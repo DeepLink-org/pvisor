@@ -15,8 +15,8 @@ guest写回关闭/开启对照，包括静态Rust负载、固定fixture、逐cas
 host写缓存、lower读缓存对照及扩展曲线仍未接入新执行器；细粒度压力与队列
 插桩仍缺失。旧入口、CSV、曲线与结论独立保留。
 
-本协议登记在 [B-FS-ENG](../../benchmark/README.md#b-fs-eng)，独立计数属于
-[B-FS-DIAG](../../benchmark/README.md#b-fs-diag)。历史曲线协议见 [CURVES.md](CURVES.md)。
+本协议登记在 [B-FS-ENG](../../benchmark.new/REGISTRY.md#b-fs-eng)，独立计数属于
+[B-FS-DIAG](../../benchmark.new/REGISTRY.md#b-fs-diag)。历史曲线协议见 [CURVES.md](CURVES.md)。
 
 ### 顶层回答什么
 

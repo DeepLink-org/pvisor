@@ -213,7 +213,7 @@ template/pool and arbitrary-port APIs remain unsupported. This is a local
 replacement for the tested core profile, not every OpenSandbox deployment.
 
 The creation design removes registry/unpack work and reduces polling delay.
-The [paired native/Docker experiment](../../benchmark/opensandbox/REPORT.md)
+The [paired native/Docker experiment](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/REPORT.md)
 found faster first creation after API restart and slower steady creation. These
 results use the `performance` build and prepared images, not registry cold pulls.
 VM isolation and Docker container isolation are different contracts; their full

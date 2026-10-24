@@ -1,5 +1,7 @@
 # Engineering guide
 
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+
 Run commands from the repository root. `just` lists public recipes in twelve groups. `just ci` runs the local check sequence; `just ci check "test pvisor-core"` runs selected commands in order and stops on failure. Internal recipes stay callable but are hidden from the default help.
 
 ## Repository layout and ownership
@@ -24,7 +26,7 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their modules |
 | `tests/` | Python packaging and repository workflow tests |
-| `examples/`, `benchmark/` | Executable product scenarios and performance measurements |
+| `examples/`, `benchmark.new/` | Executable product scenarios and performance measurements |
 | `scripts/ci/` | CI checks and smoke-test entry points |
 | `docs/src/zh/`, `docs/src/en/` | Documentation source; `docs/site/` is generated |
 | `vendor/` | Patched third-party dependencies; product orchestration belongs in `crates/` |
@@ -135,7 +137,7 @@ CI checks the default runtime and application dependency boundaries before the c
 | `just test cli` / `just test pvisor-cli` | Executable/frontend tests; `just test pvisor` selects runtime tests |
 | `just test pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `just test-py -k packaging` | Filter Python unittest checks in both test directories |
-| `just test-py discover -s benchmark/pvisor` | Benchmark tool unittest checks; also included in default Python tests |
+| `just test-py discover -s benchmark.new/support` | Benchmark tool unittest checks; also included in default Python tests |
 | `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
 | `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
 | `just test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
@@ -152,7 +154,7 @@ CI checks the default runtime and application dependency boundaries before the c
 
 Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
-Default unittest discovery includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Default unittest discovery includes `tests/` and `benchmark.new/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
 VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
 
@@ -178,7 +180,7 @@ The shared setup action installs only Python, uv and just by default. Rust, next
 
 CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Attempt; normal VM shutdown without a reported code fails with 125.
 
-See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon) for measurements and scope.
+See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon) for measurements and scope.
 
 ## Packaging and names
 

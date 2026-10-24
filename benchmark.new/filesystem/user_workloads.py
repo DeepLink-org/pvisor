@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark: B-FS-TOOLS (benchmark/README.md#b-fs-tools), user-facing.
+"""Benchmark: B-FS-TOOLS (benchmark.new/REGISTRY.md#b-fs-tools), user-facing.
 
 Question: how much time do complete repository/build/publish tasks take in each
 user execution mode, and which I/O shapes and resource conditions explain it?

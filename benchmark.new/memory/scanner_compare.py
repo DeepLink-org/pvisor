@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "benchmark/pvisor"))
+sys.path.insert(0, str(REPO / "benchmark.new/support"))
 from memory_savings import host_identity, run  # noqa: E402
 from memory_scale import digest, inventory, numbers, raw_field, validate_report  # noqa: E402
 
@@ -248,7 +248,7 @@ def main():
     for source in (
         Path(__file__),
         *(
-            REPO / "benchmark/pvisor" / n
+            REPO / "benchmark.new/support" / n
             for n in ("memory_savings.py", "memory_scale.py", "linux_cold_runtime.py")
         ),
     ):

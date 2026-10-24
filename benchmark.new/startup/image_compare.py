@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare, measure and audit a same-image prepared-instance comparison.
 
-Benchmark: B-LAZY-STARTUP (benchmark/README.md#b-lazy-startup), user-facing scope.
+Benchmark: B-LAZY-STARTUP (benchmark.new/REGISTRY.md#b-lazy-startup), user-facing scope.
 Question: with image inputs prepared, how long do new OCI/TurboOCI containers
 and a pVisor VM take to produce the same verified output and exit normally?
 Design: 3 warmups and 30 balanced randomized rounds, CPU 12/13, 2 CPU/2 GiB
@@ -112,9 +112,7 @@ def process_snapshot(owned_roots=()):
     tagged = {
         pid
         for pid, row in processes.items()
-        if row["comm"] in BUILDERS
-        or "benchmark.new/" in row["command"]
-        or "benchmark/pvisor/" in row["command"]
+        if row["comm"] in BUILDERS or "benchmark.new/" in row["command"]
     }
     for _ in range(32):
         expanded = tagged | {pid for pid, row in processes.items() if row["ppid"] in tagged}

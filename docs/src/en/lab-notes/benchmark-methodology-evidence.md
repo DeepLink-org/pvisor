@@ -1,5 +1,7 @@
 # Benchmark measurement protocols and evidence
 
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 
 All benchmarks follow the same protocol:
@@ -263,6 +265,6 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_b
   --assets target/reference-env-new --output /tmp/reference-report-new
 ```
 
-The archive uses `pvisor-reference-environment/v1`, distinct from the old smoke schema. It includes samples, commands, pinned scripts, guest/tool versions, failures, minimized real tool-return evidence, and Bundle isolation/resource proof, excluding multi-GB rootfs and inherited host credentials. Reports contain tool/kernel/pVisor identities. See the [benchmark directory](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor) for automatic preparation and reproduction.
+The archive uses `pvisor-reference-environment/v1`, distinct from the old smoke schema. It includes samples, commands, pinned scripts, guest/tool versions, failures, minimized real tool-return evidence, and Bundle isolation/resource proof, excluding multi-GB rootfs and inherited host credentials. Reports contain tool/kernel/pVisor identities. See the [benchmark directory](https://github.com/DeepLink-org/pvisor/tree/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor) for automatic preparation and reproduction.
 
 Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`

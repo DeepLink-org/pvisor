@@ -937,7 +937,7 @@ RPC/prefetch path and pooling. These are private
 rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
-See `benchmark/pvisor/lazy_image_v2.py` for same-artifact NumPy A/B; historical
+See the [archived same-artifact NumPy A/B](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_image_v2.py); historical
 Docker measurements are a different cohort. Contract tests cover real portable
 pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
 fallback and concurrent service progress. Linux KVM performance measurements do

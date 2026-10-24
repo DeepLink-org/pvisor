@@ -1,5 +1,7 @@
 # Agent 工具任务：技术记录
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
 无镜像 pVisor VM 的完整修复测试任务约 **4.61 秒**，Firecracker / 完整 Ubuntu 约 **8.51 秒**；staged 约 **0.72 秒**。Ubuntu 的开机等待影响短任务，pVisor 的工具执行仍有明显成本；启动快不等于工具路径领先。Claude/VM：初始化超时 / N=0，Codex 的真实工具闭环结果见下表。

@@ -4,7 +4,7 @@ set positional-arguments
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
 semspec_target_dir := target_dir / "semspec"
-python_paths := "pvisor tests examples benchmark/pvisor/test_*.py benchmark.new scripts/packaging scripts/ci setup.py"
+python_paths := "pvisor tests examples benchmark.new scripts/packaging scripts/ci setup.py"
 zensical_version := "0.0.67"
 
 import "tests/justfile"
@@ -237,12 +237,12 @@ test-rust *packages:
     cargo nextest run --locked "${args[@]}" "$@"
 
 # 标准库 unittest；支持文件、测试名、-k/-v，或 discover 参数
-# 无参数时覆盖 tests/、历史 benchmark 测试和命令计时测试
+# 无参数时覆盖 tests/、活动 benchmark 和命令计时测试
 [group("06. 测试与冒烟")]
 test-py *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    export PYTHONPATH="{{ repo }}/benchmark/pvisor${PYTHONPATH:+:$PYTHONPATH}"
+    export PYTHONPATH="{{ repo }}/benchmark.new/support${PYTHONPATH:+:$PYTHONPATH}"
     selected=0
     option_value=0
     for arg in "$@"; do
@@ -255,8 +255,10 @@ test-py *args:
     done
     if [[ "$selected" == 0 ]]; then
       uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests "$@"
-      uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor "$@"
-      uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/tests "$@"
+      uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/support "$@"
+      for suite in tests filesystem memory; do
+        uv run --no-project --with 'setuptools>=77' python -m unittest discover -s "benchmark.new/$suite" "$@"
+      done
     else
       uv run --no-project --with 'setuptools>=77' python -m unittest "$@"
     fi

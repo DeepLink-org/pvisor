@@ -21,7 +21,7 @@
 
 ## 实验设计
 
-注册角色分别为 B-FS-ENG（计时）和 B-FS-DIAG（插桩计数），见[注册表](../../benchmark/README.md#b-fs-eng)。所有原始样本、日志、失败尝试、输入清单、冻结源码、制品和验收收据分别保留；不同批次不合并。
+注册角色分别为 B-FS-ENG（计时）和 B-FS-DIAG（插桩计数），见[注册表](../../benchmark.new/REGISTRY.md#b-fs-eng)。所有原始样本、日志、失败尝试、输入清单、冻结源码、制品和验收收据分别保留；不同批次不合并。
 
 CLI 使用同一冻结 release/gateway 二进制，仅改变真实缓存模式。包含当前的 I/O 屏障与 journal 修复；READ/WRITE 路径、队列调度、固件和七工具输入相同。整组 affinity CPU 0,1、两核 quota、16 GiB、swap 0，guest 2 vCPU/16 GiB；Btrfs、热宿主缓存、每任务独立工作区与工具缓存、新 namespace/pivot_root/Host listener。namespace 与输入准备不计时，Host/VM 启动和正常退出计入完整任务；新 VM 写合并和 DAX 关闭。
 

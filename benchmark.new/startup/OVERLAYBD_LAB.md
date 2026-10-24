@@ -1,6 +1,6 @@
 # OverlayBD 实验部署与功能验证
 
-本部署为 [B-LAZY-STARTUP](../../benchmark/README.md#b-lazy-startup) 的
+本部署为 [B-LAZY-STARTUP](../../benchmark.new/REGISTRY.md#b-lazy-startup) 的
 [TurboOCI 对照](TURBO_OCI.md)准备可运行后端。使用官方发布程序，服务配置和数据
 保存在独立 Docker 实验环境中；宿主现有 containerd、Docker 与 systemd 配置不变。
 

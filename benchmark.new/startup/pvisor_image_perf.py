@@ -211,17 +211,8 @@ def prepare(args):
         (output / name).mkdir(parents=True)
     # Freeze the adapter and the proven namespace/framed-proxy helpers it uses.
     shutil.copy2(__file__, output / "frozen/adapter.py")
-    harness_sources = []
-    for directory, children, names in os.walk(ROOT / "benchmark/pvisor"):
-        children[:] = [name for name in children if name not in (".data", "__pycache__")]
-        harness_sources.extend(Path(directory) / name for name in names if name.endswith(".py"))
-    for source in harness_sources:
-        relative = source.relative_to(ROOT / "benchmark/pvisor")
-        if ".data" in relative.parts or "__pycache__" in relative.parts:
-            continue
-        destination = output / "frozen/harness" / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+    for name in ("lazy_image_v2.py", "lazy_startup.py"):
+        shutil.copy2(ROOT / "benchmark.new/support" / name, output / "frozen/harness" / name)
     legacy, startup = helpers(output)
     source = args.source or (
         startup.NUMPY_SOURCE if args.workload == "numpy-script" else DEFAULT_SOURCE

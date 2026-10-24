@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare and run the explicit immutable-share DAX experiment.
 
-Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), role engineering A/B.
+Benchmark: B-FS-ENG (benchmark.new/REGISTRY.md#b-fs-eng), role engineering A/B.
 Motivation: decide whether the new immutable share's DAX path helps readers.
 Conclusion sought: paired median differences and 95% CIs by access pattern.
 Design: one frozen optimized subject, mount toggle only, host-hot/fresh guests,

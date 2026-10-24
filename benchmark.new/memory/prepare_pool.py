@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scanner_compare import REPO, digest, save
 
-sys.path.insert(0, str(REPO / "benchmark/pvisor"))
+sys.path.insert(0, str(REPO / "benchmark.new/support"))
 from firecracker_ksm import WORKER, page  # noqa: E402
 
 

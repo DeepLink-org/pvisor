@@ -1,6 +1,6 @@
 # Memory experiments
 
-Read the [benchmark registry](../../benchmark/README.md) and
+Read the [benchmark registry](../../benchmark.new/REGISTRY.md) and
 [table framework](../README.md) first. `scanner_compare.py` serves the
 B-MEMORY-SCALE engineering extension; results do not populate user benchmarks.
 The other null JSON templates remain unprepared and are not elapsed-time
@@ -9,13 +9,13 @@ row; `--prepare` expands its inputs, and `semspec bench` executes the coordinato
 
 `opensandbox_memory.json` registers the separate B-OPENSANDBOX-MEMORY-ENG
 phase-memory experiment. Its generic JSON row remains deliberately unprepared;
-the complete native/default, native/physical-pool and official server/private
-Docker campaign uses [`memory.py`](../../benchmark/opensandbox/memory.py), with
+the historical native/default, native/physical-pool and official server/private
+Docker campaign used [`memory.py`](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/memory.py), with
 the preparation, preflight, five randomized rounds and audit described in that
-[experiment manual](../../benchmark/opensandbox/README.md#full-service-and-instance-memory).
+[experiment manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/README.md#full-service-and-instance-memory).
 Do not substitute campaign elapsed time for memory or fill this placeholder
 with historical measurements. The related native engine old/new diagnostic is
-registered by `startup/sandbox_engine.json` and uses `engine_ab.py` in that manual.
+registered by `startup/sandbox_engine.json` and uses the retired `engine_ab.py` in that archived manual.
 
 ## Adaptive page scanner versus KSM
 

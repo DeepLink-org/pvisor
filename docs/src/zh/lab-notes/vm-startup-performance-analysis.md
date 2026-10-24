@@ -1,5 +1,7 @@
 # VM 启动：技术分析与实验记录
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
 ## Linux：启动与退出修复复测，2026-10-11 {#concurrency-retest}
@@ -52,7 +54,7 @@ Shell 使用 128 MiB guest RAM，工具使用 16 GiB，网络使用 1 GiB；它�
 
 两种配置都启用 SMP、KVM guest、CPU mitigations、seccomp/filter、namespaces、virtio-mmio、virtio-fs、virtio-net、IPv4。裁剪配置关闭 PCI、ACPI、guest security/SELinux 和 audit；两者仍启用 `CONFIG_BLOCK`，不能将设备裁剪概括成所有块设备基础设施都消失。配置变化不构成相同加固程度的对照。这里只验证上述 HTTP 和私有内存恢复负载，没有建立完整设备、TLS/DNS/UDP/IPv6、安全逃逸或 SDK 状态恢复的兼容性保证，也没有证明启动、物理内存或密度收益。
 
-能力检查和实际配置选项 CSV 保存在本地批次或归档中，保留批次时间、样本数和摘要关联；两批独立原始报告、逐次输出、快照、输入清单、构建与审核回执保留在本地 `.data/`。复现见[内核配置实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment)。启动与完整任务收益需使用当前 CLI 另跑正式配对计时，不能由能力通过或文件尺寸推出。
+能力检查和实际配置选项 CSV 保存在本地批次或归档中，保留批次时间、样本数和摘要关联；两批独立原始报告、逐次输出、快照、输入清单、构建与审核回执保留在本地 `.data/`。复现见[内核配置实验手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#paired-kernel-configuration-experiment)。启动与完整任务收益需使用当前 CLI 另跑正式配对计时，不能由能力通过或文件尺寸推出。
 
 ## 1. 结论
 

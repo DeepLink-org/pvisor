@@ -50,7 +50,7 @@ class RegistryTests(unittest.TestCase):
                 prepare.job_command(Path("/frozen/pvisor"))
 
     def test_every_active_id_has_a_json_template_and_retired_ids_do_not(self):
-        registry = (ROOT.parent / "benchmark/README.md").read_text()
+        registry = (ROOT.parent / "benchmark.new/REGISTRY.md").read_text()
         expected = {
             line.split("：")[0].removeprefix("### ")
             for line in registry.splitlines()

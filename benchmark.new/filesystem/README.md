@@ -7,7 +7,7 @@
 本页用户实验要回答：同一套仓库检查、增量编译和离线发布任务，选择Native、
 pVisor host、staged、CLI VM、Docker、Firecracker或QEMU需要等待多久，
 哪些调用形状及资源条件决定差距？
-注册为[B-FS-TOOLS](../../benchmark/README.md#b-fs-tools)。
+注册为[B-FS-TOOLS](../../benchmark.new/REGISTRY.md#b-fs-tools)。
 `user_workloads.py`为新用户批次入口，按12机制、4资源边界、3工作流分别采样，
 N3新环境、内部三轮，不设干扰门禁，不合成总分。复用冻结负载和工具制品，
 重新测量各用户配置；已有guest写回工程A/B数据仍留在设计分析页。
@@ -64,14 +64,14 @@ Firecracker、QEMU q35及QEMU microvm共用同一收据冻结的官方stock内�
 私有预算先独立准备，输出路径须短且位于`.data`，例如：
 
 ```sh
-python3 benchmark/pvisor/prepare_reference_budget.py \
+python3 benchmark.new/support/prepare_reference_budget.py \
   --output benchmark/.data/NEW_PRIVATE_DOCKER_BUDGET \
   --memory-mib 2048 --cpu-affinity 0,1 --cpu-placement affinity
 ```
 
 将其`setup.json`传入`--docker-setup`，测量服务自动加入同一父slice。结束后只停止
 该收据明确记录的私有daemon和slice，不操作系统或其他用户的Docker。stock内核收据的
-来源要求与准备步骤见[参考内核准备](../../benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)；
+来源要求与准备步骤见[参考内核准备](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)；
 使用官方vmlinuz、匹配config、可信extractor及所需原版模块initrd，不借用pVisor固件。
 
 快速上限为每环境90秒。同一配置/case首次失败后，剩余计划样本标记为未执行，其他单元继续；
@@ -127,6 +127,8 @@ python3 benchmark.new/filesystem/workloads_v2_audit.py ABS_BATCH
 完整字节校验及原始行，`curves_analysis.py` 导出 CSV/SVG/PDF；
 `curves_diagnostics.py` 只接受独立 B-FS-DIAG 批次并严格核对实例与阶段库存。
 `curves_cli.py` 用真实普通 CLI 七工具验证落地效果，独立于 SDK 机制曲线。
+它和 `guest_writeback_cli.py` 的 `--prepare` 必须显式提供 `--template`，指向保留的
+ordinary-CLI anchor 批次；检查、运行和分析既有配置时无需该选项。
 `read_cache_curves.py` 单独扫描 1–768 MiB 的 Immutable lower 工作集，在 512 MiB
 guest 内连续五次 reopen、内部三轮，展示吞吐、READ 消除与容量边界的历史变化。
 工程发布器`publish_workloads_v2.py`、`publish_guest_writeback.py`及其tuning、CLI入口、
@@ -140,7 +142,7 @@ I/O 曲线发布器只复制当前文章或主题引用的 SVG；未引用的图
 ## 原生 metadata/read 表
 
 这里回答的问题：准备好的热缓存输入上，原生 metadata/read 完整 Python 命令需要多久？
-注册条目为 [B-FS-TOOLS](../../benchmark/README.md#b-fs-tools)。当前入口只覆盖两项原生探针；
+注册条目为 [B-FS-TOOLS](../../benchmark.new/REGISTRY.md#b-fs-tools)。当前入口只覆盖两项原生探针；
 七工具内部阶段、跨后端任务及工程 A/B 的范围仍由各自注册条目约束。
 
 [tools.json](tools.json) 是一张两行表：
@@ -193,7 +195,7 @@ Python 时钟数据与旧 hyperfine 数据的来源不同。旧数据和撤下�
 
 ## 不可变 share 的 DAX 工程 A/B
 
-`dax_ab.py` 服务 [B-FS-ENG](../../benchmark/README.md#b-fs-eng)。这是独立的
+`dax_ab.py` 服务 [B-FS-ENG](../../benchmark.new/REGISTRY.md#b-fs-eng)。这是独立的
 phase-clock 配对实验，不写入 `tools.render.json`，不代表 CLI 可写 workspace。
 准备命令冻结源码、优化二进制、固件、静态 C workload 和不可变输入，并提前保存
 30 对平衡随机顺序。两组使用相同的只读设备，仅切换 guest 的 DAX 挂载选项。

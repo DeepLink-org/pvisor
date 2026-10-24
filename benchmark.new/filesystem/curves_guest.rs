@@ -1,4 +1,4 @@
-//! Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), phase-clock curves.
+//! Benchmark: B-FS-ENG (benchmark.new/REGISTRY.md#b-fs-eng), phase-clock curves.
 //! One standalone Linux binary is used unchanged by native and VM conditions.
 //! Usage: curves_guest [--verify] PLAN.tsv WORKSPACE [ROUNDS=3]. No fixture is prepared
 //! before CURVES_READY. All outputs remain for independent parent verification.

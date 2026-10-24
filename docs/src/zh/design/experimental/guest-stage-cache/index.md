@@ -422,7 +422,7 @@ M1 可不修改 guest 内核；它验证预热后的机制，不能证明已实�
 | image 与导入格式 | [共享镜像设计](../../shared-image-cache-storage.md) | revision、索引、内容校验、权限数据完整性、格式与构建证据 |
 | guest 用户态控制 | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | 必要的初始化/确认；不把常规 stat/open 转到 guest 用户态服务 |
 | 生命周期与接入 | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime)、[environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | 准入、freeze、恢复、fork、实验配置与 Host 权限边界 |
-| 验证与性能 | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)、[benchmark](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md) | 候选规格、故障与交错测试、真实 VM harness、原始证据和统计 |
+| 验证与性能 | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)、[benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | 候选规格、故障与交错测试、真实 VM harness、原始证据和统计 |
 
 先共同评审对象模型、profile 和失败合同，再拆分工作包。共享接口由拥有者定义，不复制 DTO；`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal` 保持现有 API 边界。尚未迁移的 crate 只做必要的局部修改，不借实验改成全工作区重构。改文件前逐级阅读目录 README。
 
@@ -482,7 +482,7 @@ just fw test
 
 ##### 2.9.5.1 注册与可复现入口
 
-正式工程对照归属 [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#b-fs-eng)，请求成本诊断归属 [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#b-fs-diag)。实现与测量前复核 [注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv)及 [filesystem 入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md)。当前 `filesystem/ab.json` 和 `diagnostic.json` 仍要求具体单条件命令；先准备可重复执行的 harness，再开始测量。
+正式工程对照归属 [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng)，请求成本诊断归属 [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag)。实现与测量前复核 [注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv)及 [filesystem 入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md)。当前 `filesystem/ab.json` 和 `diagnostic.json` 仍要求具体单条件命令；先准备可重复执行的 harness，再开始测量。
 
 现有 DAX 配对实验属于独立机制，不作为本方案的证据。单独执行各条件的采样器也不会自动形成随机配对；本方案需要显式生成配对顺序、执行记录和同轮统计。
 
@@ -553,7 +553,7 @@ just fw test
 1. 区分当前实现、拟议协议、受限原型和已验收能力；协议字段与消息名在评审前均为语义草案。
 2. 每项本地操作都写清对象存活、权限、基线观察和版本条件；对象引用不能只依赖路径。
 3. 将目录版本、属性版本、内容版本和后端身份分别建模；丢失更新或提交结果不明时进入明确的恢复或失败路径。
-4. 性能实验遵守 [benchmark 规则](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)，找到对应注册条目后再测量；原始数据保存到所属实验目录的 `.data/`。
+4. 性能实验遵守 [benchmark 规则](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md)，找到对应注册条目后再测量；原始数据保存到所属实验目录的 `.data/`。
 5. 实现归属现有 crate 与 `fw/`，遵守各目录 README 和 API 边界；设计登记不创建空 CLI 开关。
 6. 新语义规格遵守 [semspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)。候选验收项、测试 PASS 和人工批准分别记录，AI 不操作真实审批账本或批准快照。
 

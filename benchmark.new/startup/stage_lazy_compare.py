@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Same staged executor, two genuinely lazy immutable image lower providers.
 
-Benchmark: B-LAZY-STARTUP (benchmark/README.md#b-lazy-startup), role user-facing.
+Benchmark: B-LAZY-STARTUP (benchmark.new/REGISTRY.md#b-lazy-startup), role user-facing.
 Motivation: compare lazy image supply without a VM/container boundary difference.
 Conclusion sought: staged file loading latency and transfer volume for pVisor
 host FUSE versus TurboOCI/OverlayBD under the same executor and workload.
@@ -77,22 +77,10 @@ def prepare(args):
     for name in sources:
         shutil.copy2(HERE / name, batch / "harness" / name)
     root = HERE.parents[1]
-    # Freeze only the existing protocol observer, not the old campaign entry point.
-    for name in ("lazy_image_v2.py", "lazy_startup.py", "lazy_common.py"):
-        source = root / "benchmark/pvisor" / name
-        if source.is_file():
-            shutil.copy2(source, batch / "harness" / name)
-    # lazy_image_v2 imports a few protocol/report helpers; retain exact bytes.
-    for directory, children, names in os.walk(root / "benchmark/pvisor"):
-        children[:] = [name for name in children if name not in (".data", "__pycache__")]
-        for name in names:
-            if not name.endswith(".py"):
-                continue
-            source = Path(directory) / name
-            destination = batch / "harness" / source.relative_to(root / "benchmark/pvisor")
-            if not destination.exists():
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
+    # Both protocol helpers are self-contained; freeze their exact source bytes.
+    for name in ("lazy_image_v2.py", "lazy_startup.py"):
+        source = root / "benchmark.new/support" / name
+        shutil.copy2(source, batch / "harness" / name)
     for name in ("pvisor", "pvisor-daemon"):
         shutil.copy2(args.binary_dir.resolve() / name, batch / "tools" / name)
     rlib = args.runtime_rlib.resolve(strict=True)

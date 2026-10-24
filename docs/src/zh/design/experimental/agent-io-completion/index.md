@@ -165,7 +165,7 @@ let gateway = pvisor::GatewayDriverConfig::new(proxy)
 
 WB=0 的 close 仍通过 FLUSH 排空，因此收益重点是保持打开文件的连续写，不能据此宣称大量 write-close 小文件已跨文件合并。该基础没有实现完整 offload、Agent 任务协议、guest transfer fence 或对象级并行；guest WB=1 的 unlink 错误已由独立的对象退休机制修复，新 host 模式仍与 guest WB=1 互斥。
 
-快速实验沿用五个新环境、每任务内部三轮，保留 Ready 排除退出的独立指标，不加入主机干扰门禁。另记录 accepted、completed、durable、Job 完成各自耗时，统计总 CPU、整个受控进程/cgroup 及内核缓存内存、驻留内存时间积分、offload/load 耗时、唤醒次数和 backing 请求；避免把延后到退出的工作算成收益。测量前按 `benchmark/README.md` 登记或复用协议，原始数据留在 benchmark `.data/`，不混入用户排名。
+快速实验沿用五个新环境、每任务内部三轮，保留 Ready 排除退出的独立指标，不加入主机干扰门禁。另记录 accepted、completed、durable、Job 完成各自耗时，统计总 CPU、整个受控进程/cgroup 及内核缓存内存、驻留内存时间积分、offload/load 耗时、唤醒次数和 backing 请求；避免把延后到退出的工作算成收益。测量前按 `benchmark.new/REGISTRY.md` 登记或复用协议，原始数据留在 benchmark `.data/`，不混入用户排名。
 
 ### 2.10 当前验证记录 {#validation}
 

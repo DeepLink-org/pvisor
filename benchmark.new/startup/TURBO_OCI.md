@@ -5,8 +5,8 @@
 四组对照的采样与审计 runner 尚未接通。此文件不构成已经完成的
 TurboOCI 复现、pVisor 性能结论或用户 benchmark 成绩页。
 
-归属 [B-LAZY-STARTUP](../../benchmark/README.md#b-lazy-startup)，遵守
-[benchmark 规则](../../benchmark/README.md)和
+归属 [B-LAZY-STARTUP](../../benchmark.new/REGISTRY.md#b-lazy-startup)，遵守
+[benchmark 规则](../../benchmark.new/REGISTRY.md)和
 [新入口的证据与发布规则](../README.md)。
 [registry.csv](../registry.csv) 已登记 `startup/lazy_startup.json`，但
 [该模板](lazy_startup.json)目前仍为未准备的占位表。四组设计已登记于
@@ -102,7 +102,7 @@ TurboOCI 另记派生 index／manifest／元数据 layer digest、转换工具�
 
 ## 首批负载与正确性
 
-负载复用 [现有 lazy runner](../../benchmark/pvisor/lazy_startup.py)的固定输入，
+负载复用 [现有 lazy runner](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_startup.py)的固定输入，
 实现新 runner 时冻结该源码，不引用会随工作区改变的常量。
 
 | 负载 | 源镜像与校验 | Ready 输出 |

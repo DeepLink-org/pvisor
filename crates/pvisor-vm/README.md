@@ -995,7 +995,7 @@ dispatch、overlay 与 Core 累计计数，并输出单行 `pvisor-fs-profile-ph
 根设备 scope 为 `rootfs`，其他设备保留 virtio-fs tag。请求使用独占 session
 guard，等已进入宿主的操作结束；它不触发 flush、capture 或额外物理查询。
 关闭 profiling 时保留普通未知 ioctl 的 ENOTTY 行为，没有新公开 API。
-`benchmark/pvisor/phase_profiles.py` 严格核对各设备的每个 token/实例及全部
+已退役的 [`phase_profiles.py`](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/phase_profiles.py) 严格核对各设备的每个 token/实例及全部
 注册实例的最终记录，原始差分保留，并另行扣除标记自身的一个 IOCTL、
 80 个请求字节和一个 direct dispatch。区间包含整个 `checked()` 的子进程
 启动及原有校验，不能解释为精确的 `worker_ms` 边界；内核异步 FORGET 等
@@ -1469,7 +1469,7 @@ in notification. Queue kicks are armed when a deferred frame needs buffers, with
 the standard availability recheck closing the race after rearming. Private tests
 cover bytewise stream fragmentation, coalescing/compaction, maximum frames, EOF,
 notification suppression and deferred completion. Linux/KVM real-guest peer
-experiments are described in `benchmark/peer/README.md`; HVF performance requires
+experiments are described in the [archived peer manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/peer/README.md); HVF performance requires
 separate measurement.
 
 Stream TX gathers at most 32 already-available frames into one `sendmsg`.

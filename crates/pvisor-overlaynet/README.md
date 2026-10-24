@@ -127,7 +127,7 @@ peer. These tests do not establish a real KVM/HVF guest boot or production capac
 The packet cache retains only the generation from validated discovery records;
 the TTL and validation rules remain the same. Sends reuse bounded packet
 buffers, and guest writes use vectored I/O with short-write handling. The
-[peer engineering harness](../../benchmark/peer/README.md) compares frozen
+[peer engineering harness](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/peer/README.md) compares frozen
 binaries through the public framed links with integrity-checked goodput, RTT
 and process CPU accounting. Its backend-thread measurements exclude virtio/KVM
 and do not represent Docker bridge or VM application TCP throughput.

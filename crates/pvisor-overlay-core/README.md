@@ -93,7 +93,7 @@ requires final cumulative records for the entire registered set and all expected
 component families. A missing instance is unknown work, never a zero request count.
 Legacy logs without registration remain partial evidence. Disabled profiles and
 explicit in-memory test profiles emit no registration.
-The [owned-lower host FUSE experiment](../../benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
+The [owned-lower host FUSE experiment](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
 records same-contract cache-off/on engineering measurements; it does not establish
 OCI/VM performance or review-journal costs.
 

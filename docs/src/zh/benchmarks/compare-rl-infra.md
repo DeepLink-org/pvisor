@@ -59,4 +59,6 @@ Lazy 冷客户端 Ready 排除镜像服务首次准备；镜像已缓存时，Do
 
 各主题的完整 CSV/JSON、制品摘要、控制条件与原始记录保存在对应本地批次或文档数据归档，保留来源与统计口径。
 
-[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
+
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。

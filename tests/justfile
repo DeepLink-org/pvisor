@@ -155,13 +155,15 @@ test-task-routing:
     check_line cargo clippy --all-targets --locked -p pvisor-shim --features vm -- -D warnings
     run test-py
     check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests
-    check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor
-    check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/tests
+    check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/support
+    for suite in tests filesystem memory; do
+      check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s "benchmark.new/$suite"
+    done
     for flags in selected leading filter; do
       case "$flags" in
         selected) run test-py tests/test_docs.py -k reference -v; check_line uv run --no-project --with 'setuptools>=77' python -m unittest tests/test_docs.py -k reference -v ;;
         leading) run test-py -q tests/test_docs.py; check_line uv run --no-project --with 'setuptools>=77' python -m unittest -q tests/test_docs.py ;;
-        filter) run test-py -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor -k packaging ;;
+        filter) run test-py -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/support -k packaging ;;
       esac
     done
     for recipe in test-hvf-cold-restore test-vm-snapshot-state test-linux-cold-restore test-environment-snapshot; do

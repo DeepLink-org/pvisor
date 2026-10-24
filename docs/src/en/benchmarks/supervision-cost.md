@@ -133,4 +133,6 @@ The data covers warm caches and small text files in one directory. It does not c
 
 Local provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Complete CSV/JSON, raw commands, reports and audit records remain in their local cohorts or the documentation data archive.
 
-Reproduction follows the [comparison method](index.md#interpretation) and the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md).
+Reproduction follows the [comparison method](index.md#interpretation) and the [runner manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md).
+
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).

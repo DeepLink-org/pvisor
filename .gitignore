@@ -37,7 +37,6 @@ crates/pvisor-vm/upstream/
 # Local benchmark previews and derived tables; public assets live under docs/.
 /benchmark.new/**/*.render.json
 /benchmark.new/*/results/*.csv
-/benchmark/pvisor/*.csv
 /benchmark.new/filesystem/vm-cache-*.csv
 /benchmark.new/filesystem/vm-cache-validation.provenance.json
 .VSCodeCounter/

@@ -126,6 +126,7 @@ def source_audit(config, destination):
 
 
 def prepare(args):
+    require(args.template is not None, "--prepare requires an explicit --template anchor batch")
     repo = REPO
     template = args.template.resolve()
     original = load(template / "campaign-pre/config.json")
@@ -661,7 +662,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", type=Path)
     parser.add_argument("--setup", type=Path)
-    parser.add_argument("--template", type=Path, default=REPO / "benchmark/.data/af17-cli")
+    parser.add_argument(
+        "--template", type=Path, help="retained ordinary-CLI anchor batch, required for --prepare"
+    )
     parser.add_argument(
         "--build-receipt",
         type=Path,

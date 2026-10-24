@@ -1,4 +1,4 @@
-// Benchmark: B-COLD-STORAGE-DIAG (benchmark/README.md#b-cold-storage-diag), role diagnostic.
+// Benchmark: B-COLD-STORAGE-DIAG (benchmark.new/REGISTRY.md#b-cold-storage-diag), role diagnostic.
 // Motivation: distinguish encoded storage payload from real VM residency benefits.
 // Conclusion sought: payload counts, complete integrity and put/restore costs for 64 MiB.
 // Design: fresh process/exclusive pool, 64 KiB blocks, unique non-fill blocks, two restores.

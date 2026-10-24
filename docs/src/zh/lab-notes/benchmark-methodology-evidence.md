@@ -1,5 +1,7 @@
 # Benchmark 测量协议与证据
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
 所有基准遵守同一套协议：
@@ -263,6 +265,6 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_b
   --assets target/reference-env-new --output /tmp/reference-report-new
 ```
 
-归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor)。
+归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor)。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`

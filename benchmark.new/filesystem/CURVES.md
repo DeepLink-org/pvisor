@@ -13,8 +13,8 @@
 核对实际 backing 工作。N5 批次用于探索；独立 N30 批次用于确认已选定的主点。
 两者都不等于完整系统论文验收，也不构成 OSDI 或 artifact 认证。
 
-本实验属于 [B-FS-ENG](../../benchmark/README.md#b-fs-eng)，诊断属于
-[B-FS-DIAG](../../benchmark/README.md#b-fs-diag)。结果只进入工程分析。
+本实验属于 [B-FS-ENG](../../benchmark.new/REGISTRY.md#b-fs-eng)，诊断属于
+[B-FS-DIAG](../../benchmark.new/REGISTRY.md#b-fs-diag)。结果只进入工程分析。
 不更新跨运行时用户表，不与普通 CLI 七工具、历史 hyperfine、DAX 或 guest
 writeback 批次拼接。
 

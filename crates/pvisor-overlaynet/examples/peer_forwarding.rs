@@ -1,4 +1,4 @@
-//! Worker for B-PEER-NET-ENG; see benchmark/peer/README.md for interpretation.
+//! Standalone peer exercise for B-PEER-NET-ENG; see benchmark.new/REGISTRY.md.
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::os::unix::fs::PermissionsExt;

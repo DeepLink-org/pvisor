@@ -1,8 +1,12 @@
 # JSON benchmark tables
 
 这里回答的问题：怎样用固定、可审查的 hyperfine 命令生成表格，并保留每次实验的来源？
-需求、角色和正确性门禁见 [benchmark/README.md](../benchmark/README.md#registry)。
+需求、角色和正确性门禁见 [REGISTRY.md](REGISTRY.md#registry)。
 [registry.csv](registry.csv) 把活动实验映射到按主题组织的 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
+
+旧 `benchmark/` 的代码、运行器及专属 Cargo examples 已退役。新入口所需的输入校验、
+命名空间隔离和资源观察保留在 [support/](support/README.md)，不提供旧 campaign 入口。
+历史报告从 Git 历史查阅，本地 `.data/` 保留原路径与原字节；历史命令需要对应冻结 harness。
 
 ## 模板与执行
 
@@ -116,8 +120,7 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 
 注册入口已核对行命令规则；尚无单次负载的模板保持未准备。
 全部活动 ID 已改为 JSON 入口。启动、process、filesystem/tools、replay 有具体命令；其他条目的
-`requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需从旧
-`benchmark/pvisor/` 拆出单次负载及正确性 hooks，不能用历史统计或任意命令填充。
+`requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需实现单次负载及正确性 hooks，不能用历史统计或任意命令填充。
 
 `just benchmark [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。

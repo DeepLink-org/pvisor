@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "benchmark/pvisor"))
+sys.path.insert(0, str(REPO / "benchmark.new/support"))
 from firecracker_ksm import Guest, expected, group_path  # noqa: E402
 from linux_cold_runtime import settle_unit  # noqa: E402
 from memory_savings import (  # noqa: E402 - import after module-loading setup
@@ -856,7 +856,7 @@ def main():
         Path(__file__).with_name("docker_support.py"),
         Path(__file__).with_name("prepare_pool.py"),
         *(
-            REPO / "benchmark/pvisor" / n
+            REPO / "benchmark.new/support" / n
             for n in ("firecracker_ksm.py", "memory_savings.py", "linux_cold_runtime.py")
         ),
     ]

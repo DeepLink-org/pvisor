@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare B-PROCESS's JSON suite and validate an untimed completed Run.
 
-Benchmark: B-PROCESS (benchmark/README.md#b-process), role engineering A/B.
+Benchmark: B-PROCESS (benchmark.new/REGISTRY.md#b-process), role engineering A/B.
 Motivation: catch minimal Run and Bundle read regressions.
 Conclusion sought: direct-command native/run/status/review levels for CI.
 Design: frozen CLI; independent storage; completed Bundle validation; 2/10 or 10/50.

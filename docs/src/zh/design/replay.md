@@ -58,7 +58,7 @@ SandboxReplay 在新沙箱中重新执行命令型工具以及 `read`、`write`�
 （对其它 Agent 不启用）：续跑步数由 pVisor 监督 stderr 进度日志，达到剩余预算后发送
 SIGINT；连续 10 分钟无输出会触发空闲终止。预算触发结果为 `agent_status = max_steps`，
 metadata 记录 `opencode_step_budget`。这些机制针对固定适配版本；
-原始实测和诊断见 [实验报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md)。
+原始实测和诊断见 [实验报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/replay/qwen3.6-results.md)。
 
 ### Codex
 

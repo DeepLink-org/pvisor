@@ -1,7 +1,7 @@
 # 启动时间：一张表，一个 JSON
 
 这里回答的问题：环境已准备好时，各执行模式到首条 Ready 输出与正常退出要等多久？
-注册条目为 [B-STARTUP](../../benchmark/README.md#b-startup)。
+注册条目为 [B-STARTUP](../../benchmark.new/REGISTRY.md#b-startup)。
 
 [timing.json](timing.json) 是八行对比表，每行调用 `<backend>_timing.py`；
 各后端也有独立的 `<backend>_timing.json`，输出与输入同名的 `.render.json`。

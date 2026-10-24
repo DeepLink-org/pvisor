@@ -26,7 +26,7 @@ behavior, examples, evidence and known limitations.
 Benchmark articles under `docs/src/{zh,en}/benchmarks/` are user decisions, not
 engineering reports: a reader must be able to choose a mode or size a deployment
 from them. Registration, data and publication rules live in
-[`benchmark/README.md`](../benchmark/README.md#structure). The rules below are the
+[`benchmark.new/REGISTRY.md`](../benchmark.new/REGISTRY.md#structure). The rules below are the
 failure modes that have actually reached the site; treat them as hard rules.
 
 **Structure**

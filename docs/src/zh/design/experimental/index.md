@@ -41,7 +41,7 @@ pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sl
 3. 默认不启用；未经验证的选项不得进入正式 CLI 示例或作为已交付能力宣传。
 4. 优先复用现有 Runtime、控制 owner、CPU/device quiescence、存储和证据模型，不另造终态所有者。
 5. 公共 VM 接口遵守 `crates/pvisor-vm/README.md`；不同后端支持范围明确，不把 KVM/HVF 或映射形态混为一谈。
-6. 实现前逐级阅读目标目录 README。测量前遵守 `benchmark/README.md`，登记或明确复用适当实验协议；原始数据放 `.data/`，不能把手动操作数据当自动策略收益。
+6. 实现前逐级阅读目标目录 README。测量前遵守 `benchmark.new/REGISTRY.md`，登记或明确复用适当实验协议；原始数据放 `.data/`，不能把手动操作数据当自动策略收益。
 7. 语义规格遵守 `tools/semspec/DESIGN.md`，PASS 与人工批准分开；AI 不操作真实审批账本/快照，不弱化 claims/checks/xfail。
 8. 本目录不保存真实凭据、用户轨迹、VM镜像或构建产物。
 

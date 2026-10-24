@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare one B-STARTUP event row and validate an untimed preflight.
 
-Benchmark: B-STARTUP (benchmark/README.md#b-startup), role user-facing.
+Benchmark: B-STARTUP (benchmark.new/REGISTRY.md#b-startup), role user-facing.
 Motivation: choose an executor for prepared disposable environments.
 Conclusion sought: same-launch Ready and normal Exit levels.
 Design: fresh inputs; checked output and Run Bundles; warm caches; 2 vCPU/128 MiB.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
-sys.path.insert(0, str(REPO / "benchmark/pvisor"))
+sys.path.insert(0, str(REPO / "benchmark.new/support"))
 _spec = importlib.util.spec_from_file_location("benchmark_common", ROOT / "common.py")
 COMMON = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(COMMON)
@@ -163,8 +163,8 @@ def prepare_template(
             Path(__file__),
             template.with_name("hooks.py"),
             template.with_name("audit.py"),
-            REPO / "benchmark/pvisor/reference_inputs.py",
-            REPO / "benchmark/pvisor/firecracker_kernels.py",
+            REPO / "benchmark.new/support/reference_inputs.py",
+            REPO / "benchmark.new/support/firecracker_kernels.py",
         ]
         helpers += [
             template.with_name(name) for name in ("timing.py", "subjects.py", script + ".py")

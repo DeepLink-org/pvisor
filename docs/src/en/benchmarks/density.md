@@ -72,6 +72,8 @@ Compressed parked snapshots versus container pause have not completed validation
 
 ### Sources and reproduction {#run}
 
-[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
 
 Complete CSV/JSON retains attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. It remains with raw records in local cohorts or the documentation data archive; failed batches remain in capacity denominators.
+
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).

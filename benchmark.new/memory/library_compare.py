@@ -124,7 +124,7 @@ def main():
         )
     ]
     paths += [
-        REPO / "benchmark/pvisor" / name
+        REPO / "benchmark.new/support" / name
         for name in ("firecracker_ksm.py", "memory_savings.py", "linux_cold_runtime.py")
     ]
     harness = {str(path.resolve()): digest(path) for path in paths}

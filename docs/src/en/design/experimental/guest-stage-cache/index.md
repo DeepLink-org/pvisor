@@ -422,7 +422,7 @@ Expand only with scoped net benefit, permitted non-target regression and accepta
 | Image/import format | [Shared-image design](../../shared-image-cache-storage.md) | Revision, index, content checks, complete permissions, format/build evidence |
 | Guest userspace | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | Necessary initialization/ACK, keeping ordinary stat/open in kernel |
 | Lifecycle/integration | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime), [environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | Admission/freeze/restore/fork/configuration/Host authority |
-| Validation/performance | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md), [benchmark](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md) | Candidate cases, fault/interleaving tests, real VM harness, raw evidence/statistics |
+| Validation/performance | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md), [benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | Candidate cases, fault/interleaving tests, real VM harness, raw evidence/statistics |
 
 Review shared identity/profile/failure contracts before splitting work. Owners define shared APIs without duplicate DTOs. `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` retain current boundaries; unconverted crates receive necessary local changes rather than workspace-wide rewrites. Read each directory README before edits.
 
@@ -482,7 +482,7 @@ Public API edits require external tests through `api`, existing boundary guards 
 
 ##### 2.9.5.1 Registry and reproduction
 
-Formal engineering comparisons belong to [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#b-fs-eng); request diagnostics belong to [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#b-fs-diag). Recheck the [Registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv) and [Filesystem entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md) before implementation/measurement. `filesystem/ab.json` and `diagnostic.json` require concrete single-condition commands; prepare the repeatable harness before measuring.
+Formal engineering comparisons belong to [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng); request diagnostics belong to [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag). Recheck the [Registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv) and [Filesystem entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md) before implementation/measurement. `filesystem/ab.json` and `diagnostic.json` require concrete single-condition commands; prepare the repeatable harness before measuring.
 
 Existing paired DAX experiments test a separate mechanism. Independent condition samplers do not automatically form randomized pairs; generate explicit ordering, execution records and same-round statistics.
 
@@ -553,7 +553,7 @@ The first handoff is M0 contracts plus the restricted M1 read-only loop. Select 
 1. Distinguish existing implementation, proposed protocol, restricted prototype and accepted capability. Message fields/names remain semantic drafts before review.
 2. State object retention, permissions, baseline observation and version conditions for every local operation; references cannot rely only on paths.
 3. Separate directory, attribute and data versions from backing identity. Lost updates and unknown commits enter explicit recovery/failure paths.
-4. Follow [Benchmark rules](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md), locate the registered experiment before measurement, and store raw data in its `.data/` directory.
+4. Follow [Benchmark rules](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md), locate the registered experiment before measurement, and store raw data in its `.data/` directory.
 5. Keep implementation in existing crates and `fw/`; follow directory READMEs and API boundaries. Registration does not create an empty CLI switch.
 6. Follow the [Semspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md). Candidate acceptance, test PASS and human approval remain separate; AI does not edit real approval ledgers/snapshots.
 

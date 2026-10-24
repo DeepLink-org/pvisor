@@ -11,7 +11,7 @@ from timing import COMMON, FIELDS, ROOT, RUNS, TIMEOUT, WARMUP, summarize_pairs
 
 
 def audit_startup(directory, manifest, results):
-    sys.path.insert(0, str(ROOT.parent / "benchmark/pvisor"))
+    sys.path.insert(0, str(ROOT.parent / "benchmark.new/support"))
     from firecracker_kernels import verify_kernel_receipt
     from reference_inputs import verify_reference_inputs
 

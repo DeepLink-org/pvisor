@@ -1,5 +1,7 @@
 # 文件系统性能：技术分析与实验记录
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/`、`benchmark/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
 ## 当前结论与测量覆盖 {#filesystem-status}
@@ -1380,7 +1382,7 @@ legacy 的 64 路径观察等待显著减少，但完整哈希增加 7.329 ms，
 
 Copy-up、读队列和 journal 锁的统计 CSV 保存在对应的本地批次或归档中，直接复制已提交的加工结果，保留批次、样本数、分布、相对/绝对置信区间与原始报告摘要；制品摘要和源码收据见来源报告。完整空闲对照、参考尾部和极值保留在 CSV 中。
 
-来源：[copy-up 工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/HOST_COPY_UP_REPORT.md)、[读队列与 journal 锁工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/HOST_READ_JOURNAL_REPORT.md)。原始日志、源码和制品在测量工作区的 `benchmark/pvisor/.data/host-copy-up-*`、`.data/read-*`、`.data/journal-*`，不作为站点下载发布。复现命令见[宿主 copy-up 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#host-copy-up-scheduling-ab-on-macos)与[读队列及 journal 锁手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#read-dispatch-and-journal-fingerprint-locks-on-macos)；需要 macOS/macFUSE，不能用 Linux 上的 harness 测试代替挂载测量。
+来源：[copy-up 工程报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/HOST_COPY_UP_REPORT.md)、[读队列与 journal 锁工程报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/HOST_READ_JOURNAL_REPORT.md)。原始日志、源码和制品在测量工作区的 `benchmark/pvisor/.data/host-copy-up-*`、`.data/read-*`、`.data/journal-*`，不作为站点下载发布。复现命令见[宿主 copy-up 手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#host-copy-up-scheduling-ab-on-macos)与[读队列及 journal 锁手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#read-dispatch-and-journal-fingerprint-locks-on-macos)；需要 macOS/macFUSE，不能用 Linux 上的 harness 测试代替挂载测量。
 
 ## 当前 Linux HOST 内核缓存能力与证据 {#host-kernel-cache}
 
@@ -1448,7 +1450,7 @@ B-FS-ENG 计划以同一新冻结 release 二进制比较 native、legacy-writab
 
 计数支持延长 TTL 避免此窗口的重复 LOOKUP，以及只读 KEEP_CACHE 消除暖操作 READ callback；可写 Metadata 的 GETATTR/OPEN/READ 并未消失。完整生命周期仍包含初次读取，零暖 READ 不表示无物理读取或零任务成本。诊断耗时不进入正式分布，失败批次不拼接，旧源码 noatime 性能不替代最新源码验收；下方独立 immutable-cache 的有效结果保留其原始测量范围。
 
-正式验收状态与独立请求计数 CSV 保存在本地批次或归档中；见[工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [复现与证据契约](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache)。两个 CSV 均为直接复制的派生数据，保留来源/二进制摘要与统计口径；原始样本、日志、冻结源码与回执留在 `benchmark/pvisor/.data/`，不发布到站点或改写历史结果。
+正式验收状态与独立请求计数 CSV 保存在本地批次或归档中；见[工程报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [复现与证据契约](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache)。两个 CSV 均为直接复制的派生数据，保留来源/二进制摘要与统计口径；原始样本、日志、冻结源码与回执留在 `benchmark/pvisor/.data/`，不发布到站点或改写历史结果。
 
 ## 不可变 lower 的物理元数据缓存 {#immutable-lower-cache}
 
@@ -1478,7 +1480,7 @@ OCI 解包缓存的宿主目录仍可写，lazy 镜像的本地投影会按需�
 
 独立 profile 有 24 个实例、全部 final 记录，计时结果不含插桩。持续挂载的 cache-on 相对 off，物理 parent stat 计数下降 49.2%，leaf stat 下降 84.3%；open/read 请求数相同。计数支持减少服务端重复解析，不是减少全部 FUSE 请求或物理磁盘读取的证明；inclusive spans 不相加。cache-on 仍明显慢于 native，长期内核缓存、upper 一致性和映射/缺页路径需分别验证。
 
-正式统计与全部实例计数 CSV 保存在本地批次或归档中；见[工程报告与复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)。冻结源码、制品回执、输入清单、失败预检、正式样本和独立 profile 保存在 `benchmark/.data/immutable-cache-*`，不合并到用户性能分布。
+正式统计与全部实例计数 CSV 保存在本地批次或归档中；见[工程报告与复现命令](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)。冻结源码、制品回执、输入清单、失败预检、正式样本和独立 profile 保存在 `benchmark/.data/immutable-cache-*`，不合并到用户性能分布。
 
 ## 冻结制品的独立计数器诊断 {#current-counters}
 
@@ -1509,7 +1511,7 @@ OCI 解包缓存的宿主目录仍可写，lazy 镜像的本地投影会按需�
 
 默认缓存路径下，六个 VM 诊断中 rootfs CREATE、RENAME、WRITE 均为零，完整 final 记录支持零请求计数。rootfs READ 仍约六千次；其 span 包括服务、锁和调度，不能直接解释为磁盘或传输等待。路径解析、读取观察、工具加载和缓存写入应分别调查。修复任务的读指纹数据量很小，但 rootfs 解析仍有成本；[可执行映射探针](#exec-mapping)仅说明短进程的映射路径差异。DAX、长期属性缓存及单一函数的因果收益尚未验证，需要保持访问与暂存语义的工程 A/B 和独立正式计时。
 
-本地整理后的计数 CSV 保留每 filesystem scope 的三次统计、调用范围、完整覆盖和来源摘要；原始日志、冻结 harness、构建回执及整理脚本保存在本地 `.data/`。相同二进制此前使用管道捕获的诊断有五次 VM 因 stderr EAGAIN 打印 panic 中止；失败证据保留，不计入此表。普通文件捕获仅用于诊断，不能据两种捕获条件的差值推导性能收益。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
+本地整理后的计数 CSV 保留每 filesystem scope 的三次统计、调用范围、完整覆盖和来源摘要；原始日志、冻结 harness、构建回执及整理脚本保存在本地 `.data/`。相同二进制此前使用管道捕获的诊断有五次 VM 因 stderr EAGAIN 打印 panic 中止；失败证据保留，不计入此表。普通文件捕获仅用于诊断，不能据两种捕获条件的差值推导性能收益。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#engineering-and-diagnostics)。
 
 
 ## npm 编译缓存带来的 rootfs 请求 {#node-cache}

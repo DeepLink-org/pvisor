@@ -1,5 +1,7 @@
 # 工程说明
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+
 从仓库根目录运行命令。`just` 按十二组展示公开配方。`just ci` 执行默认本地检查序列；`just ci check "test pvisor-core"` 顺序执行指定命令，失败即停止。内部配方仍可调用，但不在默认帮助中展示。
 
 ## 仓库结构与代码归属
@@ -25,7 +27,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
 | `tests/` | Python 打包和仓库工作流测试 |
-| `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
+| `examples/`、`benchmark.new/` | 可运行的产品场景和性能测量 |
 | `scripts/ci/` | CI 检查及冒烟测试入口 |
 | `docs/src/zh/`、`docs/src/en/` | 文档源；`docs/site/` 是生成产物 |
 | `vendor/` | 有补丁的第三方依赖；产品编排逻辑放在 `crates/` |
@@ -159,8 +161,8 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 | `just test core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
 | `just test cli` / `just test pvisor-cli` | 可执行文件／前端测试；`just test pvisor` 选择运行时测试 |
 | `just test pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
-| `just test-py -k packaging` | 在两个测试目录中筛选 unittest 检查 |
-| `just test-py discover -s benchmark/pvisor` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
+| `just test-py -k packaging` | 在仓库及活动 benchmark 测试中筛选 unittest 检查 |
+| `just test-py discover -s benchmark.new/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
 | `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
 | `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `just test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
@@ -183,7 +185,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
-默认 unittest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
+默认 unittest 收集 `tests/` 和 `benchmark.new/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python 和 tar；
 在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py`，
@@ -227,7 +229,7 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 再 sync/reboot。非零退出码使 Attempt 失败；VM 正常关机但未上报退出码时按 125 失败。
 
 启动性能实测及测量范围见
-[Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
+[Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
 
 ## 打包与命名
 

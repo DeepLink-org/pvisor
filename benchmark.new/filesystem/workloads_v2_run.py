@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark: B-FS-ENG (benchmark/README.md#b-fs-eng), engineering A/B.
+"""Benchmark: B-FS-ENG (benchmark.new/REGISTRY.md#b-fs-eng), engineering A/B.
 
 Question: which V2 mechanisms, resource boundaries and complete local workflows
 benefit from guest writeback, at equal checked file/directory sync boundaries?
