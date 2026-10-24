@@ -157,3 +157,12 @@ Truncated datagrams remain invalid even if their copied prefix looks valid.
 Native receives participate in Tokio readiness clearing, so an exhausted socket
 does not spin or lose its next wake. Guest stream framing and peer wire headers
 are unchanged.
+
+Peer bind requests a 64 KiB receive burst budget when the host default is
+smaller, retaining larger existing defaults. This accommodates short MTU-sized
+bursts on macOS, whose default Unix-datagram receive buffer is small. It is one
+bounded kernel queue per instance, not a delivery or total-memory guarantee;
+per-destination send budgets stay unchanged. A full receive queue may report
+`ENOBUFS` on Darwin; packet sends treat it as transient congestion, drop the
+remaining burst and retain the connected peer socket. Broken destinations still
+invalidate their link. No global socket settings or application retries change.

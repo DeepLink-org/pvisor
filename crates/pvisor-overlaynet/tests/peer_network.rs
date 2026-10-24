@@ -865,7 +865,10 @@ fn continuous_peer_flood_does_not_starve_router_dns_or_shutdown() {
         while !signal.load(Ordering::Relaxed) && started.elapsed() < Duration::from_secs(5) {
             match tx.send(b"invalid peer datagram") {
                 Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.raw_os_error() == Some(libc::ENOBUFS) =>
+                {
                     std::thread::yield_now()
                 }
                 Err(_) => break,

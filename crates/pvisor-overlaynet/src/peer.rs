@@ -359,6 +359,8 @@ impl BoundPeer {
             member,
             _lease: lease,
         };
+        crate::peer_batch::prepare_receiver(socket.as_raw_fd())
+            .context("reserve peer receive burst budget")?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         socket.set_nonblocking(true)?;
         let temporary = membership.slot.join("peer.json.tmp");

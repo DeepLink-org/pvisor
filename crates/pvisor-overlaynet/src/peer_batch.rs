@@ -11,6 +11,52 @@ use tokio::net::UnixDatagram;
 pub(crate) const BATCH: usize = 32;
 const CAPACITY: usize = 36 + super::peer::FRAME_LIMIT + 1;
 
+pub(crate) fn prepare_receiver(fd: RawFd) -> io::Result<()> {
+    // Darwin's default 4 KiB Unix-datagram receive budget cannot retain even
+    // a short burst of MTU-sized packets plus sender addresses. Reserve a
+    // bounded burst budget without reducing a larger existing host default.
+    let mut current: libc::c_int = 0;
+    let mut length = std::mem::size_of_val(&current) as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&mut current as *mut libc::c_int).cast(),
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes: libc::c_int = 64 * 1024;
+    if current < bytes {
+        let result = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                (&bytes as *const libc::c_int).cast(),
+                std::mem::size_of_val(&bytes) as _,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn send_error(error: io::Error) -> io::Error {
+    // XNU reports a full Unix-datagram receive queue as ENOBUFS. Treat it
+    // like EAGAIN: drop this turn's remainder without retiring a healthy link.
+    if error.raw_os_error() == Some(libc::ENOBUFS) {
+        io::ErrorKind::WouldBlock.into()
+    } else {
+        error
+    }
+}
+
 struct Packet {
     bytes: [u8; CAPACITY],
     length: usize,
@@ -184,7 +230,7 @@ pub(crate) fn send(fd: RawFd, packets: &[io::IoSlice<'_>]) -> io::Result<usize> 
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+                return Err(send_error(error));
             }
         }
     }
@@ -199,13 +245,79 @@ pub(crate) fn send(fd: RawFd, packets: &[io::IoSlice<'_>]) -> io::Result<usize> 
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+                return Err(send_error(error));
             }
         };
         if count as usize != packet.len() {
             return Err(io::ErrorKind::WriteZero.into());
         }
         Ok(1)
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixDatagram as StdDatagram;
+
+    fn receive_bytes(socket: &StdDatagram) -> libc::c_int {
+        let mut bytes: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&bytes) as libc::socklen_t;
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    socket.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    (&mut bytes as *mut libc::c_int).cast(),
+                    &mut length,
+                )
+            },
+            0
+        );
+        bytes
+    }
+
+    #[test]
+    fn receive_burst_budget_raises_small_defaults_and_preserves_larger_ones() {
+        let socket = StdDatagram::unbound().unwrap();
+        let before = receive_bytes(&socket);
+        prepare_receiver(socket.as_raw_fd()).unwrap();
+        assert!(receive_bytes(&socket) >= before.max(64 * 1024));
+        let small: libc::c_int = 2048;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    socket.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    (&small as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&small) as _,
+                )
+            },
+            0
+        );
+        assert!(receive_bytes(&socket) < 64 * 1024);
+        prepare_receiver(socket.as_raw_fd()).unwrap();
+        let prepared = receive_bytes(&socket);
+        assert!(prepared >= 64 * 1024);
+        prepare_receiver(socket.as_raw_fd()).unwrap();
+        assert_eq!(receive_bytes(&socket), prepared);
+    }
+
+    #[test]
+    fn receive_queue_congestion_is_transient_without_hiding_broken_links() {
+        assert_eq!(
+            send_error(io::Error::from_raw_os_error(libc::ENOBUFS)).kind(),
+            io::ErrorKind::WouldBlock
+        );
+        for errno in [libc::EAGAIN, libc::ECONNREFUSED, libc::ENOENT] {
+            assert_eq!(
+                send_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(errno)
+            );
+        }
     }
 }
 
