@@ -7,6 +7,10 @@ license.workspace = true
 description = "Cross-platform FUSE overlay (macFUSE / libfuse) for pVisor staging"
 readme = "README.md"
 
+[features]
+default = []
+atomic-trunc-open = []
+
 [dependencies]
 anyhow.workspace = true
 libc.workspace = true

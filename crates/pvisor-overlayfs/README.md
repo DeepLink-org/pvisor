@@ -488,3 +488,24 @@ Copy-up and apply contracts are documented in
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 - [Review and apply effects](../../docs/src/zh/guides/review-apply.md)
 - [`pvisor`](../pvisor/README.md)
+
+## Atomic truncate-on-open
+
+Cargo feature atomic-trunc-open and exactly
+PVISOR_ATOMIC_TRUNC_OPEN=1 opt into requesting FUSE_ATOMIC_O_TRUNC at INIT.
+Both gates default off. Unsupported kernels retain prior requested flags.
+The experiment routes truncating OPEN through existing preparation, preimage,
+single-link skip, hardlink handling and publication. It does not enable caching,
+change live lower visibility or relax Apply conflict/persistence checks.
+Explicit truncate/ftruncate still use ordinary SETATTR. macOS is unchanged.
+This capability changes request ordering; Native correctness/error and paired
+end-to-end evidence are required before any performance/product conclusion.
+An opt-in INIT diagnostic (PVISOR_ATOMIC_TRUNC_OPEN_DIAG=1) records whether
+negotiation succeeded and is silent otherwise.
+
+The backend also carries a narrow Linux OPEN-flag correction. Ordinary
+truncating opens retain the previous `OpenOptions::truncate` path; only
+`O_TRUNC|O_APPEND` and `O_RDONLY|O_TRUNC`, which previously surfaced as `EIO`
+because Rust rejects those combinations, pass `O_TRUNC` as a native flag.
+Non-Linux platforms and non-truncating opens are unchanged. This correction is
+independent of the feature/runtime gate and changes no truncation semantics.

@@ -768,7 +768,52 @@ macro_rules! reply_callback {
     };
 }
 
+#[cfg(all(target_os = "linux", feature = "atomic-trunc-open"))]
+fn atomic_trunc_enabled(raw: Option<&OsStr>) -> bool {
+    raw == Some(OsStr::new("1"))
+}
+
+#[cfg(all(target_os = "linux", feature = "atomic-trunc-open"))]
+trait AtomicTruncConfig {
+    fn add_atomic_trunc(&mut self) -> Result<(), u32>;
+}
+
+#[cfg(all(target_os = "linux", feature = "atomic-trunc-open"))]
+impl AtomicTruncConfig for fuser::KernelConfig {
+    fn add_atomic_trunc(&mut self) -> Result<(), u32> {
+        self.add_capabilities(fuser::consts::FUSE_ATOMIC_O_TRUNC)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "atomic-trunc-open"))]
+fn request_atomic_trunc<C: AtomicTruncConfig>(config: &mut C) -> bool {
+    config.add_atomic_trunc().is_ok()
+}
+
 impl Filesystem for DispatchFs {
+    #[cfg(all(target_os = "linux", feature = "atomic-trunc-open"))]
+    fn init(
+        &mut self,
+        _request: &Request<'_>,
+        config: &mut fuser::KernelConfig,
+    ) -> Result<(), libc::c_int> {
+        if atomic_trunc_enabled(std::env::var_os("PVISOR_ATOMIC_TRUNC_OPEN").as_deref()) {
+            // Existing OPEN preparation, baseline ordering and alias handling
+            // already implement O_TRUNC. Without this capability Linux sends a
+            // writable OPEN without O_TRUNC, prepares the old content through
+            // copy-up, and only then issues SETATTR(size=0). The existing fast
+            // path is reached only when O_TRUNC arrives on the writable OPEN.
+            // Rejected negotiation leaves prior requested flags intact.
+            let negotiated = request_atomic_trunc(config);
+            if std::env::var_os("PVISOR_ATOMIC_TRUNC_OPEN_DIAG").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                eprintln!("PVISOR_ATOMIC_TRUNC negotiated={negotiated}");
+            }
+        }
+        Ok(())
+    }
+
     fn forget(&mut self, _request: &Request<'_>, ino: u64, nlookup: u64) {
         self.metadata(|state| {
             if let Ok(fs) = state {
@@ -1329,6 +1374,50 @@ impl Filesystem for DispatchFs {
     #[cfg(target_os = "macos")]
     fn getxtimes(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyXTimes) {
         self.metadata(reply_callback!(reply, getxtimes(ino)));
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "atomic-trunc-open"))]
+mod atomic_trunc_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeConfig {
+        supported: bool,
+        requested: bool,
+    }
+
+    impl AtomicTruncConfig for FakeConfig {
+        fn add_atomic_trunc(&mut self) -> Result<(), u32> {
+            if self.supported {
+                self.requested = true;
+                Ok(())
+            } else {
+                Err(fuser::consts::FUSE_ATOMIC_O_TRUNC)
+            }
+        }
+    }
+
+    #[test]
+    fn atomic_trunc_requires_exact_enable_value() {
+        assert!(atomic_trunc_enabled(Some(OsStr::new("1"))));
+        for value in [None, Some("0"), Some("true"), Some("01"), Some("")] {
+            assert!(!atomic_trunc_enabled(value.map(OsStr::new)));
+        }
+    }
+
+    #[test]
+    fn rejected_capability_does_not_claim_negotiation() {
+        let mut rejected = FakeConfig::default();
+        assert!(!request_atomic_trunc(&mut rejected));
+        assert!(!rejected.requested);
+
+        let mut accepted = FakeConfig {
+            supported: true,
+            requested: false,
+        };
+        assert!(request_atomic_trunc(&mut accepted));
+        assert!(accepted.requested);
     }
 }
 

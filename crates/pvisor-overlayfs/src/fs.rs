@@ -1260,23 +1260,38 @@ impl OverlayFs {
         Self::open_backing(self.core.prepare_open(path, flags)?, flags).map(|(file, _)| file)
     }
 
+    #[cfg(target_os = "linux")]
+    fn needs_raw_truncate_flag(flags: i32) -> bool {
+        flags & libc::O_TRUNC != 0
+            && (flags & libc::O_APPEND != 0 || flags & libc::O_ACCMODE == libc::O_RDONLY)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn needs_raw_truncate_flag(_flags: i32) -> bool {
+        false
+    }
+
     fn open_backing(real: PathBuf, flags: i32) -> io::Result<(File, PathBuf)> {
         let access_mode = flags & libc::O_ACCMODE;
+        let truncate = flags & libc::O_TRUNC != 0;
+        // Preparation already copied up and truncated the backing file.
+        // OpenOptions rejects truncate(true) with append(true) or a read-only
+        // mode, although Linux accepts those native OPEN combinations. Route
+        // only those Linux cases through raw O_TRUNC; ordinary truncation and
+        // every non-Linux platform retain the pre-existing OpenOptions path.
+        let raw_truncate = Self::needs_raw_truncate_flag(flags);
+        let mut custom_flags =
+            flags & !(libc::O_ACCMODE | libc::O_CREAT | libc::O_EXCL | libc::O_APPEND);
+        if !raw_truncate {
+            custom_flags &= !libc::O_TRUNC;
+        }
         let mut options = OpenOptions::new();
         options
             .read(access_mode != libc::O_WRONLY)
             .write(access_mode != libc::O_RDONLY)
             .append(flags & libc::O_APPEND != 0)
-            .truncate(flags & libc::O_TRUNC != 0)
-            .custom_flags(
-                libc::O_NOFOLLOW
-                    | flags
-                        & !(libc::O_ACCMODE
-                            | libc::O_CREAT
-                            | libc::O_EXCL
-                            | libc::O_TRUNC
-                            | libc::O_APPEND),
-            );
+            .truncate(truncate && !raw_truncate)
+            .custom_flags(libc::O_NOFOLLOW | custom_flags);
         options.open(&real).map(|file| (file, real))
     }
 }
@@ -3307,6 +3322,51 @@ mod tests {
             8
         );
         assert_eq!(profile.report().unwrap().measurements["copy_up"].calls, 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_open_flags_allow_append_and_readonly_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let core = OverlayCore::new(vec![lower.clone()], temp.path().join("upper"), None).unwrap();
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let path = PathBuf::from("file");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+
+        let append = overlay
+            .open_inode(ino, libc::O_WRONLY | libc::O_TRUNC | libc::O_APPEND)
+            .unwrap();
+        assert_eq!(append.metadata().unwrap().len(), 0);
+        append.write_at(b"TA", 0).unwrap();
+        drop(append);
+        assert_eq!(fs::read(temp.path().join("upper/file")).unwrap(), b"TA");
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
+
+        let readonly_truncate = overlay
+            .open_inode(ino, libc::O_RDONLY | libc::O_TRUNC)
+            .unwrap();
+        assert_eq!(readonly_truncate.metadata().unwrap().len(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_truncate_flags_are_limited_to_previously_rejected_combinations() {
+        assert!(!OverlayFs::needs_raw_truncate_flag(libc::O_WRONLY));
+        assert!(!OverlayFs::needs_raw_truncate_flag(
+            libc::O_WRONLY | libc::O_TRUNC
+        ));
+        assert!(!OverlayFs::needs_raw_truncate_flag(
+            libc::O_RDWR | libc::O_TRUNC
+        ));
+        assert!(OverlayFs::needs_raw_truncate_flag(
+            libc::O_WRONLY | libc::O_TRUNC | libc::O_APPEND
+        ));
+        assert!(OverlayFs::needs_raw_truncate_flag(
+            libc::O_RDONLY | libc::O_TRUNC
+        ));
     }
 
     #[test]
