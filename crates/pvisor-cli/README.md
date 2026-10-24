@@ -368,6 +368,10 @@ Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pv
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
+Linux OCI fixtures distinguish an inner deadline (an untrusted child process
+exit) from the host transport watchdog. The latter must terminate and reap an
+unresponsive runtime; delegated result files use the writable `output/` mount.
+
 The ignored `minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio`
 Job test needs KVM, a static C compiler and (for GNU builds)
 `PVISOR_TEST_LIBRARY_DIR` pointing to local firmware. It boots an image containing

@@ -400,6 +400,8 @@ mod tcp_guests {
     struct Guest {
         stream: UnixStream,
         input: Vec<u8>,
+        output: VecDeque<Vec<u8>>,
+        output_offset: usize,
         link: Link,
         interface: Interface,
         sockets: SocketSet<'static>,
@@ -427,6 +429,8 @@ mod tcp_guests {
             Self {
                 stream,
                 input: vec![],
+                output: VecDeque::new(),
+                output_offset: 0,
                 link,
                 interface,
                 sockets,
@@ -436,6 +440,12 @@ mod tcp_guests {
         }
         fn socket(&mut self) -> &mut tcp::Socket<'static> {
             self.sockets.get_mut(self.handle)
+        }
+        fn queue_frame(&mut self, frame: &[u8]) {
+            let mut bytes = Vec::with_capacity(4 + frame.len());
+            bytes.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(frame);
+            self.output.push_back(bytes);
         }
         fn poll(&mut self, now: SmolInstant) {
             self.stream.set_nonblocking(true).unwrap();
@@ -457,7 +467,6 @@ mod tcp_guests {
                 self.input.drain(..4 + length);
             }
             self.interface.poll(now, &mut self.link, &mut self.sockets);
-            self.stream.set_nonblocking(false).unwrap();
             let delayed = self.faults.delayed.take();
             let mut overtook_delayed = false;
             while let Some(frame) = self.link.tx.pop_front() {
@@ -472,11 +481,11 @@ mod tcp_guests {
                         continue;
                     }
                     if self.faults.seen.is_multiple_of(13) {
-                        send(&mut self.stream, &frame);
+                        self.queue_frame(&frame);
                         self.faults.duplicated += 1;
                     }
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
                 overtook_delayed = true;
             }
             // Release after newer output, or on the next poll if idle. This
@@ -485,7 +494,24 @@ mod tcp_guests {
                 if overtook_delayed {
                     self.faults.reordered += 1;
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
+            }
+            // Both simulated guests share this thread. Never block writes while
+            // the peer needs its next poll to drain the opposite direction.
+            while let Some(bytes) = self.output.front() {
+                match self.stream.write(&bytes[self.output_offset..]) {
+                    Ok(0) => panic!("guest link stopped accepting frames"),
+                    Ok(count) => {
+                        self.output_offset += count;
+                        if self.output_offset == bytes.len() {
+                            self.output.pop_front();
+                            self.output_offset = 0;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("write guest link: {error}"),
+                }
             }
         }
     }

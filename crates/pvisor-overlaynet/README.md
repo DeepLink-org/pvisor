@@ -125,8 +125,10 @@ It is not a per-peer or per-port ACL.
 processes, including ARP, TCP/UDP/ICMP forwarding, restart generations, duplicate
 addresses, crash cleanup, policy changes and network isolation. A pair of guest
 smoltcp stacks establishes TCP and verifies simultaneous 1 MiB transfers in
-each direction under deterministic loss, duplication and reordering. Additional
-chaos tests exercise four-node concurrent forwarding with fragmented guest
+each direction under deterministic loss, duplication and reordering.
+The simulated guests retain partial nonblocking writes so full-duplex
+backpressure cannot block their shared polling thread or bypass the test deadline.
+Additional chaos tests exercise four-node concurrent forwarding with fragmented guest
 stream writes, repeated restarts, saturation followed by receiver recovery, and
 malformed-datagram floods. Congestion tests isolate a stalled guest from another
 peer. These tests do not establish a real KVM/HVF guest boot or production capacity.

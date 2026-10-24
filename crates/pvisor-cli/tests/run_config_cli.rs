@@ -359,7 +359,7 @@ spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
 control=$(dirname "$spec")
 exec "$PVISOR_TEST_PVISOR" spawn --executor host \
   --spec "$control/run-spec.json" \
-  --result-file "$control/run-result.json"
+  --result-file "$control/output/run-result.json"
 "#,
     )
     .unwrap();
@@ -439,7 +439,7 @@ done
 control=$(dirname "$bundle")
 exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
   --spec "$control/run-spec.json" \
-  --result-file "$control/run-result.json"
+  --result-file "$control/output/run-result.json"
 "#,
     )
     .unwrap();
@@ -479,11 +479,63 @@ exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
     let failure_kind = bundle.run.failure.as_ref().map(|failure| failure.kind);
     assert_eq!(
         failure_kind,
-        Some(pvisor_core::RunFailureKind::DeadlineExceeded),
-        "expected a running agent to reach its deadline: {:?}",
+        Some(pvisor_core::RunFailureKind::ProcessExit),
+        "nested deadline must remain a host-observed process exit, not imported failure evidence: {:?}",
         bundle.run.failure
     );
     assert!(!bundle.safety.host_process);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn container_executor_watchdog_stops_an_unresponsive_runtime() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let runtime = temporary.path().join("unresponsive-oci");
+    std::fs::write(
+        &runtime,
+        "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = --bundle ]; then\n    printf '%s' \"$$\" > \"$PVISOR_TEST_RUNTIME_PID\"\n    exec /bin/sleep 30\n  fi\ndone\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run_home = temporary.path().join("runs");
+    let runtime_pid = temporary.path().join("runtime.pid");
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
+        .arg(&runtime)
+        .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
+        .arg("--container-rootfs")
+        .arg(&workspace)
+        .args(["--container-network", "none", "--", "/usr/bin/true"])
+        .current_dir(&workspace)
+        .env("PVISOR_RUN_HOME", &run_home)
+        .env("PVISOR_TEST_RUNTIME_PID", &runtime_pid)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let bundle = RunBundle::read(&only_run_dir(&run_home)).unwrap();
+    assert_eq!(bundle.run.state, pvisor_core::RunState::Failed);
+    assert_eq!(
+        bundle.run.failure.unwrap().kind,
+        pvisor_core::RunFailureKind::DeadlineExceeded
+    );
+    assert!(!bundle.safety.host_process);
+    let pid: i32 = std::fs::read_to_string(runtime_pid)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "runtime survived watchdog"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 #[test]
