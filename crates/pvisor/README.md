@@ -749,7 +749,10 @@ read can decode an entire content chunk; warm-cache latency and mmap performance
 need separate workload measurements. Pool compression/deduplication tests are
 not Docker disk-use comparisons. Local pool imports explicitly reject arbitrary
 xattrs other than the existing ownership/mode override rather than dropping
-required attributes. File ownership, modes, timestamps, symlinks and hardlinks
+required attributes. On macOS, the exact host-only `com.apple.provenance`
+attribute is ignored during import without removing or changing it on the source;
+other attributes, including other `com.apple.*` names, remain rejected.
+File ownership, modes, timestamps, symlinks and hardlinks
 retain the cache contracts.
 
 Import extraction and intermediate build stages are temporary and are removed
