@@ -5,6 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use pvisor_overlaynet::vm::{VmNetwork, VmNetworkConfig, guest_mac};
@@ -664,10 +668,12 @@ fn sequenced_frame(src: u8, dst: u8, length: usize, sequence: u64) -> Vec<u8> {
 fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
     let root = directory();
     let members: Vec<_> = (11..15).map(|last| start(root.path(), last)).collect();
+    let completed = Arc::new([const { AtomicU64::new(0) }; 4]);
     let mut owners = Vec::new();
     let mut workers = Vec::new();
     for (index, (owner, mut stream, metrics)) in members.into_iter().enumerate() {
         owners.push((owner, metrics));
+        let completed = completed.clone();
         workers.push(std::thread::spawn(move || {
             stream
                 .set_write_timeout(Some(Duration::from_secs(5)))
@@ -676,7 +682,12 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
             let destination = 11 + (index as u8 + 1) % 4;
             let previous = 11 + (index as u8 + 3) % 4;
             let mut seed = 0x504e_4554_u64 + index as u64;
+            let started = Instant::now();
             for batch in 0..256 {
+                assert!(started.elapsed() < Duration::from_secs(20));
+                if batch % 64 == index as u64 {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 for offset in 0..4 {
                     let sequence = batch * 4 + offset;
                     let length = if sequence % 2 == 0 { 1514 } else { 66 };
@@ -701,6 +712,13 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
                         sequenced_frame(previous, source, length, sequence)
                     );
                 }
+                // Keep one burst per destination in flight on the lossy packet link.
+                completed[index].store(batch + 1, Ordering::Release);
+                wait_until(|| {
+                    completed
+                        .iter()
+                        .all(|done| done.load(Ordering::Acquire) > batch)
+                });
             }
         }));
     }

@@ -132,6 +132,9 @@ Additional chaos tests exercise four-node concurrent forwarding with fragmented 
 stream writes, repeated restarts, saturation followed by receiver recovery, and
 malformed-datagram floods. Congestion tests isolate a stalled guest from another
 peer. These tests do not establish a real KVM/HVF guest boot or production capacity.
+The fragmented ring test bounds each destination to one four-frame burst with
+timed progress synchronization, including deliberate worker delays. It retains
+all frame/byte/count assertions without assuming arbitrary lossless queueing.
 
 The packet cache retains only the generation from validated discovery records;
 the TTL and validation rules remain the same. Sends reuse bounded packet
