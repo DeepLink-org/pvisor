@@ -100,6 +100,12 @@ limits. Chaos rounds are not counted as additional Podman contracts. The normal
 Go suite includes its concurrent-start regression, which verifies one entrypoint
 execution for each pair of simultaneous starts.
 
+The independent Linux/KVM [application chaos runner](APPLICATION_CHAOS.md) adds
+an HTTP application, continuous requests, shared read-only volume observations,
+owner/VMM death, concurrent starts, client resets and image replacement under
+per-instance host cgroup limits. It is opt-in and does not add to the Bats/Go
+contract counts or require a Docker daemon.
+
 Together these exercise all eleven registered container/build subcommands: `pull`, `images`, `rmi`,
 `run`, `build`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
 The volume-image-content fixture requires an Alpine image containing
@@ -231,3 +237,22 @@ inode identity; all original selected inode-equality assertions pass. Nine Rust
 builder regressions, four Python adapter/source-integrity checks, Go vet and
 Clippy passed. Upstream copies and their hash inventory remain unchanged.
 Linux/KVM and the remaining build cases are still unvalidated.
+
+On 2026-10-24 the complete active profile passed on Linux x86_64/KVM with the
+default compressed local image pool: 35 Bats and 83 Go contracts, no skips.
+The immutable Alpine manifest was
+`mirror.gcr.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`;
+the runners were Bats 1.11.0 and Go 1.26.10. A frozen static musl product was
+used throughout each run. Read-only observation of 115 private test stores
+confirmed pooled catalog entries and no persistent legacy blob/rootfs/build-image
+directories. This validates the active profile, not the entire upstream corpus.
+
+The same candidate passed all four opt-in native Docker/Job acceptance cases
+and a real-guest mmap probe spanning multiple 1 MiB pool blocks, including
+read-after-close, private COW, shared-write/msync copy-up and original-image
+preservation in a fresh container. The regression found and fixed local cache
+diagnostics leaking into workload stderr and Linux rootless virtual CHOWN.
+These are correctness results; they establish no mmap performance advantage.
+Separate workspace benchmark-registration, CPUID doctest and opt-in Job
+execution-fork failures, plus an intermittent filesystem/S3 cache-guest exit
+125, remain outside this passing container profile.

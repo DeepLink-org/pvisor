@@ -113,7 +113,7 @@ platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
 The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
-`ps`, `start`, `stop`, `rm` and `logs`. Compatibility is limited to the options
+`ps`, `start`, `stop`, `rm`, `logs` and `network`. Compatibility is limited to the options
 listed in `pvisor COMMAND --help`; unsupported commands/options fail
 rather than being silently ignored. This is not complete Docker CLI or
 Docker Engine API compatibility. There is no Compose, Docker socket,
@@ -121,7 +121,7 @@ Docker credential-helper integration or cross-architecture emulation.
 
 | Command | Implemented options |
 | --- | --- |
-| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--network bridge/none` |
+| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--network`/`--net bridge/none/NAME`, `--ip` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
 | `pull` | `--platform`, one public OCI image reference |
 | `images` | Optional repository, `-q`, `--no-trunc` |
@@ -132,14 +132,16 @@ Docker credential-helper integration or cross-architecture emulation.
 | `stop` | Multiple names/IDs, `-t/--timeout`, `-s/--signal` |
 | `rm` | Multiple names/IDs, `-f`, `-v` |
 | `logs` | One container, `-f` |
+| `network` | `create --driver bridge --subnet --gateway`, `ls -q --no-trunc`, `inspect`, `rm -f` |
 
 The first profile supports Apple Silicon macOS/HVF and Linux x86_64/KVM;
 Linux runtime acceptance must be validated separately. macOS binaries require
 the existing Hypervisor entitlement and firmware. Each `--cpus` unit is a
 whole vCPU, not a fractional Docker CPU quota. `--memory` sizes total guest
 RAM. Public IPv4 TCP/DNS egress uses existing OverlayNet policy; general UDP,
-IPv6, host networking, private-address egress and cross-container discovery
-are not implemented. `-p` publishes TCP through the owning VM's guest control
+IPv6 and host networking are not implemented. Cross-container networking is
+available on the default shared `bridge` and user-defined networks below.
+Default bridge has no container-name DNS; user-defined networks do. `-p` publishes TCP through the owning VM's guest control
 transport; omitted host addresses bind `0.0.0.0`, matching Docker syntax.
 An exposed image port does not publish itself.
 
@@ -151,7 +153,7 @@ writable mount before it can be mounted read-only. Read-only shares reject
 mutation requests in the host adapter as well as in the guest mount. `stop`/`start` retains the instance upper and volumes; `rm` drops
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
 There is not yet a volume-management CLI or image-blob garbage collector;
-`rmi` removes local references while retaining the internal OCI cache.
+`rmi` removes local references while retaining shared pool objects and legacy OCI data.
 
 TTY allocation defaults `TERM` to `xterm` when no image/container or explicit
 value is present; explicit values, empty values and unsets retain precedence.
@@ -166,7 +168,19 @@ that every flag of a registered Docker command is available.
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
 tests. It must be private to the current user and cannot be a bind-mount source
-or ancestor. Per-generation control sockets live below an owned `0700`
+or ancestor. New pulls and builds use `images/pool-v1`: the existing cache's
+immutable file index and shared content pool, with independently Zstd-compressed
+chunks when beneficial and raw fallback. VM reads go through the direct lazy
+backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
+archives and extracted rootfs trees are temporary import/build inputs, except
+explicit `--output` exports. Original configurations remain under `images/configs`.
+Old directory-based records continue to work and are not automatically removed.
+Pool revisions remain pinned in container records across tag replacement/removal.
+Arbitrary xattrs are rejected because the current pool format cannot preserve
+them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
+page caching, with no new DAX path or measured performance claim. See the
+[runtime storage contract](../pvisor/README.md#independent-container-vm-lifecycle).
+Per-generation control sockets live below an owned `0700`
 `/tmp/pvisor-docker-UID` directory, keeping macOS Unix socket paths short.
 
 ## Prepared VM rootfs
@@ -300,6 +314,14 @@ detached lifetime, stop/start persistence, foreground signal forwarding, orphan
 reaping and concurrent exec exit routing. A separate ordinary Job VM case checks
 the default launch configuration's orphan reaping and exit status.
 
+Set `PVISOR_DOCKER_TEST_IMAGE` to a pinned native Alpine reference to run the
+container/build acceptance cases on freshly pulled compressed-pool images;
+the fixture asserts a pool binding instead of installing a directory-backed
+image. `PVISOR_DOCKER_TEST_ROOTFS` remains required by the separate ordinary Job
+case. `PVISOR_DOCKER_TEST_BINARY` can select the static product executable with
+embedded firmware, independently of Cargo's dynamic test artifact. It is copied
+privately before use; macOS copies retain the existing signing procedure.
+
 
 ## VM-isolated image builds (experimental)
 
@@ -331,7 +353,7 @@ are not secret storage. Simple `$NAME`/`${NAME}` expansion is supported.
 Each finished stage becomes one flattened OCI layer with guest ownership/mode,
 symlinks, hardlinks and merged deletions preserved. No instruction cache is
 implemented (`--no-cache` is accepted); unchanged base images can be reused.
-Tags are published after the files and directory entries are synced. A failed
+Tags are published after the shared content and immutable index are committed. A failed
 step leaves existing tags unchanged. OCI output must name a new file and contains
 only the standard layout/config/manifest/layer blobs, not the private rootfs.
 Builds and instances share `PVISOR_DOCKER_HOME`; temporary builds do not appear in
@@ -349,3 +371,59 @@ separate acceptance. Rootless Linux preserves default guest-root symlink owners
 in OCI output without host chown; non-root symlink owners are rejected when the
 host cannot represent them. Guest-visible symlink-owner virtualization is not
 claimed by this build profile.
+
+## Same-host peer networks
+
+The container network CLI follows Docker's network names and IPv4 options:
+
+```bash
+pvisor network create --subnet 172.20.0.0/24 dev
+pvisor run -d --name web --network dev --ip 172.20.0.11 \
+  python:3.12-alpine python -m http.server 8000
+pvisor run --rm --network dev alpine:3.20 wget -qO- http://web:8000/
+pvisor network ls
+pvisor network inspect dev
+pvisor stop web
+pvisor rm web
+pvisor network rm dev
+```
+
+`run --network` (alias `--net`) selects `bridge` by default, `none` for no NIC,
+or an existing network name/unique ID prefix. The former `--peer-network` and
+`--peer-address` options are rejected. The default bridge is a shared
+`172.17.0.0/24` network; it supports IP-address communication without container
+name DNS. User-defined networks provide live container-name DNS. A service bound
+only to guest loopback is not reachable from another container. Port publication
+is needed only for host access, not for member-to-member traffic.
+
+`network create` accepts `-d/--driver bridge`, `--subnet` and `--gateway`.
+Only canonical IPv4 /24 subnets in RFC1918 or `192.0.2.0/24` are supported.
+Omitting the subnet allocates a free /24 from `172.18.0.0`–`172.31.255.0`.
+Gateway defaults to the first host. Existing networks in this store cannot overlap.
+`run --ip` requires a user-defined network and a non-gateway host address in its
+subnet. Without it, an address is allocated under the catalog lock. Addresses
+remain reserved across stop/start and are released by container removal.
+Network names follow container-name syntax (1–128 ASCII letters/digits and
+`_`, `.`, `-`, starting with a letter/digit). Container DNS labels are at most
+63 bytes and must be unique on a network ignoring case. Network definitions and reservations are scoped to
+`PVISOR_DOCKER_HOME`, persisted in that store and survive CLI restarts.
+
+`network ls` supports `-q/--quiet`, `--no-trunc` and alias `list`.
+`network inspect NAME...` emits Docker-style JSON including IPAM and attached
+container addresses. This is a supported CLI subset, not Docker Engine API
+compatibility. `network rm NAME...` (alias `remove`) refuses built-ins and any
+container attachments, including stopped containers. Its `-f/--force` only
+ignores missing networks and never disconnects containers.
+
+Each logical bridge uses direct Unix sockets with independent peer send budgets;
+no host bridge or packet broker is created. The catalog lock is used only for
+network configuration and address reservation. IPv4 TCP, UDP, ICMP and targeted
+ARP are supported between members. External traffic retains ordinary TCP/DNS
+egress. MTU is 1500. IPv6, non-/24 subnets, host/container modes, multiple network
+attachments, `network connect/disconnect`, DNS aliases, general broadcast/multicast
+and IPv4 fragments are unsupported and rejected/dropped explicitly.
+
+Native Job `spawn --config` and embedded callers retain explicit
+`[overlaynet.peers]`/`PeerNetworkSettings` for low-level user-private groups,
+independently of the container store catalog. See the
+[runtime contract](../pvisor/README.md#explicit-same-host-vm-peer-networks).

@@ -2,13 +2,17 @@
 //!
 //! Host/container execution uses the cooperative HTTP proxy. libkrun VM
 //! execution uses a non-bypassable virtio-net/smoltcp IPv4 TCP and DNS data
-//! plane; unsupported protocols fail closed.
+//! plane; unsupported egress protocols fail closed. Explicit same-host peer
+//! networks forward IPv4 TCP/UDP/ICMP before smoltcp and can resolve live member
+//! names from private discovery records.
 
 mod bandwidth;
 mod egress;
 pub mod forward;
 pub mod headers;
 pub mod interception;
+mod peer;
+mod peer_batch;
 pub mod policy;
 mod resolver;
 pub mod server;
@@ -16,6 +20,7 @@ pub mod vm;
 
 pub use bandwidth::BandwidthRegistry;
 pub use egress::{EgressContext, EgressRuntime};
+pub use peer::PeerNetworkConfig;
 
 pub use interception::{
     InterceptionDriver, InterceptionMetrics, InterceptionProfile, InterceptionSnapshot,

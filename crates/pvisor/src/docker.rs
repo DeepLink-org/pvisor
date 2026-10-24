@@ -23,6 +23,10 @@ pub use crate::image::oci::PullProgress;
 
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
+mod images;
+/// Persistent Docker-style network management and IPAM.
+pub mod network;
+pub use network::{Network, NetworkCreate};
 
 fn native_platform() -> String {
     let architecture = match std::env::consts::ARCH {
@@ -64,8 +68,12 @@ pub struct Image {
     /// default to the host platform because they only supported native pulls.
     #[serde(default = "native_platform")]
     pub platform: String,
-    /// Prepared root filesystem owned by this user's image store.
+    /// Legacy prepared root directory. Empty for pooled images; use
+    /// [`Store::open_image`] and retain its owner while accessing files.
     pub rootfs: PathBuf,
+    /// Immutable local content-pool binding. Absent in legacy directory records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CachedImage>,
     /// Image environment. Host environment is never implicitly inherited.
     pub env: BTreeMap<String, String>,
     /// Executable prefix from image configuration.
@@ -82,6 +90,31 @@ pub struct Image {
     pub volumes: Vec<PathBuf>,
     /// Catalog publication time in Unix milliseconds.
     pub created_ms: u64,
+}
+
+/// A fixed cache revision; tags and later pulls cannot change its contents.
+/// The host-only pool location must remain available while any image or stopped
+/// container references it. Removing a catalog tag does not delete pool objects.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CachedImage {
+    /// Absolute local pool directory, shared by images in this Docker store.
+    pub location: PathBuf,
+    /// Authenticated immutable `pvisor-v1` metadata revision handle.
+    pub handle: String,
+}
+
+/// Owns a usable root directory and its lazy backend through file/VM access.
+/// Dropping it removes a pooled image's temporary projection. Legacy roots stay.
+pub struct ImageRoot {
+    root: PathBuf,
+    _owner: Option<crate::image::cache::DirectImage>,
+}
+impl ImageRoot {
+    /// Root accepted by OverlayCore/VM filesystem adapters. Pooled files must be
+    /// accessed through those adapters; ordinary host reads see placeholders.
+    pub fn rootfs(&self) -> &Path {
+        &self.root
+    }
 }
 
 /// One independently mounted host directory; sources are resolved at creation.
@@ -149,6 +182,18 @@ pub struct Create {
     pub tty: Option<[u16; 2]>,
     /// Install the current public IPv4 TCP/DNS egress profile.
     pub network: bool,
+    /// Docker network selector. None retains the isolated SDK/build link;
+    /// the CLI selects bridge by default. Resolved to an exact name at creation.
+    #[serde(default)]
+    pub network_name: Option<String>,
+    /// Requested static IPv4; supported only on user-defined networks. Automatic
+    /// allocation is retained in peers until container removal, including stops.
+    #[serde(default)]
+    pub ipv4_address: Option<std::net::Ipv4Addr>,
+    /// Optional same-host packet network. Requires network=true; all members
+    /// explicitly trust each other for IPv4 TCP, UDP and ICMP.
+    #[serde(default)]
+    pub peers: Option<crate::PeerNetworkSettings>,
 }
 
 /// Stable container identity plus the current launch generation.
@@ -306,7 +351,9 @@ impl Store {
         for name in ["instances", "volumes", "images", "results"] {
             private_directory(&root.join(name))?;
         }
-        Ok(Self { root })
+        let store = Self { root };
+        store.initialize_networks()?;
+        Ok(store)
     }
     fn lock(&self) -> anyhow::Result<File> {
         let file = OpenOptions::new()
@@ -410,38 +457,54 @@ impl Store {
         let arch = platform.strip_prefix("linux/").unwrap();
         let reference = normalize_reference(reference);
         let reference = reference.as_str();
-        let store = crate::image::oci::ImageStore::new(Some(self.root.join("images")))?;
-        let prepared = store.prepare_with_progress(reference, arch, true, progress)?;
-        let manifest: serde_json::Value = serde_json::from_reader(File::open(
-            self.root.join("images/metadata/manifests-v1").join(format!(
-                "{}.json",
-                prepared.digest.trim_start_matches("sha256:")
-            )),
-        )?)?;
-        let id = manifest["config"]["digest"]
-            .as_str()
-            .context("missing image config digest")?
-            .to_owned();
+        progress(PullProgress::Waiting);
+        let _pull = self.image_pull_lock(reference, arch)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".import-")
+            .tempdir_in(self.root.join("images"))?;
+        let store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
+        let resolved = store.resolve_with_progress(reference, arch, progress)?;
+        let cached = self.images()?.into_iter().find(|image| {
+            image.digest == resolved.prepared.digest
+                && image.platform == platform
+                && image.cache.is_some()
+        });
+        if let Some(image) = &cached {
+            let _verified = self.open_image(image)?;
+            ensure!(
+                image.id == resolved.config_digest,
+                "cached image config mismatch"
+            );
+            resolved.report_cached(progress);
+        } else {
+            store.extract_resolved(&resolved, progress)?;
+        }
+        let id = resolved.config_digest;
+        let prepared = resolved.prepared;
         ensure!(
             id.starts_with("sha256:")
                 && id.len() == 71
                 && id[7..].bytes().all(|c| c.is_ascii_hexdigit()),
             "invalid image config digest"
         );
-        let config: serde_json::Value = serde_json::from_reader(File::open(
-            self.root.join("images/blobs/sha256").join(&id[7..]),
-        )?)?;
+        let config_bytes = fs::read(staging.path().join("blobs/sha256").join(&id[7..]))?;
+        let config: serde_json::Value = serde_json::from_slice(&config_bytes)?;
         let config = &config["config"];
         let cwd = config["WorkingDir"]
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("/");
-        let image = Image {
+        let mut image = Image {
             reference: reference.into(),
             id,
             digest: prepared.digest,
             platform: platform.into(),
-            rootfs: prepared.rootfs,
+            rootfs: if cached.is_some() {
+                PathBuf::new()
+            } else {
+                prepared.rootfs
+            },
+            cache: cached.and_then(|image| image.cache),
             env: prepared.env,
             entrypoint: prepared.entrypoint,
             cmd: prepared.cmd,
@@ -454,6 +517,9 @@ impl Store {
                 .unwrap_or_default(),
             created_ms: crate::unix_now_ms(),
         };
+        if image.cache.is_none() {
+            self.pool_image(&mut image, &store, &config_bytes)?;
+        }
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
         images.retain(|i| i.reference != reference);
@@ -462,7 +528,8 @@ impl Store {
         Ok(image)
     }
     /// Remove a local image reference. Images used by any instance are refused.
-    /// Shared OCI blobs remain an internal cache and are not deleted here.
+    /// Shared pool objects and legacy OCI data are not deleted here; existing
+    /// containers retain their pinned revision even after forced tag removal.
     pub fn rmi(&self, selector: &str, force: bool) -> anyhow::Result<Vec<String>> {
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
@@ -557,6 +624,15 @@ impl Store {
         if let Some(name) = &config.name {
             ensure!(valid_name(name), "invalid container name");
         }
+        if let Some(selector) = &config.network_name {
+            ensure!(config.peers.is_none(), "conflicting network settings");
+            self.inspect_network(selector)?;
+        } else {
+            ensure!(
+                config.ipv4_address.is_none(),
+                "--ip requires a user-defined network"
+            );
+        }
         let images = self.images()?;
         let candidates: Vec<_> = images
             .iter()
@@ -611,6 +687,13 @@ impl Store {
         for port in &config.ports {
             ensure!(port.guest != 0, "guest port must be nonzero");
         }
+        if let Some(peers) = &config.peers {
+            peers.validate()?;
+            ensure!(
+                config.network,
+                "peer networking conflicts with --network none"
+            );
+        }
         let _guard = self.lock()?;
         let id = format!("{}{}", uuid(), uuid());
         let name = config
@@ -621,6 +704,7 @@ impl Store {
             !self.all()?.iter().any(|i| i.name == name),
             "container name already in use: {name}"
         );
+        self.assign_network(&mut config, &name)?;
         let directory = self.directory(&id);
         private_directory(&directory)?;
         for path in ["upper", "work"] {
@@ -707,6 +791,7 @@ impl Store {
             let _guard = self.lock()?;
             instance = self.resolve(selector)?;
             require_native_platform(&instance.image.platform)?;
+            self.validate_network_attachment(&instance)?;
             if self.active(&instance)? && instance.state == "running" {
                 return Ok(instance);
             }
@@ -1248,19 +1333,28 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
     let mut input = client.try_clone()?;
     let mut writer = stream.try_clone()?;
     let upstream = std::thread::spawn(move || -> io::Result<()> {
-        let mut bytes = [0; 16384];
-        loop {
-            let size = input.read(&mut bytes)?;
-            if size == 0 {
-                return write_frame(&mut writer, &control::StdinFrame::Eof {});
+        let result = (|| {
+            let mut bytes = [0; 16384];
+            loop {
+                let size = input.read(&mut bytes)?;
+                if size == 0 {
+                    // An orderly half-close still allows the guest's reply.
+                    return write_frame(&mut writer, &control::StdinFrame::Eof {});
+                }
+                write_frame(
+                    &mut writer,
+                    &control::StdinFrame::Data {
+                        bytes: bytes[..size].to_vec(),
+                    },
+                )?;
             }
-            write_frame(
-                &mut writer,
-                &control::StdinFrame::Data {
-                    bytes: bytes[..size].to_vec(),
-                },
-            )?;
+        })();
+        if result.is_err() {
+            // RST and failed input writes must wake the downstream reader now,
+            // rather than occupying a publication slot until the guest times out.
+            let _ = writer.shutdown(std::net::Shutdown::Both);
         }
+        result
     });
     let result = (|| -> anyhow::Result<()> {
         loop {
@@ -1272,22 +1366,37 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
         }
     })();
     let _ = client.shutdown(std::net::Shutdown::Both);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
     let _ = upstream.join();
     result
 }
 
-fn prepare_resolver(rootfs: &Path, resolver: &Path) -> anyhow::Result<()> {
+fn prepare_resolver(
+    rootfs: &Path,
+    resolver: &Path,
+    gateway: std::net::Ipv4Addr,
+) -> anyhow::Result<()> {
     use pvisor_overlay_core::{backend::UnixIdentity, sys};
     use std::ffi::OsStr;
 
     private_directory(resolver)?;
     private_directory(&resolver.join("etc"))?;
-    fs::write(resolver.join("etc/resolv.conf"), b"nameserver 192.0.2.1\n")?;
+    fs::write(
+        resolver.join("etc/resolv.conf"),
+        format!("nameserver {gateway}\n").as_bytes(),
+    )?;
     let key = OsStr::new("user.containers.override_stat");
     // Host storage stays 0700; its guest directories retain the image's metadata.
     // Otherwise this first lower makes guest / and /etc inaccessible after setuid.
     for relative in ["", "etc"] {
         let source = rootfs.join(relative);
+        // Lazy local lowers project attributes before native metadata access.
+        let prepared = pvisor_overlay_core::backend::prepare_metadata(&source);
+        if let Err(error) = prepared
+            && (relative != "etc" || error.kind() != io::ErrorKind::NotFound)
+        {
+            return Err(error.into());
+        }
         let identity = match fs::symlink_metadata(&source) {
             Ok(metadata) => {
                 ensure!(
@@ -1333,16 +1442,25 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
         VmPlatform::init_logging("debug");
     }
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
+    let image_root = store.open_image(&instance.image)?;
     let endpoint = socket(&instance)?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
     let directory = store.directory(&instance.id);
-    let mut lowers = vec![instance.image.rootfs.clone()];
+    let mut lowers = vec![image_root.rootfs().to_owned()];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
-        prepare_resolver(&instance.image.rootfs, &resolver)?;
+        prepare_resolver(
+            image_root.rootfs(),
+            &resolver,
+            instance
+                .config
+                .peers
+                .as_ref()
+                .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway),
+        )?;
         lowers.insert(0, resolver);
     }
     vm.overlay(
@@ -1411,17 +1529,41 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
             vm::{VmNetwork, VmNetworkConfig},
         };
         let policy = pvisor_core::network::NetworkPolicy::compile(&Default::default())?;
-        let egress = EgressRuntime::with_bandwidth_registry(
-            policy,
-            std::sync::Arc::new(pvisor_core::PolicyControlController),
-            BandwidthRegistry::default(),
+        let egress = if instance.config.peers.is_some() {
+            EgressRuntime::for_peer_network(policy, BandwidthRegistry::default())?
+        } else {
+            EgressRuntime::with_bandwidth_registry(
+                policy,
+                std::sync::Arc::new(pvisor_core::PolicyControlController),
+                BandwidthRegistry::default(),
+            )
+        };
+        let mut config = VmNetworkConfig::new(
+            egress,
+            EgressContext {
+                run_id: Some(instance.id.clone()),
+                attempt_id: Some(instance.generation.clone()),
+            },
         );
-        let (network, stream) =
-            VmNetwork::start(VmNetworkConfig::new(egress, EgressContext::default()))?;
-        vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
+        config.peer_network = instance
+            .config
+            .peers
+            .as_ref()
+            .map(crate::PeerNetworkSettings::resolve)
+            .transpose()?;
+        let address = config
+            .peer_network
+            .as_ref()
+            .map_or(pvisor_overlaynet::vm::GUEST_IPV4, |peer| peer.address);
+        let gateway = config
+            .peer_network
+            .as_ref()
+            .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway);
+        let (network, stream) = VmNetwork::start(config)?;
+        vm.network(stream, pvisor_overlaynet::vm::guest_mac(address))?;
         guest.network = Some(pvisor_guest::NetworkConfig {
-            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+            address: address.octets(),
+            gateway: gateway.octets(),
         });
         Some(network)
     } else {
@@ -1457,6 +1599,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docker_published_tcp_reset_cancels_the_guest_tunnel() {
+        use std::os::fd::AsRawFd;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("guest.sock");
+        let guest = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = guest.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            assert!(matches!(
+                read_frame::<Request>(&mut stream).unwrap(),
+                Request::Connect { port: 8080 }
+            ));
+            write_frame(&mut stream, &Reply::Ready).unwrap();
+            assert!(matches!(
+                read_frame::<control::StdinFrame>(&mut stream).unwrap(),
+                control::StdinFrame::Data { .. }
+            ));
+            sent.send(()).unwrap();
+            let error = read_frame::<control::StdinFrame>(&mut stream).unwrap_err();
+            // Release a broken implementation's downstream reader before asserting.
+            let _ = write_frame(&mut stream, &Reply::Exit { code: 0 });
+            error.kind()
+        });
+        let forwarding = std::thread::spawn(move || forward(accepted, &path, 8080));
+        client.write_all(b"GET /unfinished HTTP/1.1\r\n").unwrap();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    client.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&linger as *const libc::linger).cast(),
+                    std::mem::size_of_val(&linger) as _,
+                )
+            },
+            0
+        );
+        drop(client);
+        let kind = server.join().unwrap();
+        let _ = forwarding.join().unwrap();
+        assert!(
+            matches!(
+                kind,
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ),
+            "reset did not cancel tunnel: {kind:?}"
+        );
+    }
+
+    #[test]
     fn resolver_preserves_guest_directory_metadata_without_exposing_host_storage() {
         use pvisor_overlay_core::{backend::UnixIdentity, sys};
         use std::ffi::OsStr;
@@ -1474,7 +1677,7 @@ mod tests {
                 sys::set_xattr(&rootfs.join("etc"), key, b"234:567:040710", 0).unwrap();
             }
             let resolver = temporary.path().join(format!("resolver-{custom}"));
-            prepare_resolver(&rootfs, &resolver).unwrap();
+            prepare_resolver(&rootfs, &resolver, pvisor_overlaynet::vm::ROUTER_IPV4).unwrap();
             let root = UnixIdentity::parse(&sys::get_xattr(&resolver, key).unwrap()).unwrap();
             let etc =
                 UnixIdentity::parse(&sys::get_xattr(&resolver.join("etc"), key).unwrap()).unwrap();
@@ -1515,6 +1718,7 @@ mod tests {
             digest: format!("sha256:{}", "2".repeat(64)),
             platform: native_platform(),
             rootfs,
+            cache: None,
             env: BTreeMap::from([("IMAGE_ENV".into(), "image".into())]),
             entrypoint: vec!["/entry".into()],
             cmd: vec!["default".into()],
@@ -1546,8 +1750,87 @@ mod tests {
             interactive: false,
             tty: None,
             network: false,
+            network_name: None,
+            ipv4_address: None,
+            peers: None,
         }
     }
+    #[test]
+    fn docker_network_addresses_are_reserved_across_stops_and_released_on_removal() {
+        let (_directory, store, _) = fixture();
+        let net = store
+            .create_network(NetworkCreate {
+                name: "dev".into(),
+                subnet: Some("172.22.0.0/24".into()),
+                gateway: None,
+            })
+            .unwrap();
+        let config = |name: &str, ip: Option<&str>| {
+            let mut cfg = request();
+            cfg.name = Some(name.into());
+            cfg.network = true;
+            cfg.network_name = Some("dev".into());
+            cfg.ipv4_address = ip.map(|ip| ip.parse().unwrap());
+            cfg
+        };
+        let a = store.create(config("web", None)).unwrap();
+        assert!(store.create(config("WEB", None)).is_err());
+        let b = store.create(config("client", None)).unwrap();
+        assert_eq!(
+            a.config.peers.as_ref().unwrap().address,
+            "172.22.0.2".parse::<std::net::Ipv4Addr>().unwrap()
+        );
+        assert_ne!(
+            a.config.peers.as_ref().unwrap().address,
+            b.config.peers.as_ref().unwrap().address
+        );
+        assert!(
+            store
+                .create(config("duplicate", Some("172.22.0.2")))
+                .is_err()
+        );
+        assert!(store.create(config("outside", Some("172.23.0.2"))).is_err());
+        assert!(store.create(config("router", Some("172.22.0.1"))).is_err());
+        assert!(store.remove_network("dev", true).is_err());
+        assert_eq!(store.network_instances(&net.id).unwrap().len(), 2);
+        store.remove(&a.id, false).unwrap();
+        let c = store.create(config("replacement", None)).unwrap();
+        assert_eq!(
+            c.config.peers.as_ref().unwrap().address,
+            "172.22.0.2".parse::<std::net::Ipv4Addr>().unwrap()
+        );
+        store.remove(&b.id, false).unwrap();
+        store.remove(&c.id, false).unwrap();
+        store.remove_network("dev", false).unwrap();
+    }
+
+    #[test]
+    fn docker_network_concurrent_creation_assigns_unique_addresses() {
+        let (_directory, store, _) = fixture();
+        store
+            .create_network(NetworkCreate {
+                name: "dev".into(),
+                subnet: None,
+                gateway: None,
+            })
+            .unwrap();
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut cfg = request();
+                    cfg.name = Some(format!("worker-{i}"));
+                    cfg.network = true;
+                    cfg.network_name = Some("dev".into());
+                    store.create(cfg).unwrap().config.peers.unwrap().address
+                })
+            })
+            .collect();
+        let addresses: std::collections::BTreeSet<_> =
+            workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert_eq!(addresses.len(), 8);
+    }
+
     #[test]
     fn docker_platform_selection_and_legacy_records_preserve_native_defaults() {
         assert_eq!(canonical_platform("linux/arm64/v8").unwrap(), "linux/arm64");

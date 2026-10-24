@@ -4,14 +4,14 @@
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
+use crate::devices::Error as DeviceError;
 use crate::devices::virtio::net::Result;
 use crate::devices::virtio::net::{NUM_QUEUES, QUEUE_CONFIG};
 use crate::devices::virtio::queue::Error as QueueError;
 use crate::devices::virtio::{
     ActivateError, ActivateResult, DeviceQueue, DeviceState, InterruptTransport, QueueConfig,
-    VirtioDevice, TYPE_NET,
+    TYPE_NET, VirtioDevice,
 };
-use crate::devices::Error as DeviceError;
 
 use super::backend::{ReadError, WriteError};
 use super::worker::NetWorker;
@@ -37,6 +37,7 @@ pub enum FrontendError {
 pub enum RxError {
     Backend(ReadError),
     DeviceError(DeviceError),
+    QueueError(QueueError),
 }
 
 #[derive(Debug)]

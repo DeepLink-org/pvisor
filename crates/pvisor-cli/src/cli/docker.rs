@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod build;
+mod network;
 mod progress;
 
 impl DockerCommand {
@@ -28,6 +29,8 @@ pub(super) enum DockerCommand {
     Build(build::Build),
     /// Create and run a new container in its own VM.
     Run(Box<Run>),
+    /// Manage container networks.
+    Network(network::NetworkArgs),
     /// Download an image from an OCI registry.
     Pull {
         /// Select an image platform; downloading does not enable CPU emulation.
@@ -87,9 +90,12 @@ pub(super) struct Run {
     cpus: u8,
     #[arg(short = 'm', long, default_value = "512m", value_parser = memory)]
     memory: u32,
-    /// Public IPv4 TCP/DNS egress, or no network device.
-    #[arg(long, default_value = "bridge", value_parser = ["bridge", "none"])]
+    /// Connect to bridge (default), none, or a user-defined network.
+    #[arg(long, alias = "net", default_value = "bridge")]
     network: String,
+    /// Static IPv4 in a user-defined network's configured subnet.
+    #[arg(long)]
+    ip: Option<std::net::Ipv4Addr>,
     /// Image followed by the optional command and its literal arguments.
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_names = ["IMAGE", "COMMAND"])]
     invocation: Vec<String>,
@@ -288,9 +294,12 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Build(args) = command {
         return build::run(args);
     }
+    if let DockerCommand::Network(args) = command {
+        return network::run(args);
+    }
     let store = Store::discover()?;
     match command {
-        DockerCommand::Build(_) => unreachable!(),
+        DockerCommand::Build(_) | DockerCommand::Network(_) => unreachable!(),
         DockerCommand::Pull { image, platform } => {
             let image = {
                 let mut display = progress::PullDisplay::new(&image);
@@ -381,6 +390,16 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 !(args.tty && args.interactive && !args.detach) || unsafe { libc::isatty(0) } == 1,
                 "the input device is not a TTY"
             );
+            ensure!(
+                !args.network.starts_with("container:") && args.network != "host",
+                "network mode is unsupported: {}",
+                args.network
+            );
+            let selected_network = store.inspect_network(&args.network)?;
+            ensure!(
+                !selected_network.builtin || args.ip.is_none(),
+                "--ip requires a user-defined network"
+            );
             let (env, unset_env) = environment(&args.env, &args.env_files)?;
             let config = docker::Create {
                 name: args.name,
@@ -407,7 +426,10 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 auto_remove: args.rm,
                 interactive: args.interactive,
                 tty: args.tty.then(terminal_size),
-                network: args.network != "none",
+                network: selected_network.name != "none",
+                network_name: Some(selected_network.name),
+                ipv4_address: args.ip,
+                peers: None,
             };
             let instance = {
                 let mut display = progress::PullDisplay::new(&config.image);
@@ -688,6 +710,48 @@ mod tests {
         #[command(subcommand)]
         command: DockerCommand,
     }
+    #[test]
+    fn docker_network_and_ip_options_replace_custom_peer_flags() {
+        let parsed = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--network",
+            "dev",
+            "--ip",
+            "172.18.0.11",
+            "alpine",
+        ])
+        .unwrap();
+        let DockerCommand::Run(args) = parsed.command else {
+            panic!()
+        };
+        assert_eq!(args.network, "dev");
+        assert_eq!(args.ip, Some("172.18.0.11".parse().unwrap()));
+        let parsed = Cli::try_parse_from(["pvisor", "run", "--net=dev", "alpine"]).unwrap();
+        let DockerCommand::Run(args) = parsed.command else {
+            panic!()
+        };
+        assert_eq!(args.network, "dev");
+        assert!(args.ip.is_none());
+        assert!(Cli::try_parse_from(["pvisor", "run", "--peer-network", "dev", "alpine"]).is_err());
+        assert!(
+            Cli::try_parse_from(["pvisor", "run", "--peer-address", "192.0.2.11", "alpine"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pvisor",
+                "network",
+                "create",
+                "--subnet",
+                "172.20.0.0/24",
+                "dev"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["pvisor", "network", "connect", "dev", "container"]).is_err());
+    }
+
     #[test]
     fn docker_platform_options_precede_the_image_and_preserve_guest_flags() {
         let parsed =

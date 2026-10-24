@@ -367,6 +367,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `overlaynet.rules` | `Vec<NetworkAccessRule>` | `[]` | 结构化授权；字段见 network_rule；`--overlaynet-rule` 替换 |
 | `overlaynet.deny` | `Vec<NetworkAccessRule>` | `[]` | 结构化拒绝；`--overlaynet-deny` 替换 |
 | `overlaynet.limits` | `Vec<NetworkBandwidthLimit>` | `[]` | 带宽条目；字段见 bandwidth_limit；`--overlaynet-limit` 替换 |
+| `overlaynet.peers` | `Option<PeerNetworkSettings>` | `未设置` | 显式加入同宿主 VM 网络；要求 auto 模式与不受限的网络策略 |
 | `gateway.mode` | `GatewayMode` | `"off"` | off 或 capture；`--gateway-mode` |
 | `gateway.profile` | `Option<GatewayProfile>` | `未设置` | zcode-bigmodel；`--gateway-profile` 同时选择 capture |
 | `gateway.zcode_builtin_config` | `Option<PathBuf>` | `未设置` | Zcode 适配配置路径 |

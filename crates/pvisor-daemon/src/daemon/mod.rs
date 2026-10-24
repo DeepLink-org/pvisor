@@ -1,6 +1,7 @@
 //! Single-node ownership: durable sandbox intentions, bounded admission and
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
 pub mod api;
+mod e2b;
 mod models;
 mod store;
 #[cfg(test)]
@@ -303,6 +304,15 @@ impl Daemon {
             record.env.insert(
                 crate::runtime::ENVD_TOKEN_ENV.into(),
                 record.endpoint_token.clone(),
+            );
+        } else {
+            record.env.insert(
+                "PVISOR_EXECD_ACCESS_TOKEN".into(),
+                format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                ),
             );
         }
         let spec = RuntimeSpec {

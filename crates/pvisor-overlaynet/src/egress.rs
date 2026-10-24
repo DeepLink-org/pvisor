@@ -53,6 +53,7 @@ pub struct EgressRuntime {
     policy: Arc<std::sync::RwLock<NetworkPolicy>>,
     controller: Arc<dyn ControlController>,
     bandwidth: BandwidthRegistry,
+    peer_capable: bool,
 }
 
 impl std::fmt::Debug for EgressRuntime {
@@ -69,6 +70,36 @@ impl std::fmt::Debug for EgressRuntime {
 }
 
 impl EgressRuntime {
+    /// Construct default-controller egress that can also admit a peer packet network.
+    ///
+    /// Rejects policies with scoped rules, denies or bandwidth budgets. Peer
+    /// membership explicitly grants all supported packet protocols, so custom
+    /// controllers are unsupported. A subsequent restrictive policy replacement
+    /// closes the packet gate; clones share the policy and its gate.
+    pub fn for_peer_network(
+        policy: NetworkPolicy,
+        bandwidth: BandwidthRegistry,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            policy.allows_unrestricted_packets(),
+            "peer networking requires unrestricted network policy without bandwidth limits"
+        );
+        let mut runtime = Self::with_bandwidth_registry(
+            policy,
+            Arc::new(pvisor_core::PolicyControlController),
+            bandwidth,
+        );
+        runtime.peer_capable = true;
+        Ok(runtime)
+    }
+
+    pub(crate) fn permits_peer_network(&self) -> bool {
+        self.peer_capable
+            && self
+                .policy
+                .read()
+                .is_ok_and(|policy| policy.allows_unrestricted_packets())
+    }
     pub fn with_bandwidth_registry(
         policy: NetworkPolicy,
         controller: Arc<dyn ControlController>,
@@ -78,6 +109,7 @@ impl EgressRuntime {
             policy: Arc::new(std::sync::RwLock::new(policy)),
             controller,
             bandwidth,
+            peer_capable: false,
         }
     }
 

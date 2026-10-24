@@ -1368,3 +1368,45 @@ host UID/GID when the server cannot switch identities. This permits managed
 volume initialization without host root privileges. Native host ownership remains
 visible; arbitrary unmapped owners still fail rather than silently losing metadata.
 Overlay-backed image files use their separate virtual metadata contract.
+In that mode Linux CHOWN updates the upper inode's virtual identity without
+changing host ownership. Guest root may assign arbitrary virtual owners; other
+callers must own the file, retain its UID and retain its group or select their
+primary group. Linux idmapped FUSE's omitted-credential sentinel delegates guest
+authorization to the VFS, which checks SETATTR before sending the request.
+Supplementary-group changes with explicit credentials are not supported by this path.
+Copy-up preserves the immutable lower, hardlinks observe the same identity,
+and CHOWN clears regular-file setuid/setgid bits.
+
+### Framed virtio-net transport
+
+The connected stream is configured with `O_NONBLOCK` before the backend is
+published, preserving its other status flags. Setup failure aborts backend
+creation. Cloned descriptors share this status; callers must not reset it.
+This also prevents Darwin stream sends from blocking on a full buffer, where
+`MSG_DONTWAIT` alone is insufficient. Backpressure tests use bounded I/O, and
+the maximum-frame receive fixture writes concurrently rather than relying on
+the host's default socket capacity.
+
+The Unix-stream backend retains a bounded read-ahead buffer (at most 65,566
+bytes) across RX calls. Incomplete length prefixes and payloads return without
+blocking the device worker; coalesced frames are parsed from the same read.
+Zero/oversized lengths and truncated EOF fail closed without growing the buffer
+or spinning. The four-byte big-endian framing and public network API are unchanged.
+
+RX checks the negotiated event index before interrupting a guest that is already
+polling. A deferred frame completed after queue replenishment also participates
+in notification. Queue kicks are armed when a deferred frame needs buffers, with
+the standard availability recheck closing the race after rearming. Private tests
+cover bytewise stream fragmentation, coalescing/compaction, maximum frames, EOF,
+notification suppression and deferred completion. Linux/KVM real-guest peer
+experiments are described in `benchmark/peer/README.md`; HVF performance requires
+separate measurement.
+
+Stream TX gathers at most 32 already-available frames into one `sendmsg`.
+Reusable owned buffers retain each frame independently (each at most 65,562
+bytes including the virtio header); guest RAM is copied before publishing its
+used descriptor, and no RAM lease survives socket backpressure. A byte cursor
+preserves partial prefixes, payloads and frame boundaries. Pending batches finish
+before accepting another batch; EAGAIN resumes on socket writability without
+waiting to fill a batch. Malformed TX descriptors complete without emitting wire
+bytes. Datagram and TAP backend TX retain their existing per-frame paths.

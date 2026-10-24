@@ -1031,7 +1031,8 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                         limits: config.overlaynet.limits.clone(),
                     },
                 )
-                .listen(&config.overlaynet.listen),
+                .listen(&config.overlaynet.listen)
+                .peer_network(config.overlaynet.peers.clone()),
             );
         if let Some(path) = &config.vm.control_socket {
             builder = builder.control_socket(path);
@@ -1580,7 +1581,8 @@ async fn execute_config(
                     limits: config.overlaynet.limits.clone(),
                 },
             )
-            .listen(&config.overlaynet.listen),
+            .listen(&config.overlaynet.listen)
+            .peer_network(config.overlaynet.peers.clone()),
         );
     if let Some(path) = &config.vm.control_socket {
         builder = builder.control_socket(path);
@@ -2860,6 +2862,14 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
     validate_prepared_workspace_request(config)?;
+    if let Some(peers) = &config.overlaynet.peers {
+        peers.validate()?;
+        anyhow::ensure!(
+            config.run.executor == RunExecutorKind::Vm
+                && config.overlaynet.mode == OverlayNetMode::Auto,
+            "peer networking requires a native VM with overlaynet mode auto"
+        );
+    }
     anyhow::ensure!(
         config.vm.control_socket.is_none() || config.run.executor == RunExecutorKind::Vm,
         "vm.control_socket requires a VM executor"

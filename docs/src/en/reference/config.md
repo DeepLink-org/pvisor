@@ -391,6 +391,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `overlaynet.rules` | `Vec<NetworkAccessRule>` | `[]` | Structured grants; network_rule fields below; `--overlaynet-rule` replaces |
 | `overlaynet.deny` | `Vec<NetworkAccessRule>` | `[]` | Structured denials; `--overlaynet-deny` replaces |
 | `overlaynet.limits` | `Vec<NetworkBandwidthLimit>` | `[]` | Bandwidth entries; bandwidth_limit fields below; `--overlaynet-limit` replaces |
+| `overlaynet.peers` | `Option<PeerNetworkSettings>` | `unset` | Explicit same-host VM network membership; requires auto mode and unrestricted policy |
 | `gateway.mode` | `GatewayMode` | `"off"` | off or capture; `--gateway-mode` |
 | `gateway.profile` | `Option<GatewayProfile>` | `unset` | zcode-bigmodel; `--gateway-profile` selects capture |
 | `gateway.zcode_builtin_config` | `Option<PathBuf>` | `unset` | Zcode integration configuration path |

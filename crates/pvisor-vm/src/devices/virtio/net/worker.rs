@@ -6,14 +6,14 @@ use crate::devices::virtio::net::unixstream::Unixstream;
 use crate::devices::virtio::net::{MAX_BUFFER_SIZE, QUEUE_SIZE};
 use crate::devices::virtio::{DeviceQueue, InterruptTransport};
 
+use super::VNET_HDR_LEN;
 use super::backend::{NetBackend, ReadError, WriteError};
 use super::device::{FrontendError, RxError, TxError, VirtioNetBackend};
-use super::VNET_HDR_LEN;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use std::os::fd::AsRawFd;
 #[cfg(target_os = "macos")]
 use std::os::fd::RawFd;
-use std::os::fd::AsRawFd;
 use std::thread;
 use std::{cmp, result};
 use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
@@ -34,6 +34,7 @@ pub struct NetWorker {
     tx_frame_buf: [u8; MAX_BUFFER_SIZE],
     tx_frame_len: usize,
     tx_has_deferred_frame: bool,
+    stream_tx: Option<super::tx_batch::TxBatch>,
 }
 
 impl NetWorker {
@@ -45,10 +46,15 @@ impl NetWorker {
         _vnet_features: u64,
         cfg_backend: VirtioNetBackend,
     ) -> Result<Self, ConnectError> {
+        let stream_tx = matches!(
+            cfg_backend,
+            VirtioNetBackend::UnixstreamFd(_) | VirtioNetBackend::UnixstreamPath(_)
+        )
+        .then(super::tx_batch::TxBatch::new);
         let backend = match cfg_backend {
             VirtioNetBackend::UnixstreamFd(fd) => {
                 let owned_fd = fd.try_clone().map_err(ConnectError::CloneDescriptor)?;
-                Box::new(Unixstream::new(owned_fd)) as Box<dyn NetBackend + Send>
+                Box::new(Unixstream::new(owned_fd)?) as Box<dyn NetBackend + Send>
             }
             VirtioNetBackend::UnixstreamPath(path) => {
                 Box::new(Unixstream::open(path)?) as Box<dyn NetBackend + Send>
@@ -81,6 +87,7 @@ impl NetWorker {
             tx_frame_buf: [0u8; MAX_BUFFER_SIZE],
             tx_frame_len: 0,
             tx_iovec: Vec::with_capacity(QUEUE_SIZE as usize),
+            stream_tx,
             tx_has_deferred_frame: false,
         })
     }
@@ -139,8 +146,12 @@ impl NetWorker {
                                 if event_set.contains(EventSet::HANG_UP)
                                     || event_set.contains(EventSet::READ_HANG_UP)
                                 {
-                                    log::error!("Got {event_set:?} on backend fd, virtio-net will stop working");
-                                    eprintln!("LIBKRUN VIRTIO-NET FATAL: Backend process seems to have quit or crashed! Networking is now disabled!");
+                                    log::error!(
+                                        "Got {event_set:?} on backend fd, virtio-net will stop working"
+                                    );
+                                    eprintln!(
+                                        "LIBKRUN VIRTIO-NET FATAL: Backend process seems to have quit or crashed! Networking is now disabled!"
+                                    );
                                 } else {
                                     if event_set.contains(EventSet::IN) {
                                         self.process_backend_socket_readable()
@@ -184,15 +195,9 @@ impl NetWorker {
         if let Err(e) = self.rx_q.event.read() {
             log::error!("Failed to get rx event from queue: {e:?}");
         }
-        if let Err(e) = self.rx_q.queue.disable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
-        if let Err(e) = self.process_rx() {
+        if let Err(e) = self.process_rx_loop() {
             log::error!("Failed to process rx: {e:?} (triggered by queue event)")
         };
-        if let Err(e) = self.rx_q.queue.enable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
     }
 
     pub(crate) fn process_tx_queue_event(&mut self) {
@@ -206,18 +211,16 @@ impl NetWorker {
 
     pub(crate) fn process_backend_socket_readable(&mut self) {
         crate::devices::virtio::memory_gate::external_wake(&self.mem, "network_rx");
-        if let Err(e) = self.rx_q.queue.enable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
-        if let Err(e) = self.process_rx() {
+        if let Err(e) = self.process_rx_loop() {
             log::error!("Failed to process rx: {e:?} (triggered by backend socket readable)");
         };
-        if let Err(e) = self.rx_q.queue.disable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
     }
 
     pub(crate) fn process_backend_socket_writeable(&mut self) {
+        if self.stream_tx.is_some() {
+            self.process_tx_loop();
+            return;
+        }
         match self
             .backend
             .try_finish_write(VNET_HDR_LEN, &self.tx_frame_buf[..self.tx_frame_len])
@@ -233,18 +236,39 @@ impl NetWorker {
         }
     }
 
+    fn process_rx_loop(&mut self) -> result::Result<(), RxError> {
+        loop {
+            self.rx_q
+                .queue
+                .disable_notification(&self.mem)
+                .map_err(RxError::QueueError)?;
+            self.process_rx()?;
+            // Only ask the guest to kick when a deferred frame needs new
+            // buffers. Recheck after arming, closing the replenishment race.
+            if !self.rx_has_deferred_frame
+                || !self
+                    .rx_q
+                    .queue
+                    .enable_notification(&self.mem)
+                    .map_err(RxError::QueueError)?
+            {
+                return Ok(());
+            }
+        }
+    }
+
     fn process_rx(&mut self) -> result::Result<(), RxError> {
+        let mut signal_queue = false;
         // if we have a deferred frame we try to process it first,
         // if that is not possible, we don't continue processing other frames
         if self.rx_has_deferred_frame {
             if self.write_frame_to_guest() {
                 self.rx_has_deferred_frame = false;
+                signal_queue = true;
             } else {
                 return Ok(());
             }
         }
-
-        let mut signal_queue = false;
 
         // Read as many frames as possible.
         let result = loop {
@@ -264,7 +288,13 @@ impl NetWorker {
 
         // At this point we processed as many Rx frames as possible.
         // We have to wake the guest if at least one descriptor chain has been used.
-        if signal_queue {
+        if signal_queue
+            && self
+                .rx_q
+                .queue
+                .needs_notification(&self.mem)
+                .map_err(RxError::QueueError)?
+        {
             self.interrupt
                 .try_signal_used_queue()
                 .map_err(RxError::DeviceError)?;
@@ -294,6 +324,9 @@ impl NetWorker {
     }
 
     fn process_tx(&mut self) -> result::Result<(), TxError> {
+        if self.stream_tx.is_some() {
+            return self.process_stream_tx();
+        }
         let tx_queue = &mut self.tx_q.queue;
 
         if self.backend.has_unfinished_write()
@@ -382,7 +415,7 @@ impl NetWorker {
                     break;
                 }
                 Err(e @ WriteError::Internal(_) | e @ WriteError::ProcessNotRunning) => {
-                    return Err(TxError::Backend(e))
+                    return Err(TxError::Backend(e));
                 }
             }
         }
@@ -393,6 +426,49 @@ impl NetWorker {
                 .map_err(TxError::DeviceError)?;
         }
 
+        result
+    }
+
+    fn process_stream_tx(&mut self) -> result::Result<(), TxError> {
+        let batch = self.stream_tx.as_mut().expect("stream TX enabled");
+        let mut used = false;
+        let result = (|| {
+            loop {
+                // Always finish an owned partial batch before accepting more
+                // guest buffers. At most 32 bounded frames remain pending.
+                batch
+                    .flush(self.backend.raw_socket_fd())
+                    .map_err(TxError::Backend)?;
+                while !batch.full() {
+                    let Some(head) = self.tx_q.queue.pop(&self.mem) else {
+                        break;
+                    };
+                    let index = head.index;
+                    if let Err(error) = batch.push(&self.mem, head) {
+                        log::warn!("Rejecting malformed TX frame: {error}");
+                    }
+                    self.tx_q
+                        .queue
+                        .add_used(&self.mem, index, 0)
+                        .map_err(TxError::QueueError)?;
+                    used = true;
+                }
+                if batch.empty() {
+                    return Ok(());
+                }
+            }
+        })();
+        if used
+            && self
+                .tx_q
+                .queue
+                .needs_notification(&self.mem)
+                .map_err(TxError::QueueError)?
+        {
+            self.interrupt
+                .try_signal_used_queue()
+                .map_err(TxError::DeviceError)?;
+        }
         result
     }
 
@@ -470,5 +546,158 @@ impl NetWorker {
     fn read_into_rx_frame_buf_from_backend(&mut self) -> result::Result<(), ReadError> {
         self.rx_frame_buf_len = self.backend.read_frame(&mut self.rx_frame_buf)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::legacy::DummyIrqChip;
+    use crate::devices::virtio::VirtQueue;
+    use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, atomic::Ordering};
+
+    #[test]
+    fn tx_batches_own_completed_guest_buffers_and_resume_after_backpressure() {
+        use std::io::Read;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        let rx = VirtQueue::new(GuestAddress(0), &mem, 64);
+        let tx = VirtQueue::new(GuestAddress(0x1000), &mem, 64);
+        let (local, mut peer) = UnixStream::pair().unwrap();
+        local
+            .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let interrupt =
+            InterruptTransport::new(DummyIrqChip::new().into(), "net-test".into()).unwrap();
+        let mut worker = NetWorker::new(
+            DeviceQueue::new(
+                rx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            DeviceQueue::new(
+                tx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            interrupt,
+            mem.clone(),
+            0,
+            VirtioNetBackend::UnixstreamFd(Arc::new(local.into())),
+        )
+        .unwrap();
+        let bytes: libc::c_int = 1024;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    worker.backend.raw_socket_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&bytes) as _,
+                )
+            },
+            0
+        );
+        let mut expected = Vec::new();
+        for sequence in 0..40usize {
+            let address = 0x10000 + sequence as u64 * 2048;
+            let mut frame = vec![0; VNET_HDR_LEN];
+            frame.extend_from_slice(&[sequence as u8; 1514]);
+            mem.write_slice(&frame, GuestAddress(address)).unwrap();
+            tx.dtable[sequence].set(address, frame.len() as u32, 0, 0);
+            tx.avail.ring[sequence].set(sequence as u16);
+            expected.extend_from_slice(&1514u32.to_be_bytes());
+            expected.extend_from_slice(&[sequence as u8; 1514]);
+        }
+        // Malformed guest descriptors complete without a panic or wire bytes.
+        tx.dtable[40].set(0x30000, 32, 2, 0);
+        tx.dtable[41].set(0x31000, 1, 0, 0);
+        tx.avail.ring[40].set(40);
+        tx.avail.ring[41].set(41);
+        tx.avail.idx.set(42);
+        worker.tx_q.event.write(1).unwrap();
+        worker.process_tx_queue_event();
+        assert_eq!(tx.used.idx.get(), 32);
+        assert!(worker.tx_has_deferred_frame);
+        // Guest is free to reuse completed buffers, even during a partial send.
+        for sequence in 0..32 {
+            mem.write_slice(&[0xee; 1526], GuestAddress(0x10000 + sequence * 2048))
+                .unwrap();
+        }
+        let mut arrived = Vec::new();
+        for _ in 0..10000 {
+            let mut bytes = [0; 503];
+            loop {
+                match peer.read(&mut bytes) {
+                    Ok(0) => panic!("unexpected stream EOF"),
+                    Ok(length) => arrived.extend_from_slice(&bytes[..length]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    error => panic!("receive: {error:?}"),
+                }
+            }
+            if arrived.len() == expected.len() {
+                break;
+            }
+            worker.process_backend_socket_writeable();
+        }
+        assert_eq!(arrived, expected);
+        assert_eq!(tx.used.idx.get(), 42);
+        assert!(worker.stream_tx.as_ref().unwrap().empty());
+        assert!(!worker.tx_has_deferred_frame);
+    }
+
+    #[test]
+    fn rx_event_index_suppresses_extra_irq_and_deferred_completion_still_notifies() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let rx = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let tx = VirtQueue::new(GuestAddress(0x1000), &mem, 8);
+        let mut rx_queue = rx.create_queue();
+        rx_queue.set_event_idx(true);
+        let (local, mut peer) = UnixStream::pair().unwrap();
+        let interrupt =
+            InterruptTransport::new(DummyIrqChip::new().into(), "net-test".into()).unwrap();
+        let mut worker = NetWorker::new(
+            DeviceQueue::new(rx_queue, Arc::new(EventFd::new(EFD_NONBLOCK).unwrap())),
+            DeviceQueue::new(
+                tx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            interrupt.clone(),
+            mem.clone(),
+            0,
+            VirtioNetBackend::UnixstreamFd(Arc::new(local.into())),
+        )
+        .unwrap();
+        rx.dtable[0].set(0x4000, 2048, 2, 0);
+        rx.avail.ring[0].set(0);
+        rx.avail.idx.set(1);
+        // The guest is already polling and only requests a notification after
+        // the second used entry. The first packet must not inject an IRQ.
+        rx.avail.event.set(1);
+        let mut framed = 66u32.to_be_bytes().to_vec();
+        framed.extend_from_slice(&[0x5a; 66]);
+        peer.write_all(&framed).unwrap();
+        worker.process_backend_socket_readable();
+        assert_eq!(rx.used.idx.get(), 1);
+        assert_eq!(interrupt.status().load(Ordering::SeqCst), 0);
+        // Exhausted RX buffers must arm a guest kick, without losing the frame.
+        peer.write_all(&framed).unwrap();
+        worker.process_backend_socket_readable();
+        assert!(worker.rx_has_deferred_frame);
+        assert_eq!(rx.used.event.get(), 1);
+        rx.dtable[1].set(0x5000, 2048, 2, 0);
+        rx.avail.ring[1].set(1);
+        rx.avail.idx.set(2);
+        worker.rx_q.event.write(1).unwrap();
+        worker.process_rx_queue_event();
+        assert!(!worker.rx_has_deferred_frame);
+        assert_eq!(rx.used.idx.get(), 2);
+        assert_eq!(interrupt.status().load(Ordering::SeqCst), 1);
+        let mut arrived = [0; 66];
+        mem.read_slice(&mut arrived, GuestAddress(0x5000 + VNET_HDR_LEN as u64))
+            .unwrap();
+        assert_eq!(arrived, [0x5a; 66]);
     }
 }

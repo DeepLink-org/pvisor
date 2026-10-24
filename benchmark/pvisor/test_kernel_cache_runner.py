@@ -156,7 +156,8 @@ class KernelCacheRunnerTests(unittest.TestCase):
             bench.export_counters(tmp_path, report)
             import csv
 
-            rows = list(csv.DictReader((tmp_path / "counters.csv").open()))
+            with (tmp_path / "counters.csv").open() as stream:
+                rows = list(csv.DictReader(stream))
             assert len(rows) == 2
             assert rows[0]["calls"] == "5" and rows[0]["fuse_callback"] == "True"
             assert rows[1]["fuse_callback"] == "False"

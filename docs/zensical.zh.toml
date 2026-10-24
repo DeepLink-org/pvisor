@@ -179,6 +179,7 @@ nav = [
     { "VM 启动性能分析" = "lab-notes/vm-startup-performance-analysis.md" },
     { "端到端任务性能分析" = "lab-notes/agent-task-performance-analysis.md" },
     { "VM 内存性能分析" = "lab-notes/vm-memory-performance-analysis.md" },
+    { "OpenSandbox 对比：启动、磁盘与内存" = "lab-notes/opensandbox-performance-analysis.md" },
     { "文件系统性能分析" = "lab-notes/filesystem-performance-analysis.md" },
     { "缓存与异步写入性能曲线" = "lab-notes/filesystem-io-performance-analysis.md" },
     { "Benchmark 方法与证据" = "lab-notes/benchmark-methodology-evidence.md" },

@@ -631,6 +631,30 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。`immutable_lower_cache.py --profiles` 保留每个 PID/component/instance 的所有累计 records，以各实例 final record 比较 physical parent/leaf stats 和 cache hits/misses/evictions；inclusive spans 不相加。真实 mount 若被拒绝，保留失败并仅以明确标记的 core 机制实验补充，不替代 FUSE 结果。
 - **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
+### B-OPENSANDBOX-ENG：本地兼容后端的就绪等待 {#b-opensandbox-eng}
+
+- **角色：** engineering A/B。
+- **Motivation：** 判断本地 pVisor OpenSandbox 后端是否能缩短 SDK 创建到可执行命令的等待。
+- **想要的结论：** 在预备好的同 digest Ubuntu、1 CPU/512 MiB、同机 SDK 1.1.0 下，报告 native VM 与官方 Docker server 的就绪延迟分布、差异区间及失败；明确 native guest 或旧版同字节 execd 配置，不混合批次，不推断完整协议、网络策略、生产密度或隔离等级等价。
+- **实验设计：** 服务与镜像预先准备，另列首个请求；固定种子随机交替，每臂至少 20 次新建沙箱。服务重启首个请求另用 20 次独立服务进程重启配对，不包含服务启动时间，也不称为磁盘冷缓存。计时 SDK create 返回，再单列首次命令完成时间；必须校验 stdout、私有文件及删除成功，完整保留失败，不剔除慢样本。所有请求相同资源/argv/环境，包含各后端实际 admission/readiness 与 SDK 开销。VM 的 cgroup 限额覆盖 VMM/supervisor，Docker 限额覆盖容器；这是各自本地部署配置，不能视为相同内核隔离或同等可用 guest RAM。无 Docker 基线时只能报告 native 单臂诊断。
+- **入口脚本：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
+
+### B-SANDBOX-ENGINE-ENG：原生 guest 执行后端的启动与命令延迟 {#b-sandbox-engine-eng}
+
+- **角色：** engineering A/B；完整证据保留 `benchmark/.data/sandbox-engine-*`，不进入用户 benchmark 页。
+- **Motivation：** 判断以共享 Rust guest 引擎替代每 VM 官方 execd/envd 后，SDK 首次/稳态创建与命令完成是否改善。
+- **想要的结论：** 同机、同预算、同 SDK 的旧制品/官方服务与新制品/原生引擎配对中位数差异、变化比例及 95% bootstrap 区间；OpenSandbox 与 E2B 分列，不外推 Docker 或完整协议性能。
+- **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
+- **入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
+
+### B-OPENSANDBOX-MEMORY-ENG：本地兼容服务的完整内存成本 {#b-opensandbox-memory-eng}
+
+- **角色：** engineering A/B；综合报告位于 `docs/src/{zh,en}/lab-notes/opensandbox-performance-analysis.md`，原始证据保留 `benchmark/.data/opensandbox-memory-*`。
+- **Motivation：** 判断默认 pVisor 及显式共享内存池在本地 OpenSandbox 用法中能否降低服务与实例的实际内存，而不是把配置 RAM 当作占用。
+- **想要的结论：** 同机、同源 Ubuntu、官方 SDK 1.1.0 和每实例 1 CPU/512 MiB 下，空服务、1/4 个空闲实例及四实例各持 64 MiB 数据时的完整组 cgroup 内存分类、可获得的 PSS、CPU 与校验结果；分别报告默认配置与开启物理池，包含未获得收益的条件。完整组计费为主指标，任何进程不可读时整组 PSS 标不可用，不漏算后作比较。
+- **实验设计：** 三臂为冻结 pVisor 原生后端默认模式、同制品显式物理池、官方 OpenSandbox 1.1.0 配独立 rootless Docker。API、VMM/supervisor、pool 或 dockerd/containerd/shim 全部在专属受限产品组内，外部 SDK 协调器和观察者不计入；四核配额、4 GiB、零 swap，镜像预备且宿主页缓存保留，不改变宿主 KSM/sysctl 或停止无关任务。预检每臂一组独立保存，正式至少五轮固定种子随机交替；每臂新服务、新实例。采集空服务、1/4 实例空闲窗口，四实例相同 64 MiB 确定性数据就绪后观察 30 秒，之后每实例完整改写为独有数据并观察 10 秒；全量数据校验、独立文件写入、实际 cgroup/CPU 限制、宿主进程归属与确认删除为门禁。PSS 为完整产品映射的驻留物理内存，不能代替未映射缓存和内核成本；同时给 cgroup memory.current/stat、峰值和 CPU，预备缓存的组外计费明确披露。保留失败及全部有效慢样本，失败停止，预检不混入正式数据；按轮配对 bootstrap 95% CI，分簇时单列，不作 P99、真实 Agent 工作集或生产密度推断。
+- **入口：** `benchmark/opensandbox/memory.py`，静态负载为同目录 `memory_worker.rs`；复现与来源见目录 README。
+
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
 - **角色：** engineering A/B
@@ -717,6 +741,37 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 对照组为原生、host 代理和 VM。
   - 不访问公网，不代表真实模型 API 的延迟。
 - **入口脚本：** `v1/network.py`、`ubuntu_vm_network.py`。
+
+### B-PEER-NET-ENG：同机直连转发的可靠性与热路径成本 {#b-peer-net-eng}
+
+- **角色：** engineering A/B；原始证据和工程分析保存在 `benchmark/peer/.data/`，不进入用户网络页。
+- **Motivation：** 验证 daemonless peer 网络在拥塞、重启和双向流量中保持隔离与完整性，并避免转发热路径出现明显性能退化。
+- **想要的结论：** 同机冻结基线/候选的有效 Ethernet goodput、往返延迟和全进程 CPU 成本，附配对中位数差异 bootstrap 95% CI；明确不代表 KVM、Docker bridge 或应用 TCP 吞吐。
+- **实验设计：** 公共 `VmNetwork` guest framed stream 与真实 Unix datagram 转发，两个 backend 线程、两个 guest 驱动线程；64-byte ping/pong 和 1514-byte、窗口 8 的有序完整性验证批传输。每样本独立网络目录和 owner，计时前预热；同一四核亲和性、相同负载，3 轮预热后至少 30 轮 seeded 随机配对，不剔除慢样本。所有帧逐字节验证，任何超时/损坏/丢包保留且使批次无效。输出 sent/received/dropped、wall、process CPU、原始 RTT 与宿主/源码/二进制/harness 摘要。故障注入正确性测试独立于计时。
+- **入口：** `benchmark/peer/run.py` 调用 `crates/pvisor-overlaynet/examples/peer_forwarding.rs`；复现与限制见 `benchmark/peer/README.md`。
+- **发行配置补充：** 默认 `release` 候选可单独采样 3 次预热和至少 30 次正式运行；同样的完整性、亲和性和证据规则。只报告绝对水平，不与独立 `performance` 批次计算变化或归因编译优化。
+
+### B-FOUR-PEER-ENG：512 MiB 上限下四实例的真实网络通信 {#b-four-peer-eng}
+
+- **角色：** engineering A/B；Docker 对照报告 `benchmark/peer/FOUR_NODE_REPORT.md`，转发优化报告 `benchmark/peer/PEER_OPTIMIZATION_REPORT.md`；原始证据在该目录 `.data/`，不更新用户网络 benchmark 页。
+- **Motivation：** 判断真实四 pVisor 的复杂通信是否稳定，以及相对四 Docker bridge 容器的网络性能成本。
+- **想要的结论：** 每实例宿主 cgroup 内存硬上限 512 MiB、swap 0、1 CPU 配额下，四节点全互连 RPC、12 条有向 TCP 批传输及四跳环形 RPC 的吞吐、RTT、CPU 和内存；同批随机配对差异 bootstrap 95% CI，保留失败和性能短板。
+- **实验设计：** 原生 KVM 四 VM（各 384 MiB guest，VMM/网络/前端计入各自 512 MiB scope）与四 rootful Docker 自定义 bridge 容器（各 512 MiB），同一静态 musl worker、IP、MTU 1500、四逻辑 CPU 亲和性及输入。先真实 guest 正确性与慢接收端/重启预检，再 3 次预热和 30 对 seeded 随机交替；每条件启动四个新实例，启动/准备/控制器不计网络时钟，组内三个正常负载按固定顺序执行。逐字节/数量校验、scope/cgroup 实际限制、guest 内存及 OOM 事件均核对；错误使批次失败，保留全部已完成数据，不剔除慢样本、不拼接失败批次。记录全节点输出、逐 RPC RTT、宿主 CPU/内存曲线、二进制/源码/镜像和环境摘要。Docker daemon/containerd 为宿主既有服务，其开销另观察，不冒充完全受限的整机预算；共享宿主内核与 VM 内核的不同明确披露。不改宿主 sysctl、不操作无关容器/网络，不据小规模结果推导生产密度。
+- **入口：** `benchmark/peer/four_node.py`、`four_node_worker.rs`；复现见 `benchmark/peer/README.md`。
+- **转发优化对照：** 同一当前运行时代码的冻结 baseline/candidate，复用上述四 VM、512 MiB/零 swap/1 CPU、三个负载、3 次预热与 30 对随机协议；`four_node.py --compare-pvisor BASELINE` 比较两个 pVisor 制品，不与旧 Docker 批次计算优化收益。诊断用 `trace_syscalls.c` 的局部 LD_PRELOAD 计数器记录各线程 socket、read/write（包含 eventfd）及 epoll 次数与时间，不采集 ioctl；只注入专属实验进程，诊断结果独立，不计入正式样本。正式对照必须移除计数器。GSO/MTU/协议变化需独立正确性验证，不以放宽校验或扩大未约束队列换取吞吐。
+- **优化批次干扰规则：** `reject_foreign_work` 在入场和每 0.5 秒检查同 UID 的构建、测试及可见 KVM FD，排除本实验冻结可执行文件。发现外部工作使整批无效并停止，保留原始值，不补选较快样本；不终止外部任务。无法读取的进程不作为全宿主安静证明。清理前保存本实验实例状态、completion 和日志，避免无输出退出码丢失诊断。
+- **持续批传输补充：** 每方向 32 MiB（12 方向共 384 MiB），新 worker 相同于两臂，额外采集 guest `/proc/net/snmp` 的 TCP 重传增量。3 对预热与 30 对正式样本独立成批，控制程序在计时和 CPU 窗口外采集计数，不与 4 MiB 样本合并，也不以延长采样直到显著的方式挑选结果。
+- **系统调用批量化：** 以已有 read-ahead/gather-write 优化为基线，仅增加 VMM stream TX gather、Linux peer `sendmmsg/recvmmsg`，保持帧协议、32 帧上限、socket 预算及拥塞丢弃语义。沿用三个默认负载、3 次预热和 30 对正式样本；独立 profile 同时记录 mmsg 调用和成功 message 数，区分“循环排空”和真正系统调用批量化。报告为 `benchmark/peer/PACKET_BATCH_REPORT.md`；其他并行修改不进入冻结候选，失败批次不补选或合并。
+- **批量化版本重测 Docker：** 冻结当前批量 I/O 制品，重新与四 Docker bridge 容器按上述默认三个负载、3 对预热和 30 对随机配对测量。使用新专用网络、相同静态 worker/预算、持续干扰门禁；一次正式批次，错误停止，不用旧 Docker 样本补齐。新报告 `benchmark/peer/FOUR_NODE_BATCHED_DOCKER_REPORT.md` 与旧报告分开保留，不由跨批次差异推算优化百分比。
+
+### B-PEER-CHAOS-ENG：持续流量中的四实例故障隔离与恢复 {#b-peer-chaos-eng}
+
+- **角色：** diagnostic；正确性与有界持续运行检查，不是性能比较，也不进入用户 benchmark 页。
+- **Motivation：** 检查批量转发实现是否在持续通信、节点不可用和地址代际变化下保持数据完整性，并隔离故障节点。
+- **想要的结论：** 固定观察窗内，完整性校验、健康节点可达性、故障后恢复、真实资源限制及失败记录；不将有限时长无故障称为生产可靠性保证。
+- **实验设计：** 同一冻结网络运行时，四个真实 Linux/KVM VM，各 384 MiB guest、512 MiB 宿主硬上限、零 swap、1 CPU 配额、CPU 4–7。默认 30 分钟、30 个预定故障周期，持续交替全互连 TCP RPC、12 向批传输、四跳环形 RPC、变长 UDP 和慢读端；节点 1 依次经历三秒 cgroup 冻结、正常停止/启动、SIGKILL VMM、删除/同名同 IP 重建，其余三节点在故障窗口内必须完成健康通信。冻结时已建立 TCP 必须在解冻后完成；崩溃不承诺旧 TCP 会话延续，重建后新连接、DNS 和 UDP 必须恢复。逐字节验证，不把超时当成功；UDP 允许有界重传但逐项报告实际尝试/重复/超时。每秒采集 cgroup 内存/OOM/swap、进程/线程/FD；节点 0/2/3 持续保留以观察积累。记录宿主干扰但不做性能归因，不终止无关任务。失败停止并保存全部证据，不剔除、不拼接或自动重试整批；短预检独立保存。
+- **入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
+- **并发协议补充：** `mixed_chaos.py` 独立启动一组四 VM，在三个 384 MiB 全互连 TCP 传输中并发校验 12 向 UDP；必须保留 UDP 完成时 TCP 客户端尚未完成的证据。预算、校验和失败停止规则相同，不与持续运行批次合并，不做性能比较。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
 
@@ -834,6 +889,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 64 MiB fill、非填充可压缩和确定性随机数据的编码字节、对象数、两次完整读回及编码/恢复墙钟成本；真实自动回收和实例内 pager 明确标 unsupported/not implemented，不以存储测试替代。
 - **实验设计：** 新进程、新的实例独占 CompressedPool，每块 64 KiB，三次独立执行；填充模式允许对象复用，其他模式保持块内容唯一以分开压缩与去重。全字节检查，拒绝校验失败，记录原文/编码 SHA-256 身份、来源/制品摘要和完整失败。编码字节排除索引、allocator、scratch 和原 RAM；不宣称净物理节省或业务延迟。无 VM、无全局 KSM 修改。
 - **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；运行命令与报告见 `benchmark/pvisor/README.md`、`COLD_RUNTIME_REPORT.md`。
+
+### B-IMAGE-STORAGE-ENG：本地镜像池能节省多少磁盘空间 {#b-image-storage-eng}
+
+- **角色：** engineering A/B；库存、日志及来源保留 `benchmark/.data/image-storage-*`，不发布到用户 benchmark 页。
+- **Motivation：** 判断压缩内容池相对完整解包及 Docker 实际镜像存储的容量收益，以及多镜像内容共享是否提供额外节省。
+- **想要的结论：** 固定 linux/amd64 manifest 的单镜像及组合库存，分别报告 pVisor 完整存储、Docker 完整存储、压缩 blobs 和解包树的字节与分配块；明确 metadata、层共享、删除后残留和计量边界。
+- **实验设计：** 同一宿主、文件系统和来源 digest，新的私有 pVisor store 与独立 rootless Docker daemon，禁用实验目录的 Btrfs 透明压缩。Docker 使用 containerd overlayfs snapshotter，并记录与宿主发行配置的差异；不操作既有 daemon 的镜像/容器。按 manifest/config/layer SHA-256 验证来源，检查镜像能读取已知内容；硬链接仅计一次。静态库存可重复采集，报告每次原值及范围；不是延迟采样，不从容量计数推导速度或 mmap 收益。源下载缓存、测量工具和二进制不计入任一镜像存储；包含各后端的镜像内容和元数据，Docker 空 daemon 的固定开销另列。失败保留，不用独立单镜像之和代替真正组合存储。不将 rmi 后未 GC 的空目录当作可回收空间。
+- **入口：** `benchmark/image_storage/run.py`，复现与计量边界见该目录 README。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 

@@ -80,7 +80,8 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
             daemon.clone(),
             request_policy,
         ))
-        .with_state(daemon)
+        .with_state(daemon.clone())
+        .merge(super::e2b::router(daemon))
 }
 
 impl IntoResponse for ApiError {
@@ -102,6 +103,7 @@ async fn request_policy(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let http1 = request.version() <= axum::http::Version::HTTP_11;
     let request_id = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
         .expect("UUID is a valid header value");
     request
@@ -134,6 +136,11 @@ async fn request_policy(
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
+    if http1 && (response.status().is_client_error() || response.status().is_server_error()) {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
     response
 }
 
@@ -415,7 +422,7 @@ fn strip_headers(headers: &mut HeaderMap, request: bool) {
     strip_service_headers(headers, request, false);
 }
 
-fn strip_service_headers(headers: &mut HeaderMap, request: bool, envd: bool) {
+pub(crate) fn strip_service_headers(headers: &mut HeaderMap, request: bool, envd: bool) {
     let nominated: Vec<HeaderName> = headers
         .get_all(header::CONNECTION)
         .iter()
@@ -549,6 +556,19 @@ async fn proxy(
         path.get("port")
             .ok_or_else(|| ApiError::bad_request("Missing port"))?,
     )?;
+    // Axum's Path extractor percent-decodes the wildcard exactly as the guest
+    // HTTP router does. Runtime rebinding belongs exclusively to the owner.
+    if port == crate::runtime::EXECD_PORT
+        && path.get("path").is_some_and(|value| {
+            value.trim_start_matches('/').split('/').next() == Some("internal")
+        })
+    {
+        return Err(ApiError::new(
+            403,
+            "FORBIDDEN",
+            "execd runtime initialization is private to the supervisor",
+        ));
+    }
     let suffix = request
         .uri()
         .path()
@@ -576,6 +596,13 @@ pub(super) async fn forward(
             "WebSocket upgrades and CONNECT are not supported",
         ));
     }
+    if port == crate::runtime::ENVD_PORT && super::e2b::private_path(&guest_path) {
+        return Err(ApiError::new(
+            403,
+            "FORBIDDEN",
+            "envd runtime control is private",
+        ));
+    }
     // Shared admission permits parallel proxies; exclusive lifecycle writers
     // fence delete/rebind and prevent new readers starving a queued control.
     let guard = daemon.proxy_guard(id).await?;
@@ -584,6 +611,24 @@ pub(super) async fn forward(
         let url = upstream_url(&upstream, &guest_path, request.uri().query())?;
         let (mut parts, body) = request.into_parts();
         strip_service_headers(&mut parts.headers, true, port == crate::runtime::ENVD_PORT);
+        if port == crate::runtime::EXECD_PORT
+            && !parts.headers.contains_key("x-execd-access-token")
+            && let Some(token) = daemon
+                .record(id)
+                .await?
+                .env
+                .get("PVISOR_EXECD_ACCESS_TOKEN")
+        {
+            let mut value = HeaderValue::from_str(token).map_err(|_| {
+                ApiError::new(
+                    503,
+                    "INVALID_SERVICE_CREDENTIAL",
+                    "invalid execd credential",
+                )
+            })?;
+            value.set_sensitive(true);
+            parts.headers.insert("x-execd-access-token", value);
+        }
         daemon
             .proxy_client()
             .request(parts.method, url)
@@ -803,6 +848,41 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::ACCEPTED, "{sandbox}");
         sandbox
+    }
+
+    #[tokio::test]
+    async fn official_python_sdk_explicit_secure_access_false_is_supported() {
+        let fixture = RouteFixture::open().await;
+        let mut payload = create_payload(json!({}));
+        payload["secureAccess"] = json!(false);
+        let (status, _, sandbox) = exchange(
+            &fixture.app,
+            Method::POST,
+            "/v1/sandboxes",
+            AUTH,
+            Body::from(payload.to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{sandbox}");
+        assert_eq!(sandbox["status"]["state"], "Running");
+    }
+
+    #[tokio::test]
+    async fn execd_initialization_cannot_be_rebound_through_public_proxy() {
+        let fixture = RouteFixture::open().await;
+        let sandbox = create_over_http(&fixture.app, json!({})).await;
+        let id = sandbox["id"].as_str().unwrap();
+        for suffix in ["internal/init", "%69nternal/init", "%2finternal%2finit"] {
+            let (status, _, body) = exchange(
+                &fixture.app,
+                Method::POST,
+                &format!("/v1/sandboxes/{id}/proxy/44772/{suffix}"),
+                AUTH,
+                Body::from("{}"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{suffix}: {body}");
+        }
     }
 
     fn assert_error(value: &Value, code: &str) {

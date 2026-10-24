@@ -1229,9 +1229,21 @@ impl RunExecutor for VmExecutor {
             .get("pvisor.network.driver")
             .and_then(serde_json::Value::as_str)
             == Some("vm-smoltcp");
-        if let Err(error) =
-            prepare_network_resolver(&mut root_overlay, temporary.path(), vm_network_enabled)
-        {
+        let router = match spec.metadata.get("pvisor.network.gateway_ipv4") {
+            Some(value) => match serde_json::from_value::<std::net::Ipv4Addr>(value.clone()) {
+                Ok(router) => router,
+                Err(error) => {
+                    return failed_to_start(format!("invalid VM router address: {error}"));
+                }
+            },
+            None => pvisor_overlaynet::vm::ROUTER_IPV4,
+        };
+        if let Err(error) = prepare_network_resolver(
+            &mut root_overlay,
+            temporary.path(),
+            vm_network_enabled,
+            router,
+        ) {
             return failed_to_start(format!("prepare VM synthetic resolver: {error}"));
         }
         if let Some(workspace) = &workspace {
@@ -1282,6 +1294,29 @@ impl RunExecutor for VmExecutor {
             &spec.runtime.resource_limits,
             vm_network_enabled,
         );
+        // Publishing the reserved host-only control port explicitly selects the
+        // shared guest process/file engine. Ordinary Jobs retain omission.
+        guest.control = self
+            .vsock_ports
+            .contains_key(&pvisor_guest::control::CONTROL_PORT);
+        if guest.control {
+            guest.process = Some(pvisor_guest::ProcessConfig {
+                new_session: true,
+                ..Default::default()
+            });
+        }
+        if let Some(network) = guest.network.as_mut()
+            && let Some(value) = spec.metadata.get("pvisor.network.guest_ipv4")
+        {
+            let address = value
+                .as_str()
+                .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok());
+            let Some(address) = address else {
+                return failed_to_start("invalid VM guest network address".into());
+            };
+            network.address = address.octets();
+            network.gateway = router.octets();
+        }
         let requested_memory_mib = spec
             .runtime
             .resource_limits
@@ -2600,7 +2635,13 @@ fn run_linked_krun(
         }
         vm.network(
             unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) },
-            pvisor_overlaynet::vm::VM_MAC,
+            pvisor_overlaynet::vm::guest_mac(std::net::Ipv4Addr::from(
+                guest
+                    .network
+                    .as_ref()
+                    .context("network device requires guest network configuration")?
+                    .address,
+            )),
         )?;
     }
     // Explicit AF_VSOCK listeners preserve zero-feature vsock: no implicit TSI.
@@ -2886,6 +2927,7 @@ fn prepare_network_resolver(
     overlay: &mut OverlayDeviceSpec,
     temporary: &Path,
     enabled: bool,
+    router: std::net::Ipv4Addr,
 ) -> std::io::Result<()> {
     if !enabled {
         return Ok(());
@@ -2895,7 +2937,7 @@ fn prepare_network_resolver(
     std::fs::create_dir_all(resolver.parent().expect("resolver parent"))?;
     std::fs::write(
         &resolver,
-        b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
+        format!("nameserver {router}\noptions timeout:2 attempts:2\n"),
     )?;
     overlay.lowers.insert(0, network_lower);
     // An explicit promise belongs to its original physical lower. The private
@@ -3085,7 +3127,13 @@ mod tests {
                 add_vm_overlay(&mut before, "root", &overlay, None).is_ok(),
                 valid
             );
-            prepare_network_resolver(&mut overlay, temp.path(), enabled).unwrap();
+            prepare_network_resolver(
+                &mut overlay,
+                temp.path(),
+                enabled,
+                pvisor_overlaynet::vm::ROUTER_IPV4,
+            )
+            .unwrap();
             let mut after = VmBuilder::new(1, 128).unwrap();
             let result = add_vm_overlay(&mut after, "root", &overlay, None);
             assert_eq!(result.is_ok(), valid, "builder handoff: {result:?}");
@@ -3139,8 +3187,22 @@ mod tests {
             let before = serde_json::to_value(&overlay).unwrap();
             // A file at the resolver directory makes preparation fail locally.
             std::fs::write(temp.path().join("network-lower"), b"occupied").unwrap();
-            prepare_network_resolver(&mut overlay, temp.path(), false).unwrap();
-            assert!(prepare_network_resolver(&mut overlay, temp.path(), true).is_err());
+            prepare_network_resolver(
+                &mut overlay,
+                temp.path(),
+                false,
+                pvisor_overlaynet::vm::ROUTER_IPV4,
+            )
+            .unwrap();
+            assert!(
+                prepare_network_resolver(
+                    &mut overlay,
+                    temp.path(),
+                    true,
+                    pvisor_overlaynet::vm::ROUTER_IPV4
+                )
+                .is_err()
+            );
             assert_eq!(serde_json::to_value(&overlay).unwrap(), before);
             assert_eq!(
                 std::fs::read(temp.path().join("network-lower")).unwrap(),

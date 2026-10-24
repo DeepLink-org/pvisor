@@ -1533,5 +1533,38 @@ async fn native_guest_environment_is_preserved_without_container_restrictions() 
     let state = runtime.state.lock().unwrap();
     assert_eq!(state.creates, 1);
     assert_eq!(state.specs[0].image, "execd-fixture");
-    assert_eq!(state.specs[0].env, expected_env);
+    let mut actual = state.specs[0].env.clone();
+    let credential = actual.remove("PVISOR_EXECD_ACCESS_TOKEN").unwrap();
+    assert_eq!(credential.len(), 64);
+    assert!(credential.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_eq!(actual, expected_env);
+}
+
+#[tokio::test]
+async fn execd_credentials_are_generated_per_sandbox_and_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let mut payload = request_json();
+    payload["env"] = json!({"PVISOR_EXECD_ACCESS_TOKEN": "caller-chosen"});
+    let first = daemon
+        .create(serde_json::from_value(payload).unwrap())
+        .await
+        .unwrap();
+    let second = create(&daemon).await;
+    let a = daemon.record(&first.id).await.unwrap().env["PVISOR_EXECD_ACCESS_TOKEN"].clone();
+    let b = daemon.record(&second.id).await.unwrap().env["PVISOR_EXECD_ACCESS_TOKEN"].clone();
+    assert_ne!(a, "caller-chosen");
+    assert_ne!(a, b);
+    assert_eq!(a.len(), 64);
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert_eq!(
+        daemon.record(&first.id).await.unwrap().env["PVISOR_EXECD_ACCESS_TOKEN"],
+        a
+    );
+    assert_eq!(
+        daemon.record(&second.id).await.unwrap().env["PVISOR_EXECD_ACCESS_TOKEN"],
+        b
+    );
 }

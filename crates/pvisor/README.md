@@ -677,6 +677,55 @@ atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
+New Docker pulls and completed builds default to the local immutable cache pool
+under `PVISOR_DOCKER_HOME/images/pool-v1` (beneath the default user-local
+`pvisor/docker` directory when unset). They reuse the cache's V1 file/metadata
+index, authenticated fixed revision, conditional publication and direct VM
+backend. They do not retain a complete extracted rootfs or OCI layer archives.
+Original OCI configuration bytes are retained separately under `images/configs`
+so subsequent builds preserve configuration such as labels and SHELL. A repeated
+pull still resolves the registry manifest/config, but a matching catalogued pool
+revision skips layer download and extraction. Pulls of the same reference/platform
+serialize without holding the catalog lock across network I/O.
+
+`Image.cache` binds the pool location and immutable handle; its legacy `rootfs`
+field is empty. Embedded consumers call `Store::open_image`, retain the returned
+`ImageRoot` through all OverlayCore/VM access, and use its `rootfs()` as the lower.
+That path is a temporary metadata/sparse-file projection: native host reads must
+not bypass the filesystem backend. Ordinary VM reads fetch only needed content
+blocks, with bounded decoded memory caches and no persistent raw block mirror.
+Copy-up may materialize a whole file in the projection before copying into upper;
+normal projection teardown removes it. Legacy records without `cache` continue
+to use their existing directories, including already created containers. No
+existing image directories are automatically deleted or migrated.
+
+Pool data is deduplicated by raw content SHA-256 across files, paths and images.
+Each existing V1 content chunk (at most 1 MiB) is independently encoded using
+Zstd level 3 when it saves more than 64 bytes, otherwise raw, in a versioned
+13-byte envelope containing magic, codec and decoded length. Reads bound input
+and decoded size, then verify the raw digest before returning bytes. Metadata
+remains uncompressed for indexed range reads. `pool-format.json` and the internal
+`pool+file://` binding identify this separate physical encoding. Its physical
+`format.json` also rejects ordinary raw V1 readers/publishers; the pool adapter
+supplies the unchanged logical index format. Ordinary
+filesystem/S3 V1 prefixes remain raw and are not converted in place. This is not
+the proposed small-file-pack V2 format. Current index entry/object limits remain.
+
+Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
+not enable DAX or make the mutable physical projection Immutable. A cold small
+read can decode an entire content chunk; warm-cache latency and mmap performance
+need separate workload measurements. Pool compression/deduplication tests are
+not Docker disk-use comparisons. Local pool imports explicitly reject arbitrary
+xattrs other than the existing ownership/mode override rather than dropping
+required attributes. File ownership, modes, timestamps, symlinks and hardlinks
+retain the cache contracts.
+
+Import extraction and intermediate build stages are temporary and are removed
+on ordinary success/failure. Abrupt process death can leave temporary directories.
+Pool data/revisions remain after `rmi` because stopped containers may reference
+them; automatic GC and disk-cache quotas are not implemented. Failed publication
+does not replace existing catalog tags, but can leave unreferenced pool objects.
+
 Each launch self-executes a detached owner and a separate native VMM. Embedding
 applications using `docker::Store::start` must dispatch
 `docker::internal_if_requested` at process entry, before threads or normal CLI
@@ -691,6 +740,12 @@ exit codes remain visible in completion records and instance output.
 Concurrent starts join the same starting generation and wait for its bounded
 readiness or failure; they do not spawn a second owner or reject a healthy
 in-progress launch. Waiting never retains the catalog lock.
+
+Published TCP relays cancel the guest tunnel on client reset or failed input
+writes, releasing the bounded connection slot without waiting for the guest
+application to time out. Orderly client write-half close still forwards EOF and
+allows the complete guest response. Completion cancels blocked companion pumps
+before joining them; cloned descriptors must not retain finished tunnels.
 
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
@@ -711,9 +766,9 @@ self-executes the existing container VM path under a private build store, with n
 user mounts, and is killed/reaped before host-side COPY or export. An inherited
 pipe terminates the VMM if the frontend dies. Context capture uses directory
 file descriptors and no-follow opens; destination links resolve against the
-guest root. Completed stages export the merged OverlayCore view as a flat OCI
-layer, reimport it and sync the resulting layout/rootfs before catalog tag
-publication. This reuses logical guest ownership/mode without installing host
+guest root. Completed stages temporarily export the merged OverlayCore view as a flat OCI
+layer and reimport it. Final publication commits the shared local content pool
+before replacing catalog tags; temporary layouts/rootfs trees are then released. This reuses logical guest ownership/mode without installing host
 setuid bits. Context capture and each COPY preserve regular-file hardlinks,
 including links spanning directories or separately selected sources, without
 linking the private snapshot back to host source inodes.
@@ -1234,3 +1289,81 @@ upper directory remains private (0700).
 Managed volume directories retain guest-selected modes across reopen, including
 image copy-up permissions. They must remain owned directories (never symlinks);
 the enclosing store and volumes catalog remain private 0700 directories.
+
+## Explicit same-host VM peer networks
+
+Native VM Jobs and container VMs can join the same user-private network without
+a central forwarding process. For Jobs, add this to each `spawn --config FILE`
+TOML configuration, selecting a different address for every live instance:
+
+```toml
+[run]
+executor = "vm"
+
+[overlaynet]
+mode = "auto"
+policy = "public"
+
+[overlaynet.peers]
+network = "development"
+address = "192.0.2.11"
+```
+
+A second member uses the same `network` with, for example, `192.0.2.12` and can
+connect directly to a service listening on `192.0.2.11` or `0.0.0.0`. The Rust
+API uses `NetworkDriverConfig::peer_network(Some(PeerNetworkSettings { network,
+address, gateway, aliases }))`. `gateway` defaults to `192.0.2.1` in TOML;
+`aliases` defaults empty. These explicit low-level groups are independent of the
+Docker-style network catalog described below.
+
+The low-level group name is 1–24 ASCII letters, digits, underscores or hyphens.
+Explicit groups are scoped to the effective host UID; container network names
+instead resolve through their store-scoped catalog to ID-based groups.
+Directories live under canonical `/tmp/pvisor-host-<UID>/networks/<network>/`;
+each address has a numeric member directory containing `net.sock`, `peer.json`
+and a persistent address lease. This uses the existing host authority root,
+which native executors exclude from guest projections. Discovery metadata is
+not guest authority. The lease refuses duplicate live addresses; fresh packet
+generations fence restarts, and an owner can reclaim stale files after a crash.
+No periodic central registry service is required.
+
+Membership explicitly grants bidirectional IPv4 TCP, UDP and ICMP to every
+member of that network. It requires `auto` native networking, unrestricted
+resolved network policy, no bandwidth budgets and the default controller.
+Deny/allowlist/scoped policies, custom controllers, host/OCI executors and off/
+proxy networking are refused rather than bypassed. Ordinary external egress
+retains its existing TCP/DNS path. Peer ARP is targeted; IPv6, fragmentation,
+general broadcast/multicast are unsupported. Explicit `aliases` publish network-local
+DNS names; an empty list disables peer DNS on this member. Native addresses remain
+explicit; the container catalog supplies automatic address allocation.
+MTU is 1500. Slow/missing peers cause bounded packet drops, not a global wait.
+The Run interception profile records `peer_ipv4`; peer packet counts are separate
+from host-egress/proxy flow counters. No network performance claim follows from
+packet contract tests. See the [transport contract](../pvisor-overlaynet/README.md#same-host-peer-packet-networks).
+
+
+Container networks use `docker::Store::{create_network, networks, inspect_network,
+network_instances, remove_network}` and persistent versioned `networks.json`
+under that store. `Create.network_name` selects a definition and
+`Create.ipv4_address` optionally requests a static IP. The CLI selects shared
+`bridge` by default; omitted SDK selectors and build RUN retain their isolated
+link for compatibility. None networking has no NIC. A user-defined network is
+created explicitly, and its name/ID resolves to a private runtime group keyed by
+the network ID. Config names may contain dots and up to 128 bytes; they never
+become filesystem path components. Subnets are RFC1918 or 192.0.2.0/24, /24 only.
+Catalog serialization reserves unique addresses across concurrent creations and
+stops until container removal; network removal refuses any remaining attachments.
+User-defined networks publish live container names in DNS with zero TTL; missing
+bare member names return NXDOMAIN and never become host egress grants. Default
+bridge permits IP connectivity without member-name DNS. Different stores have
+separate default bridges and network catalogs. The virtual gateway, resolver,
+DHCP and packet classification use the selected subnet/gateway. See the
+[Docker-compatible CLI subset](../pvisor-cli/README.md#same-host-peer-networks).
+
+### Explicit guest control publication
+
+`VmExecutor::with_vsock_ports` explicitly publishing reserved control port 1025
+also enables `GuestConfig.control` and a session-owned workload process group.
+This selects the shared host-only guest process/file engine used by the native
+daemon. Other published ports and ordinary Jobs do not enable it. Guest control
+requests stay inside the VM; no host process or filesystem fallback is provided.

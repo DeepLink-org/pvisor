@@ -328,7 +328,8 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
                     limits: config.overlaynet.limits.clone(),
                 },
             )
-            .listen(&config.overlaynet.listen);
+            .listen(&config.overlaynet.listen)
+            .peer_network(config.overlaynet.peers.clone());
             #[allow(unused_mut)]
             let mut builder = PVisor::builder()
                 .storage(stage)
@@ -345,7 +346,7 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
             if let Some(proxy) = resolve_proxy(config)? {
                 builder = builder.gateway(
                     GatewayDriverConfig::new(proxy)
-                        .output_dir(&stage)
+                        .output_dir(stage)
                         .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
                 );
             }

@@ -81,9 +81,47 @@ fn serve(
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     let request: Request = read_frame(&mut stream)?;
+    let tracked = matches!(request, Request::Start { .. });
+    let request = if let Request::Start { launch } = request {
+        Request::Exec {
+            argv: launch.argv,
+            env: launch.env,
+            unset_env: Vec::new(),
+            cwd: launch.cwd,
+            user: launch.user,
+            tty: launch.tty,
+        }
+    } else {
+        request
+    };
     stream.set_read_timeout(None)?;
     match request {
         Request::Ping {} => write_frame(&mut stream, &Reply::Ready),
+        Request::Info {} => write_frame(
+            &mut stream,
+            &Reply::Value {
+                value: super::files::info(config)?,
+            },
+        ),
+        Request::File { request } => super::files::serve(&mut stream, request),
+        Request::Signal {
+            pid,
+            generation,
+            signal,
+        } => {
+            processes.signal_tracked(pid, generation, signal)?;
+            write_frame(&mut stream, &Reply::Ready)
+        }
+        Request::Resize {
+            pid,
+            generation,
+            rows,
+            columns,
+        } => {
+            processes.resize(pid, generation, rows, columns)?;
+            write_frame(&mut stream, &Reply::Ready)
+        }
+        Request::Start { .. } => unreachable!("normalized above"),
         Request::Input {} => {
             let mut input = input
                 .lock()
@@ -100,32 +138,11 @@ fn serve(
             write_frame(&mut stream, &Reply::Ready)
         }
         Request::Connect { port } => {
-            let mut tcp = std::net::TcpStream::connect_timeout(
+            let tcp = std::net::TcpStream::connect_timeout(
                 &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
                 std::time::Duration::from_secs(10),
             )?;
-            write_frame(&mut stream, &Reply::Ready)?;
-            let mut input = stream.try_clone()?;
-            let mut output = tcp.try_clone()?;
-            std::thread::spawn(move || {
-                let _ = consume_input(&mut input, &mut output);
-                let _ = output.shutdown(std::net::Shutdown::Write);
-            });
-            let mut bytes = [0; 16384];
-            loop {
-                let size = tcp.read(&mut bytes)?;
-                if size == 0 {
-                    break;
-                }
-                write_frame(
-                    &mut stream,
-                    &Reply::Output {
-                        stream: 1,
-                        bytes: bytes[..size].to_vec(),
-                    },
-                )?;
-            }
-            write_frame(&mut stream, &Reply::Exit { code: 0 })
+            forward_tcp(stream, tcp)
         }
         Request::Exec {
             argv,
@@ -141,6 +158,11 @@ fn serve(
                 config.env.remove(&key);
             }
             config.env.extend(env);
+            if tracked {
+                config
+                    .env
+                    .retain(|key, _| !key.starts_with("PVISOR_NATIVE_"));
+            }
             if let Some(cwd) = cwd {
                 config.cwd = cwd;
             }
@@ -149,6 +171,9 @@ fn serve(
                 options.user = Some(user);
             }
             options.tty = tty;
+            if tracked {
+                options.new_session = true;
+            }
             options.stdin = pvisor_guest::StdinMode::Pipe;
             options.create_workdir = false;
             let Spawned {
@@ -168,14 +193,29 @@ fn serve(
                     return write_frame(&mut stream, &Reply::Exit { code });
                 }
             };
-            write_frame(&mut stream, &Reply::Ready)?;
+            let exec_pid = process.id();
+            let exec_generation = process.generation();
+            if let Err(error) = write_frame(
+                &mut stream,
+                &if tracked {
+                    Reply::Started {
+                        pid: exec_pid,
+                        generation: exec_generation,
+                    }
+                } else {
+                    Reply::Ready
+                },
+            ) {
+                let _ = processes.signal_tracked(exec_pid, exec_generation, libc::SIGKILL);
+                return Err(error);
+            }
             let mut stdin = input.unwrap();
             let mut input = stream.try_clone()?;
             let exec_pid = process.id();
             let processes = processes.clone();
             std::thread::spawn(move || {
                 if consume_input(&mut input, &mut stdin).is_err() {
-                    let _ = processes.signal(exec_pid, libc::SIGKILL);
+                    let _ = processes.signal_tracked(exec_pid, exec_generation, libc::SIGKILL);
                 }
             });
             let output = Arc::new(Mutex::new(stream.try_clone()?));
@@ -194,6 +234,44 @@ fn serve(
             Ok(())
         }
     }
+}
+
+fn forward_tcp(mut stream: UnixStream, mut tcp: std::net::TcpStream) -> io::Result<()> {
+    write_frame(&mut stream, &Reply::Ready)?;
+    let mut input = stream.try_clone()?;
+    let mut output = tcp.try_clone()?;
+    let upstream = std::thread::spawn(move || {
+        if consume_input(&mut input, &mut output).is_ok() {
+            // Explicit EOF is a half-close: the TCP peer may still reply.
+            let _ = output.shutdown(std::net::Shutdown::Write);
+        } else {
+            let _ = output.shutdown(std::net::Shutdown::Both);
+            let _ = input.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    let result = (|| {
+        let mut bytes = [0; 16384];
+        loop {
+            let size = tcp.read(&mut bytes)?;
+            if size == 0 {
+                break;
+            }
+            write_frame(
+                &mut stream,
+                &Reply::Output {
+                    stream: 1,
+                    bytes: bytes[..size].to_vec(),
+                },
+            )?;
+        }
+        write_frame(&mut stream, &Reply::Exit { code: 0 })
+    })();
+    // A completed response or error owns both pumps. Cancel blocked input reads
+    // and TCP writes before joining; cloned descriptors must not retain a tunnel.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    let _ = tcp.shutdown(std::net::Shutdown::Both);
+    let _ = upstream.join();
+    result
 }
 
 pub(super) fn start(
@@ -255,7 +333,8 @@ pub(super) fn start(
                 ) {
                     let _ = write_frame(
                         &mut stream,
-                        &Reply::Error {
+                        &Reply::Failure {
+                            errno: error.raw_os_error().unwrap_or(libc::EIO),
                             message: error.to_string(),
                         },
                     );
@@ -264,4 +343,195 @@ pub(super) fn start(
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn tcp_tunnel_guest_eof_releases_the_input_reader() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let application = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(b"response-without-client-half-close")
+                .unwrap();
+        });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handler = std::thread::spawn(move || {
+            serve(
+                server,
+                &GuestConfig::default(),
+                &Processes::default(),
+                0,
+                &Arc::new(Mutex::new(None)),
+            )
+        });
+        write_frame(&mut client, &Request::Connect { port }).unwrap();
+        assert!(matches!(
+            read_frame::<Reply>(&mut client).unwrap(),
+            Reply::Ready
+        ));
+        let mut body = Vec::new();
+        loop {
+            match read_frame::<Reply>(&mut client).unwrap() {
+                Reply::Output { bytes, .. } => body.extend(bytes),
+                Reply::Exit { code: 0 } => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(body, b"response-without-client-half-close");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let eof = client.read(&mut [0; 1]);
+        let _ = client.shutdown(std::net::Shutdown::Both);
+        application.join().unwrap();
+        handler.join().unwrap().unwrap();
+        assert!(
+            matches!(eof, Ok(0)),
+            "guest tunnel input reader retained the connection: {eof:?}"
+        );
+    }
+
+    #[test]
+    fn tcp_tunnel_input_half_close_preserves_the_complete_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected: Vec<u8> = (0..131077).map(|i| (i * 37) as u8).collect();
+        let response = expected.clone();
+        let application = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut input = Vec::new();
+            stream.read_to_end(&mut input).unwrap();
+            assert_eq!(input, b"request");
+            stream.write_all(&response).unwrap();
+        });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let handler = std::thread::spawn(move || {
+            serve(
+                server,
+                &GuestConfig::default(),
+                &Processes::default(),
+                0,
+                &Arc::new(Mutex::new(None)),
+            )
+        });
+        write_frame(&mut client, &Request::Connect { port }).unwrap();
+        assert!(matches!(
+            read_frame::<Reply>(&mut client).unwrap(),
+            Reply::Ready
+        ));
+        write_frame(
+            &mut client,
+            &StdinFrame::Data {
+                bytes: b"request".to_vec(),
+            },
+        )
+        .unwrap();
+        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        let mut actual = Vec::new();
+        loop {
+            match read_frame::<Reply>(&mut client).unwrap() {
+                Reply::Output { bytes, .. } => actual.extend(bytes),
+                Reply::Exit { code: 0 } => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(actual, expected);
+        application.join().unwrap();
+        handler.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn tracked_exec_streams_stdin_and_signal_uses_shared_reaper_registry() {
+        let processes = Processes::default();
+        let config = GuestConfig {
+            argv: vec!["/bin/sleep".into(), "60".into()],
+            cwd: "/".into(),
+            env: BTreeMap::from([("PVISOR_NATIVE_GENERATION".into(), "private".into())]),
+            ..Default::default()
+        };
+        let main = processes.spawn(&config, false).unwrap().process;
+        let main_pid = main.id();
+        let reaper = processes.clone();
+        let reaper = std::thread::spawn(move || reaper.supervise(main).unwrap());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let guest = processes.clone();
+        let launch = config.clone();
+        let worker = std::thread::spawn(move || {
+            serve(
+                server,
+                &launch,
+                &guest,
+                main_pid,
+                &Arc::new(Mutex::new(None)),
+            )
+            .unwrap()
+        });
+        write_frame(
+            &mut client,
+            &Request::Start {
+                launch: pvisor_guest::control::ExecLaunch {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "read line; printf '%s:%s' \"$line\" \"${PVISOR_NATIVE_GENERATION-unset}\""
+                            .into(),
+                    ],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                    user: None,
+                    tty: None,
+                },
+            },
+        )
+        .unwrap();
+        let Reply::Started { pid, generation } = read_frame(&mut client).unwrap() else {
+            panic!("missing PID");
+        };
+        assert_eq!(
+            processes
+                .signal_tracked(pid, generation + 1, libc::SIGKILL)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        write_frame(
+            &mut client,
+            &StdinFrame::Data {
+                bytes: b"hello\n".to_vec(),
+            },
+        )
+        .unwrap();
+        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        let mut output = Vec::new();
+        loop {
+            match read_frame::<Reply>(&mut client).unwrap() {
+                Reply::Output { bytes, .. } => output.extend(bytes),
+                Reply::Exit { code } => {
+                    assert_eq!(code, 0);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(output, b"hello:unset");
+        worker.join().unwrap();
+        assert_eq!(
+            processes.signal(pid, 9).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        processes.signal(main_pid, libc::SIGTERM).unwrap();
+        assert_eq!(reaper.join().unwrap(), 143);
+    }
 }

@@ -13,6 +13,7 @@ pub(super) const MAX_OBJECT: usize = 64 * 1024 * 1024;
 #[derive(Clone)]
 pub(crate) enum Storage {
     Filesystem(PathBuf),
+    Pool(Arc<super::pool::PoolStorage>),
     S3(Arc<S3>),
     Metadata(Arc<MetadataStorage>),
 }
@@ -168,7 +169,7 @@ impl Storage {
         ensure!(object.bytes.len() == expected, "truncated cache range");
         Ok(object.bytes)
     }
-    fn read(
+    pub(super) fn read(
         &self,
         key: &str,
         range: Option<Range<u64>>,
@@ -176,6 +177,7 @@ impl Storage {
     ) -> anyhow::Result<Option<StoredObject>> {
         validate_key(key)?;
         match self {
+            Self::Pool(pool) => pool.read(key, range, limit),
             Self::Metadata(metadata) => metadata.read(key, range, limit),
             Self::S3(s3) => s3.request(
                 key,
@@ -248,10 +250,11 @@ impl Storage {
             expected.map(PutMode::Update).unwrap_or(PutMode::Create),
         )
     }
-    fn write(&self, key: &str, bytes: Vec<u8>, mode: PutMode) -> anyhow::Result<()> {
+    pub(super) fn write(&self, key: &str, bytes: Vec<u8>, mode: PutMode) -> anyhow::Result<()> {
         validate_key(key)?;
         ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
         match self {
+            Self::Pool(pool) => return pool.write(key, bytes, mode),
             Self::Metadata(_) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -375,7 +378,7 @@ pub(super) enum Operation {
 #[derive(Debug, thiserror::Error)]
 #[error("cache publication conflict: HEAD changed or object already exists")]
 struct Conflict;
-fn conflict() -> anyhow::Error {
+pub(super) fn conflict() -> anyhow::Error {
     Conflict.into()
 }
 pub(crate) fn is_conflict(error: &anyhow::Error) -> bool {

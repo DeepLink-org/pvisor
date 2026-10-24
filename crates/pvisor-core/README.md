@@ -36,3 +36,9 @@ just test core
 ```
 
 [Operation and Event design](../../docs/src/zh/design/operations-events.md) · [System architecture](../../docs/src/zh/design/architecture.md)
+
+`NetworkPolicy::allows_unrestricted_packets` is a conservative admission predicate
+for packet transports that cannot enforce proxy flow/port rules or bandwidth
+budgets. It accepts only unrestricted effective policy; it does not authorize a
+custom controller or prove that a driver installed controls. The peer transport
+and owning runtime remain responsible for packet and lifecycle enforcement.

@@ -42,6 +42,9 @@ pub struct InterceptionProfile {
     /// General UDP forwarding; local DNS/DHCP responders are not UDP egress.
     pub udp: bool,
     pub inherited_by_children: bool,
+    /// Explicit member-to-member IPv4 TCP/UDP/ICMP; independent of UDP egress.
+    #[serde(default)]
+    pub peer_ipv4: bool,
 }
 
 impl InterceptionProfile {
@@ -54,6 +57,7 @@ impl InterceptionProfile {
             dns: false,
             udp: false,
             inherited_by_children: false,
+            peer_ipv4: false,
         }
     }
 
@@ -70,6 +74,7 @@ impl InterceptionProfile {
             dns: true,
             udp: false,
             inherited_by_children: true,
+            peer_ipv4: false,
         }
     }
 }
@@ -92,6 +97,15 @@ pub struct InterceptionSnapshot {
     pub bytes_guest_to_host: u64,
     pub bytes_host_to_guest: u64,
     pub unsupported_packets: u64,
+    /// Ethernet frames accepted by the direct peer transport (including ARP).
+    #[serde(default)]
+    pub peer_packets_sent: u64,
+    /// Validated peer frames queued for delivery to this guest.
+    #[serde(default)]
+    pub peer_packets_received: u64,
+    /// Peer frames dropped for invalid identity, policy, missing destination or congestion.
+    #[serde(default)]
+    pub peer_packets_dropped: u64,
     pub active_tcp_flows: u64,
     pub peak_tcp_flows: u64,
     /// Bounded decisions for destinations that reached this driver. A proxy
@@ -138,6 +152,9 @@ struct Counters {
     bytes_guest_to_host: AtomicU64,
     bytes_host_to_guest: AtomicU64,
     unsupported_packets: AtomicU64,
+    peer_packets_sent: AtomicU64,
+    peer_packets_received: AtomicU64,
+    peer_packets_dropped: AtomicU64,
     active_tcp_flows: AtomicU64,
     peak_tcp_flows: AtomicU64,
     targets: Mutex<TargetObservations>,
@@ -154,6 +171,22 @@ pub struct InterceptionMetrics {
 }
 
 impl InterceptionMetrics {
+    pub(crate) fn peer_sent(&self) {
+        self.counters
+            .peer_packets_sent
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn peer_received(&self) {
+        self.counters
+            .peer_packets_received
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn peer_dropped(&self) {
+        self.counters
+            .peer_packets_dropped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> InterceptionSnapshot {
         let targets = self
             .counters
@@ -176,6 +209,9 @@ impl InterceptionMetrics {
             bytes_guest_to_host: self.counters.bytes_guest_to_host.load(Ordering::Relaxed),
             bytes_host_to_guest: self.counters.bytes_host_to_guest.load(Ordering::Relaxed),
             unsupported_packets: self.counters.unsupported_packets.load(Ordering::Relaxed),
+            peer_packets_sent: self.counters.peer_packets_sent.load(Ordering::Relaxed),
+            peer_packets_received: self.counters.peer_packets_received.load(Ordering::Relaxed),
+            peer_packets_dropped: self.counters.peer_packets_dropped.load(Ordering::Relaxed),
             active_tcp_flows: self.counters.active_tcp_flows.load(Ordering::Relaxed),
             peak_tcp_flows: self.counters.peak_tcp_flows.load(Ordering::Relaxed),
             targets: targets.targets.clone(),

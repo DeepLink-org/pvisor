@@ -37,8 +37,8 @@ pub use config::{
     BaseReference, ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings,
     FilesystemMode, GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsCommit,
     OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
-    PreparedBase, PreparedRootfs, RecordSettings, RunConfig, RunExecutorKind, RunPolicy,
-    RunSettings, RunStdio, VmSettings,
+    PeerNetworkSettings, PreparedBase, PreparedRootfs, RecordSettings, RunConfig, RunExecutorKind,
+    RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 #[cfg(feature = "gateway")]
 pub use config::{CooperativeModelWait, GatewayDriverConfig, ModelWaitRounds, NativeModelWait};

@@ -19,7 +19,7 @@ const MAX_ENTRIES: usize = 200_000;
 const MAX_SPANS: usize = 500_000;
 pub(super) const MAX_CONTROL: usize = 1024 * 1024;
 const BINARY_NAMES: [&str; 4] = ["files.bin", "contents.bin", "index.bin", "objects.bin"];
-const FORMAT: &[u8] = b"{\"format_version\":1,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
+pub(super) const FORMAT: &[u8] = b"{\"format_version\":1,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
 /// Exact immutable metadata basenames accepted by services and pinned proxies.
 pub(super) fn metadata_object_name(name: &str) -> bool {
     matches!(
@@ -191,6 +191,18 @@ pub(super) struct PortableCache {
     blobs: Mutex<LruCache<String, Arc<Vec<u8>>>>,
 }
 impl PortableCache {
+    pub(super) fn publish_prepared(
+        &self,
+        store: &crate::image::oci::ImageStore,
+        image: &crate::image::oci::PreparedImage,
+        architecture: &str,
+        canonical: &str,
+    ) -> anyhow::Result<Response> {
+        let observed = self.observe(canonical, platform(architecture)?)?;
+        Ok(self
+            .publish_observed(store, image, architecture, canonical, observed)?
+            .0)
+    }
     pub(super) fn new(storage: Storage, local_store: Option<PathBuf>, read_only: bool) -> Self {
         Self {
             storage,

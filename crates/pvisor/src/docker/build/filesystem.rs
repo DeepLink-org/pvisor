@@ -485,6 +485,33 @@ pub(super) fn copy(
     Ok(())
 }
 
+// Read a logical lower without materializing its complete raw contents on disk.
+struct ImageReader {
+    path: PathBuf,
+    file: File,
+    offset: u64,
+}
+impl io::Read for ImageReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let length = bytes.len().min(crate::image::cache::MAX_READ as usize) as u32;
+        let size = if let Some(body) =
+            pvisor_overlay_core::backend::read_at(&self.path, self.offset, length)?
+        {
+            bytes[..body.len()].copy_from_slice(&body);
+            body.len()
+        } else {
+            use std::os::unix::fs::FileExt;
+            self.file
+                .read_at(&mut bytes[..length as usize], self.offset)?
+        };
+        self.offset += size as u64;
+        Ok(size)
+    }
+}
+
 pub(super) fn export(core: &OverlayCore, output: &Path) -> anyhow::Result<()> {
     let mut archive = tar::Builder::new(File::create(output)?);
     let mut links = BTreeMap::new();
@@ -560,10 +587,14 @@ pub(super) fn export(core: &OverlayCore, output: &Path) -> anyhow::Result<()> {
                 archive.append_data(
                     &mut header,
                     name,
-                    OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                        .open(&backing)?,
+                    ImageReader {
+                        path: backing.clone(),
+                        offset: 0,
+                        file: OpenOptions::new()
+                            .read(true)
+                            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                            .open(&backing)?,
+                    },
                 )?;
             }
         } else {

@@ -445,6 +445,7 @@ pub(crate) struct AttemptPrepareOpts<'a> {
     pub gateway_enabled: bool,
     pub model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     pub vm_network: bool,
+    pub peers: Option<crate::PeerNetworkSettings>,
     pub attempt_id: &'a str,
 }
 
@@ -457,6 +458,7 @@ pub(crate) struct OverlayAttemptPrepareOpts<'a> {
 
 #[derive(Clone)]
 pub(crate) struct VmNetworkPrepareOpts {
+    pub peers: Option<crate::PeerNetworkSettings>,
     pub network: NetworkConfig,
     pub controller: Arc<dyn ControlController>,
     pub attempt_id: String,
@@ -642,6 +644,7 @@ pub(crate) fn prepare_attempt(
             start_vm_network(
                 spec,
                 VmNetworkPrepareOpts {
+                    peers: opts.peers.clone(),
                     network: config.network.clone(),
                     controller: Arc::clone(&opts.controller),
                     attempt_id: opts.attempt_id.to_owned(),
@@ -656,7 +659,7 @@ pub(crate) fn prepare_attempt(
         initial_run_record(spec, preparation, &storage, opts.attempt_id.to_string())?;
     run_record.overlaynet_listen = Some(gateway.listen.clone());
     run_record.network_interception = Some(if opts.vm_network {
-        pvisor_overlaynet::InterceptionProfile::vm_smoltcp()
+        vm_network_profile(spec)
     } else {
         pvisor_overlaynet::InterceptionProfile::explicit_proxy()
     });
@@ -806,9 +809,7 @@ pub(crate) fn prepare_overlay_attempt(
     let network_policy = prepared_network.map(|network| network.policy);
     let mut run_record =
         initial_run_record(spec, preparation, &storage, opts.attempt_id.to_string())?;
-    run_record.network_interception = vm_network
-        .as_ref()
-        .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp());
+    run_record.network_interception = vm_network.as_ref().map(|_| vm_network_profile(spec));
     run_record.network_policy = network_policy;
     run_record.overlay = Some(overlay_record.clone());
     run_record.overlay_lowers = overlay_lowers;
@@ -917,9 +918,7 @@ pub(crate) fn prepare_storage_attempt(
         .map(|network| network.metrics.clone());
     let network_policy = prepared_network.map(|network| network.policy);
     let mut run_record = initial_run_record(spec, preparation, &storage, attempt_id.to_string())?;
-    run_record.network_interception = vm_network
-        .as_ref()
-        .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp());
+    run_record.network_interception = vm_network.as_ref().map(|_| vm_network_profile(spec));
     run_record.network_policy = network_policy;
     let session = AttemptSession {
         proxy: None,
@@ -979,6 +978,12 @@ pub(crate) fn prepare_storage_attempt(
     })
 }
 
+fn vm_network_profile(spec: &RunSpec) -> pvisor_overlaynet::InterceptionProfile {
+    let mut profile = pvisor_overlaynet::InterceptionProfile::vm_smoltcp();
+    profile.peer_ipv4 = spec.metadata.contains_key("pvisor.network.peers");
+    profile
+}
+
 fn start_vm_network(
     spec: &mut RunSpec,
     opts: VmNetworkPrepareOpts,
@@ -987,8 +992,11 @@ fn start_vm_network(
     bandwidth_registry: BandwidthRegistry,
 ) -> anyhow::Result<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>> {
     let policy = NetworkPolicy::compile(&opts.network)?;
-    let egress =
-        EgressRuntime::with_bandwidth_registry(policy, opts.controller, bandwidth_registry);
+    let egress = if opts.peers.is_some() {
+        EgressRuntime::for_peer_network(policy, bandwidth_registry)?
+    } else {
+        EgressRuntime::with_bandwidth_registry(policy, opts.controller, bandwidth_registry)
+    };
     let mut config = pvisor_overlaynet::vm::VmNetworkConfig::new(
         egress,
         EgressContext {
@@ -997,6 +1005,28 @@ fn start_vm_network(
         },
     );
     config.metrics = metrics;
+    config.peer_network = opts
+        .peers
+        .as_ref()
+        .map(crate::PeerNetworkSettings::resolve)
+        .transpose()?;
+    let guest_address = config
+        .peer_network
+        .as_ref()
+        .map_or(pvisor_overlaynet::vm::GUEST_IPV4, |peer| peer.address);
+    let router = config
+        .peer_network
+        .as_ref()
+        .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway);
+    spec.metadata.insert(
+        "pvisor.network.gateway_ipv4".into(),
+        serde_json::to_value(router)?,
+    );
+    spec.metadata.remove("pvisor.network.peers");
+    if let Some(peers) = &opts.peers {
+        spec.metadata
+            .insert("pvisor.network.peers".into(), serde_json::to_value(peers)?);
+    }
     if let Some((listen, _)) = gateway {
         let host: std::net::SocketAddr = listen
             .strip_prefix("http://")
@@ -1016,7 +1046,7 @@ fn start_vm_network(
     );
     spec.metadata.insert(
         "pvisor.network.guest_ipv4".into(),
-        serde_json::Value::String(pvisor_overlaynet::vm::GUEST_IPV4.to_string()),
+        serde_json::Value::String(guest_address.to_string()),
     );
     Ok(Arc::new(std::sync::Mutex::new(Some(VmNetworkAttachment {
         guest_stream,
@@ -1059,10 +1089,13 @@ fn rewrite_vm_gateway_implant(spec: &mut RunSpec, listen: &str) {
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse::<u16>().ok())
         .expect("Gateway listen address was validated before implant rewriting");
-    let virtual_base = format!(
-        "http://{}:{gateway_port}",
-        pvisor_overlaynet::vm::ROUTER_IPV4
-    );
+    let router = spec
+        .metadata
+        .get("pvisor.network.gateway_ipv4")
+        .and_then(|v| v.as_str())
+        .unwrap_or("192.0.2.1")
+        .to_owned();
+    let virtual_base = format!("http://{router}:{gateway_port}");
     let mut source_bases = vec![
         format!("http://{listen_authority}"),
         format!("https://{listen_authority}"),
@@ -1089,7 +1122,7 @@ fn rewrite_vm_gateway_implant(spec: &mut RunSpec, listen: &str) {
             }
         }
     }
-    let no_proxy = format!("127.0.0.1,localhost,{}", pvisor_overlaynet::vm::ROUTER_IPV4);
+    let no_proxy = format!("127.0.0.1,localhost,{router}");
     process.env.insert("NO_PROXY".into(), no_proxy.clone());
     process.env.insert("no_proxy".into(), no_proxy);
     process
@@ -1868,5 +1901,81 @@ mod tests {
             Some("openai_base_url=\"http://192.0.2.1:19081/v1\"")
         );
         assert!(process.env["NO_PROXY"].contains("192.0.2.1"));
+    }
+}
+
+#[cfg(test)]
+mod peer_attachment_tests {
+    use super::*;
+
+    #[test]
+    fn peer_attachment_publishes_real_identity_address_and_coverage() {
+        let peers = crate::PeerNetworkSettings {
+            network: format!(
+                "peer-test-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..12]
+            ),
+            address: "192.0.2.11".parse().unwrap(),
+            gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+            aliases: vec![],
+        };
+        let mut spec = RunSpec::process("peer-attachment", "test", "/bin/true");
+        let attachment = start_vm_network(
+            &mut spec,
+            VmNetworkPrepareOpts {
+                peers: Some(peers.clone()),
+                network: Default::default(),
+                controller: Arc::new(pvisor_core::PolicyControlController),
+                attempt_id: "attempt-peer-attachment".into(),
+            },
+            None,
+            InterceptionMetrics::default(),
+            BandwidthRegistry::default(),
+        )
+        .unwrap();
+        assert_eq!(spec.metadata["pvisor.network.guest_ipv4"], "192.0.2.11");
+        assert_eq!(
+            spec.metadata["pvisor.network.peers"]["network"],
+            peers.network
+        );
+        assert!(vm_network_profile(&spec).peer_ipv4);
+        let directory = peers.resolve().unwrap().directory;
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("11/peer.json")).unwrap())
+                .unwrap();
+        assert_eq!(record["instance"], "attempt-peer-attachment");
+        attachment
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .shutdown()
+            .unwrap();
+        assert!(!directory.join("11/net.sock").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+
+        // Untrusted input metadata cannot claim peer coverage on an isolated link.
+        let attachment = start_vm_network(
+            &mut spec,
+            VmNetworkPrepareOpts {
+                peers: None,
+                network: Default::default(),
+                controller: Arc::new(pvisor_core::PolicyControlController),
+                attempt_id: "attempt-isolated".into(),
+            },
+            None,
+            InterceptionMetrics::default(),
+            BandwidthRegistry::default(),
+        )
+        .unwrap();
+        assert!(!vm_network_profile(&spec).peer_ipv4);
+        assert_eq!(spec.metadata["pvisor.network.guest_ipv4"], "192.0.2.2");
+        attachment
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .shutdown()
+            .unwrap();
     }
 }

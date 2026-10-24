@@ -42,6 +42,25 @@ pub struct PreparedImage {
     pub cmd: Vec<String>,
 }
 
+/// A resolved manifest/config; layer contents need not be downloaded yet.
+pub(crate) struct ResolvedImage {
+    pub(crate) prepared: PreparedImage,
+    pub(crate) config_digest: String,
+    reference: String,
+    image_ref: ImageReference,
+    layers: Vec<Descriptor>,
+}
+impl ResolvedImage {
+    pub(crate) fn report_cached(&self, progress: &mut dyn FnMut(PullProgress)) {
+        for layer in &self.layers {
+            progress(PullProgress::LayerReady {
+                digest: layer.digest.clone(),
+                cached: true,
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ImageStore {
     pub(crate) root: PathBuf,
@@ -211,7 +230,7 @@ impl ImageStore {
         let image_ref = ImageReference::parse(image)?;
         progress(PullProgress::Waiting);
         self.with_prepared_cache(image_ref.clone(), architecture, refresh, || {
-            self.resolve_and_prepare(image, architecture, image_ref, progress)
+            self.resolve_and_prepare(image, architecture, progress)
         })
     }
 
@@ -306,9 +325,20 @@ impl ImageStore {
         &self,
         image: &str,
         architecture: &str,
-        image_ref: ImageReference,
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PreparedImage> {
+        let resolved = self.resolve_with_progress(image, architecture, progress)?;
+        self.extract_resolved(&resolved, progress)?;
+        Ok(resolved.prepared)
+    }
+
+    pub(crate) fn resolve_with_progress(
+        &self,
+        image: &str,
+        architecture: &str,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<ResolvedImage> {
+        let image_ref = ImageReference::parse(image)?;
         progress(PullProgress::Resolving);
         let mut registry = RegistryClient::new(&self.client, image_ref.clone());
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
@@ -341,7 +371,33 @@ impl ImageStore {
             config.os,
             config.architecture
         );
-        let digest_hex = digest_hex(&manifest_digest)?;
+        Ok(ResolvedImage {
+            prepared: PreparedImage {
+                rootfs: self
+                    .root
+                    .join("rootfs-v3/sha256")
+                    .join(digest_hex(&manifest_digest)?),
+                digest: manifest_digest,
+                env: parse_env(config.config.env.unwrap_or_default()),
+                entrypoint: config.config.entrypoint.unwrap_or_default(),
+                cmd: config.config.cmd.unwrap_or_default(),
+            },
+            config_digest: manifest.config.digest,
+            reference: image.into(),
+            image_ref,
+            layers: manifest.layers,
+        })
+    }
+
+    pub(crate) fn extract_resolved(
+        &self,
+        resolved: &ResolvedImage,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<()> {
+        let manifest_digest = &resolved.prepared.digest;
+        let image = resolved.reference.as_str();
+        let mut registry = RegistryClient::new(&self.client, resolved.image_ref.clone());
+        let digest_hex = digest_hex(manifest_digest)?;
         let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
         let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
         let lock = OpenOptions::new()
@@ -359,7 +415,7 @@ impl ImageStore {
                 .join(format!(".{digest_hex}.partial-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&partial)?;
             let extraction = (|| -> anyhow::Result<()> {
-                for layer in &manifest.layers {
+                for layer in &resolved.layers {
                     let blob = self.fetch_blob(&mut registry, layer, progress)?;
                     progress(PullProgress::Extracting {
                         digest: layer.digest.clone(),
@@ -379,7 +435,7 @@ impl ImageStore {
             extraction?;
             let metadata = RootfsMetadata {
                 image,
-                manifest_digest: &manifest_digest,
+                manifest_digest,
             };
             fs::write(
                 self.root
@@ -388,7 +444,7 @@ impl ImageStore {
                 serde_json::to_vec_pretty(&metadata)?,
             )?;
         } else {
-            for layer in &manifest.layers {
+            for layer in &resolved.layers {
                 progress(PullProgress::LayerReady {
                     digest: layer.digest.clone(),
                     cached: true,
@@ -397,13 +453,7 @@ impl ImageStore {
         }
         lock.unlock()?;
 
-        Ok(PreparedImage {
-            rootfs,
-            digest: manifest_digest,
-            env: parse_env(config.config.env.unwrap_or_default()),
-            entrypoint: config.config.entrypoint.unwrap_or_default(),
-            cmd: config.config.cmd.unwrap_or_default(),
-        })
+        Ok(())
     }
 
     fn fetch_blob(

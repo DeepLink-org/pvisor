@@ -8,7 +8,8 @@
 //! Prepared images are trusted local `<images_dir>/<key>.json` manifests (see
 //! PreparedImage). Bootstrap supervises real execd, egress and workload, and
 //! provides byte-transparent AF_VSOCK listeners on CID 3, ports 44772/18080.
-//! Those listeners bridge to the real services, not synthetic health handlers.
+//! Legacy listeners bridge to real upstream services. Managed pooled templates
+//! use real execd plus a host capability adapter that explicitly rejects policy.
 //! The bootstrap receives workload argv without shell interpolation. Its rootfs
 //! is an immutable, independently provisioned Linux tree, never the host root.
 //!
@@ -65,7 +66,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-const EXECD_PORT: u16 = 44772;
+pub(crate) const EXECD_PORT: u16 = 44772;
 const EGRESS_PORT: u16 = 18080;
 pub(crate) const ENVD_PORT: u16 = 49983;
 pub(crate) const ENVD_TOKEN_ENV: &str = "PVISOR_ENVD_ACCESS_TOKEN";
@@ -116,7 +117,9 @@ pub struct E2bTemplate {
 }
 
 impl E2bTemplate {
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Validate operator resources and the three-component envd version.
+    /// Returns an error without side effects when limits or version are unsupported.
+    pub fn validate(&self) -> Result<()> {
         let version: Vec<_> = self.envd_version.split('.').collect();
         ensure!(
             version.len() == 3
@@ -213,6 +216,7 @@ pub struct NativeRuntimeConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedImage {
+    /// Immutable root tree, or the Docker store directory when pooled_image is set.
     pub rootfs: PathBuf,
     pub entrypoint: Vec<String>,
     #[serde(default)]
@@ -226,6 +230,22 @@ pub struct PreparedImage {
     /// Omission retains the OpenSandbox execd/egress bootstrap contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2b: Option<E2bTemplate>,
+    /// Pinned shared-pool image. Its projection owner lives until VM teardown;
+    /// mutable registry tags are never resolved during sandbox creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pooled_image: Option<pvisor::docker::Image>,
+    /// Managed execd/vsock bootstrap with pVisor's explicit unsupported-policy
+    /// adapter, rather than a guest upstream egress process. Requires pooled_image.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_opensandbox: bool,
+    /// Managed real E2B envd, initialized privately by the supervisor.
+    /// Requires a pooled image and an E2B resource/version profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_e2b: bool,
+    /// Use the shared pvisor-guest process/file engine and host protocol adapters.
+    /// No execd/envd is launched. Requires a pooled image; old manifests omit it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_guest: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -698,10 +718,11 @@ impl Runtime for NativeRuntime {
             .write(true)
             .open("/dev/kvm")
             .context("native VM requires usable /dev/kvm")?;
-        ensure!(
-            unsafe { libc::ioctl(kvm.as_raw_fd(), 0xAE00) } == 12,
-            "unsupported KVM API version"
-        );
+        let version = unsafe { libc::ioctl(kvm.as_raw_fd(), 0xAE00, 0) };
+        if version < 0 {
+            return Err(std::io::Error::last_os_error()).context("query KVM API version");
+        }
+        ensure!(version == 12, "unsupported KVM API version {version}");
         Ok(())
     }
 
@@ -812,7 +833,7 @@ impl Runtime for NativeRuntime {
                         }
                         _ => {}
                     }
-                    sleep(Duration::from_millis(100)).await;
+                    sleep(Duration::from_millis(5)).await;
                 }
             })
             .await
@@ -906,6 +927,8 @@ impl Runtime for NativeRuntime {
 /// before exec. Direct invocation outside that cgroup fails closed; this async
 /// entrypoint never migrates pre-existing Tokio memory charges.
 pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
+    let startup_clock = std::time::Instant::now();
+    let mut startup = BTreeMap::new();
     ensure!(
         cfg!(all(target_os = "linux", target_arch = "x86_64")),
         "unsupported native VM platform"
@@ -937,6 +960,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         "supervisor was not placed in its cgroup before exec"
     );
     group.verify_limits(&identity.spec)?;
+    startup.insert("validated_us", startup_clock.elapsed().as_micros());
     mark(sandbox_dir, "started")?;
     // Membership was installed before exec, so supervisor/Tokio allocations
     // and every subsequently spawned native runner are charged to this budget.
@@ -958,29 +982,116 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     } else {
         vec![EXECD_PORT, EGRESS_PORT]
     };
+    let native_control = ports_dir.join("guest.sock");
+    if identity.image.native_guest {
+        vsock_ports.insert(pvisor_guest::control::CONTROL_PORT, native_control.clone());
+    }
     for port in ports {
         let path = ports_dir.join(format!("{port}.sock"));
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         endpoints.insert(port, format!("http://{}", listener.local_addr()?));
-        vsock_ports.insert(u32::from(port), path.clone());
-        publications.spawn(bridge(listener, path));
+        if port == EGRESS_PORT && (identity.image.native_opensandbox || identity.image.native_guest)
+        {
+            let token = identity
+                .spec
+                .env
+                .get("PVISOR_EXECD_ACCESS_TOKEN")
+                .context("managed credential missing")?;
+            publications.spawn(native_egress(
+                listener,
+                endpoints[&EXECD_PORT].clone(),
+                service_health_client("x-execd-access-token", Some(token))?,
+            ));
+        } else if identity.image.native_guest {
+            let mut env = identity.image.env.clone();
+            env.extend(identity.spec.env.clone());
+            env.retain(|key, _| {
+                !key.starts_with("PVISOR_")
+                    && !key.starts_with("KRUN_")
+                    && !key.starts_with("LIBKRUN_")
+                    && key != "EXECD_ACCESS_TOKEN"
+            });
+            if identity.spec.e2b.is_some() {
+                env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+            }
+            let token_key = if identity.spec.e2b.is_some() {
+                ENVD_TOKEN_ENV
+            } else {
+                "PVISOR_EXECD_ACCESS_TOKEN"
+            };
+            publications.spawn(crate::native::serve(
+                listener,
+                crate::native::Service::new(
+                    native_control.clone(),
+                    identity
+                        .spec
+                        .env
+                        .get(token_key)
+                        .context("native credential missing")?
+                        .clone(),
+                    identity.spec.id.clone(),
+                    identity.generation.clone(),
+                    execd_generation(&identity)?,
+                    env,
+                    identity.spec.e2b.is_some(),
+                ),
+            ));
+        } else {
+            vsock_ports.insert(u32::from(port), path.clone());
+            if port == EXECD_PORT && identity.image.native_opensandbox {
+                let token = identity
+                    .spec
+                    .env
+                    .get("PVISOR_EXECD_ACCESS_TOKEN")
+                    .context("managed credential missing")?;
+                publications.spawn(managed_execd_bridge(listener, path, token.clone()));
+            } else if port == ENVD_PORT && identity.image.native_e2b {
+                let token = identity
+                    .spec
+                    .env
+                    .get(ENVD_TOKEN_ENV)
+                    .context("managed envd credential missing")?;
+                publications.spawn(managed_service_bridge(listener, path, token.clone(), true));
+            } else {
+                publications.spawn(bridge(listener, path));
+            }
+        }
     }
+    // A projection contains metadata placeholders, not an unpacked image. Keep
+    // its backend registration alive while VmExecutor exports it to the runner.
     let run_dir = sandbox_dir.join("run");
     private_directory(&run_dir)?;
+    let pooled_root = identity
+        .image
+        .pooled_image
+        .as_ref()
+        .map(|image| {
+            // Scratch belongs to this VM; cache.location still reads the shared
+            // pool. Confirmed crash cleanup does not depend on TempDir Drop.
+            pvisor::docker::Store::open(run_dir.join("image"))?.open_image(image)
+        })
+        .transpose()?;
+    startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
     let settings = pvisor::VmSettings {
         ram_backing: identity
             .memory_pool
             .is_none()
             .then(|| run_dir.join("live-ram")),
         memory_pool: identity.memory_pool.clone(),
-        rootfs: Some(identity.image.rootfs.clone()),
-        rootfs_immutable: true,
+        rootfs: Some(
+            pooled_root
+                .as_ref()
+                .map(|root| root.rootfs().to_path_buf())
+                .unwrap_or_else(|| identity.image.rootfs.clone()),
+        ),
+        rootfs_immutable: pooled_root.is_none(),
         library_dir: identity.image.library_dir.clone(),
         memory_mib: u32::try_from(identity.spec.memory_bytes / MIB)?,
         cpus: u16::try_from(identity.spec.cpu_millis.div_ceil(1000).min(8))?,
         ..Default::default()
     };
     let executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
+    startup.insert("executor_ready_us", startup_clock.elapsed().as_micros());
     let visor = supervisor_builder()
         .storage(run_dir)
         .network(pvisor::NetworkDriverConfig::default())
@@ -991,6 +1102,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
         .await
         .context("native VM run admission failed")?;
+    startup.insert("attempt_started_us", startup_clock.elapsed().as_micros());
     publish_new(
         &sandbox_dir.join("run.json"),
         &RunRecord {
@@ -1030,11 +1142,78 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
         bail!("native live VM control verification failed");
     }
-    let client = health_client(if identity.spec.e2b.is_some() {
-        identity.spec.env.get(ENVD_TOKEN_ENV).map(String::as_str)
+    startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
+    let client = if identity.image.native_opensandbox
+        || (identity.image.native_guest && identity.spec.e2b.is_none())
+    {
+        service_health_client(
+            "x-execd-access-token",
+            identity
+                .spec
+                .env
+                .get("PVISOR_EXECD_ACCESS_TOKEN")
+                .map(String::as_str),
+        )?
     } else {
-        None
-    })?;
+        health_client(if identity.spec.e2b.is_some() {
+            identity.spec.env.get(ENVD_TOKEN_ENV).map(String::as_str)
+        } else {
+            None
+        })?
+    };
+    if identity.image.native_opensandbox {
+        let initialized = timeout(
+            READY_TIMEOUT,
+            initialize_execd(
+                &client,
+                &endpoints[&EXECD_PORT],
+                &identity,
+                &startup_clock,
+                &mut startup,
+            ),
+        )
+        .await;
+        if !matches!(initialized, Ok(Ok(()))) {
+            service.dispatch(HostAttemptCommand::Terminate).await?;
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            bail!("native execd binding initialization failed");
+        }
+    }
+    if identity.image.native_guest {
+        let initialized = timeout(READY_TIMEOUT, async {
+            loop {
+                if probe_services(&client, &endpoints).await.is_ok() {
+                    break;
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        if initialized.is_err() {
+            service.dispatch(HostAttemptCommand::Terminate).await?;
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            bail!("native guest engine readiness failed");
+        }
+    }
+    if identity.image.native_e2b {
+        let initialized = timeout(
+            READY_TIMEOUT,
+            initialize_envd(&client, &endpoints[&ENVD_PORT], &identity),
+        )
+        .await;
+        if !matches!(initialized, Ok(Ok(()))) {
+            service.dispatch(HostAttemptCommand::Terminate).await?;
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            bail!("native envd initialization failed: {initialized:?}");
+        }
+    }
+    startup.insert(
+        "services_initialized_us",
+        startup_clock.elapsed().as_micros(),
+    );
+    // Bounded private diagnostics, no environment, output or host paths. This
+    // is not readiness evidence and has no effect on lifecycle authorization.
+    let _ = publish_new(&sandbox_dir.join("startup.json"), &startup);
     // Handle remains in this durable owner. Native transitions are serialized
     // independently of daemon lifetimes, even across IPC client disconnects.
     loop {
@@ -1146,6 +1325,25 @@ async fn execute_control(
     };
     let result = timeout(CONTROL_TIMEOUT, service.dispatch(command)).await??;
     let state = native_status(result.status)?;
+    if state == RuntimeState::Running
+        && (identity.image.native_opensandbox
+            || (identity.image.native_guest && identity.spec.e2b.is_none()))
+        && !matches!(operation, Operation::Endpoint { .. })
+    {
+        let ready = probe(client, &format!("{}/ready", endpoints[&EXECD_PORT])).await?;
+        validate_execd_binding(&ready, identity)?;
+    }
+    if state == RuntimeState::Running
+        && (identity.image.native_e2b
+            || (identity.image.native_guest && identity.spec.e2b.is_some()))
+        && !matches!(operation, Operation::Endpoint { .. })
+    {
+        let env = envd_environment(client, &endpoints[&ENVD_PORT]).await?;
+        ensure!(
+            env.get("E2B_SANDBOX_ID") == Some(&identity.spec.id),
+            "envd is bound to another sandbox"
+        );
+    }
     observe_control(
         directory,
         client,
@@ -1214,7 +1412,11 @@ fn native_status(status: pvisor_core::RunStatus) -> Result<RuntimeState> {
 
 fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     let image = &identity.image;
-    let mut argv = image.entrypoint.clone();
+    let mut argv = if image.native_guest {
+        Vec::new()
+    } else {
+        image.entrypoint.clone()
+    };
     argv.extend(
         if identity.spec.entrypoint.is_empty() {
             &image.cmd
@@ -1226,7 +1428,26 @@ fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     );
     let mut env = image.env.clone();
     env.extend(identity.spec.env.clone());
+    if image.native_e2b {
+        env.remove(ENVD_TOKEN_ENV);
+    }
+    if image.native_opensandbox {
+        // The raw credential never enters the guest environment or execd argv.
+        env.remove("PVISOR_EXECD_ACCESS_TOKEN");
+        env.remove("EXECD_ACCESS_TOKEN");
+    }
     validate_argv_env(&argv, &env)?;
+    if image.native_guest {
+        env.retain(|key, _| !key.starts_with("PVISOR_") && key != "EXECD_ACCESS_TOKEN");
+        env.insert("PVISOR_NATIVE_SANDBOX_ID".into(), identity.spec.id.clone());
+        env.insert(
+            "PVISOR_NATIVE_GENERATION".into(),
+            identity.generation.clone(),
+        );
+        if identity.spec.e2b.is_some() {
+            env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+        }
+    }
     ensure!(!argv.is_empty(), "prepared bootstrap is missing");
     let mut run = pvisor_core::RunSpec::process(
         format!("run-{}", identity.generation),
@@ -1257,6 +1478,9 @@ async fn bridge(listener: TcpListener, path: PathBuf) -> Result<()> {
         tokio::select! {
             accepted = listener.accept() => {
                 let (mut tcp, _) = accepted?;
+                // Header and body can arrive in separate vsock packets. Do not
+                // hold the small second write behind TCP's delayed-ACK timer.
+                let _ = tcp.set_nodelay(true);
                 let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
                 let path = path.clone();
                 connections.spawn(async move {
@@ -1271,12 +1495,248 @@ async fn bridge(listener: TcpListener, path: PathBuf) -> Result<()> {
     }
 }
 
+// This is an honest capability adapter, not an imitation of upstream egress.
+// SDKs resolve this endpoint even when no policy was requested. Health depends
+// on the real guest service; every policy operation fails explicitly.
+async fn native_egress(
+    listener: TcpListener,
+    execd: String,
+    client: reqwest::Client,
+) -> Result<()> {
+    use axum::{Json, Router, http::StatusCode, routing::get};
+    let router = Router::new().route("/healthz", get(move || {
+        let (client, execd) = (client.clone(), execd.clone());
+        async move {
+            let ready = async {
+                probe(&client, &format!("{execd}/ping")).await?;
+                validate_ready(&probe(&client, &format!("{execd}/ready")).await?)
+            }.await;
+            if ready.is_ok() { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE }
+        }
+    })).fallback(|| async {
+        (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({
+            "code": "NOT_SUPPORTED", "message": "OpenSandbox network policy is not supported by the native OverlayNet profile"
+        })))
+    });
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+fn execd_generation(identity: &Identity) -> Result<u64> {
+    Ok(uuid::Uuid::parse_str(&identity.generation)?.as_u64_pair().0)
+}
+
+// Keep guest runtime-init unreachable through an unauthenticated loopback
+// mapping. Only this protected HTTP listener is published; the actual vsock
+// stream remains a Unix socket in the private sandbox directory.
+async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: String) -> Result<()> {
+    managed_service_bridge(listener, path, token, false).await
+}
+
+async fn managed_service_bridge(
+    listener: TcpListener,
+    path: PathBuf,
+    token: String,
+    envd: bool,
+) -> Result<()> {
+    use axum::{
+        Router,
+        body::Body,
+        extract::Request,
+        http::{StatusCode, header},
+        response::Response,
+        routing::any,
+    };
+    let client = reqwest::Client::builder()
+        .unix_socket(path)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
+        .connect_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(0)
+        .build()?;
+    let token = Arc::new(token);
+    let auth_header = if envd {
+        "x-access-token"
+    } else {
+        "x-execd-access-token"
+    };
+    let router = Router::new().fallback(any(move |request: Request| {
+        let (client, token) = (client.clone(), token.clone());
+        async move {
+            if request.headers().get_all(auth_header).iter().count() != 1
+                || !request
+                    .headers()
+                    .get(auth_header)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|value| constant_time_equal(value, &token))
+            {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+            if request.method() == axum::http::Method::CONNECT
+                || request.headers().contains_key(header::UPGRADE)
+            {
+                return Err(StatusCode::NOT_IMPLEMENTED);
+            }
+            let (mut parts, body) = request.into_parts();
+            let mut url = url::Url::parse("http://guest/").expect("fixed origin");
+            url.set_path(parts.uri.path());
+            url.set_query(parts.uri.query());
+            if url.path() != parts.uri.path() || url.query() != parts.uri.query() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            crate::daemon::api::strip_service_headers(&mut parts.headers, true, envd);
+            let response = client
+                .request(parts.method, url)
+                .headers(parts.headers)
+                .body(reqwest::Body::wrap_stream(body.into_data_stream()))
+                .send()
+                .await
+                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            let mut headers = response.headers().clone();
+            crate::daemon::api::strip_service_headers(&mut headers, false, envd);
+            let mut result = Response::builder()
+                .status(response.status())
+                .body(Body::from_stream(response.bytes_stream()))
+                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            *result.headers_mut() = headers;
+            Ok::<_, StatusCode>(result)
+        }
+    }));
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+async fn initialize_envd(client: &reqwest::Client, envd: &str, identity: &Identity) -> Result<()> {
+    loop {
+        if probe_status(
+            client,
+            &format!("{envd}/health"),
+            reqwest::StatusCode::NO_CONTENT,
+        )
+        .await
+        .is_ok()
+        {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    let mut env = identity.image.env.clone();
+    env.extend(identity.spec.env.clone());
+    env.retain(|key, _| {
+        !key.starts_with("PVISOR_") && !key.starts_with("KRUN_") && !key.starts_with("LIBKRUN_")
+    });
+    env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+    let response = client
+        .post(format!("{envd}/init"))
+        .json(&serde_json::json!({
+            "accessToken": identity.spec.env[ENVD_TOKEN_ENV], "envVars": env,
+            "defaultUser": "root", "defaultWorkdir": "/root", "lifecycleID": identity.generation,
+        }))
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::NO_CONTENT,
+        "envd initialization rejected: {}",
+        response.status()
+    );
+    ensure!(
+        response
+            .headers()
+            .get("x-envd-version")
+            .and_then(|v| v.to_str().ok())
+            == identity.spec.e2b.as_ref().map(|p| p.envd_version.as_str()),
+        "prepared envd version differs from live binary"
+    );
+    probe_services(client, &BTreeMap::from([(ENVD_PORT, envd.into())])).await
+}
+
+fn validate_execd_binding(bytes: &[u8], identity: &Identity) -> Result<()> {
+    validate_ready(bytes)?;
+    let ready: serde_json::Value = serde_json::from_slice(bytes)?;
+    ensure!(
+        ready["sandboxId"].as_str() == Some(identity.spec.id.as_str())
+            && ready["generation"].as_u64() == Some(execd_generation(identity)?),
+        "execd is bound to another sandbox generation"
+    );
+    Ok(())
+}
+
+async fn initialize_execd(
+    client: &reqwest::Client,
+    execd: &str,
+    identity: &Identity,
+    clock: &std::time::Instant,
+    startup: &mut BTreeMap<&'static str, u128>,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    // Apply once: retrying an uncertain restart could run entrypoint twice.
+    loop {
+        if probe(client, &format!("{execd}/ping")).await.is_ok() {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    startup.insert("execd_ping_us", clock.elapsed().as_micros());
+    let token = identity
+        .spec
+        .env
+        .get("PVISOR_EXECD_ACCESS_TOKEN")
+        .context("managed execd credential missing")?;
+    let hash = format!(
+        "sha256:{}",
+        Sha256::digest(token.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let response = client
+        .post(format!("{execd}/internal/init"))
+        .json(&serde_json::json!({
+            "sandboxId": identity.spec.id, "generation": execd_generation(identity)?,
+            "accessTokenHash": hash, "entrypointPolicy": "restart"
+        }))
+        .send()
+        .await;
+    startup.insert("execd_binding_us", clock.elapsed().as_micros());
+    // A lost acknowledgement can still be proven by the authenticated binding.
+    if let Ok(response) = response {
+        ensure!(response.status().is_success(), "execd init rejected");
+    }
+    let ready = probe(client, &format!("{execd}/ready")).await?;
+    validate_execd_binding(&ready, identity)?;
+    probe_status(
+        &health_client(None)?,
+        &format!("{execd}/code/contexts"),
+        reqwest::StatusCode::UNAUTHORIZED,
+    )
+    .await?;
+    let response = client
+        // Metrics deliberately samples CPU for one second upstream. The cheap
+        // context inventory exercises the same auth gate without that delay.
+        .get(format!("{execd}/code/contexts"))
+        .header("X-EXECD-ACCESS-TOKEN", token)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::OK,
+        "execd authenticated readiness failed"
+    );
+    Ok(())
+}
+
 fn health_client(token: Option<&str>) -> Result<reqwest::Client> {
+    service_health_client("x-access-token", token)
+}
+fn service_health_client(name: &'static str, token: Option<&str>) -> Result<reqwest::Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Some(token) = token {
         let mut value = reqwest::header::HeaderValue::from_str(token)?;
         value.set_sensitive(true);
-        headers.insert("x-access-token", value);
+        headers.insert(name, value);
     }
     Ok(reqwest::Client::builder()
         .no_proxy()
@@ -1295,11 +1755,7 @@ async fn probe_services(client: &reqwest::Client, endpoints: &BTreeMap<u16, Stri
         .await?;
         // Health alone also succeeds before envd initialization. Prove both
         // authenticated API access and rejection without the bootstrap token.
-        let envs = probe(client, &format!("{envd}/envs")).await?;
-        ensure!(
-            serde_json::from_slice::<BTreeMap<String, String>>(&envs).is_ok(),
-            "invalid real envd environment response"
-        );
+        envd_environment(client, envd).await?;
         probe_status(
             &health_client(None)?,
             &format!("{envd}/envs"),
@@ -1329,6 +1785,22 @@ fn validate_ready(bytes: &[u8]) -> Result<()> {
     );
     Ok(())
 }
+async fn envd_environment(
+    client: &reqwest::Client,
+    envd: &str,
+) -> Result<BTreeMap<String, String>> {
+    // Valid launch environments may approach 64 KiB; JSON escaping can expand
+    // them by six, beyond the ordinary small health-response bound.
+    let bytes = probe_status_limited(
+        client,
+        &format!("{envd}/envs"),
+        reqwest::StatusCode::OK,
+        512 * 1024,
+    )
+    .await?;
+    serde_json::from_slice(&bytes).context("invalid real envd environment response")
+}
+
 async fn probe(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     probe_status(client, url, reqwest::StatusCode::OK).await
 }
@@ -1337,12 +1809,20 @@ async fn probe_status(
     url: &str,
     status: reqwest::StatusCode,
 ) -> Result<Vec<u8>> {
+    probe_status_limited(client, url, status, HEALTH_LIMIT).await
+}
+async fn probe_status_limited(
+    client: &reqwest::Client,
+    url: &str,
+    status: reqwest::StatusCode,
+    limit: usize,
+) -> Result<Vec<u8>> {
     let mut response = client.get(url).send().await?;
     ensure!(response.status() == status, "real service health failed");
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         ensure!(
-            body.len() + chunk.len() <= HEALTH_LIMIT,
+            body.len() + chunk.len() <= limit,
             "service health response too large"
         );
         body.extend_from_slice(&chunk);
@@ -1672,7 +2152,9 @@ fn validate_argv_env(argv: &[String], env: &BTreeMap<String, String>) -> Result<
             "invalid guest environment key"
         );
         ensure!(
-            !key.starts_with("PVISOR_") && !key.starts_with("AGENTCTL_"),
+            (!key.starts_with("PVISOR_")
+                || matches!(key.as_str(), "PVISOR_EXECD_ACCESS_TOKEN" | ENVD_TOKEN_ENV))
+                && !key.starts_with("AGENTCTL_"),
             "reserved native control environment key"
         );
         ensure!(!value.contains('\0'), "guest environment contains NUL");
@@ -1703,6 +2185,37 @@ fn validate_owner(owner: &str) -> Result<()> {
 }
 fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
     ensure!(
+        !image.native_guest
+            || (image.pooled_image.is_some() && !image.native_opensandbox && !image.native_e2b),
+        "native guest requires an exclusive pooled engine profile"
+    );
+    ensure!(
+        !image.native_e2b
+            || (image.pooled_image.is_some() && image.e2b.is_some() && !image.native_opensandbox),
+        "managed E2B requires a pooled E2B-only image"
+    );
+    ensure!(
+        !image.native_opensandbox || (image.pooled_image.is_some() && image.e2b.is_none()),
+        "managed OpenSandbox requires a pooled non-E2B image"
+    );
+    if let Some(pooled) = &image.pooled_image {
+        let cache = pooled
+            .cache
+            .as_ref()
+            .context("pooled manifest requires a cache binding")?;
+        ensure!(
+            cache.location.is_absolute()
+                && cache.location.starts_with(&image.rootfs)
+                && !cache.location.components().any(|p| matches!(
+                    p,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                ))
+                && pooled.platform == "linux/amd64"
+                && pooled.rootfs.as_os_str().is_empty(),
+            "invalid native pooled image binding"
+        );
+    }
+    ensure!(
         image.rootfs.is_absolute()
             && image.rootfs != Path::new("/")
             && !image.rootfs.components().any(|part| matches!(
@@ -1714,7 +2227,8 @@ fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
         "prepared rootfs must be absolute and independent of host root and daemon state"
     );
     ensure!(
-        !image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/'),
+        (image.native_guest && image.entrypoint.is_empty())
+            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
         "prepared guest bootstrap must be absolute"
     );
     validate_argv_env(&image.entrypoint, &image.env)?;
@@ -1738,7 +2252,8 @@ fn validate_image(image: &PreparedImage, state: &Path) -> Result<()> {
         "prepared rootfs must be independent of host root and daemon state"
     );
     ensure!(
-        !image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/'),
+        (image.native_guest && image.entrypoint.is_empty())
+            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
         "prepared guest bootstrap must be absolute"
     );
     validate_argv_env(&image.entrypoint, &image.env)?;
@@ -1872,7 +2387,7 @@ fn admit_supervisor_request(
         ))
     }
 }
-fn constant_time_equal(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_equal(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -2259,6 +2774,10 @@ mod tests {
                 env: BTreeMap::from([("PATH".into(), "/guest/bin".into())]),
                 library_dir: None,
                 e2b: None,
+                pooled_image: None,
+                native_opensandbox: false,
+                native_e2b: false,
+                native_guest: false,
             },
             cgroup: temp
                 .join("groups")
@@ -2282,6 +2801,300 @@ mod tests {
             },
             operations: SandboxLocks::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn managed_envd_mapping_authenticates_before_first_init_and_preserves_basic_user() {
+        use axum::{Router, extract::Request, http::StatusCode, routing::any};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("envd.sock");
+        let unix = UnixListener::bind(&path).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let guest = tokio::spawn(async move {
+            axum::serve(
+                unix,
+                Router::new().fallback(any(move |request: Request| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert_eq!(request.headers()["authorization"], "Basic cm9vdDo=");
+                        assert_eq!(request.headers()["x-access-token"], "a".repeat(64));
+                        assert!(!request.headers().contains_key("x-api-key"));
+                        assert!(!request.headers().contains_key("e2b-sandbox-id"));
+                        StatusCode::NO_CONTENT
+                    }
+                })),
+            )
+            .await
+            .unwrap();
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let token = "a".repeat(64);
+        let bridge = tokio::spawn(managed_service_bridge(listener, path, token.clone(), true));
+        let client = health_client(None).unwrap();
+        for target in ["init", "health", "envs", "freeze"] {
+            assert_eq!(
+                client
+                    .post(format!("{url}/{target}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let result = client
+            .post(format!("{url}/init"))
+            .header("x-access-token", token)
+            .header("authorization", "Basic cm9vdDo=")
+            .header("x-api-key", "never-forward-lifecycle-key")
+            .header("e2b-sandbox-id", "private-routing")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(result.status(), 204);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        bridge.abort();
+        guest.abort();
+    }
+
+    #[tokio::test]
+    async fn managed_loopback_rejects_init_bypass_and_streams_authenticated_binary_bodies() {
+        use axum::{
+            Router,
+            body::{Body, to_bytes},
+            extract::Request,
+            http::{HeaderValue, StatusCode, header},
+            response::Response,
+            routing::any,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("guest.sock");
+        let unix = UnixListener::bind(&path).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let guest = tokio::spawn(async move {
+            axum::serve(
+                unix,
+                Router::new().fallback(any(move |request: Request| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert!(!request.headers().contains_key("open-sandbox-api-key"));
+                        assert!(!request.headers().contains_key("cookie"));
+                        assert_eq!(request.uri().query(), Some("x=1&x=2"));
+                        let bytes = to_bytes(request.into_body(), 4 * 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let mut response = Response::builder()
+                            .status(StatusCode::CREATED)
+                            .body(Body::from(bytes))
+                            .unwrap();
+                        response
+                            .headers_mut()
+                            .append(header::SET_COOKIE, HeaderValue::from_static("a=1"));
+                        response
+                            .headers_mut()
+                            .append(header::SET_COOKIE, HeaderValue::from_static("b=2"));
+                        response
+                    }
+                })),
+            )
+            .await
+            .unwrap();
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let token = "a".repeat(64);
+        let bridge = tokio::spawn(managed_execd_bridge(listener, path, token.clone()));
+        let client = health_client(None).unwrap();
+        for target in ["/internal/init", "/ready", "/command"] {
+            assert_eq!(
+                client
+                    .post(format!("{url}{target}"))
+                    .body("{}")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+        }
+        assert_eq!(
+            client
+                .post(format!("{url}/internal/init"))
+                .header("x-execd-access-token", "wrong")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let bytes = vec![0xa5; 3 * 1024 * 1024];
+        let response = service_health_client("x-execd-access-token", Some(&token))
+            .unwrap()
+            .post(format!("{url}/command?x=1&x=2"))
+            .header("open-sandbox-api-key", "do-not-forward")
+            .header(header::COOKIE, "do-not-forward")
+            .body(bytes.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            2
+        );
+        assert_eq!(response.bytes().await.unwrap().as_ref(), bytes);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        bridge.abort();
+        guest.abort();
+    }
+
+    #[tokio::test]
+    async fn native_egress_requires_real_execd_ready_and_refuses_policy() {
+        use axum::{Router, routing::get};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let initialized = Arc::new(AtomicBool::new(false));
+        let ready = initialized.clone();
+        let guest = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let execd = format!("http://{}", guest.local_addr().unwrap());
+        let guest_task = tokio::spawn(async move {
+            axum::serve(guest, Router::new().route("/ping", get(|| async { "pong" }))
+                .route("/ready", get(move || {
+                    let ready = ready.clone();
+                    async move { axum::Json(serde_json::json!({"initialized": ready.load(Ordering::SeqCst)})) }
+                }))).await.unwrap();
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(native_egress(listener, execd, health_client(None).unwrap()));
+        let client = health_client(None).unwrap();
+        assert_eq!(
+            client
+                .get(format!("{url}/healthz"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            503
+        );
+        initialized.store(true, Ordering::SeqCst);
+        assert_eq!(
+            client
+                .get(format!("{url}/healthz"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        let rejected = client
+            .post(format!("{url}/policy"))
+            .json(&serde_json::json!({"defaultAction":"allow"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 501);
+        assert_eq!(
+            rejected.json::<serde_json::Value>().await.unwrap()["code"],
+            "NOT_SUPPORTED"
+        );
+        guest_task.abort();
+        let _ = guest_task.await;
+        assert_eq!(
+            client
+                .get(format!("{url}/healthz"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            503
+        );
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[test]
+    fn managed_profile_requires_a_pinned_pool_and_preserves_legacy_manifests() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut identity, _) = identity_fixture(temp.path());
+        let legacy = serde_json::to_value(&identity.image).unwrap();
+        assert!(legacy.get("pooled_image").is_none());
+        assert!(legacy.get("native_opensandbox").is_none());
+        let legacy: PreparedImage = serde_json::from_value(legacy).unwrap();
+        assert!(validate_image_shape(&legacy, &temp.path().join("state")).is_ok());
+        identity.image.native_opensandbox = true;
+        assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_err());
+    }
+
+    #[test]
+    fn native_engine_launches_workload_directly_and_preserves_legacy_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut identity, _) = identity_fixture(temp.path());
+        assert!(!identity.image.native_guest);
+        assert!(
+            serde_json::to_value(&identity.image)
+                .unwrap()
+                .get("native_guest")
+                .is_none()
+        );
+        identity.image.native_guest = true;
+        identity.image.entrypoint.clear();
+        identity.spec.entrypoint = vec!["/bin/sleep".into(), "60".into()];
+        identity
+            .spec
+            .env
+            .insert("PVISOR_EXECD_ACCESS_TOKEN".into(), "secret".into());
+        assert!(
+            validate_image_shape(&identity.image, &temp.path().join("state")).is_err(),
+            "native engine must retain a pinned pool owner"
+        );
+        let run = make_run_spec(&identity).unwrap();
+        let pvisor_core::RunInvocation::Process(process) = run.invocation;
+        assert_eq!(process.program, "/bin/sleep");
+        assert_eq!(process.args, ["60"]);
+        assert!(!process.env.contains_key("PVISOR_EXECD_ACCESS_TOKEN"));
+        assert_eq!(process.env["PVISOR_NATIVE_SANDBOX_ID"], identity.spec.id);
+        assert_eq!(process.env["PVISOR_NATIVE_GENERATION"], identity.generation);
+        identity.image.native_opensandbox = true;
+        assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_err());
+    }
+
+    #[test]
+    fn managed_binding_fences_identity_and_keeps_raw_credentials_out_of_guest_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut identity, _) = identity_fixture(temp.path());
+        identity.image.native_opensandbox = true;
+        identity
+            .spec
+            .env
+            .insert("PVISOR_EXECD_ACCESS_TOKEN".into(), "a".repeat(64));
+        identity
+            .image
+            .env
+            .insert("EXECD_ACCESS_TOKEN".into(), "template-secret".into());
+        let run = make_run_spec(&identity).unwrap();
+        let pvisor_core::RunInvocation::Process(process) = run.invocation;
+        assert!(!process.env.contains_key("PVISOR_EXECD_ACCESS_TOKEN"));
+        assert!(!process.env.contains_key("EXECD_ACCESS_TOKEN"));
+        assert_eq!(process.env["PATH"], "/guest/bin");
+        let mut ready = serde_json::json!({"initialized":true,"sandboxId":identity.spec.id,
+            "generation":execd_generation(&identity).unwrap()});
+        assert!(validate_execd_binding(&serde_json::to_vec(&ready).unwrap(), &identity).is_ok());
+        ready["generation"] = serde_json::json!(1);
+        assert!(validate_execd_binding(&serde_json::to_vec(&ready).unwrap(), &identity).is_err());
+        ready["generation"] = serde_json::json!(execd_generation(&identity).unwrap());
+        ready["sandboxId"] = serde_json::json!("another-sandbox");
+        assert!(validate_execd_binding(&serde_json::to_vec(&ready).unwrap(), &identity).is_err());
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn constructor_fixture(temp: &Path) -> NativeRuntimeConfig {

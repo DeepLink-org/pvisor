@@ -88,22 +88,17 @@ fn pull_and_implicit_run_report_waiting_before_network_or_vm_start() {
         "x86_64" => "amd64",
         other => panic!("unsupported test architecture: {other}"),
     };
-    // Hold the isolated OCI fixture's preparation lock. Neither command can
+    // Hold the isolated Docker pool's preparation lock. Neither command can
     // reach a registry; progress must be flushed while the request is waiting.
-    let key = serde_json::to_vec(&(
-        "registry-1.docker.io",
-        "library/ubuntu",
-        "latest",
-        architecture,
-    ))
-    .unwrap();
-    let locks = home.join("images/locks");
+    let key =
+        serde_json::to_vec(&("registry-1.docker.io/library/ubuntu@latest", architecture)).unwrap();
+    let locks = home.join("images/pull-locks");
     fs::create_dir_all(&locks).unwrap();
     let hash: String = Sha256::digest(key)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    let lock = fs::File::create(locks.join(format!("prepare-{hash}.lock"))).unwrap();
+    let lock = fs::File::create(locks.join(hash)).unwrap();
     lock.lock_exclusive().unwrap();
     for args in [
         vec!["pull", "ubuntu:latest"],
@@ -146,10 +141,14 @@ impl Native {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let binary = temporary.path().join("pvisor");
-        fs::copy(env!("CARGO_BIN_EXE_pvisor"), &binary).unwrap();
+        let source_binary = std::env::var_os("PVISOR_DOCKER_TEST_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pvisor")));
+        fs::copy(&source_binary, &binary).unwrap();
         #[cfg(target_os = "macos")]
         {
-            let firmware = Path::new(env!("CARGO_BIN_EXE_pvisor"))
+            let firmware = source_binary
+                .as_path()
                 .parent()
                 .unwrap()
                 .join("libkrunfw.5.dylib")
@@ -172,30 +171,44 @@ impl Native {
         }
         let home = temporary.path().join("store");
         pvisor::docker::Store::open(home.clone()).unwrap();
-        let rootfs = PathBuf::from(
-            std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS")
-                .expect("set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep"),
-        );
-        let image = pvisor::docker::Image {
-            reference: "fixture:latest".into(),
-            id: format!("sha256:{}", "1".repeat(64)),
-            digest: format!("sha256:{}", "2".repeat(64)),
-            platform: if cfg!(target_arch = "aarch64") {
-                "linux/arm64"
-            } else {
-                "linux/amd64"
+        let mut image = if let Some(reference) = std::env::var_os("PVISOR_DOCKER_TEST_IMAGE") {
+            let image = pvisor::docker::Store::open(home.clone())
+                .unwrap()
+                .pull(reference.to_str().unwrap())
+                .unwrap();
+            assert!(
+                image.cache.is_some(),
+                "native image acceptance must use the local pool"
+            );
+            assert!(image.rootfs.as_os_str().is_empty());
+            image
+        } else {
+            let rootfs = PathBuf::from(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect(
+                "set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep",
+            ));
+            pvisor::docker::Image {
+                reference: "fixture:latest".into(),
+                id: format!("sha256:{}", "1".repeat(64)),
+                digest: format!("sha256:{}", "2".repeat(64)),
+                platform: if cfg!(target_arch = "aarch64") {
+                    "linux/arm64"
+                } else {
+                    "linux/amd64"
+                }
+                .into(),
+                rootfs: rootfs.canonicalize().unwrap(),
+                cache: None,
+                env: BTreeMap::new(),
+                entrypoint: Vec::new(),
+                cmd: Vec::new(),
+                cwd: "/".into(),
+                user: String::new(),
+                stop_signal: 15,
+                volumes: Vec::new(),
+                created_ms: 0,
             }
-            .into(),
-            rootfs: rootfs.canonicalize().unwrap(),
-            env: BTreeMap::new(),
-            entrypoint: Vec::new(),
-            cmd: Vec::new(),
-            cwd: "/".into(),
-            user: String::new(),
-            stop_signal: 15,
-            volumes: Vec::new(),
-            created_ms: 0,
         };
+        image.reference = "fixture:latest".into();
         // This is an isolated catalog fixture, never a real user's image store.
         fs::write(
             home.join("images.json"),
@@ -500,7 +513,16 @@ fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
     assert_eq!(image.env["MESSAGE"], "custom");
     assert_eq!(image.env["INHERITED"], "custom");
     assert_eq!(image.env["LITERAL"], "${MESSAGE}");
-    assert_eq!(fs::read(image.rootfs.join("payload")).unwrap(), b"hello");
+    let store = pvisor::docker::Store::open(home.clone()).unwrap();
+    let opened = store.open_image(image).unwrap();
+    assert_eq!(
+        pvisor_overlay_core::backend::read_at(&opened.rootfs().join("payload"), 0, 5)
+            .unwrap()
+            .unwrap(),
+        b"hello"
+    );
+    assert!(image.rootfs.as_os_str().is_empty());
+    assert!(image.cache.is_some());
     assert!(archive.is_file());
     fs::write(
         context.join("Dockerfile"),
@@ -677,5 +699,76 @@ fn docker_build_frontend_death_terminates_its_vm() {
             .unwrap()
             .iter()
             .all(|i| i.reference != "never:published")
+    );
+}
+
+#[test]
+fn docker_network_cli_create_list_inspect_remove_and_reject_unsupported_modes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("store");
+    for args in [
+        vec!["network", "--help"],
+        vec!["network", "create", "--help"],
+        vec!["network", "ls", "--help"],
+    ] {
+        assert!(command(&home).args(args).output().unwrap().status.success());
+    }
+    assert!(!home.exists());
+    let run = |args: &[&str]| {
+        let output = command(&home).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    let created = run(&[
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--subnet",
+        "172.25.0.0/24",
+        "--gateway",
+        "172.25.0.254",
+        "dev",
+    ]);
+    let id = String::from_utf8(created.stdout).unwrap().trim().to_owned();
+    assert_eq!(id.len(), 64);
+    let list = run(&["network", "ls"]);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("dev"));
+    let quiet = run(&["network", "ls", "-q", "--no-trunc"]);
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout)
+            .lines()
+            .any(|line| line == id)
+    );
+    let inspect = run(&["network", "inspect", "dev"]);
+    let networks: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(networks[0]["Name"], "dev");
+    assert_eq!(networks[0]["Id"], id);
+    assert_eq!(networks[0]["IPAM"]["Config"][0]["Gateway"], "172.25.0.254");
+    assert_eq!(networks[0]["IPAM"]["Config"][0]["Subnet"], "172.25.0.0/24");
+    for args in [
+        vec!["network", "create", "dev"],
+        vec!["network", "create", "--subnet", "172.25.0.0/16", "large"],
+        vec!["network", "rm", "bridge"],
+        vec!["network", "connect", "dev", "container"],
+        vec!["run", "--peer-network", "dev", "image"],
+        vec!["run", "--network", "host", "image"],
+    ] {
+        let output = command(&home).args(&args).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+    run(&["network", "rm", &id]);
+    run(&["network", "rm", "--force", "absent"]);
+    assert!(
+        !command(&home)
+            .args(["network", "inspect", "dev"])
+            .output()
+            .unwrap()
+            .status
+            .success()
     );
 }

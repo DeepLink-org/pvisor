@@ -189,6 +189,39 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        if kind == "symlink" {
+            let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+            if uid != 0 && m.st_uid == uid && m.st_gid == gid {
+                m.st_uid = 0;
+                m.st_gid = 0;
+            }
+        } else if kind == "file" || kind == "directory" {
+            let file = open_child(directory, OsStr::from_bytes(name.as_bytes()), false)?;
+            let mut bytes = [0u8; 128];
+            let count = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    c"user.containers.override_stat".as_ptr(),
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                )
+            };
+            if count >= 0 {
+                let identity =
+                    pvisor_overlay_core::backend::UnixIdentity::parse(&bytes[..count as usize])?;
+                m.st_uid = identity.uid;
+                m.st_gid = identity.gid;
+                m.st_mode = identity.mode;
+            } else {
+                let error = std::io::Error::last_os_error();
+                if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
+                    return Err(error.into());
+                }
+            }
+        }
+    }
     Ok(Response::Metadata {
         kind: kind.into(),
         size: m.st_size as u64,
@@ -205,6 +238,73 @@ fn metadata_at(directory: &File, name: &[u8]) -> anyhow::Result<Response> {
 
 pub(super) fn stat(store: &ImageStore, digest: &str, path: &[u8]) -> anyhow::Result<Response> {
     metadata::stat(store, digest, path)
+}
+
+pub(super) fn current_stat(
+    store: &ImageStore,
+    digest: &str,
+    path: &[u8],
+) -> anyhow::Result<Response> {
+    let (directory, name) = parent(store, digest, path)?;
+    metadata_at(&directory, &name)
+}
+
+// The current cache metadata format has no arbitrary xattr contract. Refuse
+// local imports requiring it instead of silently losing attributes on pooling.
+pub(super) fn validate_pool_attributes(
+    store: &ImageStore,
+    digest: &str,
+    path: &[u8],
+    kind: &str,
+) -> anyhow::Result<()> {
+    let (directory, name) = parent(store, digest, path)?;
+    #[cfg(target_os = "linux")]
+    if kind == "symlink" {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    let file = if kind == "symlink" {
+        let name = CString::new(name)?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_SYMLINK | libc::O_CLOEXEC | libc::O_EVTONLY,
+            )
+        };
+        ensure!(fd >= 0, "cannot inspect image symlink attributes");
+        unsafe { File::from_raw_fd(fd) }
+    } else {
+        open_child(&directory, OsStr::from_bytes(&name), false)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let file = open_child(&directory, OsStr::from_bytes(&name), false)?;
+    let mut names = vec![0u8; 128 * 1024];
+    #[cfg(target_os = "linux")]
+    let size =
+        unsafe { libc::flistxattr(file.as_raw_fd(), names.as_mut_ptr().cast(), names.len()) };
+    #[cfg(target_os = "macos")]
+    let size =
+        unsafe { libc::flistxattr(file.as_raw_fd(), names.as_mut_ptr().cast(), names.len(), 0) };
+    if size < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOTSUP) {
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    for name in names[..size as usize]
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        ensure!(
+            name == b"user.containers.override_stat",
+            "local image pool does not support xattr {} on {}",
+            String::from_utf8_lossy(name),
+            String::from_utf8_lossy(path)
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn directory(

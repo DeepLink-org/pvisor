@@ -22,6 +22,16 @@ pub fn host_authority_root() -> anyhow::Result<std::path::PathBuf> {
     Ok(root)
 }
 
+/// Resolve a named network below the guest-excluded private authority root.
+pub(crate) fn peer_network_directory(network: &str) -> anyhow::Result<std::path::PathBuf> {
+    let mut directory = host_authority_root()?;
+    for component in ["networks", network] {
+        directory.push(component);
+        create_authority_root(&directory)?;
+    }
+    Ok(directory)
+}
+
 fn validate_authority_directory(path: &std::path::Path) -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path)?;

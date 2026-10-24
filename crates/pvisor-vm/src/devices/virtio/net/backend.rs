@@ -7,6 +7,7 @@ pub enum ConnectError {
     CloneDescriptor(io::Error),
     InvalidAddress(nix::Error),
     CreateSocket(nix::Error),
+    ConfigureSocket(nix::Error),
     Binding(nix::Error),
     SendingMagic(nix::Error),
     // Tap backend errors.

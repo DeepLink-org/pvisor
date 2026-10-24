@@ -3,3 +3,5 @@ pub mod daemon;
 pub mod runtime;
 
 pub mod memory_pool;
+
+mod native;

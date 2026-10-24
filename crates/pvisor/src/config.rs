@@ -564,6 +564,8 @@ pub struct OverlayNetSettings {
     pub rules: Vec<NetworkAccessRule>,
     pub deny: Vec<NetworkAccessRule>,
     pub limits: Vec<NetworkBandwidthLimit>,
+    /// Optional explicit same-host VM packet-network membership.
+    pub peers: Option<PeerNetworkSettings>,
 }
 
 impl Default for OverlayNetSettings {
@@ -576,7 +578,83 @@ impl Default for OverlayNetSettings {
             rules: Vec::new(),
             deny: Vec::new(),
             limits: Vec::new(),
+            peers: None,
         }
+    }
+}
+
+/// Membership in a user-private, same-host IPv4 network.
+///
+/// All members explicitly trust one another for TCP, UDP and ICMP. Admission
+/// requires a native VM, Auto networking, unrestricted network policy, no
+/// bandwidth limits and the default controller. Addresses are explicit; no
+/// automatic allocation, IPv6, fragmentation or general broadcasts are provided.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerNetworkSettings {
+    /// Shared network name: 1–24 ASCII letters, digits, underscores or hyphens.
+    /// Names are scoped to the effective host UID, independently of Job storage.
+    pub network: String,
+    /// Unique non-gateway host in the gateway's private IPv4 /24.
+    /// A live duplicate refuses startup; stopping an instance releases its lease.
+    pub address: std::net::Ipv4Addr,
+    /// Virtual router and DNS resolver; member addresses must share its /24.
+    /// Defaults to 192.0.2.1 for existing explicit native-VM configurations.
+    #[serde(default = "default_peer_gateway")]
+    pub gateway: std::net::Ipv4Addr,
+    /// Network-local DNS aliases. Empty disables peer DNS on this member.
+    /// User-defined container networks publish the container's name here.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+fn default_peer_gateway() -> std::net::Ipv4Addr {
+    pvisor_overlaynet::vm::ROUTER_IPV4
+}
+
+impl PeerNetworkSettings {
+    /// Validate the name and address without creating directories or sockets.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.network.is_empty()
+                && self.network.len() <= 24
+                && self
+                    .network
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+            "peer network name must contain 1–24 ASCII letters, digits, underscores or hyphens"
+        );
+        let bytes = self.address.octets();
+        anyhow::ensure!(
+            bytes[..3] == self.gateway.octets()[..3]
+                && (1..=254).contains(&bytes[3])
+                && (1..=254).contains(&self.gateway.octets()[3])
+                && self.address != self.gateway
+                && (self.gateway.is_private() || self.gateway.octets()[..3] == [192, 0, 2]),
+            "peer address must be a non-gateway host in a private IPv4 /24 (or 192.0.2.0/24)"
+        );
+        anyhow::ensure!(
+            self.aliases.len() <= 16
+                && self.aliases.iter().all(|name| !name.is_empty()
+                    && name.len() <= 128
+                    && name.split('.').all(|label| !label.is_empty()
+                        && label.len() <= 63
+                        && label
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))),
+            "invalid peer DNS alias"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn resolve(&self) -> anyhow::Result<pvisor_overlaynet::PeerNetworkConfig> {
+        self.validate()?;
+        Ok(pvisor_overlaynet::PeerNetworkConfig {
+            directory: crate::runtime::host_transport::peer_network_directory(&self.network)?,
+            address: self.address,
+            gateway: self.gateway,
+            aliases: self.aliases.clone(),
+        })
     }
 }
 
@@ -827,6 +905,8 @@ impl CooperativeModelWait {
 /// libkrun VM and otherwise remains inactive unless Gateway/proxy is requested.
 #[derive(Debug, Clone)]
 pub struct NetworkDriverConfig {
+    /// Explicit same-host VM network membership; disabled by default.
+    pub peers: Option<PeerNetworkSettings>,
     pub mode: OverlayNetMode,
     pub network: pvisor_overlaynet::NetworkConfig,
     pub listen: String,
@@ -838,11 +918,19 @@ impl Default for NetworkDriverConfig {
             mode: OverlayNetMode::Auto,
             network: pvisor_overlaynet::NetworkConfig::default(),
             listen: "127.0.0.1:0".into(),
+            peers: None,
         }
     }
 }
 
 impl NetworkDriverConfig {
+    /// Select explicit peer membership. Validation runs before driver startup;
+    /// None keeps the default isolated VM link.
+    pub fn peer_network(mut self, peers: Option<PeerNetworkSettings>) -> Self {
+        self.peers = peers;
+        self
+    }
+
     pub fn listen(mut self, listen: impl Into<String>) -> Self {
         self.listen = listen.into();
         self
@@ -853,6 +941,7 @@ impl NetworkDriverConfig {
             mode,
             network,
             listen: "127.0.0.1:0".into(),
+            peers: None,
         }
     }
 }
@@ -1339,5 +1428,60 @@ mod session_policy_tests {
         std::fs::remove_dir(&directory).unwrap();
         symlink(root.path(), &directory).unwrap();
         assert!(load().is_err());
+    }
+}
+
+#[cfg(test)]
+mod peer_config_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_peer_settings_roundtrip_and_validate() {
+        let config: RunConfig = toml::from_str(
+            r#"
+[run]
+executor = "vm"
+[overlaynet.peers]
+network = "development"
+address = "192.0.2.11"
+"#,
+        )
+        .unwrap();
+        let peer = config.overlaynet.peers.as_ref().unwrap();
+        peer.validate().unwrap();
+        let restored: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.overlaynet.peers.unwrap().address, peer.address);
+        for network in [
+            "",
+            "../escape",
+            "/tmp/network",
+            "a.b",
+            "contains space",
+            "abcdefghijklmnopqrstuvwxyz",
+        ] {
+            assert!(
+                PeerNetworkSettings {
+                    network: network.into(),
+                    address: peer.address,
+                    gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+                    aliases: vec![],
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for address in ["192.0.2.0", "192.0.2.1", "192.0.2.255", "10.0.0.2"] {
+            assert!(
+                PeerNetworkSettings {
+                    network: "dev".into(),
+                    address: address.parse().unwrap(),
+                    gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+                    aliases: vec![],
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(RunConfig::default().overlaynet.peers.is_none());
     }
 }
