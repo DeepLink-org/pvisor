@@ -1,4 +1,4 @@
-//! Attempt completion is committed only after Bundle and terminal publication.
+//! Attempt completion commits the Bundle before terminal event publication.
 //! The receipt binds the result to immutable Bundle bytes; Run/Job state is a projection.
 
 use super::{RunRecord, RunRecordState};
@@ -41,6 +41,13 @@ pub(crate) fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
 
 impl Completion {
     pub(crate) fn commit(record: &RunRecord, result: &RunResult) -> anyhow::Result<()> {
+        if let Some(committed) = Self::load(record)? {
+            ensure!(
+                serde_json::to_value(&committed.result)? == serde_json::to_value(result)?,
+                "Attempt completion is already committed with a different result"
+            );
+            return Ok(());
+        }
         let stage = record.stage_dir();
         let bundle_bytes = read_file(&super::bundle::RunBundle::path(&stage))?;
         let receipt = Self {
@@ -211,6 +218,22 @@ mod tests {
     }
 
     #[test]
+    fn committed_receipt_is_idempotent_and_cannot_be_replaced_by_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let (record, mut result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        let bytes = std::fs::read(root.path().join(FILENAME)).unwrap();
+        Completion::commit(&record, &result).unwrap();
+        result.state = RunState::Failed;
+        assert!(Completion::commit(&record, &result).is_err());
+        assert_eq!(std::fs::read(root.path().join(FILENAME)).unwrap(), bytes);
+        assert_eq!(
+            RunBundle::read(root.path()).unwrap().run.state,
+            RunState::Completed
+        );
+    }
+
+    #[test]
     fn absent_commit_never_turns_a_bundle_or_terminal_record_into_success() {
         for state in [RunRecordState::Running, RunRecordState::Completed] {
             let root = tempfile::tempdir().unwrap();
@@ -222,7 +245,9 @@ mod tests {
                 RunRecordState::Unknown
             );
             assert!(RunBundle::read(root.path()).is_err());
-            let _lease = super::super::registry::RunLease::acquire(root.path()).unwrap();
+            let (locked, _lease) = record.lock_current().unwrap();
+            assert_eq!(locked.state, RunRecordState::Unknown);
+            assert!(locked.require_stopped().is_err());
             reconcile(&mut record).unwrap();
             assert_eq!(record.state, RunRecordState::Unknown);
             assert!(record.require_stopped().is_err());

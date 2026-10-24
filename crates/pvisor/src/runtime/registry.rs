@@ -330,7 +330,10 @@ impl RunRecord {
     pub fn lock_current(&self) -> anyhow::Result<(Self, RunLease)> {
         let stage = self.stage_dir();
         let lease = RunLease::acquire(&stage)?;
-        let current = Self::read(&stage)?;
+        let mut current = Self::read(&stage)?;
+        // Our own exclusive lease makes is_live true. It must not suppress the
+        // completion gate for a stopped Attempt about to be reviewed or mutated.
+        current.project_completion()?;
         anyhow::ensure!(
             current.run_id == self.run_id,
             "Run identity changed while acquiring its lease"
@@ -391,6 +394,20 @@ impl RunRecord {
         Ok(())
     }
 
+    fn project_completion(&mut self) -> anyhow::Result<()> {
+        if self.completion_protocol.is_some() {
+            match super::completion::Completion::load(self)? {
+                Some(receipt) => receipt.project(self)?,
+                None => {
+                    self.state = RunRecordState::Unknown;
+                    self.finished_at_unix_ms = None;
+                    self.live_control = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
         // A Job's original stage remains a stable selector across Attempts.
         // The active Attempt owns its own run.json, Bundle and storage lease.
@@ -414,14 +431,7 @@ impl RunRecord {
             );
         }
         if record.completion_protocol.is_some() && !is_live(stage)? {
-            match super::completion::Completion::load(&record)? {
-                Some(receipt) => receipt.project(&mut record)?,
-                None => {
-                    record.state = RunRecordState::Unknown;
-                    record.finished_at_unix_ms = None;
-                    record.live_control = None;
-                }
-            }
+            record.project_completion()?;
         }
         if let Some(overlay) = record.overlay.as_mut()
             && pvisor_overlay_core::apply::reconcile_terminal_overlay(overlay)?

@@ -256,6 +256,71 @@ fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() 
 }
 
 #[test]
+fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let mut record = fixture(root.path());
+    record.schema_version = 2;
+    record.completion_protocol = Some(super::super::completion::VERSION);
+    record.write().unwrap();
+    std::fs::write(root.path().join("upper/change"), b"retained").unwrap();
+    // Exercise mutation directly while raw disk state still says Completed,
+    // before status has had any opportunity to reconcile it to Unknown.
+    for apply in [true, false] {
+        let error = if apply {
+            RuntimeJobService::apply(
+                &ServiceContext::default(),
+                ApplyRequest {
+                    job: selection(&record),
+                    target: None,
+                    all: true,
+                    selection: Default::default(),
+                },
+            )
+            .err()
+            .unwrap()
+        } else {
+            RuntimeJobService::drop(
+                &ServiceContext::default(),
+                DropRequest {
+                    job: selection(&record),
+                },
+            )
+            .err()
+            .unwrap()
+        };
+        assert!(error.to_string().contains("EXECUTION_UNKNOWN"));
+        assert_eq!(
+            std::fs::read(root.path().join("upper/change")).unwrap(),
+            b"retained"
+        );
+        assert!(!root.path().join("target/change").exists());
+    }
+    let error = RuntimeJobService::review(
+        &ServiceContext::default(),
+        ReviewRequest {
+            job: selection(&record),
+            checkpoint: None,
+        },
+    )
+    .err()
+    .unwrap();
+    let unknown = error.downcast_ref::<ReviewUnavailable>().unwrap();
+    assert_eq!(unknown.job_id, record.run_id);
+    assert_eq!(unknown.stage, record.stage_dir());
+    let status = RuntimeJobService::status(
+        &ServiceContext::default(),
+        StatusRequest {
+            job: selection(&record),
+        },
+    )
+    .unwrap();
+    assert_eq!(status.record.state, super::super::RunRecordState::Unknown);
+    assert!(status.record.require_stopped().is_err());
+    assert!(!root.path().join("completion.json").exists());
+    assert!(root.path().join("upper").is_dir());
+}
+
+#[test]
 fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());

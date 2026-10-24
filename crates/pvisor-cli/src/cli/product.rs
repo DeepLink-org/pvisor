@@ -48,7 +48,44 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             },
             checkpoint: args.checkpoint,
         },
-    )?;
+    );
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let Some(unknown) = error.downcast_ref::<pvisor::job_service::ReviewUnavailable>()
+            else {
+                return Err(error);
+            };
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "state": "unknown",
+                        "code": "COMPLETION_UNCOMMITTED",
+                        "job_id": unknown.job_id,
+                        "attempt_id": unknown.attempt_id,
+                        "reason": unknown.reason,
+                        "stage": unknown.stage,
+                        "stage_retained": true,
+                        "workspace_mutation_allowed": false,
+                        "recovery": {"command": "status", "selector": unknown.stage, "json": true}
+                    }))?
+                );
+            } else {
+                println!("pVisor review — {}", unknown.job_id);
+                println!("outcome: UNKNOWN");
+                println!("reason: {}", unknown.reason);
+                println!("stage retained: {}", unknown.stage.display());
+                println!(
+                    "recovery: run `pvisor status <selector> --json` with this stage or Job ID to reconcile available receipts"
+                );
+                println!(
+                    "A missing receipt cannot establish success. Workspace mutation remains blocked."
+                );
+            }
+            return Ok(());
+        }
+    };
     let (record, bundle, context) = response.view();
     let context = serde_json::to_value(context)?;
     if args.json {

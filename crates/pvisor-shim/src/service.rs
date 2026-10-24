@@ -998,10 +998,10 @@ impl Task for PvisorTask {
                 if let Some(pid) = already_started_exec_pid(entry, live.vm) {
                     return Ok(start_response(pid));
                 }
-                let mut internal = live
+                let internal = live
                     .execs
                     .get_mut(&req.exec_id)
-                    .and_then(|exec| exec.internal.take())
+                    .and_then(|exec| exec.internal.as_mut())
                     .ok_or_else(|| {
                         rpc_error(
                             Code::FAILED_PRECONDITION,
@@ -1025,9 +1025,12 @@ impl Task for PvisorTask {
                 }
                 (pid, req.exec_id.clone())
             } else {
-                let mut internal = live
+                if live.entry.status != TaskStatus::Created {
+                    return Err(rpc_error(Code::FAILED_PRECONDITION, "task already started"));
+                }
+                let internal = live
                     .internal
-                    .take()
+                    .as_mut()
                     .ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "task already started"))?;
                 internal
                     .start()
@@ -1263,67 +1266,28 @@ impl Task for PvisorTask {
                 format!("invalid signal {}", req.signal),
             ));
         }
-        let (pid, vm_sock) = {
+        let socket = {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if req.exec_id.is_empty() {
-                (live.entry.pid, None)
-            } else {
-                let exec = live
-                    .entry
-                    .execs
-                    .get(&req.exec_id)
-                    .ok_or_else(|| not_found(&req.exec_id))?;
-                if exec.status == TaskStatus::Stopped {
-                    return Ok(Empty::new());
-                }
-                if live.vm
-                    && live
-                        .execs
-                        .get(&req.exec_id)
-                        .and_then(|exec| exec.vm_sock.as_ref())
-                        .is_none()
-                {
-                    return Err(rpc_error(
-                        Code::FAILED_PRECONDITION,
-                        "VM exec has no agent socket",
-                    ));
-                }
-                (
-                    exec.pid,
-                    live.execs
-                        .get(&req.exec_id)
-                        .and_then(|exec| exec.vm_sock.as_ref())
-                        .map(|socket| socket.try_clone())
-                        .transpose()
-                        .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?,
-                )
+                if live.entry.status == TaskStatus::Stopped { return Ok(Empty::new()); }
+                let internal = live.internal.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "task has no process ownership"))?;
+                internal.signal(signal, req.all && !live.vm).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+                return Ok(Empty::new());
             }
-        };
-        if let Some(socket) = vm_sock {
-            // VM exec kill: dropping the agent connection makes the guest
-            // agent SIGKILL the process (guest pids must never be signaled
-            // on the host).
-            socket
-                .shutdown(std::net::Shutdown::Both)
-                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
-            return Ok(Empty::new());
-        }
-        let Some(pid) = pid else {
-            return Ok(Empty::new());
-        };
-        // `all` targets the process group; each process detached into one.
-        let target = if req.all { -(pid as i32) } else { pid as i32 };
-        if unsafe { libc::kill(target, signal) } != 0 {
-            let error = std::io::Error::last_os_error();
-            // ESRCH after exit is benign: the process already went away.
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(rpc_error(
-                    Code::INTERNAL,
-                    format!("kill {target} with {signal}: {error}"),
-                ));
+            let entry = live.entry.execs.get(&req.exec_id).ok_or_else(|| not_found(&req.exec_id))?;
+            if entry.status == TaskStatus::Stopped { return Ok(Empty::new()); }
+            let exec = live.execs.get(&req.exec_id).ok_or_else(|| not_found(&req.exec_id))?;
+            if !live.vm {
+                let internal = exec.internal.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "exec has no process ownership"))?;
+                internal.signal(signal, req.all).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+                return Ok(Empty::new());
             }
-        }
+            exec.vm_sock.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "VM exec has no agent socket"))?
+                .try_clone().map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?
+        };
+        // Guest PIDs are never host signal targets; EOF terminates the guest exec.
+        socket.shutdown(std::net::Shutdown::Both).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
         Ok(Empty::new())
     }
 
@@ -1638,23 +1602,10 @@ impl Sandbox for PvisorSandbox {
         _ctx: &TtrpcContext,
         req: StopSandboxRequest,
     ) -> ttrpc::Result<StopSandboxResponse> {
-        let pid = {
-            let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
-            sandbox
-                .as_ref()
-                .filter(|state| state.id == req.sandbox_id)
-                .and_then(|state| state.internal.pid)
-        };
-        if let Some(pid) = pid
-            && unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0
-        {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(rpc_error(
-                    Code::INTERNAL,
-                    format!("stop sandbox holder {pid}: {error}"),
-                ));
-            }
+        let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+        if let Some(state) = sandbox.as_ref().filter(|state| state.id == req.sandbox_id) {
+            state.internal.signal(libc::SIGTERM, false)
+                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
         }
         Ok(StopSandboxResponse::new())
     }
@@ -1671,13 +1622,8 @@ impl Sandbox for PvisorSandbox {
         let Some(mut state) = state else {
             return Err(rpc_error(Code::NOT_FOUND, "no sandbox on this shim"));
         };
-        if let Some(pid) = state.internal.pid
-            && unsafe { libc::kill(pid as i32, libc::SIGKILL) } != 0
-        {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                warn!("kill sandbox holder {pid}: {error}");
-            }
+        if let Err(error) = state.internal.signal(libc::SIGKILL, false) {
+            warn!("kill sandbox holder: {error}");
         }
         state.internal.close_start();
         let task_count = self.inner.tasks.lock().expect("tasks mutex").len();

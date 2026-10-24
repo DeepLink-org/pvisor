@@ -47,6 +47,13 @@ execution. Ordinary runs report `safe_profile_requested = false`. Managed replay
 uses `spawn --config`, preserves the safe request and returns the outer exit status.
 After an interrupted new Attempt, `status` reconciles a committed completion or
 reports `unknown` while preserving its stage; missing completion is never success.
+`status --review` and `review` display `UNKNOWN` for an uncommitted completion,
+with the retained stage and an existing `status` reconciliation entry point.
+Their `--json` form returns `state: "unknown"`, `COMPLETION_UNCOMMITTED`, reason,
+identities and recovery selector instead of a fabricated Bundle or safety summary.
+This read-only diagnostic exits successfully; it does not authorize apply/drop.
+`status <selector> --json` reconciles available receipts under the existing locks;
+a missing receipt keeps the outcome unknown. Corrupt evidence remains an error.
 
 The seven live VM flags are command-local, under **Live VM** in command help:
 

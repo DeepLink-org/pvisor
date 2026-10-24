@@ -59,14 +59,29 @@ Capture is a Gateway capability, not a second product.
 New Attempts use Run record schema 2, Bundle schema 5 and completion protocol 1.
 Older readers reject these schemas instead of bypassing the completion check.
 Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
-Session durably prepares the Bundle,
-publishes its terminal events, writes the terminal Run projection, then atomically
+Session durably prepares the Bundle and terminal Run projection, then atomically
 publishes `completion.json` binding the typed result to the Bundle's BLAKE3 digest.
-Only that receipt commits completion. Readers reject missing/changed Bundles and
+Only after that receipt commits does it publish the Completed fact and terminal
+run event. An unconfirmed receipt suppresses both notifications and retains the
+stage for reconciliation; a possibly committed receipt is never rewritten as a
+failure after a lost acknowledgement. Identical receipt commits are idempotent;
+a different result cannot replace one. Without retained storage, event publication
+retains its existing failure semantics.
+
+Event delivery is separate from committed execution: rejected/unknown terminal
+appends never replace a committed result or publish a contradictory terminal.
+Post-commit audit gaps appear in the returned result's warnings, without rewriting
+the immutable Bundle/receipt. They are not appended to that historical Bundle;
+automatic event backfill after a crash is not implemented.
+Readers reject missing/changed Bundles and
 foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
 with its stage retained and workspace mutation refused. `status` reconciles stale
 Run/Job projections under their metadata and Attempt leases; it never takes a live
-Attempt's lease or infers success from owner death. Legacy records without the
+Attempt's lease or infers success from owner death. Review and mutation readers
+also validate completion after acquiring their own Attempt lease; that lease is
+not evidence of another live execution. Review returns a typed `ReviewUnavailable`
+for uncommitted completion; corruption and unsupported schemas remain errors.
+Legacy records without the
 protocol marker retain their original read rules. This is local crash consistency,
 not authentication against another process with unrestricted access as the host UID.
 Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.

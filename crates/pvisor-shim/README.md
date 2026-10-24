@@ -79,7 +79,13 @@ containerd ──ttrpc── PvisorTask (Task service)
 - `child.rs` is the self-exec pipeline (the house `INTERNAL_SANDBOX_ARG`
   pattern): `Create` produces a created-but-not-running init process that
   blocks on a start pipe; `Start` releases it. Exits are reaped by the
-  framework's SIGCHLD monitor and mapped back onto tasks.
+  framework's SIGCHLD monitor and mapped back onto tasks. Readiness transfers a
+  kernel pidfd from the still-owning internal parent (or the runner itself)
+  before publishing the numeric PID. The shim retains it after Start and uses
+  it for signals; stopped tasks are idempotent and never signal a recycled PID.
+  Host process-group signals require Linux 6.9 pidfd group support and fail
+  explicitly on older kernels. VM task termination signals the owned runner;
+  guest exec termination closes its agent connection.
 - `service.rs` implements the ttrpc Task service and publishes
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.

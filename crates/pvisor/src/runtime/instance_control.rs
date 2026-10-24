@@ -210,8 +210,14 @@ impl InstanceControlServer {
                         if attempt_task.is_finished() { break; }
                     }
                     _ = clients.join_next(), if !clients.is_empty() => { replies.retain(|(handle, _)| !handle.is_finished()); }
-                    accepted = self.listener.accept() => {
-                        let Ok((stream, _)) = accepted else { break; };
+                    accepted = super::host_transport::accept_control(&self.listener) => {
+                        let (stream, _) = match accepted {
+                            Ok(accepted) => accepted,
+                            Err(error) => {
+                                tracing::error!(%error, "instance control listener failed");
+                                break;
+                            }
+                        };
                         if clients.len() >= MAX_CONNECTIONS { continue; }
                         let controls = controls.clone();
                         let status = status.clone();

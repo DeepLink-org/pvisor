@@ -142,8 +142,6 @@ fn failed_sandbox_start_does_not_leave_a_cache_service() {
     let output = daemon()
         .args([
             "--sandbox",
-            "--api-key",
-            "fixture-key",
             "--images-dir",
             "/nonexistent-pvisor-images",
             "--cgroup-root",
@@ -151,6 +149,7 @@ fn failed_sandbox_start_does_not_leave_a_cache_service() {
             "--cache-listen",
             &format!("unix://{}", socket.display()),
         ])
+        .env("OPEN_SANDBOX_API_KEY", "fixture-key")
         .output()
         .unwrap();
     assert!(!output.status.success());

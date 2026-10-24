@@ -251,7 +251,9 @@ explicit. An OpenSandbox image is not an E2B template.
 
 E2B lifecycle requests use `X-API-Key` and numeric `{code, message, error_code}`
 errors. They use the same configured secret as OpenSandbox's lifecycle API.
-`serve` resolves `--api-key`, then `OPEN_SANDBOX_API_KEY`, then `E2B_API_KEY`.
+`serve` resolves `OPEN_SANDBOX_API_KEY`, then `E2B_API_KEY`. The former
+`--api-key` option is rejected: migrate service launchers to environment credentials
+before upgrading. Credentials are never parsed from argv.
 Use environment credentials rather than command-line secrets. E2B data requests
 require exactly one `E2b-Sandbox-Id`, `E2b-Sandbox-Port: 49983` and
 sandbox-scoped `X-Access-Token`; that token grants no lifecycle or other-sandbox

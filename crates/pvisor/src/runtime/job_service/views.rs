@@ -47,6 +47,21 @@ pub struct ReviewContext {
     pub file_view: &'static str,
     pub execution_evidence: &'static str,
 }
+/// A retained Attempt has no committed completion, so review cannot claim a result.
+/// Read-only status can reconcile an existing receipt; it cannot invent a missing one.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[error("Job {job_id} review is UNKNOWN: {reason}")]
+pub struct ReviewUnavailable {
+    /// Selected Job identity, checked against the locked current record.
+    pub job_id: String,
+    /// Selected Attempt identity, when the record carries one.
+    pub attempt_id: Option<String>,
+    /// Retained stage; no cleanup or workspace mutation is authorized by this error.
+    pub stage: std::path::PathBuf,
+    /// Why execution evidence cannot currently be reviewed.
+    pub reason: &'static str,
+}
+
 pub struct ReviewResponse {
     pub record: RunRecord,
     pub bundle: RunBundle,
@@ -178,6 +193,15 @@ impl RuntimeJobService {
         let (mut record, _lease) = selected.lock_current()?;
         check_selected_record(&selected, &record)?;
         context.check(&record)?;
+        if record.state == crate::RunRecordState::Unknown {
+            return Err(ReviewUnavailable {
+                job_id: record.run_id.clone(),
+                attempt_id: record.attempt_id.clone(),
+                stage: record.stage_dir(),
+                reason: "Attempt completion is not committed; execution outcome is unknown",
+            }
+            .into());
+        }
         let bundle_stage = record.stage_dir();
         let checkpoint_id = if let Some(id) = &request.checkpoint {
             let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;

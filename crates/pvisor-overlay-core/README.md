@@ -294,7 +294,11 @@ must not reuse stale metadata across mutation boundaries.
 Entry publication exclusively creates a private random temporary directory;
 reserved-looking host names are never cleanup authority. Interrupted copies can
 leave these directories behind, and retries do not sweep them. Replacement
-backups require a durable ownership receipt before reuse or cleanup. Legacy
+backups publish an initialized, synced ownership receipt by no-replace rename
+before reuse or cleanup. Failed initialization cannot publish the apply ID;
+abandoned private initialization siblings are not adopted or swept. Target locks
+use the fixed `/tmp/pvisor-apply-locks-<effective-uid>` namespace across TMPDIR
+settings and remain private, no-follow, single-link files. Legacy
 backups without that receipt are retained and require manual inspection, not
 automatic adoption. Terminal `overlay.json` publications are authoritative over
 an older matching Run overlay identity/generation. While the apply ledger is

@@ -252,7 +252,7 @@ where
                     .into_response());
             }
         };
-        let host = crate::policy::host_from_authority(&target.host);
+        let host = target.host.clone();
         let port = target.port;
         let authorized = match authorize(
             state,
@@ -657,6 +657,32 @@ mod tests {
             assert_eq!(snapshot.policy_allowed, 0);
             assert_eq!(snapshot.targets["TCP example.com:443"].denied, 1);
         });
+    }
+
+    #[tokio::test]
+    async fn ipv6_connect_preserves_the_parsed_host_through_authorization() {
+        let metrics = InterceptionMetrics::default();
+        let state = OverlayServerState::new(
+            Arc::new(PolicyControlController),
+            PolicySink,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .with_interception_metrics(metrics.clone());
+        for authority in ["[::1]:443", "[2001:db8::10]:8443"] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(authority)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let targets = metrics.snapshot().targets;
+        assert!(targets.keys().any(|key| key.contains("::1")), "{targets:?}");
+        assert!(targets.keys().any(|key| key.contains("2001:db8::10")), "{targets:?}");
+        assert_eq!(targets.len(), 2);
     }
 
     #[derive(Clone)]

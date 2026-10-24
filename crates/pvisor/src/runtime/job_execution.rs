@@ -462,7 +462,14 @@ impl Server {
         let task = tokio::spawn(async move {
             let admission =
                 std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONTROL_CONNECTIONS));
-            while let Ok((mut stream, _)) = listener.accept().await {
+            loop {
+                let (mut stream, _) = match super::host_transport::accept_control(&listener).await {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        tracing::error!(%error, "execution control listener failed");
+                        break;
+                    }
+                };
                 if authorize_host_peer(&stream).is_err() {
                     continue;
                 }
