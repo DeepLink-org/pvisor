@@ -41,7 +41,6 @@ mod pager;
 ))]
 pub(crate) use pager::{start_diagnostics, start_with_pool};
 
-
 impl VmExecutor {
     /// Prepare this process for later native VM launches before starting threads.
     ///

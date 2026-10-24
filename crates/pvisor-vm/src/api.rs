@@ -53,13 +53,17 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
+    /// Number of guest vCPUs; validated as nonzero within backend limits before boot.
     pub cpus: u8,
+    /// Guest RAM size in MiB; must be nonzero and fit backend address-space limits.
     pub memory_mib: u32,
 }
 
 /// Runtime services with the same signatures on every supported target.
 pub struct VmPlatform;
+/// Process-local platform discovery and diagnostics; no VM is created by these queries.
 pub trait RuntimeSupport {
+    /// Report compiled architecture/backend primitives without probing host permissions.
     fn capabilities() -> Capabilities;
     /// Initialize process logging before constructing the VM.
     fn init_logging(filter: &str);
@@ -83,9 +87,13 @@ pub trait RuntimeSupport {
 }
 
 #[derive(Clone, Debug)]
+/// Owned immutable kernel payload and its architecture-specific guest boot addresses.
 pub struct KernelImage {
+    /// Kernel bytes retained by shared ownership until all consumers release them.
     pub bytes: Arc<[u8]>,
+    /// Guest physical load address, not a host pointer.
     pub guest_address: u64,
+    /// Guest instruction address at first CPU entry.
     pub entry_address: u64,
 }
 
@@ -96,9 +104,13 @@ pub struct KernelImage {
 /// unsupported quoting/control characters and oversized commands are rejected.
 #[derive(Clone, Debug)]
 pub struct GuestCommand {
+    /// Absolute guest executable path; validated with the custom-init command.
     pub executable: String,
+    /// Guest argument vector; passed without shell expansion.
     pub arguments: Vec<String>,
+    /// Explicit guest environment; host variables are not inherited implicitly.
     pub environment: std::collections::BTreeMap<String, String>,
+    /// Absolute working directory interpreted by the caller-supplied init.
     pub working_directory: String,
 }
 
@@ -115,6 +127,7 @@ pub struct NetworkOptions {
 pub trait VmConfiguration: Sized {
     /// Construct a configuration; equivalent to `from_config` with explicit sizing.
     fn new(cpus: u8, memory_mib: u32) -> io::Result<Self>;
+    /// Validate sizing and construct an unbooted configuration; failure creates no VM.
     fn from_config(config: VmConfig) -> io::Result<Self>;
     /// Restore sealed, validated machine state. Captured kernel geometry avoids
     /// loading a fresh firmware payload; legacy states retain the normal loader.
@@ -126,6 +139,8 @@ pub trait VmConfiguration: Sized {
     /// adjacent firmware. Keep the file available until boot. Never searches
     /// LD_LIBRARY_PATH/DYLD_LIBRARY_PATH or downloads missing firmware.
     fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()>;
+    /// Transfer an empty regular file as writable RAM backing. The runtime owns it
+    /// and may resize/map it at boot; nonempty/nonregular inputs leave configuration unchanged.
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     /// Opt in to a common boot-kernel RAM baseline on Apple Silicon HVF.
     /// `directory` must be an existing absolute, same-user, private directory
@@ -142,6 +157,8 @@ pub trait VmConfiguration: Sized {
     /// configuration unchanged. Boot rejects incompatible payloads/geometries
     /// and corrupted cache entries, without falling back to an unshared copy.
     fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()>;
+    /// Copy and validate a trusted kernel payload and guest load/entry addresses.
+    /// Successful replacement retains its own bytes; invalid geometry preserves the prior kernel.
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
     -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
@@ -173,6 +190,8 @@ pub trait VmConfiguration: Sized {
         disable_proactive_compaction: bool,
         offload_minimum: Duration,
     ) -> io::Result<()>;
+    /// Disable built-in init before attaching /dev/root. A root already attached
+    /// returns InvalidInput without changing the previous init selection.
     fn disable_implicit_init(&mut self) -> io::Result<()>;
     /// Configure a custom init's command; requires implicit init to be disabled.
     /// Validate atomically before replacing the previous command.
@@ -224,6 +243,11 @@ pub trait VmConfiguration: Sized {
     /// Attach a writable merged overlay. `shm_size` must be zero; DAX for this
     /// merged view is Unsupported. Failure preserves previous attachments.
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()>;
+    /// Add owned immutable bytes to an existing filesystem tag; a leading slash
+    /// is optional. Virtual parent directories must already exist; empty/dot/parent/
+    /// NUL components and duplicate names are rejected. Mode uses guest permission
+    /// bits. A one-shot name is consumed by its first successful lookup (not listing);
+    /// releasing its inode removes the remaining bytes. Validation failure preserves attachments.
     fn virtual_file(
         &mut self,
         tag: &str,
@@ -249,14 +273,26 @@ pub trait VmConfiguration: Sized {
     /// logging (`init_logging`) can target the process's own stderr while
     /// guest output still reaches the caller's descriptors.
     fn task_stdio(&mut self, stdin: RawFd, stdout: RawFd, stderr: RawFd) -> io::Result<()>;
+    /// Transfer the framed Ethernet stream and explicit guest-init options.
+    /// Has network() ownership/nonblocking requirements; unavailable networking
+    /// returns Unsupported, and no implicit TSI path is installed.
     fn network_with_options(
         &mut self,
         stream: std::os::unix::net::UnixStream,
         mac: [u8; 6],
         options: NetworkOptions,
     ) -> io::Result<()>;
+    /// Configure a unique guest vsock port mapped to a caller-owned host socket
+    /// path; listen selects a host listener rather than a connector. The caller
+    /// authorizes exposure and retains the path. Duplicate ports and guest-idle
+    /// profiles reject the update; this never enables TSI networking.
     fn vsock_port(&mut self, guest_port: u32, host_path: PathBuf, listen: bool) -> io::Result<()>;
+    /// Select snapshot-compatible devices before boot. DAX, nested virtualization
+    /// and guest-idle configurations reject the change; no snapshot is captured.
     fn snapshot_profile(&mut self) -> io::Result<()>;
+    /// Validate and consume restore state for this CPU topology, enabling the
+    /// snapshot profile. Writable RAM backing and unsupported device/build profiles
+    /// reject restoration; a successfully restored machine starts paused.
     fn machine_restore(&mut self, restore: MachineRestore) -> io::Result<()>;
 }
 
@@ -264,6 +300,9 @@ pub trait VmConfiguration: Sized {
 /// callback receives live control after installation and must return promptly.
 /// Normal guest shutdown exits the process; setup failure returns an error.
 pub trait VmRuntime: Sized {
+    /// Consume the builder and retain resources through the VM event loop.
+    /// Invoke on_ready before CPU execution; it must not block and may resume a
+    /// restored VM. An error aborts startup; normal guest shutdown exits the runner.
     fn run(self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()>;
 }
 
@@ -271,8 +310,13 @@ pub trait VmRuntime: Sized {
 /// Implementations serialize transitions; handles do not extend VM lifetime.
 /// A failed drain/offload transition requires terminating the runner.
 pub trait VmControl: Send + Sync {
+    /// Read the current pause flag under the VM lock; stopped/poisoned owners return an error.
     fn is_paused(&self) -> Result<bool, String>;
+    /// Serialize a CPU pause; the owner retains all resources. Drain/transition
+    /// failure requires runner termination; pause alone is not snapshot quiescence.
     fn pause(&self) -> Result<(), String>;
+    /// Serialize resume after a valid pause/restore. It does not reacquire storage
+    /// or restore a checkpoint; transition failure requires runner termination.
     fn resume(&self) -> Result<(), String>;
     /// Unconditional whole-VM offload. Guest-idle profiles reject this method;
     /// use `GuestIdleControl::offload_guest_idle` with a claimed epoch instead.
@@ -296,41 +340,73 @@ pub trait VmControl: Send + Sync {
 /// `Err` denotes a stopped VM or poisoned control lock; unavailable advice and
 /// strategy conflicts are reported per mapping, leaving the healthy VM usable.
 pub trait RamDedupControl: Send + Sync {
+    /// Advise eligible mappings under the transition lock and return per-range
+    /// results. Repeat calls may register the same bytes; results never prove savings.
     fn advise_ram_dedup(&self) -> Result<RamDedupReport, String>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Results of one best-effort deduplication advice call; not a memory-savings measurement.
 pub struct RamDedupReport {
     /// Sum of mapping lengths accepted by this call, not merged bytes. Repeated
     /// calls can accept the same bytes again; do not sum reports as savings.
     pub accepted_bytes: u64,
+    /// Per-mapping outcomes, including skipped and unsupported ranges.
     pub mappings: Vec<RamDedupMapping>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// One RAM mapping considered during an advice call.
 pub struct RamDedupMapping {
+    /// Starting guest physical address of the considered mapping.
     pub guest_address: u64,
+    /// Mapping length in bytes; not necessarily resident bytes.
     pub length: u64,
+    /// Registration outcome for this mapping; does not imply pages were merged.
     pub status: RamDedupStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Outcome of deduplication advice for a single mapping.
 pub enum RamDedupStatus {
+    /// The host accepted asynchronous dedup advice, without proving an active scanner.
     Accepted,
+    /// This mapping was excluded by its ownership, layout or active strategy.
     Skipped(RamDedupSkipReason),
-    Unsupported { errno: Option<i32>, reason: String },
-    Error { errno: Option<i32>, reason: String },
+    /// The host or compiled backend cannot apply this advice.
+    Unsupported {
+        /// Host errno when available; absence denotes a backend capability limitation.
+        errno: Option<i32>,
+        /// Human-readable unsupported-operation detail, not a stable error code.
+        reason: String,
+    },
+    /// The advice attempt failed; the original RAM mapping remains in place.
+    Error {
+        /// Host errno when an OS advice call failed.
+        errno: Option<i32>,
+        /// Diagnostic error detail; callers should use the typed outcome for decisions.
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Reasons for excluding a mapping without attempting host dedup advice.
 pub enum RamDedupSkipReason {
+    /// Guest device/shared-memory window rather than ordinary RAM.
     DeviceWindow,
+    /// Mapping is shared, so private-RAM advice is inappropriate.
     SharedMapping,
+    /// Mapping lacks the required private ownership semantics.
     NotPrivate,
+    /// Huge-page backing is outside this advice strategy.
     HugePages,
+    /// Read-only mapping does not qualify for writable-RAM advice.
     NotWritable,
+    /// Address or length does not meet the host page alignment.
     Unaligned,
+    /// An active cold pager owns the RAM optimization strategy.
     ColdPagerActive,
+    /// Device memory preparation already owns the affected mappings.
     DevicePreparationActive,
 }
 
@@ -339,6 +415,9 @@ pub enum RamDedupSkipReason {
 /// The resumable operation thaws the source after successful or rejected actions.
 /// Save-and-stop capture remains parked; freeze failure requires termination.
 pub trait SnapshotControl: VmControl {
+    /// Freeze CPUs, drain devices and invoke action within timeout. The borrowed
+    /// guard cannot escape. A completed/rejected action resumes the source; failure
+    /// to establish or release the barrier requires terminating the runner.
     fn with_snapshot_quiesced<T>(
         &self,
         timeout: Duration,
@@ -357,6 +436,9 @@ pub trait SnapshotControl: VmControl {
 /// file must be fresh and empty. The caller publishes RAM, state and an owned
 /// filesystem copy in the same freeze; this interface does not publish them.
 pub trait SnapshotCapture {
+    /// Write complete RAM to the fresh empty destination and return CPU/device
+    /// state. Caller holds this freeze through filesystem capture and atomic
+    /// publication; a failed write may leave partial destination bytes.
     fn capture_machine_state(&self, file: &File) -> Result<MachineSnapshot, String>;
     /// Capture all RAM, or changed blocks against the supervisor-bound immutable
     /// baseline. A delta inventory is an optimization, never restore authority.
@@ -413,17 +495,27 @@ pub trait ColdRamControl: VmControl {
         store: S,
         options: ColdRamOptions,
     ) -> io::Result<()>;
+    /// Run action behind the supported cold-RAM CPU/device barrier. None means
+    /// no eligible RAM; errors require the caller to terminate after failed drain.
+    /// Unavailable backends return Unsupported without invoking action.
     fn with_ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut FrozenMachine<'_>) -> Result<T, String>,
     ) -> Result<Option<T>, String>;
+    /// Return best-effort resident RAM bytes, or None when unavailable for this
+    /// VM layout. Unsupported platforms return an error; this is not node RSS.
     fn experimental_ram_residency(&self) -> Result<Option<u64>, String>;
+    /// Install a synchronized fault resolver for owned RAM. Unsupported backends
+    /// reject installation; the caller retains handler resources through VM teardown.
     fn install_ram_fault_handler(&self, handler: Arc<MemoryFaultHandler>) -> Result<(), String>;
 }
 
 /// Memory operations available within a runtime-provided quiescence window.
 /// Tokens remain subject to the safety requirements of [`RamAccess`].
 pub trait FrozenMemory {
+    /// Create bounded RAM tokens with the requested block size within this freeze.
+    /// Unsupported backends/layouts return an error; tokens do not extend VM lifetime
+    /// or relax RamAccess quiescence and residency requirements.
     fn experimental_ram_blocks(&self, bytes: usize) -> Result<Vec<RamBlock>, String>;
     /// Query owned ordinary RAM on macOS while this freeze owns CPU/device
     /// quiescence; raw firmware/device windows are excluded. Returns native page
@@ -431,18 +523,26 @@ pub trait FrozenMemory {
     /// Queries do not fault contents. Identities are not PFNs, per-process RSS,
     /// or whole-host attribution; separate VM queries are not one atomic sample.
     /// Other backends return an explicit unsupported error.
+    /// This observation grants no ownership or reclaim permission.
     fn experimental_ram_page_inventory(&self) -> Result<(u64, Vec<[u64; 4]>), String>;
+    /// Install a host resolver while frozen; it must reject unowned faults and
+    /// serialize restoration. Failure does not authorize releasing the RAM barrier.
     fn install_memory_fault_handler(
         &mut self,
         handler: Arc<MemoryFaultHandler>,
     ) -> Result<(), String>;
+    /// Install or remove bounded device RAM preparation under the VM barrier.
+    /// The callback runs before device access and must not reenter VM control;
+    /// unsupported layouts return an error without replacing preparation.
     fn set_device_prepare(&self, handler: Option<Arc<MemoryPrepare>>) -> Result<(), String>;
 }
 
 /// Inspect opaque state and rebind captured filesystems to caller-owned copies.
 /// Rebinding preserves the old state on error; it does not copy or publish files.
 pub trait SnapshotState {
+    /// Return validated captured CPU count; malformed snapshot data is InvalidData.
     fn cpu_count(&self) -> io::Result<usize>;
+    /// Report whether a valid captured kernel layout is present; malformed state is an error.
     fn has_kernel_layout(&self) -> io::Result<bool>;
     /// Verify captured inode identities/content while every source writer is frozen.
     fn verify_frozen_filesystem_backing(&self, tag: &str) -> io::Result<usize>;
@@ -459,6 +559,8 @@ pub trait SnapshotState {
         copies: &[(PathBuf, PathBuf)],
         shared_lowers: &[PathBuf],
     ) -> io::Result<usize>;
+    /// Replace access policy on the selected captured filesystem atomically.
+    /// Missing tags or malformed saved state return errors; caller owns policy authorization.
     fn rebind_filesystem_policy(
         &mut self,
         tag: &str,
@@ -472,13 +574,19 @@ pub trait SnapshotState {
         tag: &str,
         excluded_paths: &[PathBuf],
     ) -> io::Result<usize>;
+    /// Return the saved guest RAM address/file-offset inventory after structural
+    /// validation. This does not open/map RAM or authorize a restore.
     fn ram_mappings(&self) -> io::Result<Vec<RamMappingSnapshot>>;
+    /// Rebind one captured filesystem root to its caller-owned independent copy.
+    /// Validate the saved binding before replacing it; no filesystem bytes are copied.
     fn rebind_filesystem_copy(
         &mut self,
         tag: &str,
         source: &Path,
         destination: &Path,
     ) -> io::Result<usize>;
+    /// Rebind captured backing layers to caller-verified copies while preserving
+    /// layer order and writable-state separation. Failure preserves the old state.
     fn rebind_filesystem_layers(
         &mut self,
         tag: &str,
@@ -503,7 +611,12 @@ pub trait SnapshotState {
 /// Validate a native restore and map sealed RAM privately. RAM mapping alone
 /// does not validate CPU/device state or authorize execution of the snapshot.
 pub trait RestoreState {
+    /// Check captured state and sealed RAM geometry for cpu_count. Does not
+    /// prove host/boot/build compatibility; that authorization belongs to the supervisor.
     fn validate(&self, cpu_count: usize) -> Result<(), String>;
+    /// Privately map the sealed file at the supplied guest ranges after checking
+    /// alignment, offsets and exact topology. The returned owner retains mappings;
+    /// no CPUs run and snapshot execution is not authorized by this operation.
     fn map_ram(
         &self,
         ranges: &[(vm_memory::GuestAddress, usize)],
@@ -512,7 +625,9 @@ pub trait RestoreState {
 
 /// Experimental access to a RAM token; callers enforce quiescence and ownership.
 pub trait RamAccess {
+    /// Starting guest physical address; valid only while the owning VM mapping lives.
     fn guest_address(&self) -> u64;
+    /// Token length in bytes; access still requires the RamAccess safety conditions.
     fn length(&self) -> usize;
     /// # Safety
     /// All CPUs/devices must be quiescent and the block resident; output must
@@ -533,21 +648,33 @@ pub trait RamAccess {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Compiled guest CPU architecture; not a cross-architecture migration promise.
 pub enum Architecture {
+    /// 64-bit Arm guest architecture.
     Aarch64,
+    /// 64-bit x86 guest architecture.
     X86_64,
+    /// 64-bit RISC-V architecture identifier; capability presence does not imply host support.
     Riscv64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Native virtualization backend selected by this build.
 pub enum Hypervisor {
+    /// Linux Kernel-based Virtual Machine backend.
     Kvm,
+    /// Apple Hypervisor.framework backend.
     Hvf,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Implemented runtime primitives; host permission and installed sandbox evidence are separate.
 pub struct Capabilities {
+    /// Guest architecture compiled into the native backend.
     pub architecture: Architecture,
+    /// Native hypervisor implementation used on this platform.
     pub hypervisor: Hypervisor,
+    /// Whether the compiled profile implements whole-machine capture/restore.
     pub machine_snapshot: bool,
+    /// Whether the compiled profile exposes cold-RAM fault handling; host authority is still required.
     pub cold_ram_faults: bool,
 }
 
@@ -571,28 +698,37 @@ pub struct VmmHandle {
 pub enum VcpuObservedState {
     /// A backend execution-entry boundary; not proof of sustained guest execution.
     Executing,
+    /// Backend is processing a VM exit; no guest-idle inference is made.
     HandlingExit,
+    /// Backend entered an observed event wait, not proof of Linux idle or a safe pause.
     WaitingForEvent,
     /// Reserved for a reliable host scheduling source; M0 does not infer this.
     HostDescheduled,
     /// A control park (including snapshot/RAM maintenance), never guest idle.
     ManualPaused,
+    /// Backend CPU lifecycle has ended.
     Stopped,
     /// Includes time inside KVM_RUN, which can execute, halt or be descheduled.
     Unknown,
 }
 
 #[derive(Clone, Debug)]
+/// Latest diagnostic state for one backend CPU within an observation session.
 pub struct VcpuObservation {
+    /// Backend CPU ordinal within this VM topology.
     pub id: u8,
     /// Registered backend CPU not yet stopped, not guest Linux CPU-online state.
     /// Unbooted HVF secondaries conservatively remain Unknown and block aggregation.
     pub online: bool,
+    /// Last observed phase; Unknown is retained when execution cannot be inferred.
     pub state: VcpuObservedState,
+    /// Collector sequence at this CPU record update.
     pub sequence: u64,
     /// Monotonic offsets from this VM's observation origin, not guest time.
     pub since: Duration,
+    /// Saturating count of observed phase changes in this session.
     pub transitions: u64,
+    /// Saturating count of observed event-wait entries in this session.
     pub wait_entries: u64,
     /// Closed observation intervals, including truncation when disabling;
     /// not necessarily a backend wake event.
@@ -603,10 +739,15 @@ pub struct VcpuObservation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why an observation snapshot cannot even identify an all-waiting opportunity.
 pub enum VcpuObservationRejection {
+    /// Observation is disabled; no waiting claim can be made.
     Disabled,
+    /// Not all configured backend CPUs have a complete observation record.
     TopologyIncomplete,
+    /// At least one CPU phase is unknown.
     Unknown,
+    /// At least one eligible CPU is outside an event wait.
     NotAllWaiting,
     /// Even a full waiting window is observe-only: no complete wake/deadline contract.
     WakeDeadlineUnavailable,
@@ -619,18 +760,29 @@ pub enum VcpuObservationRejection {
 /// or wake delivery guarantee is provided in M0.
 #[derive(Clone, Debug)]
 pub struct VcpuObservationSnapshot {
+    /// Backend that produced these diagnostic records.
     pub hypervisor: Hypervisor,
+    /// Whether collection is enabled for this snapshot.
     pub enabled: bool,
+    /// Observation enable-session identity; old sessions cannot be combined.
     pub session: u64,
+    /// Topology revision captured with the CPU records.
     pub topology_generation: u64,
+    /// Collector-wide sequence at the sampled snapshot.
     pub sequence: u64,
     /// Captured under the same collector lock as the cloned CPU records.
     pub sampled_at: Duration,
+    /// Bounded latest record for each configured backend CPU, not a transition log.
     pub vcpus: Vec<VcpuObservation>,
+    /// All eligible records are waiting; this is never pause/offload permission.
     pub all_waiting: bool,
+    /// Diagnostic epoch of the current all-waiting window.
     pub idle_epoch: u64,
+    /// VM-origin monotonic start of the current all-waiting window, when known.
     pub all_waiting_since: Option<Duration>,
+    /// Accumulated closed all-waiting windows in this session.
     pub completed_all_waiting: Duration,
+    /// Reason the snapshot lacks complete wake/deadline authority, even if all_waiting.
     pub rejection: VcpuObservationRejection,
 }
 
@@ -645,7 +797,11 @@ pub struct VcpuObservationSnapshot {
 /// holding device/queue locks. A dead VM or poisoned lock returns an error;
 /// observation errors do not change VM control state. Counters saturate.
 pub trait VcpuObservationControl {
+    /// Enable/disable the shared diagnostic collector. Repeated enables are
+    /// idempotent; a new session starts Unknown, and errors leave control state unchanged.
     fn set_vcpu_observation(&self, enabled: bool) -> Result<(), String>;
+    /// Clone the consistent latest snapshot under the collector lock. Does not
+    /// kick CPUs, start workers or grant an idle lease; stopped owners return an error.
     fn vcpu_observation(&self) -> Result<VcpuObservationSnapshot, String>;
 }
 
@@ -655,8 +811,11 @@ pub struct FrozenMachine<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Backend RAM fault delivered to an installed resolver; not an arbitrary memory-access grant.
 pub struct MemoryFault {
+    /// Guest physical fault address; the handler must check ownership and bounds.
     pub guest_address: u64,
+    /// Backend fault syndrome; interpretation is architecture-specific.
     pub syndrome: u64,
 }
 /// Resolver must reject unowned addresses and synchronize concurrent CPU faults.
@@ -670,9 +829,13 @@ pub struct RamBlock {
     pub(crate) inner: crate::memory::Block,
 }
 #[derive(Clone, Copy, Debug)]
+/// Best-effort backing/residency report from one completed reclaim operation.
 pub struct RamReclaim {
+    /// Bytes covered by published backing, not necessarily released physical capacity.
     pub backed_bytes: u64,
+    /// Resident-byte estimate before reclaim; None when the host cannot measure it.
     pub resident_before_bytes: Option<u64>,
+    /// Resident-byte estimate after reclaim; None when the host cannot measure it.
     pub resident_after_bytes: Option<u64>,
 }
 
@@ -696,8 +859,11 @@ pub enum PermissionSemantics {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BaselineContentIndex {
+    /// Canonical immutable baseline root retained by the caller-owned generation lease.
     pub root: PathBuf,
+    /// Sealed baseline content-index file bound to root.
     pub file: PathBuf,
+    /// Lowercase SHA-256 hex digest authenticating the content index bytes.
     pub sha256: String,
 }
 
@@ -705,6 +871,7 @@ pub struct BaselineContentIndex {
 /// Host paths retain their native representation. The runtime validates UTF-8
 /// atomically before replacing configuration for the backend that requires it.
 pub struct OverlayConfig {
+    /// Physical lower roots in highest-to-lowest overlay priority order.
     pub lower_dirs: Vec<PathBuf>,
     /// Stability promises in physical lower order (highest priority first).
     /// New attachments default an empty list to all Immutable. Transparent/live
@@ -726,13 +893,21 @@ pub struct OverlayConfig {
     /// Read-only observers may coexist without a freshness guarantee; concurrent
     /// external writers are unsupported regardless of lower declarations.
     pub upper_dir: PathBuf,
+    /// Optional private work directory; must be separate from lower/target and on the upper filesystem.
     pub work_dir: Option<PathBuf>,
+    /// Optional exclusively owned preimage journal directory for review/apply observations.
     pub preimage_dir: Option<PathBuf>,
+    /// Separate host destination for reviewed changes; configuring it does not apply anything.
     pub apply_target: Option<PathBuf>,
+    /// Optional baseline root for conflict observations, independent of merged lower selection.
     pub baseline_lower: Option<PathBuf>,
+    /// Optional leased immutable baseline content receipt; absence keeps ordinary fingerprinting.
     pub baseline_content_index: Option<BaselineContentIndex>,
+    /// Relative paths excluded from the merged view and protected against recursive effects.
     pub excluded_paths: Vec<PathBuf>,
+    /// Shared path access policy checked on each serving operation.
     pub access_policy: pvisor_overlay_core::FileAccessPolicy,
+    /// Host/guest ownership, permissions and xattr translation model.
     pub semantics: PermissionSemantics,
 }
 
@@ -745,37 +920,57 @@ pub struct MachineSnapshot {
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+/// One captured guest RAM region bound to a range in the sealed RAM file.
 pub struct RamMappingSnapshot {
+    /// Guest physical starting address, never a host pointer.
     pub base: u64,
+    /// Length in bytes; restore checks topology and page alignment.
     pub len: u64,
+    /// Byte offset of this region within the captured RAM file.
     pub file_offset: u64,
 }
 /// Supervisor-bound immutable MAP_PRIVATE baseline for optional delta capture.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RamDeltaSpec {
+    /// Device identity of the caller-pinned immutable baseline file.
     pub device: u64,
+    /// Inode identity of the caller-pinned immutable baseline file.
     pub inode: u64,
+    /// Logical baseline RAM length in bytes, bounded by validate().
     pub length: u64,
+    /// Power-of-two block size, 4 KiB through 1 MiB; validate also bounds block count.
     pub block_bytes: u32,
+    /// Lowercase SHA-256 of the complete immutable baseline contents.
     pub base_sha256: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Versioned inventory of blocks captured differently from an immutable RAM baseline.
 pub struct RamDeltaCapture {
+    /// Delta encoding version; only version 1 is accepted.
     pub version: u32,
+    /// Logical RAM bytes described by this delta inventory.
     pub length: u64,
+    /// Block size in bytes; must match the validated baseline geometry.
     pub block_bytes: u32,
+    /// SHA-256 identity of the unchanged baseline needed to reconstruct RAM.
     pub base_sha256: String,
     /// Sorted unique changed blocks, including blocks cleared to zero.
     pub changed_blocks: Vec<u64>,
 }
+/// Structural validation of baseline/delta geometry; never grants restore authority.
 pub trait RamDeltaState {
+    /// Reject invalid lengths/block sizes/digests and, for captures, unsupported
+    /// versions or unordered/duplicate/out-of-range indices. Does not open or hash a file.
     fn validate(&self) -> Result<(), String>;
 }
 
+/// Caller-authorized machine state and retained sealed RAM used for private restore.
 pub struct MachineRestore {
+    /// CPU/device/kernel state; still validated against host and RAM topology at restore.
     pub state: MachineSnapshot,
+    /// Shared owner of sealed RAM bytes; caller keeps contents immutable for all restored VMs.
     pub ram_file: Arc<File>,
 }
 
@@ -787,10 +982,19 @@ pub struct MachineRestore {
 /// distinguish capacity rejection from a broken connection. No VM pointers or
 /// OS mapping state cross this boundary. The pager never calls put under a VM barrier.
 pub trait ColdRamStore: Send {
+    /// Session-owned immutable block reference; Send does not permit cross-session reuse.
     type Object: Send;
+    /// Publish verified immutable bytes and acquire exactly one reference.
+    /// WouldBlock guarantees no reference was acquired; other errors may be uncertain.
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object>;
+    /// Restore and verify the entire referenced block into the exact output
+    /// buffer before returning success. Partial/error bytes must not be used as restored RAM.
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()>;
+    /// Consume one session reference after all dependent mappings are removed.
+    /// The caller must reconcile uncertain errors rather than assuming release succeeded.
     fn release(&mut self, object: Self::Object) -> io::Result<()>;
+    /// Return current storage/reference accounting, or an error for an unhealthy
+    /// session; concurrent cross-session counts may be approximate.
     fn stats(&mut self) -> io::Result<ColdRamPoolStats>;
     /// An optional immutable, read-only pool file page. The object pins its slot
     /// until release; callers must unmap it before releasing the object. On a
@@ -800,13 +1004,18 @@ pub trait ColdRamStore: Send {
     fn shared_mapping(&self, object: &Self::Object) -> Option<SharedRamMapping>;
 }
 
+/// Pinned read-only pool-file region supplied for private shared-page mappings.
 pub struct SharedRamMapping {
+    /// Read-only file owner; the associated object reference must also remain pinned.
     pub file: Arc<File>,
+    /// Byte offset of the object slot; the caller validates alignment and file bounds.
     pub offset: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+/// Explicit cold-RAM strategy preferences; all false by default and validated on pager start.
 pub struct ColdRamOptions {
+    /// Enable optional diagnostic metrics; it does not change reclaim correctness or limits.
     pub metrics: bool,
     /// Request native pages for a shared host pool: 4 KiB on Linux x86_64,
     /// 16 KiB on Apple Silicon/HVF. HVF requires `share_resident` as well.
@@ -821,16 +1030,24 @@ pub struct ColdRamOptions {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+/// Process-local outstanding cold-RAM work, not node memory consumption.
 pub struct ColdRamActivity {
+    /// Bytes of pending file-backed work, or zero with no such worker.
     pub pending_file_bytes: u64,
+    /// Bytes of pending snapshot-related work, or zero with no such worker.
     pub pending_snapshot_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Store-reported accounting for the current session and shared immutable objects.
 pub struct ColdRamPoolStats {
+    /// Bytes charged by the store encoding; not decoded VM RAM or process RSS.
     pub encoded_bytes: u64,
+    /// Number of currently retained immutable objects.
     pub objects: u64,
+    /// Object references held by this store session, including local aliases.
     pub session_references: u64,
+    /// Objects referenced by multiple sessions; a live approximate sharing count.
     pub cross_session_objects: u64,
 }
 
@@ -839,10 +1056,19 @@ pub struct ColdRamPoolStats {
 /// back into VM control. `flush_writes` drains staging, not checkpoint publication.
 /// Readers observe staged writes without requiring generation commit.
 pub trait RamFileStore: Send {
+    /// Current logical RAM-file length in bytes; no generation is committed.
     fn logical_bytes(&self) -> u64;
+    /// Resize staging storage to size bytes, preserving the store resize/error
+    /// contract; failure may retain partial storage effects and must be surfaced.
     fn set_len(&mut self, size: u64) -> io::Result<()>;
+    /// Read at offset into output, returning the bytes read; zero at EOF.
+    /// Must remain bounded and avoid VM-control reentry from the FUSE worker.
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<usize>;
+    /// Write all input bytes at offset into staging, or report an I/O error.
+    /// A failed write may have partial effects; this is not a generation commit.
     fn write_at(&mut self, offset: u64, input: &[u8]) -> io::Result<()>;
+    /// Drain staged writes according to the store contract. Does not publish
+    /// a checkpoint/generation or authorize removing the backing owner.
     fn flush_writes(&self) -> io::Result<()>;
 }
 
@@ -852,6 +1078,7 @@ pub struct RamFileMount {
     pub(crate) _inner: crate::ram_file::Mount,
 }
 
+/// Construct a mount owner and RAM file whose consumers must close before owner drop.
 pub trait RamFileMapping: Sized {
     /// Create one mmap-compatible RAM inode in a private child of `directory`.
     /// The caller owns cache authorization and generation commit. The runtime

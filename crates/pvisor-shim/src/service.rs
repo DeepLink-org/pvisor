@@ -1270,24 +1270,48 @@ impl Task for PvisorTask {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if req.exec_id.is_empty() {
-                if live.entry.status == TaskStatus::Stopped { return Ok(Empty::new()); }
-                let internal = live.internal.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "task has no process ownership"))?;
-                internal.signal(signal, req.all && !live.vm).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+                if live.entry.status == TaskStatus::Stopped {
+                    return Ok(Empty::new());
+                }
+                let internal = live.internal.as_ref().ok_or_else(|| {
+                    rpc_error(Code::FAILED_PRECONDITION, "task has no process ownership")
+                })?;
+                internal
+                    .signal(signal, req.all && !live.vm)
+                    .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
                 return Ok(Empty::new());
             }
-            let entry = live.entry.execs.get(&req.exec_id).ok_or_else(|| not_found(&req.exec_id))?;
-            if entry.status == TaskStatus::Stopped { return Ok(Empty::new()); }
-            let exec = live.execs.get(&req.exec_id).ok_or_else(|| not_found(&req.exec_id))?;
+            let entry = live
+                .entry
+                .execs
+                .get(&req.exec_id)
+                .ok_or_else(|| not_found(&req.exec_id))?;
+            if entry.status == TaskStatus::Stopped {
+                return Ok(Empty::new());
+            }
+            let exec = live
+                .execs
+                .get(&req.exec_id)
+                .ok_or_else(|| not_found(&req.exec_id))?;
             if !live.vm {
-                let internal = exec.internal.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "exec has no process ownership"))?;
-                internal.signal(signal, req.all).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+                let internal = exec.internal.as_ref().ok_or_else(|| {
+                    rpc_error(Code::FAILED_PRECONDITION, "exec has no process ownership")
+                })?;
+                internal
+                    .signal(signal, req.all)
+                    .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
                 return Ok(Empty::new());
             }
-            exec.vm_sock.as_ref().ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "VM exec has no agent socket"))?
-                .try_clone().map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?
+            exec.vm_sock
+                .as_ref()
+                .ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "VM exec has no agent socket"))?
+                .try_clone()
+                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?
         };
         // Guest PIDs are never host signal targets; EOF terminates the guest exec.
-        socket.shutdown(std::net::Shutdown::Both).map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+        socket
+            .shutdown(std::net::Shutdown::Both)
+            .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
         Ok(Empty::new())
     }
 
@@ -1604,7 +1628,9 @@ impl Sandbox for PvisorSandbox {
     ) -> ttrpc::Result<StopSandboxResponse> {
         let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
         if let Some(state) = sandbox.as_ref().filter(|state| state.id == req.sandbox_id) {
-            state.internal.signal(libc::SIGTERM, false)
+            state
+                .internal
+                .signal(libc::SIGTERM, false)
                 .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
         }
         Ok(StopSandboxResponse::new())

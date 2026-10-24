@@ -120,7 +120,7 @@ signature_lines() {
 
 # Inspect the native task inventory, including the visibility contract.
 mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
-printf '%s\n' default ci clean build check wheel fw fmt fmt-rust fmt-py lint lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget update-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
+printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget update-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
 diff -u "$work/expected" "$work/public"
 
 run doctor dev
@@ -358,6 +358,11 @@ PVISOR_TASK_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001 --r
 check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
 expect_failure cases --suite use --case
 if grep -Fq $'cargo\trun\t' "$PVISOR_TASK_TEST_LOG"; then echo 'invalid selection reached semspec' >&2; exit 1; fi
+
+run accept-wheel "$work/wheel with spaces.whl" "$work/evidence with spaces.json"
+check_line python3 scripts/packaging/verify_wheel.py "$work/wheel with spaces.whl" --install-smoke --acceptance-log "$work/evidence with spaces.json"
+expect_failure accept-wheel only-one-argument
+test ! -s "$PVISOR_TASK_TEST_LOG"
 
 run wheel
 test -f "$work/dist/pvisor-a.whl"

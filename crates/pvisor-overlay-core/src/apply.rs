@@ -78,8 +78,8 @@ struct TargetApplyLock {
 impl TargetApplyLock {
     fn acquire(target: &Path) -> Result<Self, OverlayError> {
         // All entry points must share this inode namespace, regardless of TMPDIR.
-        let directory = Path::new("/tmp")
-            .join(format!("pvisor-apply-locks-{}", unsafe { libc::geteuid() }));
+        let directory =
+            Path::new("/tmp").join(format!("pvisor-apply-locks-{}", unsafe { libc::geteuid() }));
         Self::acquire_in(target, &directory)
     }
 
@@ -873,7 +873,9 @@ fn publish_backup_dir(
     path: &Path,
     initialize: impl FnOnce(&Path) -> Result<(), OverlayError>,
 ) -> Result<(), OverlayError> {
-    let parent = path.parent().ok_or_else(|| OverlayError::Apply("backup has no parent".into()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| OverlayError::Apply("backup has no parent".into()))?;
     let temporary = parent.join(format!(".pvisor-apply-init-{}", uuid::Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&temporary)?;
     let result = (|| {
@@ -3129,10 +3131,14 @@ mod tests {
         fs::create_dir(&alternate).unwrap();
         let lock = TargetApplyLock::acquire(&target).unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "apply::tests::target_lock_is_shared_across_tmpdirs"])
+            .args([
+                "--exact",
+                "apply::tests::target_lock_is_shared_across_tmpdirs",
+            ])
             .env(TARGET, &target)
             .env("TMPDIR", &alternate)
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !target.join("waiting").exists() {
             assert!(child.try_wait().unwrap().is_none());
@@ -3166,13 +3172,18 @@ mod tests {
     fn backup_initialization_failure_never_publishes_partial_ownership() {
         let root = tempdir().unwrap();
         let backup = root.path().join("backup");
-        for bytes in [None, Some(b"partial".as_slice()), Some(b"backup".as_slice())] {
+        for bytes in [
+            None,
+            Some(b"partial".as_slice()),
+            Some(b"backup".as_slice()),
+        ] {
             let error = publish_backup_dir(&backup, |temporary| {
                 if let Some(bytes) = bytes {
                     fs::write(temporary.join(".pvisor-owner"), bytes)?;
                 }
                 Err(io::Error::other("injected initialization/sync failure").into())
-            }).unwrap_err();
+            })
+            .unwrap_err();
             assert!(error.to_string().contains("injected"));
             assert!(!backup.exists());
         }
@@ -3182,7 +3193,10 @@ mod tests {
         fs::write(abandoned.join(".pvisor-owner"), b"partial").unwrap();
         open_backup_dir(&backup).unwrap();
         assert_eq!(fs::read(backup.join(".pvisor-owner")).unwrap(), b"backup");
-        assert_eq!(fs::read(abandoned.join(".pvisor-owner")).unwrap(), b"partial");
+        assert_eq!(
+            fs::read(abandoned.join(".pvisor-owner")).unwrap(),
+            b"partial"
+        );
         open_backup_dir(&backup).unwrap();
         let occupied = root.path().join("occupied");
         fs::DirBuilder::new().mode(0o700).create(&occupied).unwrap();

@@ -830,15 +830,26 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
     let socket = directory.canonicalize().unwrap().join("pool.sock");
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut a = loop {
-        assert!(child.0.try_wait().unwrap().is_none(), "pool exited before readiness");
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "pool exited before readiness"
+        );
         match UnixStream::connect(&socket) {
             Ok(stream) => {
                 let mut client = PoolClient::new(stream, Duration::from_secs(2)).unwrap();
                 client.stats().unwrap();
                 break client;
             }
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
-                assert!(Instant::now() < deadline, "pool readiness deadline: {error}");
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "pool readiness deadline: {error}"
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => panic!("pool readiness: {error}"),

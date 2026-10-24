@@ -11,6 +11,9 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 5. **契约必须写清楚。** 接口文档说明输入校验、资源所有权、调用顺序、生命周期、线程与同步要求、错误后的状态，以及快照冻结、发布和恢复的职责边界。
 6. **底层验证也守住边界。** 需要访问寄存器、设备队列或内部状态的测试放在本 crate 内；其他 crate 的测试使用公开 API。不能为了测试重新公开实现模块。
 
+公开 API 的缺失文档由 `#![deny(missing_docs)]` 强制拒绝；`mise run lint-api-docs`
+对 VM、OverlayFS 与 Journal 运行 warnings-denied rustdoc，并由 CI 执行。
+
 API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存回调类型也是内部运行时使用的唯一类型定义；内部不复制等价记录。快照恢复验证和 COW 映射共用 RAM 清单及文件大小校验，映射过程另外检查拓扑和宿主页对齐。
 
 统一的 Rust API 不表示不同架构之间可以互相恢复快照，也不表示机器已具备虚拟化权限。能力描述、运行时安装证据和持久化兼容性校验是不同契约。

@@ -515,9 +515,14 @@ run = '''
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for lint" >&2; exit 2; fi
 mise run lint-rust --
+mise run lint-api-docs --
 mise run lint-py --
 mise run lint-workflows --
 '''
+
+[tasks.lint-api-docs]
+description = "严格验证已迁移 crate 的公开 API 文档"
+run = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p pvisor-vm -p pvisor-overlayfs -p pvisor-journal"
 
 [tasks.lint-py]
 description = "Python 静态检查"
@@ -800,4 +805,22 @@ case "$(uname -m)" in
   x86_64) rustup target add x86_64-unknown-linux-musl ;;
   *) echo "unsupported guest architecture" >&2; exit 2 ;;
 esac
+'''
+
+[tasks.accept-wheel]
+description = "验收安装后的 wheel：真实 VM 冷恢复、stage/apply 与准入拒绝"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -ne 2 ]]; then echo "usage: accept-wheel WHEEL LOG_JSON" >&2; exit 2; fi
+python3 scripts/packaging/verify_wheel.py "$1" --install-smoke --acceptance-log "$2"
+'''
+
+[tasks.publish-release]
+description = "按摘要校验已有发布内容，只上传缺失制品"
+hide = true
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+python3 scripts/ci/publish_release.py "$@"
 '''

@@ -21,6 +21,13 @@ The current release set contains Linux x86_64 and Apple Silicon macOS wheels. So
     - Workflow: `release.yml`
     - Environment: `pypi`
 
+3. Register trusted native runners with the `pvisor-release` label: Linux x86_64
+   with KVM access, and Apple Silicon macOS with Hypervisor.framework access.
+   Install mise's pinned Python/Rust tools and the matching Linux musl Rust target
+   (`mise run setup`). Dedicate these runners to trusted release commits and
+   remove previous Job state between runs. Missing runners or virtualization
+   permissions block publication.
+
 No PyPI API token is stored in GitHub. A pending publisher can create the project on the first successful upload but does not reserve its name.
 
 Before pushing the first release tag, verify that the `pvisor` Trusted Publisher matches the current repository, workflow and environment.
@@ -47,17 +54,43 @@ Before pushing the first release tag, verify that the `pvisor` Trusted Publisher
 
 The PEP 517 backend is setuptools with repository-owned `scripts/packaging/build_backend.py`. It builds the native components and stages platform payloads before wheel assembly. `setup.py` installs binary scripts without Python console-entry-point wrappers and marks wheels platform-specific while retaining Python/ABI tags `py3-none`.
 
-Packaging fetches pinned libkrun firmware archives for Linux x86_64 and Apple Silicon macOS unless `PVISOR_LIBKRUNFW_PATH` points to an existing payload. Local wheel builds must use a supported path; missing payload is a build error rather than an incomplete wheel.
+Packaging builds the pinned firmware sources in `fw/`, verifies downloaded kernel
+inputs and caches builds by their inputs. `PVISOR_LIBKRUNFW_PATH` can select an
+existing payload. Missing firmware is a build error. Each platform exports its
+corresponding firmware sources for publication alongside the wheels.
 
 Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the libkrunfw kernel; the wheel does not include firmware shared libraries. The manylinux_2_28 tag remains for glibc Python installers. Building requires Zig, cargo-zigbuild and the Rust musl target; firmware is loaded only during the build.
 
 Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and packages `libkrunfw.5.dylib`. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
 
-Every wheel has component checks and an installed CLI smoke test. Release-set validation requires exactly one supported wheel per platform, matching versions, valid metadata and bounded artifact sizes before publication.
+Stable releases first run the required CI workflow at the release commit, then
+build wheels. Each final wheel is installed in a fresh environment on its native
+runner. Acceptance checks host exit status, refusal of strict host execution,
+real VM startup, suspend/cold restore with continuing in-memory progress, stable
+Job/new Attempt identity, staged writes and review. A separate fresh VM Job
+checks selective apply; the restored layered Job must refuse its unsupported
+apply path. It uses a
+small static guest compiled from repository-owned source; unavailable hardware
+fails acceptance. Logs retain wheel and installed binary SHA-256 plus command
+results as `release-acceptance-*` artifacts. Run the same acceptance locally with
+`mise run accept-wheel -- WHEEL LOG_JSON`.
 
-Rerunning a partially completed tagged release skips files already accepted by PyPI and fills missing GitHub Release assets.
+Release-set validation requires exactly one supported wheel per platform,
+matching versions, valid metadata and bounded artifact sizes. Both platform
+acceptances and the complete set must pass before either publication channel.
 
-The Linux x86_64 daemon uses native `pvisor-vm`, not rootless Podman. Its `serve` command needs KVM access, delegated cgroup v2 and a trusted prepared-image manifest/rootfs with a bootstrap supervising genuine execd/egress services and guest vsock bridges on CID 3, ports 44772/18080. The bootstrap/image recipe is not supplied or end-to-end validated. Shipping an executable is not SDK-conformance or density evidence. See [daemon setup](../guides/daemon/index.md).
+Stable versions are immutable. A retry verifies existing GitHub/PyPI file
+SHA-256 values before publishing. Identical files are retained and missing files
+can be added; different bytes under an existing filename fail and require a new
+version. GitHub uploads never overwrite assets, and PyPI does not blindly skip
+existing filenames. Corresponding firmware sources are published on GitHub before
+PyPI wheels. A configured gate is not evidence that acceptance has passed.
+
+The Linux x86_64 daemon uses native `pvisor-vm` with KVM and delegated cgroup v2.
+New templates use the shared Rust guest engine and host protocol adapters;
+explicit execd/envd binaries retain their upstream backend. Wheel acceptance
+covers native Jobs; daemon SDK conformance, containerd integration and density
+require their own acceptance evidence. See [daemon setup](../guides/daemon/index.md).
 
 ## Nightly builds
 

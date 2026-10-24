@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -1056,7 +1057,10 @@ class ReleasePackagingTests(unittest.TestCase):
                 ):
                     assert retired not in contents
                 assert "dist/*.whl" in contents
-                assert "dist/pvisor-firmware-source-*.tar.gz" in contents
+                if workflow == "nightly.yml":
+                    assert "dist/pvisor-firmware-source-*.tar.gz" in contents
+                else:
+                    assert "publish-release -- github dist" in contents
                 assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
                 assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
                 if workflow == "nightly.yml":
@@ -1122,6 +1126,8 @@ class ReleasePackagingTests(unittest.TestCase):
                     expected = wheel_verify.expected_binaries(wheel)
 
                     def create_environment(self, environment):
+                        # Relocated standalone Python copies cannot find libpython on macOS.
+                        assert self.symlinks
                         scripts = wheel_verify._installed_script_dir(environment)
                         scripts.mkdir(parents=True)
                         for name in expected:
@@ -1153,6 +1159,99 @@ class ReleasePackagingTests(unittest.TestCase):
                         "service" in command or "pvisor-memory-pool" in command
                         for command in commands
                     )
+
+    def test_acceptance_rejects_reused_attempt_and_wrong_applied_bytes(self):
+        # Exercise the acceptance oracle itself; these mocks are not VM evidence.
+        for fault in (None, "same-attempt", "wrong-apply", "strict-executed"):
+            with self.subTest(fault=fault), workspace() as (root, resources):
+                executable = root / "pvisor"
+                wheel = root / "pvisor.whl"
+                executable.write_bytes(b"installed")
+                wheel.write_bytes(b"wheel")
+                directory = root / "acceptance"
+                stage = directory / "stage"
+                upper = root / "upper"
+                upper.mkdir()
+                counter = upper / "counter"
+                state = {"attempt": 0, "busy": True}
+
+                class Process:
+                    returncode = None
+
+                    def __init__(self, command, **kwargs):
+                        state["attempt"] += 1
+                        stage.mkdir(exist_ok=True)
+                        (stage / "run.json").write_text("{}")
+                        counter.write_text(str(1000 + state["attempt"]))
+
+                    def poll(self):
+                        return self.returncode
+
+                    def wait(self, **kwargs):
+                        self.returncode = 0
+                        return 0
+
+                    def terminate(self):
+                        self.returncode = -15
+
+                    kill = terminate
+
+                def run(command, **kwargs):
+                    args = list(map(str, command))
+                    code, output = 0, ""
+                    if args[0] == "rustc":
+                        pass
+                    elif args[1] == "spawn":
+                        code = 1 if "--strict" in args else 0 if "vm" in args else 7
+                        if "--strict" in args and fault == "strict-executed":
+                            (directory / "workspace/forbidden").touch()
+                    elif args[1] == "status":
+                        if state["attempt"] == 2 and state["busy"]:
+                            state["busy"] = False
+                            return subprocess.CompletedProcess(
+                                command, 1, "", "Error: Job operation already in progress: busy"
+                            )
+                        if "--review" in args:
+                            output = json.dumps({"schema_version": 5})
+                        else:
+                            output = json.dumps(
+                                {
+                                    "run": {
+                                        "run_id": "same-job",
+                                        "attempt_id": "same"
+                                        if fault == "same-attempt"
+                                        else str(state["attempt"]),
+                                        "overlay": {"upper": {"upper_dir": str(upper)}},
+                                    }
+                                }
+                            )
+                    elif args[1] == "suspend":
+                        output = json.dumps({"checkpoint_id": "checkpoint"})
+                    elif args[1] == "apply":
+                        if "apply-stage" in args[2]:
+                            (directory / "workspace/applied").write_bytes(
+                                b"wrong" if fault == "wrong-apply" else b"reviewed wheel bytes"
+                            )
+                        else:
+                            code, output = 1, "Error: Job composes read-only layers above its base"
+                    return subprocess.CompletedProcess(command, code, output, "")
+
+                resources.enter_context(mock.patch.object(wheel_verify.subprocess, "run", run))
+                resources.enter_context(
+                    mock.patch.object(wheel_verify.subprocess, "Popen", Process)
+                )
+                log = root / "evidence/result.json"
+                if fault:
+                    with self.assertRaises(RuntimeError):
+                        wheel_verify.acceptance(executable, wheel, directory, {}, log)
+                else:
+                    wheel_verify.acceptance(executable, wheel, directory, {}, log)
+                    evidence = json.loads(log.read_text())
+                    self.assertEqual(
+                        evidence["wheel_sha256"], wheel_verify.hashlib.sha256(b"wheel").hexdigest()
+                    )
+                    self.assertEqual(evidence["steps"][-1]["step"], "vm-restore-stage-review")
+                self.assertTrue(log.is_file())
 
     def test_setuptools_excludes_stale_retired_and_unrelated_wheel_scripts(self):
         with workspace() as (tmp_path, resources):

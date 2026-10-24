@@ -27,6 +27,8 @@
 //! snapshot/overlay records are defined in `api` with the same shape everywhere.
 //!
 //! See the crate README and [`api`] for the complete calling contract.
+#![deny(missing_docs)]
+
 #[macro_use]
 extern crate log;
 

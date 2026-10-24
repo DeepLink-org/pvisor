@@ -330,7 +330,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `policies` | `pvisor_core::SessionPolicies` | `{}` | Additional session, workspace and user restrictions |
 | `run.agent` | `String` | `"agent"` | `--name`; CLI derives command name when left at default |
 | `run.executor` | `RunExecutorKind` | `"host"` | `--executor`: host, container, vm |
-| `run.profile` | `RunProfile` | `"default"` | `default` or `safe`; safe requests sandbox admission and the CLI safe preset, without implying non-bypassable selective proxy networking |
+| `run.profile` | `pvisor_core::RunProfile` | `"default"` | `default` or `safe`; safe requests sandbox admission and the CLI safe preset, without implying non-bypassable selective proxy networking |
 | `run.timeout_ms` | `Option<u64>` | `unset` | Wall time in ms; `--timeout 30s` |
 | `run.stdio` | `RunStdio` | `"inherit"` | inherit or capture; `--stdio` |
 | `run.policy` | `RunPolicy` | `"observe"` | observe or enforce; `--strict` selects enforce |

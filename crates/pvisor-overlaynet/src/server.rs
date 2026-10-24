@@ -681,7 +681,10 @@ mod tests {
         }
         let targets = metrics.snapshot().targets;
         assert!(targets.keys().any(|key| key.contains("::1")), "{targets:?}");
-        assert!(targets.keys().any(|key| key.contains("2001:db8::10")), "{targets:?}");
+        assert!(
+            targets.keys().any(|key| key.contains("2001:db8::10")),
+            "{targets:?}"
+        );
         assert_eq!(targets.len(), 2);
     }
 
