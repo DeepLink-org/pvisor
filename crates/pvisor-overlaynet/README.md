@@ -128,6 +128,9 @@ smoltcp stacks establishes TCP and verifies simultaneous 1 MiB transfers in
 each direction under deterministic loss, duplication and reordering.
 The simulated guests retain partial nonblocking writes so full-duplex
 backpressure cannot block their shared polling thread or bypass the test deadline.
+The timed duplex recovery test reserves the nextest execution pool while it runs,
+so other tests cannot consume its scheduling budget. Its 20-second deadline,
+payloads and fault/integrity assertions remain unchanged.
 Additional chaos tests exercise four-node concurrent forwarding with fragmented guest
 stream writes, repeated restarts, saturation followed by receiver recovery, and
 malformed-datagram floods. Congestion tests isolate a stalled guest from another

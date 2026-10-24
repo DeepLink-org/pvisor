@@ -177,6 +177,8 @@ Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 or newer, t
 `mise trust`, `mise install --locked`, and `mise run setup`. The checked-in `mise.toml`
 manages development tools; `uv.lock` fixes Python development dependencies in
 `.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
+The timed peer TCP recovery test reserves all nextest execution slots while it
+runs; other tests keep their normal parallelism. See [.config/nextest.toml](.config/nextest.toml).
 See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
 
 Complex task implementations live in `scripts/tasks/`; `mise.toml` declares their
