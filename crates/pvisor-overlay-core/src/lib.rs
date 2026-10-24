@@ -8,6 +8,8 @@ pub use content_index::encode_content_index;
 pub mod preimage_log;
 pub mod profile;
 pub mod service;
+#[cfg(all(feature = "sparse-checkpoint-copy", target_os = "linux"))]
+mod sparse_copy;
 pub mod stage;
 pub mod sys;
 

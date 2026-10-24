@@ -10,6 +10,8 @@ readme = "README.md"
 [features]
 default = []
 gateway = ["dep:pvisor-gateway"]
+# Opt-in hole-preserving checkpoint/restore copies; see pvisor-overlay-core.
+sparse-checkpoint-copy = ["pvisor-overlay-core/sparse-checkpoint-copy"]
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "http2", "tokio"] }
