@@ -124,7 +124,7 @@ impl ReceiveBatch {
                     fd,
                     messages.as_mut_ptr(),
                     BATCH as _,
-                    libc::MSG_DONTWAIT,
+                    libc::MSG_DONTWAIT as _,
                     std::ptr::null_mut(),
                 )
             };
@@ -173,7 +173,7 @@ pub(crate) fn send(fd: RawFd, packets: &[io::IoSlice<'_>]) -> io::Result<usize> 
                     fd,
                     messages.as_mut_ptr(),
                     packets.len() as _,
-                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                    (libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL) as _,
                 )
             };
             if count > 0 {
