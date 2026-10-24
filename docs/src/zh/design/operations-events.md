@@ -96,8 +96,8 @@ Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。
 | `pvisor-journal` | 提交、引用校验与恢复 |
 
 ```sh
-just test core pvisor-journal
-just test pvisor
+mise run test -- core pvisor-journal
+mise run test -- pvisor
 ```
 
 Operation 契约测试覆盖身份、改写／放置分离、终态和版本拒绝。生产路径测试覆盖网络权限实际收窄后的事实链、因果引用，以及环境变量值不进入操作快照。

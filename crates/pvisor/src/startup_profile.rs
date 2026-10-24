@@ -130,6 +130,19 @@ impl Drop for Span {
     }
 }
 
+struct DiagnosticWriter;
+impl Write for DiagnosticWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Ok(line) = std::str::from_utf8(bytes) {
+            crate::diagnostics::diagnostic(format_args!("{}", line.trim_end_matches('\n')));
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,18 +200,5 @@ mod tests {
             }
         }
         record.emit(&mut Unavailable);
-    }
-}
-
-struct DiagnosticWriter;
-impl Write for DiagnosticWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if let Ok(line) = std::str::from_utf8(bytes) {
-            crate::diagnostics::diagnostic(format_args!("{}", line.trim_end_matches('\n')));
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }

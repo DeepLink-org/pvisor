@@ -460,23 +460,23 @@ M1 可不修改 guest 内核；它验证预热后的机制，不能证明已实�
 按实际修改选择命令，完成目标 crate 测试、受影响消费者编译和必要的真实平台验证：
 
 ```bash
-just test pvisor-vm
-just test pvisor-overlay-core
-just test pvisor-overlayfs
-just test pvisor-guest
-just test pvisor
+mise run test -- pvisor-vm
+mise run test -- pvisor-overlay-core
+mise run test -- pvisor-overlayfs
+mise run test -- pvisor-guest
+mise run test -- pvisor
 ```
 
 涉及固件补丁或配置时：
 
 ```bash
-just fw build
-just fw test
+mise run fw -- build
+mise run fw -- test
 ```
 
 固件测试验证构建/打包合同，不能替代真实 guest 文件系统测试。记录固定内核、patch 集、配置、VMM/固件哈希与 `libkrunfw.SOURCE`。测试所需 `/dev/kvm`、`/dev/fuse`、权限或平台不具备时，报告失败/跳过及未覆盖能力。
 
-修改公开 API 时，从 crate 外部经 `api` 测试合同，执行已有边界 guards，并以 warnings denied 检查 rustdoc；不为测试暴露内部状态。修改 semspec 用例时遵守 [semspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)，执行 `just semspec lint docs/src/zh/cases`；修改 runner 时用 `just test-semspec`。AI 不执行 approve/revoke，不改真实 `REVIEWED.toml` 或 `.approved/`，不弱化已有 claims/checks/xfail。
+修改公开 API 时，从 crate 外部经 `api` 测试合同，执行已有边界 guards，并以 warnings denied 检查 rustdoc；不为测试暴露内部状态。修改 semspec 用例时遵守 [semspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)，执行 `mise run semspec -- lint docs/src/zh/cases`；修改 runner 时用 `mise run test-semspec`。AI 不执行 approve/revoke，不改真实 `REVIEWED.toml` 或 `.approved/`，不弱化已有 claims/checks/xfail。
 
 #### 2.9.5 性能实验协议
 

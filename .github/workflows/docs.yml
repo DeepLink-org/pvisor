@@ -10,7 +10,11 @@ on:
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/test_docs.py'
-      - 'justfile'
+      - 'mise.toml'
+      - 'mise.lock'
+      - 'tests/tasks.toml'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/docs.yml'
   pull_request:
@@ -22,7 +26,11 @@ on:
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/test_docs.py'
-      - 'justfile'
+      - 'mise.toml'
+      - 'mise.lock'
+      - 'tests/tasks.toml'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
@@ -43,15 +51,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: docs-semspec
           workspaces: tools/semspec -> ../../target/semspec
       - name: Test documentation checks
-        run: just test-py tests/test_docs.py
+        run: mise run test-py -- tests/test_docs.py
       - name: Build and check documentation
-        run: just docs-build --require-recorded
+        run: mise run docs-build -- --require-recorded
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site

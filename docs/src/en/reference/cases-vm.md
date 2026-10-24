@@ -5,12 +5,12 @@ Apple Silicon macOS/HVF. New specifications are UNREVIEWED and have not been
 compiled or executed. Review the SDK driver at
 `crates/pvisor/examples/vm_control_case.rs` together with this specification.
 
-`just cases` discovers this page. The four SDK cases explicitly SKIP when the
-SDK driver is unavailable. `just cases --suite vm` builds the driver, signs it on macOS,
+`mise run cases` discovers this page. The four SDK cases explicitly SKIP when the
+SDK driver is unavailable. `mise run cases -- --suite vm` builds the driver, signs it on macOS,
 and runs all six cases on this page. To use existing binaries:
 
 ```sh
-just semspec run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+mise run semspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
 ```
 
 macOS requires `PVISOR_CASE_ROOTFS` pointing to a Linux guest rootfs; Linux defaults
@@ -220,7 +220,7 @@ vm_case_setup() {
 require_vm_sdk() {
   require_vm_case
   export VM_CASE_DRIVER="${PVISOR_CASE_VM_DRIVER:-$(dirname "$SUBJECT_BIN")/examples/vm_control_case}"
-  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with just cases --suite vm'
+  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with mise run cases -- --suite vm'
   export PVISOR_CASE_VM_PYTHON="${PVISOR_CASE_VM_PYTHON:-/usr/bin/python3}"
   [ -x "$PVISOR_CASE_ROOTFS/$PVISOR_CASE_VM_PYTHON" ] || skip 'guest Python unavailable'
 }

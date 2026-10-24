@@ -255,8 +255,8 @@ assert_content executable executable
 先按第二章学习 stage、review、apply 与 drop，再运行这些独立检查验证净效果、冲突与链接行为。macOS 需要 macFUSE；Linux 需要 /dev/fuse 和 user/mount namespace。缺少前提时退出 77；S-STAGE-013 保留已知 macOS xfail。检查和准备函数仍需人工审核。
 
 ```bash
-just cases --suite stage
-just cases --suite stage --case S-STAGE-008 --keep
+mise run cases -- --suite stage
+mise run cases -- --suite stage --case S-STAGE-008 --keep
 ```
 
 <!-- semspec: setup -->

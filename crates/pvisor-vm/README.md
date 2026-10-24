@@ -845,7 +845,7 @@ token 在整个探针中唯一，`scope` 指定该段所属设备；只有该设
 未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
 flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。
 该镜像不解析 Lazy Image 的页格式，也不把元数据放进 DAX 窗口。固件需
-重新执行 `just fw build` 后，guest 才会带上这部分 FUSE 改动。
+重新执行 `mise run fw -- build` 后，guest 才会带上这部分 FUSE 改动。
 
 公开 API 的真实 guest 正确性用例为 `readonly_dax_case`：
 
@@ -862,11 +862,11 @@ ROOTFS 须包含 `/usr/bin/python3`，FIRMWARE 是支持 DAX 的 libkrunfw 文�
 
 ## 验证入口
 
-`just test pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
+`mise run test -- pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
 
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，保证 VM 核心组件只在本 crate 内编译。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
 
-真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `just test-environment-snapshot`，整机冷恢复使用 `just test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `just fw build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `just test-hvf-cold-restore` 和 `just test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。Just 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
+真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `mise run test-environment-snapshot`，整机冷恢复使用 `mise run test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `mise run fw -- build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `mise run test-hvf-cold-restore` 和 `mise run test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。mise 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
 
 ## Stage snapshot rebinding
 

@@ -43,10 +43,10 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 ## 从现有测量入口开始
 
 ```bash
-just benchmark smoke --output benchmark.new/process/.data/candidate
-just benchmark nightly --output benchmark.new/process/.data/nightly-new
-just benchmark-compare benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
-just benchmark startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark.new/process/.data/candidate
+mise run benchmark -- nightly --output benchmark.new/process/.data/nightly-new
+mise run benchmark-compare -- benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
+mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
 ```
 
 进程回归门禁使用 semspec bench 与 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
@@ -104,7 +104,7 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 
 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv`列出每个报告及摘要；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv`便于重算分布；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`保留完整 JSON、脚本快照、Bundle、错误日志和 SIGKILL ledger。payload 与 rootfs 可按脚本重建，未在 docs 复制数 GB 环境。已有 macOS 与 Linux VM 批次完整保留；新产品工作负载只在 Linux 测，不合并跨平台样本。
 
-本轮 `just lint` 通过；`just test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
+本轮 `mise run lint` 通过；`mise run test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
 
 用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv`按批次分组。
 

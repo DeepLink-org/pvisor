@@ -27,7 +27,7 @@ jobs:
       - id: ver
         shell: bash
         run: |
-          version="$(just check-release-version --skip-lockfile)"
+          version="$(mise run check-release-version -- --skip-lockfile)"
           local_version="g${GITHUB_RUN_NUMBER}.${GITHUB_SHA:0:7}"
           echo "local_version=$local_version" >> "$GITHUB_OUTPUT"
           echo "version=$version+$local_version" >> "$GITHUB_OUTPUT"
@@ -73,7 +73,7 @@ jobs:
       - name: Verify complete nightly artifact set
         env:
           VERSION: ${{ needs.meta.outputs.version }}
-        run: just check-release-artifacts dist --version "$VERSION"
+        run: mise run check-release-artifacts -- dist --version "$VERSION"
 
       - name: Publish rolling nightly release
         uses: ncipollo/release-action@v1

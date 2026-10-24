@@ -22,13 +22,13 @@ Design: 四个固定 argv，逐条件顺序运行；每条件 2 次预热、10 �
 spawn，兼容尚未重命名的基线 run。实验使用已准备的二进制，默认关闭附加性能日志。
 
 ```sh
-just benchmark smoke
-just benchmark smoke --binary target/release/pvisor --output benchmark.new/process/.data/smoke-new
+mise run benchmark -- smoke
+mise run benchmark -- smoke --binary target/release/pvisor --output benchmark.new/process/.data/smoke-new
 ```
 
 Markdown 是四个条件的唯一声明；准备器通过 `semspec filter --format json` 读取已验证
 的计划，生成私有批次输入，再由 `semspec bench` 和公共运行库执行。不要直接执行含
-占位符的源文档。`just semspec filter benchmark.new/process/smoke.md` 仅渲染规格。
+占位符的源文档。`mise run semspec -- filter benchmark.new/process/smoke.md` 仅渲染规格。
 
 ### native
 
@@ -100,7 +100,7 @@ PVISOR_FS_PROFILE = "0"
 
 ## Data and analysis
 
-`just benchmark smoke` 审核成功后输出四行 Markdown 表格，并生成 `smoke.render.json`。
+`mise run benchmark -- smoke` 审核成功后输出四行 Markdown 表格，并生成 `smoke.render.json`。
 默认临时证据在审核后清理；`--output` 显式保留新 `.data/` 批次，包括冻结规格、
 公共 runtime、二进制和配置摘要、所有预热与正式记录、原始样本和 semspec 导出。
 任何命令、校验、制品摘要、样本数量或统计复算失败都阻止发布，旧结果不被覆盖。

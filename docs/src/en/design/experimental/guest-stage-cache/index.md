@@ -460,23 +460,23 @@ Controlled interleavings first validate protocol/lifetimes, then real KVM valida
 Choose commands for actual edits, covering target crates, affected consumer compilation and necessary platform checks:
 
 ```bash
-just test pvisor-vm
-just test pvisor-overlay-core
-just test pvisor-overlayfs
-just test pvisor-guest
-just test pvisor
+mise run test -- pvisor-vm
+mise run test -- pvisor-overlay-core
+mise run test -- pvisor-overlayfs
+mise run test -- pvisor-guest
+mise run test -- pvisor
 ```
 
 For firmware patches/configuration:
 
 ```bash
-just fw build
-just fw test
+mise run fw -- build
+mise run fw -- test
 ```
 
 Firmware tests check build/bundle contracts, not real guest filesystems. Record kernel, patches, configuration, VMM/firmware hashes and `libkrunfw.SOURCE`. Missing `/dev/kvm`, `/dev/fuse`, permissions or platform produce explicit failures/skips and uncovered scope.
 
-Public API edits require external tests through `api`, existing boundary guards and warnings-denied rustdoc. Keep internals private. Follow [Semspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md) for case changes with `just semspec lint docs/src/zh/cases`; runner edits use `just test-semspec`. AI does not approve/revoke, edit real `REVIEWED.toml`/`.approved/`, or weaken claims/checks/xfail.
+Public API edits require external tests through `api`, existing boundary guards and warnings-denied rustdoc. Keep internals private. Follow [Semspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md) for case changes with `mise run semspec -- lint docs/src/zh/cases`; runner edits use `mise run test-semspec`. AI does not approve/revoke, edit real `REVIEWED.toml`/`.approved/`, or weaken claims/checks/xfail.
 
 #### 2.9.5 Performance protocol
 

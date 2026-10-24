@@ -91,7 +91,7 @@ sampling. The worker output path must be at most 70 bytes and on real disk.
 Conventional harness checks, performed outside sampling:
 
 ```sh
-just test-py discover -s benchmark.new/memory -p test_scanner_compare.py
+mise run test-py -- discover -s benchmark.new/memory -p test_scanner_compare.py
 ```
 
 ## Firecracker and pooled-memory curves
@@ -280,7 +280,7 @@ target/semspec/debug/semspec bench --cwd "$PWD" \
 Full preflight covers all seven arms and three patterns. Subsets are diagnostic
 only. A new formal output requires all arms/patterns and at least five randomized
 rounds. Preserve failed and changed-harness cohorts; never use them for a formal
-comparison. `just test-py discover -s benchmark.new/memory -p test_pool_compare.py`
+comparison. `mise run test-py -- discover -s benchmark.new/memory -p test_pool_compare.py`
 checks missing integrity acknowledgements, wrong digests, budget/swap failures,
 short scan windows, incomplete ownership and unexpected stock-Firecracker advice.
 

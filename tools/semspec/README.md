@@ -150,20 +150,20 @@ real ledgers/snapshots, or weaken claims/checks/xfail to obtain PASS.
 From pVisor:
 
 ```sh
-just test-semspec
-just semspec lint docs/src/zh/cases
-just semspec run docs/src/zh/cases/01-first-job.md --subject-bin target/release/pvisor
-just cases --suite use               # builds product; semspec requires every selected case to PASS
-just semspec run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
-just semspec review docs/src/zh/cases --strict         # fails until human review
+mise run test-semspec
+mise run semspec -- lint docs/src/zh/cases
+mise run semspec -- run docs/src/zh/cases/01-first-job.md --subject-bin target/release/pvisor
+mise run cases -- --suite use               # builds product; semspec requires every selected case to PASS
+mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+mise run semspec -- review docs/src/zh/cases --strict         # fails until human review
 ```
 
 STAGE checks live in docs/src/zh/cases/06-stage-apply.md. DOC and VM appendices
 use the same Markdown format and preparation from reference/index.md:
 
 ```sh
-just semspec lint docs/src/zh/reference
-just semspec lint tools/semspec/semantics
+mise run semspec -- lint docs/src/zh/reference
+mise run semspec -- lint tools/semspec/semantics
 ```
 
 Self-specifications in semantics/review.md are drafts. AI must not execute

@@ -7,18 +7,18 @@
 各后端也有独立的 `<backend>_timing.json`，输出与输入同名的 `.render.json`。
 
 ```sh
-just benchmark startup/timing
-just benchmark startup/timing --row Docker
-just benchmark docker_timing
-just benchmark pvisor_vm_timing
-just benchmark native_timing
+mise run benchmark -- startup/timing
+mise run benchmark -- startup/timing --row Docker
+mise run benchmark -- docker_timing
+mise run benchmark -- pvisor_vm_timing
+mise run benchmark -- native_timing
 ```
 
 `--row` 只执行并渲染选中的行。默认使用自动清理的临时目录，只保存最终表格。
 需要保留原始证据或发布文档时：
 
 ```sh
-just benchmark startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
 python3 benchmark.new/update.py benchmark.new/startup/.data/measurement/row-0-* --startup-docs docs/src
 ```
 

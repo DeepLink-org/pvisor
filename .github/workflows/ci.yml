@@ -26,20 +26,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
-          components: rustfmt, clippy
+          native-firmware: "true"
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-clippy
-      - name: Install actionlint
-        run: |
-          mkdir -p "$RUNNER_TEMP/actionlint-bin"
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash -o "$RUNNER_TEMP/download-actionlint.bash"
-          bash "$RUNNER_TEMP/download-actionlint.bash" 1.7.7 "$RUNNER_TEMP/actionlint-bin"
-          echo "$RUNNER_TEMP/actionlint-bin" >> "$GITHUB_PATH"
-      - run: just lint-workflows
-      - run: just fmt-rust --check
-      - run: just lint-rust
+      - run: mise run lint-workflows
+      - run: mise run fmt-rust -- --check
+      - run: mise run lint-rust
 
   semspec:
     name: semspec / ${{ matrix.os }}
@@ -52,18 +46,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
-          components: rustfmt, clippy
-          install-nextest: "true"
+          native-firmware: "true"
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/semspec -> ../../target/semspec
-      - run: just fmt-semspec
-      - run: just lint-semspec
-      - run: just test-semspec
-      - run: just semspec --spec-dir docs/src/zh/reference lint
-      - run: just semspec lint docs/src/zh/cases
-      - run: just semspec --spec-dir tools/semspec/semantics lint
+      - run: mise run fmt-semspec
+      - run: mise run lint-semspec
+      - run: mise run test-semspec
+      - run: mise run semspec -- --spec-dir docs/src/zh/reference lint
+      - run: mise run semspec -- lint docs/src/zh/cases
+      - run: mise run semspec -- --spec-dir tools/semspec/semantics lint
       # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
   python:
@@ -73,10 +66,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
-      - run: just fmt-py --check
-      - run: just lint-py
-      - run: just test-scripts
-      - run: just test-py
+      - run: mise tasks validate
+      - run: mise run fmt-py -- --check
+      - run: mise run lint-py
+      - run: mise run test-scripts
+      - run: mise run test-py
 
   firmware:
     name: Firmware bundle and ABI / Linux
@@ -87,7 +81,7 @@ jobs:
       - uses: ./.github/actions/setup-build-env
       - name: Install firmware test compiler
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
-      - run: just fw test
+      - run: mise run fw -- test
 
   native-components:
     name: Native ${{ matrix.component }} / Linux x86_64
@@ -110,16 +104,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
           static-musl: "true"
-          install-nextest: "true"
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.component }}
       # The shared pipeline prepares firmware/guest only for VM-bearing components.
       # Conventional tests are not an end-to-end KVM/prepared-image deployment gate.
-      - run: just build debug ${{ matrix.component }}
-      - run: just test ${{ matrix.package }} -- ${{ matrix.test_args }}
+      - run: mise run build -- debug ${{ matrix.component }}
+      - run: mise run test -- ${{ matrix.package }} -- ${{ matrix.test_args }}
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
@@ -179,9 +173,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
           static-musl: "${{ matrix.prepare_pvisor }}"
-          install-nextest: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -208,15 +201,15 @@ jobs:
       # the same recipe on Linux also keeps the smoke-test setup identical.
       - name: Build and smoke-test pVisor product binary
         if: matrix.prepare_pvisor
-        run: just smoke
+        run: mise run smoke
 
       - name: Test Journal without workspace feature unification
         if: matrix.shard == 'core'
-        run: just test pvisor-journal
+        run: mise run test -- pvisor-journal
 
       - name: Test portable daemon cache service on macOS
         if: runner.os == 'macOS'
-        run: just test pvisor-daemon -- --test cache
+        run: mise run test -- pvisor-daemon -- --test cache
 
       - name: Report macOS Hypervisor availability
         if: runner.os == 'macOS'
@@ -227,7 +220,7 @@ jobs:
           # GitHub-hosted Linux runners may disable unprivileged user
           # namespaces. The dedicated isolation job remains strict.
           PVISOR_TEST_ALLOW_NO_USERNS: "1"
-        run: just test-rust ${{ matrix.packages }}
+        run: mise run test-rust -- ${{ matrix.packages }}
 
       # Reuse the Linux CLI shard's product build and writable /dev/kvm.
       # Hosted Apple Silicon runners cannot run nested Hypervisor VMs.
@@ -313,7 +306,7 @@ jobs:
         if: matrix.shard == 'cli' || runner.os == 'macOS'
         env:
           PVISOR_TEST_ALLOW_NO_USERNS: "1"
-        run: just test pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway
+        run: mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway
 
   pvisor-isolation-regression:
     name: pVisor isolation and documented cases / Linux
@@ -325,9 +318,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
           static-musl: "true"
-          install-nextest: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -349,11 +341,11 @@ jobs:
 
       - name: Record isolated core budget
         run: |
-          just build release
+          mise run build -- release
           # The budget ratchets against the committed baseline in
           # scripts/ci/core-budget.json; an intentional growth regenerates it
-          # with `just update-core-budget` in the same change.
-          just check-core-budget target/release/pvisor --baseline scripts/ci/core-budget.json > target/pvisor-core-budget.json
+          # with `mise run update-core-budget` in the same change.
+          mise run check-core-budget -- target/release/pvisor --baseline scripts/ci/core-budget.json > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -364,7 +356,7 @@ jobs:
       - name: Run strict pVisor isolation regressions
         env:
           PVISOR_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
-        run: just test-isolation
+        run: mise run test-isolation
 
       - name: Stop debug Host listener before release scenarios
         shell: bash
@@ -374,11 +366,11 @@ jobs:
       - name: Run pVisor filesystem examples
         env:
           WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
-        run: just examples 01-filesystem-isolation 02-changeset-management
+        run: mise run examples -- 01-filesystem-isolation 02-changeset-management
 
       - name: Run documented cases
         run: |
-          just cases \
+          mise run cases -- \
             --case S-DOC-001,S-DOC-002,S-DOC-003,S-DOC-004,S-DOC-005,S-DOC-006 \
             --case S-DOC-008,S-DOC-009,S-DOC-010,S-DOC-011 \
             --case S-DOC-013,S-DOC-014,S-DOC-015 \
@@ -390,7 +382,7 @@ jobs:
             --case S-DOC-048
 
       - name: Run the CLI learning path (all cases must PASS)
-        run: just cases --suite use
+        run: mise run cases -- --suite use
 
       - name: Upload learning-path report
         if: always()
@@ -418,7 +410,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
           static-musl: "true"
 
       - uses: Swatinem/rust-cache@v2
@@ -431,7 +423,7 @@ jobs:
       - name: Run network and Gateway examples
         env:
           WORK_ROOT: ${{ runner.temp }}/pvisor-examples
-        run: just examples 03-network-isolation 04-gateway-llm-control
+        run: mise run examples -- 03-network-isolation 04-gateway-llm-control
 
   ci:
     name: CI

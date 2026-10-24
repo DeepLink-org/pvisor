@@ -133,7 +133,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
-- **入口脚本：** `benchmark.new/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`just benchmark startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark.new/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark.new/startup/README.md`](../benchmark.new/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
+- **入口脚本：** `benchmark.new/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`mise run benchmark -- startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark.new/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark.new/startup/README.md`](../benchmark.new/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
 
 ### B-LAZY-STARTUP：远程镜像按需读取能缩短多少启动等待 {#b-lazy-startup}
 
@@ -205,7 +205,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分别报告每项工具耗时和完整任务耗时（包括启动与收尾）。
   - 每个样本都要校验工具输出；暂存模式还要校验宿主原文件未被写入、upper 内容完整。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
-- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark.new/filesystem/tools.md` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`just benchmark filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark.new/filesystem/README.md)。
+- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark.new/filesystem/tools.md` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`mise run benchmark -- filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark.new/filesystem/README.md)。
 
 **历史 Ready 与驻留环境快速对照：** `filesystem_rounds.py` / `filesystem_rounds_workload.py`
 回答“启动到首条负载 Ready 要多久，同一环境连续执行三轮工具后要等多久”。
@@ -825,7 +825,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 检查批量转发实现是否在持续通信、节点不可用和地址代际变化下保持数据完整性，并隔离故障节点。
 - **想要的结论：** 固定观察窗内，完整性校验、健康节点可达性、故障后恢复、真实资源限制及失败记录；不将有限时长无故障称为生产可靠性保证。
 - **实验设计：** 同一冻结网络运行时，四个真实 Linux/KVM VM，各 384 MiB guest、512 MiB 宿主硬上限、零 swap、1 CPU 配额、CPU 4–7。默认 30 分钟、30 个预定故障周期，持续交替全互连 TCP RPC、12 向批传输、四跳环形 RPC、变长 UDP 和慢读端；节点 1 依次经历三秒 cgroup 冻结、正常停止/启动、SIGKILL VMM、删除/同名同 IP 重建，其余三节点在故障窗口内必须完成健康通信。冻结时已建立 TCP 必须在解冻后完成；崩溃不承诺旧 TCP 会话延续，重建后新连接、DNS 和 UDP 必须恢复。逐字节验证，不把超时当成功；UDP 允许有界重传但逐项报告实际尝试/重复/超时。每秒采集 cgroup 内存/OOM/swap、进程/线程/FD；节点 0/2/3 持续保留以观察积累。记录宿主干扰但不做性能归因，不终止无关任务。失败停止并保存全部证据，不剔除、不拼接或自动重试整批；短预检独立保存。
-- **历史入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
+- **历史入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `mise run test -- pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
 - **并发协议补充：** `mixed_chaos.py` 独立启动一组四 VM，在三个 384 MiB 全互连 TCP 传输中并发校验 12 向 UDP；必须保留 UDP 完成时 TCP 客户端尚未完成的证据。预算、校验和失败停止规则相同，不与持续运行批次合并，不做性能比较。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
@@ -1022,7 +1022,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
 - **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
-- **入口脚本：** `benchmark.new/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semspec bench 与公共 runtime 测量，`just benchmark smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
+- **入口脚本：** `benchmark.new/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semspec bench 与公共 runtime 测量，`mise run benchmark -- smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
 
 ## 检查清单 {#checklist}
 

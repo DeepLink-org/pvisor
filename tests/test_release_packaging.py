@@ -104,7 +104,7 @@ class ReleasePackagingTests(unittest.TestCase):
         assert 'manylinux-x86_64-image = "manylinux_2_28"' in contents
         assert 'archs = ["arm64"]' in contents
         assert "PVISOR_CARGO_ZIGBUILD" not in contents
-        assert "cargo-zigbuild" in contents
+        assert "cargo:cargo-zigbuild" in (ROOT / "mise.toml").read_text(encoding="utf-8")
 
     def test_release_version_accepts_matching_stable_tag(self):
         with workspace() as (tmp_path, resources):

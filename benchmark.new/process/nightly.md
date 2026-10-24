@@ -16,7 +16,7 @@ nightly 使用与 [smoke](smoke.md) 相同的负载和正确性要求，以独�
 以下四个 bench cell 明确给出完整命令和参数；路径占位符在准备阶段展开，不经 shell 解释。
 
 ```sh
-just benchmark nightly --binary target/release/pvisor --output benchmark.new/process/.data/nightly-new
+mise run benchmark -- nightly --binary target/release/pvisor --output benchmark.new/process/.data/nightly-new
 ```
 
 <!-- semspec: bench id=native -->

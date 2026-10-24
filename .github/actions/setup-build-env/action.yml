@@ -1,55 +1,24 @@
 name: Setup pVisor environment
-description: Python, uv, and just, with opt-in Rust build tools
+description: Pinned mise toolchain and Python environment, with opt-in native build prerequisites
 inputs:
-  rust:
-    description: Install stable Rust
+  native-firmware:
+    description: Prepare native firmware build prerequisites
     default: "false"
-  components:
-    description: Additional Rust components (comma-separated)
-    default: ""
   static-musl:
     description: Install Linux tools for static CLI/shim and firmware builds
-    default: "false"
-  install-nextest:
-    description: Install cargo-nextest
     default: "false"
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v5
+    - uses: jdx/mise-action@v3
       with:
-        python-version: "3.12"
+        version: 2026.10.18
+        cache: true
 
-    - uses: astral-sh/setup-uv@v6
-      with:
-        enable-cache: true
-
-    - uses: taiki-e/install-action@v2
-      with:
-        tool: just@1.57.0
-
-    - name: Install Rust
-      if: inputs.rust == 'true'
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: ${{ inputs.components }}
-
-    - name: Install cargo-nextest
-      if: inputs.install-nextest == 'true'
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-nextest@0.9.137
-
-    - name: Install guest Rust target
-      if: inputs.rust == 'true'
+    - name: Prepare development environment
       shell: bash
-      run: |
-        case "$(uname -m)" in
-          arm64|aarch64) rustup target add aarch64-unknown-linux-musl ;;
-          x86_64) rustup target add x86_64-unknown-linux-musl ;;
-          *) echo "Unsupported guest architecture" >&2; exit 1 ;;
-        esac
+      run: mise run setup
 
     - name: Install Linux static musl build tools
       if: runner.os == 'Linux' && inputs.static-musl == 'true'
@@ -57,12 +26,9 @@ runs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends build-essential flex bison libelf-dev libssl-dev curl
-        python -m pip install ziglang==0.13.0
-        echo "$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)')" >> "$GITHUB_PATH"
-        cargo install cargo-zigbuild --locked
 
     - name: Install macOS native firmware build tools
-      if: runner.os == 'macOS' && inputs.rust == 'true'
+      if: runner.os == 'macOS' && inputs.native-firmware == 'true'
       shell: bash
       run: |
         brew install llvm lld make gnu-sed gnu-tar

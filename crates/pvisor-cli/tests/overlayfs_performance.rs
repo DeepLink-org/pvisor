@@ -12,7 +12,7 @@ const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(10);
 /// End-to-end guard against making lower-file payload I/O part of readdir/getattr.
 ///
 /// Run manually with:
-/// `just test pvisor-cli -- --release --test overlayfs_performance --run-ignored ignored-only --no-capture`
+/// `mise run test -- pvisor-cli -- --release --test overlayfs_performance --run-ignored ignored-only --no-capture`
 #[test]
 #[ignore = "requires a working macFUSE mount and measures wall-clock performance"]
 fn recursive_lower_walk_does_not_materialize_file_payloads() {

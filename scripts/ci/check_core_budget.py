@@ -30,7 +30,7 @@ RUNTIME_FORBIDDEN = {
 APP_FORBIDDEN = {"pvisor-gateway", "pvisor-tui"}
 
 BASELINE_NOTE = (
-    "Regenerate with `just update-core-budget` in a change that intentionally "
+    "Regenerate with `mise run update-core-budget` in a change that intentionally "
     "grows the budget; CI fails whenever a metric exceeds the recorded value."
 )
 BASELINE_METRICS = ("dependencies", "workspace_source_lines", "core_public_declarations")
@@ -81,7 +81,7 @@ def enforce_baseline(metrics, baseline_path):
     ]
     assert not exceeded, (
         "; ".join(exceeded) + f" ({baseline_path}); if the growth is intentional, "
-        "regenerate the baseline with `just update-core-budget` and "
+        "regenerate the baseline with `mise run update-core-budget` and "
         "commit it in this change"
     )
 
@@ -107,7 +107,7 @@ def main():
     parser.add_argument(
         "--baseline",
         type=Path,
-        help="committed budget baseline to enforce (see `just update-core-budget`)",
+        help="committed budget baseline to enforce (see `mise run update-core-budget`)",
     )
     parser.add_argument(
         "--write-baseline",

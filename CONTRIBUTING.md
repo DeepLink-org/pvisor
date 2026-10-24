@@ -13,13 +13,25 @@ Thanks for helping. This page is the short version; the full guide is
 
 ## Development loop
 
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 or newer, then run:
+
 ```bash
-just build            # debug build
-just test             # Rust tests via cargo nextest, then Python tests
-just test pvisor-core # limit Rust tests to one package
-just ci "fmt-rust --check" "fmt-py --check"        # formatting
-just lint             # clippy and ruff
-just docs-build       # build and check the documentation site
+mise trust
+mise install --locked
+mise run setup
+```
+
+Tool versions live in `mise.toml`; Python development dependencies use `uv.lock`
+and `.venv`. Platform libraries and virtualization permissions are documented in
+the development guide. Task arguments follow `--`.
+
+```bash
+mise run build            # debug build
+mise run test             # Rust tests via cargo nextest, then Python tests
+mise run test -- pvisor-core # limit Rust tests to one package
+mise run ci -- "fmt-rust --check" "fmt-py --check"        # formatting
+mise run lint             # clippy and ruff
+mise run docs-build       # build and check the documentation site
 ```
 
 See [development](https://deeplink-org.github.io/pvisor/en/community/development/)
@@ -36,13 +48,13 @@ an approval:
 - approving a case (`semspec approve`) and editing `REVIEWED.toml` or `.approved/`
   snapshots are human-only maintainer actions.
 
-Run `just cases --suite stage` for the STAGE domain and `just semspec lint docs/src/zh/cases` for the
+Run `mise run cases -- --suite stage` for the STAGE domain and `mise run semspec -- lint docs/src/zh/cases` for the
 specifications. Details: [testing](https://deeplink-org.github.io/pvisor/en/community/testing/).
 
 ## Pull requests
 
 - Keep each PR focused; describe the behavior change and how you verified it.
-- Run `just ci "fmt-rust --check" "fmt-py --check"`, `just lint`, and the relevant `just test` targets.
+- Run `mise run ci -- "fmt-rust --check" "fmt-py --check"`, `mise run lint`, and the relevant `mise run test` targets.
 - Update the documentation that owns the behavior you changed, and keep
   `docs/README.md` conventions (one canonical page per subject).
 

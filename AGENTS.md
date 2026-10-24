@@ -62,10 +62,10 @@ keep engineering A/B and diagnostic results out of user pages.
 
 ## Test command
 
-Use `just test` as the default validation command. It runs Rust tests through
+Use `mise run test` as the default validation command. It runs Rust tests through
 `cargo nextest` in debug mode (for faster iteration) and then runs the Python
 test suite. To limit Rust coverage to one package, pass its Cargo package name
-positionally, for example `just test pvisor-core`. Short aliases are
+positionally, for example `mise run test -- pvisor-core`. Short aliases are
 `pvisor`, `core` (`control` and `agentctl` remain aliases), and `capture` (Gateway). Use a direct `cargo test`
 invocation only when doctests or an explicitly documented special runner is
 required.
@@ -76,5 +76,5 @@ Follow `tools/semspec/DESIGN.md` for semspec. AI may draft new cases, repair the
 subject implementation and maintain conventional runner tests. AI must not run
 `semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
 snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.
-Use `just test-semspec` to validate the standalone runner and `just semspec lint docs/src/zh/cases`
+Use `mise run test-semspec` to validate the standalone runner and `mise run semspec -- lint docs/src/zh/cases`
 for specifications. Human approval is distinct from a passing test.

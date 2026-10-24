@@ -28,8 +28,6 @@ jobs:
 
       - uses: ./.github/actions/setup-build-env
 
-      - uses: dtolnay/rust-toolchain@stable
-
       - name: Fetch main release boundary
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
@@ -41,7 +39,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" ]]; then
             args+=(--tag "${GITHUB_REF_NAME}")
           fi
-          version="$(just check-release-version "${args[@]}")"
+          version="$(mise run check-release-version -- "${args[@]}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   wheels:
@@ -69,7 +67,7 @@ jobs:
 
       - name: Check completeness and package metadata
         run: |
-          just check-release-artifacts \
+          mise run check-release-artifacts -- \
             dist --version "${{ needs.validate.outputs.version }}"
 
       - name: Upload verified release set

@@ -23,8 +23,8 @@ Design: 每个适配器固定 task 0，截取一个完整工具批次；零预�
 校验成功才归档输出和状态；失败停止该批次，完整保留失败与慢样本。
 
 ```sh
-just benchmark replay --binary target/release/pvisor-replay
-just benchmark replay --binary target/release/pvisor-replay --output benchmark.new/replay/.data/replay-new
+mise run benchmark -- replay --binary target/release/pvisor-replay
+mise run benchmark -- replay --binary target/release/pvisor-replay --output benchmark.new/replay/.data/replay-new
 ```
 
 Markdown 中的 bench cell 是唯一命令定义。准备器经 `semspec filter --format json`

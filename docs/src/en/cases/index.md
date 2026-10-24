@@ -34,33 +34,33 @@ This stages workspace files while host file access remains ambient. Before runni
 | Need | Tool and entry point | Next step |
 |---|---|---|
 | Review and approve access interactively | `pvisor spawn --tui` / `--ask`, dispatched to adjacent `pvisor-tui` | [CLI reference](../reference/cli.md) |
-| Route real model requests and capture trajectories | `pvisor spawn --gateway-mode capture --gateway-route ...` | [Capture guide](../guides/capture.md) and the local mock-request test in `just examples 04-gateway-llm-control` |
+| Route real model requests and capture trajectories | `pvisor spawn --gateway-mode capture --gateway-route ...` | [Capture guide](../guides/capture.md) and the local mock-request test in `mise run examples -- 04-gateway-llm-control` |
 | Prepare restoration from native Agent history | `pvisor replay`, dispatched to adjacent `pvisor-replay` | [Chapter 5](05-tools-and-restoration.md), [replay guide](../guides/replay.md) |
 | Select an OCI container or VM executor | `pvisor spawn --executor container` / `--executor vm` | [Containers](../guides/executors/container.md), [VMs](../guides/executors/vm.md); requires a runtime/rootfs |
 | Save CPU, RAM, devices, and the complete file tree | Native VM execution checkpoints / snapshot storage SDK | [Execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); requires a compatible owned-rootfs, no-network Job; not a daemon capability |
 | Manage OCI file caching or a shared cold-page pool | `pvisor cache` / `pvisor-daemon serve --sandbox --memory-pool` | [Shared image cache](../reference/shared-image-cache.md), [daemon pool](../guides/daemon/index.md#memory-pool) |
 
-Gateway capture requires a build with the gateway feature; wheels and `just build release` include it. Core Job commands work without companion binaries; `pvisor --help` lists installed optional commands in their object group. Full VM snapshots require KVM or Apple Silicon Hypervisor and a working FUSE backend. Ordinary VM Jobs support execution checkpoints with a compatible owned-rootfs, no-network profile; `status --json` reports capability and blockers.
+Gateway capture requires a build with the gateway feature; wheels and `mise run build -- release` include it. Core Job commands work without companion binaries; `pvisor --help` lists installed optional commands in their object group. Full VM snapshots require KVM or Apple Silicon Hypervisor and a working FUSE backend. Ordinary VM Jobs support execution checkpoints with a compatible owned-rootfs, no-network profile; `status --json` reports capability and blockers.
 
 ## Execute the documentation
 
 Each case has a Bash block preceded by a single `<!-- semspec: case id=S-USE-001 -->` comment (using that case’s ID), containing product commands, semantic assertions, and failure conditions. Preparation and assertion functions live in the Markdown block below, marked with `<!-- semspec: setup -->`. Case comments also accept timeout=60s, xfail-on=linux, and the paired xfail-reason. semspec extracts only marked code blocks, independently of heading levels, leaving ordinary tutorial examples unexecuted. Copy this directory’s Markdown documents to run them without configuration files or external shell scripts. Supply one or more Markdown files/directories explicitly on the command line; semspec does not infer search paths. Running one chapter also reads preparation from its sibling index.md.
 
 ```bash
-just semspec list docs/src/zh/cases --domain USE
-just semspec lint docs/src/zh/cases
-just semspec run docs/src/zh/cases/01-first-job.md
-just semspec run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
-just cases --suite use
-just cases --suite use --case S-USE-005,S-USE-007 --keep
-just cases --suite use --output target/pvisor-learning-report.json
+mise run semspec -- list docs/src/zh/cases --domain USE
+mise run semspec -- lint docs/src/zh/cases
+mise run semspec -- run docs/src/zh/cases/01-first-job.md
+mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+mise run cases -- --suite use
+mise run cases -- --suite use --case S-USE-005,S-USE-007 --keep
+mise run cases -- --suite use --output target/pvisor-learning-report.json
 ```
 
-`just cases --suite use` builds the release product and companions, then executes all 16 cases in isolated temporary workspaces, HOME, XDG, and Job data directories. Linux CI checks FUSE and user/mount/network namespaces first. Missing prerequisites do not become SKIP; environment and execution failures fail the gate. The report is target/pvisor-learning-report.json. Failures retain their workspaces; --keep also retains successful ones. Selected runs require exactly the requested IDs. Full runs discover all S-USE IDs from this documentation directory, automatically including new cases. Empty reports, missing cases, duplicates, SKIP, XFAIL, and any other non-PASS verdict fail the gate. The entry uses semspec’s `--require-pass` directly, sharing the same parsed inventory for discovery, selection, and report validation. With `--output`, valid selection clears an old report before atomically publishing fresh results; no additional validation script is needed.
+`mise run cases -- --suite use` builds the release product and companions, then executes all 16 cases in isolated temporary workspaces, HOME, XDG, and Job data directories. Linux CI checks FUSE and user/mount/network namespaces first. Missing prerequisites do not become SKIP; environment and execution failures fail the gate. The report is target/pvisor-learning-report.json. Failures retain their workspaces; --keep also retains successful ones. Selected runs require exactly the requested IDs. Full runs discover all S-USE IDs from this documentation directory, automatically including new cases. Empty reports, missing cases, duplicates, SKIP, XFAIL, and any other non-PASS verdict fail the gate. The entry uses semspec’s `--require-pass` directly, sharing the same parsed inventory for discovery, selection, and report validation. With `--output`, valid selection clears an old report before atomically publishing fresh results; no additional validation script is needed.
 
 Specifications and the complete Markdown documents containing preparation participate in semspec digests. New cases remain UNREVIEWED: execution success and human semantic approval are separate. After human review of the engine, vocabulary, and cases, add --require-reviewed. Test execution does not approve cases or update the review ledger.
 
-[DOC cases](../reference/cases.md), [VM control cases](../reference/cases-vm.md), STAGE and USE scenarios run through `just cases`, selected with `--suite doc/stage/use/vm`; `just examples` runs examples/pvisor. CI runs existing isolation regressions and network/Gateway mock scenarios alongside this learning path. Retired standalone snapshot hardware records remain historical evidence. Legacy Controller/Worker acceptance records are not validation of the new daemon. Validate native execution restoration separately against the [execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); the daemon's [runtime boundaries](../guides/daemon/index.md) do not include VM restore. This learning path does not count unexecuted VM/Gateway capabilities as success.
+[DOC cases](../reference/cases.md), [VM control cases](../reference/cases-vm.md), STAGE and USE scenarios run through `mise run cases`, selected with `--suite doc/stage/use/vm`; `mise run examples` runs examples/pvisor. CI runs existing isolation regressions and network/Gateway mock scenarios alongside this learning path. Retired standalone snapshot hardware records remain historical evidence. Legacy Controller/Worker acceptance records are not validation of the new daemon. Validate native execution restoration separately against the [execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); the daemon's [runtime boundaries](../guides/daemon/index.md) do not include VM restore. This learning path does not count unexecuted VM/Gateway capabilities as success.
 
 The full execution gate currently targets Linux. On macOS, select applicable cases individually; loopback policy differs from Linux namespaces, so the host-loopback refusal checked by S-USE-014 is not a macOS guarantee.
 

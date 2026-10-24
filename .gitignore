@@ -41,3 +41,10 @@ crates/pvisor-vm/upstream/
 /benchmark.new/filesystem/vm-cache-validation.provenance.json
 .VSCodeCounter/
 .workbuddy/
+
+# Machine-specific mise overrides stay local.
+mise.local.toml
+.mise.local.toml
+mise.local.lock
+.mise.local.lock
+review2/

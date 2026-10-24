@@ -156,7 +156,7 @@ temporary unpacked build storage, which is outside the create path.
 Per-VM projection scratch lives under the owned run directory, so confirmed
 cgroup cleanup also reclaims it after a supervisor crash. Pool objects remain shared.
 
-Build the runtime-performance daemon with `just build performance daemon` (the
+Build the runtime-performance daemon with `mise run build -- performance daemon` (the
 binary is staged as `target/performance/pvisor-daemon`). Build the trusted
 **1.1.0** execd once from the pinned upstream commit:
 
@@ -801,7 +801,7 @@ compatibility.
 Run targeted checks with:
 
 ```sh
-just test pvisor-daemon
+mise run test -- pvisor-daemon
 ```
 
 Pool tests launch the actual component, check sharing/budgets and local recovery

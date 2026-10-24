@@ -54,10 +54,10 @@ pip install -e .
 Or build the CLI from source:
 
 ```bash
-just install-cli
+mise run install-cli
 ```
 
-To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. Installed native scripts ignore `PVISOR_BIN`. Editable Python installation is not a native CLI build; use `just build` or `just install-cli`.
+To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. Installed native scripts ignore `PVISOR_BIN`. Editable Python installation is not a native CLI build; use `mise run build` or `mise run install-cli`.
 
 ## Install the single-node daemon separately {#daemon}
 

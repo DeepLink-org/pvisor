@@ -4,12 +4,12 @@
 新规格均为 UNREVIEWED；未编译或执行。使用的 SDK 驱动源码是
 `crates/pvisor/examples/vm_control_case.rs`，应连同规格一起审查。
 
-`just cases` 发现本页；SDK 驱动未准备时，四条 SDK 场景明确报告 SKIP。
-`just cases --suite vm` 构建并在 macOS 签名驱动，再执行本页的全部六条场景。
+`mise run cases` 发现本页；SDK 驱动未准备时，四条 SDK 场景明确报告 SKIP。
+`mise run cases -- --suite vm` 构建并在 macOS 签名驱动，再执行本页的全部六条场景。
 也可以对已有二进制运行：
 
 ```sh
-just semspec run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+mise run semspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
 ```
 
 macOS 必须设置 `PVISOR_CASE_ROOTFS` 为 Linux guest rootfs；Linux 默认使用 `/`。
@@ -214,7 +214,7 @@ vm_case_setup() {
 require_vm_sdk() {
   require_vm_case
   export VM_CASE_DRIVER="${PVISOR_CASE_VM_DRIVER:-$(dirname "$SUBJECT_BIN")/examples/vm_control_case}"
-  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with just cases --suite vm'
+  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with mise run cases -- --suite vm'
   export PVISOR_CASE_VM_PYTHON="${PVISOR_CASE_VM_PYTHON:-/usr/bin/python3}"
   [ -x "$PVISOR_CASE_ROOTFS/$PVISOR_CASE_VM_PYTHON" ] || skip 'guest Python unavailable'
 }

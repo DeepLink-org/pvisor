@@ -252,7 +252,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 ## 验证后端
 
-`just test pvisor` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
+`mise run test -- pvisor` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
 
 有 KVM 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
 

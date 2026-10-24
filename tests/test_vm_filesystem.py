@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guest filesystem checks: PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py"""
+"""Guest filesystem checks: PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py"""
 
 import errno
 import fcntl

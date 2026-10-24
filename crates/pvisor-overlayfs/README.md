@@ -388,7 +388,7 @@ The older Core immutable-cache control remains separate.
 Validation:
 
 ```sh
-just test pvisor-overlayfs
+mise run test -- pvisor-overlayfs
 cargo nextest run --locked -p pvisor-overlayfs --run-ignored ignored-only -E 'test(host_kernel_cache)'
 cargo check --locked -p pvisor -p pvisor-cli
 RUSTDOCFLAGS='-D warnings' cargo doc --locked -p pvisor-overlayfs --no-deps
@@ -442,8 +442,8 @@ Linux: FUSE3 development packages, for example `libfuse3-dev`.
 ### Build and test
 
 ```bash
-just build release
-just test pvisor-overlayfs
+mise run build -- release
+mise run test -- pvisor-overlayfs
 ```
 
 pVisor embeds the overlay library and owns its mount lifecycle. There is no

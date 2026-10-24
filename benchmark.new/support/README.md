@@ -36,5 +36,5 @@ settings or adopts an existing daemon. Pass the resulting `setup.json` to the
 owning experiment and retain it for scoped cleanup. Affinity is not a cpuset
 placement guarantee. Kernel and runtime capability checks remain separate.
 
-Run the helper contracts with `just test-py discover -s benchmark.new/support`.
-The default `just test-py` includes these contracts and all active benchmark suites.
+Run the helper contracts with `mise run test-py -- discover -s benchmark.new/support`.
+The default `mise run test-py` includes these contracts and all active benchmark suites.

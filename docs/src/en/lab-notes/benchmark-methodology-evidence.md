@@ -43,10 +43,10 @@ Start every report with this table:
 ## Start from the existing measurement entry points
 
 ```bash
-just benchmark smoke --output benchmark.new/process/.data/candidate
-just benchmark nightly --output benchmark.new/process/.data/nightly-new
-just benchmark-compare benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
-just benchmark startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark.new/process/.data/candidate
+mise run benchmark -- nightly --output benchmark.new/process/.data/nightly-new
+mise run benchmark-compare -- benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
+mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
 ```
 
 The process regression gate uses semspec bench and a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. `benchmark-compare` accepts validated `in.bench.json` files from matching configurations and harnesses; measure the baseline separately with the same suite into `.data/main`.
@@ -104,7 +104,7 @@ Wall covers command launch through exit. Worker covers internal tool execution/v
 
 Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv`, Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv`, and Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz` retain JSON, exact harness snapshots, Bundles, errors and SIGKILL ledgers. Rootfs/payloads are reproducible and excluded from docs to avoid gigabytes of copies. Prior macOS/Linux VM results remain intact. New product workloads are Linux-only and are not pooled across platforms.
 
-`just lint` passed. `just test`: Rust 1,075 passed / 8 skipped, Python 84 passed / 16 skipped. Benchmark tests alone: 19 passed. STAGE semantics: 14/14 PASS, with human review still UNREVIEWED; test success is not human approval. Large syscall traces and non-crash apply ledgers remain in local target artifacts; the public archive retains reports, Bundles, diagnostics and crash ledgers.
+`mise run lint` passed. `mise run test`: Rust 1,075 passed / 8 skipped, Python 84 passed / 16 skipped. Benchmark tests alone: 19 passed. STAGE semantics: 14/14 PASS, with human review still UNREVIEWED; test success is not human approval. Large syscall traces and non-crash apply ledgers remain in local target artifacts; the public archive retains reports, Bundles, diagnostics and crash ledgers.
 
 Recompute with `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv`; Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv` keeps batches separate.
 

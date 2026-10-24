@@ -125,7 +125,7 @@ export ZCODE_RUNTIME_ROOT="/absolute/path/to/ZCode"
 export ZCODE_ENTRY="$ZCODE_RUNTIME_ROOT/apps/zcode-cli/packages/cli/dist/zcode.cjs"
 export ZCODE_BUILTIN_PROVIDER_CONFIG_FILE="$ZCODE_RUNTIME_ROOT/apps/zcode-cli/packages/cli/dist/provider/zcode-builtin.json"
 export WORK_ROOT="$PWD/target/zcode-example"
-just examples 05-zcode-cli
+mise run examples -- 05-zcode-cli
 ```
 
 The deterministic integration test requires Linux rootless isolation and FUSE3,
@@ -141,7 +141,7 @@ for macOS interactive testing, then inspect the Run with `pvisor review` and
 choose `pvisor apply` or `pvisor drop`.
 
 The tests use standard-library unittest in an isolated temporary directory. Run
-`PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py`;
+`PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py`;
 `PVISOR_BIN` selects the CLI. `WORK_ROOT` still selects the workspace for example runs.
 The standard example runner still runs 01–04 unless 05 is selected explicitly.
 

@@ -609,10 +609,33 @@ pub fn plan_overlay_apply(
         .filter(|change| selected_paths.contains(&change.relative_path()))
         .cloned()
         .collect::<Vec<_>>();
+    validate_excluded_changes(record, &selected)?;
     Ok(ApplyPlan {
         selected,
         selected_paths,
     })
+}
+
+fn validate_excluded_changes(
+    record: &OverlayRecord,
+    changes: &[ChangeEntry],
+) -> Result<(), OverlayError> {
+    for excluded in &record.excluded_paths {
+        crate::OverlayCore::validate_rel(excluded)?;
+        for change in changes {
+            let path = change.relative_path();
+            if crate::core::path_has_prefix(&path, excluded)
+                || (replaces_directory(change) && crate::core::path_has_prefix(excluded, &path))
+            {
+                return Err(OverlayError::Apply(format!(
+                    "change at {} would affect excluded path {}",
+                    path.display(),
+                    excluded.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn upper_hard_link_groups(inventory: &[UpperEntry]) -> Vec<Vec<PathBuf>> {
@@ -1098,6 +1121,8 @@ fn apply_prepared_target(
     recovering: bool,
     apply_id: &str,
 ) -> Result<(), OverlayError> {
+    // Recovery must enforce exclusions too, including intents written by older versions.
+    validate_excluded_changes(record, changes)?;
     if recovering {
         restore_interrupted_replacements(record, apply_id, preimages, changes)?;
     }

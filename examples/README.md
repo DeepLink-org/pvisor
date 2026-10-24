@@ -17,7 +17,7 @@
 ## Run
 
 ```bash
-just examples
+mise run examples
 ```
 
 这些入口统一增量编译并使用 release targets，之后复用 Cargo 缓存。需要

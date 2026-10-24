@@ -118,7 +118,7 @@ proxy for the guest agent (see below); this is not a network isolation claim.
 Build with the feature through the shared native build pipeline:
 
 ```bash
-just build debug shim-vm
+mise run build -- debug shim-vm
 ```
 
 Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel.
@@ -425,17 +425,17 @@ Pure logic (`plan`, `state`, `caps`, `cgroup`, mount option parsing) is
 cross-platform and unit-tested on any host:
 
 ```bash
-just test shim          # or: cargo nextest run -p pvisor-shim
+mise run test -- shim          # or: cargo nextest run -p pvisor-shim
 ```
 
 The Linux syscall paths can be compile-checked from a development host:
 
 ```bash
-just check -p pvisor-shim --target x86_64-unknown-linux-musl
-just lint-rust -p pvisor-shim --target x86_64-unknown-linux-musl
+mise run check -- -p pvisor-shim --target x86_64-unknown-linux-musl
+mise run lint-rust -- -p pvisor-shim --target x86_64-unknown-linux-musl
 ```
 
-Build selection uses the same `just build PROFILE COMPONENT` entry as the CLI
+Build selection uses the same `mise run build -- PROFILE COMPONENT` entry as the CLI
 and daemon. Profiles are `debug`, `release`, and `performance`; `shim` builds
 the host-only binary without preparing firmware, while `shim-vm` enables `vm`
 and shares firmware resolution, guest compilation, Zig linking and artifact
@@ -449,7 +449,7 @@ Cross-building the host-only shim needs the Linux musl Rust target, Zig and
 cargo-zigbuild; executing it requires Linux. VM cross-builds additionally need
 the firmware override described above.
 
-On Linux, `just test shim -- --features vm` also tests the VM-enabled code.
+On Linux, `mise run test -- shim -- --features vm` also tests the VM-enabled code.
 CI builds and tests both shim variants using the shared native-component matrix,
 and runs host-independent shim tests in the macOS shard. These are conventional
 tests, not containerd or real-KVM acceptance.
@@ -459,7 +459,7 @@ tests, not containerd or real-KVM acceptance.
 On a Linux host with containerd ≥ 1.7, build the host-only shim:
 
 ```bash
-just build release shim
+mise run build -- release shim
 sudo install -m755 target/release/containerd-shim-pvisor-v2 /usr/local/bin/
 sudo systemctl restart containerd
 sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
@@ -467,7 +467,7 @@ sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
 ```
 
 For VM support, replace the build command with
-`just build release shim-vm` and install
+`mise run build -- release shim-vm` and install
 `target/release/containerd-shim-pvisor-v2`. This entry point prepares the
 embedded kernel and builds the Rust guest automatically.
 

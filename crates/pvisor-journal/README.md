@@ -28,8 +28,10 @@ Complete recovered records are synced before a retry can receive LocalSync.
 
 Append validates Core bounds and causality, accepts unresolved forward references,
 and rejects cycles. Identical event-ID/content retries return the original
-position without new notifications; changed content is rejected. Rejected means
-this request did not commit. Unknown means the outcome cannot be inferred;
+position without new notifications; changed content is rejected. JSON parsing
+explicitly preserves finite floating point values across close/reopen so the
+same event retains its content digest. Rejected means this request did not commit.
+Unknown means the outcome cannot be inferred;
 a write failure poisons all clones until close/reopen recovery. Memory receipts
 are Volatile; file receipts are LocalSync, not replicated or remote durability.
 Live subscriptions have capacity 256, contain only newly committed events, and
@@ -71,7 +73,7 @@ assert!(trace.journal().records()?.is_empty());
 From the repository root:
 
 ```sh
-just test pvisor-journal
+mise run test -- pvisor-journal
 cargo check -p pvisor-journal --all-targets
 cargo clippy -p pvisor-journal --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc -p pvisor-journal --no-deps

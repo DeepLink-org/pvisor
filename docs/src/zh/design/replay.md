@@ -89,7 +89,7 @@ Claude 历史 `Read` 只接受 workspace 内的普通文件。它保留指向 wo
 ## 代码与验证
 
 ```bash
-just test pvisor-replay
+mise run test -- pvisor-replay
 ```
 
 - `adapter/claude_code.rs`：完整批次分组、prepare-only 无工具执行、旧 observation 拒绝或显式降级、Read 范围与输出预算、历史命令超时与进程组清理；

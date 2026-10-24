@@ -21,7 +21,7 @@ Shared image cache handles, authentication, and failures follow the [cache proto
 
 ## Check executable behavior
 
-The [scenario appendix](cases.md) retains product commands, semantic claims, and assertions, and serves as the DOC semspec source. Runner fixtures in its code blocks cannot be run as ordinary shell commands; the repository entry `just cases` executes the checks. Execution success and human approval are recorded separately; PASS does not authorize changes to human review ledgers.
+The [scenario appendix](cases.md) retains product commands, semantic claims, and assertions, and serves as the DOC semspec source. Runner fixtures in its code blocks cannot be run as ordinary shell commands; the repository entry `mise run cases` executes the checks. Execution success and human approval are recorded separately; PASS does not authorize changes to human review ledgers.
 
 ## Scenario check preparation
 

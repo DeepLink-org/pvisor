@@ -36,7 +36,7 @@ Unsupported UDP, IPv6, ICMP, QUIC, and inbound forwarding fail closed. `deny-all
 ## Platform setup
 
 - **Linux**: needs an accessible `/dev/kvm`; the static musl build embeds the guest kernel, so no firmware shared libraries are needed at run time.
-- **macOS**: build and sign the Hypervisor entitlement with `just build release`; the wheel bundles `libkrunfw`, and running from source downloads a pinned version verified by SHA-256.
+- **macOS**: build and sign the Hypervisor entitlement with `mise run build -- release`; the wheel bundles `libkrunfw`, and running from source downloads a pinned version verified by SHA-256.
 
 ## Known gaps
 

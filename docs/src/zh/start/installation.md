@@ -61,12 +61,12 @@ pip install -e .
 也可以从源码构建 CLI：
 
 ```bash
-just install-cli
+mise run install-cli
 ```
 
 测试特定原生构建时，直接调用其路径（例如 `target/debug/pvisor`），或把其目录放在 `PATH` 最前。
 安装后的原生脚本忽略 `PVISOR_BIN`。Editable Python 安装不是原生 CLI 构建；
-使用 `just build` 或 `just install-cli`。
+使用 `mise run build` 或 `mise run install-cli`。
 
 ## 单独安装单机 daemon {#daemon}
 

@@ -11,7 +11,7 @@
 ## 模板与执行
 
 [process/smoke.md](process/smoke.md) 与 [process/nightly.md](process/nightly.md) 把各自采样配置、四个直接 argv 条件与
-校验 hooks 放在同一份可读规格中。`just benchmark smoke` 先通过 semspec 的 JSON
+校验 hooks 放在同一份可读规格中。`mise run benchmark -- smoke` 先通过 semspec 的 JSON
 计划清单读取 Markdown，准备器只展开路径和执行预检；行模板自动生成，不维护配套
 `.json` 和 `.commands.json`。批次仍保留现有逐次计时、完整审计与 CI 阈值比较。
 [replay/replay.md](replay/replay.md) 同样统一七种轨迹格式的计划，复用相同入口；
@@ -41,16 +41,16 @@ fixture、原生前缀及工作区校验由 replay 适配器负责。其余注�
 公开 benchmark 仍必须经过本目录的注册、准备、完整逐次审计和发布门禁。
 
 ```sh
-just benchmark startup/timing
-just benchmark startup/timing --row Docker
-just benchmark startup/timing "pvisor vm"
-just benchmark docker_timing
-just benchmark smoke
-just benchmark filesystem/tools
-just benchmark replay --binary target/release/pvisor-replay
+mise run benchmark -- startup/timing
+mise run benchmark -- startup/timing --row Docker
+mise run benchmark -- startup/timing "pvisor vm"
+mise run benchmark -- docker_timing
+mise run benchmark -- smoke
+mise run benchmark -- filesystem/tools
+mise run benchmark -- replay --binary target/release/pvisor-replay
 ```
 
-`just benchmark` 直接输出渲染后的 Markdown 表格，并在模板旁生成同名 `.render.json`：
+`mise run benchmark` 直接输出渲染后的 Markdown 表格，并在模板旁生成同名 `.render.json`：
 例如 `docker_timing.json` → `docker_timing.render.json`。默认使用自动清理的临时目录，
 只保留最终表格；不追加 CSV、不自动更新用户文档。部分行失败时不覆盖已有结果。
 第二个位置参数或 `--row` 可指定启动或文件系统表的一行；行名忽略大小写和多余空格。
@@ -62,8 +62,8 @@ process smoke/nightly 保留自动构建；其他表使用预构建制品。
 需要审计、CI 对比或发布时，显式保留原始证据：
 
 ```sh
-just benchmark startup/timing --output benchmark.new/startup/.data/measurement
-just benchmark smoke --output benchmark.new/process/.data/measurement
+mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark.new/process/.data/measurement
 ```
 
 启动每行保存在 `row-0-<id>/`、`row-1-<id>/` 等子目录中；其他表直接使用指定目录。
@@ -100,7 +100,7 @@ python3 benchmark.new/update.py "$batch"
 新 Python 计时口径不能与历史 hyperfine 批次合并，历史文件与 provenance 保持原样。
 历史 replay 文档绑定明确保留旧口径，拒绝把新计时结果直接覆盖成旧口径；新公开批次须登记新绑定。
 
-`run.py` 统一解析表名、行名和选项；Just 只负责按解析结果构建 process 二进制与 semspec。
+`run.py` 统一解析表名、行名和选项；mise 只负责按解析结果构建 process 二进制与 semspec。
 准备和发布只接受整行命令，旧的逐单元格命令与 `| json ... * ...` 提取分支已删除。
 历史展示 JSON 仍可直接渲染；旧逐单元格批次不再由当前发布器发布，需要按当前模板重新测量。
 
@@ -140,9 +140,9 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 活动入口由 registry.csv 登记，已迁移的 smoke、nightly 和 replay 使用 Markdown，其他保留 JSON。启动、process、filesystem/tools、replay 有具体命令；其他条目的
 `requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需实现单次负载及正确性 hooks，不能用历史统计或任意命令填充。
 
-`just benchmark [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
+`mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
-验证：`just test-semspec` 和 `just test-py discover -s benchmark.new/tests`。
+验证：`mise run test-semspec` 和 `mise run test-py -- discover -s benchmark.new/tests`。
 
 ## 文档表格
 

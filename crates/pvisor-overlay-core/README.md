@@ -15,7 +15,7 @@ they must reject view mutations themselves and do not promise fresh observations
 ## Validation
 
 ```sh
-just test pvisor-overlay-core
+mise run test -- pvisor-overlay-core
 ```
 
 `resolve_checked` is the optional namespace-selection query; it preserves policy,
@@ -270,6 +270,19 @@ prove baseline/source identity and preserve first-observation publication
 races, composed lowers, remote backing and hardlink ordering.
 
 ## Apply inventory and publication
+
+Excluded paths protect effects as well as visibility. Directory removal,
+replacement, rename and exchange reject physical excluded descendants even
+without deny rules. Apply planning and prepared-intent recovery independently
+reject changes inside excluded paths or recursive replacements of their
+ancestors, including old stages. This ancestor check is conservative even if a
+configured excluded descendant is currently absent. macOS uses the same ASCII
+case-insensitive exclusion matching as the serving view.
+
+Importing lower metadata never copies the three supported overlay opaque xattrs
+into the upper: source metadata must not become overlay control state. Ordinary
+user xattrs remain preserved. Raw upper snapshot/restore retains opaque markers
+because it copies existing overlay state rather than importing lower metadata.
 
 Apply planning collects one request-local upper inventory containing relative
 raw paths, whiteout flags and no-follow metadata. Change classification and

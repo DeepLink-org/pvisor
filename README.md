@@ -137,15 +137,15 @@ The remaining crates are `pvisor-core`, `pvisor-journal`, `pvisor-gateway`,
 `pvisor-vm`, `pvisor-daemon`, `pvisor-guest`, `pvisor-shim`, `pvisor-overlay-core`,
 `pvisor-overlayfs` and `pvisor-overlaynet`. See the
 [engineering guide](docs/src/en/community/development.md) for source ownership,
-dependencies and targeted tests (`just test pvisor` for the runtime,
-`just test cli` for application frontends).
+dependencies and targeted tests (`mise run test -- pvisor` for the runtime,
+`mise run test -- cli` for application frontends).
 
 Release builds optimize the virtio-fs adapter (`pvisor-vm`) and shared filesystem
 mechanics (`pvisor-overlay-core`) for execution speed. Other crates retain the
 distribution profile's size optimization; the `performance` profile optimizes
 the complete application for speed.
 
-`just build release` builds all supported workspace executables into
+`mise run build -- release` builds all supported workspace executables into
 `target/release` (or `CARGO_TARGET_DIR/release`). Linux x86_64 builds `pvisor`,
 `pvisor-tui`, `pvisor-replay`, `pvisor-daemon`,
 `containerd-shim-pvisor-v2` with VM support, and `pvisor-guest`.
@@ -155,29 +155,37 @@ serving, shim and the standalone guest executable require Linux. VM builds share
 resolution. Standalone tools outside the workspace, such as semspec, retain their
 own build/test entries.
 
-`just build PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
+`mise run build -- PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
 wheel set), `daemon`, `shim`, and `shim-vm`. Profiles are `debug` (default),
 `release`, and `performance`. The host-only `shim` selection skips VM firmware.
-Use `just test shim` for targeted tests,
-or on Linux `just test shim -- --features vm` for VM-enabled tests. See the
+Use `mise run test -- shim` for targeted tests,
+or on Linux `mise run test -- shim -- --features vm` for VM-enabled tests. See the
 [shim guide](crates/pvisor-shim/README.md#developing) for prerequisites and
 containerd acceptance checks.
 
 Rust test options follow `--`, for example
-`just test pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
+`mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
 On macOS, VM test signing uses the same features, Cargo profile and build-target
 selection as the test run. Default and Gateway-enabled runtime/CLI tests both
 run in CI. All repository semspec recipes share `target/semspec` (beneath
 `CARGO_TARGET_DIR` when set), including documentation rendering, lint and tests.
 The Python format/lint entries also cover packaging and CI scripts plus `setup.py`.
 
+## Development environment
+
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 or newer, then run
+`mise trust`, `mise install --locked`, and `mise run setup`. The checked-in `mise.toml`
+manages development tools; `uv.lock` fixes Python development dependencies in
+`.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
+See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
+
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and
 bundle tests are maintained in [`fw/`](fw/README.md). CLI, daemon and single-wheel
 builds use this source-built firmware by default, with verified kernel downloads
-and input-keyed build caching. Use `just fw build` to build it independently and
-`just fw test` to run its bundle/ABI regression tests. See the directory README
+and input-keyed build caching. Use `mise run fw -- build` to build it independently and
+`mise run fw -- test` to run its bundle/ABI regression tests. See the directory README
 for toolchain requirements, cache settings and corresponding-source export.
 Published wheels remain ready to install without a kernel build toolchain.
 

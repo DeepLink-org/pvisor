@@ -32,7 +32,7 @@ drivers are not implemented.
 ## Develop
 
 ```bash
-just test pvisor-overlaynet
+mise run test -- pvisor-overlaynet
 ```
 
 ## Links

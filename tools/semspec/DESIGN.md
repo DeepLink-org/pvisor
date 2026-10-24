@@ -212,10 +212,10 @@ date = "2026-10-02"
 及 CLI 分模块；不另建工作区子 crate 或执行器抽象。常规测试可以由 AI 维护。
 
 ```sh
-just test-semspec
-just semspec lint docs/src/zh/cases
-just semspec lint docs/src/zh/reference
-just semspec --spec-dir tools/semspec/semantics lint
+mise run test-semspec
+mise run semspec -- lint docs/src/zh/cases
+mise run semspec -- lint docs/src/zh/reference
+mise run semspec -- --spec-dir tools/semspec/semantics lint
 ```
 
 自举规格在 tools/semspec/semantics/review.md，必须人工审核。

@@ -43,6 +43,7 @@ class LaunchContracts(unittest.TestCase):
                 export.assert_called_once_with("/batch", {}, "/trial", "S03", backend)
                 cleanup.assert_called_once_with("/batch", {}, "/trial", "S03", backend)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux namespace identities required")
     def test_all_conditions_use_fresh_namespaces_and_one_output_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
             batch = Path(temporary)
@@ -91,6 +92,7 @@ class LaunchContracts(unittest.TestCase):
                 if backend == "staged":
                     self.assertIn("/bench-trial/stage", config["argv"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux namespace identities required")
     def test_trial_cannot_be_reused_and_caller_cache_overrides_are_removed(self):
         with tempfile.TemporaryDirectory() as temporary:
             batch = Path(temporary)

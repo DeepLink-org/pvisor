@@ -271,7 +271,7 @@ Shared Core does not imply identical POSIX return behavior across backends. Stag
 
 ## 4. Experimental evidence {#experiments}
 
-`JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs` runs targeted tests covering public Core/apply behavior and the actual FUSE `open_inode` / `open_path` entry points. The `pvisor` integration regressions also drive the real virtio-fs worker through guest descriptor rings, covering content reads/writes, live/frozen target layouts and device-state restore; logical checkpoint coverage checks that copied/restored read observations constrain later first mutation. These validate shared implementation and adapter wiring, rather than real host FUSE mounts, KVM/HVF guest boot or cross-platform acceptance. The table lists coverage entry points, not counts of independent fault cases.
+`JUST_TEMPDIR=/tmp mise run test -- pvisor-overlay-core pvisor-overlayfs` runs targeted tests covering public Core/apply behavior and the actual FUSE `open_inode` / `open_path` entry points. The `pvisor` integration regressions also drive the real virtio-fs worker through guest descriptor rings, covering content reads/writes, live/frozen target layouts and device-state restore; logical checkpoint coverage checks that copied/restored read observations constrain later first mutation. These validate shared implementation and adapter wiring, rather than real host FUSE mounts, KVM/HVF guest boot or cross-platform acceptance. The table lists coverage entry points, not counts of independent fault cases.
 
 | Mechanism | Existing tests to inspect |
 |---|---|

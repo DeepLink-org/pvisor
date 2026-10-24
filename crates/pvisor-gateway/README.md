@@ -152,8 +152,8 @@ fails explicitly rather than partially succeeding unnoticed.
 ## Develop
 
 ```bash
-just test pvisor-gateway
-# or: just test capture
+mise run test -- pvisor-gateway
+# or: mise run test -- capture
 cargo nextest run --locked -p pvisor-gateway --test llm_fixtures --test ag_fixture_tests
 ```
 

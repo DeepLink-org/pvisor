@@ -101,7 +101,20 @@ class RunnerContracts(unittest.TestCase):
                     RUN.materialize_upper_view(upper, Path(temporary) / "view", "S03")
 
     def test_frozen_application_fixture_oracles(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        # Detached Git maintenance must not outlive the temporary fixture owner.
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "GIT_CONFIG_COUNT": "2",
+                    "GIT_CONFIG_KEY_0": "gc.auto",
+                    "GIT_CONFIG_VALUE_0": "0",
+                    "GIT_CONFIG_KEY_1": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_1": "false",
+                },
+            ),
+            tempfile.TemporaryDirectory() as temporary,
+        ):
             layer = Path(temporary) / "layer"
             fixture = RUN.make_fixture(layer)
             for index in (0, 31, 32, 1023):

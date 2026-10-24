@@ -5,7 +5,7 @@
 它们按文档顺序覆盖：先执行，再治理 Effect。
 
 ```bash
-just examples
+mise run examples
 ```
 
 ## pVisor
@@ -18,8 +18,8 @@ just examples
 | `04-gateway-llm-control` | 内嵌 Gateway 路由与捕获 |
 
 需要 macOS 或 Linux、Cargo、Python 3，以及 `jq` 等常见 POSIX 工具。
-文件系统示例还需要 macFUSE 或 FUSE3。`just examples 01-filesystem-isolation 02-changeset-management` 跑需要 FUSE 的 01/02；
-`just examples 03-network-isolation 04-gateway-llm-control` 跑不需要 FUSE 的 03/04。
+文件系统示例还需要 macFUSE 或 FUSE3。`mise run examples -- 01-filesystem-isolation 02-changeset-management` 跑需要 FUSE 的 01/02；
+`mise run examples -- 03-network-isolation 04-gateway-llm-control` 跑不需要 FUSE 的 03/04。
 
 从 `pvisor/01-filesystem-isolation` 开始，再进入 changeset 管理。
 

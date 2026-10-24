@@ -1158,14 +1158,14 @@ Upper/merged state must never be labeled immutable.
 ## Develop
 
 ```bash
-just build release          # release build + macOS Hypervisor signing
-just build    # debug build + macOS signing
-just test pvisor            # runtime tests
-just test pvisor-cli        # application/executable tests
-just examples
+mise run build -- release          # release build + macOS Hypervisor signing
+mise run build    # debug build + macOS signing
+mise run test -- pvisor            # runtime tests
+mise run test -- pvisor-cli        # application/executable tests
+mise run examples
 ```
 
-On macOS, source builds that use HVF must be signed. `just build release` does this;
+On macOS, source builds that use HVF must be signed. `mise run build -- release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedded
 `pvisor-guest` supervisor is built as a static Linux musl ELF
 with Rust's bundled linker. On Apple Silicon, install its stdlib once with
@@ -1177,7 +1177,7 @@ HVF on macOS. Its implementation derives from libkrun components, but no separat
 vendored libkrun `rlib`, `libkrun.so` or `libkrun.dylib` is required. The separate guest
 kernel is embedded in Linux static musl builds; macOS loads `libkrunfw.5.dylib`
 at runtime. Linux source builds require Zig, `cargo-zigbuild`, and
-`rustup target add x86_64-unknown-linux-musl`. Use `just build` so target
+`rustup target add x86_64-unknown-linux-musl`. Use `mise run build` so target
 selection and kernel preparation match release builds.
 
 ## Links

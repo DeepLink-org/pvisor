@@ -185,6 +185,7 @@ class StartupContracts(unittest.TestCase):
 
 
 @unittest.skipUnless(SEMSPEC.is_file(), "built semspec required")
+@unittest.skipUnless(hasattr(os, "sched_getaffinity"), "Linux CPU affinity required")
 class StartupIntegration(unittest.TestCase):
     def test_native_event_row_publishes_paired_metrics_for_eight_backends(self):
         with tempfile.TemporaryDirectory(prefix="paired startup ") as temporary:

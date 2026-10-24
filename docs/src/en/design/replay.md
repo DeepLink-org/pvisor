@@ -66,7 +66,7 @@ Regular files can still change concurrently. These budgets provide neither a fil
 ## Code and validation
 
 ```bash
-just test pvisor-replay
+mise run test -- pvisor-replay
 ```
 
 - `adapter/claude_code.rs`: complete-batch grouping, prepare-only without execution, stale-observation rejection/explicit degradation, Read ranges/output budgets, historical command deadlines/process-group cleanup;

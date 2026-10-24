@@ -346,7 +346,7 @@ platform limits. Its command examples refer to these installed frontends.
 ## Build and validation
 
 `gateway` forwards to `pvisor/gateway`; default builds keep Gateway optional.
-Use `just test pvisor-cli` for application tests and `just test pvisor` for
+Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pvisor` for
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
@@ -363,7 +363,7 @@ copy with the existing Hypervisor entitlement. Run it with local socket and
 virtualization access:
 
 ```bash
-PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/rootfs just test pvisor-cli -- \
+PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/rootfs mise run test -- pvisor-cli -- \
   -E 'binary(docker_cli)' --run-ignored only
 ```
 

@@ -149,10 +149,10 @@ I/O 曲线发布器只复制当前文章或主题引用的 SVG；未引用的图
 脚本拥有采样和统计，不在外层重复计时。
 
 ```sh
-just benchmark filesystem/tools
-just benchmark filesystem/tools --row native-read
-just benchmark filesystem/tools native-read
-just benchmark filesystem/tools --output benchmark.new/filesystem/.data/measurement
+mise run benchmark -- filesystem/tools
+mise run benchmark -- filesystem/tools --row native-read
+mise run benchmark -- filesystem/tools native-read
+mise run benchmark -- filesystem/tools --output benchmark.new/filesystem/.data/measurement
 ```
 
 命令直接输出渲染表格，并生成同名 `tools.render.json`。第二个位置参数或 `--row` 只执行选中的行，

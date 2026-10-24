@@ -116,7 +116,7 @@ N10/条件；单位 ms，完整任务。此批不能与正式确认合并。
 
 ### 正确性与生命周期
 
-- 独立原型 `just test pvisor-vm`：395 passed、8 skipped；包括并发首次绑定、512 项淘汰、在途引用存活和现有 VM/API/快照边界回归。跳过项不计为通过。
+- 独立原型 `mise run test -- pvisor-vm`：395 passed、8 skipped；包括并发首次绑定、512 项淘汰、在途引用存活和现有 VM/API/快照边界回归。跳过项不计为通过。
 - 真实 guest 验证完整数据、并发 pread、mmap 私有 COW、关闭 FD 后映射、缓存压力后的重读、symlink/hardlink、不同 uid 的访问拒绝、只读写入/截断/删除拒绝以及 fsync。
 - 六个混合视图 guest 比较当前模式、数据缓存、数据加元数据缓存的一个 copy-up 序列：旧 FD 仍读 lower，新 FD 读 upper，宿主 lower 未修改、upper 字节正确。它不代替全部 rename/hardlink/失效交错验收。
 - 数据/元数据实验 Overlay 配置与 no-open 绑定状态的 snapshot/restore 尚未验收，原型明确拒绝；元数据导入与混合可写连接的选择性本地 open 尚未实现。不能按只读试验启用普通 mutable lower 的全局缓存。

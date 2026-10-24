@@ -18,9 +18,9 @@ Benchmark: B-FS-TOOLS ([注册表](../REGISTRY.md#b-fs-tools)), role user-facing
 每次要求对应操作的精确成功 JSON。semspec 每行调用脚本一次，接收完整统计行，不再套一层计时。
 
 ```sh
-just benchmark filesystem/tools
-just benchmark filesystem/tools --row native-read
-just benchmark filesystem/tools --output benchmark.new/filesystem/.data/native-new
+mise run benchmark -- filesystem/tools
+mise run benchmark -- filesystem/tools --row native-read
+mise run benchmark -- filesystem/tools --output benchmark.new/filesystem/.data/native-new
 ```
 
 以下路径占位符由准备器展开；正式执行入口先准备、冻结并预检，再执行和审计。

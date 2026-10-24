@@ -2,5 +2,5 @@
   "dependencies": 235,
   "workspace_source_lines": 234962,
   "core_public_declarations": 302,
-  "note": "Regenerate with `just update-core-budget` in a change that intentionally grows the budget; CI fails whenever a metric exceeds the recorded value."
+  "note": "Regenerate with `mise run update-core-budget` in a change that intentionally grows the budget; CI fails whenever a metric exceeds the recorded value."
 }

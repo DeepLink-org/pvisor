@@ -90,11 +90,11 @@ Example, from startup latency:
   macro, `benchmark.new/docs.json` or a `*.render.json` file.
 
 ```bash
-just docs-serve         # native Chinese preview on 127.0.0.1:3000
-just docs-serve en      # native English preview on 127.0.0.1:3001
-just docs-serve zh -a 127.0.0.1:3002
-just docs-build         # clean-build both languages and validate generated pages
-just docs-build --require-recorded  # same build with CI's strict translation check
+mise run docs-serve         # native Chinese preview on 127.0.0.1:3000
+mise run docs-serve -- en      # native English preview on 127.0.0.1:3001
+mise run docs-serve -- zh -a 127.0.0.1:3002
+mise run docs-build         # clean-build both languages and validate generated pages
+mise run docs-build -- --require-recorded  # same build with CI's strict translation check
 ```
 
 The recipes call `zensical build` and `zensical serve` directly. Configuration is
@@ -113,10 +113,10 @@ PATH --stdin`; annotated case cells also become ordinary Markdown with NOT RUN
 or a recorded verdict. It never supplies `--execute`. `SEMSPEC_RESULTS` may
 explicitly select a saved case/experiment report; missing and stale evidence are
 visible and do not become PASS. Other SSGs can use `filter --format json` for
-Markdown, source byte edits, dependencies and diagnostics. `just docs-build` and `just docs-serve`
+Markdown, source byte edits, dependencies and diagnostics. `mise run docs-build` and `mise run docs-serve`
 build the standalone semspec CLI and set `SEMSPEC_BIN` and `PYTHONPATH` for the
 extension. The documentation recipes therefore also require the Rust toolchain.
-Rendering reads completed results only. Run `just semspec bench path/to/in.json`
+Rendering reads completed results only. Run `mise run semspec -- bench path/to/in.json`
 explicitly to execute a template and create `in.render.json` plus raw evidence in
 `in.bench.json`. See [semspec's table format](../tools/semspec/README.md#executable-benchmark-tables).
 Fixed historical benchmark tables are written directly in Markdown, retaining
@@ -156,7 +156,7 @@ The language selector keeps the current article. Preview one locale at a time
 with the native server; alternate-language links use absolute published-site URLs, preserving the article
 path. A local preview serves one locale, so switching language opens the published
 translation. To inspect unpublished translations, preview the other locale
-separately (`just docs-serve en` or `just docs-serve zh`).
+separately (`mise run docs-serve -- en` or `mise run docs-serve -- zh`).
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
 
@@ -166,8 +166,8 @@ Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the 
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
-The Zensical version is pinned once in `justfile`. CI runs the documentation
-regression tests and `just docs-build --require-recorded` before uploading
+The Zensical version is declared in the `dev` group in `pyproject.toml` and resolved in `uv.lock`. CI runs the documentation
+regression tests and `mise run docs-build -- --require-recorded` before uploading
 `docs/site`; do not duplicate the build commands in the workflow.
 
 ## Layout
@@ -370,7 +370,7 @@ reintroduce them.
    up.
 
 `scripts/check-docs.py` enforces the mechanical parts in CI (via
-`just docs-build`): bilingual pairing, navigation targets, link/anchor/image
+`mise run docs-build`): bilingual pairing, navigation targets, link/anchor/image
 resolution — and a **duplicate-paragraph gate** that fails the build when the
 same substantive prose paragraph (≥150 chars) appears in two pages. Intentional
 shared boilerplate must use a recognized convention instead of raw repetition:
@@ -431,8 +431,8 @@ After reviewing both versions, record the pair and build:
 
 ```bash
 python3 scripts/check-docs.py --record-translations
-just docs-build
-just test-py tests/test_docs.py
+mise run docs-build
+mise run test-py -- tests/test_docs.py
 ```
 
 `translations.json` stores a combined SHA-256 of each pair. Structural
@@ -460,7 +460,7 @@ Linux host, Cursor occupied about 270,412 watches against a 271,298 limit;
 reading the article tree. This is a host resource failure, not a Markdown error.
 The page checker must still run after the generator.
 
-`just docs-build` and `just docs-serve` check available native watches before
+`mise run docs-build` and `mise run docs-serve` check available native watches before
 invoking Zensical. A failed preflight stops before deleting the existing site.
 The check cannot reserve capacity against concurrent editor activity.
 
@@ -508,7 +508,7 @@ or evidence of completed research:
 - `reference/config`: all 113 fields in the configured serde structures, including
   nested mount, route, resource, and policy entries, now have names, types,
   defaults, and usage. `scripts/check-reference.py` compares names and types
-  against source during `just docs-build`; Rust documentation tests compare raw
+  against source during `mise run docs-build`; Rust documentation tests compare raw
   defaults against serialization and parse the actual TOML fences. CLI precedence
   remains behavioral review, with existing `cli_lists_replace_config_lists` and
   file-access-priority tests. This covers fields, not a complete TOML schema.
@@ -532,10 +532,10 @@ or evidence of completed research:
 Validate content and build before updating bilingual revision hashes:
 
 ```bash
-just test pvisor
-just test-py tests/test_docs.py
+mise run test -- pvisor
+mise run test-py -- tests/test_docs.py
 python3 scripts/check-docs.py --record-translations
-just docs-build
+mise run docs-build
 ```
 
 To validate a TOML file without launching an executor:
@@ -622,7 +622,7 @@ charter and conduct reporting channel are not yet established.
 
 **Acceptance criteria**
 
-- Generate at `just docs-build`, or check the generated result against the code in CI.
+- Generate at `mise run docs-build`, or check the generated result against the code in CI.
 - Cover `[run]`, top-level `filesystem`, `[overlayfs]`, `[overlaynet]`, `[gateway]`, `[record]`, `[policies.*]`, `[container]` and `[vm]`.
 
 ### reference/env-vars.md

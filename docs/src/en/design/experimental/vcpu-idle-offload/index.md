@@ -210,7 +210,7 @@ These responsibilities do not predefine new files or dependencies. Implementatio
 
 Record date, platform, stage/profile, source SHA and dirty manifest, binary/firmware/rootfs identity, commands, results, failures/skips, uncovered cases, evidence paths and conclusion. See [Initial implementation and validation](#validation) and the [KVM engineering report](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_report.md).
 
-Use targeted `just test PACKAGE` by default; real VM/special runners follow existing contracts. PASS and semantic approval stay separate; AI does not edit real ledgers. Update user documentation and formal support matrices after successful experimental implementation.
+Use targeted `mise run test -- PACKAGE` by default; real VM/special runners follow existing contracts. PASS and semantic approval stay separate; AI does not edit real ledgers. Update user documentation and formal support matrices after successful experimental implementation.
 
 ### 2.8 Initial implementation and validation {#validation}
 
@@ -262,7 +262,7 @@ Overhead includes collector, sampler and evidence I/O rather than pure integrati
 
 #### Validation and artifact boundaries
 
-- Final `just test pvisor-vm`: 345 passed, 8 skipped, including real KVM busy-loop/OUT/HLT special tests and SMP/session/concurrent-sampling/exit/capacity/statistics regressions.
+- Final `mise run test -- pvisor-vm`: 345 passed, 8 skipped, including real KVM busy-loop/OUT/HLT special tests and SMP/session/concurrent-sampling/exit/capacity/statistics regressions.
 - Python runner: 16 unit tests passed, covering explicit fork with default forkserver, timeout, provenance, topology and output rejection.
 - Example debug build and formatting checks passed; Linux VM library Clippy passed. Tests Clippy was blocked by existing dependency warnings in pvisor; unrelated code was retained.
 - macOS/HVF compilation and runtime remain unvalidated; lost-wakeup, complete timer/deadline and automatic restoration are untested.

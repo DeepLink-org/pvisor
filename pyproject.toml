@@ -9,11 +9,24 @@ authors = [
     {name = "reiase"}
 ]
 
+# Runtime wheels remain dependency-free; these packages belong only to contributors.
+[dependency-groups]
+dev = [
+    "setuptools>=77",
+    "pyelftools==0.33",
+    "zensical==0.0.67",
+    "cibuildwheel==4.1.0",
+    "twine>=6,<7",
+]
+
 [project.urls]
 Homepage = "https://deeplink-org.github.io/pvisor/"
 Documentation = "https://deeplink-org.github.io/pvisor/"
 Repository = "https://github.com/DeepLink-org/pvisor"
 Issues = "https://github.com/DeepLink-org/pvisor/issues"
+
+[tool.uv.dependency-groups]
+dev = { requires-python = ">=3.12" }
 
 [tool.setuptools.packages.find]
 include = ["pvisor*"]
@@ -35,16 +48,17 @@ archs = ["x86_64"]
 manylinux-x86_64-image = "manylinux_2_28"
 before-all = [
     "yum install -y gcc gcc-c++ make flex bison elfutils-libelf-devel openssl-devel curl bc perl patch tar gzip xz",
-    "/opt/python/cp312-cp312/bin/python -m pip install ziglang==0.13.0",
-    "ln -sf $(/opt/python/cp312-cp312/bin/python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent / \"zig\")') /usr/local/bin/zig",
-    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-    "$HOME/.cargo/bin/rustup target add x86_64-unknown-linux-musl",
-    "$HOME/.cargo/bin/cargo install cargo-zigbuild --locked",
-    "$HOME/.cargo/bin/cargo install just --version 1.57.0 --locked",
+    "curl -fsSL https://mise.run | MISE_VERSION=v2026.10.18 sh",
+    "$HOME/.local/bin/mise trust /project/mise.toml",
+    "cd /project && $HOME/.local/bin/mise install --locked",
+    "$HOME/.local/bin/mise reshim",
+    # Keep cibuildwheel's selected Python ahead of mise's Python.
+    "for tool in cargo rustc cargo-zigbuild zig uv; do ln -sf \"${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims/$tool\" \"$HOME/.local/bin/$tool\"; done",
+    "cd /project && $HOME/.local/bin/mise run setup",
 ]
 # Static musl CLI, with its kernel embedded. Keep the manylinux wheel tag
 # for glibc Python installers; the CLI has no glibc runtime dependency.
-environment = { PATH = "$HOME/.cargo/bin:$PATH", PVISOR_FW_BUILD_DIR = "/project/target/fw" }
+environment = { PATH = "$HOME/.local/bin:$HOME/.cargo/bin:$PATH", PVISOR_FW_BUILD_DIR = "/project/target/fw" }
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]

@@ -38,7 +38,10 @@ def cohort():
 
 class ComparisonTests(unittest.TestCase):
     def test_prepare_quotes_paths_and_refuses_to_overwrite_evidence(self):
-        with tempfile.TemporaryDirectory(prefix="pv-scan-") as temporary:
+        # The worker limits absolute output paths to 70 bytes.
+        with tempfile.TemporaryDirectory(
+            prefix="pv-scan-", dir=Path("/tmp").resolve()
+        ) as temporary:
             root = Path(temporary)
             command = [
                 sys.executable,
