@@ -806,6 +806,30 @@ fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
     let (b, mut sb, mb) = start(root.path(), 12);
     let tx = UnixDatagram::bind(root.path().join("11/tx-12.sock")).unwrap();
     tx.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+    let inject = |bytes: &[u8]| {
+        // Unlike Linux's blocking datagram send, Darwin can return ENOBUFS
+        // immediately. This driver must inject every rejected test packet;
+        // runtime packet forwarding retains its separate best-effort contract.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match tx.send_to(bytes, root.path().join("12/net.sock")) {
+                Ok(length) => {
+                    assert_eq!(length, bytes.len());
+                    break;
+                }
+                Err(error)
+                    if (matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) || error.raw_os_error() == Some(libc::ENOBUFS))
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("raw peer datagram injection failed: {error}"),
+            }
+        }
+    };
     let mut seed = 0x504e_4554_u64;
     for index in 0..1024 {
         seed ^= seed << 13;
@@ -821,7 +845,7 @@ fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
         if !bytes.is_empty() {
             bytes[0] = 0;
         }
-        tx.send_to(&bytes, root.path().join("12/net.sock")).unwrap();
+        inject(&bytes);
         if index % 128 == 127 {
             wait_until(|| mb.snapshot().peer_packets_dropped == index + 1);
         }
@@ -838,7 +862,7 @@ fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
     valid.extend(generation("11"));
     valid.extend(generation("12"));
     valid.extend_from_slice(&frame);
-    tx.send_to(&valid, root.path().join("12/net.sock")).unwrap();
+    inject(&valid);
     assert_eq!(receive(&mut sb), frame);
     assert_eq!(mb.snapshot().peer_packets_received, 1);
     assert_eq!(mb.snapshot().peer_packets_dropped, 1024);
