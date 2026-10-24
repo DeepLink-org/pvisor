@@ -635,7 +635,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **角色：** engineering A/B。
 - **Motivation：** 判断本地 pVisor OpenSandbox 后端是否能缩短 SDK 创建到可执行命令的等待。
-- **想要的结论：** 在预备好的同版本 Ubuntu/execd、1 CPU/512 MiB、同机 SDK 1.1.0 下，报告 native VM 与官方 Docker server 的就绪延迟分布、差异区间及失败；不推断完整协议、网络策略、生产密度或隔离等级等价。
+- **想要的结论：** 在预备好的同 digest Ubuntu、1 CPU/512 MiB、同机 SDK 1.1.0 下，报告 native VM 与官方 Docker server 的就绪延迟分布、差异区间及失败；明确 native guest 或旧版同字节 execd 配置，不混合批次，不推断完整协议、网络策略、生产密度或隔离等级等价。
 - **实验设计：** 服务与镜像预先准备，另列首个请求；固定种子随机交替，每臂至少 20 次新建沙箱。服务重启首个请求另用 20 次独立服务进程重启配对，不包含服务启动时间，也不称为磁盘冷缓存。计时 SDK create 返回，再单列首次命令完成时间；必须校验 stdout、私有文件及删除成功，完整保留失败，不剔除慢样本。所有请求相同资源/argv/环境，包含各后端实际 admission/readiness 与 SDK 开销。VM 的 cgroup 限额覆盖 VMM/supervisor，Docker 限额覆盖容器；这是各自本地部署配置，不能视为相同内核隔离或同等可用 guest RAM。无 Docker 基线时只能报告 native 单臂诊断。
 - **入口脚本：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
 
@@ -646,6 +646,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 同机、同预算、同 SDK 的旧制品/官方服务与新制品/原生引擎配对中位数差异、变化比例及 95% bootstrap 区间；OpenSandbox 与 E2B 分列，不外推 Docker 或完整协议性能。
 - **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
 - **入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
+
+### B-OPENSANDBOX-MEMORY-ENG：本地兼容服务的完整内存成本 {#b-opensandbox-memory-eng}
+
+- **角色：** engineering A/B；综合报告位于 `docs/src/{zh,en}/lab-notes/opensandbox-performance-analysis.md`，原始证据保留 `benchmark/.data/opensandbox-memory-*`。
+- **Motivation：** 判断默认 pVisor 及显式共享内存池在本地 OpenSandbox 用法中能否降低服务与实例的实际内存，而不是把配置 RAM 当作占用。
+- **想要的结论：** 同机、同源 Ubuntu、官方 SDK 1.1.0 和每实例 1 CPU/512 MiB 下，空服务、1/4 个空闲实例及四实例各持 64 MiB 数据时的完整组 cgroup 内存分类、可获得的 PSS、CPU 与校验结果；分别报告默认配置与开启物理池，包含未获得收益的条件。完整组计费为主指标，任何进程不可读时整组 PSS 标不可用，不漏算后作比较。
+- **实验设计：** 三臂为冻结 pVisor 原生后端默认模式、同制品显式物理池、官方 OpenSandbox 1.1.0 配独立 rootless Docker。API、VMM/supervisor、pool 或 dockerd/containerd/shim 全部在专属受限产品组内，外部 SDK 协调器和观察者不计入；四核配额、4 GiB、零 swap，镜像预备且宿主页缓存保留，不改变宿主 KSM/sysctl 或停止无关任务。预检每臂一组独立保存，正式至少五轮固定种子随机交替；每臂新服务、新实例。采集空服务、1/4 实例空闲窗口，四实例相同 64 MiB 确定性数据就绪后观察 30 秒，之后每实例完整改写为独有数据并观察 10 秒；全量数据校验、独立文件写入、实际 cgroup/CPU 限制、宿主进程归属与确认删除为门禁。PSS 为完整产品映射的驻留物理内存，不能代替未映射缓存和内核成本；同时给 cgroup memory.current/stat、峰值和 CPU，预备缓存的组外计费明确披露。保留失败及全部有效慢样本，失败停止，预检不混入正式数据；按轮配对 bootstrap 95% CI，分簇时单列，不作 P99、真实 Agent 工作集或生产密度推断。
+- **入口：** `benchmark/opensandbox/memory.py`，静态负载为同目录 `memory_worker.rs`；复现与来源见目录 README。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
@@ -763,6 +771,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 固定观察窗内，完整性校验、健康节点可达性、故障后恢复、真实资源限制及失败记录；不将有限时长无故障称为生产可靠性保证。
 - **实验设计：** 同一冻结网络运行时，四个真实 Linux/KVM VM，各 384 MiB guest、512 MiB 宿主硬上限、零 swap、1 CPU 配额、CPU 4–7。默认 30 分钟、30 个预定故障周期，持续交替全互连 TCP RPC、12 向批传输、四跳环形 RPC、变长 UDP 和慢读端；节点 1 依次经历三秒 cgroup 冻结、正常停止/启动、SIGKILL VMM、删除/同名同 IP 重建，其余三节点在故障窗口内必须完成健康通信。冻结时已建立 TCP 必须在解冻后完成；崩溃不承诺旧 TCP 会话延续，重建后新连接、DNS 和 UDP 必须恢复。逐字节验证，不把超时当成功；UDP 允许有界重传但逐项报告实际尝试/重复/超时。每秒采集 cgroup 内存/OOM/swap、进程/线程/FD；节点 0/2/3 持续保留以观察积累。记录宿主干扰但不做性能归因，不终止无关任务。失败停止并保存全部证据，不剔除、不拼接或自动重试整批；短预检独立保存。
 - **入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
+- **并发协议补充：** `mixed_chaos.py` 独立启动一组四 VM，在三个 384 MiB 全互连 TCP 传输中并发校验 12 向 UDP；必须保留 UDP 完成时 TCP 客户端尚未完成的证据。预算、校验和失败停止规则相同，不与持续运行批次合并，不做性能比较。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
 

@@ -1,5 +1,7 @@
 benchmark_id,role,entry,status
 B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.json,requires-single-condition-command
+B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.json,requires-single-condition-command
+B-OPENSANDBOX-MEMORY-ENG,engineering A/B,memory/opensandbox_memory.json,requires-single-condition-command
 B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command
 B-LAZY-STARTUP,user-facing,startup/image_compare.json,explicit-python-paired-prepared-images
 B-LAZY-STARTUP,user-facing,startup/image_lazy_compare.json,explicit-python-paired-cold-warm-images
@@ -19,6 +21,9 @@ B-APPLY-DIAG,diagnostic,workflow/apply_diagnostic.json,requires-single-condition
 B-SUPERVISION,user-facing,workflow/review.json,requires-single-condition-command
 B-WORKFLOW,user-facing,workflow/workflow.json,requires-single-condition-command
 B-NETWORK,user-facing,network/network.json,requires-single-condition-command
+B-PEER-NET-ENG,engineering A/B,network/peer.json,requires-single-condition-command
+B-FOUR-PEER-ENG,engineering A/B,network/four_peer.json,requires-single-condition-command
+B-PEER-CHAOS-ENG,diagnostic,network/peer_chaos.json,requires-single-condition-command
 B-DENSITY,user-facing,density/density.json,requires-single-condition-command
 B-ISOLATION,user-facing,isolation/isolation.json,requires-single-condition-command
 B-AGENT-TASK,user-facing,agent/agent.json,requires-single-condition-command

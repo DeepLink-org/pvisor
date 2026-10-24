@@ -7,6 +7,16 @@ The other null JSON templates remain unprepared and are not elapsed-time
 substitutes for phase memory accounting. `scanner_compare.json` is a Python paired
 row; `--prepare` expands its inputs, and `semspec bench` executes the coordinator.
 
+`opensandbox_memory.json` registers the separate B-OPENSANDBOX-MEMORY-ENG
+phase-memory experiment. Its generic JSON row remains deliberately unprepared;
+the complete native/default, native/physical-pool and official server/private
+Docker campaign uses [`memory.py`](../../benchmark/opensandbox/memory.py), with
+the preparation, preflight, five randomized rounds and audit described in that
+[experiment manual](../../benchmark/opensandbox/README.md#full-service-and-instance-memory).
+Do not substitute campaign elapsed time for memory or fill this placeholder
+with historical measurements. The related native engine old/new diagnostic is
+registered by `startup/sandbox_engine.json` and uses `engine_ab.py` in that manual.
+
 ## Adaptive page scanner versus KSM
 
 Question: at the same 60-second observation window, how much memory does the

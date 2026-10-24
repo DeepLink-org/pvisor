@@ -190,6 +190,7 @@ The config uses the pVisor fields from `four_node.py`; Docker is not needed.
 python3 benchmark/peer/chaos.py --config CONFIG.json --output NEW_PREFLIGHT --seconds 30 --faults 4
 python3 benchmark/peer/chaos.py --config CONFIG.json --output NEW_SOAK
 python3 benchmark/peer/audit_chaos.py NEW_SOAK
+python3 benchmark/peer/mixed_chaos.py --config CONFIG.json --output NEW_MIXED
 ```
 
 The default is 1,800 seconds with 30 faults scheduled at equal offsets, rotating
@@ -199,6 +200,12 @@ alive. Healthy traffic must complete inside every fault window. The freeze start
 after the full-mesh connection barrier; all established TCP requests must finish
 after thaw. Crash/recreation requires new connections and all 12 DNS directions
 to recover; old crashed sessions are not expected to survive.
+
+The TCP worker uses separate connection-ready and GO rounds of its barrier: every
+flow connects and writes its header before the main thread prints READY. Historical
+workers printed READY before their flow threads reached the barrier. Those records
+still verify delivered content but cannot establish that every connection existed
+at fault injection; use a newly built worker and separate cohort for that claim.
 
 Traffic cycles through full-mesh RPC, 384 MiB full-mesh bulk, four-hop RPC and a
 slow-reader case. Every cycle also checks 12 UDP directions with 32–1,472-byte
@@ -218,3 +225,10 @@ so a final in-flight operation can extend it. Clean only the owned network and
 instances after preserving evidence. Malformed frames, spoofing, isolation and
 deterministic loss/duplication/reordering remain separate public-interface tests
 in `peer_network.rs`, not claims from the real-guest application probe.
+
+`mixed_chaos.py` starts a fresh group and runs three 384 MiB TCP transfers. Each
+GO also starts 12-direction UDP, and records which TCP clients are still in flight
+when the UDP requests finish. The overlap evidence and raw outputs are mandatory;
+this independent supplement is not merged into the sustained cohort.
+
+Results, failed cohorts and coverage limits: [sustained correctness report](CHAOS_REPORT.md).

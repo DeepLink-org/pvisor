@@ -209,6 +209,18 @@
     },
     {
       "locale": "zh",
+      "page": "lab-notes/opensandbox-performance-analysis.md",
+      "benchmark_ids": [
+        "B-OPENSANDBOX-ENG",
+        "B-IMAGE-STORAGE-ENG",
+        "B-OPENSANDBOX-MEMORY-ENG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": []
+    },
+    {
+      "locale": "zh",
       "page": "lab-notes/filesystem-performance-analysis.md",
       "benchmark_ids": [
         "B-FS-ENG",
@@ -448,6 +460,18 @@
         "B-MEMORY-SCALE",
         "B-MEMORY-DIAG",
         "B-COLD-RUNTIME-ENG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": []
+    },
+    {
+      "locale": "en",
+      "page": "lab-notes/opensandbox-performance-analysis.md",
+      "benchmark_ids": [
+        "B-OPENSANDBOX-ENG",
+        "B-IMAGE-STORAGE-ENG",
+        "B-OPENSANDBOX-MEMORY-ENG"
       ],
       "role": "engineering evidence",
       "tables": [],

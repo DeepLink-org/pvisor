@@ -141,6 +141,9 @@ fn flow(
     let mut response = payload.clone();
     let mut rtt_us = Vec::new();
     let mut hash = 14695981039346656037;
+    // First barrier confirms every flow has connected and written its header.
+    // The same barrier is then reused for the host's explicit GO release.
+    gate.wait();
     gate.wait();
     let started = Instant::now();
     for sequence in 0..request.count {
@@ -236,6 +239,7 @@ fn run(node: usize, scenario: &str, peers: &[String]) {
     } else {
         None
     };
+    gate.wait();
     // Connections are established, but no payload is sent before the common GO.
     println!("READY {node} {scenario}");
     io::stdout().flush().unwrap();
