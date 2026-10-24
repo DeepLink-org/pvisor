@@ -1,6 +1,6 @@
 # Roadmap
 
-See [Why pVisor](../why/index.md#trust-ladder) for the levels and scale axes. The table below lists ongoing L1 work (individual local Jobs) and its acceptance criteria.
+The table below lists ongoing L1 work (individual local Jobs) and its acceptance criteria. See [supervision levels and execution scale](#trust-ladder) for how review practices relate to task volume.
 
 | Work | Acceptance criteria |
 | --- | --- |
@@ -36,7 +36,7 @@ The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pV
 ## L2 and L3 milestones
 
 !!! note "Under construction"
-    The entry criteria and gap list for L2/L3 are not final, and no schedule is set. The requirements and acceptance criteria below describe the current work. For the level definitions see the [trust ladder](../why/index.md#trust-ladder); for the capacity rationale see [concurrency density](../benchmarks/density.md).
+    The entry criteria and gap list for L2/L3 are not final, and no schedule is set. The requirements and acceptance criteria below describe the current work. For the level definitions see the [supervision levels and execution scale](#trust-ladder); for the capacity rationale see [concurrency density](../benchmarks/density.md).
 
 ### L2: multiple local Jobs / one pipeline
 
@@ -55,3 +55,7 @@ Acceptance criteria:
 
 - Give a gap list and staging plan for integration with external cross-node schedulers and for auditing after evidence is centralized. pVisor does not provide a cluster-wide control plane; the single-node daemon has no global DAG or distributed lease.
 - The capacity rationale is shared with L2: [concurrency density](../benchmarks/density.md).
+
+## Supervision levels and execution scale {#trust-ladder}
+
+The L0–L3 labels remain a reference for supervision: L0 approves individual commands, L1 reviews individual results, L2 spot-checks using policy and evidence, and L3 focuses on audits and exceptions. Execution scale can be one task, local concurrency, or multiple machines scheduled by an external system; scale and human involvement are independent axes. Increasing concurrency does not establish L2/L3 acceptance rules. The milestones above still require their respective entry conditions and acceptance criteria.

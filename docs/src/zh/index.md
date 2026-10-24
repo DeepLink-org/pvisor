@@ -1,9 +1,9 @@
 ---
 template: home.html
-title: 让自主 Agent 的执行可以规模化
-description: 提升执行密度，降低监督成本。pVisor 通过资源共享与闲置回收优化机器承载能力，通过文件暂存、运行记录与审查机制降低监督负担，让更多 Agent 任务在有限资源下运行。
+title: Agent 原生沙箱框架
+description: 为本地 Agent 提供文件暂存、审查与选择性合入，为推理、评测和 Agentic RL 后训练提供可集成的执行环境。按场景选择入口，并核对接口能力与验证范围。
 hide:
   - navigation
   - toc
 ---
-# 让自主 Agent 的执行可以规模化
+# Agent 原生沙箱框架

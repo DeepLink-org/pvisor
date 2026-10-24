@@ -1,50 +1,37 @@
-# Why pVisor
+# pVisor overview {#overview}
 
-Use pVisor when you want an agent to finish a task without watching every command. It limits what the agent can touch, holds its file changes until you decide what to merge, and records what ran. A mistake stays bounded, a failed attempt is cheap to drop, and a result can be checked after the run.
+<span id="what-is-policyvisor"></span>
 
-## Reduce intervention during execution
+**PolicyVisor (pVisor) is an agent-native sandbox framework that provides file-level oversight of access and modifications, sandbox execution lifecycle management, and image and memory resource optimizations. Together, these capabilities support secure, controlled, high-density agent execution.**
 
-An agent can run only as long as you are willing to watch it. Approve every command and your attention becomes the ceiling. Switch to full auto and you accept that it may corrupt files, read what it should not, or send requests to the wrong host.
+**Agent-Native:** pVisor integrates file-level oversight, sandbox lifecycle management, and resource reuse throughout agent execution. It uses files as the unit of management to bound access and modifications, isolate candidate changes, and support review; coordinates sandbox pause, memory offload, and resume through Host-side I/O management to actively reclaim resident memory from idle sandboxes during model waits; and uses on-demand image loading, memory sharing, and compression to reduce redundant resource use during branching exploration and rollback. Together, these mechanisms support secure, controlled, high-density agent execution.
 
-Approval cost scales with steps; review cost scales with results. Deferring review lets you sample results, batch them, and machine-check them. A complete record can be verified in one pass after the run instead of intercepted during it.
+<span id="responsibilities-of-the-execution-layer"></span>
 
-## Decouple supervision from execution volume
+## pVisor's place in an agent system {#system-role}
 
-Unattended execution needs three properties at once:
+pVisor integrates agent-oriented management into sandbox execution: it oversees file and network interactions, coordinates sandbox lifecycles, and optimizes image and memory resources on the Host. The VM executor example below shows pVisor as a module within the sandbox execution framework.
 
-| Property | Meaning | What it means for you |
-| --- | --- | --- |
-| Bounded | The blast radius of a mistake is known in advance | No need to approve every command |
-| Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
-| Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
+![Agent above a Host sandbox framework containing pVisor and its runtime, with the guest VM below](../assets/diagrams/pvisor/agent-host-guest-en.svg)
 
-Each property has a mechanism: [file and network policies](../guides/policies/files.md) installed at runtime, [staging](../concepts/staging.md) that holds changes until you merge them, and [records](../concepts/capabilities-and-evidence.md) written for every Job.
+The sandbox runtime / VMM runs the VM and its devices. pVisor coordinates the runtime through lifecycle and resource-management integration points, while Host-side [OverlayCore](../design/overlayfs.md) and [OverlayNet](../design/overlaynet.md) manage guest file and network I/O. These module relationships require corresponding runtime integration points; support for automatic waiting management is described in the [experiment record](../design/experimental/vcpu-idle-offload/index.md). The Agent or upper-level system owns decisions, result acceptance, reward computation, and cross-node scheduling.
 
-At scale, environment preparation, tool execution, model waiting and failure rework enter the bill too. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) accounts for them across pVisor's execution paths and isolation choices, including host-side I/O takeover while a guest is offloaded during a wait.
+<span id="decouple-supervision-from-execution-volume"></span>
+<span id="reduce-intervention-during-execution"></span>
+<span id="task-flow"></span>
+<span id="when-to-use"></span>
 
-## Responsibilities of the execution layer
+## Use cases {#workflows}
 
-pVisor is the **semantic layer for each execution**: it defines boundaries, installs controls, and leaves evidence.
+**Local agent workflows**
 
-Executors provide isolation through host namespaces/Seatbelt, containers, or VMs. pVisor manages execution policy, lifecycle, and records; external systems such as Kubernetes and Ray handle cross-node orchestration.
+To limit an agent's impact on your workspace and review and accept file changes after execution, start with [your first run](../start/first-run.md) and work through execution, review, and apply.
 
-## Today, and after {#trust-ladder}
+**Agent execution infrastructure**
 
-Autonomous execution falls into four levels, by when and by how much a human intervenes:
+To manage multiple execution environments for inference, evaluation, or post-training and reduce resource use during model waits and branching exploration, start with the [infrastructure overview](../guides/infrastructure/index.md) to choose an integration interface and runtime configuration.
 
-| Level | How humans intervene (trust axis) | What carries it (scale axis) | Status |
-| --- | --- | --- | --- |
-| L0 | Approve each command before it runs | A single interactive session | Common in agents, now with model-assisted approval |
-| L1 | Review each change after the run | Local, individual Jobs | **pVisor today** |
-| L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs / one pipeline | Next |
-| L3 | Audit afterward; humans handle exceptions only | Clustered: cross-node scheduling, centralized evidence | pVisor's scale target |
+<span id="trust-ladder"></span>
 
-pVisor targets L1 today: enforce access boundaries at runtime, stage file changes, then inspect records and results. Use the `--ask` approval channel when an individual operation needs a human decision. The [single-node daemon](../guides/daemon/index.md) manages local sandbox lifecycle through an API separate from native Job review; Kubernetes, Ray and similar systems own cross-node scheduling, with pVisor supplying execution semantics and checkable records.
-
-- **One person, one agent.** An unattended refactor with the changes reviewed before merge: available today.
-- **One person, many agents.** Parallel runs with batch review: next ([parallel agents](../guides/parallel-agents.md)).
-- **Teams and platforms.** The L1 workflow in CI: available today ([running in CI](../guides/ci.md)).
-- **Agentic RL and evaluation.** A recorded, forkable, replayable batch substrate: direction ([RL rollouts](../guides/rl-rollouts.md), [research directions](../design/research/index.md)).
-
-!!! note "Under construction"
-    Supervision cost per unit of agent work has no measurements yet; requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md). L2/L3 entry criteria are not final: see the [roadmap](../community/roadmap.md) for progress and [concurrency density](../benchmarks/density.md) for the capacity rationale.
+!!! note "Support scope"
+    Isolating file changes requires [staging](../concepts/staging.md), which does not undo external API calls, database writes, or other external side effects. Isolation and resource management depend on the [executor](../security/executor-boundaries.md), [interface](../guides/infrastructure/integration.md#capabilities), and experimental status; see the corresponding [benchmarks](../benchmarks/index.md) for performance evidence.
