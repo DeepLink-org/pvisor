@@ -6,6 +6,23 @@ use pvisor_journal::api::{Journal, JournalStore};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+const FAKE_OCI_RUNTIME: &str = r#"#!/bin/sh
+set -eu
+bundle=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$bundle" ] || exit 0
+control=$(dirname "$bundle")
+exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
+  --spec "$control/run-spec.json" \
+  --result-file "$control/output/run-result.json"
+"#;
+
 fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
     let runs = std::fs::read_dir(run_home)
         .expect("list Run Home")
@@ -334,6 +351,50 @@ fn record_destination_survives_toml_round_trip() {
 
 #[cfg(unix)]
 #[test]
+fn fake_oci_uses_control_input_instead_of_rootfs_mountpoint() {
+    let temporary = tempfile::tempdir().unwrap();
+    let control = temporary.path().join("control with spaces");
+    let bundle = control.join("oci-bundle");
+    let placeholder = bundle.join("rootfs/run/pvisor/run-spec.json");
+    std::fs::create_dir_all(placeholder.parent().unwrap()).unwrap();
+    std::fs::write(&placeholder, b"").unwrap();
+    std::fs::write(control.join("run-spec.json"), b"real input").unwrap();
+    let runtime = temporary.path().join("fake-oci");
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pvisor = temporary.path().join("pvisor-argv");
+    std::fs::write(&pvisor, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&pvisor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(&runtime)
+        .args(["run", "--bundle"])
+        .arg(&bundle)
+        .arg("test-container")
+        .env("PVISOR_TEST_PVISOR", &pvisor)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "spawn\n--executor\nhost\n--stdio\ncapture\n--spec\n{}\n--result-file\n{}\n",
+            control.join("run-spec.json").display(),
+            control.join("output/run-result.json").display()
+        )
+    );
+    let management = Command::new(&runtime)
+        .args(["kill", "test-container", "TERM"])
+        .env("PVISOR_TEST_PVISOR", &pvisor)
+        .output()
+        .unwrap();
+    assert!(management.status.success());
+    assert!(
+        management.stdout.is_empty(),
+        "management launched a workload"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 #[cfg_attr(
     target_os = "macos",
     ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
@@ -344,25 +405,7 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
     std::fs::create_dir(&workspace).unwrap();
     let run_home = temporary.path().join("runs");
     let runtime = temporary.path().join("fake-oci");
-    std::fs::write(
-        &runtime,
-        r#"#!/bin/sh
-set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle) bundle="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
-control=$(dirname "$spec")
-exec "$PVISOR_TEST_PVISOR" spawn --executor host \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/output/run-result.json"
-"#,
-    )
-    .unwrap();
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
@@ -424,25 +467,7 @@ fn container_executor_deadline_stops_the_runtime_client() {
     std::fs::create_dir(&workspace).unwrap();
     let run_home = temporary.path().join("runs");
     let runtime = temporary.path().join("fake-oci");
-    std::fs::write(
-        &runtime,
-        r#"#!/bin/sh
-set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle) bundle="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$bundle" ] || exit 0
-control=$(dirname "$bundle")
-exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/output/run-result.json"
-"#,
-    )
-    .unwrap();
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let started = std::time::Instant::now();

@@ -371,6 +371,8 @@ existing prerequisites; compile checks are not real-guest validation.
 Linux OCI fixtures distinguish an inner deadline (an untrusted child process
 exit) from the host transport watchdog. The latter must terminate and reap an
 unresponsive runtime; delegated result files use the writable `output/` mount.
+Fixtures resolve input beside the OCI bundle; rootfs mountpoint placeholders
+are not serialized input and must not be discovered by a recursive file search.
 
 The ignored `minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio`
 Job test needs KVM, a static C compiler and (for GNU builds)
