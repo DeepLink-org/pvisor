@@ -77,6 +77,7 @@ impl TxBatch {
     }
 
     pub(super) fn flush(&mut self, fd: RawFd) -> Result<(), WriteError> {
+        // The stream backend configures O_NONBLOCK before handing us its fd.
         while self.first < self.count {
             let mut vectors: [libc::iovec; BATCH] = std::array::from_fn(|_| libc::iovec {
                 iov_base: std::ptr::null_mut(),
@@ -138,6 +139,7 @@ mod tests {
     #[test]
     fn short_writes_retain_batch_cursor_without_replaying_prefixes_or_payloads() {
         let (sender, mut receiver) = UnixStream::pair().unwrap();
+        sender.set_nonblocking(true).unwrap();
         receiver.set_nonblocking(true).unwrap();
         let bytes: libc::c_int = 1024;
         assert_eq!(
@@ -176,6 +178,7 @@ mod tests {
             let mut bytes = [0; 997];
             loop {
                 match receiver.read(&mut bytes) {
+                    Ok(0) => panic!("unexpected stream EOF"),
                     Ok(length) => arrived.extend_from_slice(&bytes[..length]),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     error => panic!("unexpected receive: {error:?}"),

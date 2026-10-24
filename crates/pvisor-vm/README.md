@@ -1379,6 +1379,14 @@ and CHOWN clears regular-file setuid/setgid bits.
 
 ### Framed virtio-net transport
 
+The connected stream is configured with `O_NONBLOCK` before the backend is
+published, preserving its other status flags. Setup failure aborts backend
+creation. Cloned descriptors share this status; callers must not reset it.
+This also prevents Darwin stream sends from blocking on a full buffer, where
+`MSG_DONTWAIT` alone is insufficient. Backpressure tests use bounded I/O, and
+the maximum-frame receive fixture writes concurrently rather than relying on
+the host's default socket capacity.
+
 The Unix-stream backend retains a bounded read-ahead buffer (at most 65,566
 bytes) across RX calls. Incomplete length prefixes and payloads return without
 blocking the device worker; coalesced frames are parsed from the same read.

@@ -217,6 +217,10 @@ pub trait VmConfiguration: Sized {
         mode: u32,
         one_shot: bool,
     ) -> io::Result<()>;
+    /// Transfer a connected, framed Ethernet stream to the VM with this MAC.
+    /// Backend startup enables nonblocking I/O while preserving other status
+    /// flags; clones share those flags and must not reset them. Socket setup
+    /// failure aborts startup rather than running a blocking device worker.
     fn network(&mut self, stream: std::os::unix::net::UnixStream, mac: [u8; 6]) -> io::Result<()>;
     /// Route the task-stdio console ports (`krun-stdin`/`krun-stdout`/
     /// `krun-stderr` plus the unnamed console) to these descriptors instead

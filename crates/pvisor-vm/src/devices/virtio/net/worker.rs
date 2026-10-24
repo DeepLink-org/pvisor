@@ -54,7 +54,7 @@ impl NetWorker {
         let backend = match cfg_backend {
             VirtioNetBackend::UnixstreamFd(fd) => {
                 let owned_fd = fd.try_clone().map_err(ConnectError::CloneDescriptor)?;
-                Box::new(Unixstream::new(owned_fd)) as Box<dyn NetBackend + Send>
+                Box::new(Unixstream::new(owned_fd)?) as Box<dyn NetBackend + Send>
             }
             VirtioNetBackend::UnixstreamPath(path) => {
                 Box::new(Unixstream::open(path)?) as Box<dyn NetBackend + Send>
@@ -566,6 +566,9 @@ mod tests {
         let rx = VirtQueue::new(GuestAddress(0), &mem, 64);
         let tx = VirtQueue::new(GuestAddress(0x1000), &mem, 64);
         let (local, mut peer) = UnixStream::pair().unwrap();
+        local
+            .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
         peer.set_nonblocking(true).unwrap();
         let interrupt =
             InterruptTransport::new(DummyIrqChip::new().into(), "net-test".into()).unwrap();
@@ -628,6 +631,7 @@ mod tests {
             let mut bytes = [0; 503];
             loop {
                 match peer.read(&mut bytes) {
+                    Ok(0) => panic!("unexpected stream EOF"),
                     Ok(length) => arrived.extend_from_slice(&bytes[..length]),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                     error => panic!("receive: {error:?}"),

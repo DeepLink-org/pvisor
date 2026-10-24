@@ -1,3 +1,4 @@
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sys::socket::{
     AddressFamily, MsgFlags, SockFlag, SockType, UnixAddr, connect, getsockopt, recv, send,
     setsockopt, socket, sockopt,
@@ -29,7 +30,15 @@ pub struct Unixstream {
 
 impl Unixstream {
     /// Create the backend with a pre-established connection to the userspace network proxy.
-    pub fn new(fd: OwnedFd) -> Self {
+    pub fn new(fd: OwnedFd) -> Result<Self, ConnectError> {
+        // Darwin's stream send path does not honor MSG_DONTWAIT when waiting
+        // for send-buffer space. Configure the owned socket before publication.
+        let flags = fcntl(&fd, FcntlArg::F_GETFL).map_err(ConnectError::ConfigureSocket)?;
+        fcntl(
+            &fd,
+            FcntlArg::F_SETFL(OFlag::from_bits_retain(flags) | OFlag::O_NONBLOCK),
+        )
+        .map_err(ConnectError::ConfigureSocket)?;
         if let Err(e) = setsockopt(&fd, sockopt::SndBuf, &(16 * 1024 * 1024)) {
             log::warn!("Failed to increase SO_SNDBUF (performance may be decreased): {e}");
         }
@@ -40,13 +49,13 @@ impl Unixstream {
             getsockopt(&fd, sockopt::RcvBuf)
         );
 
-        Self {
+        Ok(Self {
             fd,
             receive: vec![0; super::MAX_BUFFER_SIZE + FRAME_HEADER_LEN],
             receive_start: 0,
             receive_end: 0,
             last_partial_write_length: 0,
-        }
+        })
     }
 
     /// Create the backend opening a connection to the userspace network proxy.
@@ -61,7 +70,7 @@ impl Unixstream {
         let peer_addr = UnixAddr::new(&path).map_err(ConnectError::InvalidAddress)?;
         connect(fd.as_raw_fd(), &peer_addr).map_err(ConnectError::Binding)?;
 
-        Ok(Self::new(fd))
+        Self::new(fd)
     }
 
     fn write_loop(&mut self, buf: &[u8]) -> Result<(), WriteError> {
@@ -207,9 +216,18 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
+    fn connected_socket_is_nonblocking_and_retains_existing_flags() {
+        let (local, _peer) = UnixStream::pair().unwrap();
+        let before = fcntl(&local, FcntlArg::F_GETFL).unwrap();
+        let backend = Unixstream::new(local.into()).unwrap();
+        let after = fcntl(&backend.fd, FcntlArg::F_GETFL).unwrap();
+        assert_eq!(after, before | OFlag::O_NONBLOCK.bits());
+    }
+
+    #[test]
     fn partial_header_and_body_never_block_and_preserve_every_byte() {
         let (local, mut peer) = UnixStream::pair().unwrap();
-        let mut backend = Unixstream::new(local.into());
+        let mut backend = Unixstream::new(local.into()).unwrap();
         let mut output = [0; 2048];
         let mut framed = 1514u32.to_be_bytes().to_vec();
         framed.extend((0..1514).map(|index| (index * 37) as u8));
@@ -231,7 +249,7 @@ mod tests {
     #[test]
     fn coalesced_frames_and_eof_are_drained_without_spinning() {
         let (local, mut peer) = UnixStream::pair().unwrap();
-        let mut backend = Unixstream::new(local.into());
+        let mut backend = Unixstream::new(local.into()).unwrap();
         let mut framed = Vec::new();
         for sequence in 0..32u8 {
             framed.extend_from_slice(&66u32.to_be_bytes());
@@ -260,7 +278,7 @@ mod tests {
     fn invalid_frame_lengths_fail_without_unbounded_allocation_or_panic() {
         for length in [0, u32::MAX, 2048] {
             let (local, mut peer) = UnixStream::pair().unwrap();
-            let mut backend = Unixstream::new(local.into());
+            let mut backend = Unixstream::new(local.into()).unwrap();
             peer.write_all(&length.to_be_bytes()).unwrap();
             assert!(matches!(
                 backend.read_frame(&mut [0; 2048]),
@@ -272,7 +290,7 @@ mod tests {
     #[test]
     fn read_ahead_compaction_preserves_maximum_frame_and_rejects_truncated_eof() {
         let (local, mut peer) = UnixStream::pair().unwrap();
-        let mut backend = Unixstream::new(local.into());
+        let mut backend = Unixstream::new(local.into()).unwrap();
         let mut bytes = Vec::new();
         for _ in 0..16 {
             bytes.extend_from_slice(&1514u32.to_be_bytes());
@@ -283,18 +301,30 @@ mod tests {
         bytes.extend_from_slice(&large);
         bytes.extend_from_slice(&66u32.to_be_bytes());
         bytes.extend_from_slice(&[0; 3]);
-        peer.write_all(&bytes).unwrap();
-        drop(peer);
+        peer.set_write_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let writer = std::thread::spawn(move || peer.write_all(&bytes));
         let mut output = vec![0; super::super::MAX_BUFFER_SIZE];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut read = |output: &mut [u8]| loop {
+            match backend.read_frame(output) {
+                Err(ReadError::NothingRead) => {
+                    assert!(std::time::Instant::now() < deadline, "stream read stalled");
+                    std::thread::yield_now();
+                }
+                result => break result,
+            }
+        };
         for _ in 0..16 {
-            let length = backend.read_frame(&mut output).unwrap();
+            let length = read(&mut output).unwrap();
             assert_eq!(&output[super::super::VNET_HDR_LEN..length], &[0x5a; 1514]);
         }
-        let length = backend.read_frame(&mut output).unwrap();
+        let length = read(&mut output).unwrap();
         assert_eq!(&output[super::super::VNET_HDR_LEN..length], &large);
         assert!(matches!(
-            backend.read_frame(&mut output),
+            read(&mut output),
             Err(ReadError::Internal(nix::Error::ECONNRESET))
         ));
+        writer.join().unwrap().unwrap();
     }
 }
