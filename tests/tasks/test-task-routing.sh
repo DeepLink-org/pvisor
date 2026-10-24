@@ -29,6 +29,9 @@ for plugin in github:nextest-rs/nextest cargo:cargo-zigbuild; do
     *) echo "$binary is outside the mise installation" >&2; exit 1 ;;
   esac
 done
+# Markdown selection exercises the real parser, including on a clean checkout.
+cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
+export PVISOR_TASK_TEST_SEMSPEC="$CARGO_TARGET_DIR/semspec/debug/semspec"
 export PVISOR_TASK_TEST_LOG="$work/commands" CARGO_TARGET_DIR="$work/target with spaces" CARGO_INSTALL_ROOT="$work/install"
 export PVISOR_TASK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
 mkdir "$work/bin" "$work/tests"
@@ -80,6 +83,10 @@ if [[ "$name" == codesign && "${PVISOR_TASK_TEST_BAD_CODESIGN:-0}" == 1 ]]; then
 if [[ "$name" == codesign && "$1" == --verify && "${PVISOR_TASK_TEST_BAD_VERIFY:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == cargo && "$1" == build ]]; then
   if [[ "${PVISOR_TASK_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
+  if [[ " $* " == *"/tools/semspec/Cargo.toml "* ]]; then
+    mkdir -p "$CARGO_TARGET_DIR/semspec/debug"
+    cp "$PVISOR_TASK_TEST_SEMSPEC" "$CARGO_TARGET_DIR/semspec/debug/semspec"
+  fi
   profile=debug
   for ((i=0; i<$#; i++)); do
     if [[ "${args[$i]}" == --release ]]; then profile=release; fi
@@ -307,7 +314,8 @@ for recipe in fw cases benchmark doctor; do
     *) expect_failure "$recipe" unknown ;;
   esac
   if [[ "$recipe" == benchmark ]]; then
-    command_line python3 "$work/benchmark/run.py" --check smoke unknown > "$work/expected"
+    command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+    command_line python3 "$work/benchmark/run.py" --check smoke unknown >> "$work/expected"
     diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
   else
     test ! -s "$PVISOR_TASK_TEST_LOG"
@@ -316,18 +324,22 @@ done
 run benchmark startup/timing 'pvisor vm'
 check_line python3 "$work/benchmark/run.py" --check startup/timing 'pvisor vm'
 check_line python3 "$work/benchmark/run.py" startup/timing 'pvisor vm'
-run benchmark filesystem/tools native-read
+SEMSPEC_BIN="$work/missing-semspec" run benchmark filesystem/tools native-read
 check_line python3 "$work/benchmark/run.py" filesystem/tools native-read
 expect_failure benchmark filesystem/tools 'pvisor vm'
-command_line python3 "$work/benchmark/run.py" --check filesystem/tools 'pvisor vm' > "$work/expected"
+command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+command_line python3 "$work/benchmark/run.py" --check filesystem/tools 'pvisor vm' >> "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 grep -Fq 'available: native-metadata, native-read' "$work/stderr"
 run benchmark smoke --binary /already-built/pvisor
 {
-  command_line python3 "$work/benchmark/run.py" --check smoke --binary /already-built/pvisor
   command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
+  command_line python3 "$work/benchmark/run.py" --check smoke --binary /already-built/pvisor
   command_line python3 "$work/benchmark/run.py" smoke --binary /already-built/pvisor
 } > "$work/expected"
+diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
+PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure benchmark filesystem/tools native-read
+command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 run benchmark smoke
 check_line python3 "$work/benchmark/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke

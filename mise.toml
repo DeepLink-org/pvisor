@@ -35,6 +35,8 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -eq 0 ]]; then set -- smoke; fi
+cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
+export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
 process_build="$(python3 "$MISE_PROJECT_ROOT/benchmark/run.py" --check "$@")"
 if [[ "$process_build" == process ]]; then
   benchmark_repo="${PVISOR_BENCHMARK_REPO:-$MISE_PROJECT_ROOT}"
@@ -53,8 +55,6 @@ if [[ "$process_build" == process ]]; then
   )
   set -- --binary "$benchmark_build/release/pvisor" "$@"
 fi
-cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
 python3 "$MISE_PROJECT_ROOT/benchmark/run.py" "$@"
 '''
 

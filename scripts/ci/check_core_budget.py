@@ -2,7 +2,7 @@
 """Enforce the embeddable runtime budget and default application boundaries.
 
 The workspace-line, dependency and public-API budgets compare against a
-committed baseline (`scripts/ci/core-budget.json`, regenerated with `just
+committed baseline (`scripts/ci/core-budget.json`, regenerated with `mise run
 update-core-budget`). Any growth beyond the baseline fails CI; an intentional
 growth regenerates the baseline in the same change so the exact delta stays
 reviewable. The `--max-*` flags remain for ad-hoc local checks.
