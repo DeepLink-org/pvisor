@@ -48,7 +48,7 @@ def validate_batch(directory):
     if manifest["benchmark_id"] == "B-STARTUP" and manifest["metric_scope"] != READY_EXIT_SCOPE:
         raise ValueError("startup validation requires paired Ready / Exit data")
     if (
-        manifest["entry"] == "filesystem/tools.json"
+        manifest["entry"] in ("filesystem/tools.md", "filesystem/tools.json")
         and manifest["metric_scope"] != FILESYSTEM_SCOPE
     ):
         raise ValueError("filesystem validation requires the current Python command timer")

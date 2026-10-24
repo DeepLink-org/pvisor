@@ -1,17 +1,104 @@
 //! Executable JSON tables and read-only Markdown substitution. These commands
-//! are independent of semantic cases, verdicts, review ledgers and digests.
+//! are independent of semantic cases and review ledgers. Inline observations
+//! bind source and engine digests for offline freshness, never human approval.
 use anyhow::{Context, Result, ensure};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use crate::project::atomic_write;
+
+/// An inline table delegates sampling to its scripts; semspec never times them.
+#[derive(Serialize)]
+pub struct Cell {
+    pub id: String,
+    pub end: usize,
+    pub table: Value,
+    pub digest: String,
+}
+
+pub fn cells(source: &str) -> Result<Vec<Cell>> {
+    let mut ids = BTreeSet::new();
+    let mut cells = Vec::new();
+    for block in crate::parse::marked_blocks(source)? {
+        let Some(parameters) = block.parameters.strip_prefix("table ") else {
+            continue;
+        };
+        let words = shell_words::split(parameters)?;
+        ensure!(words.len() == 1, "table requires only id=NAME");
+        let id = words[0]
+            .strip_prefix("id=")
+            .context("table requires id=NAME")?;
+        ensure!(
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                && ids.insert(id.to_owned()),
+            "invalid or duplicate table ID"
+        );
+        let table = serde_json::from_str(&block.script).context("invalid inline table")?;
+        validate_table(&table, true)?;
+        cells.push(Cell {
+            id: id.into(),
+            end: block.end,
+            table,
+            digest: crate::seal::digest(&[
+                b"semspec/table/v1\0",
+                source.as_bytes(),
+                include_bytes!("table.rs"),
+            ]),
+        });
+    }
+    Ok(cells)
+}
+
+/// Execute in a private directory, retaining evidence only on request or failure.
+pub fn run(
+    cell: &Cell,
+    source: &Path,
+    artifacts: Option<&Path>,
+) -> Result<crate::experiment::Outcome> {
+    let root = match artifacts {
+        Some(path) => tempfile::tempdir_in(path)?,
+        None => tempfile::tempdir()?,
+    };
+    let input = root.path().join("input.json");
+    fs::write(&input, json_bytes(&cell.table)?)?;
+    let result = bench_at(&input, source.parent());
+    let mut data = match &result {
+        Ok(output) => json!({
+            "status":"PASS", "result":serde_json::from_slice::<Value>(&fs::read(output)?)?,
+            "evidence":serde_json::from_slice::<Value>(&fs::read(input.with_extension("bench.json"))?)?,
+        }),
+        Err(error) => json!({"status":"FAIL", "error":format!("{error:#}")}),
+    };
+    if artifacts.is_some() || result.is_err() {
+        data["workdir"] = root
+            .keep()
+            .into_os_string()
+            .to_string_lossy()
+            .into_owned()
+            .into();
+    } else {
+        // Returned values remain useful without publishing paths to deleted logs.
+        for record in data["evidence"]["commands"].as_array_mut().unwrap() {
+            record.as_object_mut().unwrap().remove("log");
+        }
+        data["evidence"].as_object_mut().unwrap().remove("template");
+    }
+    Ok(crate::experiment::Outcome {
+        id: format!("table:{}", cell.id),
+        digest: cell.digest.clone(),
+        data,
+    })
+}
 
 /// Execute trusted Bash command rows/cells once per distinct expression.
 /// Rows must print a nonempty JSON object of scalar columns; cells print a scalar.
@@ -24,38 +111,31 @@ pub fn bench(input: &Path) -> Result<PathBuf> {
 /// Commands receive SEMSPEC_BENCH_LOG; stdout and stderr are retained per command.
 pub fn bench_at(input: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
     let input = input.canonicalize().context("read benchmark template")?;
-    ensure!(
-        input.extension().is_some_and(|ext| ext == "json"),
-        "bench input must be a .json file"
-    );
+    let mut table: Value = if input.extension().is_some_and(|ext| ext == "md") {
+        let source = fs::read_to_string(&input)?;
+        let mut cells = cells(&source)?;
+        ensure!(
+            cells.len() == 1
+                && crate::experiment::cells(&source)?.is_empty()
+                && crate::parse::parse_document(&input, &source)?.is_empty(),
+            "bench Markdown requires exactly one table and no case/bench cells"
+        );
+        cells.remove(0).table
+    } else {
+        ensure!(
+            input.extension().is_some_and(|ext| ext == "json"),
+            "bench input must be a .json or .md file"
+        );
+        serde_json::from_slice(&fs::read(&input)?)?
+    };
     let output = input.with_extension("render.json");
     let evidence = input.with_extension("bench.json");
-    let mut table: Value = serde_json::from_slice(&fs::read(&input)?)?;
     validate_table(&table, true)?;
     let cwd = cwd
         .unwrap_or(input.parent().unwrap())
         .canonicalize()
         .context("command cwd must exist")?;
     ensure!(cwd.is_dir(), "command cwd must be a directory");
-    let mut shapes = HashMap::new();
-    for row in table.as_object().unwrap().values() {
-        let values = row
-            .as_object()
-            .map(|row| row.values().collect::<Vec<_>>())
-            .unwrap_or_else(|| vec![row]);
-        for cell in values {
-            if let Some(command) = cell.as_str().and_then(|s| s.strip_prefix("$ ")) {
-                ensure!(!command.trim().is_empty(), "empty command cell");
-                shell_words::split(command).context("invalid command quoting")?;
-                if let Some(previous) = shapes.insert(command.to_owned(), !row.is_object()) {
-                    ensure!(
-                        previous == !row.is_object(),
-                        "one script command cannot produce both a row object and a scalar cell"
-                    );
-                }
-            }
-        }
-    }
     for path in [&output, &evidence] {
         if path.exists() {
             fs::remove_file(path)?;
@@ -200,6 +280,32 @@ fn validate_table(table: &Value, commands: bool) -> Result<()> {
             );
         }
     }
+    if commands {
+        validate_commands(table)?;
+    }
+    Ok(())
+}
+
+fn validate_commands(table: &Value) -> Result<()> {
+    let mut shapes = HashMap::new();
+    for row in table.as_object().unwrap().values() {
+        let values = row
+            .as_object()
+            .map(|row| row.values().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec![row]);
+        for cell in values {
+            if let Some(command) = cell.as_str().and_then(|s| s.strip_prefix("$ ")) {
+                ensure!(!command.trim().is_empty(), "empty command cell");
+                shell_words::split(command).context("invalid command quoting")?;
+                if let Some(previous) = shapes.insert(command.to_owned(), !row.is_object()) {
+                    ensure!(
+                        previous == !row.is_object(),
+                        "one script command cannot produce both a row object and a scalar cell"
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -330,6 +436,12 @@ fn render_placeholder(placeholder: &str, input: &Path) -> Result<String> {
     )?;
     validate_table(&table, false).with_context(|| format!("table {}", file.display()))?;
     markdown_table(table.as_object().unwrap(), &options)
+}
+
+/// Render a resolved inline table with the same escaping as external tables.
+pub fn render_value(table: &Value) -> Result<String> {
+    validate_table(table, false)?;
+    markdown_table(table.as_object().unwrap(), &TableOptions::default())
 }
 
 fn escape(text: &str) -> String {

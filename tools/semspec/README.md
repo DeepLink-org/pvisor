@@ -185,6 +185,7 @@ data; only strings beginning with `$ ` are commands.
 ```sh
 semspec bench in.json                 # creates in.render.json and in.bench.json
 semspec bench --cwd workspace in.json
+semspec bench experiment.md           # one inline table; same sibling outputs
 semspec render article.md
 semspec render article.md --output article.render.md
 ```
@@ -210,6 +211,27 @@ recursively executed. Known template errors are checked before execution and
 preserve existing results; failures during execution clear old results/evidence.
 The template is never overwritten. Successful outputs are written atomically.
 A command cannot serve as both a row object and scalar cell.
+
+Keep prose and a script-owned experiment together with an inline JSON table:
+
+````markdown
+<!-- semspec: table id=filesystem -->
+```json
+{"native": "$ python3 measure.py"}
+```
+````
+
+`filter experiment.md` is read-only and shows NOT RUN. `--format json` exposes
+validated `tables` alongside direct-argv `experiments`. `--execute` calls each
+distinct expression once per table and renders its returned columns, without
+timing or resampling. The script owns timeouts, validation, units and statistics.
+Commands use the document directory as cwd. `--artifacts DIR` retains raw JSON,
+logs and `report.json`; without it, successful temporary evidence is removed and
+failures retain their work directory. `--results DIR` renders offline; changed
+source or table engine yields STALE. These observations never approve cases.
+For `bench FILE.md`, require exactly one table and no case/bench cells to avoid
+silently ignoring another executable experiment; `filter` supports multiple cells.
+Registered experiments still use their prepare/audit pipeline before publication.
 
 Row and column insertion order are preserved. Evidence retains `kind: script-row`
 or `script-cell`, raw returned JSON, log paths and complete row/cell mappings.

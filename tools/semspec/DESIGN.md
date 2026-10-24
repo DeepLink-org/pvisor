@@ -322,6 +322,14 @@ runs 至少 2，timeout 为正秒数。计时采用 Python perf_counter_ns，进
 每次预热和正式都必须校验成功，不删除慢样本，失败也尝试 cleanup 并保存原始记录。
 直接 `filter --execute` 即可得到表格，不要求配套脚本或结果文件。
 
+已有自有采样协议的实验使用 `table id=NAME` 紧接 JSON fence，复用 JSON bench 的
+行/标量命令语义。每张表内相同表达式只执行一次；不做外层计时或二次采样，超时、
+校验与统计由脚本负责。filter JSON 的 tables 返回同一份已验证定义，准备器无需解析 Markdown。
+显式执行按文档目录运行，直接渲染完整返回表；可选 artifacts 保存原始 JSON 和日志，
+默认成功清理临时目录、失败保留诊断。离线结果绑定源文档和表引擎摘要，变更显示 STALE。
+`bench FILE.md` 只接受一张 table 且没有 case/bench cell，沿用相邻 render/bench JSON 输出；
+filter 支持多 cell。公开实验仍先准备、冻结和预检，执行后完整审计，不能直接跳过发布门禁。
+
 `tools/semspec/runtime.py` 是相同的 stdlib 公共执行层，嵌入独立 Rust 二进制，
 同时由 benchmark.new 适配器导入。process/replay、startup Ready/Exit、filesystem
 共享采样、统计、证据写入和命令记录审核；fixture、Ready 协议、Bundle 和输入校验

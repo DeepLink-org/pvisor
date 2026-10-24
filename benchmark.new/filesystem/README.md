@@ -145,14 +145,8 @@ I/O 曲线发布器只复制当前文章或主题引用的 SVG；未引用的图
 注册条目为 [B-FS-TOOLS](../../benchmark.new/REGISTRY.md#b-fs-tools)。当前入口只覆盖两项原生探针；
 七工具内部阶段、跨后端任务及工程 A/B 的范围仍由各自注册条目约束。
 
-[tools.json](tools.json) 是一张两行表：
-
-```json
-{
-  "native-metadata": "$ python3 @REPO@/benchmark.new/filesystem/metadata_timing.py @BATCH@",
-  "native-read": "$ python3 @REPO@/benchmark.new/filesystem/read_timing.py @BATCH@"
-}
-```
+[tools.md](tools.md) 同时保存实验说明与两行可执行表定义。semspec 每行调用脚本一次，
+脚本拥有采样和统计，不在外层重复计时。
 
 ```sh
 just benchmark filesystem/tools
@@ -181,7 +175,7 @@ read 读取完整数据并校验 SHA256。输入大小、目录结构及所有�
 
 - `prepare.py`：核对固定行命令，创建共享输入并执行逐行预检。
 - `workload.py`：输入生成、完整校验与两种单次负载。
-- `fs_timing.py`：共同采样、时钟和统计；`*_timing.py` 固定操作。
+- `fs_timing.py BATCH MODE`：metadata/read 共用的入口、采样、时钟和统计。
 - `audit.py`：校验逐次命令、零退出、单调时钟、样本统计与 semspec 行映射。
 
 保留批次含 `in.json`、`in.render.json`、`in.bench.json`、manifest 和冻结 harness，

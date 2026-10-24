@@ -35,6 +35,7 @@ fixture、原生前缀及工作区校验由 replay 适配器负责。其余注�
 
 小型本地实验可直接在 Markdown 中写 `semspec: bench id=NAME` TOML cell，
 用 `semspec filter experiment.md --execute` 得到表格；无需手写采样循环或 result.json。
+已有自有采样协议的实验使用 `semspec: table id=NAME` JSON cell，返回完整行，避免重复计时。
 同一文档中的 case、期待输出、结果和说明也由 filter 统一渲染。
 格式见 [semspec](../tools/semspec/README.md#shared-experiment-runtime)。
 公开 benchmark 仍必须经过本目录的注册、准备、完整逐次审计和发布门禁。
@@ -86,7 +87,7 @@ python3 benchmark.new/update.py "$batch"
 两行共用一份输入，解释器与负载校验计入完整命令时间，无需外部计时工具。手动保留批次：
 
 ```sh
-batch=$(python3 benchmark.new/filesystem/prepare.py benchmark.new/filesystem/tools.json)
+batch=$(python3 benchmark.new/filesystem/prepare.py benchmark.new/filesystem/tools.md)
 "$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"
 python3 benchmark.new/update.py "$batch"
 ```

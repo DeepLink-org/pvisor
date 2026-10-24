@@ -72,7 +72,11 @@ class FilesystemContracts(unittest.TestCase):
                     self.assertFalse(AUDIT._same_trial_command(altered, expected))
 
     def test_modified_command_or_extra_arguments_are_rejected_before_preparation(self):
-        table = json.loads((ROOT / "filesystem/tools.json").read_text())
+        table = {
+            "native-"
+            + mode: f"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ {mode}"
+            for mode in ("metadata", "read")
+        }
         for expression in (
             table["native-read"] + " --payload-mib 16",
             "$ python3 arbitrary.py @BATCH@",
@@ -130,9 +134,20 @@ class FilesystemContracts(unittest.TestCase):
 
     def test_failed_sample_keeps_diagnostics_and_cannot_write_a_summary(self):
         with workspace() as (root, resources):
-            batch = FILESYSTEM.prepare(
-                ROOT / "filesystem/tools.json", root / ".data/batch", row="native-read"
+            batch = root / ".data/batch"
+            batch.mkdir(parents=True)
+            prepare_fixture(batch / "fixture")
+            (batch / "manifest.json").write_text(
+                json.dumps(
+                    dict(
+                        status="prepared",
+                        metric_scope=SCOPE,
+                        rows={"native-read": "native-read"},
+                        artifacts={},
+                    )
+                )
             )
+            run_trial(batch, "read", "preflight", 0)
             with patch(
                 "fs_timing.run_trial", side_effect=[1, 1, 1, ValueError("incorrect output")]
             ):
@@ -175,7 +190,7 @@ class FilesystemIntegration(unittest.TestCase):
 
     def test_two_rows_share_one_fixture_and_publish_only_audited_samples(self):
         with workspace() as (root, resources):
-            batch = FILESYSTEM.prepare(ROOT / "filesystem/tools.json", root / ".data/batch")
+            batch = FILESYSTEM.prepare(ROOT / "filesystem/tools.md", root / ".data/batch")
             self.bench(batch)
             for mode in ("metadata", "read"):
                 self.assertEqual(
@@ -185,6 +200,7 @@ class FilesystemIntegration(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reuse a measured"):
                 measure(batch, "read")
             manifest, table, results = validate_batch(batch)
+            self.assertEqual(manifest["entry"], "filesystem/tools.md")
             self.assertEqual(manifest["metric_scope"], SCOPE)
             self.assertEqual(manifest["fixture_scope"], FIXTURE_SCOPE)
             self.assertEqual(manifest["measurement_engine"], "python-perf_counter_ns")
@@ -211,7 +227,7 @@ class FilesystemIntegration(unittest.TestCase):
     def test_single_row_preserves_fixed_workload_and_rejects_tampered_statistics(self):
         with workspace() as (root, resources):
             batch = FILESYSTEM.prepare(
-                ROOT / "filesystem/tools.json", root / ".data/batch", row="native-metadata"
+                ROOT / "filesystem/tools.md", root / ".data/batch", row="native-metadata"
             )
             self.assertEqual(list(json.loads((batch / "in.json").read_text())), ["native-metadata"])
             self.bench(batch)

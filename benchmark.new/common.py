@@ -93,20 +93,28 @@ def create_batch(template, output=None):
     return batch
 
 
-def command_definition(template):
-    """Read a legacy command definition or semspec's validated Markdown inventory."""
-    template = Path(template).resolve()
-    if template.suffix != ".md":
-        return json.loads(template.with_suffix(".commands.json").read_text())
+def markdown_inventory(template):
+    """Read semspec's validated Markdown inventory without executing subjects."""
     semspec = os.environ.get("SEMSPEC_BIN", str(REPO / "target/semspec/debug/semspec"))
     output = subprocess.run(
-        [semspec, "filter", str(template), "--format", "json"],
+        [semspec, "filter", str(Path(template).resolve()), "--format", "json"],
         check=True,
         capture_output=True,
         text=True,
     )
     document = json.loads(output.stdout)
-    if document["format"] != 1 or not document["experiments"]:
+    if document["format"] != 1:
+        raise ValueError("unsupported semspec Markdown inventory")
+    return document
+
+
+def command_definition(template, document=None):
+    """Read a legacy command definition or semspec's validated Markdown inventory."""
+    template = Path(template).resolve()
+    if template.suffix != ".md":
+        return json.loads(template.with_suffix(".commands.json").read_text())
+    document = document if document is not None else markdown_inventory(template)
+    if not document["experiments"] or document["tables"]:
         raise ValueError("expected a nonempty semspec Markdown benchmark inventory")
     plans = document["experiments"]
     counts = {(cell["plan"]["runs"], cell["plan"]["warmup"]) for cell in plans}
@@ -125,12 +133,17 @@ def command_definition(template):
 
 
 def table_template(template):
-    """Generate row commands for Markdown plans; preserve legacy JSON templates."""
+    """Read inline script tables or generate rows for direct command plans."""
     template = Path(template)
     if template.suffix == ".md":
+        document = markdown_inventory(template)
+        if document["tables"]:
+            if len(document["tables"]) != 1 or document["experiments"]:
+                raise ValueError("a batch requires one inline table or direct command plans")
+            return document["tables"][0]["table"]
         return {
             name: "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ " + shlex.quote(name)
-            for name in command_definition(template)["commands"]
+            for name in command_definition(template, document)["commands"]
         }
     return json.loads(template.read_text())
 
@@ -183,7 +196,7 @@ def materialize(
         )
         filesystem = (
             metadata["benchmark_id"] == "B-FS-TOOLS"
-            and metadata["entry"] == "filesystem/tools.json"
+            and metadata["entry"] == "filesystem/tools.md"
             and row_config.get("metric_scope") == FILESYSTEM_SCOPE
             and 1 <= len(row_config["rows"]) <= 2
         )

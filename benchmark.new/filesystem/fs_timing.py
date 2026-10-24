@@ -79,15 +79,20 @@ def measure(batch, mode):
     return result
 
 
-def main(mode):
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batch", type=Path)
+    parser.add_argument("mode", choices=MODES)
     args = parser.parse_args()
     batch = args.batch.resolve()
     try:
-        print(json.dumps(measure(batch, mode)))
+        print(json.dumps(measure(batch, args.mode)))
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         manifest = json.loads((batch / "manifest.json").read_text())
         manifest.update(status="failed", error=str(error))
         save(batch / "manifest.json", manifest)
         parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

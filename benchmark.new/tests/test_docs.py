@@ -167,7 +167,7 @@ class DocumentationTests(unittest.TestCase):
             fixture_scope="expected workload",
         )
         metadata = dict(
-            entry="filesystem/tools.json",
+            entry="filesystem/tools.md",
             benchmark_id="B-FS-TOOLS",
             role="user-facing",
             metric_scope="wrong timer",
@@ -199,7 +199,7 @@ class DocumentationTests(unittest.TestCase):
             if binding.get("kind") == "startup":
                 self.assertIn("same Popen launch", binding["metric_scope"])
                 self.assertEqual(binding["page"], "benchmarks/startup.md")
-        self.assertNotIn("filesystem/tools.json", inventory["bindings"])
+        self.assertNotIn("filesystem/tools.md", inventory["bindings"])
         self.assertFalse(inventory["bindings"]["replay/replay.md"]["show_batch"])
 
     def test_live_json_must_equal_latest_csv_and_sample_counts(self):
@@ -253,7 +253,7 @@ class DocumentationTests(unittest.TestCase):
                     )
                 ],
                 bindings={
-                    "filesystem/tools.json": dict(
+                    "filesystem/tools.md": dict(
                         table="benchmarks/results.render.json",
                         csv="results.csv",
                         benchmark_id="B-FS-TOOLS",

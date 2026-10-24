@@ -8,15 +8,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import ROOT, create_batch, materialize, save
+from common import ROOT, create_batch, materialize, save, table_template
 from fs_timing import FIXTURE_SCOPE, ROWS, RUNS, SCOPE, WARMUP, run_trial
 from workload import prepare_fixture, validate_fixture
 
 
 def validate_template(template):
-    table = json.loads(Path(template).read_text())
+    table = table_template(template)
     expected = {
-        label: f"$ python3 @REPO@/benchmark.new/filesystem/{mode}_timing.py @BATCH@"
+        label: f"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ {mode}"
         for label, mode in ROWS.items()
     }
     if table != expected or list(table) != list(expected):
@@ -47,8 +47,6 @@ def prepare(template, output=None, row=None):
                         "fs_timing.py",
                         "audit.py",
                         "workload.py",
-                        "metadata_timing.py",
-                        "read_timing.py",
                     )
                 ],
             ],

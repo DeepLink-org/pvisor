@@ -58,7 +58,7 @@ enum Commands {
         #[arg(long)]
         require_reviewed: bool,
     },
-    /// Execute command cells or rows in a JSON table; write INPUT.render.json and INPUT.bench.json.
+    /// Execute a JSON or inline Markdown table; write INPUT.render.json and INPUT.bench.json.
     Bench {
         input: PathBuf,
         /// Working directory for commands; defaults to the template directory.
@@ -225,8 +225,9 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 .transpose()?;
             let has_cases = !semspec::parse::parse_document(&input, &text)?.is_empty();
             let experiments = semspec::experiment::cells(&text)?;
+            let tables = semspec::table::cells(&text)?;
             ensure!(
-                !execute || has_cases || !experiments.is_empty(),
+                !execute || has_cases || !experiments.is_empty() || !tables.is_empty(),
                 "no executable cells in document"
             );
             ensure!(
@@ -301,6 +302,16 @@ fn dispatch(cli: Cli) -> Result<i32> {
                         break;
                     }
                     let outcome = semspec::experiment::run(cell, &input)?;
+                    if outcome.data["status"] != "PASS" {
+                        code = code.max(1);
+                    }
+                    report.benchmarks.push(outcome);
+                }
+                for cell in &tables {
+                    if runner::interruption() != 0 {
+                        break;
+                    }
+                    let outcome = semspec::table::run(cell, &input, artifacts.as_deref())?;
                     if outcome.data["status"] != "PASS" {
                         code = code.max(1);
                     }

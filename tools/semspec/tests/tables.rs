@@ -370,3 +370,192 @@ fn script_row_preserves_full_float_precision() {
     let text = fs::read_to_string(root.join("in.render.json")).unwrap();
     assert!(text.contains("196.85512733333334"), "{text}");
 }
+
+fn inline_table(id: &str, value: &Value) -> String {
+    format!("<!-- semspec: table id={id} -->\n```json\n{value}\n```\n")
+}
+
+#[test]
+fn markdown_table_inventory_execution_and_offline_render_share_one_definition() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("measure.py"), "import json,pathlib\np=pathlib.Path('calls');p.write_text(p.read_text()+'x' if p.exists() else 'x')\nprint(json.dumps({'N':30,'Median ms':1.25,'note':'<script>|unsafe'}))\n").unwrap();
+    let value = json!({"metadata":"$ python3 measure.py", "read":"$ python3 measure.py"});
+    let text = format!(
+        "# Probe\n\nProse stays intact.\n\n{}\n````markdown\n{}\n````\n",
+        inline_table("native", &value),
+        inline_table("example", &value)
+    );
+    fs::write(root.join("probe.md"), &text).unwrap();
+    let out = cli(root, &["filter", "probe.md", "--format", "json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(document["tables"].as_array().unwrap().len(), 1);
+    assert_eq!(document["tables"][0]["id"], "native");
+    assert_eq!(document["tables"][0]["table"], value);
+    assert!(document["experiments"].as_array().unwrap().is_empty());
+    assert!(!root.join("calls").exists());
+    assert!(
+        document["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("table:native — NOT RUN")
+    );
+    assert!(
+        !cli(root, &["filter", "probe.md", "--strict"])
+            .status
+            .success()
+    );
+
+    let out = cli(
+        root,
+        &["filter", "probe.md", "--execute", "--artifacts", "evidence"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "x");
+    let md = String::from_utf8(out.stdout).unwrap();
+    assert!(md.contains("table:native — PASS"));
+    assert!(md.contains("| metadata | 30 | 1.25 | &lt;script&gt;&#124;unsafe |"));
+    assert!(md.contains("<!-- semspec: table id=example -->"));
+    let report: Value =
+        serde_json::from_slice(&fs::read(root.join("evidence/report.json")).unwrap()).unwrap();
+    let data = &report["benchmarks"][0]["data"];
+    assert_eq!(data["evidence"]["commands"].as_array().unwrap().len(), 1);
+    assert_eq!(data["evidence"]["rows"].as_array().unwrap().len(), 2);
+    assert!(Path::new(data["evidence"]["commands"][0]["log"].as_str().unwrap()).is_file());
+    assert!(
+        cli(
+            root,
+            &["filter", "probe.md", "--results", "evidence", "--strict"]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "x");
+    fs::write(root.join("probe.md"), text.clone() + "\nChanged prose.\n").unwrap();
+    let out = cli(root, &["filter", "probe.md", "--results", "evidence"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("table:native — STALE"));
+    assert!(
+        !cli(
+            root,
+            &["filter", "probe.md", "--results", "evidence", "--strict"]
+        )
+        .status
+        .success()
+    );
+
+    fs::write(root.join("probe.md"), &text).unwrap();
+    assert!(cli(root, &["bench", "probe.md"]).status.success());
+    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "xx");
+    let resolved: Value =
+        serde_json::from_slice(&fs::read(root.join("probe.render.json")).unwrap()).unwrap();
+    assert_eq!(resolved, data["result"]);
+    assert_eq!(fs::read_to_string(root.join("probe.md")).unwrap(), text);
+    let count = fs::read_dir(root).unwrap().count();
+    let out = cli(root, &["filter", "probe.md", "--execute"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("table:native — PASS"));
+    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "xxx");
+    assert_eq!(fs::read_dir(root).unwrap().count(), count);
+    assert!(!root.join("REVIEWED.toml").exists());
+}
+
+#[test]
+fn markdown_tables_reject_ambiguous_or_malformed_definitions_and_expose_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let good = inline_table(
+        "probe",
+        &json!({"row":"$ touch executed; printf '{\"N\":2}'"}),
+    );
+    for malformed in [
+        good.clone() + &good,
+        good.replace("id=probe", "id=bad:name"),
+        good.replace("id=probe", "id=probe extra=1"),
+        good.replace("```json", "```toml"),
+        inline_table("probe", &json!({"row":{"nested":[]}})),
+        inline_table("probe", &json!({})),
+        inline_table("probe", &json!({"row":"$ "})),
+        inline_table("probe", &json!({"row":"$ printf 'unterminated"})),
+        inline_table("probe", &json!({"row":"$ same", "other":{"N":"$ same"}})),
+    ] {
+        fs::write(root.join("probe.md"), malformed).unwrap();
+        assert!(
+            !cli(root, &["filter", "probe.md", "--execute"])
+                .status
+                .success()
+        );
+        assert!(!root.join("executed").exists());
+    }
+    for ambiguous in [
+        good.clone() + &inline_table("other", &json!({"r":{"N":2}})),
+        good.clone() + "<!-- semspec: bench id=other -->\n```toml\nargv=[\"true\"]\n```\n",
+        good.clone() + "<!-- semspec: case id=S-TEST-001 -->\n```bash\ntrue\n```\n",
+    ] {
+        fs::write(root.join("probe.md"), ambiguous).unwrap();
+        assert!(!cli(root, &["bench", "probe.md"]).status.success());
+        assert!(!root.join("executed").exists());
+    }
+    fs::write(
+        root.join("probe.md"),
+        inline_table(
+            "failure",
+            &json!({"row":"$ printf invalid; echo diagnostic >&2; exit 7"}),
+        ),
+    )
+    .unwrap();
+    let out = cli(
+        root,
+        &["filter", "probe.md", "--execute", "--artifacts", "evidence"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let md = String::from_utf8(out.stdout).unwrap();
+    assert!(md.contains("table:failure — FAIL"));
+    assert!(!md.contains("— PASS"));
+    let report: Value =
+        serde_json::from_slice(&fs::read(root.join("evidence/report.json")).unwrap()).unwrap();
+    let workdir = report["benchmarks"][0]["data"]["workdir"].as_str().unwrap();
+    assert!(
+        fs::read_to_string(Path::new(workdir).join("input.bench.logs/0001.log"))
+            .unwrap()
+            .contains("diagnostic")
+    );
+    assert!(!Path::new(workdir).join("input.render.json").exists());
+}
+
+#[test]
+fn filesystem_markdown_preserves_script_owned_sampling_and_removes_fixed_mode_wrappers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmark.new/filesystem");
+    let source = fs::read_to_string(root.join("tools.md")).unwrap();
+    assert!(semspec::experiment::cells(&source).unwrap().is_empty());
+    let cells = semspec::table::cells(&source).unwrap();
+    assert_eq!(cells.len(), 1);
+    assert_eq!(cells[0].id, "native-filesystem");
+    assert_eq!(
+        cells[0].table,
+        json!({
+            "native-metadata":"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ metadata",
+            "native-read":"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ read",
+        })
+    );
+    assert_eq!(
+        cells[0]
+            .table
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["native-metadata", "native-read"]
+    );
+    for removed in ["tools.json", "metadata_timing.py", "read_timing.py"] {
+        assert!(!root.join(removed).exists());
+    }
+}

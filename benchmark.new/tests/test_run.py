@@ -86,10 +86,17 @@ class TableRunnerContracts(unittest.TestCase):
         templates, row = RUN.resolve_selection(["startup/timing", "  pvisor   vm "])
         self.assertEqual(templates, [ROOT / "startup/timing.json"])
         self.assertEqual(row, "pVisor VM")
-        self.assertEqual(
-            RUN.resolve_selection(["filesystem/tools"], "NATIVE-READ"),
-            ([ROOT / "filesystem/tools.json"], "native-read"),
-        )
+        # Selection consumes validated inventory; the Rust table tests and
+        # filesystem integration exercise the actual Markdown parser and source.
+        with patch.object(
+            RUN,
+            "table_template",
+            return_value={"native-metadata": "$ metadata", "native-read": "$ read"},
+        ):
+            self.assertEqual(
+                RUN.resolve_selection(["filesystem/tools"], "NATIVE-READ"),
+                ([ROOT / "filesystem/tools.md"], "native-read"),
+            )
         templates, row = RUN.resolve_selection(["startup/timing", "filesystem/tools"])
         self.assertEqual(len(templates), 2)
         self.assertIsNone(row)

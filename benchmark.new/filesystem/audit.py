@@ -41,7 +41,7 @@ def _same_trial_command(actual, expected):
 def audit_filesystem(batch, manifest, evidence, resolved, template):
     batch = Path(batch)
     if (
-        manifest["entry"] != "filesystem/tools.json"
+        manifest["entry"] not in ("filesystem/tools.md", "filesystem/tools.json")
         or manifest["benchmark_id"] != "B-FS-TOOLS"
         or manifest["metric_scope"] != SCOPE
         or manifest["fixture_scope"] != FIXTURE_SCOPE
@@ -66,7 +66,11 @@ def audit_filesystem(batch, manifest, evidence, resolved, template):
     rows, results = [], {}
     for (label, expression), record in zip(template.items(), evidence["commands"]):
         mode = ROWS[label]
-        expected_argv = ["python3", str(ROOT / "filesystem" / f"{mode}_timing.py"), str(batch)]
+        if manifest["entry"] == "filesystem/tools.md":
+            expected_argv = ["python3", str(ROOT / "filesystem/fs_timing.py"), str(batch), mode]
+        else:
+            # Historical batches retain their original, frozen fixed-mode entrypoints.
+            expected_argv = ["python3", str(ROOT / "filesystem" / f"{mode}_timing.py"), str(batch)]
         if (
             not isinstance(expression, str)
             or not expression.startswith("$ ")

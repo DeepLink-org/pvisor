@@ -205,7 +205,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分别报告每项工具耗时和完整任务耗时（包括启动与收尾）。
   - 每个样本都要校验工具输出；暂存模式还要校验宿主原文件未被写入、upper 内容完整。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
-- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark.new/filesystem/tools.json` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`just benchmark filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark.new/filesystem/README.md)。
+- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark.new/filesystem/tools.md` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`just benchmark filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark.new/filesystem/README.md)。
 
 **历史 Ready 与驻留环境快速对照：** `filesystem_rounds.py` / `filesystem_rounds_workload.py`
 回答“启动到首条负载 Ready 要多久，同一环境连续执行三轮工具后要等多久”。
@@ -648,6 +648,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 在预备好的同 digest Ubuntu、1 CPU/512 MiB、同机 SDK 1.1.0 下，报告 native VM 与官方 Docker server 的就绪延迟分布、差异区间及失败；明确 native guest 或旧版同字节 execd 配置，不混合批次，不推断完整协议、网络策略、生产密度或隔离等级等价。
 - **实验设计：** 服务与镜像预先准备，另列首个请求；固定种子随机交替，每臂至少 20 次新建沙箱。服务重启首个请求另用 20 次独立服务进程重启配对，不包含服务启动时间，也不称为磁盘冷缓存。计时 SDK create 返回，再单列首次命令完成时间；必须校验 stdout、私有文件及删除成功，完整保留失败，不剔除慢样本。所有请求相同资源/argv/环境，包含各后端实际 admission/readiness 与 SDK 开销。VM 的 cgroup 限额覆盖 VMM/supervisor，Docker 限额覆盖容器；这是各自本地部署配置，不能视为相同内核隔离或同等可用 guest RAM。无 Docker 基线时只能报告 native 单臂诊断。
 - **历史入口：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
+- **低内存十请求突发对照：** 当前 pVisor native guest/performance 与固定 commit 的官方 OpenSandbox 1.1.0/rootless Docker，均经官方 SDK 1.1.0、同 digest Ubuntu 来源、每实例 1 CPU/128 MiB。每臂独立产品 slice 限 4 CPU、memory.high=1.5 GiB、memory.max=2 GiB、swap=0，包含 SDK/观察者、API 以及所有 VMM/supervisor 或 dockerd/containerd/shim/容器；私有 Docker 通过显式 socket 与 cgroup-parent 证明全树归属，不使用宿主默认 Docker。预先准备镜像和私有 Docker 数据，服务启动、镜像导入、transport 构造不计时；保留宿主页缓存。先独立预检 1/2/10 个请求，再 3 对预热、20 对固定种子随机交替的新服务进程，每条件同一 barrier 放行 10 个新实例，全部首命令/私有文件校验完成前保持实例存活。比较整批全部 create 返回、全部首命令完成及每请求时延，记录发起偏移、完整内存 current/peak/events、宿主余量与确认删除。每轮配对 bootstrap 95% CI，失败停止并保留，不剔除慢请求，不合并单臂诊断；任一 OOM/资源越界/归属错误使批次无效。运行前至少 6 GiB 可用，低于 4 GiB 或产品组超过 1.75 GiB 停止；一次仅运行一个产品组。Docker 限额约束容器，VM 限额包括宿主 VMM/supervisor，完整产品预算相同但隔离契约与可用 guest RAM 不等价，不外推容量上限、持续吞吐或网络策略兼容性。冻结制品、来源、配置、harness 与失败证据于 `.data/`，不进入用户 benchmark 页。
 
 ### B-SANDBOX-ENGINE-ENG：原生 guest 执行后端的启动与命令延迟 {#b-sandbox-engine-eng}
 

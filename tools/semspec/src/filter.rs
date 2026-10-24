@@ -26,6 +26,8 @@ pub struct Document {
     pub dependencies: Vec<PathBuf>,
     /// Validated benchmark plans in source order; inventory only, never execution.
     pub experiments: Vec<experiment::Cell>,
+    /// Script-owned table plans; commands are inventory, never implicit execution.
+    pub tables: Vec<table::Cell>,
     /// Byte offsets in the original input, before any semspec substitutions.
     pub edits: Vec<Edit>,
     pub diagnostics: Vec<Diagnostic>,
@@ -58,6 +60,7 @@ pub fn render(
     let cases = parse::parse_document(path, source)?;
     let blocks = parse::marked_blocks(source)?;
     let experiments = experiment::cells(source)?;
+    let inline_tables = table::cells(source)?;
     let mut edits = Vec::new();
     let mut diagnostics = Vec::new();
     let mut dependencies = BTreeSet::from([path.to_path_buf()]);
@@ -87,10 +90,17 @@ pub fn render(
             end,
             text: String::new(),
         });
-        if block.parameters.starts_with("bench ") {
-            let cell = experiments.iter().find(|c| c.end == block.end).unwrap();
-            let row = report.and_then(|r| r.benchmarks.iter().find(|r| r.id == cell.id));
-            let fresh = row.is_some_and(|r| r.digest == cell.digest);
+        if block.parameters.starts_with("bench ") || block.parameters.starts_with("table ") {
+            let is_table = block.parameters.starts_with("table ");
+            let (id, digest) = if is_table {
+                let cell = inline_tables.iter().find(|c| c.end == block.end).unwrap();
+                (format!("table:{}", cell.id), &cell.digest)
+            } else {
+                let cell = experiments.iter().find(|c| c.end == block.end).unwrap();
+                (cell.id.clone(), &cell.digest)
+            };
+            let row = report.and_then(|r| r.benchmarks.iter().find(|r| r.id == id));
+            let fresh = row.is_some_and(|r| &r.digest == digest);
             let state = if fresh {
                 row.unwrap().data["status"].as_str().unwrap_or("ERROR")
             } else if row.is_some() {
@@ -101,17 +111,20 @@ pub fn render(
             if !fresh {
                 diagnostics.push(Diagnostic {
                     line: source[..block.start].lines().count() + 1,
-                    message: format!("{}: {state}", cell.id),
+                    message: format!("{id}: {state}"),
                 });
-                ensure!(!strict, "{}: {}: {state}", path.display(), cell.id);
+                ensure!(!strict, "{}: {id}: {state}", path.display());
             }
             let mut text = format!(
                 "\n> **{} — {state}** · observation; not human approval\n\n",
-                cell.id
+                id
             );
             if fresh {
                 let data = &row.unwrap().data;
-                if state == "PASS" {
+                if state == "PASS" && is_table {
+                    text.push_str(&table::render_value(&data["result"])?);
+                    text.push('\n');
+                } else if state == "PASS" {
                     text.push_str("| N | Median ms | Mean ms | SD ms | Min ms | Max ms |\n| ---: | ---: | ---: | ---: | ---: | ---: |\n|");
                     for key in ["N", "Median ms", "Mean ms", "SD ms", "Min ms", "Max ms"] {
                         text.push_str(&format!(" {} |", data["result"][key]));
@@ -264,6 +277,7 @@ pub fn render(
         markdown,
         dependencies: dependencies.into_iter().collect(),
         experiments,
+        tables: inline_tables,
         edits,
         diagnostics,
     })

@@ -58,10 +58,10 @@ pub(crate) fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
                     .to_owned();
                 ensure!(
                     parameters == "setup"
-                        || ["case ", "expect ", "bench "]
+                        || ["case ", "expect ", "bench ", "table "]
                             .iter()
                             .any(|p| parameters.starts_with(p)),
-                    "expected semspec: case, setup, expect or bench"
+                    "expected semspec: case, setup, expect, bench or table"
                 );
                 pending = Some((range, parameters));
             }
@@ -79,6 +79,8 @@ pub(crate) fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
                     "text"
                 } else if parameters.starts_with("bench ") {
                     "toml"
+                } else if parameters.starts_with("table ") {
+                    "json"
                 } else {
                     "bash"
                 };

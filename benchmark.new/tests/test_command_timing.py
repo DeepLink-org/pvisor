@@ -67,6 +67,10 @@ class RegistryTests(unittest.TestCase):
                 self.assertIn(row["benchmark_id"], ("B-PROCESS", "B-REPLAY"))
                 self.assertEqual(path.suffix, ".md")
                 continue
+            if row["status"] == "prepared-markdown-filesystem":
+                self.assertEqual(row["benchmark_id"], "B-FS-TOOLS")
+                self.assertEqual(path.suffix, ".md")
+                continue
             self.assertEqual(path.suffix, ".json")
             table = json.loads(path.read_text())
             self.assertTrue(table)
@@ -82,17 +86,6 @@ class RegistryTests(unittest.TestCase):
                         command, f"$ python3 @REPO@/benchmark.new/startup/{script}.py @BATCH@"
                     )
                     self.assertTrue(path.with_name(script + ".py").is_file())
-                continue
-            if row["status"] == "prepared-python-filesystem":
-                self.assertEqual(row["benchmark_id"], "B-FS-TOOLS")
-                self.assertEqual(
-                    table,
-                    {
-                        "native-"
-                        + mode: f"$ python3 @REPO@/benchmark.new/filesystem/{mode}_timing.py @BATCH@"
-                        for mode in ("metadata", "read")
-                    },
-                )
                 continue
             if row["status"] == "explicit-python-paired-dax":
                 self.assertEqual(row["benchmark_id"], "B-FS-ENG")
@@ -198,7 +191,7 @@ class RegistryTests(unittest.TestCase):
         with (ROOT / "registry.csv").open() as stream:
             entries = list(csv.DictReader(stream))
         for entry in entries:
-            if entry["status"] == "prepared-markdown-command":
+            if entry["status"] in ("prepared-markdown-command", "prepared-markdown-filesystem"):
                 self.assertEqual(Path(entry["entry"]).suffix, ".md")
                 continue
             table = json.loads((ROOT / entry["entry"]).read_text())
