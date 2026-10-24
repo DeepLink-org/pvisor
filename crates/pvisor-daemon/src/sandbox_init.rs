@@ -36,7 +36,7 @@ extern "C" fn stop(_: i32) {
     STOP.store(true, Ordering::Relaxed);
 }
 
-fn listener() -> io::Result<File> {
+fn listener(port: u32) -> io::Result<File> {
     // Linux AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC. Guest CID is fixed by pVisor.
     let fd = unsafe { socket(40, 1 | 0x80000, 0) };
     if fd < 0 {
@@ -46,7 +46,7 @@ fn listener() -> io::Result<File> {
     let addr = SockAddrVm {
         family: 40,
         reserved: 0,
-        port: 44772,
+        port,
         cid: 3,
         zero: [0; 4],
     };
@@ -61,7 +61,7 @@ impl Drop for Slot {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
-fn bridge(listener: File) -> io::Result<()> {
+fn bridge(listener: File, port: u16) -> io::Result<()> {
     let slots = Arc::new(AtomicUsize::new(0));
     loop {
         let fd = unsafe {
@@ -88,7 +88,7 @@ fn bridge(listener: File) -> io::Result<()> {
         thread::spawn(move || {
             let _slot = slot;
             let Ok(mut tcp) = TcpStream::connect_timeout(
-                &"127.0.0.1:44772".parse().unwrap(),
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
                 Duration::from_secs(2),
             ) else {
                 return;
@@ -119,19 +119,32 @@ fn run() -> io::Result<u8> {
         signal(15, stop);
         signal(2, stop);
     }
-    let socket = listener()?;
+    let envd = std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--envd");
+    let port = if envd { 49983 } else { 44772 };
+    let socket = listener(u32::from(port))?;
     thread::spawn(move || {
-        if bridge(socket).is_err() {
+        if bridge(socket, port).is_err() {
             STOP.store(true, Ordering::Relaxed);
         }
     });
-    let mut child = Command::new("/opt/pvisor/execd")
-        .args(["--runtime-init", "--init", "--"])
-        .args(std::env::args_os().skip(1))
-        .env_remove("PVISOR_EXECD_ACCESS_TOKEN")
-        .env_remove("EXECD_ACCESS_TOKEN")
-        .env("EXECD_RUNTIME_INIT", "true")
-        .spawn()?;
+    let mut command = Command::new(if envd {
+        "/opt/pvisor/envd"
+    } else {
+        "/opt/pvisor/execd"
+    });
+    if envd {
+        command.args(["--isnotfc", "--no-cgroups"]);
+    } else {
+        command
+            .args(["--runtime-init", "--init", "--"])
+            .args(std::env::args_os().skip(1))
+            .env_remove("PVISOR_EXECD_ACCESS_TOKEN")
+            .env_remove("EXECD_ACCESS_TOKEN")
+            .env("EXECD_RUNTIME_INIT", "true");
+    }
+    let mut child = command.env_remove("PVISOR_ENVD_ACCESS_TOKEN").spawn()?;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status.code().unwrap_or(1) as u8);

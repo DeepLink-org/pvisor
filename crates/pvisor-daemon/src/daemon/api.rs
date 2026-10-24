@@ -80,7 +80,8 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
             daemon.clone(),
             request_policy,
         ))
-        .with_state(daemon)
+        .with_state(daemon.clone())
+        .merge(super::e2b::router(daemon))
 }
 
 impl IntoResponse for ApiError {
@@ -587,6 +588,13 @@ pub(super) async fn forward(
             501,
             "NOT_IMPLEMENTED",
             "WebSocket upgrades and CONNECT are not supported",
+        ));
+    }
+    if port == crate::runtime::ENVD_PORT && super::e2b::private_path(&guest_path) {
+        return Err(ApiError::new(
+            403,
+            "FORBIDDEN",
+            "envd runtime control is private",
         ));
     }
     // Shared admission permits parallel proxies; exclusive lifecycle writers

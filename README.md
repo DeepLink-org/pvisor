@@ -80,13 +80,14 @@ before using this profile; it does not implement the Docker Engine API.
 
 pVisor focuses on bounded, recoverable, checkable execution and high sandbox
 density on a single machine. Native Jobs retain the run-review-apply workflow;
-the separate `pvisor-daemon` provides a partial OpenSandbox 1.1.0 API profile
-through a VM-only `NativeRuntime` that embeds pVisor in detached supervisor
-subprocesses. The runtime is implemented for Linux x86_64/KVM with delegated
-cgroup v2, with the daemon CLI integrated. Prepared-image bootstrap
-is neither supplied nor end-to-end validated. The daemon API does not implement
-stage/apply or checkpoints, does not automatically acquire node sharing resources,
-and has no SDK-conformance or density evidence.
+the separate [`pvisor-daemon`](crates/pvisor-daemon/README.md) provides partial
+OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles through a VM-only
+`NativeRuntime`, with managed execd/envd templates stored in the shared compressed
+image pool. Official SDK core lifecycle, command and file flows are validated on
+Linux x86_64/KVM with delegated cgroup v2. Detached supervisors retain live VMs
+across API restart. The daemon API does not implement stage/apply or checkpoints,
+does not automatically acquire node sharing resources, and has no full
+SDK-conformance or density evidence.
 Cross-node placement, workflows and retries belong to external orchestrators
 such as Kubernetes or Ray, not a pVisor Cluster control plane.
 

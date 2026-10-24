@@ -1,0 +1,25 @@
+{
+  "sdk": {
+    "upstream": "https://github.com/e2b-dev/E2B",
+    "package": "e2b",
+    "version": "2.59.0",
+    "tag": "@e2b/python-sdk@2.59.0",
+    "commit": "db8d80dad5be3d6a94c960e29017c8a9e29680c4",
+    "protocol_blobs_sha1": {
+      "spec/openapi.yml": "07b1832ceac282c4a3851e5ec447884af6a8085c",
+      "spec/envd/envd.yaml": "935b1d3a23920c0e5b5389f2fb5ca9e42076c7e1",
+      "spec/envd/process/process.proto": "99376a0e378e0aa2e959dbbf00a73c36d88fadb4",
+      "spec/envd/filesystem/filesystem.proto": "5325d85f47f5d78aa4d7d68f35c432aa43b46824"
+    }
+  },
+  "envd": {
+    "upstream": "https://github.com/e2b-dev/runtime",
+    "commit": "3996d14cf2ee9f938508b70d1f0f71a4fc6a5235",
+    "version": "0.10.2",
+    "source_directory": "packages/envd",
+    "guest_flags": ["--isnotfc", "--no-cgroups"]
+  },
+  "profile": "partial-single-node-native-vm-with-managed-envd",
+  "verification": "Official Python 2.59.0 sync/async SDK, Linux x86-64/KVM, Ubuntu pool template; tests/e2b_sdk.py. Real daemon restart retains the same VM, files and background process. Not full SDK conformance.",
+  "unsupported": ["template-build-api", "snapshots", "fork", "auto-pause", "auto-resume", "filesystem-only-pause", "network-policy", "disable-internet", "iam", "mcp", "volumes", "historical-metrics", "arbitrary-application-ports", "websocket", "code-interpreter-kernel-injection"]
+}

@@ -50,7 +50,7 @@ enum Command {
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
         #[arg(long, default_value = ".pvisor/daemon", requires = "sandbox")]
         state: PathBuf,
-        /// Sandbox API key; defaults to OPEN_SANDBOX_API_KEY.
+        /// Sandbox API key; defaults to OPEN_SANDBOX_API_KEY or E2B_API_KEY.
         #[arg(long, requires = "sandbox")]
         api_key: Option<String>,
         /// Trusted prepared-image manifests, shared pools or immutable root trees.
@@ -194,8 +194,11 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     state_dir: state,
                     api_key: api_key
                         .or_else(|| std::env::var("OPEN_SANDBOX_API_KEY").ok())
+                        .or_else(|| std::env::var("E2B_API_KEY").ok())
                         .ok_or_else(|| {
-                            anyhow::anyhow!("sandbox requires --api-key or OPEN_SANDBOX_API_KEY")
+                            anyhow::anyhow!(
+                                "sandbox requires --api-key, OPEN_SANDBOX_API_KEY or E2B_API_KEY"
+                            )
                         })?,
                     public_endpoint: public_endpoint.unwrap_or(listener.local_addr()?.to_string()),
                     max_sandboxes,

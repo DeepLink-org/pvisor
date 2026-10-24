@@ -167,6 +167,118 @@ process-tree memory accounting is also different.
 Private `startup.json` records bounded cumulative supervisor phase times in
 microseconds for diagnosis; it contains no credentials and is never liveness proof.
 
+## Local E2B SDK interface
+
+The same daemon also accepts the official **E2B Python SDK 2.59.0**, both sync
+and async, using real **envd 0.10.2** inside each native VM. Source commits and
+protocol blobs are pinned in [`e2b.lock.json`](e2b.lock.json). This is a partial
+local profile, tested with unmodified SDKs, not full E2B service conformance.
+OpenSandbox and E2B templates can coexist in one daemon and share the compressed
+image pool, admission limits, persistent registry and confirmed native cleanup.
+They use separate guest services; an OpenSandbox image is not an E2B template.
+
+| E2B interface | Local behavior |
+| --- | --- |
+| `POST /sandboxes`, `POST /v2/sandboxes` | Local template key, envs, metadata, positive timeout; 201 after native readiness |
+| `GET /sandboxes`, `GET /v2/sandboxes` | Running/paused records, SDK metadata/state/template/time filters, sort and `x-next-token` pagination |
+| `GET /sandboxes/{id}` | Reconcile real native state; return template resources and sandbox-scoped envd token |
+| `POST /sandboxes/{id}/timeout` | Replace deadline relative to now, including shortening; expired records cannot be revived |
+| `POST /sandboxes/{id}/connect`, `/v2/sandboxes/{id}/connect`, `/sandboxes/{id}/resume` | Resume the same live VM if paused, then replace TTL under the same lifecycle lock |
+| `POST /sandboxes/{id}/pause` | Acknowledged live vCPU pause; repeated pause returns 409 as expected by the SDK |
+| `DELETE /sandboxes/{id}` | Confirm native teardown, then release admission; 204 |
+| `/e2b/*` | Stream real envd REST/Connect RPC: commands, stdout/stderr, stdin, signals, process inventory and files |
+| Template builds, snapshots/fork, filesystem-only pause, auto-pause/resume, IAM, MCP, volumes, network policy and internet denial | Rejected with 501; no substitute behavior |
+| Historical metrics, arbitrary application ports and WebSocket | Unsupported |
+
+E2B lifecycle requests use `X-API-Key` and numeric `{code, message, error_code}`
+errors. They use the same configured secret as OpenSandbox's lifecycle API.
+`serve` resolves `--api-key`, then `OPEN_SANDBOX_API_KEY`, then `E2B_API_KEY`.
+Use environment credentials rather than command-line secrets. E2B data requests
+require exactly one `E2b-Sandbox-Id`, `E2b-Sandbox-Port: 49983` and
+sandbox-scoped `X-Access-Token`; that token grants no lifecycle or other-sandbox
+access. The proxy preserves Basic authorization for envd's guest user selection,
+removes lifecycle credentials, and blocks init/upgrade/freeze/unfreeze control
+paths, including encoded paths and the OpenSandbox proxy route.
+The raw loopback mapping also authenticates before every request. Only the private
+supervisor initializes envd, checks its actual version, environment binding and
+unauthenticated rejection. The raw bootstrap token is absent from workload envs.
+
+Prepare a trusted envd from the pinned official source and publish a local template:
+
+```sh
+git clone https://github.com/e2b-dev/runtime /tmp/e2b-runtime
+git -C /tmp/e2b-runtime checkout --detach 3996d14cf2ee9f938508b70d1f0f71a4fc6a5235
+(cd /tmp/e2b-runtime/packages/envd && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /tmp/envd .)
+pvisor-daemon prepare-image --name e2b-base --image ubuntu:24.04 \
+  --envd /tmp/envd --envd-version 0.10.2 --cpu-millis 1000 --memory-mib 512 \
+  --images-dir /srv/pvi
+```
+
+The pinned envd requires Go 1.26.10. Prefer a digest-pinned base and keep the
+trusted binary/source provenance; static ELF validation does not authenticate it.
+Preparation uses the shared compressed pool and atomic manifest publication.
+`native_e2b: true` selects the embedded guest supervisor and private init handshake;
+`e2b` retains the template's resource/version profile. Create opens the pinned lazy
+projection, with private scratch reclaimed on confirmed deletion. It performs no
+image pull or full extraction. The guest starts real envd with `--isnotfc` and
+`--no-cgroups`: host delegated cgroups still cap the entire native process tree;
+per-process guest cgroup management is not provided. Default guest user/workdir are
+`root` and `/root`; other users must already exist in the operator's base image.
+The base must contain `/bin/bash` and the tools/languages needed by workloads.
+No Jupyter/code-interpreter kernel is injected.
+
+Start sandbox serving as in the Run section. For a local daemon on port 8080:
+
+```sh
+pip install 'e2b==2.59.0'
+export E2B_API_KEY='YOUR_DAEMON_API_KEY'
+export E2B_API_URL='http://127.0.0.1:8080'
+export E2B_SANDBOX_URL='http://127.0.0.1:8080/e2b'
+```
+
+```python
+from e2b import Sandbox
+
+sandbox = Sandbox.create("e2b-base", timeout=300)
+try:
+    print(sandbox.commands.run("printf 'hello from pVisor'").stdout)
+    sandbox.files.write("/tmp/hello.txt", "shared image, private writes")
+    print(sandbox.files.read("/tmp/hello.txt"))
+finally:
+    sandbox.kill()
+```
+
+Explicit `api_url`, `sandbox_url` and `api_key` arguments work as well.
+`E2B_SANDBOX_URL` must include `/e2b`; it lets the SDK route several sandboxes by
+headers without wildcard DNS or debug mode. Keep this SDK version pinned because
+those URL overrides are deprecated upstream. Only envd port 49983 is published;
+`get_host()`/signed file URLs and arbitrary web applications are outside this profile.
+
+Pause retains the live VM and its resource reservation, with no durable snapshot.
+**TTL keeps counting while paused**, and expiry deletes paused VMs too. Connect
+cannot revive an expired sandbox. A paused VM survives daemon restart, not host
+reboot; configure timeouts accordingly. This differs from E2B's snapshot-backed
+pause storage. The shared pool removes extraction from create; no E2B-cloud
+startup, density or security comparison is claimed.
+
+With an isolated daemon and at least 2 CPU/1 GiB admission capacity, run the opt-in
+real SDK acceptance test:
+
+```sh
+uv run --no-project --with e2b==2.59.0 python \
+  crates/pvisor-daemon/tests/e2b_sdk.py --api-url http://127.0.0.1:8080
+```
+
+It covers sync/async creation, two concurrent VMs, streaming, nonzero exits,
+large environment variables, stdin, background process signals, UTF-8 and >3 MiB
+binary files, private writes, pagination/metadata, TTL shortening, live pause/connect,
+scoped authentication, private route rejection and deletion. Additional real KVM
+verification restarts the daemon and reconnects to the same VM, retained file and
+running background process, then runs the existing OpenSandbox SDK test against
+the same service. Conventional target tests include E2B wire/auth/state/restart
+contracts and protected loopback initialization. These checks do not establish
+full SDK conformance or hostile multi-user isolation.
+
 ## Runtime boundary: native VM and prepared images
 
 Invoke `pvisor-daemon` directly. The native `pvisor` application does not depend
@@ -562,9 +674,10 @@ density require their own validation.
 | `daemon/models.rs` | Fixed wire models, resource quantities, unsupported feature rejection |
 | `daemon/store.rs` | Private per-record registry, atomic publication/unlink, logical budget and v1 activation |
 | `daemon/mod.rs` | Admission/commit serialization, lifecycle, restart reconciliation, TTL and endpoint access |
-| `daemon/api.rs` | OpenSandbox HTTP adapter, filters, streaming data-plane proxy |
+| `daemon/api.rs` | OpenSandbox HTTP adapter, filters, shared streaming data-plane proxy |
+| `daemon/e2b.rs` | Pinned E2B lifecycle schemas, SDK routes, TTL/connect and envd authentication |
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |
-| `prepared_image.rs` | Operator-side static execd checks, pool template preparation and atomic manifest publication |
-| `sandbox_init.rs` | Embedded guest-only execd supervisor and bounded byte-transparent vsock bridge |
+| `prepared_image.rs` | Operator-side static execd/envd checks, pool template preparation and atomic manifest publication |
+| `sandbox_init.rs` | Embedded guest-only execd/envd supervisor and bounded byte-transparent vsock bridge |

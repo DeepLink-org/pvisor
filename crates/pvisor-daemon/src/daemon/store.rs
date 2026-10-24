@@ -303,6 +303,16 @@ fn validate_record(id: &str, record: &Record) -> anyhow::Result<()> {
             && record.endpoint_token.len() >= 32,
         "invalid sandbox reservation or credential"
     );
+    if let Some(profile) = &record.e2b {
+        profile.validate()?;
+        ensure!(
+            profile.cpu_millis == record.cpu_millis
+                && profile.memory_bytes == record.memory_bytes
+                && record.env.get(crate::runtime::ENVD_TOKEN_ENV) == Some(&record.endpoint_token)
+                && record.sandbox.expires_at.is_some(),
+            "invalid E2B reservation, credential or deadline"
+        );
+    }
     Ok(())
 }
 
@@ -877,6 +887,34 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn e2b_records_bind_profile_credentials_and_deadline() {
+        let mut value = record(ID);
+        value.e2b = Some(crate::runtime::E2bTemplate {
+            cpu_millis: value.cpu_millis,
+            memory_bytes: value.memory_bytes,
+            envd_version: "0.10.2".into(),
+        });
+        value.env.insert(
+            crate::runtime::ENVD_TOKEN_ENV.into(),
+            value.endpoint_token.clone(),
+        );
+        value.sandbox.expires_at = Some(Utc::now() + chrono::Duration::seconds(300));
+        assert!(validate_record(ID, &value).is_ok());
+        for bad in 0..4 {
+            let mut corrupt = value.clone();
+            match bad {
+                0 => corrupt.memory_bytes += 1,
+                1 => {
+                    corrupt.env.remove(crate::runtime::ENVD_TOKEN_ENV);
+                }
+                2 => corrupt.sandbox.expires_at = None,
+                _ => corrupt.e2b.as_mut().unwrap().envd_version = "invalid".into(),
+            }
+            assert!(validate_record(ID, &corrupt).is_err());
+        }
+    }
+
     #[test]
     fn record_paths_cannot_escape_or_follow_symlinks() {
         let directory = tempfile::tempdir().unwrap();

@@ -10,7 +10,7 @@ use std::{
 
 #[derive(Args)]
 pub struct PrepareImage {
-    /// Local image key used by OpenSandbox create requests (not a registry URI).
+    /// Local image key used by OpenSandbox/E2B create requests (not a registry URI).
     #[arg(long)]
     name: String,
     /// Registry base image, preferably pinned by sha256 manifest digest.
@@ -18,7 +18,20 @@ pub struct PrepareImage {
     image: String,
     /// Trusted statically linked Linux execd from the pinned OpenSandbox release.
     #[arg(long)]
-    execd: PathBuf,
+    #[arg(required_unless_present = "envd", conflicts_with = "envd")]
+    execd: Option<PathBuf>,
+    /// Trusted static E2B envd binary (selects the E2B profile instead of execd).
+    #[arg(long, requires = "envd_version")]
+    envd: Option<PathBuf>,
+    /// Exact version of the supplied envd (checked against the running service).
+    #[arg(long, requires = "envd")]
+    envd_version: Option<String>,
+    /// E2B template CPU quota, charged to the whole native process tree.
+    #[arg(long, default_value_t = 1000)]
+    cpu_millis: u64,
+    /// E2B template memory in MiB, including host overhead.
+    #[arg(long, default_value_t = 512)]
+    memory_mib: u64,
     /// Directory containing prepared manifests and the shared compressed store.
     #[arg(long)]
     images_dir: PathBuf,
@@ -42,14 +55,36 @@ impl PrepareImage {
             !self.image.contains(['\n', '\r', '\0']) && !self.image.contains(char::is_whitespace),
             "invalid base image reference"
         );
-        let execd = fs::read(&self.execd).context("read trusted execd binary")?;
+        let e2b = self
+            .envd
+            .as_ref()
+            .map(|_| pvisor_daemon::runtime::E2bTemplate {
+                cpu_millis: self.cpu_millis,
+                memory_bytes: self.memory_mib.checked_mul(1024 * 1024).unwrap_or(0),
+                envd_version: self.envd_version.clone().unwrap_or_default(),
+            });
+        if let Some(profile) = &e2b {
+            ensure!(
+                profile.envd_version == "0.10.2",
+                "managed E2B requires pinned envd 0.10.2"
+            );
+            profile.validate()?;
+        }
+        let service = if e2b.is_some() { "envd" } else { "execd" };
+        let execd = fs::read(
+            self.envd
+                .as_ref()
+                .or(self.execd.as_ref())
+                .context("execd or envd is required")?,
+        )
+        .context("read trusted guest service binary")?;
         ensure!(
             execd.len() >= 64
                 && &execd[..4] == b"\x7fELF"
                 && execd[4] == 2
                 && execd[5] == 1
                 && u16::from_le_bytes([execd[18], execd[19]]) == 62,
-            "execd must be a Linux x86-64 ELF binary"
+            "guest service must be a Linux x86-64 ELF binary"
         );
         // Reject an interpreter-dependent ELF before publishing a template that
         // may use a different distro/libc. No supplied executable runs on host.
@@ -66,14 +101,14 @@ impl PrepareImage {
                             .context("invalid ELF program headers")?
                     )
                     .is_some_and(|end| end <= execd.len()),
-            "invalid execd ELF program headers"
+            "invalid guest service ELF program headers"
         );
         ensure!(
             (0..phcount).all(|i| {
                 let at = phoff + i * phsize;
                 u32::from_le_bytes(execd[at..at + 4].try_into().unwrap()) != 3
             }),
-            "execd must be statically linked (build with CGO_ENABLED=0)"
+            "guest service must be statically linked (build with CGO_ENABLED=0)"
         );
         fs::create_dir_all(&self.images_dir)?;
         let images = self.images_dir.canonicalize()?;
@@ -81,7 +116,7 @@ impl PrepareImage {
         let store = pvisor::docker::Store::open(store_root.clone())?;
         let context = tempfile::tempdir()?;
         for (name, bytes) in [
-            ("execd", execd.as_slice()),
+            (service, execd.as_slice()),
             (
                 "sandbox-init",
                 include_bytes!(env!("PVISOR_SANDBOX_INIT")).as_slice(),
@@ -95,7 +130,7 @@ impl PrepareImage {
         fs::write(
             &dockerfile,
             format!(
-                "FROM {}\nCOPY execd /opt/pvisor/execd\nCOPY sandbox-init /opt/pvisor/sandbox-init\nENTRYPOINT [\"/opt/pvisor/sandbox-init\"]\nCMD [\"/bin/sleep\",\"infinity\"]\n",
+                "FROM {}\nCOPY {service} /opt/pvisor/{service}\nCOPY sandbox-init /opt/pvisor/sandbox-init\nENTRYPOINT [\"/opt/pvisor/sandbox-init\"]\nCMD [\"/bin/sleep\",\"infinity\"]\n",
                 self.image
             ),
         )?;
@@ -123,13 +158,18 @@ impl PrepareImage {
         );
         let manifest = PreparedImage {
             rootfs: store_root,
-            entrypoint: vec!["/opt/pvisor/sandbox-init".into()],
+            entrypoint: if e2b.is_some() {
+                vec!["/opt/pvisor/sandbox-init".into(), "--envd".into()]
+            } else {
+                vec!["/opt/pvisor/sandbox-init".into()]
+            },
             cmd: vec!["/bin/sleep".into(), "infinity".into()],
             env: image.env.clone(),
             library_dir: self.library_dir.map(|p| p.canonicalize()).transpose()?,
-            e2b: None,
+            e2b: e2b.clone(),
             pooled_image: Some(image),
-            native_opensandbox: true,
+            native_opensandbox: e2b.is_none(),
+            native_e2b: e2b.is_some(),
         };
         // Atomic publication leaves the previous manifest intact on failure.
         let mut file = tempfile::NamedTempFile::new_in(&images)?;

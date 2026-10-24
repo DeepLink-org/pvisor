@@ -117,7 +117,9 @@ pub struct E2bTemplate {
 }
 
 impl E2bTemplate {
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Validate operator resources and the three-component envd version.
+    /// Returns an error without side effects when limits or version are unsupported.
+    pub fn validate(&self) -> Result<()> {
         let version: Vec<_> = self.envd_version.split('.').collect();
         ensure!(
             version.len() == 3
@@ -236,6 +238,10 @@ pub struct PreparedImage {
     /// adapter, rather than a guest upstream egress process. Requires pooled_image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_opensandbox: bool,
+    /// Managed real E2B envd, initialized privately by the supervisor.
+    /// Requires a pooled image and an E2B resource/version profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_e2b: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -996,6 +1002,13 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                     .get("PVISOR_EXECD_ACCESS_TOKEN")
                     .context("managed credential missing")?;
                 publications.spawn(managed_execd_bridge(listener, path, token.clone()));
+            } else if port == ENVD_PORT && identity.image.native_e2b {
+                let token = identity
+                    .spec
+                    .env
+                    .get(ENVD_TOKEN_ENV)
+                    .context("managed envd credential missing")?;
+                publications.spawn(managed_service_bridge(listener, path, token.clone(), true));
             } else {
                 publications.spawn(bridge(listener, path));
             }
@@ -1119,6 +1132,18 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             service.dispatch(HostAttemptCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
             bail!("native execd binding initialization failed");
+        }
+    }
+    if identity.image.native_e2b {
+        let initialized = timeout(
+            READY_TIMEOUT,
+            initialize_envd(&client, &endpoints[&ENVD_PORT], &identity),
+        )
+        .await;
+        if !matches!(initialized, Ok(Ok(()))) {
+            service.dispatch(HostAttemptCommand::Terminate).await?;
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            bail!("native envd initialization failed: {initialized:?}");
         }
     }
     startup.insert(
@@ -1246,6 +1271,16 @@ async fn execute_control(
         let ready = probe(client, &format!("{}/ready", endpoints[&EXECD_PORT])).await?;
         validate_execd_binding(&ready, identity)?;
     }
+    if state == RuntimeState::Running
+        && identity.image.native_e2b
+        && !matches!(operation, Operation::Endpoint { .. })
+    {
+        let env = envd_environment(client, &endpoints[&ENVD_PORT]).await?;
+        ensure!(
+            env.get("E2B_SANDBOX_ID") == Some(&identity.spec.id),
+            "envd is bound to another sandbox"
+        );
+    }
     observe_control(
         directory,
         client,
@@ -1326,6 +1361,9 @@ fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     );
     let mut env = image.env.clone();
     env.extend(identity.spec.env.clone());
+    if image.native_e2b {
+        env.remove(ENVD_TOKEN_ENV);
+    }
     if image.native_opensandbox {
         // The raw credential never enters the guest environment or execd argv.
         env.remove("PVISOR_EXECD_ACCESS_TOKEN");
@@ -1414,6 +1452,15 @@ fn execd_generation(identity: &Identity) -> Result<u64> {
 // mapping. Only this protected HTTP listener is published; the actual vsock
 // stream remains a Unix socket in the private sandbox directory.
 async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: String) -> Result<()> {
+    managed_service_bridge(listener, path, token, false).await
+}
+
+async fn managed_service_bridge(
+    listener: TcpListener,
+    path: PathBuf,
+    token: String,
+    envd: bool,
+) -> Result<()> {
     use axum::{
         Router,
         body::Body,
@@ -1434,18 +1481,18 @@ async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: Strin
         .pool_max_idle_per_host(0)
         .build()?;
     let token = Arc::new(token);
+    let auth_header = if envd {
+        "x-access-token"
+    } else {
+        "x-execd-access-token"
+    };
     let router = Router::new().fallback(any(move |request: Request| {
         let (client, token) = (client.clone(), token.clone());
         async move {
-            if request
-                .headers()
-                .get_all("x-execd-access-token")
-                .iter()
-                .count()
-                != 1
+            if request.headers().get_all(auth_header).iter().count() != 1
                 || !request
                     .headers()
-                    .get("x-execd-access-token")
+                    .get(auth_header)
                     .and_then(|v| v.to_str().ok())
                     .is_some_and(|value| constant_time_equal(value, &token))
             {
@@ -1463,7 +1510,7 @@ async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: Strin
             if url.path() != parts.uri.path() || url.query() != parts.uri.query() {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            crate::daemon::api::strip_service_headers(&mut parts.headers, true, false);
+            crate::daemon::api::strip_service_headers(&mut parts.headers, true, envd);
             let response = client
                 .request(parts.method, url)
                 .headers(parts.headers)
@@ -1472,7 +1519,7 @@ async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: Strin
                 .await
                 .map_err(|_| StatusCode::BAD_GATEWAY)?;
             let mut headers = response.headers().clone();
-            crate::daemon::api::strip_service_headers(&mut headers, false, false);
+            crate::daemon::api::strip_service_headers(&mut headers, false, envd);
             let mut result = Response::builder()
                 .status(response.status())
                 .body(Body::from_stream(response.bytes_stream()))
@@ -1483,6 +1530,50 @@ async fn managed_execd_bridge(listener: TcpListener, path: PathBuf, token: Strin
     }));
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+async fn initialize_envd(client: &reqwest::Client, envd: &str, identity: &Identity) -> Result<()> {
+    loop {
+        if probe_status(
+            client,
+            &format!("{envd}/health"),
+            reqwest::StatusCode::NO_CONTENT,
+        )
+        .await
+        .is_ok()
+        {
+            break;
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+    let mut env = identity.image.env.clone();
+    env.extend(identity.spec.env.clone());
+    env.retain(|key, _| {
+        !key.starts_with("PVISOR_") && !key.starts_with("KRUN_") && !key.starts_with("LIBKRUN_")
+    });
+    env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+    let response = client
+        .post(format!("{envd}/init"))
+        .json(&serde_json::json!({
+            "accessToken": identity.spec.env[ENVD_TOKEN_ENV], "envVars": env,
+            "defaultUser": "root", "defaultWorkdir": "/root", "lifecycleID": identity.generation,
+        }))
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::NO_CONTENT,
+        "envd initialization rejected: {}",
+        response.status()
+    );
+    ensure!(
+        response
+            .headers()
+            .get("x-envd-version")
+            .and_then(|v| v.to_str().ok())
+            == identity.spec.e2b.as_ref().map(|p| p.envd_version.as_str()),
+        "prepared envd version differs from live binary"
+    );
+    probe_services(client, &BTreeMap::from([(ENVD_PORT, envd.into())])).await
 }
 
 fn validate_execd_binding(bytes: &[u8], identity: &Identity) -> Result<()> {
@@ -1586,11 +1677,7 @@ async fn probe_services(client: &reqwest::Client, endpoints: &BTreeMap<u16, Stri
         .await?;
         // Health alone also succeeds before envd initialization. Prove both
         // authenticated API access and rejection without the bootstrap token.
-        let envs = probe(client, &format!("{envd}/envs")).await?;
-        ensure!(
-            serde_json::from_slice::<BTreeMap<String, String>>(&envs).is_ok(),
-            "invalid real envd environment response"
-        );
+        envd_environment(client, envd).await?;
         probe_status(
             &health_client(None)?,
             &format!("{envd}/envs"),
@@ -1620,6 +1707,22 @@ fn validate_ready(bytes: &[u8]) -> Result<()> {
     );
     Ok(())
 }
+async fn envd_environment(
+    client: &reqwest::Client,
+    envd: &str,
+) -> Result<BTreeMap<String, String>> {
+    // Valid launch environments may approach 64 KiB; JSON escaping can expand
+    // them by six, beyond the ordinary small health-response bound.
+    let bytes = probe_status_limited(
+        client,
+        &format!("{envd}/envs"),
+        reqwest::StatusCode::OK,
+        512 * 1024,
+    )
+    .await?;
+    serde_json::from_slice(&bytes).context("invalid real envd environment response")
+}
+
 async fn probe(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     probe_status(client, url, reqwest::StatusCode::OK).await
 }
@@ -1628,12 +1731,20 @@ async fn probe_status(
     url: &str,
     status: reqwest::StatusCode,
 ) -> Result<Vec<u8>> {
+    probe_status_limited(client, url, status, HEALTH_LIMIT).await
+}
+async fn probe_status_limited(
+    client: &reqwest::Client,
+    url: &str,
+    status: reqwest::StatusCode,
+    limit: usize,
+) -> Result<Vec<u8>> {
     let mut response = client.get(url).send().await?;
     ensure!(response.status() == status, "real service health failed");
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         ensure!(
-            body.len() + chunk.len() <= HEALTH_LIMIT,
+            body.len() + chunk.len() <= limit,
             "service health response too large"
         );
         body.extend_from_slice(&chunk);
@@ -1995,6 +2106,11 @@ fn validate_owner(owner: &str) -> Result<()> {
     Ok(())
 }
 fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
+    ensure!(
+        !image.native_e2b
+            || (image.pooled_image.is_some() && image.e2b.is_some() && !image.native_opensandbox),
+        "managed E2B requires a pooled E2B-only image"
+    );
     ensure!(
         !image.native_opensandbox || (image.pooled_image.is_some() && image.e2b.is_none()),
         "managed OpenSandbox requires a pooled non-E2B image"
@@ -2575,6 +2691,7 @@ mod tests {
                 e2b: None,
                 pooled_image: None,
                 native_opensandbox: false,
+                native_e2b: false,
             },
             cgroup: temp
                 .join("groups")
@@ -2598,6 +2715,64 @@ mod tests {
             },
             operations: SandboxLocks::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn managed_envd_mapping_authenticates_before_first_init_and_preserves_basic_user() {
+        use axum::{Router, extract::Request, http::StatusCode, routing::any};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("envd.sock");
+        let unix = UnixListener::bind(&path).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let guest = tokio::spawn(async move {
+            axum::serve(
+                unix,
+                Router::new().fallback(any(move |request: Request| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert_eq!(request.headers()["authorization"], "Basic cm9vdDo=");
+                        assert_eq!(request.headers()["x-access-token"], "a".repeat(64));
+                        assert!(!request.headers().contains_key("x-api-key"));
+                        assert!(!request.headers().contains_key("e2b-sandbox-id"));
+                        StatusCode::NO_CONTENT
+                    }
+                })),
+            )
+            .await
+            .unwrap();
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let token = "a".repeat(64);
+        let bridge = tokio::spawn(managed_service_bridge(listener, path, token.clone(), true));
+        let client = health_client(None).unwrap();
+        for target in ["init", "health", "envs", "freeze"] {
+            assert_eq!(
+                client
+                    .post(format!("{url}/{target}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let result = client
+            .post(format!("{url}/init"))
+            .header("x-access-token", token)
+            .header("authorization", "Basic cm9vdDo=")
+            .header("x-api-key", "never-forward-lifecycle-key")
+            .header("e2b-sandbox-id", "private-routing")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(result.status(), 204);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        bridge.abort();
+        guest.abort();
     }
 
     #[tokio::test]
