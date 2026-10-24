@@ -36,6 +36,9 @@ impl RuntimeJobService {
         context: &ServiceContext<'_>,
         request: ApplyRequest,
     ) -> anyhow::Result<MutationResponse> {
+        if !request.all && request.selection.is_all() {
+            bail!("apply requires --all or an explicit --path, --include, or --exclude selection");
+        }
         if request.all
             && (!request.selection.paths.is_empty()
                 || !request.selection.includes.is_empty()

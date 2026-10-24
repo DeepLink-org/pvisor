@@ -56,6 +56,37 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+New Attempts use Run record schema 2 and completion protocol 1. Older readers
+reject schema 2 instead of bypassing its completion check. Session durably prepares the Bundle,
+publishes its terminal events, writes the terminal Run projection, then atomically
+publishes `completion.json` binding the typed result to the Bundle's BLAKE3 digest.
+Only that receipt commits completion. Readers reject missing/changed Bundles and
+foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
+with its stage retained and workspace mutation refused. `status` reconciles stale
+Run/Job projections under their metadata and Attempt leases; it never takes a live
+Attempt's lease or infers success from owner death. Legacy records without the
+protocol marker retain their original read rules. This is local crash consistency,
+not authentication against another process with unrestricted access as the host UID.
+Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
+Completion and Bundle reads reject symlinks/nonregular files and are capped at
+64 MiB each. Very large captured results or file inventories can exceed this bound
+and fail finalization while retaining the stage.
+
+Local sandbox evidence comes from individual control installation receipts on a
+parent-retained inode. The launcher unlinks its pathname and closes the descriptor
+before workload execution. A ready marker or admission mechanism list cannot
+substitute for these receipts.
+
+`RunSpec.runtime.profile` is the shared `RunProfile::{Default, Safe}` request.
+Safe requires sandbox admission before workload start; its selective host network
+proxy may still be cooperative. `PolicyMode::Enforce` independently requires
+non-bypassable controls. Bundle `safe_profile_requested` comes from this typed
+request. `RunConfig.run.profile = "safe"` selects the CLI preset.
+
+Apply requests require explicit `all = true` or a nonempty path/include/exclude
+selection. Empty selection is rejected before target/stage mutation. The low-level
+OverlayCore selection contract remains unchanged for its existing callers.
+
 Admission carries the final network configuration into every Attempt driver;
 preparation does not re-resolve policy from mutable Run metadata or configuration.
 Guest workspace overlays require `RunExecutor::supports_guest_workspace_overlay`
@@ -71,6 +102,11 @@ requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
 The OCI executor injects the `pvisor` executable and delegates the Job through
 `spawn --executor host --spec ... --result-file ...` inside the container.
+Its RunSpec is mounted read-only, and its writable output directory excludes the
+OCI bundle/state. Result reads reject symlinks, nonregular files, foreign Run
+identities and payloads over 16 MiB. Boundary-writable JSON supplies transcript
+bytes only: the host-observed OCI runtime exit determines completion, and delegated
+AgentCtl directives, metrics, artifacts and enforcement claims are not imported.
 
 ## Explicit runtime experiments
 

@@ -482,7 +482,7 @@ fn process_markdown_profiles_preserve_registered_workloads_and_sampling() {
         }
         assert_eq!(
             seal::digest(&[&serde_json::to_vec(&controls).unwrap()]),
-            "sha256:05130ac765f89afd6676af5578a1667f130257db5b01e5f9fe4b2cb423c0bb3b"
+            "sha256:0d534c0020db4bf04fb25eb97306ac063fee340e630aaeef2009096a6beda056"
         );
         assert!(!root.join(format!("{profile}.json")).exists());
         assert!(!root.join(format!("{profile}.commands.json")).exists());

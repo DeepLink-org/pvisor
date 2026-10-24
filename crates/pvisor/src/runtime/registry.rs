@@ -113,6 +113,8 @@ pub enum RunRecordState {
     Failed,
     Terminated,
     Hibernated,
+    /// The owner stopped without a committed completion; retained effects are not approved.
+    Unknown,
 }
 
 impl RunRecordState {
@@ -130,6 +132,7 @@ impl RunRecordState {
             Self::Failed => "failed",
             Self::Terminated => "terminated",
             Self::Hibernated => "hibernated",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -137,6 +140,10 @@ impl RunRecordState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u32,
+    /// Completion protocol required by this Attempt. Legacy records omit it.
+    /// Protocol 1 requires a result/Bundle receipt before a terminal state is trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_protocol: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_control: Option<super::host_transport::LiveControlRecord>,
     pub run_id: String,
@@ -295,6 +302,18 @@ impl Drop for JobDirectoryLock {
 }
 
 impl RunRecord {
+    fn validate_schema(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(
+                (self.schema_version, self.completion_protocol),
+                (1, None) | (2, Some(super::completion::VERSION))
+            ),
+            "unsupported Run record schema {} / completion protocol {:?}",
+            self.schema_version,
+            self.completion_protocol
+        );
+        Ok(())
+    }
     /// A missing process/lease is insufficient evidence of a completed Attempt.
     pub fn require_stopped(&self) -> anyhow::Result<()> {
         super::job_execution::require_mutable(self)?;
@@ -330,11 +349,7 @@ impl RunRecord {
     }
 
     pub fn write(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.schema_version == 1,
-            "unsupported Run record schema {}",
-            self.schema_version
-        );
+        self.validate_schema()?;
         let stage = self.stage_dir();
         let path = stage.join(RUN_META_FILENAME);
         crate::util::write_run_json(&path, self, &self.run_id, "run_record")?;
@@ -391,16 +406,22 @@ impl RunRecord {
         });
         let path = stage.join(RUN_META_FILENAME);
         let mut record: Self = serde_json::from_slice(&fs::read(&path)?)?;
-        anyhow::ensure!(
-            record.schema_version == 1,
-            "unsupported Run record schema {}",
-            record.schema_version
-        );
-        if let Some(job) = active {
+        record.validate_schema()?;
+        if let Some(job) = &active {
             anyhow::ensure!(
                 record.run_id == job.run_id,
                 "execution Job record owner mismatch"
             );
+        }
+        if record.completion_protocol.is_some() && !is_live(stage)? {
+            match super::completion::Completion::load(&record)? {
+                Some(receipt) => receipt.project(&mut record)?,
+                None => {
+                    record.state = RunRecordState::Unknown;
+                    record.finished_at_unix_ms = None;
+                    record.live_control = None;
+                }
+            }
         }
         if let Some(overlay) = record.overlay.as_mut()
             && pvisor_overlay_core::apply::reconcile_terminal_overlay(overlay)?
@@ -469,7 +490,8 @@ impl RunLease {
             .open(stage_dir.join(LEASE_FILENAME))?;
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
-            anyhow::bail!("Run storage is already leased: {}", stage_dir.display());
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("acquire Run storage lease: {}", stage_dir.display()));
         }
         Ok(Self { file })
     }
@@ -1061,6 +1083,7 @@ mod tests {
         RunRecord {
             attempt_id: None,
             schema_version: 1,
+            completion_protocol: None,
             live_control: None,
             run_id: "run-test".into(),
             parent_run_id: None,
@@ -1359,7 +1382,7 @@ mod tests {
 
         let path = temp.path().join(RUN_META_FILENAME);
         let mut wire = serde_json::to_value(&current).unwrap();
-        wire["state"] = "unknown".into();
+        wire["state"] = "unrecognized-state".into();
         fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
         assert!(RunRecord::read(temp.path()).is_err());
         wire["state"] = "completed".into();

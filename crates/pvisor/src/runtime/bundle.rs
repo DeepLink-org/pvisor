@@ -359,7 +359,18 @@ impl RunBundle {
 
     pub fn read(stage_dir: &Path) -> anyhow::Result<Self> {
         let path = Self::path(stage_dir);
-        let bytes = fs::read(&path)?;
+        let bytes = super::completion::read_file(&path)?;
+        let record_path = stage_dir.join(super::registry::RUN_META_FILENAME);
+        if record_path.try_exists()? {
+            let record: RunRecord =
+                serde_json::from_slice(&super::completion::read_file(&record_path)?)?;
+            if record.completion_protocol.is_some() {
+                anyhow::ensure!(
+                    super::completion::Completion::load(&record)?.is_some(),
+                    "EXECUTION_UNKNOWN: Attempt completion is not committed; stage retained"
+                );
+            }
+        }
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
         anyhow::ensure!(
             value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION,
@@ -374,7 +385,7 @@ impl RunBundle {
         Ok(bundle)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    pub(super) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.schema_version == RUN_BUNDLE_SCHEMA_VERSION,
             "unsupported Run Bundle schema"
@@ -618,6 +629,7 @@ mod tests {
         let mut record = RunRecord {
             attempt_id: None,
             schema_version: 1,
+            completion_protocol: None,
             live_control: None,
             run_id: "run-1".into(),
             parent_run_id: Some("job-1".into()),

@@ -529,10 +529,7 @@ impl RuntimeSupervisor {
                     if let Err(cleanup) = session.abort_startup(
                         attempt_id,
                         snapshot,
-                        spec.metadata
-                            .get("pvisor.safe")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
+                        spec.runtime.profile == pvisor_core::RunProfile::Safe,
                         format!("OverlayNet proxy startup failed: {error:#}"),
                     ) {
                         tracing::warn!(%cleanup, "persist failed proxy startup");

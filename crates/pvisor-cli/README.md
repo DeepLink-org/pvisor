@@ -37,6 +37,17 @@ pvisor review last
 pvisor apply last --path src
 ```
 
+`apply` requires `--all` or an explicit `--path`, `--include` or `--exclude`
+selection. An empty selection is rejected before changing the target. `--all`
+cannot be combined with filters.
+
+TOML `[run] profile = "safe"` selects the same preset as `--safe`. Explicit
+`--filesystem host` conflicts with the safe profile and fails before workload
+execution. Ordinary runs report `safe_profile_requested = false`. Managed replay
+uses `spawn --config`, preserves the safe request and returns the outer exit status.
+After an interrupted new Attempt, `status` reconciles a committed completion or
+reports `unknown` while preserving its stage; missing completion is never success.
+
 The seven live VM flags are command-local, under **Live VM** in command help:
 
 | Command | Accepted live VM flags |

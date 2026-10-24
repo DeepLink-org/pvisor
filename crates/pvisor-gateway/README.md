@@ -15,6 +15,20 @@ Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 
+Online network/model policy is fixed in memory at startup. Session `proxy.toml`
+files are diagnostic snapshots, omit inline API keys, and cannot change policy or
+credential routes. Embedded Attempts bind the capture root to a host-owned Run
+identity; client headers identify sub-sessions within that root.
+
+When pVisor owns upstream credentials, each Attempt injects a fresh local SDK
+credential and requires it before model dispatch. Missing/foreign tokens receive
+401. Gateway consumes that credential before forwarding and resolves the supplier
+key from its frozen routes. This scopes access to the token holder; it does not
+isolate an unsandboxed process from other processes running as the same host UID.
+Embedded users can supply `InProcessRuntime.client_token` and `run_id` explicitly.
+HTTP upstreams use a ten-minute read-inactivity timeout rather than a ten-minute
+total-stream deadline, so active long streams can continue.
+
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
 wire formats are never chained through Chat Completions as an intermediate

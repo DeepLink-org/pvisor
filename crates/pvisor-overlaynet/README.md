@@ -7,6 +7,13 @@ absolute-URI forwarding, access enforcement through
 [`pvisor-core`](../pvisor-core/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
+Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
+429 without waiting in an unbounded queue. A permit remains owned by the HTTP body
+or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not a
+node-wide memory budget. HTTP upstreams have a ten-minute read-inactivity timeout;
+active responses can exceed ten minutes. CONNECT retains its existing transport
+lifecycle and does not yet have a shared bidirectional inactivity deadline.
+
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
 in-process smoltcp stack serves synthetic DNS, then terminates and
 re-originates policy-authorized IPv4 TCP. The Rust guest supervisor configures

@@ -73,8 +73,7 @@ class FilesystemContracts(unittest.TestCase):
 
     def test_modified_command_or_extra_arguments_are_rejected_before_preparation(self):
         table = {
-            "native-"
-            + mode: f"$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ {mode}"
+            "native-" + mode: f"$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ {mode}"
             for mode in ("metadata", "read")
         }
         for expression in (

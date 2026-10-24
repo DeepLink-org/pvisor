@@ -31,7 +31,7 @@ use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
 use crate::model_wait::{PendingModelWait, unless_stopped};
 use crate::runtime::debug::{self, truncate_body_bytes};
-use crate::session::storage::resolve_capture_route;
+use crate::session::storage::resolve_capture_route_with_root;
 use crate::understanding::understand_request;
 use pvisor_overlaynet::headers::{is_websocket_upgrade, skip_response_header_after_reframing};
 
@@ -147,11 +147,11 @@ pub(super) async fn llm_capture(
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
 
-    let capture_route = resolve_capture_route(
+    let capture_route = resolve_capture_route_with_root(
         &parts.headers,
         &body_bytes,
         &state.config.session_header,
-        state.storage.as_path(),
+        state.root_session.clone(),
     );
     let call = Call::from_headers(&parts.headers);
     let agent_id = cfg.agent_id.clone();

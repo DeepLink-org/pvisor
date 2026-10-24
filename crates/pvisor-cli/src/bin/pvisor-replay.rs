@@ -20,7 +20,7 @@ use pvisor::{
 
 #[derive(Debug, Clone, Args)]
 pub struct ReplayArgs {
-    /// Complete replay TOML containing [replay] and optional runtime sections.
+    /// Complete replay TOML containing `[replay]` and optional runtime sections.
     #[arg(long, value_name = "FILE", conflicts_with = "request")]
     config: Option<PathBuf>,
 
@@ -288,6 +288,9 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         ReplayError::configuration(format!("cannot resolve the pVisor executable: {error}"))
     })?;
     let mut outer = PVisorRunConfig::default();
+    if config.run.safe {
+        outer.run.profile = pvisor_core::RunProfile::Safe;
+    }
     outer.run.agent = format!("replay-{}", config.replay.agent);
     outer.run.executor = match config.run.executor.as_deref().unwrap_or("host") {
         "host" => RunExecutorKind::Host,
@@ -385,7 +388,10 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             ReplayError::configuration(format!("resolve managed replay workspace: {error}"))
         })?;
     let mut command = Command::new(&executable);
-    command.args(["run", "--config"]).arg(file.path());
+    command.args(["spawn", "--config"]).arg(file.path());
+    if config.run.safe {
+        command.arg("--safe");
+    }
     command.current_dir(&working_dir);
     let status = command.status().map_err(|error| {
         ReplayError::configuration(format!("start managed pVisor replay: {error}"))

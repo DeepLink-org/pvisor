@@ -224,6 +224,7 @@ impl LaunchPolicy {
             ..Default::default()
         };
         config.run.timeout_ms = self.runtime.timeout_ms;
+        config.run.profile = self.runtime.profile;
         config.run.resource_limits = self.runtime.resource_limits;
         config.run.policy = if self.runtime.policy_mode == PolicyMode::Enforce {
             RunPolicy::Enforce

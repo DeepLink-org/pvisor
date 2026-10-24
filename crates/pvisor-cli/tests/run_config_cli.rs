@@ -224,7 +224,7 @@ fn toml_and_cli_share_one_run_configuration() {
     let bundle = RunBundle::read(&run_dir).expect("read generated Run Bundle");
     assert_eq!(bundle.run.run_id, record["run_id"]);
     assert_eq!(bundle.run.agent, "from-cli");
-    assert!(bundle.safety.safe_profile_requested);
+    assert!(!bundle.safety.safe_profile_requested);
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["status", "--review", "--json"])

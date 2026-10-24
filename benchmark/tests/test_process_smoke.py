@@ -38,7 +38,7 @@ class ProcessSmokeContracts(unittest.TestCase):
         canonical = json.dumps(previous, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(
             hashlib.sha256(canonical).hexdigest(),
-            "8127809ada763e1394562a3cfdde3ded5cb03c18e1eeb4bd8a40cb93a94eddaf",
+            "465f373ac167562e78a6f52e7e6aa965fd80539858851fc379ab2339994026ae",
         )
         self.assertFalse((ROOT / "process/nightly.json").exists())
         self.assertFalse((ROOT / "process/nightly.commands.json").exists())

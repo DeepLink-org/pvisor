@@ -868,18 +868,12 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
     normalize_filesystem_config(&mut config)?;
-    if args.run.safe || args.audit {
+    if config.run.profile == pvisor_core::RunProfile::Safe {
         warn_safe_preset(&config, &args);
     }
     pvisor::startup_mark_run("cli.config_ready", &run_id);
-    execute_config(
-        config,
-        run_id,
-        args.run.safe || args.audit,
-        None,
-        PolicySource::CurrentDefaults,
-    )
-    .await
+    let safe = config.run.profile == pvisor_core::RunProfile::Safe;
+    execute_config(config, run_id, safe, None, PolicySource::CurrentDefaults).await
 }
 
 fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
@@ -1259,6 +1253,10 @@ async fn execute_config(
     lineage: Option<RunLineage>,
     policy_source: PolicySource,
 ) -> anyhow::Result<i32> {
+    let safe = safe || config.run.profile == pvisor_core::RunProfile::Safe;
+    if safe {
+        config.run.profile = pvisor_core::RunProfile::Safe;
+    }
     config.features.validate(config.run.executor)?;
     normalize_filesystem_config(&mut config)?;
     validate_prepared_workspace_request(&config)?;
@@ -1678,6 +1676,7 @@ async fn execute_config(
             .insert(pvisor::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
     }
     spec.runtime.timeout_ms = config.run.timeout_ms;
+    spec.runtime.profile = config.run.profile;
     spec.runtime.resource_limits = config.run.resource_limits.clone();
     spec.metadata.insert(
         "pvisor.environment".into(),
@@ -1732,10 +1731,7 @@ async fn execute_config(
         spec.metadata
             .insert("pvisor.lineage".into(), serde_json::to_value(lineage)?);
     }
-    // CLI runs always carry the best-effort lifecycle/evidence profile;
-    // filesystem restrictions, staging, and network isolation remain opt-in.
-    spec.metadata
-        .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
+    spec.metadata.insert("pvisor.frontend".into(), "cli".into());
     spec.metadata.insert(
         "pvisor.filesystem.mode".into(),
         serde_json::Value::String(
@@ -2054,7 +2050,8 @@ fn free_loopback_address() -> anyhow::Result<String> {
 
 /// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
 fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
-    if args.run.safe || args.audit {
+    if args.run.safe || args.audit || config.run.profile == pvisor_core::RunProfile::Safe {
+        config.run.profile = pvisor_core::RunProfile::Safe;
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
@@ -2935,6 +2932,10 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
         );
     }
     if safe {
+        anyhow::ensure!(
+            config.filesystem == FilesystemMode::Sandbox,
+            "--safe requires --filesystem sandbox; host filesystem access cannot satisfy the safe profile"
+        );
         anyhow::ensure!(
             config.run.executor != RunExecutorKind::Container,
             "--safe does not yet support the container executor; select host/VM"
@@ -4021,6 +4022,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.filesystem, FilesystemMode::Host);
+        assert!(
+            validate(&config, true)
+                .unwrap_err()
+                .to_string()
+                .contains("requires --filesystem sandbox")
+        );
+    }
+
+    #[test]
+    fn toml_safe_profile_resolves_the_same_preset_as_the_cli_flag() {
+        let mut from_toml: RunConfig = toml::from_str("[run]\nprofile = 'safe'\n").unwrap();
+        from_toml.overlaynet.listen = "127.0.0.1:0".into();
+        from_toml.gateway.admin_listen = "127.0.0.1:0".into();
+        apply_run_options(&mut from_toml, preset_args(&["--", "codex"])).unwrap();
+        let mut from_cli = RunConfig::default();
+        from_cli.overlaynet.listen = "127.0.0.1:0".into();
+        from_cli.gateway.admin_listen = "127.0.0.1:0".into();
+        apply_run_options(&mut from_cli, preset_args(&["--safe", "--", "codex"])).unwrap();
+        assert_eq!(
+            serde_json::to_value(from_toml).unwrap(),
+            serde_json::to_value(from_cli).unwrap()
+        );
     }
 
     #[test]

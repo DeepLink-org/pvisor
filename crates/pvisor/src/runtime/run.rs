@@ -1145,6 +1145,26 @@ impl PVisor {
                 ));
             }
         }
+        if spec.runtime.profile == pvisor_core::RunProfile::Safe {
+            if spec
+                .metadata
+                .get("pvisor.filesystem.mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("host")
+            {
+                return Err(PVisorError::InvalidSpec(
+                    "safe profile requires filesystem confinement".into(),
+                ));
+            }
+            spec.metadata.insert(
+                crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+                true.into(),
+            );
+            spec.metadata.insert(
+                crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(),
+                true.into(),
+            );
+        }
         crate::runtime::apply_process_policies(&mut spec, &descriptor)
             .map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
@@ -2196,7 +2216,11 @@ mod tests {
                 anyhow::bail!("completion audit unavailable");
             }
             if event.name() == "run.completed" {
-                let bundle = crate::RunBundle::read(&self.0)?;
+                // Terminal append precedes the commit receipt. Inspect the prepared
+                // bytes without treating them as a committed execution result.
+                anyhow::ensure!(crate::RunBundle::read(&self.0).is_err());
+                let bundle: crate::RunBundle =
+                    serde_json::from_slice(&std::fs::read(crate::RunBundle::path(&self.0))?)?;
                 anyhow::ensure!(
                     bundle
                         .run
@@ -2812,6 +2836,23 @@ mod tests {
             PVisorError::UnsupportedPolicy { dimensions, .. }
                 if dimensions == "network, subprocess"
         ));
+    }
+
+    #[tokio::test]
+    async fn typed_safe_profile_rejects_an_unconfined_embedded_executor_before_start() {
+        let marker = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("safe-embedded", "agent", "/bin/sh");
+        spec.runtime.profile = pvisor_core::RunProfile::Safe;
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec![
+            "-c".into(),
+            format!("touch {}/started", marker.path().display()),
+        ];
+        assert!(matches!(
+            PVisor::new().run(spec).await,
+            Err(PVisorError::UnsupportedPolicy { .. })
+        ));
+        assert!(!marker.path().join("started").exists());
     }
 
     #[test]

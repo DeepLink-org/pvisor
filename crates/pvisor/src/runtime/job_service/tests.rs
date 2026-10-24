@@ -163,6 +163,33 @@ fn embedded_status_and_drop_publish_generation_without_cli() {
 }
 
 #[test]
+fn empty_apply_selection_is_rejected_before_target_or_stage_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let record = fixture(root.path());
+    std::fs::write(root.path().join("upper/change"), "staged").unwrap();
+    let before = std::fs::read(root.path().join("run.json")).unwrap();
+    let target = root.path().join("missing/target");
+    let error = RuntimeJobService::apply(
+        &ServiceContext::default(),
+        ApplyRequest {
+            job: selection(&record),
+            target: Some(target.clone()),
+            all: false,
+            selection: Default::default(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("requires --all"), "{error}");
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("upper/change")).unwrap(),
+        "staged"
+    );
+    assert!(!root.path().join("target/change").exists());
+}
+
+#[test]
 fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() {
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());

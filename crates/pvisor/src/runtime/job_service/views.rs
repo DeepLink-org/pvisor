@@ -65,7 +65,7 @@ impl RuntimeJobService {
         context: &ServiceContext<'_>,
         request: StatusRequest,
     ) -> anyhow::Result<StatusResponse> {
-        let record = Self::resolve(context, &request.job)?;
+        let mut record = Self::resolve(context, &request.job)?;
         let endpoint = record
             .live_control
             .as_ref()
@@ -94,6 +94,21 @@ impl RuntimeJobService {
             }
         }
         let live = endpoint.is_some() && super::super::instance_control::owns_record(&record);
+        if !live && record.completion_protocol.is_some() {
+            let _job = super::lock_selected_job(context, &record)?;
+            match record.lock_current() {
+                Ok((mut current, _lease)) => {
+                    context.check(&current)?;
+                    super::super::completion::reconcile(&mut current)?;
+                    record = current;
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
         let blocker = execution_blocker(&record);
         let apply_history = load_apply_records(&record.stage_dir())?;

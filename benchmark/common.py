@@ -49,7 +49,8 @@ def artifact_summary(artifacts):
         if (
             path.suffix in (".py", ".rs")
             or path.suffix == ".json"
-            and "benchmark" in path.parts
+            # Retained manifests may still name the directory before its rename.
+            and {"benchmark", "benchmark.new"}.intersection(path.parts)
             and ".data" not in path.parts
             or path.name == "semspec"
             or re.fullmatch(r"python3(?:\.\d+)?", path.name)

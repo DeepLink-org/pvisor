@@ -29,12 +29,12 @@ class ReplaySpecificationTests(unittest.TestCase):
         import common
 
         config = common.command_definition(SOURCE)
-        # Golden of the retired JSON plan, treating absent env as the same empty map.
+        # Golden of the plan at benchmark/, treating absent env as the same empty map.
         # This binds every argv, hook and timeout as well as the 0/60 sampling plan.
         canonical = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(
             hashlib.sha256(canonical).hexdigest(),
-            "4f71503989c2c06c00b216007470315ea8a998ff2ab2340787a7639e667abe3c",
+            "0147c62a80ec86a473cf1e1ff006a9850cf372c5931aabd462606bc2a8f30d76",
         )
         self.assertEqual((config["warmup"], config["runs"]), (0, 60))
         self.assertEqual(

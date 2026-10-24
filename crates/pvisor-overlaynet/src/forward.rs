@@ -25,6 +25,13 @@ pub(crate) struct ConnectTarget {
     pub authority: String,
 }
 
+struct UploadTask(tokio::task::JoinHandle<()>);
+impl Drop for UploadTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub(crate) async fn handle_connect_authorized(
     mut req: Request,
     target: ConnectTarget,
@@ -58,7 +65,7 @@ pub(crate) async fn handle_connect_authorized(
         let (destination_read, mut destination_write) = destination.into_split();
         let mut upload = body.into_data_stream();
         let upload_bandwidth = bandwidth.clone();
-        tokio::spawn(async move {
+        let upload_task = UploadTask(tokio::spawn(async move {
             while let Some(chunk) = upload.next().await {
                 let Ok(chunk) = chunk else { break };
                 upload_bandwidth.throttle(chunk.len()).await;
@@ -67,7 +74,7 @@ pub(crate) async fn handle_connect_authorized(
                 }
             }
             let _ = destination_write.shutdown().await;
-        });
+        }));
         let stream = futures_util::stream::unfold(
             (destination_read, bandwidth, wait, false),
             |(mut reader, bandwidth, mut wait, stopped)| async move {
@@ -95,6 +102,7 @@ pub(crate) async fn handle_connect_authorized(
             .body(Body::new(Body::from_stream(stream).map_frame(
                 move |frame| {
                     let _ = &guard;
+                    let _ = &upload_task;
                     frame
                 },
             )))
@@ -200,7 +208,7 @@ pub(crate) async fn transparent_forward_authorized(
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(Duration::from_secs(600));
+        .read_timeout(Duration::from_secs(600));
     if target.host.parse::<std::net::IpAddr>().is_err() {
         client = client.resolve_to_addrs(&target.host, &target.addresses);
     }

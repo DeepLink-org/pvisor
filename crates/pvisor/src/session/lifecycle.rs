@@ -133,11 +133,7 @@ impl Session {
         };
         crate::util::startup_mark_run("session.agentctl_ready", spec.run_id.as_str());
         let agentctl = agentctl_server.control();
-        let safe_profile_requested = spec
-            .metadata
-            .get("pvisor.safe")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let safe_profile_requested = spec.runtime.profile == pvisor_core::RunProfile::Safe;
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.env.extend(agentctl_server.environment());
         spec.metadata.insert(
@@ -569,6 +565,34 @@ impl Session {
                     safe_profile_requested,
                 )
                 .await;
+            }
+        }
+        if let Some(mut owned) = teardown.take() {
+            let mut saved = result.clone();
+            let agentctl = self.agentctl.clone();
+            match tokio::task::spawn_blocking(move || {
+                if let Err(error) = owned.complete(&saved) {
+                    fail_finalization(&mut saved, format!("commit Attempt completion: {error:#}"));
+                    persist_result_blocking(
+                        &mut owned,
+                        &mut saved,
+                        &agentctl,
+                        safe_profile_requested,
+                    );
+                    if let Err(error) = owned.complete(&saved) {
+                        saved
+                            .warnings
+                            .push(format!("completion remains unknown: {error:#}"));
+                    }
+                }
+                saved
+            })
+            .await
+            {
+                Ok(saved) => *result = saved,
+                Err(error) => {
+                    fail_finalization(result, format!("completion commit task failed: {error}"))
+                }
             }
         }
     }

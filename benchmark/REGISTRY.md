@@ -1,10 +1,11 @@
 # Benchmark requirements and publication rules
 
-旧 `benchmark/` 运行器已整体退役；本文件保留实验需求和发布规则。
+早期 campaign 运行器已整体退役；`benchmark/` 统一维护当前入口、实验需求和发布规则。
 当前入口与准备状态以 [registry.csv](registry.csv) 为准，未准备的模板保持未测。
 下文提及的旧脚本、报告和协议属于历史记录，仅可用冻结制品或 Git 历史复现。
 当前复现方式见 [README.md](README.md)，支持模块见 [support/README.md](support/README.md)。
-原始 `.data/` 证据保留原位置与原字节，不参与活动代码依赖。
+原始 `.data/` 证据不参与活动代码依赖；保留时维持原位置与原字节，清理须有明确授权。
+本地制品清理后，历史来源清单不再代表可在本机完整复核原始测量。
 
 **benchmark 的目的是给用户一个可以据此做决定的结论，再用实验支撑它。** 不回答用户问题的测量不写进用户文档；没有实验支撑的结论不写进任何文档。
 

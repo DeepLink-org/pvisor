@@ -24,6 +24,14 @@ LIVE = SEMSPEC.is_file()
 
 
 class RegistryTests(unittest.TestCase):
+    def test_public_summary_excludes_harnesses_from_both_directory_names(self):
+        artifacts = {
+            "/repo/benchmark/startup/timing.json": "current-harness",
+            "/repo/benchmark.new/startup/timing.json": "historical-harness",
+            "/repo/benchmark/.data/cohort/inputs/rootfs.img": "input-bytes",
+        }
+        self.assertEqual(COMMON.artifact_summary(artifacts), {"inputs/rootfs.img": "input-bytes"})
+
     def test_process_baselines_select_job_entry_from_inert_root_help(self):
         spec = importlib.util.spec_from_file_location(
             "process_prepare", ROOT / "process/prepare.py"

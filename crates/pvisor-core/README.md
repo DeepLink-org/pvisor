@@ -25,6 +25,12 @@ The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs
 
 ## Local resource contracts
 
+`execution::RunProfile` is a typed execution request shared by frontends and
+embedded callers. `RuntimeConfig.profile` defaults to `Default`; `Safe` requires
+runtime sandbox admission before execution. It does not claim that every network
+mechanism is non-bypassable. `PolicyMode::Enforce` and executor installation
+observations retain that separate role.
+
 Core defines native CPU QoS and telemetry through `cpu`, `memory` and execution
 contracts, not distributed scheduling or admission. `node::EnvironmentLayer`
 identifies local image revisions with `handle` / `manifest_digest`; node image/RAM

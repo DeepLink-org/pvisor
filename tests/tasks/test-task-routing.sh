@@ -377,6 +377,8 @@ test "$(cat "$work/dist/existing.whl")" == previous
 test "$(find "$work/dist" -type f | wc -l)" -eq 1
 test "$(find "$CARGO_TARGET_DIR" -maxdepth 1 -name 'wheel.*' | wc -l)" -eq 0
 
+# The benchmark link above points at real source; cleanup fixtures stay private.
+rm "$work/benchmark"
 mkdir -p "$work/.venv" "$CARGO_TARGET_DIR/pvisor-examples" "$work/benchmark/pvisor/.data" "$work/build" "$work/docs/site" "$CARGO_TARGET_DIR/fw"
 for path in "$work/.venv/state" "$CARGO_TARGET_DIR/pvisor-examples/evidence" "$work/benchmark/pvisor/.data/report.json" "$work/build/output" "$work/docs/site/output" "$CARGO_TARGET_DIR/fw/kernel"; do touch "$path"; done
 run clean

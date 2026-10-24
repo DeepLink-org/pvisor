@@ -86,6 +86,15 @@ pub fn resolve_capture_route(
     storage: &Path,
 ) -> CaptureRoute {
     let root_session = read_run_session(storage);
+    resolve_capture_route_with_root(headers, body, session_header, root_session)
+}
+
+pub(crate) fn resolve_capture_route_with_root(
+    headers: &HeaderMap,
+    body: &Bytes,
+    session_header: &str,
+    root_session: Option<String>,
+) -> CaptureRoute {
     let header_session = extract_session_from_headers(headers, session_header);
     let claude_agent_id = extract_claude_agent_id(headers);
     let _body_subagent = is_subagent_request_body(body);

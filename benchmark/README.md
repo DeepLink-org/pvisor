@@ -4,9 +4,11 @@
 需求、角色和正确性门禁见 [REGISTRY.md](REGISTRY.md#registry)。
 [registry.csv](registry.csv) 把活动实验映射到按主题组织的 Markdown spec 或 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
 
-旧 `benchmark/` 的代码、运行器及专属 Cargo examples 已退役。新入口所需的输入校验、
-命名空间隔离和资源观察保留在 [support/](support/README.md)，不提供旧 campaign 入口。
-历史报告从 Git 历史查阅，本地 `.data/` 保留原路径与原字节；历史命令需要对应冻结 harness。
+活动代码统一位于 `benchmark/`。早期 campaign 运行器及其专属 Cargo examples 已退役；
+当前入口的输入校验、命名空间隔离和资源观察位于 [support/](support/README.md)。
+历史报告从 Git 历史查阅。`.data/` 是不随 checkout 分发的本地实验制品，可按明确授权清理；
+清理后复现需自行准备输入和对应冻结 harness。CSV 中的历史 argv 和来源清单记录当时的
+路径，不表示原始制品仍在本机保留，也不随本地清理改写。
 
 ## 模板与执行
 

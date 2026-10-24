@@ -9,12 +9,11 @@ use bytes::Bytes;
 use pvisor_overlaynet::policy::{DenyReason, NetworkPolicy};
 use pvisor_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};
 
-use super::common::effective_config;
 use super::llm_capture::llm_capture;
 use super::state::GatewayState;
 use crate::config::ProxyConfig;
 use crate::runtime::debug::{self, is_debug_enabled};
-use crate::session::storage::resolve_capture_route;
+use crate::session::storage::resolve_capture_route_with_root;
 
 #[derive(Clone)]
 pub(crate) struct GatewayRequestContext {
@@ -23,6 +22,7 @@ pub(crate) struct GatewayRequestContext {
 }
 
 pub(crate) fn build_router(state: GatewayState) -> Router {
+    let client_token = state.client_token.clone();
     let server = OverlayServerState::new(
         state.control_controller.clone(),
         state.clone(),
@@ -30,7 +30,30 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
     )
     .with_interception_metrics(state.interception_metrics.clone())
     .with_bandwidth_registry(state.bandwidth_registry.clone());
-    pvisor_overlaynet::server::build_router(server)
+    let router = pvisor_overlaynet::server::build_router(server);
+    let Some(token) = client_token else {
+        return router;
+    };
+    router.layer(axum::middleware::from_fn(
+        move |mut request: Request, next: axum::middleware::Next| {
+            let token = token.clone();
+            async move {
+                let model_request = request.method() != axum::http::Method::CONNECT
+                    && (request.uri().authority().is_none()
+                        || crate::protocol::ProtocolKind::from_path(request.uri().path())
+                            != crate::protocol::ProtocolKind::Unknown);
+                if model_request && !super::auth::consume_local_token(request.headers_mut(), &token)
+                {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        "Attempt Gateway credential required",
+                    )
+                        .into_response();
+                }
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 #[async_trait]
@@ -41,13 +64,14 @@ impl OverlaySink for GatewayState {
         &self,
         request: &Request,
     ) -> anyhow::Result<OverlayRequestContext<Self::RequestContext>> {
-        let route = resolve_capture_route(
+        let route = resolve_capture_route_with_root(
             request.headers(),
             &Bytes::new(),
             &self.config.session_header,
-            self.storage.as_path(),
+            self.root_session.clone(),
         );
-        let config = effective_config(self, &route);
+        // Capture files and client-selected sessions never grant policy authority.
+        let config = std::sync::Arc::clone(&self.config);
         let debug_on = is_debug_enabled(&config, self.storage.as_path());
         Ok(OverlayRequestContext {
             policy: NetworkPolicy::from_config(config.as_ref())?,

@@ -365,6 +365,7 @@ impl AttemptSession {
             warnings,
         };
         teardown.persist(&result, agentctl, safe_profile_requested)?;
+        teardown.complete(&result)?;
         Ok(())
     }
 }
@@ -410,12 +411,15 @@ impl AttemptTeardown {
         agentctl: crate::AgentCtlSnapshot,
         safe: bool,
     ) -> anyhow::Result<()> {
-        self.commit_state(result.state)
-            .context("commit local Run record failed")?;
         crate::RunBundle::capture(self.run_record(), result, agentctl, safe)?
             .write(&self.run_record().stage_dir())
             .context("write durable Run Bundle failed")?;
         Ok(())
+    }
+
+    pub(crate) fn complete(&mut self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
+        self.commit_state(result.state)?;
+        super::completion::Completion::commit(self.run_record(), result)
     }
 
     pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
@@ -528,7 +532,8 @@ fn initial_run_record(
         .collect::<Vec<_>>();
     Ok(RunRecord {
         attempt_id: Some(attempt_id),
-        schema_version: 1,
+        schema_version: 2,
+        completion_protocol: Some(super::completion::VERSION),
         live_control: preparation.live_control.clone(),
         run_id: spec.run_id.as_str().to_string(),
         parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
@@ -588,11 +593,19 @@ pub(crate) fn prepare_attempt(
 
     let network_metrics = InterceptionMetrics::default();
     let bandwidth_registry = BandwidthRegistry::default();
+    let client_token = (opts.gateway_enabled
+        && config
+            .models
+            .iter()
+            .any(|route| route.api_key.is_some() || route.api_key_env.is_some()))
+    .then(|| format!("pvisor-local-{}", uuid::Uuid::new_v4()));
     let gateway = InProcessCapture::start_with_runtime(
         config.clone(),
         capture_storage.clone(),
         Arc::clone(&sink),
         InProcessRuntime {
+            run_id: Some(spec.run_id.to_string()),
+            client_token: client_token.clone(),
             controller: Arc::clone(&opts.controller),
             interception_metrics: network_metrics.clone(),
             bandwidth_registry: bandwidth_registry.clone(),
@@ -686,11 +699,7 @@ pub(crate) fn prepare_attempt(
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
-    let safe = spec
-        .metadata
-        .get("pvisor.safe")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let safe = spec.runtime.profile == pvisor_core::RunProfile::Safe;
     session.finish_preparation(
         &pvisor_core::AttemptId::new(opts.attempt_id),
         safe,
@@ -732,11 +741,7 @@ pub(crate) fn prepare_attempt(
                     config_path: &config_snapshot,
                     gateway_enabled: opts.gateway_enabled,
                     vm_network: opts.vm_network,
-                    local_gateway_auth: opts.gateway_enabled
-                        && config
-                            .models
-                            .iter()
-                            .any(|route| route.api_key.is_some() || route.api_key_env.is_some()),
+                    local_gateway_token: client_token.as_deref(),
                 },
             )?;
             session.run_record.environment.runtime_injected_keys =
@@ -834,11 +839,7 @@ pub(crate) fn prepare_overlay_attempt(
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
-    let safe = spec
-        .metadata
-        .get("pvisor.safe")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let safe = spec.runtime.profile == pvisor_core::RunProfile::Safe;
     session.finish_preparation(opts.attempt_id, safe, |session| {
         let mut plan = ImplantPlan {
             env: ImplantPlan::marker_env(),
@@ -941,11 +942,7 @@ pub(crate) fn prepare_storage_attempt(
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
-    let safe = spec
-        .metadata
-        .get("pvisor.safe")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let safe = spec.runtime.profile == pvisor_core::RunProfile::Safe;
     session.finish_preparation(attempt_id, safe, |session| {
         let mut plan = ImplantPlan {
             env: ImplantPlan::marker_env(),
@@ -1386,7 +1383,7 @@ struct SessionImplantOpts<'a> {
     config_path: &'a Path,
     gateway_enabled: bool,
     vm_network: bool,
-    local_gateway_auth: bool,
+    local_gateway_token: Option<&'a str>,
 }
 
 #[cfg(feature = "gateway")]
@@ -1405,7 +1402,7 @@ fn enrich_with_session(
         config_path,
         gateway_enabled,
         vm_network,
-        local_gateway_auth,
+        local_gateway_token,
     } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
@@ -1431,9 +1428,20 @@ fn enrich_with_session(
     plan.notes
         .push("network service: in-process HTTP proxy started".into());
 
-    for (key, value) in proxy_environment_with_local_auth(listen, root_session, local_gateway_auth)
+    for (key, value) in
+        proxy_environment_with_local_auth(listen, root_session, local_gateway_token.is_some())
     {
         plan.env.insert(key, value);
+    }
+    if let Some(token) = local_gateway_token {
+        for key in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+        ] {
+            plan.env.insert(key.into(), token.into());
+        }
     }
     if !gateway_enabled {
         for key in [
