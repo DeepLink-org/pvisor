@@ -85,6 +85,8 @@ capture sockets also remain in use. See [internal channels and cleanup order](..
 
 Help, version and feature queries emit no startup logs. Execution startup markers
 are emitted after command parsing and do not measure complete process entry.
+Execution lets clap build the selected parsing path; grouped root help still
+builds the full tree. The generated `help` command never defaults to `spawn`.
 `PVISOR_STARTUP_PROFILE=1` additionally records `cli.entry_to_parsed`, measured
 from this frontend's `main` entry and emitted only after informational commands
 have returned. This includes internal dispatch checks and parsing, but excludes
