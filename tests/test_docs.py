@@ -311,7 +311,7 @@ class DocsTests(unittest.TestCase):
                 assert not set(path for entry in performance for path in entry.values()) & set(
                     path for entry in scenarios for path in entry.values()
                 )
-                check_public_assets = runpy.run_path(str(ROOT / "benchmark.new/public_assets.py"))[
+                check_public_assets = runpy.run_path(str(ROOT / "benchmark/public_assets.py"))[
                     "check_public_assets"
                 ]
                 check_public_assets(ROOT)

@@ -1,6 +1,6 @@
 # VM 启动：技术分析与实验记录
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
@@ -24,7 +24,7 @@ B-STARTUP-REVISION-ENG，Linux/KVM/FUSE；每后端、每版本 3 次预热、60
 
 **整轮性能验收仍不通过：** staged 启动存在明显波动，且[同制品文件系统复测](filesystem-performance-analysis.md#concurrency-retest)显示 VM 写入和工具成本仍退化。需要独立诊断，不能拿 host 的退出收益替代其他后端或任务内部性能结论。
 
-完整统计、分布、配对区间及制品与来源记录保存在本地批次或归档中。原始数据、每次 stdout/时序、Run Bundle、输入与构建收据在 `benchmark.new/startup/.data/concurrency-retest2-20261011/`。这些工程版本比较不重写用户页的历史跨运行时表，不覆盖冷缓存、并发负载、macOS 或服务首次启动；0.5 s 干扰检测可能漏掉短暂、不可见或未识别活动。
+完整统计、分布、配对区间及制品与来源记录保存在本地批次或归档中。原始数据、每次 stdout/时序、Run Bundle、输入与构建收据在 `benchmark/startup/.data/concurrency-retest2-20261011/`。这些工程版本比较不重写用户页的历史跨运行时表，不覆盖冷缓存、并发负载、macOS 或服务首次启动；0.5 s 干扰检测可能漏掉短暂、不可见或未识别活动。
 
 ## 当前通用与裁剪内核的能力检查 {#kernel-capabilities}
 

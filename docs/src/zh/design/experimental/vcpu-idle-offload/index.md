@@ -1,6 +1,6 @@
 # vCPU 空闲观测与自动内存卸载（EXP-001）
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 | 项目 | 当前状态 |
 |---|---|
@@ -170,7 +170,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 
 #### M4：收益实验与是否继续
 
-- [ ] 按`benchmark.new/REGISTRY.md`先登记自动策略的问题、角色、runner与统计协议。
+- [ ] 按`benchmark/REGISTRY.md`先登记自动策略的问题、角色、runner与统计协议。
 - [ ] 同任务/硬件/预算/制品，自动策略on/off随机配对，多轮；手动策略可独立对照。
 - [ ] waiting/compute/短阻塞/streaming/timer-heavy/恢复风暴分开。
 - [ ] memory-time integral、cgroup/PSS/cache、全组peak、CPU/IO、恢复及完整任务延迟、失败和有效吞吐。

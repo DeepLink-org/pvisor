@@ -168,9 +168,9 @@ The same-stage file-loading comparison has completed measurement through the new
 
 <!-- measurement-status:end -->
 
-[Stage statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv) · [Stage paired differences CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv) · [Stage provenance summary](../assets/benchmarks/lazy-stage.provenance.json) · [Stage reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md#stage-lazy)
+[Stage statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv) · [Stage paired differences CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv) · [Stage provenance summary](../assets/benchmarks/lazy-stage.provenance.json) · [Stage reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#stage-lazy)
 
-Stage raw evidence stays in `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`. The independent audit recomputes raw clocks and rechecks file validation, mount and device identities, Run Bundles, per-request bytes, 33 rounds of background observations and cleanup, and verifies the semspec export. Binary, runtime-library and frozen-harness hashes are retained; their exact correspondence to a source build is unverified. Only processed statistics and compact provenance are published; raw samples and full inventories stay in local evidence.
+Stage raw evidence stays in `benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`. The independent audit recomputes raw clocks and rechecks file validation, mount and device identities, Run Bundles, per-request bytes, 33 rounds of background observations and cleanup, and verifies the semspec export. Binary, runtime-library and frozen-harness hashes are retained; their exact correspondence to a source build is unverified. Only processed statistics and compact provenance are published; raw samples and full inventories stay in local evidence.
 
 [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
@@ -189,4 +189,4 @@ Complete CSV/JSON and raw evidence stay in `benchmark/pvisor/.data/lazy-shell-cu
 [ref-turbooci-performance]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md#performance
 [ref-dadi]: https://www.usenix.org/conference/atc20/presentation/li-huiba
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).

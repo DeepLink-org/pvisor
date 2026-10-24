@@ -1,6 +1,6 @@
 # 工程说明
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 从仓库根目录运行命令。`mise tasks ls` 展示公开任务；`mise run ci` 执行默认本地检查序列，`mise run ci -- check "test pvisor-core"` 顺序执行指定任务，失败即停止。内部任务仍可调用，但不在默认帮助中展示。
 
@@ -42,7 +42,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
 | `tests/` | Python 打包和仓库工作流测试 |
-| `examples/`、`benchmark.new/` | 可运行的产品场景和性能测量 |
+| `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
 | `scripts/ci/` | CI 检查及冒烟测试入口 |
 | `docs/src/zh/`、`docs/src/en/` | 文档源；`docs/site/` 是生成产物 |
 | `vendor/` | 有补丁的第三方依赖；产品编排逻辑放在 `crates/` |
@@ -177,7 +177,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 | `mise run test -- cli` / `mise run test -- pvisor-cli` | 可执行文件／前端测试；`mise run test -- pvisor` 选择运行时测试 |
 | `mise run test -- pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
 | `mise run test-py -- -k packaging` | 在仓库及活动 benchmark 测试中筛选 unittest 检查 |
-| `mise run test-py -- discover -s benchmark.new/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
+| `mise run test-py -- discover -s benchmark/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
 | `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
 | `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `mise run test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
@@ -200,7 +200,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
-默认 unittest 收集 `tests/` 和 `benchmark.new/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
+默认 unittest 收集 `tests/` 和 `benchmark/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python 和 tar；
 在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py`，

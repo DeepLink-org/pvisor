@@ -135,4 +135,4 @@ Local provenance records binary, source, harness and raw-report digests. Timing 
 
 Reproduction follows the [comparison method](index.md#interpretation) and the [runner manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md).
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).

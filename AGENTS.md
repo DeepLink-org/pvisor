@@ -54,8 +54,8 @@ this boundary.
 
 ## Benchmarks
 
-Any work under `benchmark.new/`, `docs/src/*/benchmarks/` or
-`docs/src/assets/benchmarks/` must follow `benchmark.new/REGISTRY.md`: find the
+Any work under `benchmark/`, `docs/src/*/benchmarks/` or
+`docs/src/assets/benchmarks/` must follow `benchmark/REGISTRY.md`: find the
 benchmark's registry entry before measuring or writing, keep each user page in
 the order Motivation, experiment design, data and analysis (three sections), and
 keep engineering A/B and diagnostic results out of user pages.

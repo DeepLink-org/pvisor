@@ -204,15 +204,15 @@ run lint-rust -p pvisor-shim --features vm
 check_line cargo clippy --all-targets --locked -p pvisor-shim --features vm -- -D warnings
 run test-py
 check_line uv run --locked --only-group dev python -m unittest discover -s tests
-check_line uv run --locked --only-group dev python -m unittest discover -s benchmark.new/support
+check_line uv run --locked --only-group dev python -m unittest discover -s benchmark/support
 for suite in tests filesystem memory; do
-  check_line uv run --locked --only-group dev python -m unittest discover -s "benchmark.new/$suite"
+  check_line uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite"
 done
 for flags in selected leading filter; do
   case "$flags" in
     selected) run test-py tests/test_docs.py -k reference -v; check_line uv run --locked --only-group dev python -m unittest tests/test_docs.py -k reference -v ;;
     leading) run test-py -q tests/test_docs.py; check_line uv run --locked --only-group dev python -m unittest -q tests/test_docs.py ;;
-    filter) run test-py -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s tests -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s benchmark.new/support -k packaging ;;
+    filter) run test-py -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s tests -k packaging; check_line uv run --locked --only-group dev python -m unittest discover -s benchmark/support -k packaging ;;
   esac
 done
 for recipe in test-hvf-cold-restore test-vm-snapshot-state test-linux-cold-restore test-environment-snapshot; do
@@ -299,7 +299,7 @@ diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 expect_failure ci "check;touch $work/injected" build
 test ! -e "$work/injected"
 test ! -s "$PVISOR_TASK_TEST_LOG"
-ln -s "$MISE_PROJECT_ROOT/benchmark.new" "$work/benchmark.new"
+ln -s "$MISE_PROJECT_ROOT/benchmark" "$work/benchmark"
 for recipe in fw cases benchmark doctor; do
   case "$recipe" in
     cases) expect_failure cases --suite unknown ;;
@@ -307,37 +307,37 @@ for recipe in fw cases benchmark doctor; do
     *) expect_failure "$recipe" unknown ;;
   esac
   if [[ "$recipe" == benchmark ]]; then
-    command_line python3 "$work/benchmark.new/run.py" --check smoke unknown > "$work/expected"
+    command_line python3 "$work/benchmark/run.py" --check smoke unknown > "$work/expected"
     diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
   else
     test ! -s "$PVISOR_TASK_TEST_LOG"
   fi
 done
 run benchmark startup/timing 'pvisor vm'
-check_line python3 "$work/benchmark.new/run.py" --check startup/timing 'pvisor vm'
-check_line python3 "$work/benchmark.new/run.py" startup/timing 'pvisor vm'
+check_line python3 "$work/benchmark/run.py" --check startup/timing 'pvisor vm'
+check_line python3 "$work/benchmark/run.py" startup/timing 'pvisor vm'
 run benchmark filesystem/tools native-read
-check_line python3 "$work/benchmark.new/run.py" filesystem/tools native-read
+check_line python3 "$work/benchmark/run.py" filesystem/tools native-read
 expect_failure benchmark filesystem/tools 'pvisor vm'
-command_line python3 "$work/benchmark.new/run.py" --check filesystem/tools 'pvisor vm' > "$work/expected"
+command_line python3 "$work/benchmark/run.py" --check filesystem/tools 'pvisor vm' > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 grep -Fq 'available: native-metadata, native-read' "$work/stderr"
 run benchmark smoke --binary /already-built/pvisor
 {
-  command_line python3 "$work/benchmark.new/run.py" --check smoke --binary /already-built/pvisor
+  command_line python3 "$work/benchmark/run.py" --check smoke --binary /already-built/pvisor
   command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-  command_line python3 "$work/benchmark.new/run.py" smoke --binary /already-built/pvisor
+  command_line python3 "$work/benchmark/run.py" smoke --binary /already-built/pvisor
 } > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 run benchmark smoke
-check_line python3 "$work/benchmark.new/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke
+check_line python3 "$work/benchmark/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke
 check_line python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$CARGO_TARGET_DIR/pvisor-benchmark-build" --all
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 PVISOR_TASK_TEST_BAD_BUILD=1 run docs-serve en -a 127.0.0.1:3002
 check_line uv run --locked --only-group dev zensical serve -f docs/zensical.en.toml -a 127.0.0.1:3002
 grep -Fq 'continuing live preview' "$work/stderr"
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 expect_failure docs-build
 {
-  command_line python3 benchmark.new/docs.py check
+  command_line python3 benchmark/docs.py check
   command_line python3 scripts/check-reference.py
   command_line python3 scripts/check-docs.py --preflight-build
 } > "$work/expected"

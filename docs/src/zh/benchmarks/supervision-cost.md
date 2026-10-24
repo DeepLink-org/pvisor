@@ -135,4 +135,4 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 复现步骤见[比较方法](index.md#interpretation)与[运行手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)。
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。

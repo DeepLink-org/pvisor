@@ -168,9 +168,9 @@ pVisor 完成四文件校验的中位等待为冷缓存 78.15 ms、热缓存 52.
 
 <!-- measurement-status:end -->
 
-[Stage 统计 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv) · [Stage 配对差异 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv) · [Stage 来源摘要](../assets/benchmarks/lazy-stage.provenance.json) · [Stage 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md#stage-lazy)
+[Stage 统计 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv) · [Stage 配对差异 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv) · [Stage 来源摘要](../assets/benchmarks/lazy-stage.provenance.json) · [Stage 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#stage-lazy)
 
-Stage 原始证据保留在 `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`；独立审计复算原始时钟、文件校验、挂载与设备身份、Run Bundle、逐请求字节、33 轮后台观察及清理，并核对 semspec 导出。二进制、runtime 库与冻结 harness 有摘要收据，精确源码构建对应关系未验证。公开下载仅包含加工统计与精简来源，原始样本和完整清单留在本地证据目录。
+Stage 原始证据保留在 `benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`；独立审计复算原始时钟、文件校验、挂载与设备身份、Run Bundle、逐请求字节、33 轮后台观察及清理，并核对 semspec 导出。二进制、runtime 库与冻结 harness 有摘要收据，精确源码构建对应关系未验证。公开下载仅包含加工统计与精简来源，原始样本和完整清单留在本地证据目录。
 
 [复现手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
@@ -189,4 +189,4 @@ Stage 原始证据保留在 `benchmark.new/startup/.data/overlaybd-lab-20261017/
 [ref-turbooci-performance]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md#performance
 [ref-dadi]: https://www.usenix.org/conference/atc20/presentation/li-huiba
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。

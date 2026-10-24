@@ -34,6 +34,6 @@ For cold-image client waiting and content downloads, see the separate [on-demand
 
 ### Sources and reproduction {#run}
 
-Complete statistics, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the experiment, and the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json) for the measured artifacts.
+Complete statistics, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md) to reproduce the experiment, and the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json) for the measured artifacts.
 
 [Comparison method](index.md#interpretation)

@@ -1,6 +1,6 @@
 # 文件系统性能：技术分析与实验记录
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/`、`benchmark/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
@@ -1091,7 +1091,7 @@ guest `CLOCK_MONOTONIC_RAW` 记录阶段时间。重复 read/parallel 是 4 遍�
 
 首次 mmap 增加约 80.92 ms，而顺序热读取每遍减少约 0.96 ms，说明减少数据 READ 请求并不足以抵消当前首次访问成本。小文件的重复 open/read/close 也出现稳定退化。首次映射、逐页 fault、窗口回收及宿主映射竞争仍需要独立诊断；这些配对时间不能将差额全部归因于某一把锁或某一步。DAX 默认关闭，保留显式 opt-in；先定位首次 mmap 和窗口压力，再决定是否接入只读工具/镜像路径。实验关闭组仍预留窗口，不能将其成本当作普通无窗口设备的精确成本。
 
-完整统计 CSV、来源与校验摘要保存在本地批次或归档中。入口与复现见仓库 `benchmark.new/filesystem/README.md`；原始日志、冻结源码和制品保存在本地 `benchmark.new/filesystem/.data/dax-20261011-final/`。该工程批次独立于七工具、跨运行时和历史启动数据。
+完整统计 CSV、来源与校验摘要保存在本地批次或归档中。入口与复现见仓库 `benchmark/filesystem/README.md`；原始日志、冻结源码和制品保存在本地 `benchmark/filesystem/.data/dax-20261011-final/`。该工程批次独立于七工具、跨运行时和历史启动数据。
 
 ## Linux：直接队列服务与局部屏障，60 样本快速复测 {#direct-queue-fast}
 

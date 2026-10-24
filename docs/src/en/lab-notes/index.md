@@ -4,7 +4,7 @@ This section keeps engineering experiment records for performance and mechanisms
 
 Numbers on each page belong to their frozen cohorts and artifact versions and do not represent the performance level of the current build. `.data/` paths point to local archives that are not published with the repository or site; they exist for cohort provenance only.
 
-Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark.new/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
+Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
 
 | Page | Contents |
 | --- | --- |

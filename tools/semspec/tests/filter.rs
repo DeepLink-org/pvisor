@@ -460,7 +460,7 @@ python3 -c 'import sys; print("x" * 100000 + "FINAL_FAILURE"); sys.exit(1)'
 #[test]
 fn process_markdown_profiles_preserve_registered_workloads_and_sampling() {
     use std::collections::BTreeMap;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmark.new/process");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmark/process");
     for (profile, warmup, runs) in [("smoke", 2, 10), ("nightly", 10, 50)] {
         let source = fs::read_to_string(root.join(format!("{profile}.md"))).unwrap();
         let cells = semspec::experiment::cells(&source).unwrap();

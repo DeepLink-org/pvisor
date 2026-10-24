@@ -482,7 +482,7 @@ Public API edits require external tests through `api`, existing boundary guards 
 
 ##### 2.9.5.1 Registry and reproduction
 
-Formal engineering comparisons belong to [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng); request diagnostics belong to [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag). Recheck the [Registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv) and [Filesystem entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md) before implementation/measurement. `filesystem/ab.json` and `diagnostic.json` require concrete single-condition commands; prepare the repeatable harness before measuring.
+Formal engineering comparisons belong to [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng); request diagnostics belong to [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag). Recheck the [Registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) and [Filesystem entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md) before implementation/measurement. `filesystem/ab.json` and `diagnostic.json` require concrete single-condition commands; prepare the repeatable harness before measuring.
 
 Existing paired DAX experiments test a separate mechanism. Independent condition samplers do not automatically form randomized pairs; generate explicit ordering, execution records and same-round statistics.
 

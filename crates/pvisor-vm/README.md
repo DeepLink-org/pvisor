@@ -1180,14 +1180,14 @@ close→unlink→syncfs 返回 ENOENT，旧0044/0045固件均可见；旧制品�
 2026-10-17 的新宿主 SDK 回归在新0048与旧0047固件上均通过完整探针，
 包括 fd 已关闭的 unlink/rename-overwrite 后 syncfs；这验证宿主对象退休修复
 不依赖新压力算法。新宿主+0048的 backing EIO 用例也通过，PID1 以125报告失败。
-本地[正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-correctness-20261017/receipt.json)
+本地[正确性收据](../../benchmark/filesystem/.data/guest-writeback-correctness-20261017/receipt.json)
 关联三组成功与旧组合失败日志，保留为0048历史证据。
 
-0049v2 的[独立正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-v2-20261017/receipt.json)
+0049v2 的[独立正确性收据](../../benchmark/filesystem/.data/guest-writeback-tuning-correctness-v2-20261017/receipt.json)
 关联新固件 FULL、故障注入 ERROR、同 inode 多 FD、7项固件合同及当时50项
 filesystem Python 合同；511项 Rust 通过与8项跳过明确复用未变化的宿主实现范围。
 原失败写入历史随后在512 MiB guest／2 GiB父预算下由5个全新 guest 完成，
-[压力验证](../../benchmark.new/filesystem/.data/guest-writeback-memory-v2-20261017/verification.json)
+[压力验证](../../benchmark/filesystem/.data/guest-writeback-memory-v2-20261017/verification.json)
 保留225行、guest与host全字节校验及原分配错误未复现的记录。
 新的四臂 N5 曲线完成20个环境、900行；普通 CLI 则以同一0049v2固件对照
 WB0/1，PRE、独立诊断与 N5正式环境均通过。CLI七工具整体及 Ready 未检出收益，
@@ -1216,7 +1216,7 @@ PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
 字节区间；这些区间共享4 KiB页，部分写跨页。文件为2 MiB加256字节，累计写入
 6 MiB，交错114次 checked-close/reopen，并在写线程仍活动时短暂空闲15 ms，
 给提交 timer 推进机会。最后显式 fsync、syncfs，guest 与宿主分别核对完整长度及
-全部字节。该新增 full 探针已在0048基线上通过；[独立调用记录](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-20261017/full-baseline-0048.invocation.json)
+全部字节。该新增 full 探针已在0048基线上通过；[独立调用记录](../../benchmark/filesystem/.data/guest-writeback-tuning-correctness-20261017/full-baseline-0048.invocation.json)
 与原0048性能批次分开。0049v2 的新 FULL 也通过该用例，记录在上方的新正确性收据中；
 该正确性结果不用于推导性能收益。
 
@@ -1495,4 +1495,4 @@ VMM 的 payload 校验/选择、guest memory 创建与内核加载、hypervisor/
 直接与宿主 runtime、frontend 或 guest 时钟对齐。阶段间日志写入的成本不归入下一阶段，
 外层 span 仍包含内层日志成本。诊断会扰动启动，重叠阶段不能相加；未启用时不采集时钟。
 这些阶段覆盖 VMM 准备，guest/application Ready 必须通过独立输出 observer 确认。
-采集和汇总见 [启动诊断工具](../../benchmark.new/startup/startup_profile.py)。
+采集和汇总见 [启动诊断工具](../../benchmark/startup/startup_profile.py)。

@@ -96,4 +96,4 @@ Linux x86_64/KVM，Ryzen 7 9700X，内核 7.2.10-200.fc44.x86_64。每组四实�
 
 随机共享负载中，物理池约 1.7 秒达到持续减少 128 MiB 的目标，KSM 约 27.8 秒达到目标，并在 60 秒时取得更低的占用和 CPU 读数。短时页面的评估重点是早期回收，长期保留页面还需考察持续成本。两种时间尺度都应结合实际页面寿命分析；这些单次观测尚不能建立纯算法速度、亚秒级工具吞吐或稳定 CPU 改善的结论。
 
-完整来源与复现步骤保留在 [memory 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md)。本地原始证据为 `benchmark.new/memory/.data/q8/` 和 `l4/`，对应审计报告 SHA-256 分别为 `05958d9ca694f8aa63e81d2bce4a97ee7ad575d7dd19ed3279be91ceced03d8a`、`dfbf4fb91ea2613601bf2217dd08ddb55885591d3e1ec5c805da07b954c18f2f`。预检与正式样本分开保存，失败条件不补入成功批次；原始写入后记录仍完整保留。
+完整来源与复现步骤保留在 [memory 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md)。本地原始证据为 `benchmark/memory/.data/q8/` 和 `l4/`，对应审计报告 SHA-256 分别为 `05958d9ca694f8aa63e81d2bce4a97ee7ad575d7dd19ed3279be91ceced03d8a`、`dfbf4fb91ea2613601bf2217dd08ddb55885591d3e1ec5c805da07b954c18f2f`。预检与正式样本分开保存，失败条件不补入成功批次；原始写入后记录仍完整保留。

@@ -279,7 +279,7 @@ AI 不得执行 approve 或编辑真实 REVIEWED.toml、遗留 .approved 文件�
 传递路径。原始返回 JSON、日志和 kind=script-row/script-cell 保留在 commands；rows/cells
 记录行列到命令的关联。非零退出、非法或嵌套数据、未执行命令和列不一致阻止发布，返回值
 不会递归执行。已知模板错误在执行前拒绝并保留旧结果，执行失败清除旧结果。
-benchmark.new 独立审核逐次单调时钟、准备/校验 hooks、原始样本、有效输出和正常退出，
+benchmark 独立审核逐次单调时钟、准备/校验 hooks、原始样本、有效输出和正常退出，
 重新计算统计并验证输入和代码摘要，再以 Python 时钟口径发布。历史计时数据保留原始口径。
 渲染未展开的行命令报错，不执行。
 
@@ -331,7 +331,7 @@ runs 至少 2，timeout 为正秒数。计时采用 Python perf_counter_ns，进
 filter 支持多 cell。公开实验仍先准备、冻结和预检，执行后完整审计，不能直接跳过发布门禁。
 
 `tools/semspec/runtime.py` 是相同的 stdlib 公共执行层，嵌入独立 Rust 二进制，
-同时由 benchmark.new 适配器导入。process/replay、startup Ready/Exit、filesystem
+同时由 benchmark 适配器导入。process/replay、startup Ready/Exit、filesystem
 共享采样、统计、证据写入和命令记录审核；fixture、Ready 协议、Bundle 和输入校验
 仍由实验负责。common.py 把公共库纳入制品摘要与冻结 harness。仅迁移这三条稳定链路，
 不把特殊 VM、镜像池、资源观察实验强行改成通用命令，也不改历史时钟与测量数据。

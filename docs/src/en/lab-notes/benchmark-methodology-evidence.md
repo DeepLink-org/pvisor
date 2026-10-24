@@ -1,6 +1,6 @@
 # Benchmark measurement protocols and evidence
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
 
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 
@@ -18,7 +18,7 @@ Integrate and retain both macOS/HVF and Linux/KVM datasets in the corresponding 
 
 Calculate distributions separately for each platform. Cross-platform comparisons require matching workloads, timing boundaries, cache states and parameters. Label unmeasured areas and state platform restrictions for unsupported features. Interpret Linux offload and macOS shared cold-page reclamation as separate datasets.
 
-Available data: [startup latency](../benchmarks/startup.md), [memory deduplication](../benchmarks/vm-memory/index.md), and [Linux deduplication and shared-library curves](vm-memory-performance-analysis.md#linux-pool-curves). Older macOS cold-page and Linux snapshot records remain in the [memory experiment archive](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history).
+Available data: [startup latency](../benchmarks/startup.md), [memory deduplication](../benchmarks/vm-memory/index.md), and [Linux deduplication and shared-library curves](vm-memory-performance-analysis.md#linux-pool-curves). Older macOS cold-page and Linux snapshot records remain in the [memory experiment archive](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history).
 
 ## Environment checklist
 
@@ -43,15 +43,15 @@ Start every report with this table:
 ## Start from the existing measurement entry points
 
 ```bash
-mise run benchmark -- smoke --output benchmark.new/process/.data/candidate
-mise run benchmark -- nightly --output benchmark.new/process/.data/nightly-new
-mise run benchmark-compare -- benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
-mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark/process/.data/candidate
+mise run benchmark -- nightly --output benchmark/process/.data/nightly-new
+mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json benchmark/process/.data/main/in.bench.json
+mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
 ```
 
 The process regression gate uses semspec bench and a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. `benchmark-compare` accepts validated `in.bench.json` files from matching configurations and harnesses; measure the baseline separately with the same suite into `.data/main`.
 
-The startup event-clock table uses 3 warmups/60 samples per condition and records Ready and normal Exit from the same launch. It does not replace the retired startup/resource matrix or reproduce its historical sampling settings. See the [current benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md) for prepared binary, rootfs, image and kernel prerequisites. Every explicit output directory must be new; failures retain evidence and block publication. Building and input preparation occur outside these timers.
+The startup event-clock table uses 3 warmups/60 samples per condition and records Ready and normal Exit from the same launch. It does not replace the retired startup/resource matrix or reproduce its historical sampling settings. See the [current benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md) for prepared binary, rootfs, image and kernel prerequisites. Every explicit output directory must be new; failures retain evidence and block publication. Building and input preparation occur outside these timers.
 
 ## Interpretation and archiving
 

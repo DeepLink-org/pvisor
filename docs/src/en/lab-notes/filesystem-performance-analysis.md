@@ -1,6 +1,6 @@
 # Filesystem performance: technical analysis and experiment records
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
 
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` and `benchmark/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 
@@ -1091,7 +1091,7 @@ Units are ms. Change is enabled relative to disabled; positive values mean slowe
 
 The first mmap adds about 80.92 ms, while each warm sequential read saves about 0.96 ms. Reducing data READ requests is insufficient to offset the current first-access cost. Repeated small-file open/read/close also regresses consistently. Initial mapping, page faults, window reclamation and host mapping contention require separate diagnosis; these paired phase times do not attribute the difference to one lock or step. DAX is disabled by default with explicit opt-in retained. First mmap and window pressure need investigation before integrating read-only tool/image paths. The disabled experimental condition still reserves a window, so its cost does not exactly represent an ordinary device without one.
 
-The complete statistics CSV, provenance and validation summary remain in the local batch or archive. The entry and reproduction instructions are in repository `benchmark.new/filesystem/README.md`. Raw logs, frozen source and artifacts are local under `benchmark.new/filesystem/.data/dax-20261011-final/`. This engineering batch is independent of the seven-tool, cross-runtime and historical startup datasets.
+The complete statistics CSV, provenance and validation summary remain in the local batch or archive. The entry and reproduction instructions are in repository `benchmark/filesystem/README.md`. Raw logs, frozen source and artifacts are local under `benchmark/filesystem/.data/dax-20261011-final/`. This engineering batch is independent of the seven-tool, cross-runtime and historical startup datasets.
 
 ## Linux: direct queue service and scoped fences, 60-sample quick retest {#direct-queue-fast}
 

@@ -1,6 +1,6 @@
 # Engineering guide
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
 
 Run commands from the repository root. `mise tasks ls` lists public tasks; `mise run ci` runs the local check sequence, and `mise run ci -- check "test pvisor-core"` runs selected tasks in order and stops on failure. Internal tasks stay callable but are hidden from the default help.
 
@@ -41,7 +41,7 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their modules |
 | `tests/` | Python packaging and repository workflow tests |
-| `examples/`, `benchmark.new/` | Executable product scenarios and performance measurements |
+| `examples/`, `benchmark/` | Executable product scenarios and performance measurements |
 | `scripts/ci/` | CI checks and smoke-test entry points |
 | `docs/src/zh/`, `docs/src/en/` | Documentation source; `docs/site/` is generated |
 | `vendor/` | Patched third-party dependencies; product orchestration belongs in `crates/` |
@@ -152,7 +152,7 @@ CI checks the default runtime and application dependency boundaries before the c
 | `mise run test -- cli` / `mise run test -- pvisor-cli` | Executable/frontend tests; `mise run test -- pvisor` selects runtime tests |
 | `mise run test -- pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `mise run test-py -- -k packaging` | Filter Python unittest checks in both test directories |
-| `mise run test-py -- discover -s benchmark.new/support` | Benchmark tool unittest checks; also included in default Python tests |
+| `mise run test-py -- discover -s benchmark/support` | Benchmark tool unittest checks; also included in default Python tests |
 | `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
 | `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
 | `mise run test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
@@ -169,7 +169,7 @@ CI checks the default runtime and application dependency boundaries before the c
 
 Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
-Default unittest discovery includes `tests/` and `benchmark.new/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Default unittest discovery includes `tests/` and `benchmark/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
 VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
 

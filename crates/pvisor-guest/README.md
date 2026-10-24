@@ -144,4 +144,4 @@ before the switch is known retain the existing error only. Config-read timing is
 is connected, so it excludes the subsequent console wait. Logging can perturb
 startup. Collect profiled diagnostics separately
 from uninstrumented performance samples. See the
-[startup diagnostic tool](../../benchmark.new/startup/startup_profile.py).
+[startup diagnostic tool](../../benchmark/startup/startup_profile.py).

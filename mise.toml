@@ -30,12 +30,12 @@ UV_PYTHON_DOWNLOADS = "never"
 TMPDIR = "{{ get_env(name='TMPDIR', default='/tmp') | canonicalize }}"
 
 [tasks.benchmark]
-description = "不传参数运行 smoke；其他参数指定 benchmark.new 中的 Markdown 规格或 JSON 表格。"
+description = "不传参数运行 smoke；其他参数指定 benchmark 中的 Markdown 规格或 JSON 表格。"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -eq 0 ]]; then set -- smoke; fi
-process_build="$(python3 "$MISE_PROJECT_ROOT/benchmark.new/run.py" --check "$@")"
+process_build="$(python3 "$MISE_PROJECT_ROOT/benchmark/run.py" --check "$@")"
 if [[ "$process_build" == process ]]; then
   benchmark_repo="${PVISOR_BENCHMARK_REPO:-$MISE_PROJECT_ROOT}"
   benchmark_build="${PVISOR_BENCHMARK_BUILD_DIR:-$CARGO_TARGET_DIR/pvisor-benchmark-build}"
@@ -55,7 +55,7 @@ if [[ "$process_build" == process ]]; then
 fi
 cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
 export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
-python3 "$MISE_PROJECT_ROOT/benchmark.new/run.py" "$@"
+python3 "$MISE_PROJECT_ROOT/benchmark/run.py" "$@"
 '''
 
 [tasks.benchmark-compare]
@@ -67,9 +67,9 @@ set -euo pipefail
 if [[ $# -lt 1 ]]; then echo "usage: mise run benchmark-compare candidate baseline output threshold" >&2; exit 2; fi
 if [[ $# -gt 4 ]]; then echo "too many arguments for benchmark-compare" >&2; exit 2; fi
 if [[ $# -lt 2 ]]; then set -- "$@" ''; fi
-if [[ $# -lt 3 ]]; then set -- "$@" benchmark.new/process/.data/comparison; fi
+if [[ $# -lt 3 ]]; then set -- "$@" benchmark/process/.data/comparison; fi
 if [[ $# -lt 4 ]]; then set -- "$@" 15; fi
-python3 benchmark.new/process/compare.py --candidate "$1" --baseline "$2" --output "$3" --threshold "$4"
+python3 benchmark/process/compare.py --candidate "$1" --baseline "$2" --output "$3" --threshold "$4"
 '''
 
 [tasks.build]
@@ -144,7 +144,7 @@ description = "构建并检查双语文档；支持 --require-recorded"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-python3 benchmark.new/docs.py check
+python3 benchmark/docs.py check
 python3 scripts/check-reference.py
 python3 scripts/check-docs.py --preflight-build
 cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"
@@ -452,7 +452,7 @@ description = "支持 --check 等 formatter 参数"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-ruff format pvisor tests examples benchmark.new tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py "$@"
+ruff format pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py "$@"
 '''
 
 [tasks.fmt-rust]
@@ -525,7 +525,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for lint-py" >&2; exit 2; fi
-ruff check pvisor tests examples benchmark.new tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py
+ruff check pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py
 '''
 
 [tasks.lint-rust]
@@ -675,7 +675,7 @@ description = "无参数时覆盖 tests/、活动 benchmark 和命令计时测�
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-export PYTHONPATH="$MISE_PROJECT_ROOT/benchmark.new/support${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$MISE_PROJECT_ROOT/benchmark/support${PYTHONPATH:+:$PYTHONPATH}"
 selected=0
 option_value=0
 for arg in "$@"; do
@@ -688,10 +688,10 @@ for arg in "$@"; do
 done
 if [[ "$selected" == 0 ]]; then
   uv run --locked --only-group dev python -m unittest discover -s tests "$@"
-  uv run --locked --only-group dev python -m unittest discover -s benchmark.new/support "$@"
+  uv run --locked --only-group dev python -m unittest discover -s benchmark/support "$@"
   uv run --locked --only-group dev python -m unittest discover -s tools/semspec "$@"
   for suite in tests filesystem memory; do
-    uv run --locked --only-group dev python -m unittest discover -s "benchmark.new/$suite" "$@"
+    uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite" "$@"
   done
 else
   uv run --locked --only-group dev python -m unittest "$@"

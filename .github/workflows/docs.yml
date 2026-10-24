@@ -5,7 +5,7 @@ on:
     branches: [main, develop, next]
     paths:
       - 'docs/**'
-      - 'benchmark.new/**'
+      - 'benchmark/**'
       - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
@@ -23,7 +23,7 @@ on:
     branches: [main, develop, next]
     paths:
       - 'docs/**'
-      - 'benchmark.new/**'
+      - 'benchmark/**'
       - 'tools/semspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'

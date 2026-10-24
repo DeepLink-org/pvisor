@@ -1415,7 +1415,7 @@ requests stay inside the VM; no host process or filesystem fallback is provided.
 普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
 这些标记说明宿主已创建进程，不证明应用或 VM guest 就绪。不同进程、不同 profiler 的相对
 时钟不共用 epoch，重叠 span 不能相加。采集和离线汇总见
-[启动诊断](../../benchmark.new/startup/README.md#启动瓶颈诊断b-startup-diag)。
+[启动诊断](../../benchmark/startup/README.md#启动瓶颈诊断b-startup-diag)。
 
 ### Early runner descriptor capacity
 

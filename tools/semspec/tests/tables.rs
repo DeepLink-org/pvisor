@@ -533,7 +533,7 @@ fn markdown_tables_reject_ambiguous_or_malformed_definitions_and_expose_failures
 
 #[test]
 fn filesystem_markdown_preserves_script_owned_sampling_and_removes_fixed_mode_wrappers() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmark.new/filesystem");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmark/filesystem");
     let source = fs::read_to_string(root.join("tools.md")).unwrap();
     assert!(semspec::experiment::cells(&source).unwrap().is_empty());
     let cells = semspec::table::cells(&source).unwrap();
@@ -542,8 +542,8 @@ fn filesystem_markdown_preserves_script_owned_sampling_and_removes_fixed_mode_wr
     assert_eq!(
         cells[0].table,
         json!({
-            "native-metadata":"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ metadata",
-            "native-read":"$ python3 @REPO@/benchmark.new/filesystem/fs_timing.py @BATCH@ read",
+            "native-metadata":"$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ metadata",
+            "native-read":"$ python3 @REPO@/benchmark/filesystem/fs_timing.py @BATCH@ read",
         })
     );
     assert_eq!(

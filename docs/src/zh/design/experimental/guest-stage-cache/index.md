@@ -482,7 +482,7 @@ mise run fw -- test
 
 ##### 2.9.5.1 注册与可复现入口
 
-正式工程对照归属 [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng)，请求成本诊断归属 [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag)。实现与测量前复核 [注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/registry.csv)及 [filesystem 入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md)。当前 `filesystem/ab.json` 和 `diagnostic.json` 仍要求具体单条件命令；先准备可重复执行的 harness，再开始测量。
+正式工程对照归属 [B-FS-ENG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-eng)，请求成本诊断归属 [B-FS-DIAG](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md#b-fs-diag)。实现与测量前复核 [注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)及 [filesystem 入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md)。当前 `filesystem/ab.json` 和 `diagnostic.json` 仍要求具体单条件命令；先准备可重复执行的 harness，再开始测量。
 
 现有 DAX 配对实验属于独立机制，不作为本方案的证据。单独执行各条件的采样器也不会自动形成随机配对；本方案需要显式生成配对顺序、执行记录和同轮统计。
 

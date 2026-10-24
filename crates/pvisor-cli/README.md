@@ -74,7 +74,7 @@ the OS loader before `main`. Checkpoints `cli.owner_image_begin/ready`,
 `cli.owner_spawn_begin/returned`, and `cli.owner_request_sent` distinguish image
 verification, process creation and request dispatch. Owner bootstrap remains a
 bound aggregate, including its own verification before environment restoration.
-The [startup diagnostic collector](../../benchmark.new/startup/startup_profile.py)
+The [startup diagnostic collector](../../benchmark/startup/startup_profile.py)
 keeps process-relative spans separate from host checkpoint gaps and workload Ready.
 
 The frontend verifies and pins its own executable before launching its owner;

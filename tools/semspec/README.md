@@ -236,7 +236,7 @@ Registered experiments still use their prepare/audit pipeline before publication
 Row and column insertion order are preserved. Evidence retains `kind: script-row`
 or `script-cell`, raw returned JSON, log paths and complete row/cell mappings.
 Rendering is read-only, never runs commands, and rejects unresolved values.
-`benchmark.new` separately checks raw trials, hooks, inputs, clock provenance and
+`benchmark` separately checks raw trials, hooks, inputs, clock provenance and
 recomputed statistics before publishing benchmark measurements.
 
 Table options preserve existing article layouts when moving literal data to JSON:
@@ -281,7 +281,7 @@ semspec filter experiment.md --execute --artifacts /tmp/launch-evidence
 This path requires Python 3.10+. The runtime is embedded in the installed CLI;
 no repository checkout or Python package installation is required. The same
 [`runtime.py`](runtime.py) supplies process/replay, Ready/Exit and native filesystem
-adapters in `benchmark.new`. It owns validated repetition, `perf_counter_ns`,
+adapters in `benchmark`. It owns validated repetition, `perf_counter_ns`,
 raw trial evidence, statistics and command-trial audits. Experiments own fixture
 preparation, subject argv, Ready protocol and correctness checks. Existing JSON
 `bench` commands remain supported; complex registered experiments keep their

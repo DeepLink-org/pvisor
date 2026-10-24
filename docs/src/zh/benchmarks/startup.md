@@ -34,6 +34,6 @@ pVisor VM 的 Ready 中位数为 130.71 ms，位于 Docker rootless 的 105.03 m
 
 ### 来源与复现 {#run}
 
-统计、源码与制品来源和原始记录保存在对应本地批次或文档数据归档。复现见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md)，被测制品见[来源 JSON](../assets/benchmarks/startup-timing.provenance.json)。
+统计、源码与制品来源和原始记录保存在对应本地批次或文档数据归档。复现见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md)，被测制品见[来源 JSON](../assets/benchmarks/startup-timing.provenance.json)。
 
 [比较方法](index.md#interpretation)

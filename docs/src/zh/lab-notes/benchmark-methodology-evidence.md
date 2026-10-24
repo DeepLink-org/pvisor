@@ -1,6 +1,6 @@
 # Benchmark 测量协议与证据
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new)。
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
@@ -18,7 +18,7 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 
 不同平台分别计算分布，不合并样本。只有负载、计时起止、缓存状态和参数一致时才做跨平台对比；未测项目标为未测，不支持的功能写明平台限制。Linux 的 offload 数据与 macOS 的共享冷页回收数据分别解释。
 
-当前数据：[启动延迟](../benchmarks/startup.md)、[内存去重](../benchmarks/vm-memory/index.md)、[Linux 去重与共享库曲线](vm-memory-performance-analysis.md#linux-pool-curves)。旧 macOS 冷页和 Linux 快照记录保留在 [memory 实验归档](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)。
+当前数据：[启动延迟](../benchmarks/startup.md)、[内存去重](../benchmarks/vm-memory/index.md)、[Linux 去重与共享库曲线](vm-memory-performance-analysis.md#linux-pool-curves)。旧 macOS 冷页和 Linux 快照记录保留在 [memory 实验归档](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history)。
 
 ## 环境清单
 
@@ -43,15 +43,15 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 ## 从现有测量入口开始
 
 ```bash
-mise run benchmark -- smoke --output benchmark.new/process/.data/candidate
-mise run benchmark -- nightly --output benchmark.new/process/.data/nightly-new
-mise run benchmark-compare -- benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
-mise run benchmark -- startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark/process/.data/candidate
+mise run benchmark -- nightly --output benchmark/process/.data/nightly-new
+mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json benchmark/process/.data/main/in.bench.json
+mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
 ```
 
 进程回归门禁使用 semspec bench 与 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
 
-启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
+启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
 
 ## 解释与归档
 

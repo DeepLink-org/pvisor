@@ -1,6 +1,6 @@
 # vCPU idle observation and automatic RAM offload (EXP-001)
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark.new](https://github.com/DeepLink-org/pvisor/tree/main/benchmark.new).
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
 
 | Item | Current status |
 |---|---|
@@ -170,7 +170,7 @@ Exit gate: record each support-matrix cell. SMP mocks do not replace real guest 
 
 #### M4: benefit experiments and continuation decision
 
-- [ ] Register the automatic-policy question, role, runner and statistics under `benchmark.new/REGISTRY.md`.
+- [ ] Register the automatic-policy question, role, runner and statistics under `benchmark/REGISTRY.md`.
 - [ ] Use identical tasks/hardware/budgets/artifacts, randomized paired on/off runs across rounds; manual policy can be a separate control.
 - [ ] Separate waiting, compute, short blocking, streaming, timer-heavy and restore-storm workloads.
 - [ ] Measure memory-time integral, cgroup/PSS/cache, complete-group peaks, CPU/IO, restore and full-task latency, failures and useful throughput.

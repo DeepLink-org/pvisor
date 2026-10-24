@@ -26,7 +26,7 @@ behavior, examples, evidence and known limitations.
 Benchmark articles under `docs/src/{zh,en}/benchmarks/` are user decisions, not
 engineering reports: a reader must be able to choose a mode or size a deployment
 from them. Registration, data and publication rules live in
-[`benchmark.new/REGISTRY.md`](../benchmark.new/REGISTRY.md#structure). The rules below are the
+[`benchmark/REGISTRY.md`](../benchmark/REGISTRY.md#structure). The rules below are the
 failure modes that have actually reached the site; treat them as hard rules.
 
 **Structure**
@@ -86,8 +86,8 @@ Example, from startup latency:
   Anchor churn breaks lab-note links and is not a formatting cleanup.
 - Do not put a benchmark registry ID (`B-*`) or an internal switch name on a
   user page; link to the topic page or the runner manual instead.
-- Run `python3 benchmark.new/docs.py check` after touching a `{{ table(...) }}`
-  macro, `benchmark.new/docs.json` or a `*.render.json` file.
+- Run `python3 benchmark/docs.py check` after touching a `{{ table(...) }}`
+  macro, `benchmark/docs.json` or a `*.render.json` file.
 
 ```bash
 mise run docs-serve         # native Chinese preview on 127.0.0.1:3000
@@ -123,10 +123,10 @@ Fixed historical benchmark tables are written directly in Markdown, retaining
 their measured values, statistical scope and source links. Tables updated by
 benchmark publication and the generated measurement-coverage table use JSON;
 their bindings are registered in
-[`benchmark.new/docs.json`](../benchmark.new/docs.json). Run
-`python3 benchmark.new/docs.py check` before building. Historical tables retain
+[`benchmark/docs.json`](../benchmark/docs.json). Run
+`python3 benchmark/docs.py check` before building. Historical tables retain
 their original statistics and claims; only explicit live bindings are updated
-by `python3 benchmark.new/docs.py publish BATCH`. Links/code in dynamic JSON
+by `python3 benchmark/docs.py publish BATCH`. Links/code in dynamic JSON
 tables opt into `markdown: true`, with `row_names: false` when the first column
 is already present. Semspec validates optional alignments and displayed headers.
 
@@ -252,7 +252,7 @@ method, environment and date, and keep dated raw samples in local `.data/` direc
 Version the Markdown tables and only the resolved JSON projections needed by the
 build. Static tables already in articles, per-round/per-environment records,
 historical tables and engineering intermediate tables do not receive public
-downloads by default. `benchmark.new/public_assets.py` allowlists the necessary
+downloads by default. `benchmark/public_assets.py` allowlists the necessary
 user-statistics CSVs; `csv_path(repo, filename, locale)` resolves their shared
 download path under `docs/overrides/assets/benchmarks/data/`. Both languages use
 one copy. Keep localized `.render.json` projections beside articles and complete
@@ -267,7 +267,7 @@ Full manifests, per-file harness records, host paths and complete package receip
 remain in the benchmark's ignored `.data/`. Publishers update the shared summary
 and only the JSON projections needed by the build. Historical and engineering
 CSV/JSON and replaced provenance remain in
-`benchmark.new/.data/docs-assets-prune-20261018/`; its migration inventory preserves
+`benchmark/.data/docs-assets-prune-20261018/`; its migration inventory preserves
 original paths, byte hashes and destinations. Reducing public files must preserve
 article tables and figures, measurement values, statistical scope and evidence hashes.
 Keep executable benchmark templates and raw `*.bench.json`

@@ -140,7 +140,7 @@ def check_duplicates(source):
                 continue
             text = FENCES.sub("", page.read_text(encoding="utf-8"))
             # measurement-status blocks are tool-managed per-page boilerplate
-            # (see benchmark.new/docs.py), intentionally identical across pages.
+            # (see benchmark/docs.py), intentionally identical across pages.
             text = re.sub(
                 r"(?s)<!--\s*measurement-status:start\s*-->.*?<!--\s*measurement-status:end\s*-->",
                 "",

@@ -12,6 +12,7 @@ recursive-include fw/tests *.py
 recursive-include fw/utils *
 global-exclude *.pyc *.pyo
 prune target
+prune vendor/*/target
 prune fw/linux-*
 prune fw/tarballs
 include tests/tasks.toml
