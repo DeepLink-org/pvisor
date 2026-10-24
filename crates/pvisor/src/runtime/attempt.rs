@@ -991,6 +991,7 @@ fn start_vm_network(
     metrics: InterceptionMetrics,
     bandwidth_registry: BandwidthRegistry,
 ) -> anyhow::Result<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>> {
+    let mut startup = crate::startup_profile::Span::start("storage.network");
     let policy = NetworkPolicy::compile(&opts.network)?;
     let egress = if opts.peers.is_some() {
         EgressRuntime::for_peer_network(policy, bandwidth_registry)?
@@ -1048,6 +1049,7 @@ fn start_vm_network(
         "pvisor.network.guest_ipv4".into(),
         serde_json::Value::String(guest_address.to_string()),
     );
+    startup.success(None);
     Ok(Arc::new(std::sync::Mutex::new(Some(VmNetworkAttachment {
         guest_stream,
         backend,

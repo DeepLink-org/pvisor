@@ -4,7 +4,7 @@ set positional-arguments
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
 semspec_target_dir := target_dir / "semspec"
-python_paths := "pvisor tests examples benchmark.new scripts/packaging scripts/ci setup.py"
+python_paths := "pvisor tests examples benchmark.new tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py"
 zensical_version := "0.0.67"
 
 import "tests/justfile"
@@ -256,6 +256,7 @@ test-py *args:
     if [[ "$selected" == 0 ]]; then
       uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests "$@"
       uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark.new/support "$@"
+      uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tools/semspec "$@"
       for suite in tests filesystem memory; do
         uv run --no-project --with 'setuptools>=77' python -m unittest discover -s "benchmark.new/$suite" "$@"
       done
@@ -376,7 +377,7 @@ test-vm-snapshot-state: (vm-probe-build "pvisor-vm" "threaded_cold_restore_case"
 # 09. benchmark
 # ============================================================
 
-# 不传参数运行 smoke；其他参数指定 benchmark.new 中的 JSON 表格。
+# 不传参数运行 smoke；其他参数指定 benchmark.new 中的 Markdown 规格或 JSON 表格。
 [group("09. benchmark")]
 benchmark *args:
     #!/usr/bin/env bash
@@ -569,6 +570,7 @@ vm-case-driver:
 [private]
 test-semspec *args:
     cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}" --locked "$@"
+    python3 -m unittest discover -s tools/semspec -p 'test_*.py'
 
 [private]
 semspec *args:

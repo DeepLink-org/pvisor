@@ -49,7 +49,7 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not list"):
                 prepare.job_command(Path("/frozen/pvisor"))
 
-    def test_every_active_id_has_a_json_template_and_retired_ids_do_not(self):
+    def test_every_active_id_has_a_registered_spec_and_retired_ids_do_not(self):
         registry = (ROOT.parent / "benchmark.new/REGISTRY.md").read_text()
         expected = {
             line.split("：")[0].removeprefix("### ")
@@ -62,6 +62,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual({row["benchmark_id"] for row in rows}, expected)
         for row in rows:
             path = ROOT / row["entry"]
+            self.assertTrue(path.is_file())
+            if row["status"] == "prepared-markdown-command":
+                self.assertIn(row["benchmark_id"], ("B-PROCESS", "B-REPLAY"))
+                self.assertEqual(path.suffix, ".md")
+                continue
             self.assertEqual(path.suffix, ".json")
             table = json.loads(path.read_text())
             self.assertTrue(table)
@@ -193,6 +198,9 @@ class RegistryTests(unittest.TestCase):
         with (ROOT / "registry.csv").open() as stream:
             entries = list(csv.DictReader(stream))
         for entry in entries:
+            if entry["status"] == "prepared-markdown-command":
+                self.assertEqual(Path(entry["entry"]).suffix, ".md")
+                continue
             table = json.loads((ROOT / entry["entry"]).read_text())
             if entry["status"] == "requires-single-condition-command":
                 self.assertTrue(
@@ -236,7 +244,7 @@ class RegistryTests(unittest.TestCase):
                 COMMON,
                 "registered",
                 return_value=dict(
-                    benchmark_id="B-PROCESS", role="engineering A/B", entry="process/smoke.json"
+                    benchmark_id="B-PROCESS", role="engineering A/B", entry="process/smoke.md"
                 ),
             ):
                 COMMON.materialize_commands(template, batch, {"BINARY": "/a path/it's-pvisor"})
@@ -294,7 +302,7 @@ class CommandTimingTests(unittest.TestCase):
         metadata = dict(
             benchmark_id="B-PROCESS",
             role="engineering A/B",
-            entry="process/smoke.json" if len(names) == 4 else "process/fixture.json",
+            entry="process/smoke.md" if len(names) == 4 else "process/fixture.json",
         )
         with patch.object(COMMON, "registered", return_value=metadata):
             batch = COMMON.create_batch(self.entry, self.batch)

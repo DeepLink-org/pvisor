@@ -108,7 +108,12 @@ custom search index or custom HTTP server is involved.
 `docs.semspec_tables` is a Python-Markdown preprocessor registered in both native
 configurations. A standalone `{{ table("file.render.json") }}` line loads a JSON
 table relative to its article and becomes ordinary Markdown before HTML rendering;
-the source file retains the placeholder. `just docs-build` and `just docs-serve`
+the source file retains the placeholder. The adapter calls `semspec filter --source
+PATH --stdin`; annotated case cells also become ordinary Markdown with NOT RUN
+or a recorded verdict. It never supplies `--execute`. `SEMSPEC_RESULTS` may
+explicitly select a saved case/experiment report; missing and stale evidence are
+visible and do not become PASS. Other SSGs can use `filter --format json` for
+Markdown, source byte edits, dependencies and diagnostics. `just docs-build` and `just docs-serve`
 build the standalone semspec CLI and set `SEMSPEC_BIN` and `PYTHONPATH` for the
 extension. The documentation recipes therefore also require the Rust toolchain.
 Rendering reads completed results only. Run `just semspec bench path/to/in.json`

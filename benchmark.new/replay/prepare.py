@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import ROOT, create_batch, digest, materialize_commands, save
+from common import ROOT, create_batch, digest, materialize_commands, save, table_template
 from replay_fixtures import trajectory
 from replay_hooks import SENTINEL, conclude, prepare
 
@@ -22,7 +22,7 @@ def prepare_batch(template, binary, output=None):
     batch = create_batch(template, output)
     frozen = batch / "pvisor-replay"
     shutil.copy2(binary.resolve(strict=True), frozen)
-    agents = json.loads(template.read_text())
+    agents = table_template(template)
     protocol = {}
     inputs = []
     for agent in agents:

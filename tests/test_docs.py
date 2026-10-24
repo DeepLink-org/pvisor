@@ -59,7 +59,14 @@ class LiveTableTests(unittest.TestCase):
         self.assertIn("missing.json", warnings.output[0])
         self.assertEqual(
             run.call_args.args[0],
-            ["/semspec", "render", "/workspace/docs/src/zh/page.md", "--stdin", "--best-effort"],
+            [
+                "/semspec",
+                "filter",
+                "--source",
+                "/workspace/docs/src/zh/page.md",
+                "--stdin",
+                "--best-effort",
+            ],
         )
 
     def test_renderer_failures_leave_page_text_in_live_mode_but_fail_strict_mode(self):

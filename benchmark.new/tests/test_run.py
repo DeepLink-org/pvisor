@@ -115,6 +115,10 @@ class TableRunnerContracts(unittest.TestCase):
                 prepare.assert_not_called()
 
     def test_entry_resolution_rejects_results_and_unknown_names(self):
+        self.assertEqual(RUN.resolve_entry("smoke"), ROOT / "process/smoke.md")
+        self.assertEqual(RUN.resolve_entry("process/smoke.md"), ROOT / "process/smoke.md")
+        self.assertEqual(RUN.resolve_entry("replay"), ROOT / "replay/replay.md")
+        self.assertEqual(RUN.resolve_entry("nightly"), ROOT / "process/nightly.md")
         self.assertEqual(RUN.resolve_entry("startup/timing"), ROOT / "startup/timing.json")
         self.assertEqual(RUN.resolve_entry("docker_timing"), ROOT / "startup/docker_timing.json")
         for value in ("missing", "startup/timing.render"):

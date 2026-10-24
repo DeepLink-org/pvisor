@@ -216,20 +216,7 @@ fn json_bytes(value: &Value) -> Result<Vec<u8>> {
 /// fail the render. With `best_effort`, each failed placeholder becomes a visible
 /// warning, diagnostics go to stderr and other tables continue to render.
 pub fn render(source: &str, input: &Path, best_effort: bool) -> Result<String> {
-    let mut protected = Vec::new();
-    let mut start = None;
-    for (event, range) in Parser::new(source).into_offset_iter() {
-        match event {
-            Event::Start(Tag::CodeBlock(_)) => start = Some(range.start),
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some(start) = start.take() {
-                    protected.push(start..range.end);
-                }
-            }
-            Event::Code(_) => protected.push(range),
-            _ => {}
-        }
-    }
+    let protected = protected_ranges(source);
     let mut text = String::new();
     let mut offset = 0;
     for (index, line) in source.split_inclusive('\n').enumerate() {
@@ -254,7 +241,6 @@ pub fn render(source: &str, input: &Path, best_effort: bool) -> Result<String> {
                 }
                 Err(error) => return Err(error),
             };
-            // Blank lines separate a table from adjacent paragraphs.
             if !text.is_empty() && !text.ends_with("\n\n") {
                 text.push('\n');
             }
@@ -273,7 +259,48 @@ pub fn render(source: &str, input: &Path, best_effort: bool) -> Result<String> {
     Ok(text)
 }
 
-fn render_placeholder(placeholder: &str, input: &Path) -> Result<String> {
+fn protected_ranges(source: &str) -> Vec<std::ops::Range<usize>> {
+    let mut protected = Vec::new();
+    let mut start = None;
+    for (event, range) in Parser::new(source).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = start.take() {
+                    protected.push(start..range.end);
+                }
+            }
+            Event::Code(_) => protected.push(range),
+            _ => {}
+        }
+    }
+    protected
+}
+
+pub fn references(source: &str) -> Result<Vec<PathBuf>> {
+    let protected = protected_ranges(source);
+    let mut references = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if !protected
+            .iter()
+            .any(|r| r.start < offset + line.len() && offset < r.end)
+            && trimmed.starts_with("{{ table(")
+        {
+            let args = table_arguments(trimmed)?;
+            references.push(PathBuf::from(
+                args[0]
+                    .as_str()
+                    .context("table path must be a JSON string")?,
+            ));
+        }
+        offset += line.len();
+    }
+    Ok(references)
+}
+
+fn table_arguments(placeholder: &str) -> Result<Vec<Value>> {
     let path = placeholder
         .strip_prefix("{{ table(")
         .unwrap()
@@ -285,6 +312,10 @@ fn render_placeholder(placeholder: &str, input: &Path) -> Result<String> {
         matches!(args.len(), 1 | 2),
         "expected filename and optional table options"
     );
+    Ok(args)
+}
+fn render_placeholder(placeholder: &str, input: &Path) -> Result<String> {
+    let args = table_arguments(placeholder)?;
     let path = args[0]
         .as_str()
         .context("table path must be a JSON string")?;

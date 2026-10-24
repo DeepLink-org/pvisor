@@ -1,9 +1,0 @@
-{
-  "claude-code": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ claude-code",
-  "codex": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ codex",
-  "opencode": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ opencode",
-  "mini-swe-agent": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ mini-swe-agent",
-  "openhands": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ openhands",
-  "pi-agent": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ pi-agent",
-  "swe-agent": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ swe-agent"
-}

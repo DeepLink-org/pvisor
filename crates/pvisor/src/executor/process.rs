@@ -1404,6 +1404,7 @@ impl RunExecutor for ProcessExecutor {
     }
 
     async fn execute(&self, context: &Session) -> ExecutorOutput {
+        let mut startup = crate::startup_profile::Span::start("process.prepare");
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
         context
@@ -1460,6 +1461,9 @@ impl RunExecutor for ProcessExecutor {
                 None
             }
         };
+        startup.success(None);
+        drop(startup);
+        crate::util::startup_mark_run("process.spawn_begin", context.spec().run_id.as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -1527,6 +1531,7 @@ impl RunExecutor for ProcessExecutor {
             tokio::spawn(async move { read_limited(stderr, limit, stop).await })
         });
 
+        crate::util::startup_mark_run("process.spawn_ready", context.spec().run_id.as_str());
         context.transition(RunState::Running, None).await;
 
         let end = context

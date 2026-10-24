@@ -145,6 +145,7 @@ impl InstanceControlServer {
 
     pub(crate) fn record(&self) -> anyhow::Result<super::host_transport::LiveControlRecord> {
         use std::io::Read;
+        let mut startup = crate::startup_profile::Span::start("runtime.control_executable_blake3");
         let binary = std::env::current_exe()?;
         #[cfg(target_os = "linux")]
         let mut file = std::fs::File::open("/proc/self/exe")?;
@@ -159,6 +160,7 @@ impl InstanceControlServer {
             }
             hash.update(&bytes[..count]);
         }
+        startup.success(None);
         Ok(super::host_transport::LiveControlRecord {
             path: self.socket.path.clone(),
             device: self.socket.device,

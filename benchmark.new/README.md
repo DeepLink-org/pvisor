@@ -1,8 +1,8 @@
-# JSON benchmark tables
+# Benchmark specifications and tables
 
 这里回答的问题：怎样用固定、可审查的 Python 计时命令生成表格，并保留每次实验的来源？
 需求、角色和正确性门禁见 [REGISTRY.md](REGISTRY.md#registry)。
-[registry.csv](registry.csv) 把活动实验映射到按主题组织的 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
+[registry.csv](registry.csv) 把活动实验映射到按主题组织的 Markdown spec 或 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
 
 旧 `benchmark/` 的代码、运行器及专属 Cargo examples 已退役。新入口所需的输入校验、
 命名空间隔离和资源观察保留在 [support/](support/README.md)，不提供旧 campaign 入口。
@@ -10,8 +10,15 @@
 
 ## 模板与执行
 
+[process/smoke.md](process/smoke.md) 与 [process/nightly.md](process/nightly.md) 把各自采样配置、四个直接 argv 条件与
+校验 hooks 放在同一份可读规格中。`just benchmark smoke` 先通过 semspec 的 JSON
+计划清单读取 Markdown，准备器只展开路径和执行预检；行模板自动生成，不维护配套
+`.json` 和 `.commands.json`。批次仍保留现有逐次计时、完整审计与 CI 阈值比较。
+[replay/replay.md](replay/replay.md) 同样统一七种轨迹格式的计划，复用相同入口；
+fixture、原生前缀及工作区校验由 replay 适配器负责。其余注册实验仍用以下 JSON 格式。
+
 每个条件对应一个 Python 行命令，脚本返回 N、Median ms、Mean ms、SD ms、Min ms、Max ms。
-process/replay 的固定 argv、准备/校验命令、环境、样本数和预热数登记在同名
+旧 JSON 入口的固定 argv、准备/校验命令、环境、样本数和预热数登记在同名
 `*.commands.json` 中，准备时展开为批次 `commands.json` 并冻结摘要：
 
 ```json
@@ -20,7 +27,17 @@ process/replay 的固定 argv、准备/校验命令、环境、样本数和预�
 
 计时器使用标准库 `perf_counter_ns` 与 `statistics`，只计时被测进程的创建至正常退出；
 准备和校验命令不计时，但每次（包括预热）必须成功。解释器启动、semspec 和统计处理不计时。
-启动的 Ready / Exit 与文件系统已有独立 Python 行计时器，保留各自指标口径。
+公共时钟、预热/采样、统计、逐次记录及命令证据审核现在由
+[semspec runtime](../tools/semspec/runtime.py) 提供。`command_timing.py`、startup 的
+`timing.py`、filesystem 的 `fs_timing.py` 是实验适配器，只保留各自的准备、Ready
+协议、fixture 与正确性检查。批次同时冻结公共 runtime 摘要和源码，沿用现有时钟
+与统计字段；不合并或改写历史样本。复杂专用实验暂时保留自己的执行协议。
+
+小型本地实验可直接在 Markdown 中写 `semspec: bench id=NAME` TOML cell，
+用 `semspec filter experiment.md --execute` 得到表格；无需手写采样循环或 result.json。
+同一文档中的 case、期待输出、结果和说明也由 filter 统一渲染。
+格式见 [semspec](../tools/semspec/README.md#shared-experiment-runtime)。
+公开 benchmark 仍必须经过本目录的注册、准备、完整逐次审计和发布门禁。
 
 ```sh
 just benchmark startup/timing
@@ -59,7 +76,7 @@ just benchmark smoke --output benchmark.new/process/.data/measurement
 ```sh
 cargo build --locked --manifest-path tools/semspec/Cargo.toml --target-dir target/semspec
 export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
-batch=$(python3 benchmark.new/process/prepare.py benchmark.new/process/smoke.json --binary target/release/pvisor)
+batch=$(python3 benchmark.new/process/prepare.py benchmark.new/process/smoke.md --binary target/release/pvisor)
 "$SEMSPEC_BIN" bench --cwd "$batch/workspace" "$batch/in.json"
 python3 benchmark.new/update.py "$batch"
 "$SEMSPEC_BIN" render benchmark.new/process/.data/results/smoke.semspec.md
@@ -119,7 +136,7 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 ## 迁移范围与验证
 
 注册入口已核对行命令规则；尚无单次负载的模板保持未准备。
-全部活动 ID 已改为 JSON 入口。启动、process、filesystem/tools、replay 有具体命令；其他条目的
+活动入口由 registry.csv 登记，已迁移的 smoke、nightly 和 replay 使用 Markdown，其他保留 JSON。启动、process、filesystem/tools、replay 有具体命令；其他条目的
 `requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需实现单次负载及正确性 hooks，不能用历史统计或任意命令填充。
 
 `just benchmark [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
@@ -175,7 +192,7 @@ B-REPLAY 使用七个固定适配器，每个一条 task 0 合成轨迹，60 次
 
 ```sh
 export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
-batch=$(taskset -c 0,1 python3 benchmark.new/replay/prepare.py benchmark.new/replay/replay.json --binary target/release/pvisor-replay)
+batch=$(taskset -c 0,1 python3 benchmark.new/replay/prepare.py benchmark.new/replay/replay.md --binary target/release/pvisor-replay)
 taskset -c 0,1 "$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"
 python3 benchmark.new/update.py "$batch"
 python3 benchmark.new/docs.py publish "$batch"

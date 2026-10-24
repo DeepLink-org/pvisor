@@ -9,22 +9,20 @@ These probes are distinct from seven-tool internal timings and cross-backend tas
 
 import argparse
 import json
-import statistics
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import FILESYSTEM_SCOPE as SCOPE
-from common import ROOT, digest, save
+from common import ROOT, RUNTIME, digest, save
 from workload import MODES, validate_fixture
 
 RUNS = 30
 WARMUP = 3
 TIMEOUT = 30
 FIXTURE_SCOPE = "native Python whole-command probes; 2048 files in 32 directories; 64 MiB read with SHA256; warm cache; distinct from seven-tool internal timings"
-FIELDS = ("N", "Median ms", "Mean ms", "SD ms", "Min ms", "Max ms")
+FIELDS = RUNTIME.FIELDS
 ROWS = {"native-" + mode: mode for mode in MODES}
 
 
@@ -32,23 +30,7 @@ def command(batch, mode):
     return [sys.executable, str(ROOT / "filesystem/workload.py"), mode, str(batch / "fixture")]
 
 
-def summarize(samples):
-    if len(samples) < 2 or any(type(n) is not int or n <= 0 for n in samples):
-        raise ValueError("at least two positive integer durations required")
-    values = [n / 1_000_000 for n in samples]
-    return dict(
-        zip(
-            FIELDS,
-            (
-                len(values),
-                statistics.median(values),
-                statistics.mean(values),
-                statistics.stdev(values),
-                min(values),
-                max(values),
-            ),
-        )
-    )
+summarize = RUNTIME.summarize
 
 
 def validate_result(record, mode):
@@ -59,43 +41,14 @@ def validate_result(record, mode):
 
 
 def run_trial(batch, mode, phase, index):
-    argv = command(batch, mode)
-    record = dict(
-        command=argv,
-        phase=phase,
-        index=index,
-        start_ns=None,
-        end_ns=None,
-        duration_ns=None,
-        exit_code=None,
-        stdout="",
-        stderr="",
+    return RUNTIME.command_trial(
+        batch / "trials" / mode / f"{phase}-{index:03d}.json",
+        mode,
+        phase,
+        index,
+        dict(argv=command(batch, mode), cwd=str(batch), timeout=TIMEOUT),
+        validate=lambda record: validate_result(record, mode),
     )
-    log = batch / "trials" / mode / f"{phase}-{index:03d}.json"
-    try:
-        record["start_ns"] = time.perf_counter_ns()
-        result = subprocess.run(argv, cwd=batch, capture_output=True, text=True, timeout=TIMEOUT)
-        record["end_ns"] = time.perf_counter_ns()
-        record.update(
-            duration_ns=record["end_ns"] - record["start_ns"],
-            exit_code=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
-        validate_result(record, mode)
-        return record["duration_ns"]
-    except subprocess.TimeoutExpired as error:
-        record.update(
-            error=str(error),
-            stdout=(error.stdout or b"").decode(errors="replace"),
-            stderr=(error.stderr or b"").decode(errors="replace"),
-        )
-        raise
-    except BaseException as error:
-        record["error"] = str(error)
-        raise
-    finally:
-        save(log, record)
 
 
 def measure(batch, mode):
@@ -114,9 +67,9 @@ def measure(batch, mode):
         if digest(path) != expected:
             raise ValueError("prepared artifact changed: " + path)
     validate_fixture(batch / "fixture")
-    for index in range(WARMUP):
-        run_trial(batch, mode, "warmup", index)
-    samples = [run_trial(batch, mode, "sample", index) for index in range(RUNS)]
+    samples = RUNTIME.repeat(
+        WARMUP, RUNS, lambda phase, index: run_trial(batch, mode, phase, index)
+    )
     validate_fixture(batch / "fixture")
     result = summarize(samples)
     save(

@@ -659,6 +659,17 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
 - **历史入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
 
+- **共享 VM 启动优化的同引擎对照：** 使用同一原生 guest 模板与压缩池、官方 OpenSandbox SDK 1.1.0、performance 构建和 1 CPU/512 MiB 预算，比较本轮 FD/checkpoint/早期标准流修复前后；不更换执行引擎或上游服务。基线从同份源码单独冻结，恢复串行全内容校验并撤下 pre-Rust 标准流 constructor；daemon 未调用的 CLI FD 预扩容按实际产品路径保持未接入。记录 vsock 条件导致的 checkpoint 路径跳过，不据 Job 阶段诊断推算 API 收益。3 对预热、20 对正式随机交替，每臂每轮新启独立 API，分别测首个和随后的新 VM 创建；计时 SDK create、首/次命令及同次 create→首命令完成，验证真实 stdout、私有文件、资源上限和删除 404。失败保留并使 cohort 无效，不剔除慢样本；冻结源/制品/模板/harness、SDK 依赖、亲和性、负载和配对 bootstrap 95% CI，结果仅存 `.data/` 工程分析，不混入 Docker 或更换引擎的历史批次。
+- **daemon FD 预扩容接入对照：** 延续上述同引擎、同模板、SDK 与资源/采样/正确性协议，仅比较 native-supervisor 在 Tokio 之前是否调用现有 `VmExecutor::prepare_process`；两臂均保留 checkpoint 并行校验与 guest 早期标准流修复。冻结接入前后源码和 performance 制品，独立随机交替新批次，不合并先前未接入 daemon 的结果；首个/后续新建分别给出 SDK create 与 create→首命令的配对 bootstrap 95% CI，失败完整保留，原始证据留 `.data/`。
+
+### B-OPENSANDBOX-BURST-DIAG：低内存预算下十请求突发 {#b-opensandbox-burst-diag}
+
+- **JSON 入口状态：** 未准备 [startup/opensandbox_burst.json](startup/opensandbox_burst.json)；通用行计时未接线，本地诊断使用冻结在 `.data/` 的专用 harness。
+- **角色：** diagnostic；原始证据与结论仅留 `.data/`，不进入用户 benchmark 页。
+- **Motivation：** 回答当前 OpenSandbox 接口同时收到 10 个创建请求时，整批到可用/首命令完成需要多久，并确认小内存设置不会耗尽宿主内存。
+- **想要的结论：** 分列每批全部 create 返回、全部首命令正确完成、每请求时延与发起偏移、实验 cgroup 内存峰值、宿主可用内存下界、失败和 OOM；只解释单机串行批次的突发场景，不作 A/B 加速、并发容量上限或吞吐排名。
+- **实验设计：** 当前冻结 performance daemon、官方 SDK 1.1.0、同一预准备 native guest Ubuntu 模板和固件。每 VM 1 vCPU/128 MiB（包括 supervisor/VMM 的硬上限）；整个独立 delegated scope 限 4 CPU、memory.high=1.5 GiB、memory.max=2 GiB、swap=0，API admission 仅允许 10 个/1280 MiB，CPU 子配额总和 10 CPU 受父组 4 CPU 约束。先 1 个、2 个预检，再固定 5 批各 10 个；每批新起 API，以异步 barrier 同时放行已构造 transport 的 SDK create，完整记录实际发起偏移，API 启动不计时。创建完成后各自执行并校验独立文件与唯一 stdout，全部 VM 保持到共同完成点再删除，批间要求 inventory 空、子 cgroup 消失；全程采集 memory.current/peak/events、swap 与宿主 MemAvailable。开始时至少有 6 GiB 可用；运行中宿主低于 4 GiB、实验用量超过 1.75 GiB、任一请求失败或 OOM 即停止后续批次并清理本实验资源，失败完整保留，不换大预算重试同一批，不剔除慢请求。报告五个批次与范围，不以五批估计尾分位；内存峰值是本实验 cgroup 实际计费，既有宿主共享缓存可能在组外，不当作整机独占物理内存。
+
 ### B-OPENSANDBOX-MEMORY-ENG：本地兼容服务的完整内存成本 {#b-opensandbox-memory-eng}
 
 - **JSON 入口状态：** 未准备 [memory/opensandbox_memory.json](memory/opensandbox_memory.json)（拒绝测量）。
@@ -678,6 +689,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 同输入就绪中位数差异及 95% bootstrap 区间。
 - **实验设计：** 相同 runner、rootfs 与 payload，随机交错实现，不作为跨产品用户对照。
 - **历史入口：** `guest_init.py`。
+- **当前启动优化工程 cohort：** 固定 GNU release 制品、同一动态固件和静态 Ready 负载，对照基线、仅 FD 预扩容、FD＋并行 checkpoint 校验。独立 1 vCPU / 128 MiB cohort（不与 2 vCPU 诊断混合），固定两个宿主 CPU；3 轮预热、30 轮 seeded 随机三条件交替，Ready/Exit 同次记录。采样前冻结二进制、输入、顺序和 observer 源码，使用独立 Run store/stage；校验唯一正确输出、零退出、实际 VM 隔离、空 workspace changeset 与 canary 未变，任一失败使整批无效且保留现场。经冻结的 `semspec bench` 执行本批次 Python 行，复算逐次时钟并报告配对差的 bootstrap 区间。源码/制品及全部结果留在 `.data/startup-opt-*/`；不发布为用户启动水位，默认 2 vCPU 的既有 guest 早退另列。
+
 
 ### B-STARTUP-REVISION-ENG：提交版本的启动与收尾对照 {#b-startup-revision-eng}
 
@@ -709,6 +722,11 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 固定 guest payload 与 runner；早期内核时钟和收尾时间分别解释。
 - **历史入口：** `firmware_boot.py`。
 - **版本退化诊断：** 冻结历史与指定版本制品，在启动工程对照的私有环境下启用 `PVISOR_STARTUP_TIMING=1` / `PVISOR_STARTUP_PROFILE=1`，各做少量独立试次，保留 stderr 阶段记录。诊断行命令与输出独立归档；插桩时间不发布为性能水位，不将重叠 span 相加，缺失阶段标记视为未知。
+- **当前阶段诊断入口：** `startup/startup_profile.py --collect NEW_DIR -- COMMAND` 独立采集少量新进程试次，以唯一精确 Ready 行和零退出校验成功；失败/超时保留 stdout、stderr 与 observer。固定原始 argv、cwd、二进制/harness 摘要和 CPU affinity，每次使用独立 Run store，不清理宿主页缓存或修改全局系统状态。`startup_profile.py LOG...` 可离线汇总。宿主 checkpoint 只在同 PID 内求间隔；owner 交接仅使用显式 frontend/owner 绑定。VMM/宿主/guest supervisor span 按各自 process-local epoch 展示，嵌套/重叠不相加；缺失与 unknown outcome 明示，执行/收尾不计入启动。Popen→Ready 包含 observer 管道与调度延迟；VMM-built→Ready 包含 callback、event loop、guest 与输出观察，不能称为纯内核启动。profile=1 的诊断时间不作为性能水位；泛用 `diagnostic.json` 仍未接线，不通过用户表发布。
+- **FD 扩展微诊断：** `startup/fd_probe.rs` 复现 runner 的 Linux `F_DUPFD_CLOEXEC >= 202`，在独立新进程中交替比较单线程、多线程及创建线程前预扩展表三组，每组至少五次；每次记录首次和表已扩展后的第二次复制原值，校验获得不同的有效 FD。只打开 `/dev/null`，不修改全局策略/资源限制；该结果只归因于宿主 FD 管理成本，不能直接充当 VM 加速幅度或安全替代设计的验证。
+
+- **启动优化分阶段验证：** 同一 release 构建配置、内核/rootfs/Ready 负载，冻结基线、仅 FD 预扩容、叠加 checkpoint 优化三个制品，固定 seed 交替各十次并保留命令、摘要和全部原始输出。比较全部尝试中已成功结束的 `vm.ipc.ram_fd` 与 `vm.checkpoint.compatibility` 阶段；要求每次均有唯一、时钟一致的成功记录，不剔除后续 guest 失败的尝试。guest 正常退出与 Ready 另列成功/失败，任一失败均使整体 Ready 性能 cohort 无效，不能据阶段诊断发布端到端加速百分比。无故障的正式无插桩工程 A/B 仍按 B-STARTUP-REVISION-ENG 独立执行。
+
 
 ### B-AGENT-TASK：一次完整的 Agent 修复任务要多久，主流 CLI 能否正常运行 {#b-agent-task}
 
@@ -867,7 +885,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 训练和复现需要把历史轨迹准确还原到同一个起点。用户需要知道支持哪些轨迹格式、准备是否有副作用、成本是多少。
 - **想要的结论：** "支持的格式全部通过一致性校验，准备阶段不执行工具也不修改工作区，每条轨迹的准备耗时为 X ms"。
 - **实验设计：** 对每个适配器使用固定的原生格式样本，校验前缀结构、工具参数和观测内容，同时校验工作区没有被修改。
-- **入口脚本：** `benchmark.new/replay/replay.json`（`prepare.py` 冻结和预检，semspec bench 直接测量，hooks 逐次验证，`docs.py publish` 更新 JSON 表格）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
+- **入口脚本：** `benchmark.new/replay/replay.md`（七个 bench cell；`prepare.py` 冻结和预检，semspec bench 与公共 runtime 测量，hooks 逐次验证；旧公开绑定保留历史时钟，拒绝被新 Python 口径覆盖）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
 
 ### B-VM-MEMORY：VM 闲置时能省多少内存，恢复要付出什么 {#b-vm-memory}
 
@@ -1003,7 +1021,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
 - **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
-- **入口脚本：** `benchmark.new/process/smoke.json`、`nightly.json`（`prepare.py` 准备，semspec bench 测量，`just benchmark`）；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
+- **入口脚本：** `benchmark.new/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semspec bench 与公共 runtime 测量，`just benchmark smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
 
 ## 检查清单 {#checklist}
 

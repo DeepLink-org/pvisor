@@ -144,7 +144,9 @@ test-task-routing:
       test "$(wc -l < "$JUST_TEST_LOG")" -eq 1
     fi
     run test-semspec --test-threads 1
-    check_line cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked --test-threads 1
+    { command_line cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked --test-threads 1
+      command_line python3 -m unittest discover -s tools/semspec -p 'test_*.py'; } > "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
     run lint-semspec
     check_line cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
     run test shim -- --features vm

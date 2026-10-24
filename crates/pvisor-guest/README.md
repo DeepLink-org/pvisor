@@ -2,6 +2,18 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Linux may reach PID 1 before the initial console can supply standard descriptors.
+On a minimal image without `/dev`, Rust's standard-stream check would then abort
+before `main` could mount devtmpfs or report an error. A PID-1-only libc constructor
+runs before that check: it fills only closed standard descriptors from `/dev/null`,
+creating the `/dev` mountpoint and mounting devtmpfs if needed. Existing descriptors
+and their flags are preserved; replacement descriptors survive exec. Normal guest
+initialization still waits for the named virtio ports and redirects workload I/O.
+The constructor uses only allocation-free operations and does nothing outside PID 1.
+Bootstrap failure retains the runtime's fail-closed behavior. The standard-descriptor
+test covers all closed/open combinations; the CLI's ignored minimal-rootfs KVM
+test also exercises the constructor and devtmpfs path through repeated cold boots.
+
 Before reporting workload exit, PID 1 synchronizes every visible virtio-fs
 mount and checks its result. This drains guest writes that outlive ordinary
 file closes. A writeback failure is reported and changes the final status to
@@ -111,3 +123,25 @@ Metadata, permissions and symlink targets come from the guest filesystem.
 credentials. Native failures include Linux errno for host protocol error mapping.
 The guest does not implement HTTP, SSE or E2B Connect; those adapters live in the
 daemon supervisor. Host protocol validation is separate from guest transport tests.
+
+## Startup diagnostics
+
+Host-selected `GuestConfig.env["PVISOR_STARTUP_PROFILE"] = "1"` enables optional
+`pvisor-startup-profile` JSON on guest stderr. The native Job runner copies the host profiling switch into this launch setting,
+including when ordinary environment projection omits host variables. Other
+GuestConfig consumers may explicitly supply it. No launch-message field or guest protocol changes.
+Private spans cover config read/validation, virtual filesystems and console/stdio
+initialization, scratch/workspace/share mounts and networking, helper setup, and
+workload process creation. A process-created marker does not prove application Ready.
+
+The guest uses `clock=guest_monotonic_process_relative`, `epoch=guest-supervisor`
+and guest PID; never align these timestamps with host/runner epochs or subtract
+them from host Ready. Successful spans report `ok`; errors retain `unknown` and
+best-effort logging cannot replace the original error. One entry timestamp is
+captured before reading the config because the switch is not available earlier;
+disabled subsequent spans capture no clock and emit nothing. Config parse failures
+before the switch is known retain the existing error only. Config-read timing is frozen before initialization and emitted after guest stderr
+is connected, so it excludes the subsequent console wait. Logging can perturb
+startup. Collect profiled diagnostics separately
+from uninstrumented performance samples. See the
+[startup diagnostic tool](../../benchmark.new/startup/startup_profile.py).

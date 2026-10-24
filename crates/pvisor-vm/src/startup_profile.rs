@@ -33,6 +33,14 @@ impl Span {
         }
     }
 
+    /// Finish a successful phase before beginning the next sequential phase.
+    pub(crate) fn next(mut self, stage: &'static str) -> Self {
+        self.complete(None);
+        let role = self.role;
+        drop(self);
+        Self::new(stage, role)
+    }
+
     pub(crate) fn complete(&mut self, bytes: Option<usize>) {
         self.bytes = bytes;
         self.outcome = "ok";
@@ -65,7 +73,10 @@ impl Drop for Span {
     fn drop(&mut self) {
         if let Some(record) = self.record() {
             // Diagnostics must not turn a full/closed stderr pipe into a panic.
-            let _ = writeln!(std::io::stderr().lock(), "pvisor-startup-profile {record}");
+            // Submit one complete line so concurrent host/runner diagnostics
+            // cannot interleave individual JSON formatting fragments.
+            let line = format!("pvisor-startup-profile {record}\n");
+            let _ = std::io::stderr().lock().write_all(line.as_bytes());
         }
     }
 }

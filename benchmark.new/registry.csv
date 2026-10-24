@@ -1,6 +1,7 @@
 benchmark_id,role,entry,status
 B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.json,requires-single-condition-command
 B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.json,requires-single-condition-command
+B-OPENSANDBOX-BURST-DIAG,diagnostic,startup/opensandbox_burst.json,requires-single-condition-command
 B-OPENSANDBOX-MEMORY-ENG,engineering A/B,memory/opensandbox_memory.json,requires-single-condition-command
 B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command
 B-LAZY-STARTUP,user-facing,startup/image_compare.json,explicit-python-paired-prepared-images
@@ -27,7 +28,7 @@ B-PEER-CHAOS-ENG,diagnostic,network/peer_chaos.json,requires-single-condition-co
 B-DENSITY,user-facing,density/density.json,requires-single-condition-command
 B-ISOLATION,user-facing,isolation/isolation.json,requires-single-condition-command
 B-AGENT-TASK,user-facing,agent/agent.json,requires-single-condition-command
-B-REPLAY,user-facing,replay/replay.json,prepared-binary-required
+B-REPLAY,user-facing,replay/replay.md,prepared-markdown-command
 B-VM-MEMORY,user-facing,memory/memory.json,requires-single-condition-command
 B-MEMORY-SCALE,engineering A/B,memory/scale.json,requires-single-condition-command
 B-MEMORY-SCALE,engineering A/B,memory/scanner_compare.json,explicit-python-paired-memory
@@ -40,8 +41,8 @@ B-COLD-STORAGE-DIAG,diagnostic,memory/cold_storage.json,requires-single-conditio
 B-MACOS,user-facing,agent/macos.json,requires-single-condition-command
 B-MACOS-ENG,engineering A/B,agent/macos_ab.json,requires-single-condition-command
 B-STARTUP,user-facing,startup/pvisor_vm_timing.json,prepared-python-ready-exit
-B-PROCESS,engineering A/B,process/smoke.json,prepared-binary-required
-B-PROCESS,engineering A/B,process/nightly.json,prepared-binary-required
+B-PROCESS,engineering A/B,process/smoke.md,prepared-markdown-command
+B-PROCESS,engineering A/B,process/nightly.md,prepared-markdown-command
 B-STARTUP,user-facing,startup/native_timing.json,prepared-python-ready-exit
 B-STARTUP,user-facing,startup/pvisor_host_timing.json,prepared-python-ready-exit
 B-STARTUP,user-facing,startup/pvisor_staged_timing.json,prepared-python-ready-exit

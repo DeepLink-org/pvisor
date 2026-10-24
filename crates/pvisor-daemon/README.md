@@ -353,6 +353,14 @@ before argument parsing or Tokio, then dispatches the hidden
 `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. `serve` constructs
 `NativeRuntime` with the required `--images-dir` and `--cgroup-root` flags.
 
+After each supervisor exec and before creating Tokio, the native-supervisor
+branch calls `VmExecutor::prepare_process` to reserve Linux descriptor-table
+capacity before image/VM workers share it. This optional preparation closes its
+temporary descriptors, preserves existing descriptors and limits, and leaves
+launch/error handling unchanged if it fails. Preparing only the API parent would
+not survive supervisor exec. Cache, pool and VM-runner reentry keep their own
+startup paths.
+
 The only runtime backend is **native VM execution**, with no host, OCI command or
 registry-pull fallback. It requires Linux x86_64, usable `/dev/kvm`, trusted
 absolute runtime paths and a writable delegated cgroup v2 hierarchy with enabled

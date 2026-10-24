@@ -1402,3 +1402,40 @@ also enables `GuestConfig.control` and a session-owned workload process group.
 This selects the shared host-only guest process/file engine used by the native
 daemon. Other published ports and ordinary Jobs do not enable it. Guest control
 requests stay inside the VM; no host process or filesystem fallback is provided.
+
+## 启动阶段诊断
+
+`PVISOR_STARTUP_PROFILE=1` 启用独立 `pvisor-startup-profile` JSON 行，默认关闭。
+私有共享 profiler 覆盖 Session 准备、网络启动、checkpoint 兼容性/内核与可执行文件哈希，
+以及 runner 的 lazy lower 重建、baseline lease 和沙箱安装。日志使用现有 frontend 诊断路由，
+不进入 workload stdout。成功明确登记；错误、取消或提前退出保留 `outcome=unknown`。
+关闭时不读取阶段时钟、不生成记录；写入失败不替换原操作结果。
+`PVISOR_STARTUP_TIMING=0` 单独关闭原有 checkpoint/持久化日志，不关闭 profile。
+
+普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
+这些标记说明宿主已创建进程，不证明应用或 VM guest 就绪。不同进程、不同 profiler 的相对
+时钟不共用 epoch，重叠 span 不能相加。采集和离线汇总见
+[启动诊断](../../benchmark.new/startup/README.md#启动瓶颈诊断b-startup-diag)。
+
+### Early runner descriptor capacity
+
+Embedded native VM owners may call `VmExecutor::prepare_process()` before starting
+Tokio or other worker threads. On Linux it transiently duplicates `/dev/null`
+above all reserved runner child descriptors, then releases both handles. This
+prepares capacity in the current process without changing resource limits or
+existing descriptors. It is repeatable and optional; failure leaves ordinary
+launch checks in force. Other platforms use a no-op. It does not prepare a child
+after exec, so call in the actual owner. Later descriptor pressure can still
+require table growth. High runner source FDs and their `dup2` collision protection
+remain unchanged.
+
+### Parallel checkpoint compatibility checks
+
+The owner retains full executable/firmware SHA-256 validation on the launch path,
+and overlaps the independent executable and firmware hashes with one scoped worker,
+and joins it on success or failure before returning a complete compatibility record.
+If worker creation is unavailable, it falls back to serial hashing. No worker or
+unvalidated compatibility record escapes the call. The digest fields, selected
+firmware path, boot identity and restore checks stay unchanged. This is
+not a metadata-only cache or deferred validation. Existing snapshot compatibility
+records and file-selection/error contracts remain unchanged.

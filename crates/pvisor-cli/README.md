@@ -67,6 +67,16 @@ capture sockets also remain in use. See [internal channels and cleanup order](..
 
 Help, version and feature queries emit no startup logs. Execution startup markers
 are emitted after command parsing and do not measure complete process entry.
+`PVISOR_STARTUP_PROFILE=1` additionally records `cli.entry_to_parsed`, measured
+from this frontend's `main` entry and emitted only after informational commands
+have returned. This includes internal dispatch checks and parsing, but excludes
+the OS loader before `main`. Checkpoints `cli.owner_image_begin/ready`,
+`cli.owner_spawn_begin/returned`, and `cli.owner_request_sent` distinguish image
+verification, process creation and request dispatch. Owner bootstrap remains a
+bound aggregate, including its own verification before environment restoration.
+The [startup diagnostic collector](../../benchmark.new/startup/startup_profile.py)
+keeps process-relative spans separate from host checkpoint gaps and workload Ready.
+
 The frontend verifies and pins its own executable before launching its owner;
 there is no user-wide digest admission or generation socket. For upgrade, drain
 old Jobs and stop the old `--pvisor-internal-host` with the old binary first.
@@ -340,6 +350,13 @@ Use `just test pvisor-cli` for application tests and `just test pvisor` for
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
+The ignored `minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio`
+Job test needs KVM, a static C compiler and (for GNU builds)
+`PVISOR_TEST_LIBRARY_DIR` pointing to local firmware. It boots an image containing
+only a static Ready executable ten times each with one and two vCPUs, checks
+unique Ready output and zero exit, and keeps every attempt's logs on failure.
+It covers PID 1's pre-Rust standard-stream repair when the image has no `/dev`.
+
 The Docker native acceptance test uses an isolated store and a native Linux
 rootfs containing `sh`, `cat` and `sleep`. On macOS it signs a private binary
 copy with the existing Hypervisor entitlement. Run it with local socket and
@@ -468,3 +485,10 @@ Native Job `spawn --config` and embedded callers retain explicit
 `[overlaynet.peers]`/`PeerNetworkSettings` for low-level user-private groups,
 independently of the container store catalog. See the
 [runtime contract](../pvisor/README.md#explicit-same-host-vm-peer-networks).
+
+The Job owner calls `VmExecutor::prepare_process()` after self-exec and environment
+restoration, before creating Tokio threads. Linux can then grow its high-FD table
+while it is unshared. The temporary descriptors are closed immediately; no existing
+FD, reserved runner destination or resource limit changes. Preparation failure is
+nonfatal so a low descriptor limit does not disable host Jobs. A failed later VM
+FD duplication retains its normal error. Other platforms keep their existing path.

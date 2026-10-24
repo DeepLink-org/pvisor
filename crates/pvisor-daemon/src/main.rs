@@ -122,6 +122,10 @@ fn main() -> anyhow::Result<()> {
     // Each sandbox already has a native runner; avoid a host-sized Tokio worker
     // pool per supervisor on high-core-count machines.
     let mut runtime = if matches!(args.command, Command::NativeSupervisor { .. }) {
+        // Exec resets descriptor-table capacity. Prepare in this fresh owner,
+        // before Tokio or image workers share the table. This is optional;
+        // resource limits must retain their existing startup/error behavior.
+        let _ = pvisor::VmExecutor::prepare_process();
         tokio::runtime::Builder::new_current_thread()
     } else {
         tokio::runtime::Builder::new_multi_thread()

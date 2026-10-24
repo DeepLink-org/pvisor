@@ -1,19 +1,75 @@
 # semspec
 
-A standalone Rust CLI that extracts human-reviewed, black-box checks from user
-Markdown documentation. Requires Rust 1.89+, Unix and Bash. Specifications are
+A standalone Markdown filter and black-box checker. Markdown is the specification;
+execution is explicit and human review remains a separate gate. Requires Rust 1.89+, Unix and Bash. Specifications are
 trusted executable code; PASS does not establish complete coverage or human approval.
 See [the design](DESIGN.md) and [engine contract](ENGINE.md).
 
 ```sh
 cargo install --path tools/semspec --locked
 semspec init cases                   # creates only cases/*.md in a new project
+semspec filter cases/example.md              # read-only Markdown → Markdown
+semspec filter cases/example.md --execute    # actual output and verdict inline
 semspec lint cases
 semspec list cases
 semspec run cases
 semspec run cases/example.md --subject-bin /usr/bin/true
 semspec review cases --strict
 ```
+
+## Markdown filter
+
+```sh
+semspec filter cases/example.md --execute > /tmp/example.checked.md
+cat cases/example.md | semspec filter --source cases/example.md --stdin
+semspec filter cases/example.md --format json  # markdown, byte edits, dependencies, diagnostics
+semspec filter cases/example.md --execute --artifacts /tmp/example-evidence
+semspec filter cases/example.md --results /tmp/example-evidence --strict
+```
+
+No report file is required. Results live in memory by default. `--artifacts` opts
+into a new directory containing `report.json`, retained case workspaces and full
+stream logs. `--results` reads this report, or JSON from
+`run --format json`, without executing. Reports are trusted local observations,
+not signed attestations. Source, preparation and engine digests must match to
+show a recorded verdict; old or changed evidence is visibly STALE. No result is
+NOT RUN. Neither state implies PASS. `--strict` rejects missing/stale evidence.
+`--execute` requires every selected case to PASS and returns its failure status
+while still rendering the diagnostic. `--require-reviewed` adds the human gate.
+
+The filter preserves frontmatter, prose, links and unmarked fences, removes its
+annotation lines and adds ordinary Markdown: case ID, verdict, review state,
+stdout/stderr and timing. Output is fenced safely, including embedded fences.
+`--stdin` requires `--source` (or INPUT) for relative dependencies; execution also
+requires stdin to match the file exactly. JSON format version 1 returns original
+UTF-8 byte-offset edits and dependencies for SSG/notebook/watch adapters.
+The `experiments` array exposes validated bench IDs, source end offsets, digests
+and complete plans in source order, allowing preparation adapters to consume the
+same parser without executing subjects or parsing Markdown again. A table
+replacement may use a single whole-document edit. Source files are never rewritten.
+The Zensical adapter uses this read-only interface; it never runs documentation.
+`SEMSPEC_RESULTS` optionally points it at a saved run report.
+
+An optional expected-output cell is part of the same specification:
+
+~~~~markdown
+<!-- semspec: case id=S-EXAMPLE-001 -->
+```bash
+printf 'hello\n'
+```
+
+Expected stdout (exact bytes, including the final newline):
+
+<!-- semspec: expect case=S-EXAMPLE-001 stream=stdout -->
+```text
+hello
+```
+~~~~
+
+`stream` is `stdout` or `stderr`, with at most one expectation per stream per
+case. Expectations must refer to a case in the same document. Cases stay isolated;
+use setup blocks for shared fixtures. Filter execution does not introduce a
+shared notebook kernel or implicitly execute preceding examples.
 
 No configuration file or external script is needed. Paths are mandatory: semspec
 never searches docs/src/zh/cases, cases or cwd implicitly. `run`, `lint`, `list`
@@ -54,9 +110,10 @@ manual use. Checks call installed commands through PATH; optional `--subject-bin
 timeout takes precedence. Environment prerequisites are Bash checks; exit 77 skips.
 
 Each check runs with `set -euo pipefail`, null stdin and its own process group.
-Timeout sends TERM, then KILL after five seconds; ordinary exit also kills remaining
+Timeout or CLI cancellation sends TERM, then KILL after five seconds; ordinary exit also kills remaining
 group descendants. Do not detach persistent processes. Failure directories and
 logs are retained, including XFAIL; `--keep` retains successful checks too.
+Timeouts, signals and command-not-found/not-executable exits cannot become XFAIL.
 PASS/SKIP/XFAIL exit 0 by default; `--require-pass` makes every non-PASS fail.
 FAIL/XPASS, inventory errors or required pending review exit 1;
 usage/spec errors exit 2; ERROR verdicts exit 3. Human and JSON reports are supported.
@@ -72,7 +129,8 @@ The USE entry runs semspec with `--require-pass`; no separate catalog parser or
 report-validation script is used. Strict PASS does not approve cases and can be
 combined with `--require-reviewed` for human review requirements.
 
-The nearest common directory of the supplied directories (or file parents) is
+`--root PATH` explicitly fixes the review root across selections and requires all
+inputs to lie inside it. Without it, the nearest common directory of the supplied directories (or file parents) is
 the review root: preparation names are relative to it and REVIEWED.toml lives there.
 With a single input this is its directory, as before. A missing ledger means UNREVIEWED. Only a person
 may approve from an interactive terminal:
@@ -172,3 +230,54 @@ markup such as links, code and emphasis. Pipes and newlines remain table-safe.
 rendered column, including row names when enabled. Optional `headers` supplies
 one displayed label per rendered column, allowing repeated labels while JSON
 keys remain unique. Unknown options, invalid types and incorrect counts fail.
+
+## Shared experiment runtime
+
+Small experiments can live directly in Markdown and render a statistics table:
+
+~~~~markdown
+## Python command launch
+
+Observe direct argv launch through normal zero exit; hooks are excluded.
+
+<!-- semspec: bench id=python-launch -->
+```toml
+argv = ["python3", "-c", "print('hello')"]
+warmup = 1
+runs = 10
+timeout = 5
+expected_stdout = "hello\n"
+```
+~~~~
+
+```sh
+semspec filter experiment.md                 # render only; NOT RUN
+semspec filter experiment.md --execute       # execute and print the table
+semspec filter experiment.md --execute --artifacts /tmp/launch-evidence
+```
+
+This path requires Python 3.10+. The runtime is embedded in the installed CLI;
+no repository checkout or Python package installation is required. The same
+[`runtime.py`](runtime.py) supplies process/replay, Ready/Exit and native filesystem
+adapters in `benchmark.new`. It owns validated repetition, `perf_counter_ns`,
+raw trial evidence, statistics and command-trial audits. Experiments own fixture
+preparation, subject argv, Ready protocol and correctness checks. Existing JSON
+`bench` commands remain supported; complex registered experiments keep their
+specialized protocols and publication gates.
+
+Plans accept `argv`, optional `cwd` (relative to the document directory), `env`,
+`warmup` (default 0), `runs` (default 30, minimum 2), `timeout` (positive seconds,
+default 30), optional `expected_stdout`, and direct-argv `prepare`, `conclude`,
+`cleanup` hooks. Shell syntax requires an explicit `bash -c` argv. Preparation and
+conclusion must pass for **every** trial, including warmups. Cleanup runs after
+failure too; its failure prevents success and cannot hide the original error.
+The clock includes subprocess launch, pipe capture and normal exit; hooks,
+expected-output checks and aggregation are outside it. No outlier is discarded.
+N/median/mean/sample SD/min/max are reported in milliseconds with raw nanoseconds.
+A failure stops the plan and emits evidence instead of a partial success table.
+
+Benchmark observations are distinct from human-reviewed cases. Markdown plans
+are useful for local probes and engineering checks; they do not bypass registry,
+cohort, correctness, immutable-input or publication checks for public benchmarks.
+Preparation freezes the shared runtime alongside other harness sources. Historical
+measurement data and protocols are not rewritten by this refactor.

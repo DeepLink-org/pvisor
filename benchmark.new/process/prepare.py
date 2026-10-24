@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare B-PROCESS's JSON suite and validate an untimed completed Run.
+"""Prepare B-PROCESS's Markdown/JSON suite and validate an untimed completed Run.
 
 Benchmark: B-PROCESS (benchmark.new/REGISTRY.md#b-process), role engineering A/B.
 Motivation: catch minimal Run and Bundle read regressions.

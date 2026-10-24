@@ -16,6 +16,7 @@ fn informational_commands_do_not_emit_execution_diagnostics() {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
             .args(&args)
             .env_remove("PVISOR_STARTUP_TIMING")
+            .env("PVISOR_STARTUP_PROFILE", "1")
             .env_remove("PVISOR_DIAGNOSTICS_FD")
             .env_remove("PVISOR_UI_CHILD")
             .output()
@@ -206,5 +207,66 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
                 1
             );
         }
+    }
+}
+
+#[test]
+fn opt_in_profiles_use_diagnostics_routing_and_leave_workload_stdout_clean() {
+    let temp = tempfile::tempdir().unwrap();
+    let log = temp.path().join("profile.log");
+    std::fs::write(&log, "").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args([
+            "spawn",
+            "--no-agent-defaults",
+            "--overlaynet",
+            "off",
+            "--stdio",
+            "inherit",
+            "--",
+            "/bin/echo",
+            "READY",
+        ])
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env("PVISOR_RUN_HOME", temp.path().join("runs"))
+        .env("PVISOR_STARTUP_TIMING", "0")
+        .env("PVISOR_STARTUP_PROFILE", "1")
+        .env_remove("PVISOR_DIAGNOSTICS_FD")
+        .env("PVISOR_UI_CHILD", "1")
+        .env("PVISOR_UI_STAGE_FILE", temp.path().join("stage"))
+        .env("PVISOR_UI_LOG_FILE", &log)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"READY\n");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup-profile "));
+    let text = std::fs::read_to_string(log).unwrap();
+    assert!(!text.contains("pvisor-startup level="));
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("pvisor-startup-profile "))
+        .map(|record| serde_json::from_str(record).unwrap())
+        .collect();
+    for stage in [
+        "cli.entry_to_parsed",
+        "session.start",
+        "runtime.control_executable_blake3",
+        "process.prepare",
+    ] {
+        let record = records
+            .iter()
+            .find(|record| record["stage"] == stage)
+            .unwrap_or_else(|| panic!("missing {stage}: {text}"));
+        assert_eq!(record["schema"], 1);
+        assert!(matches!(record["outcome"].as_str(), Some("ok" | "success")));
+        assert_eq!(
+            record["end_ns"].as_u64().unwrap() - record["start_ns"].as_u64().unwrap(),
+            record["duration_ns"].as_u64().unwrap()
+        );
     }
 }

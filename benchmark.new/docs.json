@@ -521,7 +521,7 @@
     }
   ],
   "bindings": {
-    "replay/replay.json": {
+    "replay/replay.md": {
       "benchmark_id": "B-REPLAY",
       "page": "benchmarks/replay-fidelity.md",
       "table": "../../overrides/assets/benchmarks/replay-semspec.render.json",

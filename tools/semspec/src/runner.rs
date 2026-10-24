@@ -1,5 +1,5 @@
 use crate::{
-    model::{Case, CaseResult, RunReport, Verdict},
+    model::{Case, CaseResult, Evidence, RunReport, Verdict},
     project::Project,
     seal::ENGINE_SEMANTICS,
 };
@@ -12,14 +12,40 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
+    sync::atomic::{AtomicI32, Ordering},
     thread,
     time::{Duration, Instant},
 };
+
+static INTERRUPTED: AtomicI32 = AtomicI32::new(0);
+extern "C" fn interrupted(signal: libc::c_int) {
+    INTERRUPTED.store(signal, Ordering::Relaxed);
+}
+/// Installed by the CLI, not library users. The handler only sets a lock-free flag.
+pub fn install_signal_handlers() -> Result<()> {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = interrupted as *const () as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        for signal in [libc::SIGINT, libc::SIGTERM] {
+            ensure!(
+                libc::sigaction(signal, &action, std::ptr::null_mut()) == 0,
+                "install cancellation handler"
+            );
+        }
+    }
+    Ok(())
+}
+pub fn interruption() -> i32 {
+    INTERRUPTED.load(Ordering::Relaxed)
+}
 
 pub struct Options {
     pub timeout: Duration,
     pub subject: Option<PathBuf>,
     pub keep: bool,
+    /// Optional existing directory in which retained case workspaces are created.
+    pub artifact_root: Option<PathBuf>,
 }
 pub fn run(project: &Project, cases: &[&Case], options: &Options) -> Result<RunReport> {
     let platform = std::env::consts::OS.to_owned();
@@ -51,21 +77,25 @@ pub fn run(project: &Project, cases: &[&Case], options: &Options) -> Result<RunR
         .collect::<Result<_>>()?;
     let mut results = vec![];
     for case in cases {
+        if interruption() != 0 {
+            break;
+        }
         results.push(run_case(
             project,
             case,
             &platform,
             subject.as_deref(),
-            options.keep,
-            options.timeout,
+            options,
         )?);
     }
     Ok(RunReport {
-        engine_semantics: ENGINE_SEMANTICS,
+        benchmarks: vec![],
+        engine_semantics: ENGINE_SEMANTICS.into(),
         engine_review: project.item("@engine")?.review,
         vocab_review,
         platform,
         results,
+        root: Some(project.root.clone()),
     })
 }
 fn run_case(
@@ -73,15 +103,18 @@ fn run_case(
     case: &Case,
     platform: &str,
     subject: Option<&Path>,
-    keep: bool,
-    default_timeout: Duration,
+    options: &Options,
 ) -> Result<CaseResult> {
     let started = Instant::now();
     let review = project.item(&case.id)?.review;
-    let root = match tempfile::Builder::new()
-        .prefix(&format!("semspec-{}-", case.id))
-        .tempdir()
-    {
+    let mut builder = tempfile::Builder::new();
+    let prefix = format!("semspec-{}-", case.id);
+    builder.prefix(&prefix);
+    let directory = match &options.artifact_root {
+        Some(path) => builder.tempdir_in(path),
+        None => builder.tempdir(),
+    };
+    let root = match directory {
         Ok(root) => root,
         Err(error) => {
             return Ok(CaseResult {
@@ -92,10 +125,20 @@ fn run_case(
                 review,
                 duration_ms: started.elapsed().as_millis(),
                 workdir: None,
+                evidence: None,
             });
         }
     };
-    let execute = || -> Result<(Option<i32>, String)> {
+    let mut evidence = Some(Evidence {
+        digest: project.case_digest(case),
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: None,
+        timed_out: false,
+        cancelled: None,
+        truncated: false,
+    });
+    let mut execute = || -> Result<(Option<i32>, String)> {
         let ws = root.path().join("ws");
         fs::create_dir(&ws)?;
         let mut script = String::from("set -euo pipefail\n");
@@ -126,25 +169,72 @@ fn run_case(
             command.env("SUBJECT_BIN", subject);
         }
         let log = root.path().join("case.log");
+        let out = root.path().join("stdout.log");
+        let err = root.path().join("stderr.log");
         let timeout = case
             .annotation
             .timeout
             .as_deref()
             .map(crate::parse::parse_timeout)
             .transpose()?
-            .unwrap_or(default_timeout);
-        let (status, timed_out) = execute_process(command, &log, timeout)?;
-        let passed = status.success() && !timed_out;
+            .unwrap_or(options.timeout);
+        let (status, timed_out) = execute_streams(command, &out, &err, timeout)?;
+        let read = |path: &Path| -> Result<(String, bool)> {
+            let mut bytes = Vec::new();
+            fs::File::open(path)?.take(65536).read_to_end(&mut bytes)?;
+            Ok((
+                String::from_utf8_lossy(&bytes).into_owned(),
+                fs::metadata(path)?.len() > bytes.len() as u64,
+            ))
+        };
+        let (stdout, out_truncated) = read(&out)?;
+        let (stderr, err_truncated) = read(&err)?;
+        fs::write(&log, format!("{stdout}{stderr}"))?;
+        evidence = Some(Evidence {
+            digest: project.case_digest(case),
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            timed_out: timed_out && interruption() == 0,
+            cancelled: (interruption() != 0).then(interruption),
+            truncated: out_truncated || err_truncated,
+        });
+        let aborted = timed_out || interruption() != 0;
+        if status.success() && !aborted {
+            for expected in &case.expectations {
+                let path = if expected.stream == "stdout" {
+                    &out
+                } else {
+                    &err
+                };
+                let matches = fs::metadata(path)?.len() == expected.text.len() as u64
+                    && fs::read(path)? == expected.text.as_bytes();
+                if !matches {
+                    return Ok((
+                        Some(1),
+                        format!("{} differs from the exact expected bytes", expected.stream),
+                    ));
+                }
+            }
+        }
+        let passed = status.success() && !aborted;
         let detail = if passed {
             String::new()
         } else {
             format!(
-                "{}{}",
-                if timed_out { "timed out\n" } else { "" },
-                tail(&log)?
+                "{}stdout tail:\n{}\nstderr tail:\n{}",
+                if interruption() != 0 {
+                    "cancelled by signal\n"
+                } else if timed_out {
+                    "timed out\n"
+                } else {
+                    ""
+                },
+                tail(&out)?,
+                tail(&err)?
             )
         };
-        Ok((if timed_out { None } else { status.code() }, detail))
+        Ok((if aborted { None } else { status.code() }, detail))
     };
     let expected =
         case.annotation.xfail_on.contains(platform) || case.annotation.xfail_on.contains("all");
@@ -152,16 +242,19 @@ fn run_case(
         Ok((Some(77), reason)) => Verdict::Skip { reason },
         Ok((Some(0), _)) if expected => Verdict::XPass,
         Ok((Some(0), _)) => Verdict::Pass,
-        Ok((_, output_tail)) if expected => Verdict::XFail {
-            reason: case.annotation.xfail_reason.clone().unwrap(),
-            output_tail,
-        },
+        // Infrastructure exits and timeouts must not satisfy a known product violation.
+        Ok((Some(code), output_tail)) if expected && ![126, 127].contains(&code) => {
+            Verdict::XFail {
+                reason: case.annotation.xfail_reason.clone().unwrap(),
+                output_tail,
+            }
+        }
         Ok((_, output_tail)) => Verdict::Fail { output_tail },
         Err(error) => Verdict::Error {
             message: format!("{error:#}"),
         },
     };
-    let workdir = if keep || verdict.retain() {
+    let workdir = if options.keep || verdict.retain() {
         Some(root.keep())
     } else {
         None
@@ -172,6 +265,7 @@ fn run_case(
         review,
         duration_ms: started.elapsed().as_millis(),
         workdir,
+        evidence,
     })
 }
 #[cfg(unix)]
@@ -198,15 +292,36 @@ impl Drop for Group {
 }
 #[cfg(unix)]
 pub fn execute_process(
-    mut command: Command,
+    command: Command,
     log: &Path,
     timeout: Duration,
 ) -> Result<(ExitStatus, bool)> {
     let log = fs::File::create(log)?;
+    execute_files(command, log.try_clone()?, log, timeout)
+}
+pub fn execute_streams(
+    command: Command,
+    stdout: &Path,
+    stderr: &Path,
+    timeout: Duration,
+) -> Result<(ExitStatus, bool)> {
+    execute_files(
+        command,
+        fs::File::create(stdout)?,
+        fs::File::create(stderr)?,
+        timeout,
+    )
+}
+fn execute_files(
+    mut command: Command,
+    stdout: fs::File,
+    stderr: fs::File,
+    timeout: Duration,
+) -> Result<(ExitStatus, bool)> {
     command
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
+        .stdout(stdout)
+        .stderr(stderr)
         .process_group(0);
     let mut child = command.spawn().context("launch interpreter")?;
     let group = Group(child.id() as i32);
@@ -215,7 +330,7 @@ pub fn execute_process(
         if let Some(status) = child.try_wait()? {
             return Ok((status, false));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || interruption() != 0 {
             break;
         }
         thread::sleep(Duration::from_millis(10));

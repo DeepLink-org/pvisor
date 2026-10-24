@@ -49,6 +49,10 @@ impl Project {
     /// Load explicitly selected Markdown inputs. Overlapping files are read once.
     /// Preparation names and REVIEWED.toml are relative to their nearest common directory.
     pub fn load(inputs: &[impl AsRef<Path>]) -> Result<Self> {
+        Self::load_at(inputs, None)
+    }
+    /// An explicit root keeps approval identities stable across input selections.
+    pub fn load_at(inputs: &[impl AsRef<Path>], review_root: Option<&Path>) -> Result<Self> {
         ensure!(
             !inputs.is_empty(),
             "specify at least one Markdown file or directory"
@@ -76,7 +80,14 @@ impl Project {
                 ensure!(root.pop(), "inputs must share a filesystem root");
             }
         }
-        let root = root.unwrap();
+        let root = review_root
+            .map(Path::canonicalize)
+            .transpose()?
+            .unwrap_or_else(|| root.unwrap());
+        ensure!(
+            root.is_dir() && files.iter().all(|p| p.starts_with(&root)),
+            "review root must contain all specifications"
+        );
         let mut cases = vec![];
         let mut preparation = BTreeMap::new();
         let mut ids = BTreeSet::new();
@@ -95,7 +106,7 @@ impl Project {
                 if !setup_path.is_file() {
                     continue;
                 }
-                let text = seal::normalize(&fs::read_to_string(&setup_path)?);
+                let text = fs::read_to_string(&setup_path)?;
                 let script = parse_setup(&text)?;
                 if script.is_empty() {
                     continue;
@@ -109,7 +120,7 @@ impl Project {
                 preparation
                     .entry(name.clone())
                     .or_insert_with(|| Preparation {
-                        digest: seal::vocab_digest(&name, &text),
+                        digest: seal::execution_digest(&seal::vocab_digest(&name, &text), &script),
                         name,
                         text,
                         script,
@@ -178,13 +189,21 @@ impl Project {
         case.preparation.clone()
     }
     pub fn case_digest(&self, case: &Case) -> String {
-        seal::case_digest(
+        let text = seal::case_digest(
             &case.text,
             &self
                 .preparation_names(case)
                 .iter()
                 .map(|n| self.preparation[n].digest.clone())
                 .collect::<Vec<_>>(),
+        );
+        seal::execution_digest(
+            &text,
+            &format!(
+                "{}\0{}",
+                case.script,
+                serde_json::to_string(&case.expectations).unwrap()
+            ),
         )
     }
     pub fn item(&self, id: &str) -> Result<Item> {
@@ -203,6 +222,15 @@ impl Project {
                 .find(|c| c.id == id)
                 .context("unknown semantic case")?;
             let mut text = case.text.clone();
+            text.push_str("\nExact executed Bash:\n\n");
+            text.push_str(&crate::filter::code(&case.script));
+            for expected in &case.expectations {
+                text.push_str(&format!(
+                    "\nExact expected {}:\n\n{}",
+                    expected.stream,
+                    crate::filter::code(&expected.text)
+                ));
+            }
             text.push_str(&format!(
                 "\n---\nEngine semantics: {}\n",
                 seal::ENGINE_SEMANTICS

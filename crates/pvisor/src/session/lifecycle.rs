@@ -105,6 +105,7 @@ impl Session {
         resolved: ResolvedRun,
         attempt_id: AttemptId,
     ) -> Result<RunHandle, PVisorError> {
+        let mut startup = crate::startup_profile::Span::start("session.start");
         let ResolvedRun {
             preparation,
             mut spec,
@@ -268,6 +269,7 @@ impl Session {
                 .await
         });
 
+        startup.success(None);
         Ok(RunHandle {
             run_id,
             attempt_id,

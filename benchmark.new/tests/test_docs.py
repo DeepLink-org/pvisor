@@ -60,7 +60,7 @@ class DocumentationTests(unittest.TestCase):
             batch = root / ".data/replay-test"
             batch.mkdir(parents=True)
             manifest = dict(
-                entry="replay/replay.json",
+                entry="replay/replay.md",
                 batch=batch.name,
                 benchmark_id="B-REPLAY",
                 role="user-facing",
@@ -200,7 +200,7 @@ class DocumentationTests(unittest.TestCase):
                 self.assertIn("same Popen launch", binding["metric_scope"])
                 self.assertEqual(binding["page"], "benchmarks/startup.md")
         self.assertNotIn("filesystem/tools.json", inventory["bindings"])
-        self.assertFalse(inventory["bindings"]["replay/replay.json"]["show_batch"])
+        self.assertFalse(inventory["bindings"]["replay/replay.md"]["show_batch"])
 
     def test_live_json_must_equal_latest_csv_and_sample_counts(self):
         with workspace() as (root, resources):
@@ -288,7 +288,7 @@ class DocumentationTests(unittest.TestCase):
                     {
                         "format": 1,
                         "bindings": {},
-                        "entry": "process/smoke.json",
+                        "entry": "process/smoke.md",
                         "benchmark_id": "B-PROCESS",
                         "role": "engineering A/B",
                     }

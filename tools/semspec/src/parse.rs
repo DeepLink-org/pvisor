@@ -1,5 +1,5 @@
 use crate::{
-    model::{Annotation, Case, valid_case_id},
+    model::{Annotation, Case, Expectation, valid_case_id},
     seal::normalize,
 };
 use anyhow::{Context, Result, ensure};
@@ -18,13 +18,13 @@ pub fn parse_setup(source: &str) -> Result<String> {
     Ok(script)
 }
 
-struct MarkedBlock {
-    start: usize,
-    end: usize,
-    parameters: String,
-    script: String,
+pub(crate) struct MarkedBlock {
+    pub start: usize,
+    pub end: usize,
+    pub parameters: String,
+    pub script: String,
 }
-fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
+pub(crate) fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
     let mut pending = None;
     let mut blocks = vec![];
     for (event, range) in Parser::new(source).into_offset_iter() {
@@ -57,8 +57,11 @@ fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
                     .trim()
                     .to_owned();
                 ensure!(
-                    parameters == "setup" || parameters.starts_with("case "),
-                    "expected semspec: case id=... or semspec: setup"
+                    parameters == "setup"
+                        || ["case ", "expect ", "bench "]
+                            .iter()
+                            .any(|p| parameters.starts_with(p)),
+                    "expected semspec: case, setup, expect or bench"
                 );
                 pending = Some((range, parameters));
             }
@@ -68,12 +71,25 @@ fn marked_blocks(source: &str) -> Result<Vec<MarkedBlock>> {
                     source[comment.end..range.start].trim().is_empty(),
                     "semspec comment must immediately precede a code block"
                 );
+                let language = match kind {
+                    CodeBlockKind::Fenced(lang) => lang.into_string(),
+                    _ => anyhow::bail!("marked cells require a fenced block"),
+                };
+                let expected = if parameters.starts_with("expect ") {
+                    "text"
+                } else if parameters.starts_with("bench ") {
+                    "toml"
+                } else {
+                    "bash"
+                };
                 ensure!(
-                    matches!(kind, CodeBlockKind::Fenced(ref lang) if lang.as_ref() == "bash"),
-                    "marked checks require a bash fence"
+                    language == expected,
+                    "marked cell requires a {expected} fence"
                 );
                 let script = fenced_body(&source[range.clone()])?;
-                lint_bash(&script)?;
+                if expected == "bash" {
+                    lint_bash(&script)?;
+                }
                 blocks.push(MarkedBlock {
                     start: comment.start,
                     end: range.end,
@@ -108,8 +124,9 @@ pub fn parse_document(path: &Path, source: &str) -> Result<Vec<Case>> {
         }
     }
     let mut cases = vec![];
-    for block in marked_blocks(source)? {
-        if block.parameters == "setup" {
+    let blocks = marked_blocks(source)?;
+    for block in &blocks {
+        if !block.parameters.starts_with("case ") {
             continue;
         }
         let mut id = None;
@@ -182,9 +199,49 @@ pub fn parse_document(path: &Path, source: &str) -> Result<Vec<Case>> {
             violation: prose.remove("违反示例").unwrap_or_default(),
             rationale: prose.remove("理由"),
             text,
-            script: block.script,
+            script: block.script.clone(),
             annotation,
             preparation: vec![],
+            expectations: vec![],
+        });
+    }
+    for block in blocks
+        .iter()
+        .filter(|b| b.parameters.starts_with("expect "))
+    {
+        let mut fields = BTreeMap::new();
+        for word in shell_words::split(block.parameters.strip_prefix("expect ").unwrap())? {
+            let (key, value) = word
+                .split_once('=')
+                .context("expect parameters must be key=value")?;
+            ensure!(
+                ["case", "stream"].contains(&key)
+                    && !value.is_empty()
+                    && fields.insert(key.to_owned(), value.to_owned()).is_none(),
+                "invalid/duplicate expect parameter {key}"
+            );
+        }
+        let id = fields
+            .get("case")
+            .context("expect requires case=S-DOMAIN-NNN")?;
+        let stream = fields
+            .get("stream")
+            .context("expect requires stream=stdout or stderr")?;
+        ensure!(
+            ["stdout", "stderr"].contains(&stream.as_str()),
+            "invalid expected stream"
+        );
+        let case = cases
+            .iter_mut()
+            .find(|c| c.id == *id)
+            .context("expect references unknown case in this document")?;
+        ensure!(
+            !case.expectations.iter().any(|e| e.stream == *stream),
+            "duplicate expectation for {id}/{stream}"
+        );
+        case.expectations.push(Expectation {
+            stream: stream.clone(),
+            text: block.script.clone(),
         });
     }
     Ok(cases)
@@ -200,7 +257,13 @@ fn fenced_body(block: &str) -> Result<String> {
         lines.len() >= 2 && last.chars().all(|c| c == marker) && last.len() >= count,
         "unterminated check fence"
     );
-    Ok(format!("{}\n", lines[1..lines.len() - 1].join("\n")))
+    let start = block.find('\n').context("opening fence needs a newline")? + 1;
+    let closing = block
+        .trim_end_matches(['\r', '\n'])
+        .rfind('\n')
+        .context("closing fence needs its own line")?
+        + 1;
+    Ok(block[start..closing].to_owned())
 }
 
 fn parse_annotation(text: &str) -> Result<Annotation> {

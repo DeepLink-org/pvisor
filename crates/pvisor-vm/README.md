@@ -1480,3 +1480,19 @@ preserves partial prefixes, payloads and frame boundaries. Pending batches finis
 before accepting another batch; EAGAIN resumes on socket writability without
 waiting to fill a batch. Malformed TX descriptors complete without emitting wire
 bytes. Datagram and TAP backend TX retain their existing per-frame paths.
+
+## 启动耗时诊断
+
+`PVISOR_STARTUP_PROFILE=1` 默认关闭，启用时向 stderr 写出 schema=1 的
+`pvisor-startup-profile` JSON 行。保持现有内核初始化/复制记录，新增：
+`vm.runtime_configure`、`vm.build`、`vm.ready_callback`、`vm.start_worker`，以及
+VMM 的 payload 校验/选择、guest memory 创建与内核加载、hypervisor/CPU/legacy device
+构建、通用设备、virtio-fs、剩余设备、boot system/restore、boot prefault、vCPU 启动。
+`vm.build` 包含内部 `vmm.*`，各阶段成功结束为 `ok`，失败/展开保留 `unknown`，
+不记录 guest 参数、环境或文件内容，不改变 API 或 guest 协议。
+
+每条记录标识 PID 和 `epoch=vm-runtime`；时钟起点是本进程首次 VM profile，不能
+直接与宿主 runtime、frontend 或 guest 时钟对齐。阶段间日志写入的成本不归入下一阶段，
+外层 span 仍包含内层日志成本。诊断会扰动启动，重叠阶段不能相加；未启用时不采集时钟。
+这些阶段覆盖 VMM 准备，guest/application Ready 必须通过独立输出 observer 确认。
+采集和汇总见 [启动诊断工具](../../benchmark.new/startup/startup_profile.py)。

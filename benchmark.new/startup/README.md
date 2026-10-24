@@ -41,7 +41,7 @@ pVisor 默认使用 `target/release/pvisor`，可用 `--binary PATH` 指定。
 - `subjects.py`：八个后端的名称、标签和固定被测 argv。
 - `common.py`：展开输入、核对制品、准备工作区并执行预检。
 - `hooks.py`：重置每次输入，校验输出、canary、Run Bundle 和只读 stage。
-- `timing.py`：共享事件时钟、采样和统计；各 `*_timing.py` 固定后端。
+- `timing.py`：启动实验适配器，复用 `tools/semspec/runtime.py` 的 Ready/Exit 观察、采样和统计；各 `*_timing.py` 固定后端。
 - `audit.py`：复算当前批次的配对样本并校验逐次证据。
 - `publish.py`：将成功批次发布为双语 Ready / Exit 结果 JSON。
 
@@ -151,3 +151,53 @@ batch 下，不与原 VM/容器批次拼接，也不通过通用发布器覆盖�
 独立离线审计通过，并已核对 semspec 导出与复算结果一致。
 正式输入、两种原始/派生 OCI 身份和 helper 链接收据均保留在该批次；
 功能预检失败记录留在独立目录，未混入正式数据。
+
+## 启动瓶颈诊断（B-STARTUP-DIAG）
+
+问题：同一条启动命令中，frontend、owner、runner、VMM 与 guest supervisor 哪个阶段最值得继续优化？
+`startup_profile.py` 独立采集小批诊断，保留每次原始日志、实际命令、源码工具及二进制摘要，
+输出阶段耗时中位数、范围、出现试次和调用数。目录必须全新；每次使用独立 Run store。
+默认连续 5 次，无预热，不作为用户启动水位，也不跨批次推算改善比例。
+
+```sh
+cargo build --locked --release -p pvisor-cli --bin pvisor
+python3 benchmark.new/startup/startup_profile.py --collect /tmp/pvisor-startup-host-new -- \
+  target/release/pvisor spawn --no-agent-defaults --overlaynet off --stdio inherit -- \
+  /bin/sh -c 'printf "PVISOR_STARTUP_READY\n"'
+python3 benchmark.new/startup/startup_profile.py --collect /tmp/pvisor-startup-vm-new -- \
+  target/release/pvisor spawn --no-agent-defaults --overlaynet off --stdio inherit \
+  --vm --rootfs /absolute/prepared-rootfs --cpu 2 --memory 128MiB -- \
+  /bin/sh -c 'printf "PVISOR_STARTUP_READY\n"'
+python3 benchmark.new/startup/startup_profile.py /tmp/pvisor-startup-vm-new/trial-*/stderr.log
+```
+
+动态构建需追加 `--vm-library-dir /absolute/firmware-directory`；静态构建按既有构建流程
+内嵌固件。macOS 需要已准备的 rootfs 和 HVF entitlement，不能使用 Linux host rootfs。
+采样前准备好制品/固件/输入，使用空闲且固定的工作区；负载必须输出唯一、精确的 Ready 行
+并正常零退出。默认超时 30 秒，失败立即停止并保留现场。此工具校验观察协议，不代替
+B-STARTUP 的 Bundle、隔离和内容校验；不要用任意 echo 冒充真实应用已可用。
+
+- `ready`：Popen→首条 Ready 的宿主观察，包含管道和调度延迟。
+- `handoff`：通过 owner 绑定定位的创建/动态加载/owner 校验/bootstrap 总间隔。
+- `gap`：同一 PID 的相邻 checkpoint 间隔，到本进程启动边界为止，排除执行/收尾；包含日志和调度，也可能跨异步任务。
+- `span`：显式内部阶段，使用各自 process-local epoch；guest epoch 独立于 host，与 gap、父 span 可能重叠，不能相加。
+
+`summary.json` 保留完整观察与原始日志摘要。缺失阶段不会补零，未知结果不视为成功。
+只有原日志时，没有 Ready observer 的窗口和未标记时间保持未知。
+`VMM built→Ready` 包含 ready callback、设备事件循环、guest 和输出传递，不能当作纯内核时间。
+进一步确认优化收益时关闭 `PVISOR_STARTUP_PROFILE`，设置 `PVISOR_STARTUP_TIMING=0`，
+按 B-STARTUP-ENG/REVISION-ENG 的同输入随机配对流程另测。
+
+首次 RAM 高编号 FD 复制的独立微诊断（Linux）：
+
+```sh
+rustc --edition=2024 -O benchmark.new/startup/fd_probe.rs -o /tmp/pvisor-fd-probe
+/tmp/pvisor-fd-probe single
+/tmp/pvisor-fd-probe threaded
+/tmp/pvisor-fd-probe preallocated
+```
+
+每次新进程调用，三种模式交替各跑至少五次，保存全部 JSON 原值。
+`first_ns` 是首次 `F_DUPFD_CLOEXEC >= 202`，`second_ns` 是已扩展表后的第二次复制；
+`preallocated` 在线程创建前先扩展并关闭该 FD。保留高 FD 的防 `dup2` 冲突约束，
+不得从诊断直接推导降低固定 FD 编号是安全优化；该微诊断不启动 VM，不是产品收益对照。

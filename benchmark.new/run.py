@@ -11,18 +11,23 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from common import ROOT, registered, save
+from common import ROOT, registered, save, table_template
 from update import display_table, validate_batch
 
 
 def resolve_entry(value):
     """Accept a registered relative path or an unambiguous short entry name."""
     candidate = Path(value)
-    if candidate.suffix != ".json":
-        candidate = Path(str(candidate) + ".json")
-    paths = [candidate, ROOT / candidate]
-    if len(candidate.parts) == 1:
-        paths.extend(ROOT.glob("*/" + candidate.name))
+    candidates = (
+        [candidate]
+        if candidate.suffix in (".json", ".md")
+        else [Path(str(candidate) + suffix) for suffix in (".json", ".md")]
+    )
+    paths = []
+    for candidate in candidates:
+        paths.extend([candidate, ROOT / candidate])
+        if len(candidate.parts) == 1:
+            paths.extend(ROOT.glob("*/" + candidate.name))
     matches = {path.resolve() for path in paths if path.is_file()}
     if len(matches) != 1:
         raise ValueError("unknown or ambiguous benchmark table: " + value)
@@ -42,7 +47,7 @@ def load_prepare(topic):
 
 def resolve_row(template, value):
     """Match a row exactly, or by case and whitespace when unambiguous."""
-    table = json.loads(Path(template).read_text())
+    table = table_template(template)
     if value in table:
         return value
     normalized = " ".join(value.casefold().split())
@@ -83,7 +88,7 @@ def run_table(
     template = Path(template).resolve()
     metadata = registered(template)
     topic = template.parent.name
-    table = json.loads(template.read_text())
+    table = table_template(template)
     row_names = list(table)
     if row is not None:
         row = resolve_row(template, row)

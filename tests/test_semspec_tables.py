@@ -48,7 +48,13 @@ class SemspecTableTests(unittest.TestCase):
             self.assertEqual(result[0], "| | ms |")
             self.assertEqual(
                 run.call_args.args[0],
-                ["/test/semspec", "render", str(root / "src/zh/benchmarks/startup.md"), "--stdin"],
+                [
+                    "/test/semspec",
+                    "filter",
+                    "--source",
+                    str(root / "src/zh/benchmarks/startup.md"),
+                    "--stdin",
+                ],
             )
             self.assertEqual(run.call_args.kwargs["input"], "\n".join(source))
 

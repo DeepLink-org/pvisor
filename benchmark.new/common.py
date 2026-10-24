@@ -3,6 +3,7 @@
 import csv
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -16,6 +17,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
+RUNTIME_PATH = REPO / "tools/semspec/runtime.py"
+_runtime_spec = importlib.util.spec_from_file_location("semspec_runtime", RUNTIME_PATH)
+RUNTIME = importlib.util.module_from_spec(_runtime_spec)
+_runtime_spec.loader.exec_module(RUNTIME)
+
 METRIC_SCOPE = "direct argv process launch through normal zero exit; perf_counter_ns; hooks and semspec excluded"
 READY_SCOPE = "Popen launch to receipt of exact REFERENCE_READY line; perf_counter_ns; preparation and teardown excluded"
 
@@ -32,16 +38,7 @@ def digest(path):
     return value.hexdigest()
 
 
-def save(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, delete=False
-    ) as stream:
-        temporary = Path(stream.name)
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-    temporary.replace(path)
+save = RUNTIME.save
 
 
 def artifact_summary(artifacts):
@@ -96,13 +93,55 @@ def create_batch(template, output=None):
     return batch
 
 
+def command_definition(template):
+    """Read a legacy command definition or semspec's validated Markdown inventory."""
+    template = Path(template).resolve()
+    if template.suffix != ".md":
+        return json.loads(template.with_suffix(".commands.json").read_text())
+    semspec = os.environ.get("SEMSPEC_BIN", str(REPO / "target/semspec/debug/semspec"))
+    output = subprocess.run(
+        [semspec, "filter", str(template), "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    document = json.loads(output.stdout)
+    if document["format"] != 1 or not document["experiments"]:
+        raise ValueError("expected a nonempty semspec Markdown benchmark inventory")
+    plans = document["experiments"]
+    counts = {(cell["plan"]["runs"], cell["plan"]["warmup"]) for cell in plans}
+    if len(counts) != 1 or len({cell["id"] for cell in plans}) != len(plans):
+        raise ValueError("a batch requires unique IDs and one runs/warmup configuration")
+    runs, warmup = counts.pop()
+    commands = {
+        cell["id"]: {
+            key: value
+            for key, value in cell["plan"].items()
+            if key not in ("runs", "warmup") and value is not None and value != []
+        }
+        for cell in plans
+    }
+    return dict(runs=runs, warmup=warmup, commands=commands)
+
+
+def table_template(template):
+    """Generate row commands for Markdown plans; preserve legacy JSON templates."""
+    template = Path(template)
+    if template.suffix == ".md":
+        return {
+            name: "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ " + shlex.quote(name)
+            for name in command_definition(template)["commands"]
+        }
+    return json.loads(template.read_text())
+
+
 def materialize(
     template, batch, variables=None, artifacts=(), cwd=None, helpers=(), row_config=None
 ):
     template, batch = Path(template).resolve(), Path(batch).resolve()
     metadata = registered(template)
     variables = dict(variables or {}) | {"REPO": REPO, "BATCH": batch}
-    table = json.loads(template.read_text())
+    table = table_template(template)
     if row_config is not None:
         table = {name: table[name] for name in row_config["rows"]}
     if metadata.get("status") == "requires-single-condition-command":
@@ -157,7 +196,7 @@ def materialize(
         executable = sys.executable
     else:
         raise ValueError("registered scripts require an explicit row configuration")
-    sources = (template, ROOT / "common.py", ROOT / "update.py", *helpers)
+    sources = (template, ROOT / "common.py", ROOT / "update.py", RUNTIME_PATH, *helpers)
     semspec = os.environ.get("SEMSPEC_BIN")
     inputs = {
         str(Path(path).resolve(strict=True)): digest(path)
@@ -208,14 +247,14 @@ def materialize(
 def materialize_commands(template, batch, variables=None, artifacts=(), cwd=None, helpers=()):
     """Freeze registered direct argv workloads and their untimed correctness hooks."""
     template, batch = Path(template), Path(batch)
-    definition = template.with_suffix(".commands.json")
-    config = json.loads(definition.read_text())
+    definition = template if template.suffix == ".md" else template.with_suffix(".commands.json")
+    config = command_definition(template)
     if (
         type(config["runs"]) is not int
         or config["runs"] < 2
         or type(config["warmup"]) is not int
         or config["warmup"] < 0
-        or set(config["commands"]) != set(json.loads(template.read_text()))
+        or set(config["commands"]) != set(table_template(template))
     ):
         raise ValueError("invalid command runs/warmup/row configuration")
     replacements = dict(variables or {}) | {"REPO": REPO, "BATCH": batch}
@@ -242,8 +281,13 @@ def materialize_commands(template, batch, variables=None, artifacts=(), cwd=None
             or command["timeout"] <= 0
         ):
             raise ValueError("invalid direct command configuration")
-        command["cwd"] = str(Path(cwd or batch).resolve())
+        command["cwd"] = str((Path(cwd or batch) / command.get("cwd", ".")).resolve())
     save(batch / "commands.json", commands)
+    if template.suffix == ".md":
+        artifacts = [
+            *artifacts,
+            os.environ.get("SEMSPEC_BIN", REPO / "target/semspec/debug/semspec"),
+        ]
     return materialize(
         template,
         batch,

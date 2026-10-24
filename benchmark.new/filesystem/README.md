@@ -237,3 +237,10 @@ CLI 独立确认每臂 N30；快速筛选 N10、只读阶段 N5 与请求诊断�
 `screen-retry.json`、`diagnostic-retry.json`、`ro-screen.json` 和
 `ro-diag.json`，均经 semspec bench 执行。复跑必须先为输出配置新的批次目录，
 避免覆盖原始证据，并满足报告列出的 KVM、预算和干扰门禁。
+
+## 公共执行层
+
+原生命令探针的 `fs_timing.py` 复用 `tools/semspec/runtime.py` 的直接 argv 计时、
+预热/采样循环、统计和逐次记录；本目录继续负责 fixture、精确输出和负载协议。
+公共库与其他 harness 一起冻结到新批次，现有指标、样本数及发布审计保持原口径。
+小型诊断可以用 Markdown bench cell，但不能替代本目录正式实验的注册和校验。

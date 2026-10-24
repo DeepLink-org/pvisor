@@ -31,7 +31,7 @@ const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
 const IDLE_CHILD_FD: RawFd = 202;
 const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
 
-fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
+pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
     // clobbering one socket when the parent's fd table happens to be crowded.
     let duplicate = unsafe {
@@ -466,6 +466,14 @@ impl VmExecutor {
         }
     }
     /// Derive the actual host/build/firmware restore binding without starting a VM.
+    ///
+    /// Reads the complete executable and selected firmware (or immutable embedded
+    /// kernel) using SHA-256, and validates the host boot identity. The independent
+    /// hashes may run on one scoped host worker; the call joins it before returning
+    /// on success or failure, and falls back to serial hashing if creation fails.
+    /// Keep the selected firmware available and quiescent for the call. Invalid,
+    /// unavailable or unreadable inputs return an error without a partial binding
+    /// or retained worker. No metadata-only or cross-process digest cache is used.
     pub fn checkpoint_compatibility(
         settings: &VmSettings,
     ) -> anyhow::Result<crate::environment_snapshot::Compatibility> {
@@ -1604,6 +1612,8 @@ impl RunExecutor for VmExecutor {
         };
         let runner_path = runner_file.path();
         crate::util::startup_mark_run("vm.spec_write_ready", spec.run_id.as_str());
+        let mut ipc_span = crate::startup_profile::Span::start("vm.runner_ipc");
+        let mut ipc_phase = crate::startup_profile::Span::start("vm.ipc.network_take");
         let mut vm_network = match context.take_vm_network() {
             Ok(network) => network,
             Err(error) => {
@@ -1613,12 +1623,18 @@ impl RunExecutor for VmExecutor {
         if vm_network_enabled && vm_network.is_none() {
             return failed_to_start("pVisor VM network attachment is missing".into());
         }
+        ipc_phase.success(None);
+        drop(ipc_phase);
+        let mut ipc_phase = crate::startup_profile::Span::start("vm.ipc.ram_fd");
         let ram_runner = match runner_fd(ram_backing.file.as_raw_fd()) {
             Ok(fd) => fd,
             Err(error) => {
                 return failed_to_start(format!("duplicate RAM backing descriptor: {error}"));
             }
         };
+        ipc_phase.success(None);
+        drop(ipc_phase);
+        let mut ipc_phase = crate::startup_profile::Span::start("vm.ipc.control_socket");
         let control_pair = (|| {
             let (host, runner) = std::os::unix::net::UnixStream::pair()?;
             host.set_nonblocking(true)?;
@@ -1629,6 +1645,9 @@ impl RunExecutor for VmExecutor {
             Ok(pair) => pair,
             Err(error) => return failed_to_start(format!("create VM control socket: {error}")),
         };
+        ipc_phase.success(None);
+        drop(ipc_phase);
+        let mut ipc_phase = crate::startup_profile::Span::start("vm.ipc.idle_network_fds");
         let idle_pair = if self.guest_idle {
             match std::os::unix::net::UnixStream::pair().and_then(|(host, runner)| {
                 host.set_nonblocking(true)?;
@@ -1652,6 +1671,11 @@ impl RunExecutor for VmExecutor {
             Ok(fd) => fd,
             Err(error) => return failed_to_start(format!("duplicate VM network socket: {error}")),
         };
+        ipc_phase.success(None);
+        drop(ipc_phase);
+        ipc_span.success(None);
+        drop(ipc_span);
+        let mut command_span = crate::startup_profile::Span::start("vm.runner_command");
         let mut command = Command::new(executable);
         command
             .env(RUNNER_SPEC_ENV, runner_path)
@@ -1736,6 +1760,8 @@ impl RunExecutor for VmExecutor {
         }
 
         scrub_runner_loader_environment(&mut command);
+        command_span.success(None);
+        drop(command_span);
         crate::util::startup_mark_run("vm.spawn_begin", spec.run_id.as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -2354,6 +2380,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     spec.features.validate(crate::RunExecutorKind::Vm)?;
+    let mut lower_span = crate::startup_profile::Span::start("runner.attach_lazy_lowers");
     let _direct_lowers = crate::image::cache::attach_runner_lowers(
         spec.root.lowers.iter().chain(
             spec.workspace
@@ -2361,6 +2388,9 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
                 .flat_map(|workspace| workspace.lowers.iter()),
         ),
     )?;
+    lower_span.success(None);
+    drop(lower_span);
+    let mut baseline_span = crate::startup_profile::Span::start("runner.lease_baselines");
     // Acquire before Landlock and hold until the VM has stopped. Copy restores
     // use ordinary fingerprints; the original generation is no longer leased.
     let baseline_owners = if spec.restore.is_none() {
@@ -2385,6 +2415,8 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             })
         })
         .collect::<Vec<_>>();
+    baseline_span.success(None);
+    drop(baseline_span);
     #[cfg(target_os = "linux")]
     let _cpu_qos = spec
         .cpu_qos
@@ -2449,7 +2481,9 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             read_write.push(PathBuf::from("/dev/userfaultfd"));
         }
         read_only.extend(firmware_read_only_paths(spec.firmware_path.as_deref()));
+        let mut sandbox = crate::startup_profile::Span::start("runner.sandbox");
         crate::executor::sandbox::restrict_krun_runner(read_only, read_write, None)?;
+        sandbox.success(None);
     }
     run_linked_krun(
         spec,
@@ -2538,6 +2572,13 @@ fn run_linked_krun(
         pvisor_vm::api::VmPlatform::init_logging("trace");
     }
     let mut guest = spec.guest.clone();
+    // Host profiling also instruments PID 1 when ordinary environment projection
+    // omits host variables. This diagnostic bit carries no guest authority.
+    if std::env::var("PVISOR_STARTUP_PROFILE").as_deref() == Ok("1") {
+        guest
+            .env
+            .insert("PVISOR_STARTUP_PROFILE".into(), "1".into());
+    }
     // Virtio-console port names arrive asynchronously. Tell PID 1 which
     // non-terminal streams must be ready before it launches the workload.
     guest.stdio_ports = Some(std::array::from_fn(|fd| {
