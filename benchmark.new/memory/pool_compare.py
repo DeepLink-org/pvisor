@@ -54,6 +54,25 @@ CURRENT_SCHEMA = "pvisor-pool-curve-condition/v4"
 WRITE_SCHEMAS = ("pvisor-pool-curve-condition/v3", CURRENT_SCHEMA)
 
 
+def harness_paths():
+    """Sources required to import the frozen coordinator without the checkout."""
+    return [
+        Path(__file__),
+        Path(__file__).with_name("scanner_compare.py"),
+        Path(__file__).with_name("docker_support.py"),
+        Path(__file__).with_name("prepare_pool.py"),
+        *(
+            REPO / "benchmark.new/support" / name
+            for name in (
+                "firecracker_ksm.py",
+                "memory_savings.py",
+                "memory_scale.py",
+                "linux_cold_runtime.py",
+            )
+        ),
+    ]
+
+
 def validate_observation(rows, guards, *, tasks_max=128):
     """Keep legacy budgets exact; v4 admits the same 256-task cap for every arm."""
     if tasks_max == 128:
@@ -850,20 +869,11 @@ def main():
         }
         for pattern in patterns
     }
-    harness_paths = [
-        Path(__file__),
-        Path(__file__).with_name("scanner_compare.py"),
-        Path(__file__).with_name("docker_support.py"),
-        Path(__file__).with_name("prepare_pool.py"),
-        *(
-            REPO / "benchmark.new/support" / n
-            for n in ("firecracker_ksm.py", "memory_savings.py", "linux_cold_runtime.py")
-        ),
-    ]
-    harness = {str(path.resolve()): digest(path) for path in harness_paths}
+    paths = harness_paths()
+    harness = {str(path.resolve()): digest(path) for path in paths}
     frozen = output / "harness"
     frozen.mkdir()
-    for path in harness_paths:
+    for path in paths:
         shutil.copy2(path, frozen / path.name)
     report = dict(
         benchmark_id="B-MEMORY-SCALE",

@@ -32,6 +32,33 @@ from pool_compare import (
 from prepare_pool import tree_manifest
 
 
+def harness_paths():
+    """Freeze the library protocol and every imported coordinator dependency."""
+    return [
+        *(
+            Path(__file__).with_name(name)
+            for name in (
+                "library_compare.py",
+                "library_protocol.py",
+                "library_evidence.py",
+                "prepare_pool.py",
+                "pool_compare.py",
+                "scanner_compare.py",
+                "docker_support.py",
+            )
+        ),
+        *(
+            REPO / "benchmark.new/support" / name
+            for name in (
+                "firecracker_ksm.py",
+                "memory_savings.py",
+                "memory_scale.py",
+                "linux_cold_runtime.py",
+            )
+        ),
+    ]
+
+
 def verify_inputs(inputs, receipt):
     if any(digest(inputs / name) != checksum for name, checksum in receipt["hashes"].items()):
         raise ValueError("frozen input bytes changed")
@@ -111,22 +138,7 @@ def main():
         for n in range(1, 5)
         for percent in (0, 25, 100)
     }
-    paths = [
-        Path(__file__).with_name(name)
-        for name in (
-            "library_compare.py",
-            "library_protocol.py",
-            "library_evidence.py",
-            "prepare_pool.py",
-            "pool_compare.py",
-            "scanner_compare.py",
-            "docker_support.py",
-        )
-    ]
-    paths += [
-        REPO / "benchmark.new/support" / name
-        for name in ("firecracker_ksm.py", "memory_savings.py", "linux_cold_runtime.py")
-    ]
+    paths = harness_paths()
     harness = {str(path.resolve()): digest(path) for path in paths}
     frozen = output / "harness"
     frozen.mkdir()

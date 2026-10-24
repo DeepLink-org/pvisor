@@ -65,13 +65,13 @@ Firecracker、QEMU q35及QEMU microvm共用同一收据冻结的官方stock内�
 
 ```sh
 python3 benchmark.new/support/prepare_reference_budget.py \
-  --output benchmark/.data/NEW_PRIVATE_DOCKER_BUDGET \
+  --output benchmark.new/.data/rb-new \
   --memory-mib 2048 --cpu-affinity 0,1 --cpu-placement affinity
 ```
 
 将其`setup.json`传入`--docker-setup`，测量服务自动加入同一父slice。结束后只停止
 该收据明确记录的私有daemon和slice，不操作系统或其他用户的Docker。stock内核收据的
-来源要求与准备步骤见[参考内核准备](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)；
+来源要求与准备步骤见[参考内核准备](../support/README.md)；
 使用官方vmlinuz、匹配config、可信extractor及所需原版模块initrd，不借用pVisor固件。
 
 快速上限为每环境90秒。同一配置/case首次失败后，剩余计划样本标记为未执行，其他单元继续；

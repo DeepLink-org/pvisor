@@ -133,9 +133,11 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
-- **入口脚本：** `benchmark.new/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`just benchmark startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark.new/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark.new/startup/README.md`](../benchmark.new/startup/README.md)。历史结果仍由 `reference_baselines.py`、`startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；工程实验与诊断见下列独立条目。
+- **入口脚本：** `benchmark.new/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`just benchmark startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark.new/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark.new/startup/README.md`](../benchmark.new/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
 
 ### B-LAZY-STARTUP：远程镜像按需读取能缩短多少启动等待 {#b-lazy-startup}
+
+- **JSON 入口状态：** 可执行 [startup/image_compare.json](startup/image_compare.json)、[startup/image_lazy_compare.json](startup/image_lazy_compare.json)、[startup/stage_lazy_compare.json](startup/stage_lazy_compare.json)；未准备 [startup/lazy_startup.json](startup/lazy_startup.json)（拒绝测量）。
 
 - **文档：** `lazy-image-startup.md`（中英文同步）。
 - **角色：** user-facing。
@@ -144,7 +146,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-daemon serve --cache 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
 - **当前实现复测：** 新静态 release 的 Docker/lazy 对照按负载独立成批，显式启用客户端索引页、上游连接池及持久私有桥；私有 namespace 隔离已有 Host listener。可使用校验后的原始压缩 OCI blobs 发布新 registry，并复制支持的 cache store，此时仅报告缓存准备成本，不沿用历史首次拉取耗时；Read Data、Metadata Data 和总响应分别计数。旧批次保留且不与新批次合并或计算实现加速比。
 - **TurboOCI 对照协议：** [具体协议](../benchmark.new/startup/TURBO_OCI.md)回答“相同 OCI 来源与应用下，TurboOCI 和 pVisor 的按需路径分别缩短多少客户端等待，准备和传输成本是多少”。四组为相同 containerd/runc 的 eager OCI 与 TurboOCI，以及相同 pVisor VM 的 eager OCI 与文件索引 lazy；内部比较加载路径，跨运行时仅比较完整产品路径。原四项公开表缺少镜像身份和负载脚本，不称精确复现；先固定 shell 与 NumPy 同类负载。独立服务、namespace 和缓存，禁止调用上游全局清理脚本；Range 206 与 200 的实际字节、元数据与内容分别计数。先预检，再按轮随机交替冷客户端及紧随其后的热客户端，3 次预热、30 个正式样本，正确性与证据门禁同上。独立 OverlayBD/TCMU 后端已部署并通过 TurboOCI shell 功能验证，操作见[部署记录](../benchmark.new/startup/OVERLAYBD_LAB.md)；正式四组采样/审计尚未接通，不产生或发布新性能结果。
-- **入口脚本：** `lazy_startup.py`。
+- **历史入口：** `lazy_startup.py`。
 
 - **已准备镜像的启动对照：** `benchmark.new/startup/image_compare.py` 是同源 Ubuntu shell 的独立补充批次，经单个 Python 配对行走 prepare → semspec bench → 专用 audit/render。普通 OCI/overlayfs 容器、TurboOCI/OverlayBD 容器与 pVisor 本地预准备 rootfs VM，每组 3 次预热、30 次随机交替，新执行实例和可写状态；镜像输入与宿主页缓存保留，不包含 pull、格式转换或解包。CPU 12,13，容器 2 CPU 配额/2 GiB，guest 2 vCPU/2 GiB；服务开销及 Docker exec 调用差异明确披露，不视为等整机预算或纯镜像格式比较。独立样本保存 Popen→唯一正确输出的 Ready 和同次正常退出的 Completion，校验输出、VM Bundle、实际后端与清理，配对 bootstrap 95% CI。记录其他 CPU 上的后台负载，不清理或停止无关任务；采样 CPU 上出现并发构建/其他已识别 benchmark 时整批标记受干扰，不事后剔除慢样本。不与 cold-client/warm-client 样本混合，不冒充完整四组冷镜像对照。
 
@@ -154,6 +156,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-LAZY-ENG：小文件 lazy image V2 的工程对照 {#b-lazy-eng}
 
+- **JSON 入口状态：** 未准备 [filesystem/lazy_image.json](filesystem/lazy_image.json)（拒绝测量）。
+
 - **文档：** 工程结果保留 `benchmark/pvisor/LAZY_IMAGE_V2_REPORT.md`、`benchmark/pvisor/LAZY_INDEX_PAGES_REPORT.md`、`benchmark/pvisor/LAZY_BRIDGE_REPORT.md` 和 `.data/`；不混入用户启动页的历史 Docker 对照。
 - **角色：** engineering A/B。
 - **Motivation：** 判断有界目录元数据预取与持久连接是否减少 Python 导入的小文件请求成本。
@@ -161,7 +165,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 私有 user/mount/PID namespace 隔离 Host listener；新 VM/workspace/stage，CPU 0/1、2 vCPU、2 GiB guest RAM，预准备 cache 服务在 CPU 2/3，本机 loopback TCP，无延迟注入。每轮随机交替 V1-compatible（`PVISOR_LAZY_IMAGE_V2=0`）/V2（默认启用），每模式冷客户端后紧接热，至少 30 轮，另有初始轮与 3 warmups。两模式均包含正确分页等共同修复，开关只比较元数据预取与连接复用；当前 harness 在此对照中显式关闭客户端索引页（`PVISOR_LAZY_INDEX_PAGES=0`）。唯一正确 NumPy 输出、退出码、Run Bundle、冷内容非零、热内容为零全部通过才有效；任何失败使批次无效，不剔除慢有效样本。分布规则同 B-LAZY-STARTUP，P95 仅参考。冻结源码、制品、harness、请求和原始报告在 `.data/`，不与历史批次合并。
 - **客户端索引页对照：** 独立批次比较 V2 RPC（`PVISOR_LAZY_IMAGE_V2=1, PVISOR_LAZY_INDEX_PAGES=0`）与 V2 客户端页（两项均为 1），隔离索引页带来的增量收益；另保留 V1/旧服务能力缺省回退测试。复用同一 NumPy、预算、正确性和 30 轮协议，文件内容载荷与二进制元数据载荷分别计数，不将索引页计为文件内容；原始证据及工程报告独立于已有 V1/V2 和 Docker 批次。
 - **私有网络桥对照：** 独立批次比较桥 V1 单次连接与桥 V2 持久连接，V2 客户端与上游连接池均开启；分别在 RPC 与索引页模式测量，不跨模式合并。桥的连接读帧/idle 等待与四个执行 worker 分离，有界接入和队列。分别记录 runner→桥 Unix 连接/请求以及桥→服务 TCP 连接/请求，校验文件与元数据字节一致；同制品开关、预算、NumPy、30 轮、正确性和 bootstrap 规则同上，不混入历史批次。
-- **入口脚本：** `lazy_image_v2.py`。
+- **历史入口：** `lazy_image_v2.py`。
 
 ### B-FS-TOOLS：各执行模式在哪些文件系统任务上更合适 {#b-fs-tools}
 
@@ -219,6 +223,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 当作十五个独立样本；中位数与范围独立于历史批次，不据跨批次差异推算优化收益。
 
 ### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
+
+- **JSON 入口状态：** 可执行 [filesystem/dax_ab.json](filesystem/dax_ab.json)；未准备 [filesystem/ab.json](filesystem/ab.json)（拒绝测量）。
 
 - **文档：** `docs/src/*/lab-notes/filesystem-performance-analysis.md`、
   `docs/src/*/lab-notes/filesystem-io-performance-analysis.md`
@@ -560,7 +566,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   干扰或每轮全量清单门禁，保留全部有效慢样本。证据在 `.data/af17-cli/`，
   结果仅进入工程分析，不改用户跨运行时表。
 - **新增独立 kernel-cache 实验：** `kernel_cache_runner.py` / `kernel_cache_driver.rs`，同一冻结 release 制品 native、legacy-writable（immutable 物理缓存开启，默认 1s）、metadata-writable60s、metadata-readonly60s、metadata-and-data-readonly60s；2048/32 half-deep、全字节验证、3 warmups/30 seed-shuffled samples、CPU 0,1；hot、legacy-TTL-expired/extended-TTL-warm、single-pass readsearch、verified git/rg 与 startup/mount/task/unmount。 全部 native/lower/upper/work 使用相同 private user/mount/PID namespace 的真正 noatime tmpfs backing；保留 mountinfo、past-atime 读验证、监督/终止回执；旧 Btrfs/future-atime kernel-cache 批次未验收，只作历史诊断，raw 保留且不可拼接。writable 必须保留 fusectl abort guard；独占 fresh upper/work、稳定 immutable lower，无 journal/preimage/metrics/custom policy/exclusions；KEEP_CACHE 只在两种 readonly 条件间归因。报告 `benchmark/pvisor/KERNEL_CACHE_REPORT.md` 仅属 Linux HOST API 工程实验，不代表 pvisor run/VM/review guarantees。
-- **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
+- **历史入口：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
 
 - **宿主请求结果复用对照：** `host_hotpath_ab.py` / `host_hotpath_driver.rs`；从当前源码冻结两份 release，仅恢复保存的优化前 `core.rs`、`service.rs`、`fs.rs` 为基线，其他修改保持一致。真实 macOS FSKit 挂载，Immutable/no-journal 与 Mutable/compact 两个独立配置，每格 3 次预热、30 个 seeded 随机配对、新 upper/work，测首次/重复 stat、小文件 append/truncate open、mkdir/FIFO/symlink。逐项验证结果、完整 lower 清单、compact 观察和正常卸载；保留全部有效慢值和失败，不作事后剔除。准备生成固定 Python 配对行 `in.json`，由 semspec bench 执行；使用 Python 阶段时钟，非 hyperfine。配对 bootstrap 95% CI 和分布检查，另跑 profile 诊断，不将诊断耗时混入正式计时。报告留在 `benchmark/pvisor/HOST_HOTPATH_REPORT.md`，不外推 Linux、VM、冷磁盘或整个 Agent 任务。
   FSKit 不可用时，`host_hotpath_phase_ab.py` / `host_hotpath_probe.rs` 独立测实际私有适配器的 LOOKUP、无句柄 GETATTR、写 OPEN 与创建回调：两份冻结源码插入同一仅测试 probe 和 fuser ReplySender 导出，回复只检查成功，不经过内核或调度队列；其余配对、校验和分布规则相同。阶段计时使用 Rust Instant，排除初始化、退出、最终校验；与真实挂载失败或其他批次不合并。
@@ -583,6 +589,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **下沉与跨文件写回整体收益：** `guest_lowering_writeback.py`，Apple Silicon/HVF，同一冻结 CLI/SDK、guest 和固件，`PVISOR_VM_GUEST_CACHE=0/1` × `PVISOR_VM_FS_WRITEBACK=0/1` 四臂；普通 `--safe` CLI 与 SDK Immutable share 分列。每 VM 2 vCPU/4096 MiB，热宿主输入、fresh VM/upper，3 warmups/30 seeded 随机配对；沿用目录镜像的 17 个元数据/读阶段，追加 defer、tiny、16 MiB boundary、24 MiB pressure、重复覆盖、单 fd 小块流写及逐文件 fsync。连续测写循环、syncfs 和两者总耗时，另记含启动/验证/收尾的任务完成时间。补充派生统计可先在每个任务内合计七个写阶段，再作配对分布；不得相加中位数或百分比，也不代表真实 Agent 权重。全部字节由 guest 与 host 校验；正常退出和 CLI Bundle 必须通过，输入/制品/harness 前后验摘要；成功 stage 经逐成员校验后压缩保留，失败现场不清理。无 host CPU affinity/cgroup 或无外部干扰保证，不剔除慢有效样本；各 cohort 内配对 bootstrap 5000 次，分离分布不作整体排名，不报告 P99。另跑 B-FS-DIAG 的独立 fresh VM 请求数与 prime-only 差分，不混入计时。技术报告/CSV 留在 `benchmark/pvisor/`，不能据此推断完整 Agent 或跨容器排名。执行时可用 `lowering_writeback_guard.py` 加入 5 GiB 启动余量和 1 GiB 运行保护线；源代码、参数及每 0.2s 的磁盘观测随批次保留，触线整批失败，不补跑或拼接样本。
 
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
+
+- **JSON 入口状态：** 未准备 [filesystem/diagnostic.json](filesystem/diagnostic.json)（拒绝测量）。
 
 - **guest writeback 流水诊断：** `benchmark.new/filesystem/guest_writeback_pipeline.py`，
   同一冻结 SDK host/guest 以旧 0047 与新 0048 固件分别开启 WB，关闭 host 写缓存与 DAX。
@@ -629,39 +637,47 @@ Design: 负载、对照、控制变量与有效样本判据。
   FLUSH/OPEN/READ/RELEASE，不能把诊断时间当工具性能或跨组件相加精确归因。
 - **Kernel-cache 诊断入口：** `kernel_cache_runner.py --profiles`；每个 count case 使用独立 fresh mount，记录 warm priming 与操作的完整请求总数，另测 prime-only 以分离 warm 增量。源码推导 expected instances（包括 notifier 是否创建 profile），核查全部 PID/component/instance 的唯一 final record，不能固定忽略额外线程实例；任何缺失/额外实例或失败都拒绝。诊断耗时绝不进入正式 distribution。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。`immutable_lower_cache.py --profiles` 保留每个 PID/component/instance 的所有累计 records，以各实例 final record 比较 physical parent/leaf stats 和 cache hits/misses/evictions；inclusive spans 不相加。真实 mount 若被拒绝，保留失败并仅以明确标记的 core 机制实验补充，不替代 FUSE 结果。
-- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
+- **历史入口：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
 ### B-OPENSANDBOX-ENG：本地兼容后端的就绪等待 {#b-opensandbox-eng}
+
+- **JSON 入口状态：** 未准备 [startup/opensandbox.json](startup/opensandbox.json)（拒绝测量）。
 
 - **角色：** engineering A/B。
 - **Motivation：** 判断本地 pVisor OpenSandbox 后端是否能缩短 SDK 创建到可执行命令的等待。
 - **想要的结论：** 在预备好的同 digest Ubuntu、1 CPU/512 MiB、同机 SDK 1.1.0 下，报告 native VM 与官方 Docker server 的就绪延迟分布、差异区间及失败；明确 native guest 或旧版同字节 execd 配置，不混合批次，不推断完整协议、网络策略、生产密度或隔离等级等价。
 - **实验设计：** 服务与镜像预先准备，另列首个请求；固定种子随机交替，每臂至少 20 次新建沙箱。服务重启首个请求另用 20 次独立服务进程重启配对，不包含服务启动时间，也不称为磁盘冷缓存。计时 SDK create 返回，再单列首次命令完成时间；必须校验 stdout、私有文件及删除成功，完整保留失败，不剔除慢样本。所有请求相同资源/argv/环境，包含各后端实际 admission/readiness 与 SDK 开销。VM 的 cgroup 限额覆盖 VMM/supervisor，Docker 限额覆盖容器；这是各自本地部署配置，不能视为相同内核隔离或同等可用 guest RAM。无 Docker 基线时只能报告 native 单臂诊断。
-- **入口脚本：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
+- **历史入口：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
 
 ### B-SANDBOX-ENGINE-ENG：原生 guest 执行后端的启动与命令延迟 {#b-sandbox-engine-eng}
+
+- **JSON 入口状态：** 未准备 [startup/sandbox_engine.json](startup/sandbox_engine.json)（拒绝测量）。
 
 - **角色：** engineering A/B；完整证据保留 `benchmark/.data/sandbox-engine-*`，不进入用户 benchmark 页。
 - **Motivation：** 判断以共享 Rust guest 引擎替代每 VM 官方 execd/envd 后，SDK 首次/稳态创建与命令完成是否改善。
 - **想要的结论：** 同机、同预算、同 SDK 的旧制品/官方服务与新制品/原生引擎配对中位数差异、变化比例及 95% bootstrap 区间；OpenSandbox 与 E2B 分列，不外推 Docker 或完整协议性能。
 - **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
-- **入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
+- **历史入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
 
 ### B-OPENSANDBOX-MEMORY-ENG：本地兼容服务的完整内存成本 {#b-opensandbox-memory-eng}
+
+- **JSON 入口状态：** 未准备 [memory/opensandbox_memory.json](memory/opensandbox_memory.json)（拒绝测量）。
 
 - **角色：** engineering A/B；综合报告位于 `docs/src/{zh,en}/lab-notes/opensandbox-performance-analysis.md`，原始证据保留 `benchmark/.data/opensandbox-memory-*`。
 - **Motivation：** 判断默认 pVisor 及显式共享内存池在本地 OpenSandbox 用法中能否降低服务与实例的实际内存，而不是把配置 RAM 当作占用。
 - **想要的结论：** 同机、同源 Ubuntu、官方 SDK 1.1.0 和每实例 1 CPU/512 MiB 下，空服务、1/4 个空闲实例及四实例各持 64 MiB 数据时的完整组 cgroup 内存分类、可获得的 PSS、CPU 与校验结果；分别报告默认配置与开启物理池，包含未获得收益的条件。完整组计费为主指标，任何进程不可读时整组 PSS 标不可用，不漏算后作比较。
 - **实验设计：** 三臂为冻结 pVisor 原生后端默认模式、同制品显式物理池、官方 OpenSandbox 1.1.0 配独立 rootless Docker。API、VMM/supervisor、pool 或 dockerd/containerd/shim 全部在专属受限产品组内，外部 SDK 协调器和观察者不计入；四核配额、4 GiB、零 swap，镜像预备且宿主页缓存保留，不改变宿主 KSM/sysctl 或停止无关任务。预检每臂一组独立保存，正式至少五轮固定种子随机交替；每臂新服务、新实例。采集空服务、1/4 实例空闲窗口，四实例相同 64 MiB 确定性数据就绪后观察 30 秒，之后每实例完整改写为独有数据并观察 10 秒；全量数据校验、独立文件写入、实际 cgroup/CPU 限制、宿主进程归属与确认删除为门禁。PSS 为完整产品映射的驻留物理内存，不能代替未映射缓存和内核成本；同时给 cgroup memory.current/stat、峰值和 CPU，预备缓存的组外计费明确披露。保留失败及全部有效慢样本，失败停止，预检不混入正式数据；按轮配对 bootstrap 95% CI，分簇时单列，不作 P99、真实 Agent 工作集或生产密度推断。
-- **入口：** `benchmark/opensandbox/memory.py`，静态负载为同目录 `memory_worker.rs`；复现与来源见目录 README。
+- **历史入口：** `benchmark/opensandbox/memory.py`，静态负载为同目录 `memory_worker.rs`；复现与来源见目录 README。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
+
+- **JSON 入口状态：** 未准备 [startup/guest_init.json](startup/guest_init.json)（拒绝测量）。
 
 - **角色：** engineering A/B
 - **Motivation：** 判断 guest init 实现变化是否改变启动等待。
 - **想要的结论：** 同输入就绪中位数差异及 95% bootstrap 区间。
 - **实验设计：** 相同 runner、rootfs 与 payload，随机交错实现，不作为跨产品用户对照。
-- **入口脚本：** `guest_init.py`。
+- **历史入口：** `guest_init.py`。
 
 ### B-STARTUP-REVISION-ENG：提交版本的启动与收尾对照 {#b-startup-revision-eng}
 
@@ -669,28 +685,34 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 定位指定提交与父提交或已归档历史版本是否改变首条有效输出和正常退出等待。
 - **想要的结论：** host、staged、VM 的 Ready / Exit 统计及同轮中位数差的 95% 配对 bootstrap 区间；不能用跨批次数字归因。
 - **实验设计：** 精确源码归档、相同 release/musl/gateway 构建参数和冻结内核；相同 rootfs、探针、CPU 0,1、2 vCPU / 128 MiB、热缓存。各条件 3 次预热、60 对正式样本，固定 seed 随机交替两个版本；Ready / Exit 同次采样。版本在独立 user/mount/PID namespace 中运行，私有 Host 状态目录，退出 namespace 时销毁自有服务；不重启宿主已有 Host。复用当前启动 observer 与完整正确性门禁，保留全部有效慢样本，无事后剔除。
-- **入口：** 每次生成并冻结的 `.data/revision-<commit>/bench.py`，由同目录 `in.json` 经 `semspec bench` 执行；构建收据、轮次顺序、逐次输出与统计一起归档。
+- **保留批次入口：** 每次生成并冻结的 `.data/revision-<commit>/bench.py`，由同目录 `in.json` 经 `semspec bench` 执行；构建收据、轮次顺序、逐次输出与统计一起归档。
 - **历史差距复核：** 先以同一 observer、探针和私有环境随机配对历史原始二进制与指定提交，明确 GNU 动态 / musl 静态等构建差异；此对照只能判断制品差距。确认差距后，以同一固件和构建目标重建源码版本，再判断源码贡献。原始固件提取出的内核摘要必须与冻结内核逐字节核对，不能仅根据链接方式断言固件不同。
 - **构建控制：** 历史 GNU、指定提交 GNU、指定提交 musl 可在同轮三条件随机顺序中采样，各 3 次预热 / 60 次正式试次，固定同一历史内核；分别报告 GNU 源码对照及指定提交 GNU/musl 路径对照的配对区间。内核差异另用同源码、同 musl 参数的两条件对照，不能从多个批次差值相减估算贡献。
 
 ### B-KERNEL-ENG：裁剪固件是否缩短当前产品的启动 {#b-kernel-eng}
 
+- **JSON 入口状态：** 未准备 [startup/kernel.json](startup/kernel.json)（拒绝测量）。
+
 - **角色：** engineering A/B；放入 `docs/src/*/lab-notes/vm-startup-performance-analysis.md`，不作为跨产品用户排名。
 - **Motivation：** 判断裁剪 guest 内核的收益，以及它是否仍支持工作区、开发工具和网络所需能力。
 - **想要的结论：** 相同 pVisor 二进制、相同 Linux 源码和补丁、相同打包方式，仅配置不同的两份新固件，其就绪/完整任务中位数差及 95% 配对 bootstrap 区间；列出减少的功能与未验证能力。
 - **实验设计：** 冻结固件源码、输入 tarball、补丁、配置与编译记录，分别重建通用配置和裁剪配置；不复用旧固件作为基线。先验证构建和同样负载的输出、暂存隔离与工作区内容；Linux KVM 上以相同两核/内存/工具输入，随机交替 shell-ready、七项文件工具和修复任务，每格 30 次、3 次预热。CPU 缓解、seccomp、namespaces、virtio-fs 等所需配置必须保留；网络/恢复能力需独立正确性检查，不能由 shell 启动通过推导。配置中 guest LSM/设备功能差异必须明确，不称为相同加固程度的排名。
-- **入口脚本：** `kernel_comparison.py`；`prepare_firmware_comparison.py` 是离线构建和来源准备 helper。
+- **历史入口：** `kernel_comparison.py`；`prepare_firmware_comparison.py` 是离线构建和来源准备 helper。
 
 ### B-STARTUP-DIAG：固件启动阶段诊断 {#b-startup-diag}
+
+- **JSON 入口状态：** 未准备 [startup/diagnostic.json](startup/diagnostic.json)（拒绝测量）。
 
 - **角色：** diagnostic
 - **Motivation：** 定位内核、初始化和宿主启动/收尾阶段对就绪时间及正常退出的贡献。
 - **想要的结论：** 各阶段计时及计时边界，不作为用户启动水位。
 - **实验设计：** 固定 guest payload 与 runner；早期内核时钟和收尾时间分别解释。
-- **入口脚本：** `firmware_boot.py`。
+- **历史入口：** `firmware_boot.py`。
 - **版本退化诊断：** 冻结历史与指定版本制品，在启动工程对照的私有环境下启用 `PVISOR_STARTUP_TIMING=1` / `PVISOR_STARTUP_PROFILE=1`，各做少量独立试次，保留 stderr 阶段记录。诊断行命令与输出独立归档；插桩时间不发布为性能水位，不将重叠 span 相加，缺失阶段标记视为未知。
 
 ### B-AGENT-TASK：一次完整的 Agent 修复任务要多久，主流 CLI 能否正常运行 {#b-agent-task}
+
+- **JSON 入口状态：** 未准备 [agent/agent.json](agent/agent.json)（拒绝测量）。
 
 - **文档：** `agent-tasks.md`
 - **角色：** user-facing
@@ -700,9 +722,11 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 使用固定的修复任务和测试，模型响应在本地固定回放，排除推理时间和公网波动。
   - 对照组与 B-FS-TOOLS 相同。
   - 以任务通过测试作为成功判据，失败单独计数，不计入耗时分布。
-- **入口脚本：** `reference_baselines.py`（tools 模式）、`v1/agent.py`。
+- **历史入口：** `reference_baselines.py`（tools 模式）、`v1/agent.py`。
 
 ### B-APPLY：审查后合入改动要多久，并行修改是否安全 {#b-apply}
+
+- **JSON 入口状态：** 未准备 [workflow/apply.json](workflow/apply.json)（拒绝测量）。
 
 - **文档：** `supervision-cost.md#apply-cost`
 - **角色：** user-facing
@@ -712,25 +736,31 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 文件数按 10 到 10 万的数量级扫描，并与同批的 Git patch 合入做对照。
   - 冲突注入：在合入前或合入过程中修改宿主文件，检查是否全部被检测到。
   - 中断注入：在合入的各阶段 SIGKILL，检查重新执行后的最终状态。
-- **入口脚本：** `v1/apply.py`。
+- **历史入口：** `v1/apply.py`。
 
 ### B-APPLY-ENG：合入目录索引的工程 A/B {#b-apply-eng}
+
+- **JSON 入口状态：** 未准备 [workflow/apply_ab.json](workflow/apply_ab.json)（拒绝测量）。
 
 - **角色：** engineering A/B，不进入用户页正文。
 - **Motivation：** 判断目录依赖闭包索引是否减少大批合入的等待，同时保持冲突检测和完整结果。
 - **想要的结论：** 同机配对的合入/冲突拒绝中位差及 95% 区间；只有输出和冲突保护全部通过后才比较。
 - **实验设计：** 同一冻结父源码，仅修改 apply 实现；编译器、依赖、release 配置一致。默认 1,000/10,000 文件、合入与合入前冲突、每格 30 次和三次预热，随机交替新旧二进制；每次创建独立 stage/target，准备排除在合入计时之外。诊断计数另跑，不把插桩时间混入性能结论。
-- **入口脚本：** `apply_plan_ab.py`。
+- **历史入口：** `apply_plan_ab.py`。
 
 ### B-APPLY-DIAG：合入计划的计数分解 {#b-apply-diag}
+
+- **JSON 入口状态：** 未准备 [workflow/apply_diagnostic.json](workflow/apply_diagnostic.json)（拒绝测量）。
 
 - **角色：** diagnostic。
 - **Motivation：** 判断时间是否花在收集改动、硬链接分组、目录索引或依赖闭包上。
 - **想要的结论：** 完整的 plan inclusive span、改动数、目录数、闭包迭代和祖先查询数；嵌套项不可相加。
 - **实验设计：** `apply_plan_ab.py --profile` 独立插桩批次，保存所有 stderr 计数；与正式计时分开。旧实现没有某项计数时明确为缺失，不当作零。可同时指定冻结的 `--trace-syscalls` 和 `--tracer-receipt`，只对合入/冲突命令运行 strace，保留源码、编译器、tracer 二进制和逐进程原始记录；分别统计 target、stage 和其他路径的元数据、复制与同步请求。tracing 耗时不能作为正式性能收益，syscall 用时不能与嵌套 span 相加。
-- **入口脚本：** `apply_plan_ab.py --profile`。
+- **历史入口：** `apply_plan_ab.py --profile`。
 
 ### B-NETWORK：网络代理和 VM 网络有多大开销 {#b-network}
+
+- **JSON 入口状态：** 未准备 [network/network.json](network/network.json)（拒绝测量）。
 
 - **文档：** `network.md`
 - **角色：** user-facing
@@ -740,24 +770,28 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 使用本地 HTTP 服务，分别测小请求延迟和 32 MiB 量级的传输吞吐。
   - 对照组为原生、host 代理和 VM。
   - 不访问公网，不代表真实模型 API 的延迟。
-- **入口脚本：** `v1/network.py`、`ubuntu_vm_network.py`。
+- **历史入口：** `v1/network.py`、`ubuntu_vm_network.py`。
 
 ### B-PEER-NET-ENG：同机直连转发的可靠性与热路径成本 {#b-peer-net-eng}
+
+- **JSON 入口状态：** 未准备 [network/peer.json](network/peer.json)（拒绝测量）。
 
 - **角色：** engineering A/B；原始证据和工程分析保存在 `benchmark/peer/.data/`，不进入用户网络页。
 - **Motivation：** 验证 daemonless peer 网络在拥塞、重启和双向流量中保持隔离与完整性，并避免转发热路径出现明显性能退化。
 - **想要的结论：** 同机冻结基线/候选的有效 Ethernet goodput、往返延迟和全进程 CPU 成本，附配对中位数差异 bootstrap 95% CI；明确不代表 KVM、Docker bridge 或应用 TCP 吞吐。
 - **实验设计：** 公共 `VmNetwork` guest framed stream 与真实 Unix datagram 转发，两个 backend 线程、两个 guest 驱动线程；64-byte ping/pong 和 1514-byte、窗口 8 的有序完整性验证批传输。每样本独立网络目录和 owner，计时前预热；同一四核亲和性、相同负载，3 轮预热后至少 30 轮 seeded 随机配对，不剔除慢样本。所有帧逐字节验证，任何超时/损坏/丢包保留且使批次无效。输出 sent/received/dropped、wall、process CPU、原始 RTT 与宿主/源码/二进制/harness 摘要。故障注入正确性测试独立于计时。
-- **入口：** `benchmark/peer/run.py` 调用 `crates/pvisor-overlaynet/examples/peer_forwarding.rs`；复现与限制见 `benchmark/peer/README.md`。
+- **历史入口：** `benchmark/peer/run.py` 调用 `crates/pvisor-overlaynet/examples/peer_forwarding.rs`；复现与限制见 `benchmark/peer/README.md`。
 - **发行配置补充：** 默认 `release` 候选可单独采样 3 次预热和至少 30 次正式运行；同样的完整性、亲和性和证据规则。只报告绝对水平，不与独立 `performance` 批次计算变化或归因编译优化。
 
 ### B-FOUR-PEER-ENG：512 MiB 上限下四实例的真实网络通信 {#b-four-peer-eng}
+
+- **JSON 入口状态：** 未准备 [network/four_peer.json](network/four_peer.json)（拒绝测量）。
 
 - **角色：** engineering A/B；Docker 对照报告 `benchmark/peer/FOUR_NODE_REPORT.md`，转发优化报告 `benchmark/peer/PEER_OPTIMIZATION_REPORT.md`；原始证据在该目录 `.data/`，不更新用户网络 benchmark 页。
 - **Motivation：** 判断真实四 pVisor 的复杂通信是否稳定，以及相对四 Docker bridge 容器的网络性能成本。
 - **想要的结论：** 每实例宿主 cgroup 内存硬上限 512 MiB、swap 0、1 CPU 配额下，四节点全互连 RPC、12 条有向 TCP 批传输及四跳环形 RPC 的吞吐、RTT、CPU 和内存；同批随机配对差异 bootstrap 95% CI，保留失败和性能短板。
 - **实验设计：** 原生 KVM 四 VM（各 384 MiB guest，VMM/网络/前端计入各自 512 MiB scope）与四 rootful Docker 自定义 bridge 容器（各 512 MiB），同一静态 musl worker、IP、MTU 1500、四逻辑 CPU 亲和性及输入。先真实 guest 正确性与慢接收端/重启预检，再 3 次预热和 30 对 seeded 随机交替；每条件启动四个新实例，启动/准备/控制器不计网络时钟，组内三个正常负载按固定顺序执行。逐字节/数量校验、scope/cgroup 实际限制、guest 内存及 OOM 事件均核对；错误使批次失败，保留全部已完成数据，不剔除慢样本、不拼接失败批次。记录全节点输出、逐 RPC RTT、宿主 CPU/内存曲线、二进制/源码/镜像和环境摘要。Docker daemon/containerd 为宿主既有服务，其开销另观察，不冒充完全受限的整机预算；共享宿主内核与 VM 内核的不同明确披露。不改宿主 sysctl、不操作无关容器/网络，不据小规模结果推导生产密度。
-- **入口：** `benchmark/peer/four_node.py`、`four_node_worker.rs`；复现见 `benchmark/peer/README.md`。
+- **历史入口：** `benchmark/peer/four_node.py`、`four_node_worker.rs`；复现见 `benchmark/peer/README.md`。
 - **转发优化对照：** 同一当前运行时代码的冻结 baseline/candidate，复用上述四 VM、512 MiB/零 swap/1 CPU、三个负载、3 次预热与 30 对随机协议；`four_node.py --compare-pvisor BASELINE` 比较两个 pVisor 制品，不与旧 Docker 批次计算优化收益。诊断用 `trace_syscalls.c` 的局部 LD_PRELOAD 计数器记录各线程 socket、read/write（包含 eventfd）及 epoll 次数与时间，不采集 ioctl；只注入专属实验进程，诊断结果独立，不计入正式样本。正式对照必须移除计数器。GSO/MTU/协议变化需独立正确性验证，不以放宽校验或扩大未约束队列换取吞吐。
 - **优化批次干扰规则：** `reject_foreign_work` 在入场和每 0.5 秒检查同 UID 的构建、测试及可见 KVM FD，排除本实验冻结可执行文件。发现外部工作使整批无效并停止，保留原始值，不补选较快样本；不终止外部任务。无法读取的进程不作为全宿主安静证明。清理前保存本实验实例状态、completion 和日志，避免无输出退出码丢失诊断。
 - **持续批传输补充：** 每方向 32 MiB（12 方向共 384 MiB），新 worker 相同于两臂，额外采集 guest `/proc/net/snmp` 的 TCP 重传增量。3 对预热与 30 对正式样本独立成批，控制程序在计时和 CPU 窗口外采集计数，不与 4 MiB 样本合并，也不以延长采样直到显著的方式挑选结果。
@@ -766,14 +800,18 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-PEER-CHAOS-ENG：持续流量中的四实例故障隔离与恢复 {#b-peer-chaos-eng}
 
+- **JSON 入口状态：** 未准备 [network/peer_chaos.json](network/peer_chaos.json)（拒绝测量）。
+
 - **角色：** diagnostic；正确性与有界持续运行检查，不是性能比较，也不进入用户 benchmark 页。
 - **Motivation：** 检查批量转发实现是否在持续通信、节点不可用和地址代际变化下保持数据完整性，并隔离故障节点。
 - **想要的结论：** 固定观察窗内，完整性校验、健康节点可达性、故障后恢复、真实资源限制及失败记录；不将有限时长无故障称为生产可靠性保证。
 - **实验设计：** 同一冻结网络运行时，四个真实 Linux/KVM VM，各 384 MiB guest、512 MiB 宿主硬上限、零 swap、1 CPU 配额、CPU 4–7。默认 30 分钟、30 个预定故障周期，持续交替全互连 TCP RPC、12 向批传输、四跳环形 RPC、变长 UDP 和慢读端；节点 1 依次经历三秒 cgroup 冻结、正常停止/启动、SIGKILL VMM、删除/同名同 IP 重建，其余三节点在故障窗口内必须完成健康通信。冻结时已建立 TCP 必须在解冻后完成；崩溃不承诺旧 TCP 会话延续，重建后新连接、DNS 和 UDP 必须恢复。逐字节验证，不把超时当成功；UDP 允许有界重传但逐项报告实际尝试/重复/超时。每秒采集 cgroup 内存/OOM/swap、进程/线程/FD；节点 0/2/3 持续保留以观察积累。记录宿主干扰但不做性能归因，不终止无关任务。失败停止并保存全部证据，不剔除、不拼接或自动重试整批；短预检独立保存。
-- **入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
+- **历史入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
 - **并发协议补充：** `mixed_chaos.py` 独立启动一组四 VM，在三个 384 MiB 全互连 TCP 传输中并发校验 12 向 UDP；必须保留 UDP 完成时 TCP 客户端尚未完成的证据。预算、校验和失败停止规则相同，不与持续运行批次合并，不做性能比较。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
+
+- **JSON 入口状态：** 未准备 [density/density.json](density/density.json)（拒绝测量）。
 
 - **文档：** `density.md`
 - **角色：** user-facing
@@ -784,10 +822,12 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 对照组为 Podman 或 Docker。
   - 先测空闲探针，再测带真实工具负载的情况；两者分别报告。
   - 成功率与资源一起报告，不能只报告成功的样本。
-- **入口脚本：** `density.py`，worker 为 `density_worker.py`。每批使用独立、固定 CPU/内存预算且禁用 swap 的 cgroup；所有任务到达 readiness barrier 后才一起释放。空闲与 Python/Git 修改和校验任务分开报告。OCI 对照必须证明 payload 与 conmon 没有逃离资源预算。记录整个 cgroup、完整 VM backing、RSS、OOM、尝试与完成数量。共享的预先准备工具/镜像缓存可能由父 cgroup 计费，不能把受限 cgroup 的容量换算为整机净内存节省。
+- **历史入口：** `density.py`，worker 为 `density_worker.py`。每批使用独立、固定 CPU/内存预算且禁用 swap 的 cgroup；所有任务到达 readiness barrier 后才一起释放。空闲与 Python/Git 修改和校验任务分开报告。OCI 对照必须证明 payload 与 conmon 没有逃离资源预算。记录整个 cgroup、完整 VM backing、RSS、OOM、尝试与完成数量。共享的预先准备工具/镜像缓存可能由父 cgroup 计费，不能把受限 cgroup 的容量换算为整机净内存节省。
 - **暂停等待的容量另测：** `parked_density.py` 使用相同静态 worker（`parked_memory_probe.rs`）、64 MiB 完整触碰和校验的数据、64 个文件与四个恢复后改动；重复与确定性随机数据分开。逐个创建并暂停到共同 parked barrier，比较当前 Job raw/压缩执行快照、native SIGSTOP 和 Podman pause；统一包含协调器、辅助进程、backing/页缓存的两核、2 GiB、零 swap 预算。随后以固定一个恢复槽逐个恢复，校验同一执行 token、全部内存和文件结果；分别报告停驻容量、准备成本、恢复至完整结果的成本、失败/未知/OOM，不能称为活跃并发或用快照文件大小推算物理密度。先单独验证四类机制的 stdin barrier 可保存/恢复；不支持的机制明确为未测，不改用计时 sleep。OCI payload/conmon 与 pause 使用的子 cgroup 必须都处于同一总预算。完整容量扫描每格至少五个批次；共享预备工具缓存的计费范围和快照相对容器 pause 的语义差异需明确。SDK offload 与自动冷页压缩不包含在此快照对照中。
 
 ### B-ISOLATION：隔离是否真的生效 {#b-isolation}
+
+- **JSON 入口状态：** 未准备 [isolation/isolation.json](isolation/isolation.json)（拒绝测量）。
 
 - **文档：** `isolation-tests.md`
 - **角色：** user-facing（正确性，不是性能）
@@ -796,25 +836,29 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：**
   - 每种行为都有负对照（必须被阻止）和正对照（必须被允许）。
   - 以宿主上的最终状态作为判据，而不是只看请求返回了什么。
-- **入口脚本：** `v1/isolation.py`。
+- **历史入口：** `v1/isolation.py`。
 
 ### B-SUPERVISION：审查改动的机器成本有多大 {#b-supervision}
+
+- **JSON 入口状态：** 未准备 [workflow/review.json](workflow/review.json)（拒绝测量）。
 
 - **文档：** `supervision-cost.md`
 - **角色：** user-facing
 - **Motivation：** 用户在 Agent 运行之外，还要审查 diff、选择性合入或丢弃。用户需要知道这一流程中工具本身占用的时间是否可以忽略。
 - **想要的结论：** "审查 N 个文件、合入其中一部分的机器流程耗时为多少，与 Git diff 流程相当或差多少"；人的阅读时间不在测量范围内，需要明确写出。
 - **实验设计：** 固定数量的改动文件，测 status、review、选择性 apply 和 drop 的完整流程，并与 Git 工作流做同批对照。
-- **入口脚本：** `v1/supervision.py`。
+- **历史入口：** `v1/supervision.py`。
 
 ### B-WORKFLOW：保留少量改动的完整任务流程是否更便宜 {#b-workflow}
+
+- **JSON 入口状态：** 未准备 [workflow/workflow.json](workflow/workflow.json)（拒绝测量）。
 
 - **文档：** `supervision-cost.md`
 - **角色：** user-facing
 - **Motivation：** Agent 常在大工作区中修改少量文件。用户要付出创建独立工作区、运行、查看 diff、选择性合入和丢弃其余结果的总成本，而不只是工具执行时间。
 - **想要的结论：** 同机、同工作区规模下，pVisor stage 与 Git worktree、文件系统 reflink 副本的完整机器流程成本，以及并发宿主修改能否阻止合入。
 - **实验设计：** 预先准备相同 Git 仓库；每次创建独立任务视图，修改 20 个文件，生成内容 diff，合入 10 个并丢弃其他改动。分别测小工作区和 10,000 文件工作区，普通合入和宿主冲突独立成组；随机交替执行，至少 30 个样本、3 次预热。验证任务执行不修改原工作区、选择性结果一致、冲突时没有任何文件被覆盖。计时包括任务视图创建到清理，排除相同起始仓库的实验夹具准备与机器校验；不测推理、人类阅读、容器或 VM 隔离。
-- **入口脚本：** `review_workflow.py`。
+- **历史入口：** `review_workflow.py`。
 
 ### B-REPLAY：轨迹回放能否忠实准备环境 {#b-replay}
 
@@ -826,6 +870,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **入口脚本：** `benchmark.new/replay/replay.json`（`prepare.py` 冻结和预检，semspec bench 直接测量，hooks 逐次验证，`docs.py publish` 更新 JSON 表格）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
 
 ### B-VM-MEMORY：VM 闲置时能省多少内存，恢复要付出什么 {#b-vm-memory}
+
+- **JSON 入口状态：** 未准备 [memory/memory.json](memory/memory.json)（拒绝测量）。
 
 - **文档：** `vm-memory/index.md`
 - **角色：** user-facing
@@ -842,9 +888,11 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 每次试验使用新的 VM，并校验数据完整性。
   - `memory_savings.py` / `vm_memory_savings` 提供当前 Linux 默认回收、live 压缩、暂停和 raw/compressed offload 用户对照。每格先预检，再 3 次预热、30 次正式样本；完整组四核/2 GiB/零 swap，512 MiB/2 vCPU guest、64 MiB 应用数据、固定 60 秒闲置窗。逐块独立摘要、全量工具写入/读回和原生 reap 为成功门禁，观察者与协调器在组外。新制品与既有快照/offload 批次分开保留。`publish_memory_savings.py` 校验完整条件、预热与正式样本、来源和干扰门禁后导出阶段/峰值/CPU/存储分布及相对默认模式的配对 bootstrap 区间。
   - `memory_sharing.py` 使用同一 SDK worker 的独立用户协议：1/2/4 个 2 vCPU/512 MiB VM，重复、相同随机和独有随机 64 MiB 数据；同一 sealed 快照的共同 inode 与全字节复制的独立 inode 对照，动态私有页 KSM advice off/on。完整组四核/2 GiB/零 swap、扫描器状态只读、每个扫描窗 30 秒；独立 inode 不是独立启动捕获，ready 与动态改写阶段不能混作同一比较。每格 3 次预热、30 个新组，独立恢复/写入/退出校验、全组内存与 CPU 和组外干扰观察；不得将 B-MEMORY-SCALE 工程批次或建议登记字节替代为这些用户数据。
-- **入口脚本：** `memory_savings.py`（当前 Linux 单实例回收、压缩、暂停和卸载）、`memory_sharing.py`（共享基线和动态 KSM 的独立用户协议）、`macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
+- **历史入口：** `memory_savings.py`（历史 Linux 单实例回收、压缩、暂停和卸载）、`memory_sharing.py`（共享基线和动态 KSM 的独立用户协议）、`macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（历史 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（历史 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
 ### B-MEMORY-SCALE：最多四个 VM 的共享、写入退化与卸载恢复 {#b-memory-scale}
+
+- **JSON 入口状态：** 可执行 [memory/scanner_compare.json](memory/scanner_compare.json)、[memory/pool_compare.json](memory/pool_compare.json)、[memory/library_compare.json](memory/library_compare.json)；未准备 [memory/scale.json](memory/scale.json)（拒绝测量）。
 
 - **角色：** engineering A/B；实验计划与报告留在 `benchmark/pvisor/`，不填充用户 benchmark 数字。
 - **Motivation：** 验证内存去重设计在多个独立 runner 中是否保持同一基线、写入隔离和独立退出；区分基线共享、动态 KSM 合并与单实例 offload 的收益及成本。
@@ -856,7 +904,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **写后释放窗口：** 曲线协议 v3 在 100% 私有写入及 peer 校验后，保留四 VM 30 秒，另存 1/2/5/10/20/30 秒计费、PSS、内核分类与 CPU；随后完成原生退出及 survivor 校验。区分即时双份驻留、旧槽释放延迟和稳定管理开销。v2 没有此窗口的批次只保留其原口径，不拼入 v3。原 60 秒闲置窗、58 项完整内容与生命周期校验、四核/2 GiB/零 swap 和每条件 180 秒资源期限不变。正式汇总重验完整矩阵、至少五个随机轮次、来源/输入/观察者摘要和完整写后窗口，未达到的回收阈值保持删失，不填作零或 60 秒。
 - **Docker 对照扩展：** 独立 rootless Docker daemon 与四容器共用一个受限 systemd slice，将 dockerd、containerd、shim、连接客户端及应用完整纳入四核/2 GiB/零 swap；每容器 256 MiB/一核配额。协议 v4 为所有条件统一设置 256 任务上限，并核对实际上限和任务耗尽事件；旧 v2/v3 保持原 128 任务校验，不混入新正式批次。`prepare_docker.py` 使用冻结的同一静态 worker、Python userspace 和 `.so`，每组独立镜像存储副本。镜像导入在测量前，daemon 启动包含在启动曲线。宿主未委派 cpuset 时由静态 launcher 在 payload 分配前设置亲和性，并核对实际 PID/亲和性、容器与完整组限制、递归 PSS、原生退出及同一完整性 oracle。容器共享宿主内核，rootless 与独立 daemon 的成本显式标注；应用 PSS 和完整组计费同时报告。不得漏掉子 scope、以 `docker stats` 替代全组核算，或将此配置外推为所有 Docker 部署。只操作专属 daemon/socket/镜像，不操作现有宿主容器。Docker 静态与共享库完整预检已通过，每条件 N=1；正式随机轮次未完成，单次预检不能标为正式结果。
 - **文件读取驱动共享库：** `benchmark.new/memory/library_compare.py` 独立批次使用同源 Python userspace 和实际 `dlopen` 的 64 MiB 唯一随机页 `.so`。七个条件为原版 Firecracker virtio-blk、独立 rootless Docker、pVisor 普通 rootfs off/KSM、同二进制物理池文件 READ 提示关闭/开启、显式不可变 DAX 参考。后者不是自动 rootfs 共享。沿用四 VM、资源/干扰/58 项完整性门禁与 60 秒闲置、30 秒写后窗口，正式至少五轮预定随机顺序；不与静态 worker 矩阵合并。空闲计时后由组外观察者核对库页的完整字节、backing inode/offset 及前后 present-file PTE，仅描述观察到的跨 VM 同槽共享，不以此代替完整组净内存。记录 userspace 文件清单及 ext4 字节、源库前后摘要、实际 DAX 属性和全局 ksmd；物理池未共享目标页是有效的零收益，不按速度剔除。额外观察阶段单列，不计入首次读回和 60 秒 CPU。普通 mutable lower 的 READ 仅提供候选顺序，不提供不可变性或合并授权。
-- **入口：** `memory_scale.py` 调用 SDK `vm_memory_scale` example；实验方案见 `benchmark/pvisor/MEMORY_SCALE_PLAN.md`。Firecracker 工程对照入口 `firecracker_ksm.py`，报告见 `benchmark/pvisor/FIRECRACKER_KSM_REPORT.md`。
+- **历史入口：** `memory_scale.py` 调用 SDK `vm_memory_scale` example；实验方案见 `benchmark/pvisor/MEMORY_SCALE_PLAN.md`。Firecracker 工程对照入口 `firecracker_ksm.py`，报告见 `benchmark/pvisor/FIRECRACKER_KSM_REPORT.md`。
 
 ### B-MEMORY-DIAG：去重登记、COW 与文件回收的机制验证 {#b-memory-diag}
 
@@ -864,20 +912,24 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 在没有 KVM/FUSE 或没有启用 KSM 扫描的宿主上，区分区域建议登记、不可变基线共享、私有写入隔离和原始 backing 回收，避免把登记字节或进程 RSS 当成实际去重收益。
 - **想要的结论：** 给出当前宿主上 advice 安装状态、每映射 smaps 的 PSS/KSM 字节、COW 完整性、原始文件回收后的驻留与读回校验；缺少真实 VM 或扫描器时明确记为未测。
 - **实验设计：** 三次独立 64 MiB 映射试验；同 inode 双私有基线、相同内容双匿名映射和单共享磁盘文件分别测量。固定非零重复页、完整字节校验；记录内核、文件系统、KSM 全局状态、来源摘要及命令。禁止改变宿主全局 KSM 设置。smaps PSS 仅描述选定映射，不代表整机净节省；不报告尾延迟或生产密度。
-- **入口：** `crates/pvisor-vm/src/ram_dedup.rs` 中 Linux ignored `memory_diagnostic` 测试，使用显式 `cargo test --ignored --nocapture` 特殊诊断 runner。原始数据保留在 `benchmark/pvisor/.data/`；复现命令与机制报告见该目录的 README。
+- **入口：** `crates/pvisor-vm/src/ram_dedup.rs` 中 Linux ignored `memory_diagnostic` 测试，使用显式 `cargo test --ignored --nocapture` 特殊诊断 runner。原始数据保留在 `benchmark/pvisor/.data/`；复现命令与机制报告见[历史诊断手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#memory-mechanism-diagnostic)。
 
 ### B-COLD-RUNTIME-ENG：Linux 实例内冷压缩的真实回收与恢复 {#b-cold-runtime-eng}
+
+- **JSON 入口状态：** 未准备 [memory/cold_runtime.json](memory/cold_runtime.json)（拒绝测量）。
 
 - **角色：** engineering A/B；报告留在 `benchmark/pvisor/`，不发布生产密度结论。
 - **Motivation：** 验证 Linux 内核缺页恢复、自动回收和实例内压缩存储的组合能否安全降低运行 VM 的宿主占用。
 - **想要的结论：** 明确实例内 cold off/on 的完整受限 cgroup 内存、RAM PSS、压缩 store/临时峰值、冷页和恢复计数，以及全部 payload 摘要、mutation、设备 I/O、退出；原始随机内容是否拒绝无益回收。
 - **实验设计：** 初始 1 VM 新实例 off/on、256 MiB/1vCPU、64 MiB 重复/独有随机数据，每格固定两段冷窗口和两次全量恢复；组四核/2GiB/零 swap，最多四 VM，无全局 KSM/sysctl 修改。kernel-fault userfaultfd 权限由用户授权。每条件独立新 cgroup，固定等待和 deadline，完整保留失败，不以 codec 字节当作净内存节省。初始预检每格 n=1，计时含 debug/校验边界，先正确性后扩展。
-- **入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`；同源冻结 GNU release 预检与加工 CSV 见 `benchmark/pvisor/COLD_RUNTIME_RELEASE_REPORT.md`，独立成批，不与既有 cohort 合并。
+- **历史入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`；同源冻结 GNU release 预检与加工 CSV 见 `benchmark/pvisor/COLD_RUNTIME_RELEASE_REPORT.md`，独立成批，不与既有 cohort 合并。
 
 ### B-VCPU-IDLE-ENG：真实 guest 的 vCPU 等待窗口与观测开销 {#b-vcpu-idle-eng}
 
+- **JSON 入口状态：** 未准备 [memory/vcpu_idle.json](memory/vcpu_idle.json)（拒绝测量）。
+
 - **角色**：engineering A/B；EXP-001 M0 observe-only，不进入用户 benchmark 正文。
-- **入口**：`benchmark/pvisor/vcpu_idle.py`，真实 VM SDK example `vm_vcpu_observe`；协议 `benchmark/pvisor/vcpu_idle_plan.md`。
+- **历史入口：** `benchmark/pvisor/vcpu_idle.py`，真实 VM SDK example `vm_vcpu_observe`；协议 `benchmark/pvisor/vcpu_idle_plan.md`。
 - **Motivation**：决定当前后端观测是否足以发现真实 guest 等待机会，以及开启采集与有界采样的成本是否值得继续研究。
 - **想要的结论**：按后端/负载报告窗口、Unknown 与拒绝原因，observer off/on 的同批配对 wall/CPU 差异及 bootstrap 95% CI；无法证明的能力明确未测。
 - **实验设计**：同机同制品，fresh VM，sleep/busy/短 timer，1/2 CPU 与 SMP 单 CPU busy 负对照；预先保存 seeded 随机配对顺序，完整输出校验、有界采样、超时、来源及失败保留。KVM_RUN 是 Unknown；HVF WaitingForEvent 不证明 Linux runqueue 空闲。无 pause/offload、全局 sysctl 修改或自动策略；卸载收益未测，M1/M2 未实现。
@@ -888,15 +940,17 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 当本机没有 live pager 或实例内后端时，验证可运行的编码存储是否保持全部内容，并区分 encoded payload 缩减与真实 VM 驻留收益。
 - **想要的结论：** 64 MiB fill、非填充可压缩和确定性随机数据的编码字节、对象数、两次完整读回及编码/恢复墙钟成本；真实自动回收和实例内 pager 明确标 unsupported/not implemented，不以存储测试替代。
 - **实验设计：** 新进程、新的实例独占 CompressedPool，每块 64 KiB，三次独立执行；填充模式允许对象复用，其他模式保持块内容唯一以分开压缩与去重。全字节检查，拒绝校验失败，记录原文/编码 SHA-256 身份、来源/制品摘要和完整失败。编码字节排除索引、allocator、scratch 和原 RAM；不宣称净物理节省或业务延迟。无 VM、无全局 KSM 修改。
-- **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；运行命令与报告见 `benchmark/pvisor/README.md`、`COLD_RUNTIME_REPORT.md`。
+- **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；历史运行命令与报告见[归档手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#cold-runtimestorage-validation)。
 
 ### B-IMAGE-STORAGE-ENG：本地镜像池能节省多少磁盘空间 {#b-image-storage-eng}
+
+- **JSON 入口状态：** 未准备 [storage/image_storage.json](storage/image_storage.json)（拒绝测量）。
 
 - **角色：** engineering A/B；库存、日志及来源保留 `benchmark/.data/image-storage-*`，不发布到用户 benchmark 页。
 - **Motivation：** 判断压缩内容池相对完整解包及 Docker 实际镜像存储的容量收益，以及多镜像内容共享是否提供额外节省。
 - **想要的结论：** 固定 linux/amd64 manifest 的单镜像及组合库存，分别报告 pVisor 完整存储、Docker 完整存储、压缩 blobs 和解包树的字节与分配块；明确 metadata、层共享、删除后残留和计量边界。
 - **实验设计：** 同一宿主、文件系统和来源 digest，新的私有 pVisor store 与独立 rootless Docker daemon，禁用实验目录的 Btrfs 透明压缩。Docker 使用 containerd overlayfs snapshotter，并记录与宿主发行配置的差异；不操作既有 daemon 的镜像/容器。按 manifest/config/layer SHA-256 验证来源，检查镜像能读取已知内容；硬链接仅计一次。静态库存可重复采集，报告每次原值及范围；不是延迟采样，不从容量计数推导速度或 mmap 收益。源下载缓存、测量工具和二进制不计入任一镜像存储；包含各后端的镜像内容和元数据，Docker 空 daemon 的固定开销另列。失败保留，不用独立单镜像之和代替真正组合存储。不将 rmi 后未 GC 的空目录当作可回收空间。
-- **入口：** `benchmark/image_storage/run.py`，复现与计量边界见该目录 README。
+- **历史入口：** `benchmark/image_storage/run.py`，复现与计量边界见该目录 README。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 
@@ -910,25 +964,29 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 以完成且通过校验的任务数作为产出指标。
   - 控制面的历史规模单独扫描。
   - 不能只报告就绪时间来代替吞吐。
-- **入口脚本：** 无。旧 `cluster_scalability.py`、`cluster_worker.py`、`controller_history.py`、专属测试及绘图/发布 helper 随 Controller/Worker 退役而删除；不得改名为 daemon 测量。历史数据只回答冻结旧制品的问题。B-DENSITY 与 B-VM-MEMORY 的独立本机探针继续有效，但不能替代 daemon 或跨主机实验。
+- **历史入口：** 无。旧 `cluster_scalability.py`、`cluster_worker.py`、`controller_history.py`、专属测试及绘图/发布 helper 随 Controller/Worker 退役而删除；不得改名为 daemon 测量。历史数据只回答冻结旧制品的问题。B-DENSITY 与 B-VM-MEMORY 的需求继续保留，其通用 JSON 模板尚未准备；历史本机探针不能替代 daemon 或跨主机实验。
 
 ### B-MACOS：macOS 上的工具和迁移成本 {#b-macos}
+
+- **JSON 入口状态：** 未准备 [agent/macos.json](agent/macos.json)（拒绝测量）。
 
 - **文档：** 并入 `filesystem.md` 和 `startup.md` 的 macOS 小节
 - **角色：** user-facing
 - **Motivation：** macOS 用户的对照对象通常是 Docker Desktop。他们需要知道在 Apple Silicon 上，pVisor VM 的工具执行和启动相对 Docker 如何。
 - **想要的结论：** "在 Apple Silicon 上，pVisor VM 与 Docker Desktop 在相同工具负载下的耗时对比"。
 - **实验设计：** 同机随机交替执行，使用相同的 Alpine 环境和工具负载，分别计时 worker 耗时和完整任务耗时。
-- **入口脚本：** `macos_docker_tools.py`。迁移版本 A/B 另属 B-MACOS-ENG。
+- **历史入口：** `macos_docker_tools.py`。迁移版本 A/B 另属 B-MACOS-ENG。
 
 ### B-MACOS-ENG：macOS CLI 迁移的工程对照 {#b-macos-eng}
+
+- **JSON 入口状态：** 未准备 [agent/macos_ab.json](agent/macos_ab.json)（拒绝测量）。
 
 - **文档：** 技术分析与工程报告，不进入用户页正文。
 - **角色：** engineering A/B
 - **Motivation：** 开发者需要防止 CLI 迁移导致启动、文件工具或冷页恢复回归。
 - **想要的结论：** 同机两个冻结版本的配对中位数差异与 95% 置信区间。
 - **实验设计：** 相同 rootfs、firmware 与预算，随机交替、检查输出与隔离；诊断另列。
-- **入口脚本：** `macos_migration.py`。
+- **历史入口：** `macos_migration.py`。
 
 ### B-COMPARE：端到端任务与强化学习训练的场景分析 {#b-compare}
 
@@ -945,7 +1003,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
 - **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
-- **入口脚本：** `benchmark.new/process/smoke.json`、`nightly.json`（`prepare.py` 准备，semspec bench 测量，`just benchmark`）；旧 `bench.py` 仅保留历史复现与统计辅助函数。
+- **入口脚本：** `benchmark.new/process/smoke.json`、`nightly.json`（`prepare.py` 准备，semspec bench 测量，`just benchmark`）；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
 
 ## 检查清单 {#checklist}
 
@@ -971,11 +1029,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-SWE-RESIDENT-ENG：真实 SWE 工具与模型等待期间的 VM 资源 {#b-swe-resident-eng}
 
+- **JSON 入口状态：** 未准备 [agent/swe_resident.json](agent/swe_resident.json)（拒绝测量）。
+
 - **角色：** engineering A/B（resident 基线与可选单 vCPU 管理对照）。
 - **Motivation：** 为判断模型等待期间 VM 保留的内存是否值得卸载，先把真实工具调用与宿主资源时间序列对齐。
 - **想要的结论：** 显式选择的一批题目在持久 microVM 内是否可完成 Agent/验证流程，并产出可审计的 CPU、memory、模型请求和工具阶段记录；成功运行前不声明优化收益或解题率。
 - **实验设计：** 首批为 SweEval 的 NodeBB 291、Vuls 666、qutebrowser 667；扩展题目另记批次，不能混合不同配置统计。mini-swe-agent 2.4.6 在宿主调用外部模型，所有工具在每题一台持续运行的 VM 内执行；首批任务资源为 2 vCPU、7168 MiB guest RAM，其他任务沿用任务定义资源，服务 cgroup 另留 2048 MiB VMM/helper 预算、零 swap。串行执行，镜像准备与初始化/验证单列；250 ms 采样，模型等待包含 API 排队、推理和网络。完整保留失败、镜像 digest、原生轨迹和版本。宿主 Agent/外部模型计算不计入 VM cgroup，不能据此推断整个系统资源或纯 reasoning 时间。
-- **入口脚本：** `benchmark/pvisor/sweeval/run.py`；`smoke.py` 和 `trial_smoke.py` 仅为诊断与协议验证，不属于真实 SWE 性能样本。复现见同目录 README。
+- **历史入口：** `benchmark/pvisor/sweeval/run.py`；`smoke.py` 和 `trial_smoke.py` 仅为诊断与协议验证，不属于真实 SWE 性能样本。复现见同目录 README。
 
 
 This isolated engineering cohort compares single-vCPU baseline, pause/resume and offload using the same VM-bound Gateway and event-driven worker. It retains task/verifier results, per-transition timing, cgroup and RAM residency; live model variation is not treated as causal latency overhead.

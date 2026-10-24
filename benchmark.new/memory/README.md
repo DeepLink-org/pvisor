@@ -63,17 +63,19 @@ Freeze them as `probe` and `pool-daemon` in a build directory with `source.tar.g
 and `build-receipt.json`. The receipt must bind `example_sha256`, `binary_sha256`
 and `source_archive_sha256`, and record the actual build command/compiler/source
 identity. Use identical prepared rootfs and firmware inputs for every condition.
+Replace `PREPARED_TOOL_ROOTFS` below with an explicit, validated local input.
+Historical evidence directories are not provisioned by a fresh checkout.
 
 ```sh
 python3 benchmark.new/memory/scanner_compare.py \
   --build benchmark.new/memory/.data/build-20261018 \
-  --rootfs benchmark/.data/full-retest-20261006/density-env4/rootfs \
+  --rootfs PREPARED_TOOL_ROOTFS \
   --firmware benchmark.new/memory/.data/build-20261018/firmware \
   --output benchmark.new/memory/.data/p2 --preflight
 # After every preflight condition passes, select a NEW short directory.
 python3 benchmark.new/memory/scanner_compare.py \
   --build benchmark.new/memory/.data/build-20261018 \
-  --rootfs benchmark/.data/full-retest-20261006/density-env4/rootfs \
+  --rootfs PREPARED_TOOL_ROOTFS \
   --firmware benchmark.new/memory/.data/build-20261018/firmware \
   --output benchmark.new/memory/.data/f1 --samples 5 --prepare
 target/semspec/debug/semspec bench --cwd "$PWD" \
@@ -197,7 +199,9 @@ Inputs must be frozen under a NEW `.data/` directory: `probe` is the release
 `firecracker_ksm.WORKER` executable. `root/worker` contains the same executable;
 `guest.ext4` is a read-only boot disk built from that root. `receipt.json` binds
 all input hashes and compiler/source/build provenance. Never rebuild while
-sampling. Harness files are frozen and checked before every condition and at end.
+sampling. Harness files, including transitive Python support imports, are frozen and
+checked before every condition and at end. Frozen harnesses import independently
+of this checkout; retained historical harness inventories stay unchanged.
 The read-only pool FD survey records unique memfd allocated blocks separately
 from its logical reservation; these are storage diagnostics, not net savings.
 The static-worker comparison clears inherited `PVISOR_MEMORY_FILE_HINTS` in

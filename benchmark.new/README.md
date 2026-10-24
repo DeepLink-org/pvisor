@@ -1,6 +1,6 @@
 # JSON benchmark tables
 
-这里回答的问题：怎样用固定、可审查的 hyperfine 命令生成表格，并保留每次实验的来源？
+这里回答的问题：怎样用固定、可审查的 Python 计时命令生成表格，并保留每次实验的来源？
 需求、角色和正确性门禁见 [REGISTRY.md](REGISTRY.md#registry)。
 [registry.csv](registry.csv) 把活动实验映射到按主题组织的 JSON 模板。综合页无独立实验，B-CLUSTER 已退役。
 

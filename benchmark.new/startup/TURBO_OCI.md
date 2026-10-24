@@ -102,7 +102,7 @@ TurboOCI 另记派生 index／manifest／元数据 layer digest、转换工具�
 
 ## 首批负载与正确性
 
-负载复用 [现有 lazy runner](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_startup.py)的固定输入，
+负载复用 [共享负载定义](../support/lazy_startup.py)的固定输入，
 实现新 runner 时冻结该源码，不引用会随工作区改变的常量。
 
 | 负载 | 源镜像与校验 | Ready 输出 |

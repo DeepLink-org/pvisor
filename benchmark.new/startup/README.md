@@ -79,6 +79,9 @@ python3 benchmark.new/startup/turbo_oci_preflight.py --binary-dir target/release
 只有所有前提通过并完成专用采样与审计接线后，才能执行正式对照；
 预检通过本身不证明挂载、镜像导入或隔离已验证。
 
+`PREPARED_IMAGE_STORE` 必须替换为通过公开 cache API 准备并验证的镜像 store。
+历史 `.data/` 路径只标识原始证据，不是新 checkout 自带的输入。
+
 ### 已准备镜像的性能对照
 
 `image_compare.py` 比较同源 Ubuntu shell 在普通 OCI 容器、TurboOCI 容器和
@@ -90,7 +93,7 @@ pVisor 本地预准备 rootfs VM 中的 Ready / Completion；不包含镜像拉�
 python3 benchmark.new/startup/image_compare.py \
   --prepare benchmark.new/startup/.data/image-compare-prepared-new \
   --lab benchmark.new/startup/.data/overlaybd-lab-20261017 \
-  --prepared-store benchmark/pvisor/.data/lazy-startup-local-20261007/service-store \
+  --prepared-store PREPARED_IMAGE_STORE \
   --binary-dir target/release --cpus 12,13 --service-cpus 14,15
 target/semspec/debug/semspec bench \
   --cwd benchmark.new/startup/.data/image-compare-prepared-new \
@@ -119,7 +122,7 @@ ext4 挂载；两侧均使用相同 Docker exec 包装器、CLI、探针与应�
 python3 benchmark.new/startup/stage_lazy_compare.py \
   --prepare benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-new \
   --lab benchmark.new/startup/.data/overlaybd-lab-20261017 \
-  --prepared-store benchmark/pvisor/.data/lazy-startup-local-20261007/service-store \
+  --prepared-store PREPARED_IMAGE_STORE \
   --binary-dir target/release --runtime-rlib target/release/deps/libpvisor-<hash>.rlib
 target/semspec/debug/semspec bench \
   --cwd "$PWD/benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-new" \
