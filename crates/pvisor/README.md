@@ -91,6 +91,12 @@ and fail finalization while retaining the stage.
 Readers reserve the bounded size reported by the opened file to avoid repeated
 small reads and buffer growth. That size is only an allocation hint; a bounded
 read and final length check still reject growth beyond the limit.
+Each load, including after locking, opens current files and verifies the receipt's
+protocol, record identity and Bundle digest. A process retains at most one pair of
+receipt/Bundle BLAKE3 hashes to reuse successful, deterministic Bundle semantic
+validation for identical bytes. Changed bytes require full validation; file metadata,
+record projections, leases and authorization are never cached. This memo is neither
+persisted nor shared between processes.
 
 Local sandbox evidence comes from individual control installation receipts on a
 parent-retained inode. The launcher unlinks its pathname and closes the descriptor

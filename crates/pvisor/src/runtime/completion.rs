@@ -8,10 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::Mutex;
 
 pub(crate) const VERSION: u16 = 1;
 const FILENAME: &str = "completion.json";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
+// Reuse only pure semantic validation of exact bytes, never file or record checks.
+static VALIDATED_COMPLETION: Mutex<Option<(blake3::Hash, blake3::Hash)>> = Mutex::new(None);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,12 +87,22 @@ impl Completion {
         receipt.validate(record)?;
         let bundle = read_file(&super::bundle::RunBundle::path(&record.stage_dir()))?;
         let mut validation = crate::startup_profile::Span::start("completion.validate_bundle");
+        let bundle_hash = blake3::hash(&bundle);
         ensure!(
-            blake3::hash(&bundle).to_hex().as_str() == receipt.bundle_blake3,
+            bundle_hash.to_hex().as_str() == receipt.bundle_blake3,
             "completion Bundle digest mismatch"
         );
-        let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle)?;
-        receipt.validate_bundle(&bundle)?;
+        let key = (blake3::hash(&bytes), bundle_hash);
+        let validated = *VALIDATED_COMPLETION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if validated != Some(key) {
+            let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle)?;
+            receipt.validate_bundle(&bundle)?;
+            *VALIDATED_COMPLETION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(key);
+        }
         validation.success(None);
         profile.success(None);
         Ok(Some(receipt))
@@ -348,6 +361,78 @@ mod tests {
         bundle["schema_version"] = serde_json::json!(4);
         std::fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
         assert!(RunBundle::read(root.path()).is_err());
+    }
+
+    #[test]
+    fn repeated_reads_revalidate_changed_receipt_and_matching_digest_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let (record, result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        let receipt_path = root.path().join(FILENAME);
+        let bundle_path = RunBundle::path(root.path());
+        let receipt_bytes = std::fs::read(&receipt_path).unwrap();
+        let bundle_bytes = std::fs::read(&bundle_path).unwrap();
+        for _ in 0..2 {
+            Completion::load(&record).unwrap().unwrap();
+        }
+
+        let mut receipt: serde_json::Value = serde_json::from_slice(&receipt_bytes).unwrap();
+        receipt["result"]["state"] = serde_json::json!("failed");
+        std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(
+            Completion::load(&record)
+                .unwrap_err()
+                .to_string()
+                .contains("contradicts")
+        );
+        std::fs::write(&receipt_path, &receipt_bytes).unwrap();
+        Completion::load(&record).unwrap().unwrap();
+
+        let mut bundle: serde_json::Value = serde_json::from_slice(&bundle_bytes).unwrap();
+        bundle["safety"]["network_non_bypassable"] = serde_json::json!(
+            !bundle["safety"]["network_non_bypassable"]
+                .as_bool()
+                .unwrap()
+        );
+        let changed = serde_json::to_vec(&bundle).unwrap();
+        let mut receipt: serde_json::Value = serde_json::from_slice(&receipt_bytes).unwrap();
+        receipt["bundle_blake3"] = serde_json::json!(blake3::hash(&changed).to_hex().as_str());
+        std::fs::write(&bundle_path, changed).unwrap();
+        std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        for _ in 0..2 {
+            assert!(
+                Completion::load(&record)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("safety summary")
+            );
+        }
+        std::fs::write(&bundle_path, &bundle_bytes).unwrap();
+        std::fs::write(&receipt_path, &receipt_bytes).unwrap();
+        Completion::load(&record).unwrap().unwrap();
+    }
+
+    #[test]
+    fn repeated_reads_still_open_current_files_and_validate_record_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut record, result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        Completion::load(&record).unwrap().unwrap();
+        record.attempt_id = Some("foreign-attempt".into());
+        assert!(Completion::load(&record).is_err());
+        record.attempt_id = Some(result.attempt_id.to_string());
+
+        for path in [RunBundle::path(root.path()), root.path().join(FILENAME)] {
+            let moved = path.with_extension("original");
+            std::fs::rename(&path, &moved).unwrap();
+            std::os::unix::fs::symlink(&moved, &path).unwrap();
+            assert!(Completion::load(&record).is_err());
+            std::fs::remove_file(&path).unwrap();
+            std::fs::rename(moved, path).unwrap();
+            Completion::load(&record).unwrap().unwrap();
+        }
+        std::fs::remove_file(root.path().join(FILENAME)).unwrap();
+        assert!(Completion::load(&record).unwrap().is_none());
     }
 
     #[test]
