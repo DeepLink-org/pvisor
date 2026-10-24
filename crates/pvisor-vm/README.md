@@ -76,6 +76,71 @@ fn configure() -> std::io::Result<VmBuilder> {
 
 ## 运行时与存储边界
 
+### Apple Silicon 共同启动内核基底（实验）
+
+`VmConfiguration::shared_kernel_base(DIR)` 将同一固件的初始内核字节发布到
+宿主私有、内容寻址、只读文件。普通冷启动将该范围映射为 `MAP_PRIVATE`，
+其他 RAM 仍使用原来的匿名或实例私有文件 backing。未修改页可以共享物理页；
+guest CPU 和设备写入通过宿主 COW 私有化，不修改共同基底。它不克隆运行中的
+guest，也不共享启动后形成的堆、文件缓存或应用页；运行期页合并使用下述独立的物理池模式。
+
+目录必须绝对、已存在、归当前用户所有且不向组/其他用户开放，并由调用方排除
+在 guest rootfs、bind mount 及其祖先之外。缓存按内核内容 SHA-256 命名；原子
+发布前写入并同步，读取时检查文件类型、只读权限、长度和完整字节。并发发布
+复用同一 inode，内容不符立即失败。缓存文件目前无自动 GC，不能人工修改或
+截断；映射持有只读文件描述符，因此删除路径、另一个 VM 或 daemon 退出不会
+撤销健康 VM 的映射。共享内核磁盘文件及页缓存不计入冷压缩池的 payload 预算。
+
+首版仅支持普通 Apple Silicon/HVF bundled-kernel 冷启动，拒绝额外 firmware、
+DAX/GPU 等设备窗口、受保护虚拟化和 snapshot profile；其他平台返回明确
+Unsupported。整机 offload 保留对私有 COW RAM 的拒绝。与冷压缩组合时，pager
+仅接管普通可写文件 backing，跳过共同内核和其他私有 COW 基底；被切分区域的
+不足一块尾部保持驻留，绝不打洞共同基底或丢弃私有修改。
+
+`just test pvisor-vm` 覆盖外部 API 的校验、失败后状态、平台拒绝、snapshot
+互斥和导出边界，以及内部映射、损坏缓存、引用生命周期与 cold-token 排除。
+真实双进程 HVF gate 使用生产映射路径，验证 guest 读取后的 Mach 对象/偏移
+身份、CPU 写入、设备式 GuestMemory 写入隔离、原基底不变与 unlink 后存活：
+
+```sh
+just test pvisor-vm -- \
+  -E 'test(hvf_two_processes_share_baseline_and_isolate_cpu_and_device_writes)' --run-ignored only
+```
+
+身份不是 PFN，也不是宿主净物理内存测量；不由此承诺节省比例。真实 Linux
+容器与压缩池组合的验收入口见 daemon README。
+
+### Apple Silicon 运行期物理页合并（实验）
+
+`ColdRamOptions { page_granular: true, share_resident: true, .. }` 选择 HVF
+物理池模式；受保护虚拟化、EFI、GPU、sound/input 构建明确拒绝。
+调用方提供普通可写文件 RAM 和返回只读、固定槽位的
+`ColdRamStore`；每个 native 16 KiB 页分别处理，共同内核等私有 COW 基底排除。
+扫描只查询驻留对象身份，不读取稀疏容量；与 Linux 物理池共用
+`cold_ram_scan.rs` 的区域遍历、自适应配额、批次选择和休息策略。每批最多
+64 份页副本（1 MiB），采样和提交各使用最多 8 ms 的软工作预算；完整扫描
+轮次之间休息 250 ms，未完成轮次的批次间休息 1 ms。初始冷却 1 秒，发布
+拒绝后冷却 250 ms，live-byte 复核失败后冷却 30 秒；这些与 Linux 一致。
+采样、合并、首次观察到的 COW 和复核失败均反馈给公共调度器，诊断使用
+相同的 `pvisor-shared-scan` 字段。Mach 查询和 HVF 映射替换仍由 macOS 实现；
+Linux 的 virtio-fs READ 提示和 balloon 协同回收尚未接入此后端。
+
+所有复制和映射替换都停驻 CPU、排空设备引用。发布不持有该屏障，提交时逐字节
+复核 live RAM；变化或拒绝保留原内容。相同页映射为 `MAP_PRIVATE`，读取共享，
+CPU/设备写入由宿主 COW 隔离。共享对象一直持有到替换完成；发现 COW 后若不能
+重新合并，先复制为匿名私有页，去掉对原文件的 shadow 关系，才释放旧槽。
+首次替换后在屏障外回收原 RAM 文件范围。错误映射转换终止 runner。
+
+不依赖 macFUSE、userfaultfd、KSM 或 Linux memfd。物理池不做压缩，也不与同一
+VM 的冷压缩 pager 同时运行。Apple Silicon 的宿主页为 16 KiB，当前 guest
+内核页为 4 KiB；相同应用数据的物理排列不同，可能不能组成相同的 16 KiB 块。
+不能据应用内容相同或 pinned 字节数推导全部应用内存共享或宿主净节省。
+
+原生 `hvf_live_remap_preserves_cpu_device_cow_and_instruction_reads` 测试覆盖
+运行后替换、CPU/设备 COW、源内容与释放 shadow 后槽位重用；daemon 的四实例
+验收使用四个 512 MiB guest、每个 64 MiB 确定性随机数据、完整读回、25%/100%
+私有写入及 survivor 校验。复现与测量口径见 daemon README。
+
 CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM pager、示例和 guest-init 基准均使用本模块的契约。核心运行时组件只在本 crate 内编译；调用方使用 `pvisor_vm::api` 的 Rust 契约，不使用 C context/裸指针配置入口。内部硬件探针和设备测试归属 `pvisor-vm`，不要求外部访问私有模块。
 
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
@@ -122,7 +187,7 @@ pidfd 确认进程退出后释放引用，不能把断连当作可安全复用�
 该模式不压缩独有页，也不要求 userfaultfd；前述 UFFD 驱逐/恢复契约适用于
 实例本地及 daemon sealed 冷压缩。快照、offload 与 KSM advice 仍互斥。
 
-物理池默认接收 virtio-fs 成功 READ 的调度提示：数据 Writer 与回复头分离，
+Linux 物理池默认接收 virtio-fs 成功 READ 的调度提示：数据 Writer 与回复头分离，
 只在成功后登记实际写入字节前缀中的完整页；相邻 descriptor 片段可合并，
 EOF、错误、取消或越界完成数不登记。提示只包含宿主地址范围，不持有数据或
 共享权限；原 device lease 保持到完成/取消，pager 自身固定并验证 RAM 映射。
@@ -140,21 +205,25 @@ EOF、错误、取消或越界完成数不登记。提示只包含宿主地址�
 不代表实际成功合并、文件命中数或内存节省。
 
 物理页扫描借鉴 [UKSM 的区域分层设计](https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf)，
-由私有 `cold_ram_scan.rs` 调度，每个 RAM mapping 分成最多 2 MiB 的区域；
-区域不会跨越映射边界。四级配额为每轮 16/64/256/512 页，初始最低级；
-至少采样 8 页、成功合并比例达到 10% 且变化数低于合并数一半时升一级。
+Linux 与 Apple Silicon 共用私有 `cold_ram_scan.rs`，每个 RAM mapping 分成
+最多 2 MiB 的区域，区域不会跨越映射边界。四级配额按字节为每轮
+64 KiB / 256 KiB / 1 MiB / 2 MiB：Linux 4 KiB 页对应 16/64/256/512 页，
+macOS 16 KiB 页对应 4/16/64/128 页，初始最低级。至少采样 32 KiB
+（Linux 8 页、macOS 2 页）、成功合并比例达到 10% 且变化数低于合并数一半时升一级。
 观察到 COW、发布复核失败或共享页提前释放，会增加变化计数；变化数达到
 合并数一半时回最低级，其余低收益轮次降一级。已全部共享的区域也会降频。
 每个区域保留最低平均探测配额，带随机起点和互质步长的遍历在重复前覆盖
-区域所有页；这不保留逐页随机排列数组。按区域轮转，每次最多取 64 页，
-单批最多考察 4096 个索引，选择阶段保留 8 ms 软时间预算；即使 hint 阶段因调度暂停耗尽预算，
+区域所有页；这不保留逐页随机排列数组。按区域轮转，每次最多取 256 KiB
+（Linux 64 页、macOS 16 页），单批最多考察 16 MiB 的页索引
+（4096/1024 个），选择阶段保留 8 ms 软时间预算；即使 hint 阶段因调度暂停耗尽预算，
 也至少访问一个有界后台区域，避免整轮跳过后台扫描。完整轮次之间
 至少休息 250 ms。低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
 和 VM/IPC 调度；这些参数是当前策略常量，不是实测 CPU 百分比保证。
 512 MiB RAM 额外区域元数据不超过 32 KiB，不改变既有逐页状态大小。
 
-完整 512 页区域走完首次遍历后，最低级将每轮 16 页合为每四轮 64 页；
-其余三轮不查询该区域的 pagemap。仍在任意连续 32 轮覆盖该区域所有页，
+完整 2 MiB 区域走完首次遍历后，最低级将每轮 64 KiB 合为每四轮 256 KiB
+（Linux 64 页、macOS 16 页）；其余三轮不查询该区域的页面状态。两端仍在
+任意连续 32 轮覆盖该区域所有页，
 首次探索、高收益区域和不足 2 MiB 的尾部保留原节奏。这样减少整区域
 元数据查询而不延长完整遍历的轮次上界；不是按无限指数退避跳过低收益区域。
 来自文件提示的成功反馈可直接提升区域并取消等待。上述轮次仍受实际
@@ -164,7 +233,8 @@ EOF、错误、取消或越界完成数不登记。提示只包含宿主地址�
 完整内容哈希、字节比较、两阶段发布及 COW 所有权契约继续决定能否合并。
 `PVISOR_EXPERIMENTAL_MEMORY_METRICS=1` 增加 `pvisor-shared-scan` 诊断，记录
 区域级别、探测、成功合并、COW 和变化计数；计数不等于净物理节省。
-确定性测试覆盖完整遍历、公平性、升降级、负载变化与元数据上限；已有真实
+确定性测试覆盖两种页大小的完整遍历、公平性、升降级、负载变化、字节预算
+一致性、查询错误传播与元数据上限；已有真实
 映射测试也断言 COW/复核失败的反馈。双 VM correctness driver 的 `--physical`
 模式见 [daemon README](../pvisor-daemon/README.md#validation)。
 

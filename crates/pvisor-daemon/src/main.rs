@@ -30,6 +30,7 @@ enum Command {
         image_store: Option<PathBuf>,
     },
     /// Run the selected shared-service components under one daemon lifecycle.
+    #[command(group(clap::ArgGroup::new("state_service").args(["sandbox", "memory_pool"]).multiple(true)))]
     Serve {
         /// Enable the cache component (disabled by default).
         #[arg(long)]
@@ -49,7 +50,7 @@ enum Command {
         #[arg(long, requires = "sandbox")]
         public_endpoint: Option<String>,
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
-        #[arg(long, default_value = ".pvisor/daemon", requires = "sandbox")]
+        #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
         /// Sandbox API key; defaults to OPEN_SANDBOX_API_KEY or E2B_API_KEY.
         #[arg(long, requires = "sandbox")]
@@ -71,9 +72,9 @@ enum Command {
         #[arg(long, default_value_t = 86400, requires = "sandbox")]
         max_timeout_seconds: u64,
         /// Enable the daemon-owned experimental shared cold-page pool.
-        #[arg(long, requires = "sandbox")]
+        #[arg(long)]
         memory_pool: bool,
-        /// Physical page sharing or sealed compression plus content deduplication.
+        /// Linux physical sharing, or compression/deduplication (also macOS HVF).
         #[arg(long, value_enum, requires = "memory_pool")]
         memory_pool_mode: Option<pvisor_daemon::memory_pool::PoolMode>,
     },
@@ -158,9 +159,43 @@ async fn run(command: Command) -> anyhow::Result<()> {
             memory_pool_mode,
         } => {
             anyhow::ensure!(
-                cache || sandbox,
-                "select at least one service: --cache or --sandbox"
+                cache || sandbox || memory_pool,
+                "select at least one service: --cache, --memory-pool or --sandbox"
             );
+            // Install handlers before publishing readiness or starting workers.
+            // A manager stopped immediately after readiness must drain normally.
+            let stop = shutdown()?;
+            tokio::pin!(stop);
+            #[cfg(target_os = "macos")]
+            anyhow::ensure!(
+                memory_pool_mode != Some(pvisor_daemon::memory_pool::PoolMode::Physical),
+                "use --memory-pool-mode physical-pages for macOS physical sharing or compressed for cold compression"
+            );
+            let standalone_pool = if memory_pool && !sandbox {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(&state)?;
+                let socket = pvisor_daemon::memory_pool::ensure_service(
+                    &state,
+                    &std::env::current_exe()?.canonicalize()?,
+                    pvisor_daemon::memory_pool::PoolConfig {
+                        mode: memory_pool_mode
+                            .unwrap_or(pvisor_daemon::memory_pool::PoolConfig::default().mode),
+                        ..Default::default()
+                    },
+                )?;
+                println!(
+                    "{}",
+                    serde_json::json!({"ready": true, "memory_pool": socket,
+                        "shared_kernel_base": cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                            .then(|| socket.parent().unwrap().join("shared-kernel"))})
+                );
+                Some(socket)
+            } else {
+                None
+            };
             // Prepare sandbox resources before starting optional components.
             let sandbox_service = if sandbox {
                 anyhow::ensure!(
@@ -220,7 +255,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
                             &runtime_state.canonicalize()?,
                             &executable,
                             pvisor_daemon::memory_pool::PoolConfig {
-                                mode: memory_pool_mode.unwrap_or_default(),
+                                mode: memory_pool_mode.unwrap_or(
+                                    pvisor_daemon::memory_pool::PoolConfig::default().mode,
+                                ),
                                 ..Default::default()
                             },
                         )?)
@@ -267,9 +304,10 @@ async fn run(command: Command) -> anyhow::Result<()> {
             };
             tokio::pin!(api);
             let (result, api_finished) = tokio::select! {
-                _ = shutdown() => (Ok(()), false),
+                _ = &mut stop => (Ok(()), false),
                 result = &mut api => (result.and_then(|_| Err(anyhow::anyhow!("sandbox service exited unexpectedly"))), true),
                 result = cache_component::wait(&mut cache) => (result, false),
+                result = wait_pool(standalone_pool) => (result, false),
             };
             let _ = api_stop.send(());
             let drained = if api_enabled && !api_finished {
@@ -293,20 +331,45 @@ async fn run(command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown() {
+async fn wait_pool(socket: Option<PathBuf>) -> anyhow::Result<()> {
+    let Some(socket) = socket else {
+        return std::future::pending().await;
+    };
+    let mut client = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let stream = std::os::unix::net::UnixStream::connect(socket)?;
+        pvisor::host_transport::authorize_host_peer_sync(&stream)?;
+        Ok(pvisor::ram_backing::ipc::PoolClient::new(
+            stream,
+            std::time::Duration::from_secs(2),
+        )?)
+    })
+    .await??;
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        tick.tick().await;
+        client = tokio::task::spawn_blocking(move || client.stats().map(|_| client))
+            .await?
+            .map_err(|error| anyhow::anyhow!("memory-pool service unavailable: {error}"))?;
+    }
+}
+
+fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
     #[cfg(unix)]
     {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut terminate) => {
-                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
-            }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        Ok(async move {
+            tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+        })
     }
     #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
+    {
+        Ok(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+    }
     // Detached native supervisors and durable ownership survive daemon-only restart.
 }
 
@@ -368,12 +431,39 @@ mod tests {
             vec!["--cpu-millis", "1000"],
             vec!["--memory-bytes", "1073741824"],
             vec!["--max-timeout-seconds", "60"],
-            vec!["--memory-pool"],
         ] {
             let mut args = vec!["pvisor-daemon", "serve", "--cache"];
             args.extend(options);
             assert!(Args::try_parse_from(&args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn memory_pool_can_run_without_linux_sandbox_services() {
+        assert!(matches!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--memory-pool",
+                "--state",
+                "/private/pool",
+                "--memory-pool-mode",
+                "compressed"
+            ])
+            .unwrap()
+            .command,
+            Command::Serve {
+                memory_pool: true,
+                sandbox: false,
+                cache: false,
+                memory_pool_mode: Some(PoolMode::Compressed),
+                ..
+            }
+        ));
+        assert!(
+            Args::try_parse_from(["pvisor-daemon", "serve", "--memory-pool-mode", "compressed"])
+                .is_err()
+        );
     }
 
     #[test]

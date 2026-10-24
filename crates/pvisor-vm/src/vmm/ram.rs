@@ -151,7 +151,7 @@ pub(crate) fn page_inventory(memory: &GuestMemoryMmap) -> Result<(u64, Vec<[u64;
     let mut rows = Vec::new();
     for region in memory
         .iter()
-        .filter(|region| region.file_offset().is_some())
+        .filter(|region| region.owned())
     {
         if !(region.len() as usize).is_multiple_of(page)
             || !(region.as_ptr() as usize).is_multiple_of(page)
@@ -383,6 +383,10 @@ pub struct RamBlock {
 }
 #[cfg(target_os = "macos")]
 impl RamBlock {
+    pub(crate) fn same_mapping(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.file, &other.file)
+    }
+
     pub fn guest_address(&self) -> u64 {
         self.guest
     }
@@ -407,6 +411,99 @@ impl RamBlock {
         crate::hvf::HvfVm {}
             .protect_memory(self.guest, self.bytes as u64, if enabled { 0 } else { 7 })
             .map_err(|error| format!("RAM block permissions: {error:?}"))
+    }
+    /// Query one native page without touching contents. Requires quiescence.
+    pub(crate) fn resident_identity(&self) -> Result<Option<[u64; 2]>, String> {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Info {
+            disposition: i32,
+            refs: i32,
+            object: u64,
+            offset: u64,
+            depth: i32,
+            pad: i32,
+        }
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn mach_vm_page_info(
+                task: u32,
+                address: u64,
+                flavor: i32,
+                info: *mut Info,
+                count: *mut u32,
+            ) -> i32;
+        }
+        if self.bytes != unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize {
+            return Err("physical sharing requires one native page".into());
+        }
+        let mut info = Info::default();
+        let mut count = 8;
+        let result = unsafe {
+            mach_vm_page_info(mach_task_self_, self.host as u64, 1, &mut info, &mut count)
+        };
+        if result != 0 || count != 8 {
+            return Err(format!(
+                "shared RAM identity query failed: {result}/{count}"
+            ));
+        }
+        if info.disposition & 1 == 0 {
+            return Ok(None);
+        }
+        if info.object == 0 {
+            return Err("resident RAM identity unavailable".into());
+        }
+        Ok(Some([info.object, info.offset]))
+    }
+    /// Replace one native RAM page under the CPU/device barrier. The caller
+    /// pins mapping.file's immutable slot until after the next replacement.
+    pub(crate) unsafe fn map_shared(
+        &self,
+        mapping: &crate::api::SharedRamMapping,
+    ) -> Result<(), String> {
+        use std::os::fd::AsRawFd;
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let fd = mapping.file.as_raw_fd();
+        if page <= 0
+            || self.bytes != page as usize
+            || !mapping.offset.is_multiple_of(page as u64)
+            || mapping.offset > i64::MAX as u64
+            || mapping
+                .offset
+                .checked_add(self.bytes as u64)
+                .is_none_or(|end| mapping.file.metadata().map_or(true, |m| end > m.len()))
+            || unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_ACCMODE != libc::O_RDONLY
+        {
+            return Err("invalid immutable physical RAM mapping".into());
+        }
+        crate::hvf::HvfVm {}
+            .unmap_memory(self.guest, self.bytes as u64)
+            .map_err(|e| format!("shared RAM unmap: {e:?}"))?;
+        if unsafe {
+            libc::mmap(
+                self.host as *mut _,
+                self.bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_FIXED | libc::MAP_PRIVATE,
+                fd,
+                mapping.offset as i64,
+            )
+        } == libc::MAP_FAILED
+        {
+            return Err(format!(
+                "shared RAM replacement: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        unsafe extern "C" {
+            fn sys_icache_invalidate(start: *mut libc::c_void, bytes: usize);
+        }
+        unsafe {
+            sys_icache_invalidate(self.host as *mut _, self.bytes);
+        }
+        crate::hvf::HvfVm {}
+            .map_memory(self.host as u64, self.guest, self.bytes as u64)
+            .map_err(|e| format!("shared RAM remap: {e:?}"))
     }
     /// Replace the mapping only after a verified compressed reference exists.
     /// Original file bytes remain until reclaim_file; this avoids disk I/O while paused.
@@ -508,9 +605,14 @@ pub(crate) fn blocks(memory: &GuestMemoryMmap, chunk: usize) -> Result<Vec<RamBl
     }
     let mut blocks = Vec::new();
     let owner = Arc::new(memory.clone());
+    let split_base = memory
+        .iter()
+        .any(|region| region.file_offset().is_some() && region.flags() & libc::MAP_PRIVATE != 0);
     for region in memory
         .iter()
-        .filter(|region| region.file_offset().is_some())
+        // Shared kernel/snapshot bases are immutable. Never punch holes in a
+        // MAP_PRIVATE source or discard its private writes as cold file RAM.
+        .filter(|region| region.file_offset().is_some() && region.flags() & libc::MAP_PRIVATE == 0)
     {
         let backing = region.file_offset().unwrap();
         let file = Arc::new(
@@ -519,10 +621,12 @@ pub(crate) fn blocks(memory: &GuestMemoryMmap, chunk: usize) -> Result<Vec<RamBl
                 .try_clone()
                 .map_err(|error| error.to_string())?,
         );
-        if !(region.len() as usize).is_multiple_of(chunk) {
+        if !(region.len() as usize).is_multiple_of(chunk) && !split_base {
             return Err("RAM sampling requires complete chunks".into());
         }
-        for offset in (0..region.len() as usize).step_by(chunk) {
+        // Kernel boundaries can split RAM at host-page rather than chunk
+        // alignment. A final incomplete chunk remains resident and untouched.
+        for offset in (0..region.len() as usize / chunk * chunk).step_by(chunk) {
             blocks.push(RamBlock {
                 _memory: owner.clone(),
                 guest: region.start_addr().raw_value() + offset as u64,

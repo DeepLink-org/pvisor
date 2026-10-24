@@ -1,20 +1,34 @@
 //! Region scheduling inspired by UKSM's hierarchical region distilling (FAST
 //! 2018, section 5). This is an independent userspace policy, not the kernel
 //! patch or its adaptive partial hash. Content identity and validation remain
-//! the store's responsibility. Only the Linux physical-page pager uses it.
+//! the store's responsibility. Linux and macOS physical-page workers share it.
 //! Reference: <https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf>
 //!
 //! Each RAM mapping is split into at most 2 MiB regions. Every round retains a
 //! low-rate exploration quota; successful merges increase a region's quota,
 //! while observed COW/publication races reduce it. A seeded coprime walk covers
 //! every page before repeating, without a page-sized permutation allocation.
-//! After bootstrap, full low-yield regions group 64 probes into one of four
-//! rounds. Coverage remains 512 pages per 32 rounds with fewer metadata walks.
-use std::ops::Range;
+//! After bootstrap, full low-yield regions group four exploration quotas into
+//! one of four rounds. A full region is covered per 32 rounds on both 4 and
+//! 16 KiB hosts.
+use std::{
+    ops::Range,
+    time::{Duration, Instant},
+};
 
+// Byte budgets keep native-page geometry from multiplying work on macOS.
+const REGION_BYTES: usize = 2 * 1024 * 1024;
+const QUOTA_BYTES: [usize; 4] = [64 * 1024, 256 * 1024, 1024 * 1024, REGION_BYTES];
+const VISIT_BYTES: usize = 256 * 1024;
+const PROBE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const BATCH_BYTES: usize = 1024 * 1024;
+pub(super) const WORK_BUDGET: Duration = Duration::from_millis(8);
+pub(super) const REJECT_RETRY: Duration = Duration::from_millis(250);
+pub(super) const INVALIDATED_RETRY: Duration = Duration::from_secs(30);
+#[cfg(test)]
 const REGION_PAGES: usize = 512;
+#[cfg(test)]
 const QUOTAS: [usize; 4] = [16, 64, 256, 512];
-const VISIT_PAGES: usize = 64;
 
 struct Region {
     pages: Range<usize>,
@@ -38,6 +52,7 @@ pub(super) struct Visit {
 
 pub(super) struct Scanner {
     regions: Vec<Region>,
+    page_bytes: usize,
     cursor: usize,
     unfinished: usize,
     pub(super) probes: u64,
@@ -47,13 +62,19 @@ pub(super) struct Scanner {
 }
 
 impl Scanner {
-    pub(super) fn new(mappings: impl Iterator<Item = Range<usize>>, seed: u64) -> Self {
+    pub(super) fn new(
+        mappings: impl Iterator<Item = Range<usize>>,
+        page_bytes: usize,
+        seed: u64,
+    ) -> Self {
+        assert!(matches!(page_bytes, 4096 | 16384));
+        let region_pages = REGION_BYTES / page_bytes;
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         use rand::{Rng, SeedableRng};
         let mut regions = Vec::new();
         for mapping in mappings {
-            for first in (mapping.start..mapping.end).step_by(REGION_PAGES) {
-                let end = (first + REGION_PAGES).min(mapping.end);
+            for first in (mapping.start..mapping.end).step_by(region_pages) {
+                let end = (first + region_pages).min(mapping.end);
                 let len = end - first;
                 let offset = rng.random_range(0..len);
                 let mut stride = rng.random_range(1..=len);
@@ -64,7 +85,7 @@ impl Scanner {
                     pages: first..end,
                     offset,
                     stride,
-                    remaining: QUOTAS[0].min(len),
+                    remaining: (QUOTA_BYTES[0] / page_bytes).min(len),
                     sampled: 0,
                     merged: 0,
                     churn: 0,
@@ -77,6 +98,7 @@ impl Scanner {
         let unfinished = regions.len();
         Self {
             regions,
+            page_bytes,
             cursor: 0,
             unfinished,
             probes: 0,
@@ -90,6 +112,40 @@ impl Scanner {
         self.unfinished == 0
     }
 
+    pub(super) fn delay(&self) -> Duration {
+        if self.round_complete() {
+            REJECT_RETRY
+        } else {
+            Duration::from_millis(1)
+        }
+    }
+
+    /// Backends inspect only the selected visit and append at most one result
+    /// per index. Empty/sparse visits consume quota too. Even an expired soft
+    /// budget permits one visit, so foreground hints cannot starve exploration.
+    pub(super) fn select<T, E>(
+        &mut self,
+        limit: usize,
+        started: Instant,
+        mut inspect: impl FnMut(Visit, &mut Vec<T>) -> Result<(), E>,
+    ) -> Result<Vec<T>, E> {
+        let mut selected = Vec::new();
+        let mut visited = 0;
+        let probe_limit = PROBE_BYTES / self.page_bytes;
+        while selected.len() < limit
+            && visited < probe_limit
+            && (visited == 0 || started.elapsed() < WORK_BUDGET)
+        {
+            let Some(visit) = self.next((limit - selected.len()).min(probe_limit - visited)) else {
+                break;
+            };
+            visited += visit.pages.len();
+            inspect(visit, &mut selected)?;
+            debug_assert!(selected.len() <= limit);
+        }
+        Ok(selected)
+    }
+
     /// Called only between publication batches. Feedback from the previous
     /// batch has been recorded before the next round's quota is chosen.
     pub(super) fn begin_round(&mut self) {
@@ -99,17 +155,19 @@ impl Scanner {
         for region in &mut self.regions {
             region.level = if region.churn > 0 && region.churn * 2 >= region.merged {
                 0
-            } else if region.sampled >= 8 && region.merged * 10 >= region.sampled {
-                (region.level + 1).min(QUOTAS.len() - 1)
+            } else if region.sampled >= (QUOTA_BYTES[0] / self.page_bytes / 2) as u32
+                && region.merged * 10 >= region.sampled
+            {
+                (region.level + 1).min(QUOTA_BYTES.len() - 1)
             } else {
                 region.level.saturating_sub(1)
             };
             if region.level == 0
-                && region.pages.len() == REGION_PAGES
-                && usize::from(region.visited) == REGION_PAGES
+                && region.pages.len() == REGION_BYTES / self.page_bytes
+                && usize::from(region.visited) == REGION_BYTES / self.page_bytes
             {
                 if region.quiet_left == 0 {
-                    region.remaining = QUOTAS[0] * 4;
+                    region.remaining = QUOTA_BYTES[0] / self.page_bytes * 4;
                     region.quiet_left = 3;
                 } else {
                     region.remaining = 0;
@@ -117,7 +175,8 @@ impl Scanner {
                 }
             } else {
                 region.quiet_left = 0;
-                region.remaining = QUOTAS[region.level].min(region.pages.len());
+                region.remaining =
+                    (QUOTA_BYTES[region.level] / self.page_bytes).min(region.pages.len());
             }
             region.sampled = 0;
             region.merged = 0;
@@ -143,14 +202,18 @@ impl Scanner {
             if region.remaining == 0 {
                 continue;
             }
-            let count = region.remaining.min(VISIT_PAGES).min(limit);
+            let count = region
+                .remaining
+                .min(VISIT_BYTES / self.page_bytes)
+                .min(limit);
             let mut pages = Vec::with_capacity(count);
             for _ in 0..count {
                 pages.push(region.pages.start + region.offset);
                 region.offset = (region.offset + region.stride) % region.pages.len();
             }
             region.remaining -= count;
-            region.visited = (usize::from(region.visited) + count).min(REGION_PAGES) as u16;
+            region.visited =
+                (usize::from(region.visited) + count).min(REGION_BYTES / self.page_bytes) as u16;
             if region.remaining == 0 {
                 self.unfinished -= 1;
             }
@@ -198,6 +261,36 @@ impl Scanner {
         }
         counts
     }
+
+    pub(super) fn report(&self, file_hint_candidates: u64) {
+        eprintln!(
+            "pvisor-shared-scan regions_by_level={:?} probed_pages_total={} successful_merges_total={} cow_breaks_total={} unstable_total={} file_hint_candidates_total={file_hint_candidates} pid={}",
+            self.levels(),
+            self.probes,
+            self.merges,
+            self.cow_breaks,
+            self.unstable,
+            std::process::id()
+        );
+    }
+}
+
+pub(super) fn deadline(time: Instant) -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    time.saturating_duration_since(*EPOCH.get_or_init(Instant::now))
+        .as_millis() as u64
+}
+
+// The callback owns the actual VM barrier; empty work must never enter it.
+pub(super) fn quiesce_nonempty<T, R>(
+    work: &mut [T],
+    action: impl FnOnce(&mut [T]) -> Result<Option<R>, String>,
+) -> Result<Option<R>, String> {
+    if work.is_empty() {
+        Ok(None)
+    } else {
+        action(work)
+    }
 }
 
 fn gcd(mut a: usize, mut b: usize) -> usize {
@@ -215,7 +308,7 @@ mod tests {
     #[test]
     fn poor_regions_eventually_visit_every_page_including_non_power_of_two_tails() {
         for len in [1, 2, 17, 511, 512, 513, 1301] {
-            let mut scanner = Scanner::new(std::iter::once(0..len), 17);
+            let mut scanner = Scanner::new(std::iter::once(0..len), 4096, 17);
             let mut seen = vec![BTreeSet::new(); scanner.regions.len()];
             for _ in 0..REGION_PAGES / QUOTAS[0] + 1 {
                 scanner.begin_round();
@@ -234,7 +327,7 @@ mod tests {
     #[test]
     fn each_region_walk_is_a_permutation_not_repeated_random_samples() {
         for len in [17, 127, 512] {
-            let mut scanner = Scanner::new(std::iter::once(0..len), 91);
+            let mut scanner = Scanner::new(std::iter::once(0..len), 4096, 91);
             let mut seen = BTreeSet::new();
             while seen.len() < len {
                 scanner.begin_round();
@@ -250,7 +343,7 @@ mod tests {
 
     #[test]
     fn productive_region_gets_more_work_without_starving_poor_regions() {
-        let mut scanner = Scanner::new(std::iter::once(0..1536), 37);
+        let mut scanner = Scanner::new(std::iter::once(0..1536), 4096, 37);
         let mut counts = [0; 3];
         for _ in 0..4 {
             scanner.begin_round();
@@ -286,7 +379,7 @@ mod tests {
 
     #[test]
     fn changed_workload_recovers_from_low_priority_and_finished_sharing_slows_down() {
-        let mut scanner = Scanner::new(std::iter::once(0..512), 1);
+        let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 1);
         for _ in 0..3 {
             scanner.begin_round();
             while let Some(visit) = scanner.next(512) {
@@ -312,7 +405,7 @@ mod tests {
 
     #[test]
     fn grouped_poor_regions_keep_sliding_coverage_and_reduce_region_queries() {
-        let mut scanner = Scanner::new(std::iter::once(0..1024), 19);
+        let mut scanner = Scanner::new(std::iter::once(0..1024), 4096, 19);
         // The first walk retains the original small, frequent exploration.
         for _ in 0..32 {
             scanner.begin_round();
@@ -345,7 +438,7 @@ mod tests {
 
     #[test]
     fn successful_hinted_feedback_wakes_a_quiet_region_without_waiting_for_its_turn() {
-        let mut scanner = Scanner::new(std::iter::once(0..512), 21);
+        let mut scanner = Scanner::new(std::iter::once(0..512), 4096, 21);
         for _ in 0..33 {
             scanner.begin_round();
             while scanner.next(64).is_some() {}
@@ -366,15 +459,116 @@ mod tests {
 
     #[test]
     fn geometry_keeps_mapping_boundaries_and_small_metadata() {
-        let scanner = Scanner::new([0..17, 17..1041].into_iter(), 1);
+        let scanner = Scanner::new([0..17, 17..1041].into_iter(), 4096, 1);
         assert_eq!(scanner.regions.len(), 3);
         assert_eq!(scanner.regions[0].pages, 0..17);
         assert_eq!(scanner.regions[1].pages, 17..529);
         assert_eq!(scanner.regions[2].pages, 529..1041);
-        let scanner = Scanner::new(std::iter::once(0..512 * 1024 * 1024 / 4096), 1);
+        let scanner = Scanner::new(std::iter::once(0..512 * 1024 * 1024 / 4096), 4096, 1);
         assert!(scanner.regions.capacity() * std::mem::size_of::<Region>() <= 32 * 1024);
-        let mut empty = Scanner::new(std::iter::empty(), 0);
+        let mut empty = Scanner::new(std::iter::empty(), 4096, 0);
         empty.begin_round();
         assert!(empty.next(1).is_none());
+    }
+
+    #[test]
+    fn native_page_sizes_keep_the_same_byte_quotas_and_adaptive_feedback() {
+        let mut histories = Vec::new();
+        for bytes in [4096, 16384] {
+            let region = REGION_BYTES / bytes;
+            let mut scanner = Scanner::new(std::iter::once(0..region * 2), bytes, 37);
+            let mut history = Vec::new();
+            for round in 0..40 {
+                scanner.begin_round();
+                let mut work = [0; 2];
+                while let Some(visit) = scanner.next(usize::MAX) {
+                    assert!(visit.region.len() * bytes <= REGION_BYTES);
+                    assert!(visit.pages.len() * bytes <= VISIT_BYTES);
+                    for index in visit.pages {
+                        work[index / region] += bytes;
+                        scanner.sampled(index);
+                        if index < region && round < 4 {
+                            scanner.merged(index);
+                        }
+                    }
+                }
+                if round == 3 {
+                    // Both COW and in-flight writes must cancel a rich region's
+                    // promotion, regardless of the host's page size.
+                    for _ in 0..region / 4 {
+                        scanner.cow(0);
+                        scanner.invalidated(1);
+                    }
+                }
+                history.push((work, scanner.levels()));
+            }
+            assert_eq!(history[0].0, [64 * 1024; 2]);
+            assert_eq!(history[3].0, [REGION_BYTES, 64 * 1024]);
+            assert_eq!(history[4].1, [2, 0, 0, 0]);
+            assert_eq!(scanner.cow_breaks, (region / 4) as u64);
+            assert_eq!(scanner.unstable, (region / 4) as u64);
+            histories.push(history);
+        }
+        assert_eq!(histories[0], histories[1]);
+    }
+
+    #[test]
+    fn sixteen_kib_walks_cover_mapping_tails_and_group_quiet_regions() {
+        let region = REGION_BYTES / 16384;
+        for len in [1, 2, 17, 127, 128, 129, 327] {
+            let mut scanner = Scanner::new([0..len, len..len + region].into_iter(), 16384, 17);
+            let mut seen = std::collections::BTreeSet::new();
+            let mut rounds = Vec::new();
+            for _ in 0..96 {
+                scanner.begin_round();
+                let mut pages = BTreeSet::new();
+                while let Some(visit) = scanner.next(7) {
+                    assert!(visit.region.end <= len || visit.region.start >= len);
+                    assert!(visit.pages.len() <= 7);
+                    pages.extend(visit.pages);
+                }
+                seen.extend(pages.iter().copied());
+                rounds.push(pages);
+            }
+            assert_eq!(seen.len(), len + region);
+            for window in rounds[32..].windows(32) {
+                let covered: BTreeSet<_> = window.iter().flat_map(|pages| pages.iter()).collect();
+                assert_eq!(covered.len(), len + region);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_bounds_sparse_probes_and_retains_work_after_hint_preemption() {
+        for bytes in [4096, 16384] {
+            let mut scanner =
+                Scanner::new(std::iter::once(0..1024 * 1024 * 1024 / bytes), bytes, 9);
+            let stale = Instant::now() - WORK_BUDGET * 2;
+            let selected = scanner
+                .select(3, stale, |visit, out| {
+                    out.extend(visit.pages);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert_eq!(selected.len(), 3);
+            assert!(!scanner.round_complete());
+            assert_eq!(scanner.delay(), Duration::from_millis(1));
+            // Deliberately use a future start to test the probe cap without
+            // depending on host scheduling speed.
+            let start = Instant::now() + Duration::from_secs(60);
+            let before = scanner.probes;
+            let selected: Vec<usize> = scanner
+                .select(BATCH_BYTES / bytes, start, |_, _| Ok::<_, ()>(()))
+                .unwrap();
+            assert!(selected.is_empty());
+            assert_eq!((scanner.probes - before) as usize * bytes, PROBE_BYTES);
+            while scanner.next(usize::MAX).is_some() {}
+            assert_eq!(scanner.delay(), Duration::from_millis(250));
+            scanner.begin_round();
+            assert_eq!(
+                scanner.select::<usize, _>(1, start, |_, _| Err("query failed")),
+                Err("query failed")
+            );
+        }
     }
 }

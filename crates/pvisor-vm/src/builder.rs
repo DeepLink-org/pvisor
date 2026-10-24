@@ -144,6 +144,27 @@ impl<B: Backend> Builder<B> {
         self.resources.ram_backing = Some(Arc::new(file));
         Ok(())
     }
+    pub(crate) fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()> {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || cfg!(any(
+                feature = "tee",
+                feature = "aws-nitro",
+                feature = "efi",
+                feature = "gpu",
+                feature = "snd",
+                feature = "input"
+            ))
+            || self.resources.snapshot_profile
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "shared kernel baseline requires fresh plain Apple Silicon HVF",
+            ));
+        }
+        crate::shared_kernel::validate_directory(&directory)?;
+        self.resources.shared_kernel_base = Some(directory.canonicalize()?);
+        Ok(())
+    }
     pub fn embedded_kernel(
         &mut self,
         bytes: &[u8],
@@ -697,6 +718,12 @@ impl<B: Backend> Builder<B> {
 ))]
 impl<B: crate::backend::SnapshotBackend> Builder<B> {
     pub fn snapshot_profile(&mut self) -> io::Result<()> {
+        if self.resources.shared_kernel_base.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "shared boot kernel baseline cannot use snapshot profiles",
+            ));
+        }
         if self.guest_idle {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,

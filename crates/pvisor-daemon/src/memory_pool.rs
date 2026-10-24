@@ -1,16 +1,17 @@
 //! Daemon-owned cold-page pool. Its detached service outlives API restarts.
-//! Physical sharing requires a live owner. Compressed clients retain sealed
-//! backing and restore locally after service loss; neither mode replaces state.
+//! Physical sharing and macOS compression require a live owner. Linux compressed
+//! clients retain sealed backing for local restore after service loss. No mode
+//! silently replaces state or reconnects a running VM.
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use pvisor::ram_backing::ipc::PoolClient;
 #[cfg(not(target_os = "linux"))]
 use pvisor::ram_backing::{ipc::serve, resident::CompressedPool};
+use pvisor::ram_backing::{ipc::serve_shared, shared::SharedPool};
 #[cfg(target_os = "linux")]
 use pvisor::ram_backing::{
-    ipc::{SealedClient, serve_sealed, serve_shared},
+    ipc::{SealedClient, serve_sealed},
     sealed::SealedPool,
-    shared::SharedPool,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,15 +30,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Linux storage selection, fixed for the lifetime of this pool state directory.
+/// Storage selection, fixed for the lifetime of this pool state directory.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum PoolMode {
-    /// Raw 4 KiB pages shared by private mappings and kernel COW; no userfaultfd.
+    /// Linux raw 4 KiB pages shared by private mappings and kernel COW;
+    /// no userfaultfd. Old macOS records use this label for legacy compression.
     #[default]
     Physical,
-    /// Deduplicated sealed compressed blocks; VM restore requires kernel-fault userfaultfd.
+    /// Deduplicated compressed blocks. Linux retains sealed client backing;
+    /// macOS HVF restores through the live pool and requires it to stay alive.
     Compressed,
+    /// Raw host pages with private COW mappings: 16 KiB on Apple Silicon,
+    /// 4 KiB on Linux. Separate from the legacy macOS `physical` record label.
+    PhysicalPages,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,7 +60,11 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            mode: PoolMode::Physical,
+            mode: if cfg!(target_os = "macos") {
+                PoolMode::Compressed
+            } else {
+                PoolMode::Physical
+            },
             max_bytes: 512 * 1024 * 1024,
             max_objects: 32768,
             max_connections: 32,
@@ -72,30 +82,12 @@ fn private_directory(path: &Path) -> Result<()> {
 }
 fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     let stream = UnixStream::connect(socket)?;
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        ensure!(
-            unsafe {
-                libc::getsockopt(
-                    stream.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    (&mut cred as *mut libc::ucred).cast(),
-                    &mut size,
-                )
-            } == 0
-                && cred.uid == unsafe { libc::geteuid() },
-            "pool peer belongs to another user"
-        );
-    }
+    pvisor::host_transport::authorize_host_peer_sync(&stream)?;
     let mut client = PoolClient::new(stream, Duration::from_secs(2))?;
     client.stats()?;
     #[cfg(target_os = "linux")]
     match mode {
-        PoolMode::Physical => client
+        PoolMode::Physical | PoolMode::PhysicalPages => client
             .enable_shared_mapping()
             .context("pool lacks physical sharing; preserve active VMs and use fresh pool state")?,
         PoolMode::Compressed => {
@@ -104,22 +96,46 @@ fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
             )?;
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    ensure!(
-        mode == PoolMode::Physical,
-        "sealed compressed pool requires Linux"
-    );
+    // Older macOS configurations called the legacy compressed backend physical.
+    // Keep those records usable without changing their persisted ownership.
+    #[cfg(target_os = "macos")]
+    if mode == PoolMode::PhysicalPages {
+        client
+            .enable_shared_mapping()
+            .context("pool lacks physical pages; use fresh state")?;
+    }
     Ok(())
 }
-/// Called under the daemon's exclusive state lock. Reuse only its private,
-/// configuration-bound service; never replace a socket or kill by stored PID.
+/// Start or reuse a private, configuration-bound service. A pool startup lock
+/// serializes callers, including standalone managers. The state directory must
+/// already exist and be owned/private. Never replaces a socket or kills by PID.
 pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Result<PathBuf> {
+    private_directory(state)?;
+    let state = state.canonicalize()?;
     let directory = state.join("memory-pool");
-    if !directory.try_exists()? {
-        use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new().mode(0o700).create(&directory)?;
+    use std::os::unix::fs::DirBuilderExt;
+    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&directory)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(error.into());
     }
     private_directory(&directory)?;
+    let bases = directory.join("shared-kernel");
+    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&bases)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(error.into());
+    }
+    private_directory(&bases)?;
+    let startup = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join("startup.lock"))?;
+    startup.lock_exclusive()?;
     let record = directory.join("config.json");
     if record.try_exists()? {
         ensure!(
@@ -188,11 +204,6 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
 pub fn run(directory: &Path) -> Result<()> {
     private_directory(directory)?;
     let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;
-    #[cfg(not(target_os = "linux"))]
-    ensure!(
-        config.mode == PoolMode::Physical,
-        "sealed compressed pool requires Linux"
-    );
     ensure!(
         config.max_bytes > 0
             && config.max_objects > 0
@@ -215,12 +226,15 @@ pub fn run(directory: &Path) -> Result<()> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     #[cfg(not(target_os = "linux"))]
-    let pool = Arc::new(Mutex::new(CompressedPool::new(
-        config.max_bytes,
-        config.max_objects,
-    )));
-    #[cfg(target_os = "linux")]
-    let pool = (config.mode == PoolMode::Physical)
+    let compressed = (config.mode != PoolMode::PhysicalPages).then(|| {
+        Arc::new(Mutex::new(CompressedPool::new(
+            config.max_bytes,
+            config.max_objects,
+        )))
+    });
+    let physical = config.mode == PoolMode::PhysicalPages
+        || (cfg!(target_os = "linux") && config.mode == PoolMode::Physical);
+    let pool = physical
         .then(|| SharedPool::new(config.max_bytes, config.max_objects))
         .transpose()?
         .map(|pool| Arc::new(Mutex::new(pool)));
@@ -238,24 +252,8 @@ pub fn run(directory: &Path) -> Result<()> {
     );
     for stream in listener.incoming() {
         let stream = stream?;
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::fd::AsRawFd;
-            let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-            let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-            if unsafe {
-                libc::getsockopt(
-                    stream.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    (&mut cred as *mut libc::ucred).cast(),
-                    &mut size,
-                )
-            } != 0
-                || cred.uid != unsafe { libc::geteuid() }
-            {
-                continue;
-            }
+        if pvisor::host_transport::authorize_host_peer_sync(&stream).is_err() {
+            continue;
         }
         if connections
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -266,6 +264,8 @@ pub fn run(directory: &Path) -> Result<()> {
             continue;
         }
         let owner = pool.clone();
+        #[cfg(not(target_os = "linux"))]
+        let compressed = compressed.clone();
         #[cfg(target_os = "linux")]
         let sealed = sealed.clone();
         let count = connections.clone();
@@ -277,7 +277,10 @@ pub fn run(directory: &Path) -> Result<()> {
                 None => serve_sealed(stream, sealed.unwrap(), refs),
             };
             #[cfg(not(target_os = "linux"))]
-            let result = serve(stream, owner, refs);
+            let result = match owner {
+                Some(owner) => serve_shared(stream, owner, refs),
+                None => serve(stream, compressed.unwrap(), refs),
+            };
             if let Err(error) = result {
                 eprintln!("memory-pool session: {error}");
             }

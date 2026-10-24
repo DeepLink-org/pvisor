@@ -660,6 +660,38 @@ prepared-image bootstrap, SDK conformance or density.
 
 ## Independent container VM lifecycle
 
+On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
+provides native 16 KiB physical slots through the same pool socket. The runner
+negotiates this protocol and starts the VM-owned physical pager instead of cold
+compression. Publication rechecks complete live bytes under the CPU/device
+barrier; reads retain sharing and writes COW. A kqueue watch keeps disconnected
+slots pinned until peer exit. This is a separate fixed pool mode, with the same
+pool-loss termination contract. It uses an unlinked file/cache, not memfd seals;
+only the trusted owner may mutate free slots. Whole-VM offload and snapshots
+remain incompatible. See the daemon README for limits and native four-VM gates.
+
+`docker::Create.shared_kernel_base` selects a private Apple Silicon boot-kernel
+cache through `pvisor_vm::api::VmConfiguration`. Equal initial kernel bytes map
+one read-only inode with private COW writes; other RAM keeps its normal backing.
+Creation canonicalizes and persists the directory, excluding guest rootfs and
+mount overlaps. The selector works independently of `memory_pool`; when both are
+used, immutable kernel RAM is excluded from both cold compression and dynamic
+physical-page merging. Baseline mappings
+retain their descriptor after daemon exit/path removal. This does not merge
+application RAM, enable snapshots/offload, or provide automatic cache GC.
+
+`docker::Create.memory_pool` optionally selects the existing same-user daemon
+pool; creation canonicalizes its private Unix socket and persists the selector
+for later starts. Pool authority must be outside guest rootfs/mount trees.
+Startup authenticates the peer before installing the shared platform pager.
+Apple Silicon uses a fresh unlinked file-backed RAM mapping and the existing
+HVF compressed pool; Linux retains anonymous RAM and negotiates physical or
+sealed-compressed storage. No environment mutation or new VM pager is introduced.
+Omitting the selector retains legacy container defaults. An unavailable pool
+fails startup. macOS depends on the live pool for restore and fails closed on
+pool loss; it does not inherit Linux sealed-local recovery. See the daemon README
+for standalone startup, manager restart, budgets and experimental limitations.
+
 The experimental `docker` module owns the user-private image catalog, pinned
 container configuration, writable uppers, managed volumes and launch generation
 records used by the top-level container commands. The CLI owns Docker argument parsing, rendering

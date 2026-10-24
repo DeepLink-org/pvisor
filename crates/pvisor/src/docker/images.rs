@@ -180,6 +180,8 @@ mod tests {
             ports: vec![],
             cpus: 1,
             memory_mib: 32,
+            memory_pool: None,
+            shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
             tty: None,
@@ -251,6 +253,59 @@ mod tests {
             vec![71; 3]
         );
         assert!(backend::attributes(&root.rootfs().join("renamed")).is_err());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn pooled_images_accept_memory_sharing_and_check_projected_root_authority() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let context = temporary.path().join("context");
+        fs::create_dir(&context).unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nCMD [\"/payload\"]\n",
+        )
+        .unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        let image = build(&store, &options(&context, "sharing:test")).unwrap();
+        assert!(image.rootfs.as_os_str().is_empty());
+        let private = temporary.path().join("pool");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = private.join("pool.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut config = create("sharing:test");
+        config.memory_pool = Some(socket.canonicalize().unwrap());
+        config.shared_kernel_base = Some(private.canonicalize().unwrap());
+        let instance = store.create(config.clone()).unwrap();
+        assert_eq!(instance.config.memory_pool, config.memory_pool);
+        assert_eq!(
+            instance.config.shared_kernel_base,
+            config.shared_kernel_base
+        );
+
+        // Projections are guest-visible even though the stored rootfs field is empty.
+        let projections = store.root.join("images/projections");
+        config.shared_kernel_base = Some(projections.canonicalize().unwrap());
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("shared kernel authority")
+        );
+        config.shared_kernel_base = None;
+        let exposed_socket = projections.join("pool.sock");
+        let _exposed = std::os::unix::net::UnixListener::bind(&exposed_socket).unwrap();
+        config.memory_pool = Some(exposed_socket);
+        assert!(
+            store
+                .create(config)
+                .unwrap_err()
+                .to_string()
+                .contains("memory pool authority")
+        );
     }
 
     #[test]

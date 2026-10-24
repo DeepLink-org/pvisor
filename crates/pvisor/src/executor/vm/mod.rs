@@ -35,3 +35,8 @@ pub(crate) mod idle;
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 mod pager;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+pub(crate) use pager::{start_diagnostics, start_with_pool};
