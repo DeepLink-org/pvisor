@@ -12,7 +12,7 @@ pub mod resident;
 #[cfg(target_os = "linux")]
 pub mod sealed;
 /// Linux daemon-owned physical pages, mapped privately by VMs for kernel COW.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod shared;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
@@ -36,7 +36,7 @@ pub fn write_process_inventory(
     directory: &Path,
     inventory: inventory::ProcessInventory,
 ) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = directory.metadata()?;
     if !metadata.is_dir()
         || metadata.uid() != unsafe { libc::geteuid() }
@@ -73,14 +73,15 @@ pub fn write_process_inventory(
         scope: "complete live mapped-backing walk; not atomic, private RSS or PFNs",
         pages: inventory.pages,
     };
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(directory.join(format!("{}.json", std::process::id())))?;
-    let mut writer = io::BufWriter::new(file);
-    serde_json::to_writer(&mut writer, &value).map_err(io::Error::other)?;
-    std::io::Write::flush(&mut writer)
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    {
+        let mut writer = io::BufWriter::new(file.as_file_mut());
+        serde_json::to_writer(&mut writer, &value).map_err(io::Error::other)?;
+        std::io::Write::flush(&mut writer)?;
+    }
+    file.persist_noclobber(directory.join(format!("{}.json", std::process::id())))
+        .map_err(|error| error.error)?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

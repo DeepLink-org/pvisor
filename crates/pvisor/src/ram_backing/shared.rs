@@ -1,5 +1,6 @@
-//! Linux physical-page owner. References pin immutable slots in a size-sealed
-//! memfd; only the owner writes free slots. VMs receive a read-only descriptor.
+//! Physical-page owner. References pin immutable native-page slots; only the
+//! owner writes free slots. Linux uses size-sealed memfd; macOS an unlinked
+//! private file with kqueue lifetime watches. Clients receive read-only FDs.
 use super::{ImageId, invalid, resident::identity};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -12,7 +13,10 @@ use std::{
     sync::Arc,
 };
 
-const PAGE: usize = 4096;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) const PAGE: usize = 16384;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) const PAGE: usize = 4096;
 pub struct SharedObject {
     id: ImageId,
     offset: u64,
@@ -67,29 +71,52 @@ impl SharedPool {
             .checked_mul(PAGE)
             .filter(|v| *v != 0 && *v <= isize::MAX as usize)
             .ok_or_else(|| invalid("invalid shared pool budget"))?;
-        let fd = unsafe {
-            libc::memfd_create(
-                c"pvisor-shared-ram".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
+        #[cfg(target_os = "linux")]
+        let (file, readonly) = {
+            let fd = unsafe {
+                libc::memfd_create(
+                    c"pvisor-shared-ram".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let file = unsafe { File::from_raw_fd(fd) };
+            file.set_len(size as u64)?;
+            // Seal size, not writes: the owner still publishes only unreferenced slots.
+            if unsafe {
+                libc::fcntl(
+                    fd,
+                    libc::F_ADD_SEALS,
+                    libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let readonly = Arc::new(File::open(format!("/proc/self/fd/{fd}"))?);
+            (file, readonly)
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        file.set_len(size as u64)?;
-        // Seal size, not writes: the owner still publishes only unreferenced slots.
-        if unsafe {
-            libc::fcntl(
-                fd,
-                libc::F_ADD_SEALS,
-                libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
-            )
-        } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let readonly = Arc::new(File::open(format!("/proc/self/fd/{fd}"))?);
+        #[cfg(target_os = "macos")]
+        let (file, readonly) = {
+            use std::os::unix::fs::PermissionsExt;
+            if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize != PAGE {
+                return Err(invalid("physical pool host-page size mismatch"));
+            }
+            let pending = tempfile::NamedTempFile::new()?;
+            pending.as_file().set_len(size as u64)?;
+            pending
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o400))?;
+            let readonly = Arc::new(File::open(pending.path())?);
+            // Unlink before accepting clients. Only the owner retains a writer;
+            // references pin immutable slots, including after daemon exit.
+            let (file, path) = pending.into_parts();
+            path.close()?;
+            (file, readonly)
+        };
+        let fd = file.as_raw_fd();
         let address = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -132,7 +159,7 @@ impl SharedPool {
         session: [u8; 16],
     ) -> io::Result<Arc<SharedObject>> {
         if bytes.len() != PAGE {
-            return Err(invalid("physical pool requires a 4 KiB page"));
+            return Err(invalid("physical pool requires a native page"));
         }
         let id = identity(bytes);
         if self.objects.contains_key(&id) {
@@ -166,7 +193,7 @@ impl SharedPool {
     }
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<Arc<SharedObject>> {
         if bytes.len() != PAGE {
-            return Err(invalid("physical pool requires a 4 KiB page"));
+            return Err(invalid("physical pool requires a native page"));
         }
         let id = identity(bytes);
         self.intern_identified(bytes, id)
@@ -250,6 +277,7 @@ impl SharedPool {
         let offset = self.objects[&id].offset;
         // No VM mapping may survive its last explicit reference. Disconnected
         // sessions keep references until pidfd confirms all mappings are gone.
+        #[cfg(target_os = "linux")]
         if unsafe {
             libc::fallocate(
                 self.file.as_raw_fd(),
@@ -261,11 +289,24 @@ impl SharedPool {
         {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(target_os = "macos")]
+        {
+            let hole = libc::fpunchhole_t {
+                fp_flags: 0,
+                reserved: 0,
+                fp_offset: offset as i64,
+                fp_length: PAGE as i64,
+            };
+            if unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_PUNCHHOLE, &hole) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
         self.objects.remove(&id);
         self.free.push(offset);
         Ok(())
     }
 }
+#[cfg(target_os = "linux")]
 pub(super) fn peer_pidfd(stream: &UnixStream) -> io::Result<OwnedFd> {
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -293,6 +334,7 @@ pub(super) fn peer_pidfd(stream: &UnixStream) -> io::Result<OwnedFd> {
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
+#[cfg(target_os = "linux")]
 pub(super) fn wait_peer_exit(pidfd: &OwnedFd) -> io::Result<()> {
     let mut pfd = libc::pollfd {
         fd: pidfd.as_raw_fd(),
@@ -309,6 +351,84 @@ pub(super) fn wait_peer_exit(pidfd: &OwnedFd) -> io::Result<()> {
         }
         return Err(io::Error::other(
             "shared pool owner exit could not be verified",
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn peer_pidfd(stream: &UnixStream) -> io::Result<OwnedFd> {
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of_val(&pid) as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if pid <= 0 || size as usize != std::mem::size_of_val(&pid) {
+        return Err(invalid("invalid physical pool peer PID"));
+    }
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let queue = unsafe { OwnedFd::from_raw_fd(queue) };
+    if unsafe { libc::fcntl(queue.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Register before issuing any authority. The event follows this process
+    // lifetime, not a later process reusing its numeric PID.
+    let event = libc::kevent {
+        ident: pid as usize,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    if unsafe {
+        libc::kevent(
+            queue.as_raw_fd(),
+            &event,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(queue)
+}
+#[cfg(target_os = "macos")]
+pub(super) fn wait_peer_exit(queue: &OwnedFd) -> io::Result<()> {
+    loop {
+        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &mut event,
+                1,
+                std::ptr::null(),
+            )
+        };
+        if result == 1 && event.flags & libc::EV_ERROR == 0 && event.fflags & libc::NOTE_EXIT != 0 {
+            return Ok(());
+        }
+        if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(io::Error::other(
+            "physical pool peer exit could not be verified",
         ));
     }
 }
@@ -357,6 +477,7 @@ mod tests {
             libc::O_RDONLY
         );
         assert!(readonly.write_all_at(&[0; PAGE], 0).is_err());
+        #[cfg(target_os = "linux")]
         assert!(pool.file.set_len(PAGE as u64).is_err());
     }
     #[test]

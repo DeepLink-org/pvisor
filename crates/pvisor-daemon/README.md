@@ -13,11 +13,15 @@ orchestrators.
 ```sh
 # Portable cache service only; no sandbox API key, KVM or cgroup required.
 pvisor-daemon serve --cache --cache-listen unix:///tmp/pvisor-cache.sock
+# Shared memory pool only (Apple Silicon macOS or Linux); no sandbox API key.
+pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool
 # Sandbox and cache together (OPEN_SANDBOX_API_KEY must be set).
 pvisor-daemon serve --sandbox --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd --cache
 ```
 
-`--cache-image-store` overrides OCI staging. Select sandbox serving explicitly
+`--cache-image-store` overrides OCI staging. `--memory-pool` can run independently
+or alongside cache/sandbox serving. `--state` belongs to sandbox or memory-pool
+serving. Select sandbox serving explicitly
 with `--sandbox`; sandbox-specific options require that selection. With no component
 selected, startup fails. Cache-specific options require `--cache`. Cache and sandbox
 retain separate endpoints, storage and authentication; the sandbox API key does not
@@ -580,8 +584,80 @@ adapter.
 
 ## Optional daemon-owned memory pool
 
-Add `--memory-pool` to `pvisor-daemon serve --sandbox` to enable the daemon-owned pool.
-It is off by default. On Linux, the VM scans resident 4 KiB pages and publishes
+Run `pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool` independently,
+or add `--memory-pool` to `serve --sandbox`. It is off by default. Standalone
+serving creates private state, prints the canonical socket in a JSON readiness
+record and monitors the detached pool. SIGINT/SIGTERM stops the manager while
+preserving the pool for live VMs; manager restart reuses that same service.
+Unexpected pool loss fails the manager. Stale sockets/configuration conflicts
+fail closed; neither a restart nor another manager replaces live RAM ownership.
+Stop dependent VMs before terminating the pool component. The pool's startup
+lock serializes independent managers as well as sandbox startup.
+
+Apple Silicon macOS defaults to `--memory-pool-mode compressed`, using the
+existing HVF cold-page backend and the same daemon lifecycle, budgets and
+same-UID authorization. Cold 64 KiB blocks are compressed and equal contents
+share one pool object; access restores private VM RAM. This is compressed-state
+deduplication, not Linux physical-page sharing. macOS does not use memfd,
+userfaultfd, a FUSE RAM mount or guest zram. Explicit `physical` selection fails
+on macOS; old macOS component records labelled `physical` retain their legacy
+compressed backend when reopened directly with the same configuration.
+**The macOS pool must stay alive: its heap can hold the only copy of cold RAM,
+and service loss terminates dependent VMs.** Linux sealed-local recovery does
+not apply. Only trusted, same-user workloads should share this experimental
+pool. No net physical-memory saving or density guarantee is implied by object
+counts or encoded payload size.
+
+Use a fresh state directory and `--memory-pool-mode physical-pages` for native
+physical sharing on Apple Silicon (also accepted on Linux):
+
+```sh
+pvisor-daemon serve --memory-pool --memory-pool-mode physical-pages --state /tmp/pvisor-physical
+pvisor run -d -m 512m --memory-pool /tmp/pvisor-physical/memory-pool/pool.sock alpine sleep 3600
+```
+
+This mode reuses the daemon's bounded content index, full-byte duplicate checks,
+slot references and same-user transport. macOS stores native 16 KiB pages in a
+private, unlinked file, gives clients only a read-only descriptor, and registers
+a kqueue process-exit watch before granting references. Disconnect alone never
+releases live mappings. Slots remain immutable while pinned; collection punches
+unreferenced slots before reuse. Unlike Linux memfd size seals, fixed size is an
+owner contract on macOS. The owner and same-user workloads must be trusted.
+The temporary filesystem must support file mapping and hole punching; backing
+uses file cache and disk, not locked RAM. A maximum of 32,768 objects bounds the
+default Apple Silicon pool to 512 MiB, with 32,768 references per VM. Indexes,
+scan buffers and per-page state add memory beyond payload limits.
+
+The HVF worker merges equal resident pages while the guest runs; reads stay
+shared and CPU/device writes COW. It rechecks every byte after publication under
+the CPU/device barrier, and releases replaced references outside that barrier.
+COW pages are detached from the source shadow before old slots can be reused.
+Unique pages stay private. The current 4 KiB guest pages do not always align into
+identical 16 KiB host pages across VMs, including for identical random heaps.
+This mode does not compress, reconnect, or support snapshots/offload. Pool loss
+terminates dependent VMs; state records do not recover RAM after owner loss.
+Legacy macOS `physical` records keep their compressed meaning; use the explicit
+new `physical-pages` mode, never change an active state's configuration.
+
+Standalone readiness also advertises `shared_kernel_base` on Apple Silicon.
+The private `<state>/memory-pool/shared-kernel` directory stores atomically
+published, verified, read-only kernel baselines for
+`pvisor run --shared-kernel-base DIR`. Equal initial firmware bytes map one inode
+privately, so unchanged kernel pages can remain physically shared and writes
+use COW. This is a cold-boot kernel baseline, not a warmed guest template or
+dynamic application-page merging. Mappings retain their file ownership after
+daemon exit or path removal. Only containers that also select `--memory-pool`
+depend on the live compressed pool. Kernel cache files/page-cache overhead are
+outside compressed payload limits, with no automatic kernel-cache GC. Do not
+modify/truncate cache files or expose the directory to guests.
+
+Connect ordinary Jobs using `pvisor spawn --vm-memory-pool SOCKET -- COMMAND`,
+or containers using `pvisor run --memory-pool SOCKET IMAGE COMMAND`. With the
+example state above, SOCKET is `/tmp/pvisor-pool/memory-pool/pool.sock` (the JSON
+record includes its canonical macOS `/private/tmp` spelling). No OpenSandbox
+bootstrap, API key, KVM or cgroup is required for this macOS path.
+
+On Linux, physical sharing remains the default. The VM scans resident 4 KiB pages and publishes
 immutable content-addressed pages into a bounded daemon memfd. Only candidates observed in different VM sessions enter the pool; candidates
 hold hashes without retaining page payloads. Equal bytes reuse one slot. After CPU/device quiescence and a live-byte recheck, the VM maps that
 slot privately: reads retain the shared physical page, while writes use kernel
@@ -608,7 +684,7 @@ The daemon starts or reuses the detached
 private state under `<state>/memory-pool/`. This component expects the daemon's
 persisted pool configuration. The component survives API restart with the
 same configuration.
-Connections authenticate the host UID and receive a read-only file descriptor.
+Connections authenticate the host UID; Linux clients receive a read-only file descriptor.
 References pin slots until explicit release after unmapping; on disconnect,
 pidfd-confirmed peer exit is required before releasing mapped references.
 Default limits are 512 MiB of page storage, 32,768 objects, 32 connections and
@@ -656,6 +732,58 @@ Cluster/controller measurements are not evidence for this node-local daemon's
 performance, admission behavior or resource density.
 
 ## Validation
+
+Standalone pool tests cover same-user compressed object sharing, budgets,
+manager shutdown/reopen, unavailable owners and stale-socket refusal. On Apple
+Silicon, the opt-in native container case also checks cold-page publication in
+both VMs, cross-session objects, post-idle exec, private writes, stop/start,
+pool-loss termination and refusal to restart without the configured pool. It
+also uses one shared kernel inode across cold starts, verifies that boot/exec
+leave the baseline unchanged and checks a baseline-only container survives pool
+loss and cache-file unlink. The lower-level native HVF COW gate is in the VM README:
+
+```sh
+# Build/sign the CLI first; ROOTFS needs native sh, cat and sleep.
+PVISOR_MEMORY_POOL_TEST_PVISOR=/absolute/path/to/signed/pvisor \
+PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/rootfs \
+just test pvisor-daemon -- --test memory_pool \
+  -E 'test(macos_container_vms_publish_and_restore_through_daemon_pool)' --run-ignored only
+```
+
+This is a correctness gate, not a net-memory or performance measurement.
+
+The opt-in four-VM physical acceptance uses a static native probe (Rust musl
+stdlib installed, no C cross-compiler required):
+
+```sh
+rustc --edition 2021 --target aarch64-unknown-linux-musl -C linker=rust-lld -O \
+  crates/pvisor-daemon/tests/fixtures/shared_memory_guest.rs -o /tmp/pvisor-shared-guest
+mkdir -m 700 /tmp/pvisor-four-evidence
+PVISOR_MEMORY_POOL_TEST_PVISOR=/absolute/path/to/signed/pvisor \
+PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/native/rootfs \
+PVISOR_SHARED_TEST_GUEST=/tmp/pvisor-shared-guest \
+PVISOR_SHARED_KERNEL_TEST_OUTPUT=/tmp/pvisor-four-evidence \
+just test pvisor-daemon -- --test memory_pool \
+  -E 'test(macos_four_512m_vms_dynamically_share_and_cow_application_pages)' --run-ignored only --no-capture
+```
+
+Run again with `PVISOR_SHARED_TEST_CONTROL=1` and a new empty private evidence
+directory for the same workload with sharing disabled. Each arm starts four
+independent 512 MiB/one-vCPU Linux VMs. The 25-second RAM inventories query native
+resident object/offset identities under each VM's own CPU/device barrier;
+`vmmap` summaries, raw worker logs and complete payload results are retained.
+The source oracle checks every byte before and after reads, quarter/full writes,
+and peer exit. Read-only probes do not rewrite the payload. Cleanup removes only
+the test's own containers and component. Failed evidence is retained too.
+
+Native four-instance results and limits are recorded in [the acceptance report](tests/MACOS_SHARED_MEMORY.md).
+
+This is one static group per arm, not randomized repeated performance sampling.
+Resident object/offset counts describe mapped guest RAM backing, not PFNs or
+whole-host memory; per-process footprint is only a proxy and pool/metadata/cache
+cost is additional. Startup and write peaks, scan CPU and density are not measured.
+The separate `macos_four_512m_containers_share_resident_kernel_pages` gate checks
+common cold-boot baselines without the dynamic pool.
 
 Conventional tests include fake-runtime lifecycle/admission/restart/TTL regressions,
 HTTP auth/schema/filter/endpoint tests and pure native identity/IPC/manifest,

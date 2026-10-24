@@ -4,9 +4,9 @@
 //! Configure, instantiate and boot the VM's CPUs and devices.
 
 use crate::kernel::cmdline::Cmdline;
+use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
 use crossbeam_channel::unbounded;
-use crossbeam_channel::Sender;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -36,7 +36,7 @@ use crate::devices::legacy::{IoApic, IrqChipT};
 use crate::devices::legacy::{IrqChip, IrqChipDevice};
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 use crate::devices::legacy::{KvmGicV2, KvmGicV3};
-use crate::devices::virtio::{port_io, MmioTransport, PortDescription, VirtioDevice, Vsock};
+use crate::devices::virtio::{MmioTransport, PortDescription, VirtioDevice, Vsock, port_io};
 #[cfg(target_arch = "x86_64")]
 use crate::vmm::device_manager::legacy::PortIODeviceManager;
 use crate::vmm::device_manager::mmio::MMIODeviceManager;
@@ -56,7 +56,7 @@ use crate::devices::virtio::display::DisplayInfo;
 #[cfg(feature = "gpu")]
 use crate::devices::virtio::display::NoopDisplayBackend;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
-use crate::devices::virtio::{fs::ExportTable, VirtioShmRegion};
+use crate::devices::virtio::{VirtioShmRegion, fs::ExportTable};
 use crate::polly::event_manager::{Error as EventManagerError, EventManager};
 use crate::utils::eventfd::EventFd;
 use crate::utils::worker_message::WorkerMessage;
@@ -88,8 +88,6 @@ use libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 #[cfg(target_arch = "x86_64")]
 use linux_loader::loader::{self, KernelLoader};
 use nix::unistd::isatty;
-#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
-use vm_memory::mmap::MmapRegion;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use vm_memory::Address;
 use vm_memory::Bytes;
@@ -97,6 +95,8 @@ use vm_memory::Bytes;
 use vm_memory::GuestMemory;
 #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
 use vm_memory::GuestRegionMmap;
+#[cfg(all(target_arch = "x86_64", not(feature = "efi"), not(feature = "tee")))]
+use vm_memory::mmap::MmapRegion;
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 #[cfg(all(target_arch = "aarch64", feature = "efi"))]
@@ -1829,6 +1829,42 @@ pub fn create_guest_memory_for_arch<A: crate::backend::Architecture>(
                 kernel_cmdline: None,
             },
         ));
+    }
+    if let Some(directory) = &vm_resources.shared_kernel_base {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if matches!(payload, Payload::KernelCopy)
+            && firmware_data.is_none()
+            && shm_manager.regions().is_empty()
+        {
+            let kernel = vm_resources
+                .kernel_bundle
+                .as_ref()
+                .ok_or(StartMicrovmError::MissingKernelConfig)?;
+            // KernelOwner retains this validated immutable allocation through run.
+            let bytes =
+                unsafe { std::slice::from_raw_parts(kernel.host_addr as *const u8, kernel.size) };
+            let memory = crate::shared_kernel::map(
+                &arch_mem_regions,
+                vm_resources.ram_backing.clone(),
+                directory,
+                kernel.guest_addr,
+                bytes,
+            )
+            .map_err(|error| StartMicrovmError::GuestMemoryMmap(error.to_string()))?;
+            return Ok((
+                memory,
+                arch_mem_info,
+                shm_manager,
+                PayloadConfig {
+                    entry_addr: GuestAddress(kernel.entry_addr),
+                    initrd_config: None,
+                    kernel_cmdline: None,
+                },
+            ));
+        }
+        let _ = directory;
+        return Err(StartMicrovmError::GuestMemoryMmap(
+            "shared kernel baseline requires plain Apple Silicon bundled-kernel RAM without device windows".into()));
     }
     let guest_mem = if let Some(file) = &vm_resources.ram_backing {
         crate::vmm::ram::map(&arch_mem_regions, &shm_manager.regions(), file.clone())

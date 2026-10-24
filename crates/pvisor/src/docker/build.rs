@@ -530,6 +530,8 @@ impl Stage {
             ports: vec![],
             cpus: options.cpus,
             memory_mib: options.memory_mib,
+            memory_pool: None,
+            shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
             tty: None,

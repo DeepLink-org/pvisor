@@ -135,6 +135,8 @@ pub struct VmResources {
     pub machine_restore: Option<Arc<crate::vmm::snapshot::MachineRestore>>,
     /// Live MAP_SHARED RAM backing, supplied by the owning supervisor.
     pub ram_backing: Option<Arc<File>>,
+    /// Host-private, read-only boot kernel baselines; never writable guest data.
+    pub shared_kernel_base: Option<PathBuf>,
     /// The vCpu and memory configuration for this microVM.
     vm_config: VmConfig,
     /// The firmware to be loaded into the microVM.
@@ -408,7 +410,7 @@ mod tests {
     use crate::vmm::resources::VmResources;
     use crate::vmm::vmm_config::kernel_cmdline::KernelCmdlineConfig;
     use crate::vmm::vmm_config::machine_config::{CpuFeaturesTemplate, VmConfig, VmConfigError};
-    use crate::vmm::vmm_config::vsock::tests::{default_config, TempSockFile};
+    use crate::vmm::vmm_config::vsock::tests::{TempSockFile, default_config};
     use crate::vmm::vstate::VcpuConfig;
 
     fn default_kernel_cmdline() -> KernelCmdlineConfig {
@@ -421,6 +423,7 @@ mod tests {
 
     fn default_vm_resources() -> VmResources {
         VmResources {
+            shared_kernel_base: None,
             ram_backing: None,
             vm_config: VmConfig::default(),
             firmware_config: None,

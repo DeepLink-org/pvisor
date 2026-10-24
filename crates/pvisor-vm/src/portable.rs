@@ -269,6 +269,9 @@ impl VmConfiguration for VmBuilder {
     fn ram_backing(&mut self, file: File) -> io::Result<()> {
         self.inner.ram_backing(file)
     }
+    fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()> {
+        self.inner.shared_kernel_base(directory)
+    }
     fn embedded_kernel(
         &mut self,
         bytes: &[u8],

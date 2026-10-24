@@ -55,6 +55,8 @@ mod guest_idle;
 mod handle;
 #[path = "memory.rs"]
 mod memory;
+#[path = "shared_kernel.rs"]
+mod shared_kernel;
 #[path = "portable.rs"]
 mod portable;
 #[path = "ram_dedup.rs"]
@@ -79,5 +81,14 @@ mod cold_ram;
 #[path = "cold_ram_linux.rs"]
 mod cold_ram_linux;
 
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod cold_ram_scan;
+
 #[path = "ram_file.rs"]
 mod ram_file;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod shared_ram_macos;

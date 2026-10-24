@@ -127,6 +127,21 @@ pub trait VmConfiguration: Sized {
     /// LD_LIBRARY_PATH/DYLD_LIBRARY_PATH or downloads missing firmware.
     fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()>;
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
+    /// Opt in to a common boot-kernel RAM baseline on Apple Silicon HVF.
+    /// `directory` must be an existing absolute, same-user, private directory
+    /// outside guest-visible trees. The runtime atomically publishes verified,
+    /// read-only content-addressed kernel files there; callers must not modify
+    /// those files. Equal firmware bytes use one inode, mapped MAP_PRIVATE:
+    /// reads can share physical pages and CPU/device writes remain VM-private.
+    /// Other guest RAM keeps its ordinary backing. The mapped descriptor pins
+    /// the baseline through VM teardown, independently of the daemon or path.
+    /// This does not clone a running guest or merge application RAM. Cache files
+    /// have no automatic GC; unlinking an unused entry is safe for live mappings,
+    /// but truncation/mutation is forbidden. Unsupported platforms/features and
+    /// snapshot profiles return Unsupported; invalid directories leave the old
+    /// configuration unchanged. Boot rejects incompatible payloads/geometries
+    /// and corrupted cache entries, without falling back to an unshared copy.
+    fn shared_kernel_base(&mut self, directory: PathBuf) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
     -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
@@ -381,8 +396,12 @@ pub trait ColdRamControl: VmControl {
     /// Unsupported backends reject before spawning a worker.
     /// The store exclusively owns its session references;
     /// restore/release RPCs serialize separately from CPU/device barriers.
-    /// Local storage uses 64 KiB blocks; page-granular Linux stores use 4 KiB.
-    /// With `share_resident`, Linux instead maps immutable store pages privately:
+    /// Local storage uses 64 KiB blocks; page-granular stores use 4 KiB on Linux
+    /// and 16 KiB on Apple Silicon. HVF requires ordinary writable file RAM and
+    /// excludes immutable kernel/snapshot regions. Its physical store supplies
+    /// read-only, unlinked backing; a trusted owner must keep referenced slots
+    /// immutable and retain disconnected references until kqueue proves peer exit.
+    /// With `share_resident`, Linux/HVF map immutable store pages privately:
     /// reads remain shared and writes use kernel COW, without userfaultfd. The
     /// store mapping lookup is bounded metadata access without transport calls.
     /// Page publication happens outside the CPU/device barrier; live bytes are
@@ -406,6 +425,12 @@ pub trait ColdRamControl: VmControl {
 /// Tokens remain subject to the safety requirements of [`RamAccess`].
 pub trait FrozenMemory {
     fn experimental_ram_blocks(&self, bytes: usize) -> Result<Vec<RamBlock>, String>;
+    /// Query owned ordinary RAM on macOS while this freeze owns CPU/device
+    /// quiescence; raw firmware/device windows are excluded. Returns native page
+    /// size and rows [guest address, Mach object, object offset, disposition].
+    /// Queries do not fault contents. Identities are not PFNs, per-process RSS,
+    /// or whole-host attribution; separate VM queries are not one atomic sample.
+    /// Other backends return an explicit unsupported error.
     fn experimental_ram_page_inventory(&self) -> Result<(u64, Vec<[u64; 4]>), String>;
     fn install_memory_fault_handler(
         &mut self,
@@ -783,11 +808,12 @@ pub struct SharedRamMapping {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ColdRamOptions {
     pub metrics: bool,
-    /// Request independently reclaimable 4 KiB pages for a shared host pool.
-    /// Linux only; other backends reject this option. The default retains the
+    /// Request native pages for a shared host pool: 4 KiB on Linux x86_64,
+    /// 16 KiB on Apple Silicon/HVF. HVF requires `share_resident` as well.
+    /// Other backends reject this option. The default retains the
     /// backend's larger compression blocks for instance-local stores.
     pub page_granular: bool,
-    /// Linux pool pages remain shared on reads and use kernel COW on writes.
+    /// Linux/HVF pool pages remain shared on reads and use kernel COW on writes.
     /// Requires page_granular and a store providing pinned shared_mapping slots.
     /// No UFFD permission is needed for this mode. Snapshots/offload remain
     /// incompatible; remapping takes the CPU/device barrier and rechecks bytes.

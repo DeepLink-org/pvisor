@@ -98,6 +98,47 @@ pvisor images
 pvisor rmi redis:7
 ```
 
+Opt in to the shared daemon memory pool on Apple Silicon macOS or Linux:
+
+```bash
+pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool
+# In another terminal, using the socket printed by the daemon:
+pvisor run -d --memory-pool /tmp/pvisor-pool/memory-pool/pool.sock --name redis redis:7
+```
+
+The private same-user socket is canonicalized and saved with the container;
+`start` reuses it and fails if unavailable. Guest mounts/rootfs must not expose
+the pool directory or an ancestor. Apple Silicon uses a private, unlinked RAM
+backing file. The default daemon mode compresses cold blocks and restores private
+RAM on access. Opt-in `--memory-pool-mode physical-pages` on the daemon instead
+merges equal resident 16 KiB pages: reads stay shared and writes use COW. No macFUSE RAM mount is required. **On macOS,
+pool loss terminates dependent VMs.** Stopping the service manager leaves its
+detached pool alive; drain containers before stopping that pool. Linux negotiates
+the existing physical or sealed-compressed protocol. Omitting `--memory-pool`
+preserves ordinary container RAM behavior. The feature is experimental; encoded
+pool size does not establish net host-memory savings. See the [daemon contract](../pvisor-daemon/README.md#optional-daemon-owned-memory-pool).
+
+On Apple Silicon, `--shared-kernel-base DIR` additionally enables a common,
+read-only boot-kernel baseline with private COW writes. The daemon creates a
+private `<state>/memory-pool/shared-kernel` directory and includes its canonical
+path in standalone readiness JSON. For example:
+
+```bash
+pvisor run -d --shared-kernel-base /tmp/pvisor-pool/memory-pool/shared-kernel alpine sleep 3600
+```
+
+Containers using the same directory and firmware reuse one backing inode.
+This flag shares initial kernel RAM. Add a `physical-pages` daemon pool to
+merge equal runtime heap/cache pages as well; host 16 KiB page alignment limits
+which guest pages can merge.
+The flag works independently of `--memory-pool`, or alongside it: both pager modes
+exclude the shared kernel. A baseline-only container retains its mappings after
+daemon exit or cache-path removal. Snapshot profiles and whole-VM offload are
+unsupported for this mode. Keep the directory private and outside guest mounts;
+never modify/truncate its files. Cache files have no automatic GC and are outside
+the compressed-pool byte budget. The feature is opt-in and does not establish a
+net memory-saving percentage. `stop`/`start` retains the directory selector.
+
 Pulls report metadata resolution, per-layer downloaded bytes and transfer rate,
 checksum verification, extraction and cache hits. Progress goes to stderr: a
 terminal redraws the active layer's bar; redirected output uses plain, throttled
@@ -121,7 +162,7 @@ Docker credential-helper integration or cross-architecture emulation.
 
 | Command | Implemented options |
 | --- | --- |
-| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--network`/`--net bridge/none/NAME`, `--ip` |
+| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
 | `pull` | `--platform`, one public OCI image reference |
 | `images` | Optional repository, `-q`, `--no-trunc` |

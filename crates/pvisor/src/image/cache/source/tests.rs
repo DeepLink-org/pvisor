@@ -17,6 +17,40 @@ fn fixture() -> (tempfile::TempDir, ImageStore, String) {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn pool_attributes_ignore_only_host_provenance_without_mutating_source() {
+    use pvisor_overlay_core::sys;
+    let (_tmp, store, digest) = fixture();
+    let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
+    let provenance = OsStr::new("com.apple.provenance");
+    for (path, kind) in [
+        ("", "directory"),
+        ("dir", "directory"),
+        ("hello", "file"),
+        ("alias", "symlink"),
+    ] {
+        let source = root.join(path);
+        sys::set_xattr(&source, provenance, b"host provenance", 0).unwrap();
+        let original = sys::get_xattr(&source, provenance).unwrap();
+        validate_pool_attributes(&store, &digest, path.as_bytes(), kind).unwrap();
+        assert_eq!(sys::get_xattr(&source, provenance).unwrap(), original);
+    }
+    for (path, attribute, kind) in [
+        ("hello", "user.required", "file"),
+        ("dir", "com.apple.provenance.required", "directory"),
+        ("alias", "com.apple.pvisor-required", "symlink"),
+    ] {
+        sys::set_xattr(&root.join(path), OsStr::new(attribute), b"keep", 0).unwrap();
+        let error = validate_pool_attributes(&store, &digest, path.as_bytes(), kind).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("does not support xattr {attribute}"))
+        );
+    }
+}
+
+#[test]
 fn server_metadata_reuses_directory_index_and_invalidates_rebuilt_root() {
     let (_tmp, store, digest) = fixture();
     let first = metadata::directory(&store, &digest, b"").unwrap();

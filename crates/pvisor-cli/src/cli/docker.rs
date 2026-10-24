@@ -90,6 +90,12 @@ pub(super) struct Run {
     cpus: u8,
     #[arg(short = 'm', long, default_value = "512m", value_parser = memory)]
     memory: u32,
+    /// Use an existing same-user daemon memory pool (experimental; macOS requires a live pool).
+    #[arg(long, value_name = "SOCKET")]
+    memory_pool: Option<PathBuf>,
+    /// Share boot-kernel RAM through a private directory (Apple Silicon; experimental).
+    #[arg(long, value_name = "DIR")]
+    shared_kernel_base: Option<PathBuf>,
     /// Connect to bridge (default), none, or a user-defined network.
     #[arg(long, alias = "net", default_value = "bridge")]
     network: String,
@@ -423,6 +429,8 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .collect::<anyhow::Result<_>>()?,
                 cpus: args.cpus,
                 memory_mib: args.memory,
+                memory_pool: args.memory_pool,
+                shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
                 tty: args.tty.then(terminal_size),

@@ -173,6 +173,20 @@ pub struct Create {
     pub cpus: u8,
     /// Total guest RAM budget in MiB.
     pub memory_mib: u32,
+    /// Optional same-user daemon pool socket, canonicalized at creation and
+    /// reused on start. Linux negotiates physical/sealed storage; Apple Silicon
+    /// uses experimental live-pool cold compression. An unavailable pool fails
+    /// startup. On macOS pool loss terminates dependent VMs; no reconnect occurs.
+    #[serde(default)]
+    pub memory_pool: Option<PathBuf>,
+    /// Optional private shared boot-kernel directory on Apple Silicon macOS.
+    /// Equal firmware bytes map one read-only inode with private COW writes.
+    /// Canonicalized at creation, retained across start, and excluded from guest
+    /// rootfs/mounts. This shares initial kernel RAM, not application pages.
+    /// May accompany memory_pool; its immutable pages are excluded from the
+    /// cold pager. The directory/files must not be modified by the caller.
+    #[serde(default)]
+    pub shared_kernel_base: Option<PathBuf>,
     /// Automatically remove the instance and its anonymous volumes on exit.
     pub auto_remove: bool,
     /// Keep guest stdin open for input attachment.
@@ -621,6 +635,46 @@ impl Store {
             config.network || config.ports.is_empty(),
             "port publishing with --network none is unsupported"
         );
+        if let Some(path) = &config.memory_pool {
+            use std::os::unix::fs::FileTypeExt;
+            ensure!(
+                cfg!(any(
+                    all(target_os = "macos", target_arch = "aarch64"),
+                    all(target_os = "linux", target_arch = "x86_64")
+                )),
+                "memory pool requires Apple Silicon macOS or Linux x86-64"
+            );
+            let path = path.canonicalize().context("resolve memory pool socket")?;
+            let parent = path.parent().context("memory pool parent missing")?;
+            let owner = fs::symlink_metadata(parent)?;
+            ensure!(
+                owner.is_dir()
+                    && owner.uid() == unsafe { libc::geteuid() }
+                    && owner.mode() & 0o077 == 0,
+                "memory pool directory must be private and owned by this user"
+            );
+            let metadata = fs::symlink_metadata(&path)?;
+            ensure!(
+                metadata.file_type().is_socket() && metadata.uid() == unsafe { libc::geteuid() },
+                "memory pool must be a same-user Unix socket"
+            );
+            config.memory_pool = Some(path);
+        }
+        if let Some(path) = &config.shared_kernel_base {
+            ensure!(
+                cfg!(all(target_os = "macos", target_arch = "aarch64")),
+                "shared kernel baseline requires Apple Silicon macOS"
+            );
+            let owner = fs::symlink_metadata(path)?;
+            ensure!(
+                path.is_absolute()
+                    && owner.is_dir()
+                    && owner.uid() == unsafe { libc::geteuid() }
+                    && owner.mode() & 0o077 == 0,
+                "shared kernel directory must be absolute, owned and private"
+            );
+            config.shared_kernel_base = Some(path.canonicalize()?);
+        }
         if let Some(name) = &config.name {
             ensure!(valid_name(name), "invalid container name");
         }
@@ -649,6 +703,23 @@ impl Store {
             self.pull_with_progress(&config.image, progress)?
         };
         require_native_platform(&image.platform)?;
+        if config.memory_pool.is_some() || config.shared_kernel_base.is_some() {
+            let image_root = self.open_image(&image)?;
+            let rootfs = image_root.rootfs().canonicalize()?;
+            if let Some(pool) = &config.memory_pool {
+                let private = pool.parent().context("memory pool parent missing")?;
+                ensure!(
+                    !rootfs.starts_with(private) && !private.starts_with(&rootfs),
+                    "image rootfs overlaps private memory pool authority"
+                );
+            }
+            if let Some(base) = &config.shared_kernel_base {
+                ensure!(
+                    !rootfs.starts_with(base) && !base.starts_with(&rootfs),
+                    "image rootfs overlaps shared kernel authority"
+                );
+            }
+        }
         let argv = resolve_command(&image, &config);
         ensure!(
             !argv.is_empty() && !argv[0].is_empty(),
@@ -669,6 +740,19 @@ impl Store {
                 "initialize an empty managed volume with a writable mount before read-only use"
             );
             let source = mount.source.canonicalize()?;
+            if let Some(base) = &config.shared_kernel_base {
+                ensure!(
+                    !source.starts_with(base) && !base.starts_with(&source),
+                    "mount overlaps shared kernel authority"
+                );
+            }
+            if let Some(pool) = &config.memory_pool {
+                let private = pool.parent().context("memory pool parent missing")?;
+                ensure!(
+                    !source.starts_with(private) && !private.starts_with(&source),
+                    "mount overlaps private memory pool authority"
+                );
+            }
             let authority = crate::host_transport::host_authority_root()?;
             let sockets = socket_directory()?;
             ensure!(
@@ -1448,7 +1532,16 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
+    if let Some(directory) = &instance.config.shared_kernel_base {
+        vm.shared_kernel_base(directory.clone())?;
+    }
     let directory = store.directory(&instance.id);
+    // HVF cold blocks require a private file backing so discarded ranges can
+    // be punched out. Linux's pager instead requires private anonymous RAM.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if instance.config.memory_pool.is_some() {
+        vm.ram_backing(tempfile::tempfile_in(&directory)?)?;
+    }
     let mut lowers = vec![image_root.rootfs().to_owned()];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
@@ -1579,7 +1672,23 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
     vm.vsock_port(control::CONTROL_PORT, endpoint, true)?;
     vm.task_stdio(-1, 1, 2)?;
     let ready = directory.join(format!("boot-{}", instance.generation));
-    vm.run(move |_| fs::write(ready, b"ready"))?;
+    vm.run(move |handle| {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            crate::executor::vm::start_diagnostics(&handle)?;
+            if let Some(pool) = &instance.config.memory_pool {
+                crate::executor::vm::start_with_pool(
+                    handle,
+                    pool,
+                    std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some(),
+                )?;
+            }
+        }
+        fs::write(ready, b"ready")
+    })?;
     Ok(())
 }
 
@@ -1746,6 +1855,8 @@ mod tests {
             ports: Vec::new(),
             cpus: 1,
             memory_mib: 128,
+            memory_pool: None,
+            shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
             tty: None,
@@ -1831,6 +1942,97 @@ mod tests {
         assert_eq!(addresses.len(), 8);
     }
 
+    #[test]
+    fn docker_memory_pool_is_persisted_private_and_optional_for_legacy_records() {
+        use std::os::unix::fs::PermissionsExt;
+        let (directory, store, _) = fixture();
+        let private = directory.path().join("pool");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = private.join("pool.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let mut config = request();
+        config.memory_pool = Some(socket.clone());
+        let mut exposed = config.clone();
+        exposed.mounts.push(Mount {
+            source: directory.path().canonicalize().unwrap(),
+            target: "/host".into(),
+            read_only: false,
+            volume: None,
+        });
+        assert!(
+            store
+                .create(exposed)
+                .unwrap_err()
+                .to_string()
+                .contains("memory pool authority")
+        );
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("private")
+        );
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let instance = store.create(config).unwrap();
+        let expected = Some(socket.canonicalize().unwrap());
+        assert_eq!(instance.config.memory_pool, expected);
+        assert_eq!(
+            store.resolve(&instance.id).unwrap().config.memory_pool,
+            expected
+        );
+        let mut legacy = serde_json::to_value(&instance.config).unwrap();
+        legacy.as_object_mut().unwrap().remove("memory_pool");
+        legacy.as_object_mut().unwrap().remove("shared_kernel_base");
+        let restored: Create = serde_json::from_value(legacy).unwrap();
+        assert!(restored.shared_kernel_base.is_none());
+        assert!(restored.memory_pool.is_none());
+    }
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn docker_kernel_base_persists_and_cannot_be_exposed_to_guest() {
+        use std::os::unix::fs::PermissionsExt;
+        let (directory, store, _) = fixture();
+        let bases = directory.path().join("bases");
+        fs::create_dir(&bases).unwrap();
+        fs::set_permissions(&bases, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = request();
+        config.shared_kernel_base = Some(bases.clone());
+        let mut exposed = config.clone();
+        exposed.mounts.push(Mount {
+            source: directory.path().canonicalize().unwrap(),
+            target: "/host".into(),
+            read_only: false,
+            volume: None,
+        });
+        assert!(
+            store
+                .create(exposed)
+                .unwrap_err()
+                .to_string()
+                .contains("shared kernel authority")
+        );
+        fs::set_permissions(&bases, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("private")
+        );
+        fs::set_permissions(&bases, fs::Permissions::from_mode(0o700)).unwrap();
+        let instance = store.create(config).unwrap();
+        assert_eq!(
+            store
+                .resolve(&instance.id)
+                .unwrap()
+                .config
+                .shared_kernel_base,
+            Some(bases.canonicalize().unwrap())
+        );
+    }
     #[test]
     fn docker_platform_selection_and_legacy_records_preserve_native_defaults() {
         assert_eq!(canonical_platform("linux/arm64/v8").unwrap(), "linux/arm64");

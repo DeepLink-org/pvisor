@@ -297,6 +297,11 @@ pub(super) fn validate_pool_attributes(
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
     {
+        // Host provenance is not part of the Linux guest's image metadata.
+        #[cfg(target_os = "macos")]
+        if name == b"com.apple.provenance" {
+            continue;
+        }
         ensure!(
             name == b"user.containers.override_stat",
             "local image pool does not support xattr {} on {}",

@@ -6,6 +6,53 @@ use pvisor_vm::api::{
 use syn::visit::{self, Visit};
 
 #[test]
+fn shared_kernel_baseline_is_explicit_atomic_and_excludes_snapshots() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut builder = VmBuilder::new(1, 128).unwrap();
+    if cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && !cfg!(any(
+            feature = "tee",
+            feature = "aws-nitro",
+            feature = "efi",
+            feature = "gpu",
+            feature = "snd",
+            feature = "input"
+        ))
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(builder.shared_kernel_base("relative".into()).is_err());
+        builder
+            .shared_kernel_base(directory.path().to_path_buf())
+            .unwrap();
+        assert!(builder
+            .shared_kernel_base(directory.path().join("missing"))
+            .is_err());
+        assert_eq!(
+            builder.snapshot_profile().unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        let mut reverse = VmBuilder::new(1, 128).unwrap();
+        reverse.snapshot_profile().unwrap();
+        assert_eq!(
+            reverse
+                .shared_kernel_base(directory.path().to_path_buf())
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    } else {
+        assert_eq!(
+            builder
+                .shared_kernel_base(directory.path().to_path_buf())
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
+}
+
+#[test]
 fn read_only_filesystem_configuration_is_atomic_without_dax() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();
@@ -224,10 +271,14 @@ fn private_adapters_do_not_define_public_inherent_methods() {
         include_str!("../src/portable.rs"),
         include_str!("../src/handle.rs"),
         include_str!("../src/memory.rs"),
+        include_str!("../src/shared_kernel.rs"),
         include_str!("../src/ram_dedup.rs"),
         include_str!("../src/vcpu_observation.rs"),
         include_str!("../src/firmware_store.rs"),
         include_str!("../src/cold_ram.rs"),
+        include_str!("../src/shared_ram_macos.rs"),
+        include_str!("../src/cold_ram_scan.rs"),
+        include_str!("../src/cold_ram_linux.rs"),
         include_str!("../src/ram_file.rs"),
     ] {
         for item in syn::parse_file(source).unwrap().items {
