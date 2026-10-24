@@ -22,6 +22,7 @@ pub(crate) struct Completion {
 }
 
 pub(crate) fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut profile = crate::startup_profile::Span::start("completion.read_file");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
@@ -39,6 +40,7 @@ pub(crate) fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
         bytes.len() as u64 <= MAX_BYTES,
         "completion data exceeds size limit"
     );
+    profile.success(Some(bytes.len() as u64));
     Ok(bytes)
 }
 
@@ -65,6 +67,7 @@ impl Completion {
     }
 
     pub(crate) fn load(record: &RunRecord) -> anyhow::Result<Option<Self>> {
+        let mut profile = crate::startup_profile::Span::start("completion.load");
         let bytes = match read_file(&record.stage_dir().join(FILENAME)) {
             Ok(bytes) => bytes,
             Err(error)
@@ -72,6 +75,7 @@ impl Completion {
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
             {
+                profile.success(None);
                 return Ok(None);
             }
             Err(error) => return Err(error),
@@ -79,12 +83,15 @@ impl Completion {
         let receipt: Self = serde_json::from_slice(&bytes)?;
         receipt.validate(record)?;
         let bundle = read_file(&super::bundle::RunBundle::path(&record.stage_dir()))?;
+        let mut validation = crate::startup_profile::Span::start("completion.validate_bundle");
         ensure!(
             blake3::hash(&bundle).to_hex().as_str() == receipt.bundle_blake3,
             "completion Bundle digest mismatch"
         );
         let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle)?;
         receipt.validate_bundle(&bundle)?;
+        validation.success(None);
+        profile.success(None);
         Ok(Some(receipt))
     }
 

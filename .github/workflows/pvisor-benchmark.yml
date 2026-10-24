@@ -160,6 +160,12 @@ jobs:
               output.mkdir()
               for name in ("status", "review"):
                   spec = commands[name]
+                  with (output / f"{name}.profile.stdout").open("wb") as stdout, (output / f"{name}.profile.stderr").open("wb") as stderr:
+                      subprocess.run(
+                          spec["argv"], cwd=spec["cwd"],
+                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
+                          stdout=stdout, stderr=stderr, timeout=15, check=True,
+                      )
                   with (output / f"{name}.stdout").open("wb") as stdout, (output / f"{name}.stderr").open("wb") as stderr:
                       subprocess.run(
                           ["strace", "-f", "-ttt", "-T", "-yy", "-o", str(output / f"{name}.strace"), "--", *spec["argv"]],

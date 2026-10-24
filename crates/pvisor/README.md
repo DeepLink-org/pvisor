@@ -1466,6 +1466,9 @@ requests stay inside the VM; no host process or filesystem fallback is provided.
 以及 runner 的 lazy lower 重建、baseline lease 和沙箱安装。日志使用现有 frontend 诊断路由，
 不进入 workload stdout。成功明确登记；错误、取消或提前退出保留 `outcome=unknown`。
 关闭时不读取阶段时钟、不生成记录；写入失败不替换原操作结果。
+完成协议读取另记录 `completion.load`、`completion.read_file` 和
+`completion.validate_bundle`，包括有界读取字节数与 Bundle 摘要/类型/语义验证。
+这些 span 嵌套，不能相加；诊断写入及追踪会扰动耗时，不能代替关闭诊断的基准。
 `PVISOR_STARTUP_TIMING=0` 单独关闭原有 checkpoint/持久化日志，不关闭 profile。
 
 普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
