@@ -1,5 +1,5 @@
 [project]
-name = "pvisor"
+name = "pvisor-sandbox"
 version = "0.3.0"
 description = "Scaling autonomous agent execution"
 readme = "README.md"

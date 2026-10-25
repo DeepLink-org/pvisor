@@ -99,7 +99,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: dist/*.whl,dist/pvisor-*.tar.gz,dist/SHA256SUMS
+          artifacts: dist/pvisor_sandbox-*.whl,dist/pvisor-*.tar.gz,dist/SHA256SUMS
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 

@@ -160,7 +160,7 @@ See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e7501
 
 ## Packaging and names
 
-The Python package, installed CLI and runtime Rust crate use `pvisor`; the application crate is `pvisor-cli`, and companion crates use `pvisor-*`; environment variables use `PVISOR_*`. Wheel names follow `pvisor-<version>-py3-none-<platform>.whl`.
+The PyPI distribution uses `pvisor-sandbox`; the Python import package, installed CLI and runtime Rust crate use `pvisor`; the application crate is `pvisor-cli`, and companion crates use `pvisor-*`; environment variables use `PVISOR_*`. Wheel names follow `pvisor_sandbox-<version>-py3-none-<platform>.whl`.
 
 ## Build environment
 

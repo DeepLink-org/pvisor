@@ -105,11 +105,11 @@ if [[ "$name" == uv && "$1" == sync && "${PVISOR_TASK_TEST_BAD_SYNC:-0}" == 1 ]]
   for ((i=0; i<$#; i++)); do
     if [[ "${args[$i]}" == --out-dir || "${args[$i]}" == --output-dir ]]; then
       staging=${args[$((i+1))]}
-      touch "$staging/pvisor-a.whl" "$staging/pvisor-b.whl" "$staging/pvisor-firmware-source-linux-x86_64.tar.gz"
+      touch "$staging/pvisor_sandbox-a.whl" "$staging/pvisor_sandbox-b.whl" "$staging/pvisor-firmware-source-linux-x86_64.tar.gz"
     fi
   done
 fi
-if [[ "$name" == python3 && "$1" == scripts/packaging/verify_wheel.py && "${PVISOR_TASK_TEST_BAD_WHEEL:-0}" == 1 && "$2" == */pvisor-b.whl ]]; then exit 1; fi
+if [[ "$name" == python3 && "$1" == scripts/packaging/verify_wheel.py && "${PVISOR_TASK_TEST_BAD_WHEEL:-0}" == 1 && "$2" == */pvisor_sandbox-b.whl ]]; then exit 1; fi
 SH
 chmod +x "$work/bin/tool"
 for name in cargo rustc rustup uv uvx python3 codesign actionlint zig; do ln -s tool "$work/bin/$name"; done
@@ -377,8 +377,8 @@ expect_failure accept-wheel only-one-argument
 test ! -s "$PVISOR_TASK_TEST_LOG"
 
 run wheel
-test -f "$work/dist/pvisor-a.whl"
-test -f "$work/dist/pvisor-b.whl"
+test -f "$work/dist/pvisor_sandbox-a.whl"
+test -f "$work/dist/pvisor_sandbox-b.whl"
 test -f "$work/dist/pvisor-firmware-source-linux-x86_64.tar.gz"
 grep -Fq 'scripts/packaging/verify_wheel.py' "$PVISOR_TASK_TEST_LOG"
 grep -Fq $'uv\trun\t--locked\t--only-group\tdev\ttwine\tcheck\t' "$PVISOR_TASK_TEST_LOG"

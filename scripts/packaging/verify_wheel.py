@@ -53,8 +53,10 @@ def _wheel_contents(
         if len(metadata_names) != 1:
             raise RuntimeError(f"expected one METADATA file, found {metadata_names}")
         metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
-        if metadata.get("Name", "").lower() != "pvisor":
-            raise RuntimeError(f"expected wheel Name 'pvisor', got {metadata.get('Name')!r}")
+        if metadata.get("Name", "").lower() != "pvisor-sandbox":
+            raise RuntimeError(
+                f"expected wheel Name 'pvisor-sandbox', got {metadata.get('Name')!r}"
+            )
         version = metadata.get("Version")
         if not version:
             raise RuntimeError("wheel METADATA has no Version")
@@ -428,7 +430,7 @@ def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None)
                 "-I",
                 "-c",
                 "import pvisor; from importlib.metadata import version; "
-                "import sys; assert pvisor.__version__ == version('pvisor') == sys.argv[1]",
+                "import sys; assert pvisor.__version__ == version('pvisor-sandbox') == sys.argv[1]",
                 version,
             ]
         )

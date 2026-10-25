@@ -73,7 +73,7 @@ except urllib.error.HTTPError as e:
 
 for asset in data.get("assets", []):
     name = asset.get("name", "")
-    if not name.endswith(".whl") or not name.startswith("pvisor-"):
+    if not name.endswith(".whl") or not name.startswith("pvisor_sandbox-"):
         continue
     if not WHEEL_RE.search(name):
         continue

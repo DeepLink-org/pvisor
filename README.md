@@ -25,7 +25,7 @@ development, with support that varies by platform.
 Install the native command from a Python wheel:
 
 ```bash
-pip install pvisor
+pip install pvisor-sandbox
 pvisor --version
 ```
 

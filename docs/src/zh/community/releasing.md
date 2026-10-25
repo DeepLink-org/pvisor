@@ -21,7 +21,7 @@ Python 源码分发包（sdist）不在发布集中。
 1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；把部署限制到
    匹配 `v*` 的 tag。
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
-   - PyPI project: `pvisor`
+   - PyPI project: `pvisor-sandbox`
    - GitHub owner: `DeepLink-org`
    - Repository: `pvisor`
    - Workflow: `release.yml`
@@ -42,7 +42,7 @@ Python 源码分发包（sdist）不在发布集中。
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
-首次推送发布 tag 前，确认 `pvisor` 的 Trusted Publisher 与当前仓库、工作流和 environment 匹配。
+首次推送发布 tag 前，确认 `pvisor-sandbox` 的 Trusted Publisher 与当前仓库、工作流和 environment 匹配。
 
 ## 准备一次发布
 

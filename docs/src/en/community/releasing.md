@@ -15,7 +15,7 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
 
 1. Create a GitHub environment named `pypi`. Do not require reviewers; restrict deployments to tags matching `v*`.
 2. Add a pending Trusted Publisher in PyPI settings:
-    - PyPI project: `pvisor`
+    - PyPI project: `pvisor-sandbox`
     - GitHub owner: `DeepLink-org`
     - Repository: `pvisor`
     - Workflow: `release.yml`
@@ -32,7 +32,7 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
 
 No PyPI API token is stored in GitHub. A pending publisher can create the project on the first successful upload but does not reserve its name.
 
-Before pushing the first release tag, verify that the `pvisor` Trusted Publisher matches the current repository, workflow and environment.
+Before pushing the first release tag, verify that the `pvisor-sandbox` Trusted Publisher matches the current repository, workflow and environment.
 
 ## Prepare a release
 
