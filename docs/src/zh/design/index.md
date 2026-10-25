@@ -32,6 +32,8 @@ Job 表示需要持续管理的任务身份；Attempt 表示一次实际执行�
 
 执行器返回 `ExecutorOutput`，Session 继续做清理、控制观察核对和结果保存。持久 Job 服务的 `ManagedJobRun` 另外拥有真实 Attempt join 与 `Server::finish`。前端拿到的是等待适配器。前端等待出错或被丢弃会请求取消，已接受的完成发布仍由 runtime 任务持有，只要其 Tokio runtime 继续存活。
 
+保留存储时，Session 先保存 Bundle，再提交绑定结果与 Bundle 摘要的完成回执，最后发布终态事件。owner 退出后，回执决定如何核对状态投影；缺少回执保留 Unknown 和 stage。具体顺序见[Attempt 完成协议](execution-model.md#attempt-completion)。
+
 ### 策略为何要解析一次
 
 假设请求允许网络访问，workspace 策略却拒绝全部网络。准入需要得到一份有效网络配置，并把同一份配置交给网络驱动和执行器。若准备阶段重新读取一份可变配置，记录中的决定与真正安装的出口可能不同。

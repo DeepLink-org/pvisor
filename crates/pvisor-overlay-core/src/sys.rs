@@ -413,9 +413,14 @@ pub fn remove_xattr(path: &Path, name: &OsStr) -> io::Result<()> {
     cvt(rc)
 }
 
+/// Import ordinary lower metadata without importing upper control state.
+/// Raw upper snapshots use the raw-tree copier and retain control attributes.
 pub fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
     for name in list_xattrs(source)? {
         let name = OsStr::from_bytes(&name);
+        if crate::validate_guest_xattr(name).is_err() {
+            continue;
+        }
         let value = get_xattr(source, name)?;
         set_xattr(destination, name, &value, 0)?;
     }

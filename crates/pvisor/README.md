@@ -128,11 +128,14 @@ requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
 The OCI executor injects the `pvisor` executable and delegates the Job through
 `spawn --executor host --spec ... --result-file ...` inside the container.
-Its RunSpec is mounted read-only, and its writable output directory excludes the
-OCI bundle/state. Result reads reject symlinks, nonregular files, foreign Run
-identities and payloads over 16 MiB. Boundary-writable JSON supplies transcript
-bytes only: the host-observed OCI runtime exit determines completion, and delegated
-AgentCtl directives, metrics, artifacts and enforcement claims are not imported.
+Only the spec file is mounted read-only; a separate output directory is writable.
+OCI bundle/state directories remain private and overlapping rootfs/mount sources
+are rejected. Delegated JSON is bounded to 16 MiB, opened without following a
+symlink or blocking on a FIFO, and checked for Run/inner-Attempt consistency.
+It supplies output text only: host-observed runtime exit status decides the
+outcome, and guest-produced controls, metrics, artifacts and AgentCtl snapshots
+are not accepted as host enforcement evidence. Enforce mode still requires
+independently installed executor observations and fails if they are missing.
 
 ## Explicit runtime experiments
 
@@ -355,7 +358,7 @@ reconciliation rather than forged into a completed receipt. Frontend wait errors
 and early success cannot bypass native teardown or hide publication failures.
 Dropping the managed run or its wait future requests cancellation; the completion
 task retains publication ownership while its Tokio runtime remains alive. This
-is not crash recovery or persistence after process/runtime shutdown. Resume/fork
+does not keep the completion task alive after process/runtime shutdown. Resume/fork
 do not report `Finished` solely because a launcher callback returned success.
 
 Managed starts with durable storage also retain a private, versioned
@@ -374,6 +377,24 @@ executor observations; it does not authenticate the producer or prove artifact
 contents. Wall-clock timestamps can move backwards and are not a monotonic audit
 clock. Capture completion and replay tool receipts have narrower scopes than a
 complete-run capture or an exactly-once external side-effect guarantee.
+
+New durable Attempts write Run schema 2 with `completion_protocol = 1` and Bundle
+schema 5. After native teardown, the runtime writes the Bundle, commits a private
+`completion.json` binding the exact Bundle BLAKE3 digest and terminal RunResult,
+then publishes completion notifications. Once committed, Bundle bytes and the
+completion result are immutable; later audit publication failures are returned
+as warnings and do not replace the terminal outcome. Completion reads are bounded
+to 64 MiB and reject symlinks, FIFOs and other non-regular files.
+
+Stopped status reconciles Run and active Job projections from the receipt under
+their mutation leases; it never re-executes the workload or overwrites a successor
+Attempt. Before a receipt is confirmed, an owner lost to a crash is `Unknown`:
+retained files are not approved, and review/apply/drop/checkpoint refuse mutation.
+A Bundle or terminal Run record alone does not prove completion. A failed final
+sync may leave a receipt visible; reopening validates its full binding before
+projecting it. Legacy Run schema 1 and Bundle schema 4 remain readable with their
+original guarantees. These local receipts do not make remote side effects or
+event delivery exactly once, and are not power-loss acceptance evidence.
 
 The lower-level `PVisor::run()` and `RuntimeJobService::start()` still return a bare
 `RunHandle`. Embedded Attempt callers and daemon detached supervisors retain their

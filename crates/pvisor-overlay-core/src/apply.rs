@@ -77,7 +77,7 @@ struct TargetApplyLock {
 
 impl TargetApplyLock {
     fn acquire(target: &Path) -> Result<Self, OverlayError> {
-        // All entry points must share this inode namespace, regardless of TMPDIR.
+        // Cross-process identity must not depend on the caller's TMPDIR.
         let directory =
             Path::new("/tmp").join(format!("pvisor-apply-locks-{}", unsafe { libc::geteuid() }));
         Self::acquire_in(target, &directory)
@@ -610,7 +610,7 @@ pub fn plan_overlay_apply(
         .filter(|change| selected_paths.contains(&change.relative_path()))
         .cloned()
         .collect::<Vec<_>>();
-    validate_excluded_changes(record, &selected)?;
+    validate_protected_effects(record, &selected, &compiled)?;
     Ok(ApplyPlan {
         selected,
         selected_paths,
@@ -727,6 +727,7 @@ pub fn apply_overlay_selected(
         &plan.selected_paths,
         &preimages,
         &plan.selected,
+        selection,
         false,
         &apply_id,
     )?;
@@ -816,6 +817,7 @@ fn recover_pending_applies_locked(
                 &selected_paths,
                 &apply.preimages,
                 &apply.changes,
+                &apply.selection,
                 true,
                 &apply.apply_id,
             )?;
@@ -1139,13 +1141,17 @@ fn apply_prepared_target(
     selected_paths: &BTreeSet<PathBuf>,
     preimages: &[PathPreimage],
     changes: &[ChangeEntry],
+    selection: &ApplySelection,
     recovering: bool,
     apply_id: &str,
 ) -> Result<(), OverlayError> {
-    // Recovery must enforce exclusions too, including intents written by older versions.
-    validate_excluded_changes(record, changes)?;
+    // Recovery can consume a plan made by an older writer. Recheck before
+    // restoring backups or publishing any target mutation.
+    let selection = CompiledApplySelection::compile(selection)?;
+    validate_protected_effects(record, changes, &selection)?;
     if recovering {
         restore_interrupted_replacements(record, apply_id, preimages, changes)?;
+        validate_protected_effects(record, changes, &selection)?;
     }
     validate_target_preimages(record, preimages, changes, recovering).map_err(|error| {
         match apply_backup_dir(record, apply_id) {
@@ -1279,6 +1285,75 @@ fn prepare_apply_preimages(
     }));
     preimages.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(preimages)
+}
+
+fn validate_protected_effects(
+    record: &OverlayRecord,
+    changes: &[ChangeEntry],
+    selection: &CompiledApplySelection,
+) -> Result<(), OverlayError> {
+    validate_excluded_changes(record, changes)?;
+    fn check(
+        record: &OverlayRecord,
+        selection: &CompiledApplySelection,
+        path: &Path,
+    ) -> Result<(), OverlayError> {
+        if record.access_policy.denied(path)
+            || selection.excluded(path)
+            || record
+                .excluded_paths
+                .iter()
+                .any(|prefix| crate::core::path_has_prefix(path, prefix))
+        {
+            return Err(OverlayError::Apply(format!(
+                "apply would affect protected path {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+    fn check_tree(
+        record: &OverlayRecord,
+        selection: &CompiledApplySelection,
+        path: &Path,
+    ) -> Result<(), OverlayError> {
+        check(record, selection, path)?;
+        let physical = record.target.join(path);
+        match fs::symlink_metadata(&physical) {
+            Ok(metadata) if metadata.is_dir() => {
+                for entry in fs::read_dir(physical)? {
+                    check_tree(record, selection, &path.join(entry?.file_name()))?;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+    for change in changes {
+        let path = change.relative_path();
+        OverlayCore::validate_rel(&path)?;
+        check(record, selection, &path)?;
+        if replaces_directory(change) {
+            // Exclusions reserve their paths even if currently absent, or if
+            // recovery has already moved the original tree into its backup.
+            if record
+                .excluded_paths
+                .iter()
+                .any(|excluded| crate::core::path_has_prefix(excluded, &path))
+            {
+                return Err(OverlayError::Apply(format!(
+                    "cannot replace directory {} containing excluded paths",
+                    path.display()
+                )));
+            }
+            if record.access_policy.has_denials() || !selection.excludes.is_empty() {
+                check_tree(record, selection, &path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn replaces_directory(change: &ChangeEntry) -> bool {
@@ -2332,6 +2407,127 @@ fn walk_upper_metadata(
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn target_lock_coordinates_processes_with_different_tmpdirs() {
+        const TARGET: &str = "PVISOR_TEST_APPLY_LOCK_TARGET";
+        const READY: &str = "PVISOR_TEST_APPLY_LOCK_READY";
+        if let Some(target) = std::env::var_os(TARGET) {
+            let ready = PathBuf::from(std::env::var_os(READY).unwrap());
+            fs::write(&ready, b"ready").unwrap();
+            let _owner = TargetApplyLock::acquire(Path::new(&target)).unwrap();
+            fs::write(ready.with_extension("acquired"), b"acquired").unwrap();
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let other_tmp = tmp.path().join("other-tmp");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&other_tmp).unwrap();
+        let ready = tmp.path().join("child.ready");
+        let owner = TargetApplyLock::acquire(&target).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "apply::tests::target_lock_coordinates_processes_with_different_tmpdirs",
+            ])
+            .env(TARGET, &target)
+            .env(READY, &ready)
+            .env("TMPDIR", &other_tmp)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let ready_observed = ready.exists();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let acquired_early = ready.with_extension("acquired").exists();
+        drop(owner);
+        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = match child.try_wait().unwrap() {
+            Some(status) => status,
+            None => {
+                child.kill().unwrap();
+                child.wait().unwrap()
+            }
+        };
+        assert!(ready_observed && !acquired_early && status.success());
+        assert!(ready.with_extension("acquired").exists());
+    }
+
+    #[test]
+    fn recovery_rechecks_protection_after_restoring_an_older_prepared_backup() {
+        for denied in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let upper = tmp.path().join("upper");
+            fs::create_dir_all(target.join("dir")).unwrap();
+            fs::write(target.join("dir/secret"), b"protected").unwrap();
+            let mut record = late_conflict_record(&target, &upper);
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                upper,
+                Some(record.upper.work_dir.clone()),
+                vec![],
+                Some(record.stage_dir.join("preimages")),
+            )
+            .unwrap();
+            core.remove(Path::new("dir/secret"), false).unwrap();
+            core.remove(Path::new("dir"), true).unwrap();
+            drop(core);
+            let plan = plan_overlay_apply(
+                &record,
+                std::slice::from_ref(&target),
+                &ApplySelection::default(),
+            )
+            .unwrap();
+            let preimages =
+                prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+            let apply_id = "older-prepared";
+            let selection = ApplySelection {
+                excludes: if denied {
+                    vec![]
+                } else {
+                    vec!["dir/secret".into()]
+                },
+                ..Default::default()
+            };
+            append_apply_record(
+                &record,
+                ApplyRecord {
+                    schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                    apply_id: apply_id.into(),
+                    created_at_unix_ms: 1,
+                    overlay_id: record.id.clone(),
+                    overlay_generation: record.generation,
+                    target: target.clone(),
+                    selection,
+                    changes: plan.selected.clone(),
+                    planned_paths: plan.selected_paths.iter().cloned().collect(),
+                    preimages,
+                    state: ApplyRecordState::Prepared,
+                    remaining_changes: 0,
+                },
+            )
+            .unwrap();
+            // Simulate an older apply crashing after moving the original tree.
+            back_up_replacements(&record, apply_id, &plan.selected, &mut |_, _| Ok(())).unwrap();
+            assert!(!target.join("dir").exists());
+            if denied {
+                record.access_policy =
+                    crate::FileAccessPolicy::new(vec!["dir/secret".into()], vec![]).unwrap();
+            }
+            let error =
+                recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap_err();
+            assert!(error.to_string().contains("protected path"), "{error}");
+            assert_eq!(fs::read(target.join("dir/secret")).unwrap(), b"protected");
+            assert!(has_pending_applies(&record).unwrap());
+        }
+    }
+
     fn late_conflict_record(target: &Path, upper: &Path) -> OverlayRecord {
         OverlayRecord {
             id: "late-conflict".into(),
@@ -3258,6 +3454,7 @@ mod tests {
                 &plan.selected_paths,
                 &preimages,
                 &plan.selected,
+                &ApplySelection::default(),
                 false,
                 apply_id,
             )
@@ -3540,6 +3737,7 @@ mod tests {
             &plan.selected_paths,
             &[],
             &plan.selected,
+            &ApplySelection::default(),
             false,
             &apply_id,
         )

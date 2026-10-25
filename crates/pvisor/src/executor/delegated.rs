@@ -29,7 +29,9 @@ impl DelegatedRunFiles {
     pub(crate) fn new_with_stdio(spec: &RunSpec, capture: bool) -> anyhow::Result<Self> {
         let temporary = tempfile::Builder::new()
             .prefix("pvisor-delegated-")
-            .tempdir()?;
+            // Keep host control state outside standard /var rootfs binds even
+            // when the caller's TMPDIR points below /var or the workspace.
+            .tempdir_in("/tmp")?;
         let spec_path = temporary.path().join(SPEC_FILENAME);
         let output_dir = temporary.path().join("output");
         std::fs::create_dir(&output_dir)?;
@@ -64,11 +66,16 @@ impl DelegatedRunFiles {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(&self.result_path)?;
+        let metadata = file.metadata()?;
         anyhow::ensure!(
-            file.metadata()?.is_file(),
+            metadata.is_file(),
             "delegated result must be a regular file"
         );
-        let mut bytes = Vec::new();
+        anyhow::ensure!(
+            metadata.len() <= MAX_RESULT_BYTES,
+            "delegated result exceeds size limit"
+        );
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.take(MAX_RESULT_BYTES + 1).read_to_end(&mut bytes)?;
         anyhow::ensure!(
             bytes.len() as u64 <= MAX_RESULT_BYTES,

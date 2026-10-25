@@ -3113,6 +3113,9 @@ impl OverlayCore {
         }
         self.record_preimage(rel)?;
         let shadows_lower = self.exists_in_lower(rel);
+        if shadows_lower {
+            self.require_tree_access(rel, rel)?;
+        }
         self.ensure_upper_parents(rel)?;
         self.clear_whiteout(rel)?;
         let path = self.upper_path(rel);
@@ -3187,6 +3190,13 @@ impl OverlayCore {
     /// This is required before renaming a lower-backed directory: a single-node
     /// copy-up would otherwise lose every child when the upper directory moves.
     pub fn materialize_tree(&self, rel: &Path) -> io::Result<PathBuf> {
+        self.require_tree_access(rel, rel)?;
+        self.materialize_tree_checked(rel)
+    }
+
+    // The public entry validates the complete physical effect closure once,
+    // before copy-up or opacity can hide a protected descendant.
+    fn materialize_tree_checked(&self, rel: &Path) -> io::Result<PathBuf> {
         self.require_visible(rel)?;
         let metadata = self.metadata(rel)?;
         if !metadata.is_dir() {
@@ -3197,7 +3207,7 @@ impl OverlayCore {
         for name in names {
             let child = Self::child(rel, &name)?;
             if self.metadata(&child)?.is_dir() {
-                self.materialize_tree(&child)?;
+                self.materialize_tree_checked(&child)?;
             } else {
                 self.copy_up(&child)?;
             }

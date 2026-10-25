@@ -93,8 +93,7 @@ mod tests {
     }
 }
 
-/// Classic-BPF filter enforcing `linux.resources.devices` rules on cgroup
-/// v2 (runc-compatible semantics: first matching rule wins, default deny).
+/// Attach the compiled, ordered device permission policy to a cgroup v2 leaf.
 #[cfg(target_os = "linux")]
 pub mod device_bpf {
     use std::path::Path;
@@ -109,13 +108,15 @@ pub mod device_bpf {
         if rules.is_empty() {
             return Ok(());
         }
-        let program = build_device_program(rules);
-        // Safety: the attr buffers are plain bytes passed to the bpf(2) syscall.
+        let program = crate::device_policy::build_device_program(rules)?;
+        // SAFETY: attributes, instructions and license remain alive throughout
+        // each syscall. The verifier's output buffer is exclusively writable
+        // until the syscall returns; no Rust reference observes it concurrently.
         unsafe {
             let license = b"GPL\0";
             let mut load_attr = [0u8; 64];
             load_attr[0..4].copy_from_slice(&(15u32).to_ne_bytes()); // BPF_PROG_TYPE_CGROUP_DEVICE
-            // program is flattened sock_filter instructions (8 bytes each).
+            // The program contains native-endian bpf_insn records (8 bytes each).
             load_attr[4..8].copy_from_slice(&((program.len() / 8) as u32).to_ne_bytes());
             load_attr[8..16].copy_from_slice(&(program.as_ptr() as u64).to_ne_bytes());
             load_attr[16..24].copy_from_slice(&(license.as_ptr() as u64).to_ne_bytes());
@@ -126,10 +127,10 @@ pub mod device_bpf {
                 // Retry with the verifier log enabled to surface the
                 // rejection reason (the logless attempt is the fast path).
                 let error = std::io::Error::last_os_error();
-                let log_buf = [0u8; 65536];
+                let mut log_buf = [0u8; 65536];
                 load_attr[24..28].copy_from_slice(&1u32.to_ne_bytes()); // log_level
                 load_attr[28..32].copy_from_slice(&(log_buf.len() as u32).to_ne_bytes());
-                load_attr[32..40].copy_from_slice(&(log_buf.as_ptr() as u64).to_ne_bytes());
+                load_attr[32..40].copy_from_slice(&(log_buf.as_mut_ptr() as u64).to_ne_bytes());
                 let retried =
                     libc::syscall(libc::SYS_bpf, 5u32, load_attr.as_ptr(), load_attr.len());
                 if retried >= 0 {
@@ -172,102 +173,5 @@ pub mod device_bpf {
     fn cstring(path: &Path) -> std::ffi::CString {
         std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
             .unwrap_or_else(|_| std::ffi::CString::new("/").expect("fallback path"))
-    }
-
-    /// Emit the rule chain as eBPF instructions.
-    fn build_device_program(rules: &[crate::plan::DeviceRulePlan]) -> Vec<u8> {
-        // eBPF register conventions for cgroup device programs:
-        // r1 = ctx (in), r0 = return value (0 deny / 1 allow).
-        const R1: u8 = 1;
-        const R2: u8 = 2;
-        const R0: u8 = 0;
-
-        const LDX_W: u8 = 0x61; // BPF_LDX | BPF_W | BPF_MEM
-        const ALU_AND_K: u8 = 0x54; // BPF_ALU | BPF_AND | BPF_K
-        const ALU_RSH_K: u8 = 0x74; // BPF_ALU | BPF_RSH | BPF_K
-        const ALU_MOV_K: u8 = 0xb4; // BPF_ALU | BPF_MOV | BPF_K
-        const JMP_JNE_K: u8 = 0x55; // BPF_JMP | BPF_JNE | BPF_K
-        const JMP_EXIT: u8 = 0x95; // BPF_JMP | BPF_EXIT
-
-        const ACC_READ: u32 = 1 << 1;
-        const ACC_WRITE: u32 = 1 << 2;
-        const ACC_MKNOD: u32 = 1 << 0;
-        const DEV_BLOCK: u32 = 1 << 0;
-        const DEV_CHAR: u32 = 1 << 1;
-
-        /// One eBPF instruction: code, regs (src<<4|dst), off (s16, LE),
-        /// imm (s32, LE).
-        fn insn(code: u8, regs: u8, off: i16, imm: i32) -> [u8; 8] {
-            let mut raw = [0u8; 8];
-            raw[0] = code;
-            raw[1] = regs;
-            raw[2..4].copy_from_slice(&off.to_le_bytes());
-            raw[4..8].copy_from_slice(&imm.to_le_bytes());
-            raw
-        }
-
-        // Track JNE instructions that must skip to the next block on
-        // mismatch; fix off at block end.
-        let mut program: Vec<[u8; 8]> = Vec::new();
-        let mut fixups: Vec<usize> = Vec::new();
-        for rule in rules {
-            let block_start = program.len();
-            let _ = block_start;
-            // access_type layout (bpf_cgroup_dev_ctx, kernel fills
-            // `(access << 16) | type`): the HIGH 16 bits carry the access
-            // mode (mknod=1<<0, read=1<<1, write=1<<2), the LOW 16 bits the
-            // device type (block=1<<0, char=1<<1). Type "a" (any) matches
-            // both: skip the type comparison.
-            if let Some(typ) = rule.typ.as_deref().filter(|typ| typ != &"a") {
-                let bit = if typ == "c" { DEV_CHAR } else { DEV_BLOCK };
-                // r2 = the device-type half (low 16 bits)
-                program.push(insn(LDX_W, (R1 << 4) | R2, 0, 0));
-                program.push(insn(ALU_AND_K, R2, 0, 0xFFFF_i32));
-                fixups.push(program.len());
-                program.push(insn(JMP_JNE_K, R2, 0, bit as i32));
-            }
-            let mut access_mask = 0u32;
-            for c in rule.access.chars() {
-                access_mask |= match c {
-                    'r' => ACC_READ,
-                    'w' => ACC_WRITE,
-                    'm' => ACC_MKNOD,
-                    _ => 0,
-                };
-            }
-            // r2 = the access half (high 16 bits); reject when any
-            // requested bit is outside the rule mask.
-            program.push(insn(LDX_W, (R1 << 4) | R2, 0, 0));
-            program.push(insn(ALU_RSH_K, R2, 0, 16));
-            program.push(insn(ALU_AND_K, R2, 0, (!access_mask & 0xFFFF) as i32));
-            fixups.push(program.len());
-            program.push(insn(JMP_JNE_K, R2, 0, 0));
-            if let Some(major) = rule.major {
-                program.push(insn(LDX_W, (R1 << 4) | R2, 4, 0));
-                fixups.push(program.len());
-                program.push(insn(JMP_JNE_K, R2, 0, major as i32));
-            }
-            if let Some(minor) = rule.minor {
-                program.push(insn(LDX_W, (R1 << 4) | R2, 8, 0));
-                fixups.push(program.len());
-                program.push(insn(JMP_JNE_K, R2, 0, minor as i32));
-            }
-            program.push(insn(ALU_MOV_K, R0, 0, i32::from(rule.allow)));
-            program.push(insn(JMP_EXIT, 0, 0, 0));
-            // All mismatch jumps in this block target the next block start.
-            let next_block = program.len() as i32;
-            for index in fixups.drain(..) {
-                let off = next_block - (index as i32 + 1);
-                program[index][2..4].copy_from_slice(&(off as i16).to_le_bytes());
-            }
-        }
-        // Default deny.
-        program.push(insn(ALU_MOV_K, R0, 0, 0));
-        program.push(insn(JMP_EXIT, 0, 0, 0));
-        let mut bytes = Vec::with_capacity(program.len() * 8);
-        for raw in program {
-            bytes.extend_from_slice(&raw);
-        }
-        bytes
     }
 }

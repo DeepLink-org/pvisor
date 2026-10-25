@@ -447,6 +447,25 @@ mod tests {
     }
 
     #[test]
+    fn terminal_projection_with_a_live_writer_still_requires_a_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut record, result) = fixture(root.path());
+        let _lease = super::super::registry::RunLease::acquire(root.path()).unwrap();
+        record.state = RunRecordState::Completed;
+        record.finished_at_unix_ms = Some(result.finished_at_unix_ms);
+        record.write().unwrap();
+        assert_eq!(
+            RunRecord::read(root.path()).unwrap().state,
+            RunRecordState::Unknown
+        );
+        Completion::commit(&record, &result).unwrap();
+        assert_eq!(
+            RunRecord::read(root.path()).unwrap().state,
+            RunRecordState::Completed
+        );
+    }
+
+    #[test]
     fn status_reconciles_job_state_from_the_receipt_or_marks_it_unknown() {
         use super::super::job_execution::{JOB_SCHEMA_VERSION, Job, JobState};
         use crate::job_service::{JobSelection, RuntimeJobService, ServiceContext, StatusRequest};
