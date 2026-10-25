@@ -347,6 +347,7 @@ mod tcp_guests {
     use smoltcp::time::Instant as SmolInstant;
     use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
     use std::collections::VecDeque;
+    use std::os::fd::AsRawFd;
 
     #[derive(Default)]
     struct Link {
@@ -520,6 +521,109 @@ mod tcp_guests {
         }
     }
 
+    fn next_guest_tick(now: SmolInstant, guests: &mut [&mut Guest]) -> SmolInstant {
+        let next = guests
+            .iter_mut()
+            .filter_map(|guest| guest.interface.poll_at(now, &guest.sockets))
+            .min();
+        // Newly queued application bytes, window updates and delayed fault
+        // injection frames need another poll before waiting for host I/O.
+        if next.is_some_and(|next| next <= now)
+            || guests.iter().any(|guest| guest.faults.delayed.is_some())
+        {
+            return now;
+        }
+        let mut fds: Vec<_> = guests
+            .iter()
+            .map(|guest| libc::pollfd {
+                fd: guest.stream.as_raw_fd(),
+                events: libc::POLLIN
+                    | if guest.output.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    },
+                revents: 0,
+            })
+            .collect();
+        // The backend runs on real threads: first allow in-flight frames to
+        // arrive. Only a quiet link may jump to the next simulated TCP timer.
+        // This wait is bounded by the independent wall-clock watchdog.
+        // SAFETY: all descriptors remain owned by guests throughout poll, and
+        // fds is a writable array of the supplied number of pollfd entries.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 10) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
+            return now;
+        }
+        if ready > 0 || guests.iter().any(|guest| !guest.output.is_empty()) {
+            return now;
+        }
+        next.unwrap_or(now)
+    }
+
+    #[test]
+    fn guest_clock_drains_io_before_advancing_to_tcp_timer() {
+        let (stream, mut backend) = UnixStream::pair().unwrap();
+        let mut guest = Guest::new(stream, 11);
+        let now = SmolInstant::ZERO;
+        guest
+            .sockets
+            .get_mut::<tcp::Socket>(guest.handle)
+            .connect(guest.interface.context(), (address(12), 9000), 49152)
+            .unwrap();
+        guest.poll(now);
+        let timer = guest.interface.poll_at(now, &guest.sockets).unwrap();
+        assert!(timer > now);
+
+        // A real backend can deliver framing in separate writes. Even a partial
+        // prefix must get a poll before advancing virtual retransmission time.
+        backend.write_all(&[0]).unwrap();
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        guest.poll(now);
+        assert_eq!(guest.input, [0]);
+
+        // A retained fault frame must be released by another poll, even if the
+        // stack itself has only a future retransmission timer.
+        guest.faults.delayed = Some(arp(11, 12, false));
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        guest.poll(now);
+        assert!(guest.faults.delayed.is_none());
+
+        // With all ready I/O serviced, reach the actual TCP timer directly,
+        // without sleeping for its simulated duration or using host elapsed time.
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), timer);
+    }
+
+    #[test]
+    fn guest_clock_does_not_advance_past_backpressured_output() {
+        let (stream, _backend) = UnixStream::pair().unwrap();
+        let mut guest = Guest::new(stream, 11);
+        let now = SmolInstant::ZERO;
+        guest
+            .sockets
+            .get_mut::<tcp::Socket>(guest.handle)
+            .connect(guest.interface.context(), (address(12), 9000), 49152)
+            .unwrap();
+        guest.poll(now);
+        assert!(guest.interface.poll_at(now, &guest.sockets).unwrap() > now);
+
+        let bytes = [0; 16384];
+        loop {
+            match guest.stream.write(&bytes) {
+                Ok(0) => panic!("guest link stopped accepting frames"),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => panic!("fill guest link: {error}"),
+            }
+        }
+        guest.queue_frame(&arp(11, 12, false));
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        assert_eq!(guest.output.len(), 1);
+    }
+
     #[test]
     fn tcp_handshake_and_bidirectional_bytes_cross_peer_network() {
         let root = directory();
@@ -603,17 +707,22 @@ mod tcp_guests {
         let (mut sent_left, mut sent_right) = (0, 0);
         let (mut received_left, mut received_right) = (Vec::new(), Vec::new());
         let started = Instant::now();
+        let mut now = SmolInstant::ZERO;
         while received_left.len() < reverse.len() || received_right.len() < forward.len() {
             assert!(
                 started.elapsed() < Duration::from_secs(20),
-                "TCP failed to recover: left={}/{}, right={}/{}",
+                "TCP failed to recover: left={}/{}, right={}/{}, \
+                 sent={sent_left}/{sent_right}, simulated={now:?}, \
+                 dropped={}/{}, peer_dropped={}/{}",
                 received_left.len(),
                 reverse.len(),
                 received_right.len(),
-                forward.len()
+                forward.len(),
+                left.faults.dropped,
+                right.faults.dropped,
+                ma.snapshot().peer_packets_dropped,
+                mb.snapshot().peer_packets_dropped
             );
-            // Accelerate retransmission time without depending on long sleeps.
-            let now = SmolInstant::from_micros(started.elapsed().as_micros() as i64 * 4);
             left.poll(now);
             right.poll(now);
             for (guest, payload, sent, received) in [
@@ -633,7 +742,7 @@ mod tcp_guests {
                         .unwrap();
                 }
             }
-            std::thread::sleep(Duration::from_millis(1));
+            now = next_guest_tick(now, &mut [&mut left, &mut right]);
         }
         assert_eq!(received_left, reverse);
         assert_eq!(received_right, forward);
