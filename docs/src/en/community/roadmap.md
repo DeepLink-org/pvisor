@@ -12,6 +12,14 @@ The current focus is single-machine execution reliability, shared-resource cost 
 
 Before adding a public feature, provide implementation, validation scenarios, limitations and release notes. Define compatibility and acceptance before changing data contracts, boundaries or public commands.
 
+## Installation and integration {#installation-and-integration}
+
+Planned: make installation, first execution and staged review work end to end before expanding distribution channels and language SDKs. The [distribution proposal](releasing.md#distribution-plan) defines channel roles and shared artifacts; [installation](../start/installation.md) owns currently available commands.
+
+Next are standalone binary archives, a versioned installer and a Homebrew entry point, alongside installation diagnostics, upgrades, rollback and removal. Settle CLI JSON output, events, errors and compatibility first; actual platform integration needs then drive TypeScript/Python SDKs. Evaluate npm distribution independently of an SDK; neither is a prerequisite for the CLI release.
+
+Linux host selective egress still uses a cooperative proxy, so the `--safe` label cannot establish a non-bypassable boundary. The proposed work combines a controlled proxy exit with host network isolation and validates cleared proxy variables, direct sockets and access to helper processes. See [network boundaries](../guides/policies/network.md#网络边界) for existing enforced-egress options and platform differences.
+
 ## Small-file delivery for lazy images {#lazy-image-small-files}
 
 Planned: automatically pack small files during image build/publication to reduce remote requests and cold-read waits for S3-backed lazy images. No implementation or performance acceptance results are available yet. See [shared image cache V1](../design/shared-image-cache-storage.md) for the current format and limitations, and [Lazy Image V2](../design/lazy-image-v2.md) for the detailed proposal on directory packing, deterministic bucketing and two-level indexes.

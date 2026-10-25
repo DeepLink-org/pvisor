@@ -55,11 +55,11 @@ cli ──> pvisor, core, journal, replay, overlaynet, overlay-core, vm
 pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
 cli --features gateway ──> gateway, pvisor/gateway
 pvisor --features gateway ──> gateway
-vm ──> overlay-core
-daemon ──> pvisor, core
+vm ──> overlay-core, guest
+daemon ──> pvisor, core, guest
 replay ──> core, journal
 shim ──> guest, overlay-core
-shim --features vm ──> vm
+shim --features vm ──> vm, overlaynet, core
 gateway ──> core, journal, overlaynet
 overlaynet ──> core
 overlayfs ──> core, overlay-core
@@ -114,7 +114,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 
 | 命令 | 作用 |
 |---|---|
-| `mise run build` / `mise run build -- release` | 构建 debug/release CLI，并在 macOS 上签署 Hypervisor entitlement |
+| `mise run build` / `mise run build -- release` | 构建当前平台支持的全部 workspace 可执行文件；macOS 签署 Hypervisor entitlement |
 | `mise run install-cli` | 将已签名的 release CLI 安装到 `CARGO_INSTALL_ROOT` 或 `~/.cargo` |
 | `mise run wheel` / `mise run wheel -- debug` | 构建全新 wheel，通过安装验证后再放入 `dist/` |
 | `mise run fw -- build` / `mise run fw -- test` | 构建固件或运行 bundle/ABI 回归 |
@@ -218,7 +218,6 @@ Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建所需的 Zig、cargo
 文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，无需单独维护文档虚拟环境。
 
 发布流程见[发布 PolicyVisor](releasing.md)，运行时要求见[可复现示例](examples.md)。
-
 
 私有运行时模块在 libkrun 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。
 

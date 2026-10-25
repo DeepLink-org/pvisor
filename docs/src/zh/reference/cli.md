@@ -25,7 +25,7 @@ pvisor help suspend
 
 ## 容器命令 {#container-commands}
 
-`run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`
+`run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`、`network`
 提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
 用 `pvisor COMMAND --help` 查看支持的参数。
 `--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn`，不属于容器 `run`。
@@ -43,6 +43,22 @@ pvisor rm redis
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
 该接口不实现 Docker Engine API、Compose 或 credential helper。
 容器使用独立的镜像存储；review/apply/drop 和 checkpoint 等命令仍操作 Job。
+
+### 同机容器网络 {#container-networks}
+
+`network create/ls/inspect/rm` 管理当前 `PVISOR_DOCKER_HOME` 中的逻辑网络。默认 `bridge` 支持按 IP 互通；用户自定义网络另提供容器名 DNS。`--network none` 不创建网卡，`--ip` 仅用于自定义网络。
+
+```bash
+pvisor network create --subnet 172.20.0.0/24 dev
+pvisor run -d --name web --network dev python:3.12-alpine python -m http.server 8000
+pvisor run --rm --network dev alpine:3.20 wget -qO- http://web:8000/
+pvisor network inspect dev
+pvisor stop web
+pvisor rm web
+pvisor network rm dev
+```
+
+同网络成员支持 IPv4 TCP、UDP、ICMP 和定向 ARP；外部出口仍受 TCP/DNS profile 限制。成员互访无需 `-p`，宿主访问才需端口发布。当前只支持允许范围内的 IPv4 /24，每个容器一个网络；IPv6、host 网络和 connect/disconnect 不支持。停止的容器仍保留地址与网络关联，需先删除容器再删除网络。
 
 ### 镜像构建
 
@@ -794,8 +810,8 @@ macOS 上，`pvisor-vm` 通过 virtio-fs 直接服务 pVisor 的 rootfs 与
 对账这两棵树。Linux 使用 KVM，Apple Silicon macOS 通过同一 executor 使用
 HVF。Linux 静态 musl 构建内嵌 guest 内核，运行时不需要固件共享库，
 并拒绝 `--vm-library-dir`。macOS wheel 把 `libkrunfw.5.dylib` 安装在 pVisor
-旁边；macOS 源码运行否则把 pinned 官方 release 下载到经 SHA-256 校验的
-平台缓存，由 `/usr/bin/cc` 把预构建 kernel bundle 转成所需 dylib。
+旁边。源码构建通过 `mise run build` 或 `mise run fw -- build` 准备仓库维护的固件；
+运行时只解析本地固件，缺失时报错，不下载或编译。
 macOS 上可用 `--vm-library-dir` 选择已有固件目录。OverlayNet `auto` 使用不可绕过的 VM smoltcp IPv4 TCP/DNS driver，而
 Gateway capture 使用经 guest virtual router 的内部路由。Linux 另外用
 namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权限，因此
@@ -933,10 +949,10 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 `pvisor cache list DIGEST [PATH]`、`pvisor cache stat DIGEST PATH` 和
 `pvisor cache read DIGEST PATH` 通过 `PVISOR_CACHE_SERVER` 访问它。
 `pvisor cache publish IMAGE` 显式发布到可写 filesystem/S3 后端。默认使用用户缓存目录下的
-`pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
+`pvisor/cache.sock` Unix socket。服务端可用 `--cache-image-store DIR`
 指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
 
-VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像挂为只读 FUSE lower，
+VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像作为只读 lower 直接接入 virtio-fs 文件服务，不创建中间宿主 FUSE 挂载，
 以 1 MiB 数据块按需读取并持久缓存。默认 socket 不存在或已失效时走本地 OCI 准备。
 显式指定服务端后连接失败会报错；`PVISOR_CACHE_SERVER=off` 强制本地准备。
 显式 rootfs 目录和原生 container executor 保持原有行为。

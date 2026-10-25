@@ -45,7 +45,7 @@ mise run test -- pvisor-overlaynet
 ## Links
 
 - [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)
-- [Network control](../../docs/src/zh/guides/network.md)
+- [Network control](../../docs/src/zh/guides/policies/network.md)
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
 - [`pvisor-core`](../pvisor-core/README.md)
 

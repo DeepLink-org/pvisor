@@ -1,29 +1,39 @@
 # Installation
 
+Install the native CLI with Python 3.10 or newer, then run a local command. Current wheels support Linux x86_64 and Apple Silicon macOS; installing a release package needs neither Rust nor a kernel build toolchain.
+
 ## 1. Install the tools
 
+Use a dedicated virtual environment to avoid changing the system Python environment:
+
 ```bash
-pip install pvisor
+python3 -m venv ~/.venvs/pvisor
+source ~/.venvs/pvisor/bin/activate
+python -m pip install pvisor
 ```
 
 Check the command:
 
 ```bash
 pvisor --version
+pvisor spawn -- /bin/echo hello
 ```
 
-The wheel installs the native CLI into the current Python environment's bin directory; no Python launcher is involved. If your project has other Python dependencies, use a virtual environment:
+The wheel installs `pvisor`, `pvisor-tui`, `pvisor-replay` and `pvisor-daemon` into that environment's bin directory without a Python launcher. Reactivate the environment in a new terminal, or use `~/.venvs/pvisor/bin/pvisor` directly. You can also install into an existing project virtual environment.
+
+Upgrade in the same environment:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install pvisor
+python -m pip install --upgrade pvisor
 ```
 
-Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or build from source for other architectures.
+To uninstall:
 
-Upgrading: update deployed `PVISOR_*` settings with the new release. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically.
+```bash
+python -m pip uninstall pvisor
+```
+
+Before upgrading, check release notes and deployed `PVISOR_*` settings. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically; uninstalling the Python package also leaves this runtime data in place. Homebrew, npm and Cargo entry points and a standalone binary installer remain part of the [distribution proposal](../community/releasing.md#distribution-plan).
 
 ## 2. Check platform prerequisites
 
@@ -35,23 +45,22 @@ brew install --cask macfuse
 
 macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This path loads no kernel extension and needs neither Recovery mode nor reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
 
-## 3. Install from source when needed
+## 3. Nightly and source builds
 
-Use the nightly wheel for the latest `main` build:
+Install a nightly build from `main` inside the activated Python environment:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
-For local development, install the Python package from a checkout:
+To modify or build the native programs, check out the source and prepare the toolchain using the [development instructions](../community/development.md):
 
 ```bash
 git clone https://github.com/DeepLink-org/pvisor.git
 cd pvisor
-pip install -e .
 ```
 
-Or build the CLI from source:
+Build and install the CLI from the prepared checkout:
 
 ```bash
 mise run install-cli
@@ -59,11 +68,11 @@ mise run install-cli
 
 To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. Installed native scripts ignore `PVISOR_BIN`. Editable Python installation is not a native CLI build; use `mise run build` or `mise run install-cli`.
 
-## Install the single-node daemon separately {#daemon}
+## Install the single-node daemon {#daemon}
 
-For an OpenSandbox-compatible lifecycle API on one Linux host, follow [daemon installation and startup](../guides/daemon/index.md). `pvisor-daemon` is a separate executable, included only in current Linux x86_64 wheels (stable or nightly) and also available through a local source build. macOS wheels do not include it, and no artifact supplies a ready-to-use sandbox image. Its partial OpenSandbox 1.1.0 profile has VM-only NativeRuntime embedding pVisor on Linux x86_64/KVM with delegated cgroup v2; the executable is integrated with native runtime construction and synchronous internal VM dispatch before Tokio.
+Linux x86_64 and macOS ARM64 wheels both include the separate `pvisor-daemon` executable. Cache serving and standalone memory pools work on both platforms; the OpenSandbox/E2B sandbox API requires Linux x86_64/KVM and delegated cgroup v2.
 
-A working sandbox needs a trusted local manifest/rootfs and genuine execd/egress through guest CID 3 vsock bridges. Bootstrap and image recipe are not supplied or end-to-end validated; starting the API does not establish SDK conformance or density. Stage/apply and checkpoint APIs are not implemented, and node sharing is not automatically acquired. Controller/Worker and the Cluster SDK are retired; external schedulers own cross-node orchestration.
+Prepare a trusted base with `prepare-image`; new templates default to the Rust guest engine and shared compressed image pool. The pinned SDKs' core lifecycle, command and file flows have native validation; full SDK conformance and production density remain unestablished. See the [daemon guide](../guides/daemon/index.md) for deployment, protocol scope and evidence. Stage/apply and checkpoint APIs remain on the native Job path; external schedulers handle cross-node orchestration.
 
 ## 4. Enable VM or OCI execution when needed
 
@@ -75,4 +84,4 @@ pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 
 Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS does not require a C cross compiler. See [development](../community/development.md) for build prerequisites.
 
-Treat these as separate platform steps: first complete a staged host workflow, then compare executor evidence in Run Bundles.
+Once the environment is ready, follow [your first run](first-run.md) through staging, review and selective apply. See [executor boundaries](../security/executor-boundaries.md) to check which file and network controls were actually installed.

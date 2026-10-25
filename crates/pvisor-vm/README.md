@@ -133,13 +133,13 @@ Unsupported。整机 offload 保留对私有 COW RAM 的拒绝。与冷压缩组
 仅接管普通可写文件 backing，跳过共同内核和其他私有 COW 基底；被切分区域的
 不足一块尾部保持驻留，绝不打洞共同基底或丢弃私有修改。
 
-`just test pvisor-vm` 覆盖外部 API 的校验、失败后状态、平台拒绝、snapshot
+`mise run test -- pvisor-vm` 覆盖外部 API 的校验、失败后状态、平台拒绝、snapshot
 互斥和导出边界，以及内部映射、损坏缓存、引用生命周期与 cold-token 排除。
 真实双进程 HVF gate 使用生产映射路径，验证 guest 读取后的 Mach 对象/偏移
 身份、CPU 写入、设备式 GuestMemory 写入隔离、原基底不变与 unlink 后存活：
 
 ```sh
-just test pvisor-vm -- \
+mise run test -- pvisor-vm -- \
   -E 'test(hvf_two_processes_share_baseline_and_isolate_cpu_and_device_writes)' --run-ignored only
 ```
 
@@ -1007,7 +1007,7 @@ SYMLINK、MKNOD 和 MKDIR 在同一 namespace 写锁内复用原生创建属性�
 Linux 回归通过临时目录检查这些行为及普通 metadata、排除路径，不依赖
 OCI 镜像、外部模型或 guest 启动。
 新目录句柄的普通 READDIR 仅返回名称、类型和稳定 cookie，inode 编号为未知
-值 0，不登记子 inode，也不随后续 LOOKUP 改变回复。LOOKUP、READDIRPLUS
+非零 unknown-inode 占位值（`FUSE_UNKNOWN_INO`），不登记子 inode，也不随后续 LOOKUP 改变回复。LOOKUP、READDIRPLUS
 和 READINDEX 继续分配真实 overlay 编号并保留引用；旧快照的已物化目录句柄
 仍使用保存的编号。分页、名称校验、类型快照与恢复验证保持原有规则。
 Linux regular-file LOOKUP 和无 FH GETATTR 保留 Core 的 namespace、
@@ -1238,8 +1238,8 @@ filesystem Python 合同；511项 Rust 通过与8项跳过明确复用未变化�
 保留225行、guest与host全字节校验及原分配错误未复现的记录。
 新的四臂 N5 曲线完成20个环境、900行；普通 CLI 则以同一0049v2固件对照
 WB0/1，PRE、独立诊断与 N5正式环境均通过。CLI七工具整体及 Ready 未检出收益，
-逐工作负载结果与回退点见[独立实验](../../docs/src/zh/design/filesystem-io-performance-analysis.md#guest-writeback-tuning)
-和[普通 CLI 数据](../../docs/src/zh/design/filesystem-guest-writeback-cli-comparisons.csv)。
+逐工作负载结果与回退点见[独立实验](../../docs/src/zh/lab-notes/filesystem-io-performance-analysis.md#guest-writeback-tuning)
+和[普通 CLI 数据](../../docs/src/zh/lab-notes/filesystem-io-performance-analysis.md#guest-writeback-cli)。
 探针时间不作为性能样本，新会话默认仍关闭 guest writeback。
 
 ```bash

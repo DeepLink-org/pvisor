@@ -30,7 +30,7 @@ not measure the complete process-entry or argument-parsing overhead.
 
 ## Container commands {#container-commands}
 
-`run`, `build`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm` and `logs`
+`run`, `build`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm`, `logs` and `network`
 use a Docker-style option subset with one VM per container and no central daemon.
 Use `pvisor COMMAND --help` for supported options. Job options such
 as `--safe`, `--stage` and `--executor` belong to `spawn`, not container `run`.
@@ -50,6 +50,22 @@ downloads are supported, but `run` and `start` require native images because CPU
 emulation is not implemented. This profile does not implement Docker Engine API,
 Compose or credential helpers. Containers use their own image store;
 Job review/apply/drop and checkpoints continue to address Jobs.
+
+### Same-host container networks {#container-networks}
+
+`network create/ls/inspect/rm` manages logical networks in the current `PVISOR_DOCKER_HOME`. The default `bridge` supports IP-based communication; user-defined networks also provide container-name DNS. `--network none` omits the NIC, and `--ip` requires a user-defined network.
+
+```bash
+pvisor network create --subnet 172.20.0.0/24 dev
+pvisor run -d --name web --network dev python:3.12-alpine python -m http.server 8000
+pvisor run --rm --network dev alpine:3.20 wget -qO- http://web:8000/
+pvisor network inspect dev
+pvisor stop web
+pvisor rm web
+pvisor network rm dev
+```
+
+Members support IPv4 TCP, UDP, ICMP and targeted ARP; external egress retains the TCP/DNS profile. Peer traffic needs no `-p`; publish ports for host access. Only IPv4 /24 networks in the allowed ranges and one network per container are supported. IPv6, host networking and connect/disconnect are unsupported. Stopped containers retain addresses and attachments, so remove containers before removing their network.
 
 ### Image builds
 
@@ -970,10 +986,10 @@ FUSE mount and does not materialize or reconcile either tree. Linux uses KVM and
 Apple Silicon macOS uses HVF through the same executor. Linux static musl builds
 embed the guest kernel and require no firmware shared library at runtime, and
 they reject `--vm-library-dir`. macOS wheels install `libkrunfw.5.dylib` beside
-pVisor; macOS source runs otherwise download the pinned official release into a
-SHA-256-verified platform cache, where `/usr/bin/cc` turns the prebuilt kernel
-bundle into the required dylib. On macOS, `--vm-library-dir` selects an existing
-firmware directory. OverlayNet `auto` uses the non-bypassable VM smoltcp IPv4
+pVisor. Source builds prepare the repository-maintained firmware through
+`mise run build` or `mise run fw -- build`. Runtime resolution only uses local
+firmware and fails when it is missing; it neither downloads nor compiles it.
+On macOS, `--vm-library-dir` selects an existing firmware directory. OverlayNet `auto` uses the non-bypassable VM smoltcp IPv4
 TCP/DNS driver, while Gateway capture uses an internal route through the guest
 virtual router. Linux additionally confines the VMM with namespaces and
 Landlock. The macOS VMM still has the invoking user's host permissions, so
@@ -1139,12 +1155,13 @@ retains compact Run/Overlay metadata, the apply ledger and capture artifacts.
 through `PVISOR_CACHE_SERVER`. `pvisor cache publish IMAGE` explicitly publishes
 to a writable filesystem/S3 backend. The default is
 the `pvisor/cache.sock` Unix socket under the user cache directory. The server
-accepts `--image-store DIR` to name an existing OCI store. File reads support
+accepts `--cache-image-store DIR` to name an existing OCI store. File reads support
 ranges and SHA-256 verification.
 
 VM image runs automatically probe the default socket; when the service is
-available they mount the remote image as a read-only FUSE lower, fetch 1 MiB
-blocks on demand, and cache them persistently. A missing or stale default socket
+available they attach the remote image directly to the virtio-fs service as a
+read-only lower without an intermediate host FUSE mount, fetch 1 MiB blocks on
+demand, and cache them persistently. A missing or stale default socket
 falls back to local OCI preparation. An explicitly configured server must work;
 `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit rootfs directories
 and the native container executor keep their current behavior. See the

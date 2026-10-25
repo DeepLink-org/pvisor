@@ -20,7 +20,7 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
 | `pvisor-cli` | CLI, TUI, cache/replay frontends and Host Job application adapters; consumes the runtime |
-| `pvisor-shim` | containerd Runtime v2 shim (`io.containerd.pvisor.v2`); task lifecycle, exec and FIFO/PTY IO for the host process path |
+| `pvisor-shim` | containerd Runtime v2 shim (`io.containerd.pvisor.v2`); lifecycle, exec and FIFO/PTY IO for OCI container and optional VM execution tiers |
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 

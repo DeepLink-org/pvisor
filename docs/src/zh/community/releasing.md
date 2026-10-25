@@ -1,7 +1,8 @@
 # 发布 PolicyVisor
 
-稳定发布由 GitHub Actions 从版本 tag 构建，并通过 Trusted Publishing 发布到
-PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不使用 Maturin。
+当前稳定发布流程由 GitHub Actions 从版本 tag 构建原生组件，以 Python wheel
+交付，并通过 Trusted Publishing 上传到 PyPI。安装方式见[安装指南](../start/installation.md)。
+wheel 不包含 PyO3 扩展，也不使用 Maturin。
 
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
@@ -10,8 +11,8 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 - 独立构建的 `pvisor-daemon`，Linux x86_64 和 macOS ARM64 wheel 均包含；
 - `libkrunfw.5.dylib`，仅 Apple Silicon macOS 包含；Linux 在构建时内嵌内核。
 
-当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel。源码分发不是已
-发布产物的一部分。
+当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel，以及对应固件源码。
+Python 源码分发包（sdist）不在发布集中。
 
 ## 一次性设置
 
@@ -104,3 +105,46 @@ wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度
 Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
 稳定 tag 发布先把已校验 wheel 与对应固件源码上传到 GitHub Release，再将 wheel 上传到 PyPI。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
+
+## 分发演进 {#distribution-plan}
+
+!!! note "提案，尚未实现"
+    优先完善原生二进制安装、CLI 和结构化输出，再按接入需求扩展包管理器与 SDK。
+    以下渠道扩展、统一发行清单和安装器尚未接入当前发布流程。
+
+### 渠道定位
+
+| 渠道 | 面向用户 | 当前状态与方向 |
+| --- | --- | --- |
+| PyPI | Python 环境中的 CLI 用户 | 已有 wheel 流程；补充独立工具环境的安装、升级验收 |
+| GitHub Release | CI、服务器与离线安装 | 已有 wheel 和固件源码；拟增加无需 Python/Rust 的二进制归档与版本化安装器 |
+| Homebrew | macOS 开发者 | 拟先提供自有 tap，复用固定版本的原生产物 |
+| npm | Node 工具链中的 CLI 用户 | 按需求增加原生程序安装入口；与 TypeScript SDK 分开交付 |
+| crates.io / Cargo | Rust 嵌入与源码构建用户 | 后续评估；先处理内部 path 依赖、构建资源和公开 API 的发布边界 |
+
+### 共享原生产物
+
+每个平台完成原生构建后，wheel、二进制归档和包管理器入口复用同一组组件。
+发行清单拟记录版本、commit、平台、组件哈希及固件来源；各归档分别记录自己的
+SHA-256。发布阶段上传已验收的产物，不再次编译。同版本的 CLI、companion、
+daemon 与固件作为一个安装单元升级，避免部分更新造成不兼容。
+
+新增渠道需验证最终安装布局，包括 Homebrew 软链接、Python 工具环境中的
+companion 和固件定位。安装器应支持指定版本、用户级目录、校验、升级、回退和
+卸载；卸载保留 Job 与用户缓存。包管理器安装的程序由该包管理器升级。
+安装 daemon 可执行文件与注册、启动系统服务分开进行。
+
+首批继续覆盖 Linux x86_64 与 macOS arm64。扩大平台支持前，增加相应原生验收。
+渠道验收除版本输出外，还需覆盖首次有效执行、已有暂存审查流程、升级和卸载；
+VM 能力沿用真实硬件验收。Stable 保持不可变，nightly 使用独立入口。
+
+### CLI、协议与 SDK
+
+运行现有 Agent CLI 不要求语言 SDK：pVisor 直接启动命令，Agent 的实现语言不影响
+这一入口。平台集成可先使用已文档化的命令、退出码和
+[JSON 输出](../reference/json-output.md)，并按[兼容边界](../reference/stability.md)
+固定版本；完整 schema 和跨版本稳定协议仍需完善。
+
+先收敛启动、取消、状态、事件与文件审查的结构化契约，再根据实际集成用户选择
+TypeScript 或 Python SDK。npm 安装入口可以只分发 Rust 原生 CLI；它不要求
+TypeScript 重写，也不意味着已经提供 SDK。SDK 不是当前 CLI 发布的前置条件。

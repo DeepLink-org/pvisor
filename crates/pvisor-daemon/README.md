@@ -162,7 +162,7 @@ the engine alone is not evidence of a speedup or full SDK conformance.
 ## Upstream OpenSandbox templates (explicit compatibility backend)
 
 Prepare a template once, then create native VMs directly through the official
-SDK. Preparation uses the same compressed content pool as `pvisor docker`:
+SDK. Preparation uses the same compressed content pool as the `pvisor run`/`build` container commands:
 equal file chunks share storage, while each VM has private writes. Create opens
 a pinned pool revision and retains its lazy projection owner until VM teardown;
 it performs no registry pull or complete rootfs extraction. Preparation may use
@@ -512,7 +512,7 @@ No security audit or hostile multi-user assurance is claimed.
   service processes still require separately provisioned resources.
 - TTL cleanup is best effort, not a hard execution deadline: native commands,
   uploads/header waits and same-sandbox controls can delay it. New proxy requests
-  are rejected after expiration. Stream/output quotas remain upstream responsibilities.
+  are rejected after expiration. Native templates enforce the bounded output limits above; upstream templates retain their service-specific quotas.
 - Normal daemon shutdown leaves owned native sandboxes and records for restart.
   Maintenance resumes after restart. It does not guarantee cleanup while the
   daemon is down; configure native host supervision for that requirement.
@@ -792,7 +792,7 @@ loss and cache-file unlink. The lower-level native HVF COW gate is in the VM REA
 # Build/sign the CLI first; ROOTFS needs native sh, cat and sleep.
 PVISOR_MEMORY_POOL_TEST_PVISOR=/absolute/path/to/signed/pvisor \
 PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/rootfs \
-just test pvisor-daemon -- --test memory_pool \
+mise run test -- pvisor-daemon -- --test memory_pool \
   -E 'test(macos_container_vms_publish_and_restore_through_daemon_pool)' --run-ignored only
 ```
 
@@ -809,7 +809,7 @@ PVISOR_MEMORY_POOL_TEST_PVISOR=/absolute/path/to/signed/pvisor \
 PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/native/rootfs \
 PVISOR_SHARED_TEST_GUEST=/tmp/pvisor-shared-guest \
 PVISOR_SHARED_KERNEL_TEST_OUTPUT=/tmp/pvisor-four-evidence \
-just test pvisor-daemon -- --test memory_pool \
+mise run test -- pvisor-daemon -- --test memory_pool \
   -E 'test(macos_four_512m_vms_dynamically_share_and_cow_application_pages)' --run-ignored only --no-capture
 ```
 

@@ -12,6 +12,7 @@
 | Daemon | Local admission, ownership, intentions, runtime reconciliation, TTL, authenticated endpoints | Cross-host scheduling or training transactions |
 | Native supervisor | Embedded pVisor/VM, RunHandle, vCPU controls, cgroup identity and guest protocol adaptation | Stage/apply/checkpoint API or automatic node sharing |
 | Prepared image | Pin userspace/backend; explicit upstream templates supply execd/envd | Replacing lifecycle API authorization |
+| `pvisor-guest` | Shared PID 1, process launch/reaping, file and control protocol | Host HTTP authentication or SDK wire adapters |
 | Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
 | Native node runtime | Separate immutable backing protocols | Automatic daemon acquisition/sharing |
 | Daemon pool component | Optional detached pool enabled by `serve --sandbox --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |

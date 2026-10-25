@@ -12,6 +12,21 @@
 
 新增公开功能前，应具备实现入口、验证场景、限制说明和发布记录。改变数据契约、执行边界或公开命令时，先明确兼容策略和验收方式。
 
+## 安装与集成 {#installation-and-integration}
+
+计划中：先让用户完成安装、首次执行和暂存审查，再扩展分发渠道与语言 SDK。
+[分发提案](releasing.md#distribution-plan)定义各渠道的定位和共享产物方向；
+当前可用命令以[安装指南](../start/installation.md)为准。
+
+下一步是独立二进制归档、版本化安装器和 Homebrew 入口，并完善安装诊断、升级、
+回退与卸载。CLI 的 JSON 输出、事件、错误与兼容策略先收敛，TypeScript／Python
+SDK 再由实际平台集成需求驱动。npm 分发与 SDK 独立评估，不作为 CLI 发布前置条件。
+
+Linux host 的选择性出口目前仍使用协作式代理，不能因 `--safe` 标签宣称不可绕过。
+拟补齐受控代理出口与宿主网络隔离的组合，并验证清除代理变量、直接 socket 和
+辅助进程访问等路径。现有强制出口选项及各平台差异见
+[网络边界](../guides/policies/network.md#网络边界)。
+
 ## 惰性镜像的小文件供给优化 {#lazy-image-small-files}
 
 计划中：在镜像构建／发布时自动合并小文件，降低 S3-backed 惰性镜像的远端请求数和冷读取等待；尚无实现或性能验收结果。现有格式与限制见[共享镜像缓存 V1](../design/shared-image-cache-storage.md)，目录打包、确定性分桶与两级索引的详细提案见 [Lazy Image V2](../design/lazy-image-v2.md)。

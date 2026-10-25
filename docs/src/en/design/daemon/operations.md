@@ -22,7 +22,7 @@ pvisor-daemon serve --sandbox \
   --memory-bytes 8589934592
 ```
 
-Keep state and runtime configuration compatible across restarts. Use TLS termination in a trusted reverse proxy before non-loopback exposure. Set `--public-endpoint` to the externally routed host:port authority; wildcard or ephemeral listeners require it. Automatic endpoint publication is not implemented.
+Keep state and runtime configuration compatible across restarts. Use TLS termination in a trusted reverse proxy before non-loopback exposure. Set `--public-endpoint` to the externally routed host:port authority; wildcard listeners require it. Ephemeral loopback listeners publish their allocated address; non-loopback binding is rejected unless explicitly enabled with `--allow-insecure-listen` for remote plaintext access.
 
 Runtime/state path absoluteness, length and persistence constraints are documented in the [operations guide's install and start](../../guides/daemon/index.md#install).
 
@@ -40,7 +40,7 @@ Templates and host code are trusted inputs. ELF/digest checks do not authenticat
 
 ## Partial protocol profile {#api}
 
-Baseline: OpenSandbox **1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`; upgrades require explicit schema/SDK/test review.
+OpenSandbox baseline: **1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`; upgrades require explicit schema/SDK/test review.
 
 | Interface | Current behavior |
 | --- | --- |
@@ -56,6 +56,8 @@ Baseline: OpenSandbox **1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f79
 Lifecycle requests use `OPEN-SANDBOX-API-KEY`. Responses carry `X-Request-ID`; errors use `{code, message}`. Server-proxy endpoints use the lifecycle key; default endpoints provide sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` headers that SDKs must preserve. Tokens cannot control lifecycle or access another sandbox. Control secrets are stripped upstream, but caller-supplied execd access credentials are not replaced.
 
 Snapshots, templates/pools, metadata mutation, hooks, network policy, credential proxy, secure access, volumes, image auth, arbitrary ports, signed endpoints, WebSocket and CONNECT are unsupported. Native VM execution is wired in the runtime; stage/apply, checkpoint/fork and offload APIs are not implemented.
+
+The same service also supports a partial local E2B Python SDK **2.59.0** profile through separate `/sandboxes`, `/v2/sandboxes` and `/e2b/*` routes. See [E2B access](../../guides/daemon/index.md#e2b) for protocol/authentication setup. Local `prepare-image` preparation and SDK template-build APIs are separate interfaces.
 
 ## Trust boundary {#security}
 

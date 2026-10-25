@@ -557,7 +557,7 @@ or evidence of completed research:
   protocols and the internal whiteout sample-path issue remain outstanding.
 - `guides/ci` and `reference/exit-codes`: copyable failure/timeout commands have
   expected return codes, retained-file behavior, and real output samples.
-  `tests/documentation_json.rs` executes both paths and checks that candidates
+  `crates/pvisor-cli/tests/documentation_json.rs` executes both paths and checks that candidates
   remain staged. This is local Linux coverage, not a hosted-runner measurement.
 
 Validate content and build before updating bilingual revision hashes:
