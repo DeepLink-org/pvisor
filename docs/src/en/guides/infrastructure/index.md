@@ -2,6 +2,8 @@
 
 pVisor can serve as the execution layer for agent inference, evaluation, and RL post-training: receive tool or task requests, execute in the selected environment, and return results and state to the caller. Validate one complete task on one machine before choosing concurrency, state reuse, and resource management for your workload.
 
+Use the [execution infrastructure quick start](../../start/infrastructure.md) to submit a task from a caller script and collect execution records and results on a Linux/KVM server.
+
 ## What an agent-native sandbox addresses {#agent-native}
 
 An agent task typically alternates between model requests and tool execution. Tools modify a workspace, later calls depend on earlier file or process state, and the environment may retain memory while waiting for the model. Evaluation and training also need to distinguish infrastructure failure from task scores and associate results with individual samples.
@@ -29,6 +31,8 @@ An inference request may need several consecutive tool calls that accumulate res
 | Agent trajectories and model context | Prepare a tool prefix and continue an agent session | Replay adapter support, repeated side effects, and output differences |
 
 See [workspace checkpoints](../fork-checkpoint.md) for file branches, the [CLI contract](../../reference/cli.md#full-vm-execution-checkpoints) for execution restoration, and the [replay guide](../replay.md) for trajectory continuation. These methods retain different kinds of state.
+
+Trajectory capture and replay also apply to [local Agent workflows](../index.md#trajectories). Validate [capture](../capture.md) and [replay](../replay.md) with one task before integrating the same workflow into inference or evaluation services.
 
 ## Deliver samples for evaluation and RL {#rl}
 

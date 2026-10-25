@@ -63,6 +63,8 @@ tap 使用 `DeepLink-org/homebrew-pvisor`；维护者需要先完成[一次性�
 
 ## 2. 检查平台要求
 
+本地工作流按下述 FUSE 要求配置；执行基础设施使用 Linux/KVM，直接按 [VM 与 OCI 环境](#vm-and-oci)准备节点。
+
 wheel 安装支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Job 默认直接写入工作区；
 `--safe` 或 `--stage` 才使用文件系统暂存。在 macOS 上运行暂存的 host Job 前，先安装 macFUSE：
 
@@ -76,6 +78,18 @@ macOS 默认使用 macFUSE 的 **FSKit 后端**。安装 macFUSE 5.4.0 或更新
 挂载点位于 `/Volumes/pvisor-*`，暂存数据仍保存在 Job 的 stage 目录。
 FSKit 不可用时会直接报错，不会自动切换内核后端或退化为直写。
 libkrun VM executor 不需要 macFUSE。
+
+## 选择上手路径 {#verify-installation}
+
+```bash
+pvisor --version
+```
+
+应看到 pVisor 的版本号。个人工作区从[本地工作流：运行与审查](first-run.md)开始；接入评测或调度程序时，从[执行基础设施：运行第一个任务](infrastructure.md)验证服务器上的任务执行与结果收集。
+
+<a id="3"></a>
+
+<a id="other-installation-methods"></a>
 
 ## 3. Nightly 与源码构建
 
@@ -109,7 +123,9 @@ Linux x86_64 和 macOS ARM64 wheel 都包含独立的 `pvisor-daemon` 可执行�
 
 通过 `prepare-image` 准备可信基础镜像，新模板默认使用 Rust guest 引擎与共享压缩镜像池。固定版本 SDK 的核心生命周期、命令和文件流程已有原生验证；完整 SDK conformance 与生产密度仍未建立。部署命令、协议范围和证据见[daemon 指南](../guides/daemon/index.md)。Stage/apply 与 checkpoint API 仍由原生 Job 路径提供；跨节点编排交给外部调度器。
 
-## 4. 需要时启用 VM 或 OCI 执行
+<a id="4-vm-oci"></a>
+
+## 4. 需要时启用 VM 或 OCI 执行 {#vm-and-oci}
 
 默认本地工作流不要求安装 Docker 或 Podman。使用 VM executor 运行 OCI 镜像时，可以显式指定：
 
@@ -125,5 +141,11 @@ Linux 使用 KVM；Apple Silicon macOS 使用 HVF。guest supervisor 是静态 m
 由 Rust 自带 linker 构建，macOS 不需要 C 交叉编译器。源码构建前的工具链准备见
 [工程说明](../community/development.md)。
 
-环境准备完成后，用[第一次运行](first-run.md)完成暂存、审查和选择性 apply。
+环境准备完成后，用[本地工作流：运行与审查](first-run.md)完成暂存、审查和选择性 apply。
 需要检查实际安装的文件与网络控制时，查看[执行器边界](../security/executor-boundaries.md)。
+
+执行基础设施快速开始需要 **Linux x86_64** 节点，并满足：
+
+- 当前账号可读写 `/dev/kvm`，且允许创建 user namespace。若出现 `setgroups` 或 `uid_map` 权限错误，请管理员检查 user namespace 和 AppArmor 策略；KVM 权限不能替代这些条件，AppArmor 规则应匹配实际 CLI 路径。
+- Host 使用安装时的 Python 3.10+ 环境；VM 内的 Python 和任务依赖由示例镜像提供，不继承 Host 的虚拟环境。
+- 首次运行可访问 Docker Hub，并有足够磁盘空间缓存镜像；不需要 Docker Daemon。离线节点可使用预先准备的镜像文件系统，见 [VM 执行器](../guides/executors/vm.md#rootfs)。

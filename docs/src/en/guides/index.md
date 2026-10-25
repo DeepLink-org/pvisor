@@ -35,12 +35,16 @@ After the task ends, check the outcome, exit code, and installed controls before
 
 To keep a file proposal while trying another approach, check [workspace fork](fork-checkpoint.md) prerequisites first. To continue CPU, RAM, and device state, choose an [execution-checkpoint interface](infrastructure/integration.md#capabilities).
 
+## Trajectory capture and replay {#trajectories}
+
+For local tasks, use [trajectory capture](capture.md) to track model interactions and [replay](replay.md) to rebuild supported agent histories and continue execution. The same guides support [context preservation](infrastructure/index.md#inference) in inference and evaluation; see [RL rollouts](rl-rollouts.md) when delivering execution results to a training workflow.
+
 ## Extend to parallel tasks and CI {#automation}
 
 Give parallel tasks separate workspaces, stages, and Job identities. Collect results with the [parallel-agent workflow](parallel-agents.md#batch), then coordinate applying them to one target tree. You or your review process still determine acceptance as task volume increases.
 
 [CI workflows](ci.md) separate execution outcomes, artifact upload, and accepting changes. Retain failure and timeout evidence so review can decide whether to rerun, repair, or discard.
 
-Use [trajectory capture](capture.md) to track model interactions and [replay](replay.md) to restore supported agent histories. Diagnose failures with [troubleshoot a Run](troubleshooting.md).
+Diagnose failures with [troubleshoot a Run](troubleshooting.md).
 
 When an inference service, evaluator, or trainer starts the tasks, use [agent execution infrastructure](infrastructure/index.md) to assign state and resource ownership. Both workflows share executor and capability documentation.

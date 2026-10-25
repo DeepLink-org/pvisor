@@ -1,4 +1,18 @@
-# Staging and apply semantics
+# File-level oversight and isolation {#apply}
+
+<span id="staging-and-apply-semantics"></span>
+
+Files carry the inputs an Agent reads, the code it modifies, and the results it delivers. Managing files lets pVisor constrain access and modification by path and associate candidate changes with files that can be reviewed and selectively accepted, without inferring workspace results from changed disk blocks.
+
+## Constrain access and modification {#access-scope}
+
+OverlayCore manages the file view, and file policies constrain access through that view. The executor provides host boundaries outside it. Declare read-only inputs, writable paths, and sensitive-file rules for the task; see [File policies](../guides/policies/files.md) for configuration. File oversight does not automatically cover networks or external services; see [Security and support scope](../security/index.md).
+
+## Isolate, review, and accept candidate changes {#candidate-changes}
+
+With staging enabled, the Agent reads base files and writes changes into a private upper layer. Later tool calls see those changes while the target workspace remains unchanged. Review presents net additions, modifications, and deletions. The caller can accept selected paths, discard remaining changes, or explore from saved state. See [Review and apply changes](../guides/review-apply.md) for the procedure.
+
+## Staging and apply semantics {#staging-semantics}
 
 Staging keeps a Job's workspace changes in a copy-on-write upper layer. Only an explicit `apply` changes the target workspace. This makes file changes reversible before apply: select what to merge, discard the stage, or fork it.
 

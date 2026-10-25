@@ -341,22 +341,24 @@ class DocsTests(unittest.TestCase):
         expected_sections = {
             "zh": [
                 "首页",
+                "快速开始",
+                "了解 pVisor",
                 "本地工作流",
                 "执行基础设施",
-                "基础与参考",
+                "参考手册",
                 "基准测试",
                 "设计与研究",
-                "实验记录",
                 "参与开发",
             ],
             "en": [
                 "Home",
+                "Quick start",
+                "Understanding pVisor",
                 "Local workflows",
                 "Execution infrastructure",
-                "Foundations and reference",
+                "Reference",
                 "Benchmarks",
                 "Design and research",
-                "Lab notes",
                 "Contributing",
             ],
         }
@@ -379,12 +381,22 @@ class DocsTests(unittest.TestCase):
                                 for entry in entries
                                 for path in entry.values()
                             )
-            concepts = config["nav"][3][expected_sections[locale][3]]
+            introduction = config["nav"][2][expected_sections[locale][2]]
+            assert pages(introduction) == [
+                "why/index.md",
+                "concepts/jobs.md",
+                "concepts/staging.md",
+                "concepts/lifecycle.md",
+                "concepts/resource-reuse.md",
+                "concepts/resource-optimization.md",
+                "security/index.md",
+            ]
+            concepts = config["nav"][5][expected_sections[locale][5]]
             security_label = "安全" if locale == "zh" else "Security"
             security = next(
                 section[security_label] for section in concepts if security_label in section
             )
-            assert "security/index.md" in pages(security)
+            assert "security/executor-boundaries.md" in pages(security)
         assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
         for locale, config in configs.items():
             assert config["docs_dir"] == f"src/{locale}"

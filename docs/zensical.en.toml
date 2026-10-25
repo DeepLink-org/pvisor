@@ -15,17 +15,35 @@ extra_javascript = ["assets/javascripts/alternate.js"]
 
 nav = [
   { "Home" = "index.md" },
-  { "Local workflows" = [
-    { "Getting started" = [
-      { "Local workflow overview" = "guides/index.md" },
-      { "Installation" = "start/installation.md" },
-      { "Your first run" = "start/first-run.md" },
+  { "Quick start" = [
+    { "Installation" = "start/installation.md" },
+    { "Local workflow: run and review" = "start/first-run.md" },
+    { "Execution infrastructure: run your first task" = "start/infrastructure.md" },
+    { "Choose an executor" = "guides/executors/index.md" },
+  ] },
+  { "Understanding pVisor" = [
+    { "Introduction" = "why/index.md" },
+    { "Core concepts" = "concepts/jobs.md" },
+    { "Core capabilities" = [
+      { "File-level oversight and isolation" = "concepts/staging.md" },
+      { "Sandbox lifecycle management" = "concepts/lifecycle.md" },
+      { "State preservation and branch reuse" = "concepts/resource-reuse.md" },
+      { "Image and memory optimization" = "concepts/resource-optimization.md" },
     ] },
+    { "Security and support scope" = "security/index.md" },
+  ] },
+  { "Local workflows" = [
+    { "Local workflow overview" = "guides/index.md" },
     { "Connect your agent" = [
       { "Connect your agent" = "guides/agents/index.md" },
       { "Claude Code" = "guides/agents/claude-code.md" },
       { "Codex CLI" = "guides/agents/codex.md" },
       { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
+    ] },
+    { "Access and credentials" = [
+      { "File policies" = "guides/policies/files.md" },
+      { "Control network access with OverlayNet" = "guides/policies/network.md" },
+      { "Credentials and environment" = "guides/policies/credentials.md" },
     ] },
     { "Tasks" = [
       { "Review and apply changes" = "guides/review-apply.md" },
@@ -52,33 +70,22 @@ nav = [
     { "Daemon quickstart" = [
       { "Run the single-node daemon" = "guides/daemon/index.md" },
     ] },
-    { "Trajectories and RL rollouts" = [
+    { "Trajectory capture and replay" = [
       { "Capture agent trajectories" = "guides/capture.md" },
       { "Replay recorded trajectories" = "guides/replay.md" },
-      { "RL rollouts" = "guides/rl-rollouts.md" },
     ] },
+    { "RL rollouts" = "guides/rl-rollouts.md" },
   ] },
-  { "Foundations and reference" = [
-    { "pVisor overview" = "why/index.md" },
-    { "Execution concepts" = [
-      { "Jobs and storage" = "concepts/jobs.md" },
-      { "Staging and apply semantics" = "concepts/staging.md" },
-      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
-    ] },
+  { "Reference" = [
     { "Executors" = [
-      { "Choose an executor" = "guides/executors/index.md" },
       { "Host executor" = "guides/executors/host.md" },
       { "Native OCI containers" = "guides/executors/container.md" },
       { "pVisor VM" = "guides/executors/vm.md" },
     ] },
-    { "Policies" = [
-      { "File policies" = "guides/policies/files.md" },
-      { "Control network access with OverlayNet" = "guides/policies/network.md" },
-      { "Credentials and environment" = "guides/policies/credentials.md" },
-    ] },
     { "Command and configuration reference" = [
       { "Commands and scenarios" = "reference/index.md" },
       { "`pvisor` command reference" = "reference/cli.md" },
+      { "Job usage and storage" = "reference/jobs.md" },
       { "Configuration files" = "reference/config.md" },
       { "Policy fields" = "reference/policy.md" },
       { "Run Bundle format" = "reference/run-bundle.md" },
@@ -91,7 +98,7 @@ nav = [
       { "Shared image cache and storage backends" = "reference/shared-image-cache.md" },
     ] },
     { "Security" = [
-      { "Security overview" = "security/index.md" },
+      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
       { "Threat model" = "security/threat-model.md" },
       { "Executor boundaries" = "security/executor-boundaries.md" },
       { "Hardening" = "security/hardening.md" },
@@ -177,16 +184,16 @@ nav = [
       { "Research directions" = "design/research/index.md" },
       { "Agent task lifecycle cost" = "design/research/agent-lifecycle-cost.md" },
     ] },
-  ] },
-  { "Lab notes" = [
-    { "Lab notes" = "lab-notes/index.md" },
-    { "VM startup performance analysis" = "lab-notes/vm-startup-performance-analysis.md" },
-    { "End-to-end task performance analysis" = "lab-notes/agent-task-performance-analysis.md" },
-    { "VM memory performance analysis" = "lab-notes/vm-memory-performance-analysis.md" },
-    { "OpenSandbox: startup, disk and memory" = "lab-notes/opensandbox-performance-analysis.md" },
-    { "Filesystem performance analysis" = "lab-notes/filesystem-performance-analysis.md" },
-    { "Cache and asynchronous-write performance curves" = "lab-notes/filesystem-io-performance-analysis.md" },
-    { "Benchmark methodology and evidence" = "lab-notes/benchmark-methodology-evidence.md" },
+    { "Lab notes" = [
+      { "Lab notes" = "lab-notes/index.md" },
+      { "VM startup performance analysis" = "lab-notes/vm-startup-performance-analysis.md" },
+      { "End-to-end task performance analysis" = "lab-notes/agent-task-performance-analysis.md" },
+      { "VM memory performance analysis" = "lab-notes/vm-memory-performance-analysis.md" },
+      { "OpenSandbox: startup, disk and memory" = "lab-notes/opensandbox-performance-analysis.md" },
+      { "Filesystem performance analysis" = "lab-notes/filesystem-performance-analysis.md" },
+      { "Cache and asynchronous-write performance curves" = "lab-notes/filesystem-io-performance-analysis.md" },
+      { "Benchmark methodology and evidence" = "lab-notes/benchmark-methodology-evidence.md" },
+    ] },
   ] },
   { "Contributing" = [
     { "Development guide" = [
@@ -210,9 +217,7 @@ logo = "assets/logos/pvisor-icon.png"
 favicon = "assets/logos/pvisor-icon.png"
 features = [
   "navigation.tabs",
-  "navigation.sections",
   "navigation.expand",
-  "navigation.indexes",
   "navigation.path",
   "navigation.tracking",
   "navigation.top",

@@ -1,38 +1,114 @@
-# Job 与存储
+# 核心概念 {#job}
 
-Job 是 pVisor 里一项持久的工作：一次受管理的命令、它的执行证据和暂存改动。
+pVisor 为沙箱增加面向 Agent 任务的管理能力，在 Host 侧管理访问边界、执行生命周期、任务状态与资源。Agent 的命令与工具在沙箱内执行，文件与网络接口连接环境内外的交互，任务记录关联执行过程与结果，状态与资源管理支持任务的持续运行和多次尝试。
 
-```bash
-pvisor spawn --safe --stage ../stage-001 -- codex
-pvisor status --review ../stage-001
-```
+## 系统架构 {#objects}
 
-`pvisor spawn` 创建 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 都直接操作它，没有 `job` 子命令。磁盘上的目录与 Run Bundle 沿用 `run-*` 名称。
+### 任务发起侧 {#task-origin}
 
-## 之后怎么再找到它
+- **Agent**：根据任务目标、模型回复和执行反馈决定下一步行动，通过工具调用发起命令执行、文件操作等请求。Agent 可以运行在沙箱内，也可以从外部调用沙箱。
+- **接入方式**：Agent 或上层系统通过 CLI、Rust Runtime 或服务 API 使用 pVisor，提交执行请求并获取结果。不同接入方式支持的能力与管理对象有所不同，具体选择见[接入方式矩阵](../guides/infrastructure/integration.md)。
 
-后续命令都接受一个 selector：Job ID、暂存目录、`run.json`，或视图内的路径。
+### 宿主与管理侧 {#host-management}
 
-`last` 是便利写法，只在**默认存储**里按当前工作区查找。用 `--stage PATH` 时 Job 存在暂存目录中，不在默认存储里，这时显式给出路径或 ID：
+- **Host（宿主系统）**：运行 pVisor 和执行后端的系统，为沙箱提供计算、内存、存储与网络资源。在 VM 场景中，Host 与运行工具的 Guest VM 相对应。
+- **pVisor 管理模块**：在 Host 侧提供面向 Agent 任务的管理能力，通过 OverlayCore、OverlayNet 监管文件与网络交互，并接入沙箱生命周期和资源管理。
+- **执行器（Executor）**：pVisor 对接不同执行后端的统一抽象，将执行请求落实到 Host 进程、OCI 容器或 VM。具体隔离和管理能力取决于后端及配置。
+- **Runtime／VMM**：执行器所对接的底层运行组件。例如，OCI 容器 Runtime 负责容器运行，VMM 负责虚拟 CPU、内存映射和虚拟设备。
 
-```bash
-pvisor status --review ../stage-001      # stage path
-pvisor status --review run-20260102-abc  # or the Job ID
-```
+### 执行环境 {#execution-environment}
 
-找不到当前工作区的 Job 时，pVisor 会报错，而不是拿别的项目的 Job 顶上。
+执行环境是 Agent 的命令与工具实际运行的空间，包括可见的文件、软件依赖、进程和网络访问条件。根据执行后端，可以采用以下形式：
 
-## 存储位置
+- **Host 进程**：命令直接作为宿主系统上的进程运行，访问范围受已配置的策略和宿主控制机制约束。
+- **OCI 容器**：命令在容器内运行，使用容器的文件系统与进程环境，并与 Host 共享内核。
+- **Guest VM**：命令在虚拟机内运行，使用独立的 guest 内核及分配的虚拟 CPU、内存和设备。
 
-| 调用方式 | 存储 |
-| --- | --- |
-| 默认，包括 `--safe` 与 `--ask` | `~/.pvisor/runs/run-<uuid>/`；用 `PVISOR_RUN_HOME` 覆盖根目录 |
-| 显式 `--stage PATH` | `PATH` 本身 |
+不同执行环境提供的隔离与管理能力有所不同，具体支持范围见[执行器边界](../security/executor-boundaries.md)。
 
-默认根目录落在工作区下层时，pVisor 改用系统临时 Run 根，避免可写暂存出现在自己的下层里。目录结构见[项目发现](../reference/cli.md#run-项目发现)。
+Agent 发起工具调用，Host 侧的 pVisor 与执行后端负责访问监管和运行管理，命令与工具在对应的执行环境中运行。
 
-## 保留与清理
+## 文件视图与网络交互 {#file-network}
 
-- 记录与暂存改动在执行后保留，直到全部合入或丢弃。
-- 合入全部剩余改动或丢弃是终态：一次性的 `upper`／`work` 数据被删除，而紧凑的 Run／Overlay 元数据、`apply-ledger.json` 与 capture 产物保留。
-- safe HOME 与显式 `CODEX_HOME` 使用私有暂存，执行后丢弃；不计入工作区 Run Bundle。
+### 文件视图与候选改动 {#file-state}
+
+- **工作区（Workspace）**：任务读取输入、修改文件和交付结果的文件范围；启用暂存时，目标工作区是最终接受改动的位置。
+- **文件视图（View）**：执行环境实际看到的文件树。启用暂存时，它合成基础层与私有写层，使工具能读取原始文件和自己的修改。
+- **基础层（Lower）**：为文件视图提供基础内容，可以来自外部工作区或受管理的不可变基底；外部工作区仍可能被其他程序修改。
+- **私有写层（Upper）**：启用暂存后保存任务的新增、修改与删除，使候选变化与目标工作区隔离。
+- **候选改动（Changeset）**：用于审查的净变化清单，描述新增、修改与删除的结果，不是每次文件操作的流水记录。
+
+### 对文件改动的处理 {#handling-changes}
+
+- **暂存（Stage）**：暂存机制，将执行中的文件改动保存在私有写层，供后续审查，暂不写入目标工作区。
+- **接受改动（Apply）**：将审查后选定的候选改动写入目标工作区。
+- **丢弃改动（Drop）**：放弃尚未接受的候选改动，不撤销已经 Apply 的修改。
+
+启用暂存后，Agent 通过文件视图读取输入并留下候选改动；调用方审查后，通过 Apply 接受所需修改，或通过 Drop 丢弃剩余改动。机制与边界见[文件级监管与隔离](staging.md)，具体操作见[审查并应用改动](../guides/review-apply.md)。
+
+### 网络访问与访问策略 {#network-policy}
+
+- **网络出口（Egress）**：执行环境向外部服务发起连接的路径，例如访问模型 API、下载依赖或请求业务服务。
+- **访问策略（Policy）**：声明文件和网络访问的允许范围，例如可读写的文件路径、可访问的网络目标。
+
+文件策略约束文件访问，网络策略约束对外连接；实际覆盖范围取决于执行后端及接入的控制机制。网络请求造成的外部变化不会随文件改动的丢弃而撤销。
+
+### 文件与网络管理组件 {#access-components}
+
+- **OverlayCore**：管理文件视图、写时复制和候选改动，为文件级监管与审查提供基础。
+- **OverlayNet**：管理经过其控制路径的网络交互，依据网络策略检查并处理对外连接。
+
+文件视图之外的访问仍依赖执行器边界。控制范围见[安全与支持范围](../security/index.md)。
+
+## 任务、执行与记录 {#task-records}
+
+- **任务（Job）**：pVisor 原生工作流中持续管理的一项工作，关联命令、执行记录及启用暂存后的候选改动。命令结束后，仍可通过同一个 Job 查询结果、审查和处理文件改动。
+- **执行实例（Attempt）**：Job 的一次具体执行，用于区分不同执行过程。一个 Attempt 可以运行包含多轮工具调用的 Agent 程序。
+- **运行记录包（Run Bundle）**：汇集任务与执行身份、退出状态、输出、实际控制生效的证据，以及启用暂存后的文件变化等信息，供审查、诊断和上层系统读取。
+
+一项工作以 Job 标识，具体运行以 Attempt 区分，执行信息通过 Run Bundle 汇集和查看。从受支持的完整执行检查点恢复时，Job 身份保持不变，并创建新的 Attempt；分叉探索则创建新的 Job，并保留来源关系。
+
+执行完成不等于接受文件改动，是否 Apply 由调用方审查后决定。
+
+<span id="job-storage"></span>
+<span id="_1"></span>
+<span id="_2"></span>
+<span id="_3"></span>
+<span id="finding-it-again-later"></span>
+<span id="jobs-and-storage"></span>
+<span id="retention-and-cleanup"></span>
+<span id="storage-location"></span>
+
+具体用法见[Job 用法与存储](../reference/jobs.md)，记录字段见[Run Bundle 格式](../reference/run-bundle.md)。
+
+<span id="interfaces"></span>
+
+以上概念描述原生 Job 工作流；独立容器和 daemon sandbox 使用各自的身份及接口，支持范围见[接入方式矩阵](../guides/infrastructure/integration.md)。
+
+## 状态与资源 {#state-resources}
+
+### 状态保存与分支 {#saved-state}
+
+- **状态（State）**：继续执行所需的文件内容，以及适用时的 CPU、内存和设备状态。
+- **检查点（Checkpoint）**：对指定范围状态的一致保存。工作区检查点保存文件变化及相关元数据；完整执行检查点还保存受支持配置下的机器状态。
+- **恢复（Restore）**：从检查点重建相应的文件或执行环境；能够继续到什么程度，取决于检查点保存的范围。
+- **分支（Branch）**：从同一保存状态建立独立的后续执行路径，使不同尝试的修改彼此隔离。
+
+同一检查点可以用于恢复，也可以作为多个独立分支的起点。检查点恢复不回退外部服务，具体语义见[状态保存与分支复用](resource-reuse.md)。
+
+### 暂停、卸载与继续执行 {#live-lifecycle}
+
+- **暂停（Pause）**：暂停原 VM 的 vCPU 执行，内存通常仍驻留。
+- **卸载（Offload）**：在满足暂停及设备访问协调条件后，将 RAM 同步到后备存储，并请求回收驻留页。
+- **继续执行（Resume）**：恢复原实例的执行，已卸载的内存页可以在后续访问时读回。
+
+这里的 Pause／Offload／Resume 管理同一个存活 VM，原 VMM 和可靠的内存恢复来源仍需保留；从检查点重建执行环境属于前述 Restore。原生 CLI 的 `suspend`／`resume` 使用检查点恢复流程，具体区别与接口支持范围见[沙箱生命周期管理](lifecycle.md)。
+
+### 镜像与内存资源 {#resource-storage}
+
+- **镜像（Image）**：准备执行环境使用的基础文件系统内容，包括系统文件、工具和依赖。
+- **共享基底（Shared base）**：多个实例可复用的不可变基础内容，后续写入保持私有。Lower 描述内容在文件视图中的角色，共享基底强调不可变内容的跨实例复用。
+- **驻留内存（Resident memory）**：当前实际占用的 Host 物理内存，与分配给 VM 的 guest RAM 容量不同。
+- **后备存储（Backing storage）**：保存内存等状态内容、供后续读回的存储来源；它本身不等于完整检查点。
+
+镜像与共享基底减少重复准备，按需加载、共享和压缩减少相应层次的资源占用。具体机制、适用条件与代价见[镜像与内存优化](resource-optimization.md)。

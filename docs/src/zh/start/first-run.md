@@ -1,92 +1,103 @@
-# 第一次运行
+<a id="_1"></a>
 
-这个示例不需要 Agent 账号或 API Key。一个脚本扮演"假 Agent"：改源码、删文件、写一个额外文件、试图读项目内的敏感路径、试图访问外网；随后你审查结果，只合入想要的改动。请先完成[安装](installation.md)，包括宿主机暂存所需的 FUSE/macFUSE。
+# 本地工作流：运行与审查 {#local-workflow}
+
+用一个演示脚本修改文件，再审查并选择性合入，体验完整的本地工作流。无需 Agent 账号或 API Key；请先完成[安装](installation.md)，包括宿主机暂存所需的 FUSE/macFUSE。
 
 ## 1. 准备演示项目
 
 ```bash
-mkdir -p pvisor-demo/project/src pvisor-demo/project/.ssh
+mkdir -p pvisor-demo/project/src
 cd pvisor-demo/project
 printf 'print("v1")\n' > src/app.py
 printf 'legacy\n' > src/legacy.txt
-printf 'FAKE-KEY\n' > .ssh/id_rsa
-git init -q && git add -A && git commit -qm init
+git init -q
+git add src
+git -c user.name='pVisor Demo' -c user.email='demo@example.invalid' -c commit.gpgsign=false commit -qm init
 ```
 
-`.ssh/id_rsa` 只是项目里的占位文件，用来演示暂存视图内的敏感路径被拒；本示例不读写你真实的 `~/.ssh`。
+演示目录应是新目录。Git 身份仅用于这次基线提交，不修改你的全局配置。
 
-## 2. 写一个"假 Agent"
+<a id="2-agent"></a>
+
+## 2. 编写演示脚本 {#demo-script}
+
+脚本会修改 `src/app.py`、删除 `src/legacy.txt`，并创建不准备合入的 `scratch.txt`：
 
 ```bash
 cat > ../agent.sh <<'SH'
 #!/usr/bin/env bash
-set -u
-printf 'print("patched")\n' >> src/app.py     # edit source
-rm -f src/legacy.txt                          # delete a file
-printf 'scratch\n' > scratch.txt              # extra change at the workspace root
-cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
-curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
+set -eu
+printf 'print("patched")\n' >> src/app.py
+rm src/legacy.txt
+printf 'scratch\n' > scratch.txt
 SH
 chmod +x ../agent.sh
 ```
 
-## 3. 让它在边界内全自动执行
+<a id="3"></a>
+
+## 3. 运行并暂存改动 {#run-and-stage}
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
-`--safe` 要求落实文件与网络隔离，并按预设拒绝 `.ssh`、`.gnupg` 与私钥文件等敏感路径；它不选择执行器，也不会静默回退到无隔离的 host 进程。`--overlaynet-deny-all` 独立安装强制网络边界。暂存目录放在项目外，每次运行使用新目录。
+`--safe` 要求文件与网络隔离，无法落实时拒绝启动；`--overlaynet-deny-all` 强制阻断外部网络访问。`--stage` 指定候选改动的存储位置，应放在项目外，每次运行使用新目录。
 
-## 4. 审查：改动与拦截都在记录里
+**预期结果：**脚本正常退出，三项改动留在暂存目录，原项目尚未变化。在当前终端检查：
 
-这次 Job 的存储就是暂存目录，用路径定位它：
+```bash
+cat src/app.py
+cat src/legacy.txt
+test ! -e scratch.txt && echo 'scratch.txt: absent'
+```
+
+应输出：
+
+```text
+print("v1")
+legacy
+scratch.txt: absent
+```
+
+<a id="4"></a>
+
+## 4. 审查候选改动 {#review-changes}
+
+用暂存路径定位这次 Job：
 
 ```bash
 pvisor status --review ../stage-001
 ```
 
-**File access observations** 列出到达 OverlayFS 的路径与结果：`src/app.py` 的写入、`src/legacy.txt` 的删除、`scratch.txt` 的写入，以及 `.ssh/id_rsa` 读取被拒（`denied=1`）。**Network access observations** 列出到达 OverlayNet 的目标与结果：`example.com` 被拒。
+**预期结果：**记录中包含 `src/app.py` 的修改、`src/legacy.txt` 的删除和 `scratch.txt` 的新增。核对退出码、实际生效的控制与警告，再决定接受哪些改动；运行结束不代表改动已合入。
 
-需要区分的是：普通 host 上的选择性代理是协作式的——只有经过代理的请求会被记录，未出现的目标不等于从未访问。强制网络边界由 `--overlaynet-deny-all`、容器离线模式或 VM 提供，见[网络控制](../guides/policies/network.md)。
+需要进一步验证访问限制时，按[文件策略](../guides/policies/files.md)和[网络控制](../guides/policies/network.md)配置。普通 host 选择性代理只记录经过代理的请求，记录中没有某个目标不等于它从未被访问；此演示使用 deny-all 强制边界。
 
 ## 5. 只合入你要的部分
 
 ```bash
 pvisor apply ../stage-001 --path src
 pvisor drop ../stage-001
-git status --short
+git diff -- src
 ```
 
-`apply --path src` 只把 `src` 下的改动写入项目，`drop` 丢弃剩余的 `scratch.txt`。若你在 Run 期间自己改了同一个文件，`apply` 会拒绝覆盖，而不会静默合并。
+**预期结果：**
 
-## 6. 换成你的命令
+| 文件 | 合入前 | 合入并丢弃剩余改动后 |
+| --- | --- | --- |
+| `src/app.py` | 只有 `print("v1")` | 新增一行 `print("patched")` |
+| `src/legacy.txt` | 仍然存在 | 已删除 |
+| `scratch.txt` | 项目中不存在，仅在 stage 中 | 项目中仍不存在，候选已丢弃 |
 
-```bash
-pvisor spawn --safe --stage ../agent-stage-001 -- codex
-pvisor status --review ../agent-stage-001
-```
+`apply --path src` 只接受 `src` 下的改动；`drop` 丢弃剩余候选，不会撤销已经接受的修改。`git diff -- src` 应显示源码新增行和文件删除。若你在运行期间修改了同一文件，`apply` 会拒绝覆盖；处理方式见[审查并应用改动](../guides/review-apply.md)。
 
-已安装的 Agent CLI 使用同一个入口。用 `--stage PATH` 时，后续命令请把该路径或命令输出的 Job ID（`run-*`）显式传进去；`last` 只在默认存储中解析，跨项目并行时不要依赖它。
+<a id="6"></a>
+<a id="7"></a>
 
-## 7. 换成真实任务之后
+## 下一步 {#next-steps}
 
-把演示替换成一个范围明确的真实任务：保留当前仓库基线，确认 Agent 已安装在所选执行环境中，并配置它需要的模型服务与凭据——pVisor 不替 Agent 选择 provider。以显式交付 OpenAI Key 的 Codex 为例，先在宿主环境设置 `OPENAI_API_KEY`：
+接入真实 Agent 时，先确认它已安装在所选环境中，再按 [Agent 接入](../guides/agents/index.md)配置模型服务与凭据，将演示命令替换为 Agent CLI。使用自定义 `--stage` 时，后续操作继续传入该路径或输出的 Job ID；`last` 只查询默认存储。
 
-```bash
-pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
-pvisor status --review ../agent-task-001
-pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
-```
-
-`--safe` 按直接可执行文件名匹配网络预设；增加 `--overlaynet-allow` 会替换预设列表，依赖下载或其他模型服务要连同模型 API 一起列出。HOME 状态写入在退出后丢弃，不要依赖这次运行保存登录状态。其他 Agent 的凭据与接入条件见[Agent 接入](../guides/agents/index.md)。
-
-Job 停止后检查退出码、实际控制、警告和改动；非零退出也可能留下候选。以下条件同时成立时，工作区 fork 才能从文件状态重新尝试：
-
-- 父 Job 是已停止、且启动策略可重建的 host Job；
-- 父子 stage 在同一文件系统上；
-- 在全部 apply/drop 清理暂存数据之前分叉。
-
-VM/container 或带 Gateway 路由的 Job 不支持此路径。冲突处理见[审查与应用](../guides/review-apply.md)。
-
-扩大任务范围前有两项约束。Linux host 的选择性代理仍是协作式，需要强制选择性出口时准备已安装 Agent 的 VM，凭据交付方式见[凭据与环境变量](../guides/policies/credentials.md)。增加并发时为每个任务准备独立 worktree 和 stage，用显式路径定位结果，逐份审查，不并发 apply 到同一目标树；[并行工作区流程](../guides/parallel-agents.md#batch)先用两个离线任务验证记录和合入，再替换成真实 Agent。
+需要 Linux 镜像或独立内核时，先[选择执行环境](../guides/executors/index.md)；需要从已有文件状态重试或并行探索时，使用[检查点与分叉](../guides/fork-checkpoint.md)及[并行工作区流程](../guides/parallel-agents.md#batch)。

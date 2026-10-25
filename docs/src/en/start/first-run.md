@@ -1,92 +1,103 @@
-# Your first run
+<a id="your-first-run"></a>
 
-This demo needs no agent account or API key. A script plays a "fake agent": it edits source, deletes a file, adds another file, attempts to read a sensitive project path and reach the internet. You then review the result and apply only the changes you want. Complete [installation](installation.md) first, including the FUSE/macFUSE setup that staged host execution needs.
+# Local workflow: run and review {#local-workflow}
+
+Run a demo script that changes files, then review and selectively apply the result. No agent account or API key is needed. Complete [installation](installation.md) first, including the FUSE/macFUSE setup required for staged host execution.
 
 ## 1. Prepare a project
 
 ```bash
-mkdir -p pvisor-demo/project/src pvisor-demo/project/.ssh
+mkdir -p pvisor-demo/project/src
 cd pvisor-demo/project
 printf 'print("v1")\n' > src/app.py
 printf 'legacy\n' > src/legacy.txt
-printf 'FAKE-KEY\n' > .ssh/id_rsa
-git init -q && git add -A && git commit -qm init
+git init -q
+git add src
+git -c user.name='pVisor Demo' -c user.email='demo@example.invalid' -c commit.gpgsign=false commit -qm init
 ```
 
-`.ssh/id_rsa` is a fake project fixture. This demo does not read or write your real `~/.ssh`.
+Use a new demo directory. The Git identity applies only to this baseline commit and does not change your global configuration.
 
-## 2. Write the fake agent
+<a id="2-write-the-fake-agent"></a>
+
+## 2. Write the demo script {#demo-script}
+
+The script modifies `src/app.py`, deletes `src/legacy.txt`, and creates `scratch.txt`, which you will leave out of the accepted changes:
 
 ```bash
 cat > ../agent.sh <<'SH'
 #!/usr/bin/env bash
-set -u
-printf 'print("patched")\n' >> src/app.py     # edit source
-rm -f src/legacy.txt                          # delete a file
-printf 'scratch\n' > scratch.txt              # extra change at the workspace root
-cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
-curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
+set -eu
+printf 'print("patched")\n' >> src/app.py
+rm src/legacy.txt
+printf 'scratch\n' > scratch.txt
 SH
 chmod +x ../agent.sh
 ```
 
-## 3. Run unattended within the boundary
+<a id="3-run-unattended-within-the-boundary"></a>
+
+## 3. Run and stage changes {#run-and-stage}
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
-`--safe` requires filesystem and network isolation and rejects `.ssh`, `.gnupg`, and common private-key paths through its preset. It does not choose an executor or silently fall back to an unisolated host process. `--overlaynet-deny-all` independently installs a mandatory network boundary. Keep the stage outside the project and use a fresh directory for each run.
+`--safe` requires file and network isolation and refuses to start if it cannot enforce them. `--overlaynet-deny-all` enforces a boundary blocking external network access. `--stage` sets the candidate-change storage location; keep it outside the project and use a fresh directory for each run.
 
-## 4. Review changes and blocked accesses
+**Expected result:** the script exits successfully, with all three changes staged and the original project unchanged. Check from your current terminal:
 
-This Job is stored in the stage directory; select it by path:
+```bash
+cat src/app.py
+cat src/legacy.txt
+test ! -e scratch.txt && echo 'scratch.txt: absent'
+```
+
+Expected output:
+
+```text
+print("v1")
+legacy
+scratch.txt: absent
+```
+
+<a id="4-review-changes-and-blocked-accesses"></a>
+
+## 4. Review candidate changes {#review-changes}
+
+Select this Job by its stage path:
 
 ```bash
 pvisor status --review ../stage-001
 ```
 
-**File access observations** list operations reaching OverlayFS: writes to `src/app.py` and `scratch.txt`, deletion of `src/legacy.txt`, and denial of the `.ssh/id_rsa` read (`denied=1`). **Network access observations** list destinations reaching OverlayNet, including the rejected `example.com` request.
+**Expected result:** the record includes a modification to `src/app.py`, deletion of `src/legacy.txt`, and addition of `scratch.txt`. Check the exit code, installed controls, and warnings before deciding which changes to accept; finishing execution does not apply changes.
 
-Selective proxies on ordinary host execution are cooperative: only requests through the proxy are recorded. An absent destination does not prove it was never accessed. Mandatory boundaries come from deny-all, container offline mode, or VM networking; see [network control](../guides/policies/network.md).
+To test access restrictions further, configure [file policies](../guides/policies/files.md) and [network control](../guides/policies/network.md). An ordinary host's selective proxy only records requests routed through it; a missing destination does not prove it was never accessed. This demo uses an enforced deny-all boundary.
 
 ## 5. Apply only what you want
 
 ```bash
 pvisor apply ../stage-001 --path src
 pvisor drop ../stage-001
-git status --short
+git diff -- src
 ```
 
-`apply --path src` writes only changes under `src` to the project. `drop` discards the remaining `scratch.txt`. If you changed the same file during the run, `apply` refuses to overwrite it rather than silently merging.
+**Expected result:**
 
-## 6. Use your own command
+| File | Before applying | After applying and dropping remaining changes |
+| --- | --- | --- |
+| `src/app.py` | Contains only `print("v1")` | Adds a line with `print("patched")` |
+| `src/legacy.txt` | Still exists | Deleted |
+| `scratch.txt` | Absent from the project; exists only in the stage | Still absent from the project; candidate discarded |
 
-```bash
-pvisor spawn --safe --stage ../agent-stage-001 -- codex
-pvisor status --review ../agent-stage-001
-```
+`apply --path src` accepts only changes under `src`; `drop` discards remaining candidates without undoing accepted changes. `git diff -- src` should show the added source line and deleted file. If you edited the same file during execution, `apply` refuses to overwrite it; see [review and apply](../guides/review-apply.md) for conflict handling.
 
-Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that path or the printed Job ID (`run-*`) to later commands. `last` searches default storage only; do not rely on it when running projects in parallel.
+<a id="6-use-your-own-command"></a>
+<a id="7-after-switching-to-a-real-task"></a>
 
-## 7. After switching to a real task
+## Next steps {#next-steps}
 
-Replace the demo with a narrowly scoped real task: retain the current repository baseline, confirm the agent is installed in the selected execution environment, and configure its model service and credentials—pVisor does not select the agent's provider. For an installed Codex with an explicitly delivered OpenAI key, set `OPENAI_API_KEY` in the host environment first:
+For a real agent, first confirm it is installed in the selected environment. Configure its model service and credentials using [Agent integration](../guides/agents/index.md), then replace the demo command with the agent CLI. With a custom `--stage`, pass that path or the printed Job ID to later commands; `last` only searches default storage.
 
-```bash
-pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
-pvisor status --review ../agent-task-001
-pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
-```
-
-`--safe` matches network presets by the direct executable filename. Adding `--overlaynet-allow` replaces the preset list, so list model APIs alongside dependency downloads or other model services. HOME writes are discarded after exit; do not depend on this run to persist login state. See [Agent integration](../guides/agents/index.md) for other agents' credentials and prerequisites.
-
-After the Job stops, check its exit code, installed controls, warnings, and changes; a nonzero exit can still leave candidates. Workspace fork can retry from file state when all of these hold:
-
-- the parent Job is a stopped host Job with reconstructable launch policy;
-- parent and child stages share a filesystem;
-- you fork before a full apply or drop cleans up staging data.
-
-VM/container Jobs and Jobs with Gateway routes do not support this path. See [review and apply](../guides/review-apply.md) for conflict handling.
-
-Two constraints apply before expanding the task scope. Selective proxies on the Linux host remain cooperative, so prepare a VM with the agent installed when you need mandatory selective egress ([credentials and environment](../guides/policies/credentials.md)). When adding concurrency, give each task a separate worktree and stage, select results by explicit paths, review each separately, and never apply concurrently into the same target tree; the [parallel workspace workflow](../guides/parallel-agents.md#batch) verifies records and merging with two offline tasks before you substitute real agents.
+For a Linux image or independent kernel, [choose an executor](../guides/executors/index.md). To retry from existing file state or explore in parallel, use [checkpoints and forks](../guides/fork-checkpoint.md) and the [parallel workspace workflow](../guides/parallel-agents.md#batch).

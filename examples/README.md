@@ -28,3 +28,9 @@ OverlayFS 示例还需要 macFUSE 或 FUSE3。
 
 - [Reproducible examples](../docs/src/zh/community/examples.md)
 - [pVisor get started](../docs/src/en/start/first-run.md)
+
+## VM 任务快速开始
+
+[07-vm-task](pvisor/07-vm-task) 提供 Host 调用方、VM 任务和输入文件，可直接运行，
+自动准备任务镜像并收集执行记录与结果。需要安装 pVisor、Linux/KVM 及节点权限；
+不需要源码编译。独立运行，不加入 `mise run examples` 场景集合。

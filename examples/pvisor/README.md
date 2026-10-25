@@ -41,3 +41,9 @@ mise run examples -- 03-network-isolation
 
 `05-zcode-cli` 需要额外安装 ZCode CLI 和 Node.js，默认批量运行仍只包含 01–04。配置方式见该示例的 README。
 `06-tui-interception` 需要交互式终端，需单独运行；`mise run examples -- 06-tui-interception` 可无 TUI 回归同一拦截路径。
+
+## VM 任务快速开始
+
+[07-vm-task](07-vm-task) 提供 Host 调用方、VM 任务和输入文件，可直接运行，
+自动准备任务镜像并收集执行记录与结果。需要安装 pVisor、Linux/KVM 及节点权限；
+不需要源码编译。独立运行，不加入 `mise run examples` 场景集合。

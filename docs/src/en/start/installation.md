@@ -51,6 +51,8 @@ For installation without a package manager, open [GitHub Releases](https://githu
 
 ## 2. Check platform prerequisites
 
+For local workflows, follow the FUSE setup below. Execution infrastructure uses Linux/KVM; prepare its node using [VM and OCI environments](#vm-and-oci).
+
 Wheel installation supports macOS and Linux and requires Python 3.10 or newer. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
 
 ```bash
@@ -58,6 +60,18 @@ brew install --cask macfuse
 ```
 
 macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This path loads no kernel extension and needs neither Recovery mode nor reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
+
+## Choose a quick start {#verify-installation}
+
+```bash
+pvisor --version
+```
+
+You should see the pVisor version. For a personal workspace, start with [Local workflow: run and review](first-run.md). For evaluator or scheduler integration, use [Execution infrastructure: run your first task](infrastructure.md) to verify server-side task execution and result collection.
+
+<a id="3-install-from-source-when-needed"></a>
+
+<a id="other-installation-methods"></a>
 
 ## 3. Nightly and source builds
 
@@ -88,7 +102,9 @@ Linux x86_64 and macOS ARM64 wheels both include the separate `pvisor-daemon` ex
 
 Prepare a trusted base with `prepare-image`; new templates default to the Rust guest engine and shared compressed image pool. The pinned SDKs' core lifecycle, command and file flows have native validation; full SDK conformance and production density remain unestablished. See the [daemon guide](../guides/daemon/index.md) for deployment, protocol scope and evidence. Stage/apply and checkpoint APIs remain on the native Job path; external schedulers handle cross-node orchestration.
 
-## 4. Enable VM or OCI execution when needed
+<a id="4-enable-vm-or-oci-execution-when-needed"></a>
+
+## 4. Enable VM or OCI execution when needed {#vm-and-oci}
 
 The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:
 
@@ -98,4 +114,10 @@ pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 
 Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS does not require a C cross compiler. See [development](../community/development.md) for build prerequisites.
 
-Once the environment is ready, follow [your first run](first-run.md) through staging, review and selective apply. See [executor boundaries](../security/executor-boundaries.md) to check which file and network controls were actually installed.
+Once the environment is ready, follow [Local workflow: run and review](first-run.md) through staging, review and selective apply. See [executor boundaries](../security/executor-boundaries.md) to check which file and network controls were actually installed.
+
+The execution infrastructure quick start requires a **Linux x86_64** node with:
+
+- Read/write access to `/dev/kvm` and permission to create user namespaces. For `setgroups` or `uid_map` errors, ask the administrator to check user namespace and AppArmor policies. KVM permissions do not replace these requirements; AppArmor rules must match the actual CLI path.
+- The Python 3.10+ environment used to install pVisor on the Host. The example image supplies Python and task dependencies inside the VM; it does not inherit the Host virtual environment.
+- Access to Docker Hub on first use and sufficient disk space to cache the image. No Docker Daemon is required. Offline nodes can use a prepared image filesystem; see the [VM executor](../guides/executors/vm.md#prepare-a-rootfs).

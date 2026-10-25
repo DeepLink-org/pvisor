@@ -200,19 +200,48 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 
 ## Information architecture
 
-Value before mechanism, mechanism before implementation. Keep Home as the first
-top-level tab, followed by seven sections: Local workflows → Execution infrastructure
-→ Foundations and reference → Benchmarks → Design and research → Lab notes → Contributing
-(首页 → 本地工作流 → 执行基础设施 → 基础与参考 → 基准测试 → 设计与研究 → 实验记录 → 参与开发).
+Value before mechanism, mechanism before implementation. Keep Home first,
+followed by eight sections: Quick start → Understanding pVisor → Local workflows → Execution
+infrastructure → Reference → Benchmarks → Design and research → Contributing
+(首页 → 快速开始 → 了解 pVisor → 本地工作流 → 执行基础设施 → 参考手册 → 基准测试 → 设计与研究 → 参与开发).
+Keep section headings separate from article links: leave `navigation.indexes`
+disabled so index articles remain explicit child entries. Keep `navigation.sections`
+disabled and use native expandable groups with matching peer typography; child
+articles are distinguished by indentation.
+Quick start owns Installation, Local workflow: run and review, Execution
+infrastructure: run your first task, and Choose an executor, in that order.
+Installation covers shared prerequisites. The local path demonstrates staging,
+review, and selective apply. The infrastructure path uses a Linux/KVM server and
+the checked-in `examples/pvisor/07-vm-task` caller that submits a VM task and
+collects its result and identity. The quick start runs that example directly; do
+not duplicate its Python source or require readers to create scripts. Installation
+owns Host prerequisites; the example image supplies guest dependencies.
+Keep the verified live pause/offload/resume walkthrough at `concepts/lifecycle.md`;
+retain old quick-start anchors as links to the moved example. Keep onboarding
+separate from checkpoint restoration and performance claims, and record the
+version and platform actually verified. Keep optional setup and detailed
+policies in their owning guides, linked from the onboarding pages.
+Understanding pVisor opens with Introduction and Core concepts, followed by a
+Core capabilities group with four articles: file-level oversight and isolation,
+sandbox lifecycle management, state preservation and branch reuse, and image
+and memory optimization. Security/support scope follows the group. Core concepts
+explains the Agent/Host/environment, file/network, task/record and state/resource
+relationships; Job commands, selectors and storage live at `reference/jobs.md`.
+Keep existing paths and anchors under `why/`, `concepts/` and `security/`.
+`concepts/resource-reuse.md` owns state semantics; resource mechanisms live at
+`concepts/resource-optimization.md`. Distinguish workspace checkpoints, full
+execution checkpoints, and same-instance live offload.
 The homepage gives equal entry points to local review and agent execution
-infrastructure. Local workflows owns preparation, review and accepting file
-results; Execution infrastructure owns inference/evaluation/rollout integration
-and links to the current interface matrix. Foundations and reference shares
-the product introduction, concepts, executors, policies, reference and security.
-Keep existing articles at their current paths: `why/index.md` is the product
-introduction, `guides/index.md` is the local overview, and the infrastructure
-overview and interface matrix live under `guides/infrastructure/`. This first
-stage reorganizes entry points without migrating the topic articles or cases.
+infrastructure. Local workflows owns Agent integration, access and credential
+configuration, review and accepting file results. Execution infrastructure owns
+inference/evaluation/rollout integration; trajectory capture and replay form a
+separate group from RL rollouts, with links from both scenario overviews.
+Reference owns executor details, policy field definitions, command/format references and
+detailed security contracts. Design and research owns implementation explanations,
+experimental features and the Lab notes group; moving navigation does not move
+articles or change their URLs. Concept pages explain supported mechanisms and
+link to owning contracts; they do not promote experimental versions to default
+capabilities or duplicate configuration matrices.
 The homepage remains accessible through its own tab and the site logo. Preserve
 the separation between tutorials, guides, references and explanations.
 Within each tab, keep the sidebar to two levels: topic group → article. Flatten
@@ -220,10 +249,10 @@ subgroups into their parent group; do not add a third sidebar level.
 
 The canonical Chinese documentation uses these sections:
 
-- `why/`: product scope, the two workflows, independent supervision and scale axes, and fit checks with comparisons.
+- `why/`: product definition, Agent-native positioning, system role and scenario entry points.
 - `start/`: installation and the first reproducible Job, ending with where to go next.
 - `guides/`: the local workflow overview and task guides; `infrastructure/` owns the platform overview and integration matrix, with shared policies and executors linked from both routes.
-- `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
+- `concepts/`: the user mental model — jobs, file oversight, lifecycle, state reuse, resources and evidence.
 - `benchmarks/`: reproducible measurements and dated comparisons.
 - `security/`: what is protected, what is not, and how to report issues.
 - `reference/`: CLI, configuration, schemas and platform support matrices.
@@ -333,7 +362,7 @@ matter or navigation label. Removing `status: todo` does not complete a missing
 field reference, schema, experiment, or policy decision. Keep outstanding items
 explicit and attach the implementation or verification that completes each one.
 Preserve page paths and bilingual parity. Keep both locale navigation trees in
-the Home-plus-seven-section order defined above.
+the Home-plus-eight-section order defined above.
 
 ### Writing style
 
