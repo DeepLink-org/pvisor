@@ -32,6 +32,10 @@ pub enum PlanError {
     UnsupportedNamespaceType(String),
     #[error("unsupported mount type {0} at {1}")]
     UnsupportedMountType(String, String),
+    /// A host memory/swap request has no valid cgroup-v2 conversion; no task
+    /// resources have been created when planning returns this error.
+    #[error("invalid linux.resources.memory constraint: {0}")]
+    InvalidMemoryConstraint(&'static str),
 }
 
 /// One upstream-contract exception: a container whose environment carries
@@ -68,25 +72,33 @@ fn is_execd_installer(spec: &Spec) -> bool {
     name && image_confirms
 }
 
-/// Resolve the bundle's `io.pvisor.executor` tier, rejecting values outside
-/// the accepted vocabulary (see [`crate::spec::ExecutorTier`]).
-fn executor_is_vm(spec: &Spec) -> Result<bool, PlanError> {
-    if is_egress_sidecar(spec) {
-        return Ok(false);
-    }
-    crate::spec::ExecutorTier::from_annotation(crate::spec::pvisor_annotation(spec, "executor"))
-        .map(crate::spec::ExecutorTier::is_vm)
-        .map_err(PlanError::InvalidExecutor)
+/// Resolve routing before choosing which constraints can be honored. A marker
+/// never grants a host task permission to discard unsupported restrictions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExecutionDisposition {
+    Host,
+    Vm,
+    Synthetic,
 }
 
-/// True when host-kernel constraints (LSM labels, seccomp, device nodes)
-/// are subsumed rather than installed: VM tasks cross the machine boundary,
-/// and the privileged OpenSandbox sidecar and execd-installer are pod
-/// infrastructure whose host constraints the cluster already admitted —
-/// validating them strictly would reject `privileged: true` materialization
-/// (`linux.devices`, apparmor) that the container tier does not model.
-fn host_constraints_subsumed(spec: &Spec) -> Result<bool, PlanError> {
-    Ok(executor_is_vm(spec)? || is_egress_sidecar(spec) || is_execd_installer(spec))
+impl ExecutionDisposition {
+    fn resolve(spec: &Spec) -> Result<Self, PlanError> {
+        let tier = crate::spec::ExecutorTier::from_annotation(crate::spec::pvisor_annotation(
+            spec, "executor",
+        ))
+        .map_err(PlanError::InvalidExecutor)?;
+        Ok(if is_egress_sidecar(spec) || !tier.is_vm() {
+            Self::Host
+        } else if is_execd_installer(spec) {
+            Self::Synthetic
+        } else {
+            Self::Vm
+        })
+    }
+
+    fn has_guest_contract(self) -> bool {
+        matches!(self, Self::Vm | Self::Synthetic)
+    }
 }
 
 /// Namespace kinds the init child knows how to create or join.
@@ -235,11 +247,9 @@ pub struct DeviceRulePlan {
     pub access: String,
 }
 
-/// The standard devices every runc container may use. CRI specs carry only
-/// the catch-all deny rule; runc prepends these allow rules before the
-/// spec's list, and the shim does the same when attaching the device
-/// filter — otherwise /dev/null, /dev/urandom and friends are denied and
-/// workload supervisors (OpenSandbox's egress among them) fail at startup.
+/// Standard device grants appended after the OCI rules, as in runc. These
+/// runtime grants survive an OCI deny-all baseline; OCI device rules cannot
+/// revoke them. Custom devices retain the caller's ordered permission updates.
 pub const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
     ("c", 1, 3), // /dev/null
     ("c", 1, 5), // /dev/zero
@@ -251,21 +261,22 @@ pub const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
     ("c", 5, 2), // /dev/ptmx
 ];
 
-/// Prepend the runc default allow rules to the spec's device rules. The
-/// spec list (including its catch-all deny) keeps first-match-wins
-/// semantics for everything else.
+/// Copy the ordered OCI rules, then append the runtime's standard device
+/// grants. This compatibility policy deliberately prevents OCI rules from
+/// disabling the standard devices; it adds no grant for other devices.
 pub fn with_default_devices(rules: &[DeviceRulePlan]) -> Vec<DeviceRulePlan> {
-    let mut out: Vec<DeviceRulePlan> = RUNC_DEFAULT_DEVICES
-        .iter()
-        .map(|(typ, major, minor)| DeviceRulePlan {
-            allow: true,
-            typ: Some(typ.to_string()),
-            major: Some(*major),
-            minor: Some(*minor),
-            access: "rwm".to_string(),
-        })
-        .collect();
-    out.extend_from_slice(rules);
+    let mut out = rules.to_vec();
+    out.extend(
+        RUNC_DEFAULT_DEVICES
+            .iter()
+            .map(|(typ, major, minor)| DeviceRulePlan {
+                allow: true,
+                typ: Some(typ.to_string()),
+                major: Some(*major),
+                minor: Some(*minor),
+                access: "rwm".to_string(),
+            }),
+    );
     out
 }
 
@@ -447,8 +458,46 @@ fn render_limit(limit: Option<i64>) -> Option<String> {
     }
 }
 
-fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
-    let linux = spec.linux().as_ref()?;
+/// OCI swap is a combined memory+swap total; v2 controls swap separately.
+/// Zero/absence means unset, -1 means unlimited. Validate before rendering so
+/// an invalid total cannot silently become an extra swap allowance.
+fn memory_swap_max(limit: Option<i64>, swap: Option<i64>) -> Result<Option<String>, PlanError> {
+    if limit.is_some_and(|bytes| bytes < -1) {
+        return Err(PlanError::InvalidMemoryConstraint(
+            "limit must be -1, zero, or positive",
+        ));
+    }
+    let bytes = match swap {
+        None | Some(0) if limit == Some(-1) => return Ok(Some("max".into())),
+        None | Some(0) => return Ok(None),
+        Some(-1) => return Ok(Some("max".into())),
+        Some(total) if total > 0 => match limit {
+            Some(-1) => total,
+            Some(memory) if memory > 0 && total >= memory => total - memory,
+            Some(memory) if memory > 0 => {
+                return Err(PlanError::InvalidMemoryConstraint(
+                    "swap total must be at least limit",
+                ));
+            }
+            _ => {
+                return Err(PlanError::InvalidMemoryConstraint(
+                    "positive swap total requires a memory limit",
+                ));
+            }
+        },
+        _ => {
+            return Err(PlanError::InvalidMemoryConstraint(
+                "swap must be -1, zero, or positive",
+            ));
+        }
+    };
+    Ok(Some(bytes.to_string()))
+}
+
+fn plan_cgroup(spec: &Spec) -> Result<Option<CgroupPlan>, PlanError> {
+    let Some(linux) = spec.linux().as_ref() else {
+        return Ok(None);
+    };
     let resources = linux.resources().as_ref();
     let path = linux
         .cgroups_path()
@@ -456,7 +505,7 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
         .map(|p| p.to_string_lossy().to_string())
         .map(|p| normalize_cgroup_path(&p));
     if resources.is_none() && path.is_none() {
-        return None;
+        return Ok(None);
     }
     let mut plan = CgroupPlan {
         path,
@@ -472,18 +521,8 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
             plan.pids_max = render_limit(Some(pids.limit()));
         }
         if let Some(memory) = resources.memory().as_ref() {
-            plan.memory_max = render_limit(memory.limit());
-            // runc's cgroup v2 mapping: the swap budget is the excess of the
-            // v1-style total over the memory limit (kubelet with swap off
-            // sends swap == limit, which correctly renders 0).
-            let swap = memory.swap();
-            let limit = memory.limit().filter(|limit| *limit > 0);
-            if let Some(swap) = swap.filter(|swap| *swap > 0) {
-                let excess = limit
-                    .filter(|limit| swap > *limit)
-                    .map(|limit| swap - limit);
-                plan.memory_swap_max = Some(excess.unwrap_or(swap).to_string());
-            }
+            plan.memory_swap_max = memory_swap_max(memory.limit(), memory.swap())?;
+            plan.memory_max = render_limit(memory.limit().filter(|bytes| *bytes != 0));
         }
         if let Some(unified) = resources.unified().as_ref() {
             for (key, value) in unified {
@@ -511,7 +550,7 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
             }
         }
     }
-    Some(plan)
+    Ok(Some(plan))
 }
 
 fn plan_namespaces(spec: &Spec) -> Result<Vec<NamespacePlan>, PlanError> {
@@ -1178,7 +1217,10 @@ fn read_varint(bytes: &[u8], cursor: usize) -> Option<(u64, usize)> {
     None
 }
 
-fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
+fn validate_spec_constraints(
+    spec: &Spec,
+    disposition: ExecutionDisposition,
+) -> Result<(), PlanError> {
     let value = serde_json::to_value(spec)?;
     reject_other_fields(
         &value,
@@ -1193,7 +1235,7 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
             "annotations",
         ],
     )?;
-    let vm = host_constraints_subsumed(spec)?;
+    let vm = disposition.has_guest_contract();
     let linux = &value["linux"];
     if vm {
         // Guest boot does not install OCI mounts or security constraints;
@@ -1317,17 +1359,13 @@ pub fn build_plan(
     rootfs_mounts: Vec<MountPlan>,
     io: IoPlan,
 ) -> Result<ContainerPlan, PlanError> {
-    validate_spec_constraints(spec)?;
+    let disposition = ExecutionDisposition::resolve(spec)?;
+    validate_spec_constraints(spec, disposition)?;
     let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
-    // The plan records the EXECUTION tier; process validation widens per
-    // host_constraints_subsumed (the egress sidecar runs on the container
-    // tier but validates with the subsumed allowlist — `privileged: true`
-    // materializes host LSM labels it cannot install).
-    let execution_vm = executor_is_vm(spec)?;
-    if execution_vm {
+    if disposition.has_guest_contract() {
         validate_vm_process(process, false)?;
     }
-    let process_plan = process_plan_from(process, host_constraints_subsumed(spec)?)?;
+    let process_plan = process_plan_from(process, disposition.has_guest_contract())?;
 
     let warnings = Vec::new();
     let namespaces = plan_namespaces(spec)?;
@@ -1347,6 +1385,36 @@ pub fn build_plan(
             .unwrap_or_default()
     };
     let linux = spec.linux().as_ref();
+    let cgroup = if disposition == ExecutionDisposition::Host {
+        plan_cgroup(spec)?
+    } else {
+        None
+    };
+    let devices: Vec<DeviceRulePlan> = linux
+        .and_then(|l| l.resources().as_ref())
+        .and_then(|r| r.devices().clone())
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|d| DeviceRulePlan {
+                    allow: d.allow(),
+                    typ: match d.typ() {
+                        Some(oci_spec::runtime::LinuxDeviceType::C) => Some("c".to_string()),
+                        Some(oci_spec::runtime::LinuxDeviceType::B) => Some("b".to_string()),
+                        _ => None,
+                    },
+                    major: d.major(),
+                    minor: d.minor(),
+                    access: d.access().clone().unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if disposition == ExecutionDisposition::Host && !devices.is_empty() {
+        crate::device_policy::build_device_program(&with_default_devices(&devices)).map_err(
+            |error| PlanError::UnsupportedConstraint(format!("linux.resources.devices: {error}")),
+        )?;
+    }
     let uid_mappings = map_mappings(linux.and_then(|l| l.uid_mappings().as_ref()));
     let gid_mappings = map_mappings(linux.and_then(|l| l.gid_mappings().as_ref()));
 
@@ -1387,14 +1455,14 @@ pub fn build_plan(
     // Two upstream-contract reroutings strip the executor annotation from
     // the stored plan so wants_vm()-based routing agrees with the
     // validation tier:
-    // - the egress sidecar (see executor_is_vm) would police an empty
+    // - the egress sidecar would police an empty
     //   namespace as a microVM;
     // - the execd-installer of a VM pod becomes a synthetic success that
     //   executes nothing. It keeps the inject annotation (admission still
     //   validates the payloads) but the workload's Create delivers them
     //   through the pod volume's host source — upstream's emptyDir mounts
     //   shadow rootfs staging in VM guests.
-    let synthetic = is_execd_installer(spec) && execution_vm;
+    let synthetic = disposition == ExecutionDisposition::Synthetic;
     let mut annotations = annotations;
     if is_egress_sidecar(spec) || synthetic {
         annotations.remove(format!("{ANNOTATION_PREFIX}executor").as_str());
@@ -1416,27 +1484,8 @@ pub fn build_plan(
             .as_ref()
             .and_then(|root| root.readonly())
             .unwrap_or(false),
-        cgroup: plan_cgroup(spec),
-        devices: linux
-            .and_then(|l| l.resources().as_ref())
-            .and_then(|r| r.devices().clone())
-            .map(|entries| {
-                entries
-                    .iter()
-                    .map(|d| DeviceRulePlan {
-                        allow: d.allow(),
-                        typ: match d.typ() {
-                            Some(oci_spec::runtime::LinuxDeviceType::C) => Some("c".to_string()),
-                            Some(oci_spec::runtime::LinuxDeviceType::B) => Some("b".to_string()),
-                            _ => None,
-                        },
-                        major: d.major(),
-                        minor: d.minor(),
-                        access: d.access().clone().unwrap_or_default(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        cgroup,
+        devices,
         masked_paths: linux
             .and_then(|l| l.masked_paths().clone())
             .unwrap_or_default(),
@@ -1654,9 +1703,9 @@ mod tests {
     }
 
     #[test]
-    fn default_devices_precede_the_cri_catch_all_deny() {
-        // CRI sends a lone catch-all deny; the runtime must allow the
-        // standard devices before it, exactly like runc.
+    fn default_device_grants_follow_the_ordered_oci_rules() {
+        // Runtime grants follow the caller's ordered OCI policy, including
+        // CRI's deny-all baseline. Behavioral coverage is in device_policy.
         let rules = with_default_devices(&[DeviceRulePlan {
             allow: false,
             typ: None,
@@ -1665,12 +1714,10 @@ mod tests {
             access: "rwm".to_string(),
         }]);
         assert_eq!(rules.len(), RUNC_DEFAULT_DEVICES.len() + 1);
-        assert!(rules.iter().take(RUNC_DEFAULT_DEVICES.len()).all(|rule| {
+        assert!(rules.iter().skip(1).all(|rule| {
             rule.allow && rule.typ.as_deref() == Some("c") && rule.access == "rwm"
         }));
-        assert!(!rules.last().unwrap().allow, "spec rules keep their place");
-        // A rule the spec explicitly denies still matches before nothing:
-        // defaults first, spec verdicts after — first match wins.
+        assert!(!rules.first().unwrap().allow, "spec rules keep their place");
         let explicit = with_default_devices(&[DeviceRulePlan {
             allow: true,
             typ: Some("b".into()),
@@ -1679,7 +1726,7 @@ mod tests {
             access: "r".into(),
         }]);
         assert_eq!(explicit.len(), RUNC_DEFAULT_DEVICES.len() + 1);
-        assert_eq!(explicit.last().unwrap().major, Some(8));
+        assert_eq!(explicit.first().unwrap().major, Some(8));
     }
 
     #[test]

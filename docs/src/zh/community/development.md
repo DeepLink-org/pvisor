@@ -196,8 +196,8 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 
 ## 打包与命名
 
-Python 包、安装后的 CLI 和运行时 Rust crate 使用 `pvisor`；应用 crate 为 `pvisor-cli`，伴随 crate 使用 `pvisor-*`，
-环境变量使用 `PVISOR_*`。wheel 文件名形如 `pvisor-<version>-py3-none-<platform>.whl`。
+PyPI 分发名使用 `pvisor-sandbox`，Python 导入包、安装后的 CLI 和运行时 Rust crate 使用 `pvisor`；应用 crate 为 `pvisor-cli`，伴随 crate 使用 `pvisor-*`，
+环境变量使用 `PVISOR_*`。wheel 文件名形如 `pvisor_sandbox-<version>-py3-none-<platform>.whl`。
 
 ## 构建环境
 

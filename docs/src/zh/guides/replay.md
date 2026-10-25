@@ -11,7 +11,7 @@
 `pvisor replay` 通常直接运行在用户已经创建的新沙箱中，因此 pVisor 必须安装在该沙箱内，或者以只读方式挂载到沙箱的 `PATH`。沙箱内有 Python 3.10 或更高版本时，直接安装发布版：
 
 ~~~bash
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 
 command -v pvisor
 pvisor --version

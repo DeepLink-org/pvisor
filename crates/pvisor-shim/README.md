@@ -92,6 +92,15 @@ containerd ──ttrpc── PvisorTask (Task service)
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
 
+Task readiness transfers an owned pidfd over a private socket before reporting
+success. Start retains that handle until Delete; init/exec and sandbox signals
+use it instead of reconstructing ownership from a saved PID. Stopped-task kill
+is idempotent. Host task processes establish their own session before readiness,
+so a process-group request cannot drift into another task's group. Group signals
+require Linux 6.9 pidfd group support; older kernels return an explicit unsupported
+error without falling back to numeric process-group signals. VM exec still uses
+its guest-agent connection, never a guest PID as a host signal target.
+
 ## Executor tiers
 
 The `io.pvisor.executor` annotation names the isolation tier a task gets.
@@ -327,6 +336,14 @@ regression, not a mystery.
   sandbox creation — buys nothing. Container-tier pods run it normally:
   there the emptyDir copy is the execd delivery mechanism.
 
+The executor annotation is validated before either exception is resolved.
+Admission uses the resulting host, VM or synthetic disposition: egress
+sidecars and container-tier installers obey the same host constraint checks
+as ordinary host tasks. Their markers do not waive seccomp, AppArmor or
+SELinux restrictions. Specs requesting those unsupported host restrictions
+now fail Create; only VM tasks and VM-only synthetic installers retain the
+documented guest contract for host fields.
+
 ## Pod-scoped /etc files under the sandbox API
 
 With `sandboxer = "shim"`, containerd's CRI generates container specs with
@@ -359,8 +376,8 @@ per-container VMs use `io.pvisor.executor=vm`.
   (rootful containerd). Rootless exec is not supported yet.
 - Pod-level sandboxes share host namespaces as described above; per-pod VMs
   are unsupported.
-- Seccomp profiles, nonempty OCI hooks, maskedPaths/readonlyPaths, device
-  nodes/device cgroups, sysctls, SELinux mount labels, rootfs propagation,
+- Seccomp profiles, nonempty OCI hooks, device
+  nodes, SELinux mount labels, rootfs propagation,
   time namespaces/offsets and other unimplemented typed Linux fields are
   rejected. Empty optional collections request no restriction and are accepted.
 - Nonempty AppArmor/SELinux process labels, user names, scheduler, I/O
@@ -380,6 +397,27 @@ per-container VMs use `io.pvisor.executor=vm`.
   `slice:prefix:id` paths translate to the slice's parent chain plus one
   `<prefix>-<id>.scope` entry — the layout kubelet's systemd cgroup driver
   produces — **not** delegated through systemd.
+- OCI `memory.swap` is a combined memory+swap total: with a positive memory
+  limit, an equal total writes `memory.swap.max=0`; a larger total writes
+  the difference. A smaller total or a positive total without a nonzero
+  memory limit is rejected before task creation. Zero/absent swap is unset,
+  except that an unlimited memory limit (`-1`) also sets swap to `max`;
+  swap `-1` is unlimited. With memory limit `-1`, a positive swap value is
+  used directly. Values below `-1` are rejected. An explicit supported
+  unified value overrides a valid OCI conversion; VM host-resource metadata
+  remains ignored and does not create a host cgroup.
+- Nonempty host `linux.resources.devices` rules are applied in order as
+  permission-bit updates: allow adds and deny removes `r`, `w` or `m` for
+  matching devices. The final mask must cover every bit of an operation
+  (including combined `rw` requests). The shim's standard device grants
+  follow the OCI rules, as in runc's spec conversion; those runtime grants
+  cannot be revoked by an earlier OCI deny. Other devices start denied.
+  Device numbers must be absent, `-1` (wildcard), or fit `u32`; type `a`
+  requires wildcard numbers and complete `rwm` access. Invalid rules and
+  policies exceeding 4096 eBPF instructions fail admission. This cgroup-v2
+  lowering does not emulate every cgroup-v1 device-controller quirk. The
+  loader requires kernel support for the generated eBPF instructions
+  (including JMP32); load/attach failures fail task creation.
 - Stats, pause/resume, and checkpointing are unimplemented.
 - VM exec: no tty, and the process starts at `Exec` time (see above).
 - Kubelet's cgroup mount arrives typed `cgroup` even on cgroup-v2-only
@@ -429,7 +467,8 @@ actually enforces it.
 
 ## Developing
 
-Pure logic (`plan`, `state`, `caps`, `cgroup`, mount option parsing) is
+Pure logic (`plan`, `state`, `caps`, `cgroup`, device-policy compilation,
+mount option parsing) is
 cross-platform and unit-tested on any host:
 
 ```bash
@@ -461,6 +500,9 @@ On Linux, `mise run test -- shim -- --features vm` also tests the VM-enabled cod
 CI builds and tests both shim variants using the shared native-component matrix,
 and runs host-independent shim tests in the macOS shard. These are conventional
 tests, not containerd or real-KVM acceptance.
+Device-policy tests interpret the actual generated instructions against a
+separate concrete permission table. They do not load the program into a Linux
+verifier or establish real device access enforcement.
 
 ## Linux acceptance smoke test
 

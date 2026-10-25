@@ -43,7 +43,7 @@ def require_digest(path: Path, digest: str) -> None:
 def pypi_existing(directory: Path, version: str) -> list[Path]:
     """Verify all overlapping wheels before returning any files to skip."""
     release = fetch_json(
-        f"https://pypi.org/pypi/pvisor/{urllib.parse.quote(version, safe='')}/json"
+        f"https://pypi.org/pypi/pvisor-sandbox/{urllib.parse.quote(version, safe='')}/json"
     )
     remote = {
         item["filename"]: item["digests"]["sha256"] for item in (release or {}).get("urls", [])
@@ -121,7 +121,7 @@ def github_publish(directory: Path, version: str, repository: str, tag: str) -> 
                 "--verify-tag",
                 "--generate-notes",
                 "--notes",
-                f"Install from PyPI: `python -m pip install pvisor=={version}`.\n\n"
+                f"Install from PyPI: `python -m pip install pvisor-sandbox=={version}`.\n\n"
                 "Native downloads need neither Python nor Rust. Download the matching "
                 f"`pvisor-{version}-linux-x86_64.tar.gz` or "
                 f"`pvisor-{version}-macos-arm64.tar.gz` and `SHA256SUMS`. "

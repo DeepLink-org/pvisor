@@ -430,7 +430,9 @@ impl RunRecord {
                 "execution Job record owner mismatch"
             );
         }
-        if record.completion_protocol.is_some() && !is_live(stage)? {
+        // A writer may have published the terminal projection immediately before
+        // committing its receipt. A live lease is not proof of that completion.
+        if record.completion_protocol.is_some() && (record.state.is_stopped() || !is_live(stage)?) {
             record.project_completion()?;
         }
         if let Some(overlay) = record.overlay.as_mut()

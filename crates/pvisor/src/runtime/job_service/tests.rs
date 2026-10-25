@@ -330,7 +330,8 @@ fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
         "/tests/fixtures/bundles/v1-minimal.json"
     )))
     .unwrap();
-    // Historical evidence predates the Attempt completion protocol.
+    // This fixture is a legacy Run (schema 1), so its historical Bundle is v4.
+    // Protocol-aware v5 Bundles require a matching completion receipt.
     historical["schema_version"] = serde_json::json!(4);
     historical["run"]["run_id"] = serde_json::json!(record.run_id);
     historical["agentctl"]["run_id"] = serde_json::json!(record.run_id);

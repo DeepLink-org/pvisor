@@ -32,6 +32,8 @@ The runtime resolves RunSpec, effective policy and executor capabilities before 
 
 The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage. The durable Job service's `ManagedJobRun` separately owns the real Attempt join and `Server::finish`. The frontend receives a wait adapter. A failed or dropped frontend wait requests cancellation. Accepted completion publication remains owned by a runtime task while its Tokio runtime survives.
 
+With retained storage, Session saves the Bundle, commits a receipt binding the result and Bundle digest, then publishes terminal events. After owner exit, the receipt governs reconciliation of state projections. A missing receipt retains Unknown and the stage. [Attempt completion](execution-model.md#attempt-completion) defines the ordering.
+
 ### Why resolve policy once?
 
 Suppose a request allows networking but workspace policy denies all network access. Admission must derive an effective network configuration and pass that same configuration to both driver and executor. If preparation reads mutable configuration again, the recorded decision and installed egress may disagree.

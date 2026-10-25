@@ -37,6 +37,11 @@ are Volatile; file receipts are LocalSync, not replicated or remote durability.
 Live subscriptions have capacity 256, contain only newly committed events, and
 can lag: use records to recover rather than treating the stream as storage.
 
+The journal enables serde_json's `float_roundtrip` feature directly: finite
+floating-point payloads retain their serialized identity across close/reopen,
+so exact retries keep their original receipt even in a standalone dependency
+graph. This does not change event-ID conflict detection for changed payloads.
+
 Async append/emit futures are Send and use Tokio blocking tasks. Once first
 polled and accepted by spawn_blocking, cancellation of the waiter does not cancel
 the append. Retry the exact same event after recovery if the outcome is unknown.

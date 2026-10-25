@@ -53,7 +53,7 @@ elif sys.argv[1] == '-c':
     sysconfig.get_path = lambda name: str(root)
     exec(sys.argv[2])
 elif sys.argv[1] == '-':
-    names = ('legacy-package', 'pvisor') if os.environ['INSTALL_TEST_INCLUDE_PVISOR'] == '1' else ('legacy-package',)
+    names = ('legacy-package', 'pvisor', 'pvisor_sandbox') if os.environ['INSTALL_TEST_INCLUDE_PVISOR'] == '1' else ('legacy-package', 'pvisor')
     assets = [{'name': f'{name}-0.3.0-py3-none-{platform}.whl', 'browser_download_url': f'https://example.test/{name}-{platform}.whl'}
               for name in names for platform in ('macosx_11_0_arm64', 'manylinux_2_28_x86_64')]
     urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps({'assets': assets}).encode())
@@ -81,7 +81,7 @@ for included in 1 0; do
     else
       test "$got" -eq 0
       ! grep -Fq pvisor-memory-pool "$work/stdout" "$work/stderr"
-      grep -Fq https://example.test/pvisor- "$work/pip.log"
+      grep -Fq https://example.test/pvisor_sandbox- "$work/pip.log"
       ! grep -Fq legacy-package "$work/pip.log"
       grep -Fq 'pVisor 0.3.0' "$work/stdout"
     fi

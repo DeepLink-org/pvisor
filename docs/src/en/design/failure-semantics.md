@@ -16,6 +16,8 @@ Session prepares file/network resources, commits required startup facts, then di
 | --- | --- | --- | --- |
 | Admission / driver preparation / startup fact commit | Workload not dispatched; preparation may have created directories, mounts or sockets | Session cleanup and preparation errors | Resolve resources/capabilities first; do not bypass failed startup-fact commit to dispatch |
 | Post-execution recording or cleanup | Workload ran; upper changes or network effects may exist | Attempt, actual exit, Bundle/log and stage completeness | Do not rerun commands automatically to repair records |
+| Interruption before completion commit, or uncertain commit | Bundle or terminal Run projection may be saved; a receipt may exist | Original Attempt receipt, Bundle digest and identity; establish owner and lease state before reconciliation | Restore projections from a valid receipt; without one retain Unknown and the stage, without rerunning the workload |
+| Completion committed, terminal-event publication failed | Result and Bundle are bound; Journal may lack terminal events | Check the completion receipt and audit gap separately | Retain the committed result; do not rewrite the Bundle or publish an opposite terminal state |
 | Host CLI timeout, disconnect or cancellation | The Job owner or a caller-side durable operation may have produced effects; cleanup may continue | Pinned Job state, artifacts and original request correlation | Host envelopes supply no generic deduplication; frontend does not automatically retry |
 | Journal append returns Unknown | No bytes, a partial tail or a complete record may exist; handle is poisoned | Release clones/active writes, reopen and inspect the original Event ID | Retry append with identical Event ID and contents, without repeating external work |
 | Uncertain execution capture / suspend / resume / fork receipt | Durable requests, objects, branches or successor Attempts may exist | Original request ID, Job head, current Attempt and exit/startup receipts | Reuse ID and parameters within that operation's scope; ambiguity may still return Unknown |
@@ -39,6 +41,8 @@ Journal retries retain the original Event object. Calling `Trace::event()` again
 
 ## Recovery does not mean redispatch {#reconciliation}
 
+Durable Attempt results are reconciled from the [completion receipt](execution-model.md#attempt-completion). Terminal Run fields or Bundle existence cannot substitute for a missing receipt. A valid receipt repairs only projections owned by that Attempt, without rerunning commands or undoing later Job transitions.
+
 Suspend illustrates separate steps: accepting a request, publishing machine state, confirming source-runner exit and writing a suspended head. A matching Job/Attempt/request `ExecutionSuspension` terminal receipt supplies the corresponding termination proof. A snapshot directory or missing PID alone does not justify launching a second VM.
 
 Resume first retains the restore request and destination Attempt path. If a repeated request finds uncertain successor records, it returns `EXECUTION_UNKNOWN` instead of launching another VM to obtain success. Error rollback is also conditional: the caller must still own that restore transition, with neither a live successor nor its `run.json`, before restoring previous Job state. Execution that occurred cannot automatically become “never ran”. [Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) owns the detailed state machine.
@@ -57,6 +61,7 @@ Callers reconcile terminal state and cleanup before releasing stages, snapshot l
 | --- | --- |
 | `pvisor/src/session.rs`, `session/lifecycle.rs` | Preparation, dispatch, cleanup and fact publication |
 | `pvisor/src/runtime/job_service/managed.rs` | Accepted Attempt join, frontend cancellation and terminal publication |
+| `pvisor/src/runtime/completion.rs`, `job_service/views.rs` | Result/Bundle binding, projection reconciliation and review boundaries for Unknown |
 | `pvisor-cli/src/cli/host_service.rs` | Frontend/owner bootstrap, private cancellation channel, direct durable-operation routing and process cleanup |
 | `pvisor/src/runtime/host_transport.rs`, `instance_control.rs` | Recorded endpoint validation, owner commands and response uncertainty |
 | `pvisor/src/runtime/registry.rs` | `job.lock`, Run records and the retained internal Overlay control |

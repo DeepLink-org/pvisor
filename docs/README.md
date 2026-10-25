@@ -16,9 +16,9 @@ runtime does not make their controls, records, defaults or lifecycle APIs
 interchangeable. Describe Agent-specific integrations as such; keep supervision
 levels independent of concurrency and deployment scale.
 
-Use `pvisor` for the Python distribution, import package, and wheel filename
-prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
-repository/deployment URLs. Separate requested policy, installed controls, and observed
+Use `pvisor-sandbox` for the Python distribution and `pvisor_sandbox` for the wheel
+filename prefix. Keep `pvisor` for the Python import package and CLI. Use current
+Rust crate names, `PVISOR_*` environment variables, and repository/deployment URLs. Separate requested policy, installed controls, and observed
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
 

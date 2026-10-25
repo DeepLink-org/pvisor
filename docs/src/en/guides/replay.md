@@ -11,7 +11,7 @@ The agent saves its native trajectory; [Gateway capture](capture.md) produces a 
 `pvisor replay` usually runs directly inside the new sandbox you prepared, so pVisor must be installed in that sandbox or mounted read-only on the sandbox's `PATH`. When the sandbox has Python 3.10 or newer, install the released version directly:
 
 ~~~bash
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 
 command -v pvisor
 pvisor --version

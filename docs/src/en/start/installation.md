@@ -9,7 +9,7 @@ Use a dedicated virtual environment to avoid changing the system Python environm
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 ```
 
 Check the command:
@@ -24,13 +24,13 @@ The wheel installs `pvisor`, `pvisor-tui`, `pvisor-replay` and `pvisor-daemon` i
 Upgrade in the same environment:
 
 ```bash
-python -m pip install --upgrade pvisor
+python -m pip install --upgrade pvisor-sandbox
 ```
 
 To uninstall:
 
 ```bash
-python -m pip uninstall pvisor
+python -m pip uninstall pvisor-sandbox
 ```
 
 Before upgrading, check release notes and deployed `PVISOR_*` settings. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically; uninstalling the Python package also leaves this runtime data in place. npm, Cargo and a standalone version-selecting installer remain part of the [distribution proposal](../community/releasing.md#distribution-plan).

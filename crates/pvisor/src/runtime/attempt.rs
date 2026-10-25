@@ -1721,6 +1721,29 @@ mod tests {
             teardown
                 .commit_state(pvisor_core::RunState::Hibernated)
                 .unwrap();
+            assert_eq!(
+                crate::RunRecord::read(&storage).unwrap().state,
+                crate::RunRecordState::Unknown
+            );
+            let result: pvisor_core::RunResult = serde_json::from_value(serde_json::json!({
+                "run_id":spec.run_id, "attempt_id":attempt, "state":"hibernated",
+                "started_at_unix_ms":teardown.run_record().started_at_unix_ms,
+                "finished_at_unix_ms":pvisor_core::unix_now_ms(),
+                "value":{"request_id":"suspend", "checkpoint":{
+                    "snapshot_id":"a".repeat(64), "store":temporary.path(),
+                    "source_run_id":spec.run_id, "source_attempt_id":attempt,
+                    "created_at_unix_ms":1, "ram_storage":"compressed"
+                }}
+            }))
+            .unwrap();
+            let agentctl = crate::AgentCtlSnapshot {
+                run_id: spec.run_id.to_string(),
+                attempt_id: attempt.to_string(),
+                directive: pvisor_core::AgentDirective::Continue,
+                clients: vec![],
+            };
+            teardown.persist(&result, agentctl, false).unwrap();
+            teardown.complete(&result).unwrap();
             let record = crate::RunRecord::read(&storage).unwrap();
             assert_eq!(record.state, crate::RunRecordState::Hibernated);
             assert_eq!(

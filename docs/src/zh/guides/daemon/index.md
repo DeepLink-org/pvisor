@@ -19,7 +19,7 @@
 Linux x86_64 和 macOS ARM64 wheel 都会随 `pvisor` 安装 `pvisor-daemon`。缓存服务支持两个平台；以下 sandbox 服务需要 Linux x86_64：
 
 ```bash
-pip install pvisor
+pip install pvisor-sandbox
 pvisor-daemon --help
 pvisor-daemon protocol
 ```

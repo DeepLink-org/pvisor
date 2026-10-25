@@ -21,13 +21,15 @@ with mock.patch.object(sys, "path", [str(SCRIPTS), *sys.path]):
 
 def wheel(root, platform, *, missing=None):
     tag = "macosx_11_0_arm64" if platform == "macos-arm64" else "manylinux_2_28_x86_64"
-    path = root / f"pvisor-0.3.0-py3-none-{tag}.whl"
+    path = root / f"pvisor_sandbox-0.3.0-py3-none-{tag}.whl"
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("pvisor-0.3.0.dist-info/METADATA", "Name: pvisor\nVersion: 0.3.0\n")
+        archive.writestr(
+            "pvisor_sandbox-0.3.0.dist-info/METADATA", "Name: pvisor-sandbox\nVersion: 0.3.0\n"
+        )
         names = [*assets.BINARIES, "libkrunfw.SOURCE"]
         for name in names:
             if name != missing:
-                archive.writestr(f"pvisor-0.3.0.data/scripts/{name}", f"payload {name}")
+                archive.writestr(f"pvisor_sandbox-0.3.0.data/scripts/{name}", f"payload {name}")
         archive.writestr("../../unexpected", "must not be extracted")
     return path
 

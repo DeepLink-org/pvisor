@@ -10,7 +10,7 @@
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 ```
 
 确认安装：
@@ -27,13 +27,13 @@ bin 目录，不经过 Python 启动器。打开新终端后重新激活环境�
 在同一环境中升级：
 
 ```bash
-python -m pip install --upgrade pvisor
+python -m pip install --upgrade pvisor-sandbox
 ```
 
 需要卸载时运行：
 
 ```bash
-python -m pip uninstall pvisor
+python -m pip uninstall pvisor-sandbox
 ```
 
 升级前检查发布说明和部署中的 `PVISOR_*` 设置。本地状态（`.pvisor`）和用户缓存

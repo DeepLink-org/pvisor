@@ -39,7 +39,7 @@
 <polyline points="405,589 677,589" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
 <text x="455" y="578" font-size="14">4 清理与观察核对</text>
 <polyline points="405,632 952,632" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
-<text x="560" y="621" font-size="14">5 保存结果；公布终态</text>
+<text x="490" y="621" font-size="14">5 Bundle → 完成回执 → 终态事件（保留存储时）</text>
 <polyline points="405,676 128,676" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
 <text x="220" y="666" font-size="14">RunResult</text>
 <text x="28" y="727" font-size="15">ManagedJobRun 另持有 Attempt join 与 Job 完成发布；前端不拥有最终提交。</text></g></svg>

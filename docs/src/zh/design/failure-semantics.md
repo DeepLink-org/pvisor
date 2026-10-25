@@ -16,6 +16,8 @@ Session 准备文件和网络资源，提交必要启动事实，再派发执行
 | --- | --- | --- | --- |
 | 准入 / 驱动准备 / 启动事实提交 | 工作负载尚未派发；准备可能已创建目录、挂载或 socket | Session 清理结果与准备错误 | 先处理资源与能力问题；启动事实失败时不能绕过该门直接派发 |
 | 执行后记录或清理失败 | 工作负载已经运行；upper、网络请求等效果可能存在 | Attempt、实际退出、Bundle/日志和 stage 完整性 | 不为补齐记录自动重跑命令 |
+| 完成回执提交前中断或提交结果不明 | Bundle 或 Run 终态投影可能已保存，回执可能存在 | 原 Attempt 的回执、Bundle 摘要与身份；核对前确认 owner 和租约状态 | 有效回执用于恢复投影；缺少回执保留 Unknown 和 stage，不重跑工作负载 |
+| 完成回执已提交，终态事件发布失败 | 结果与 Bundle 已绑定，Journal 可能缺少终态事件 | 完成回执与事件审计缺口分别核对 | 保留已提交结果，不改写 Bundle 或补发相反终态 |
 | Host CLI 超时、断连或取消 | Job owner 或调用方的持久操作可能已产生效果，清理仍可能进行 | 固定目标的 Job 状态、产物与原 request 关联 | Host envelope 不提供通用去重；前端不自动重试 |
 | Journal append 返回 Unknown | 无字节、部分尾部或完整记录均可能存在；句柄 poisoned | 释放 clone 和活跃写任务后，reopen 恢复并查原 Event ID | 用同一 Event ID 和完整内容重试 append；不重做外部操作 |
 | execution capture / suspend / resume / fork 回执不明 | 持久请求、对象、分支或继任 Attempt 可能已建立 | 原 request ID、Job head、当前 Attempt、终止或启动回执 | 在对应操作范围内重用原 ID 和原参数；状态不明时可继续返回 Unknown |
@@ -39,6 +41,8 @@ Journal 重试要保留原 Event 对象。再次调用 `Trace::event()` 会生�
 
 ## 恢复不是重新派发 {#reconciliation}
 
+持久 Attempt 的结果核对以[完成回执](execution-model.md#attempt-completion)为依据。缺失回执不能用 Run 终态字段或 Bundle 存在替代；回执有效时只修复属于该 Attempt 的状态投影，不重新执行命令或撤销之后的 Job 迁移。
+
 以 suspend 为例：接收请求、发布机器对象、确认源 runner 退出、写入 suspended head 是不同步骤。只有匹配 Job/Attempt/request 的 `ExecutionSuspension` 终态回执才提供对应终止证明。仅看到 snapshot 目录或 PID 消失，不能据此启动第二个 VM。
 
 resume 先保存恢复请求与目标 Attempt 路径。重复请求若发现继任记录尚不确定，返回 `EXECUTION_UNKNOWN`，不会为了得到成功响应再启动一份。启动错误后的回退也受条件约束：必须仍拥有本次恢复迁移，且没有 live 继任与其 `run.json`，才恢复先前 Job 状态。已经发生的执行不能自动回滚成“从未运行”。具体状态机见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。
@@ -57,6 +61,7 @@ Journal 恢复只修复合法完整前缀后的未完成尾部。已完成但损
 | --- | --- |
 | `pvisor/src/session.rs`、`session/lifecycle.rs` | 准备、派发、清理和事实发布 |
 | `pvisor/src/runtime/job_service/managed.rs` | 已接受 Attempt 的 join、前端取消与终态发布 |
+| `pvisor/src/runtime/completion.rs`、`job_service/views.rs` | 结果与 Bundle 绑定、状态投影核对和 Unknown 的审查边界 |
 | `pvisor-cli/src/cli/host_service.rs` | 前端/owner 启动、私有取消通道、直接持久操作路由与进程清理 |
 | `pvisor/src/runtime/host_transport.rs`、`instance_control.rs` | 按记录校验端点、owner 命令与响应不确定性 |
 | `pvisor/src/runtime/registry.rs` | `job.lock`、Run 记录与仍在使用的 Overlay 内部控制 |

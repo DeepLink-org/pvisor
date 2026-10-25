@@ -19,7 +19,7 @@ New templates use the Rust process/file engine in `pvisor-guest` by default. The
 Linux x86_64 and macOS ARM64 wheels install `pvisor-daemon` alongside `pvisor`. Cache serving works on both platforms; the sandbox service below requires Linux x86_64:
 
 ```bash
-pip install pvisor
+pip install pvisor-sandbox
 pvisor-daemon --help
 pvisor-daemon protocol
 ```

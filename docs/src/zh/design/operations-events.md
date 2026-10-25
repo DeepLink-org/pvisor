@@ -73,6 +73,8 @@ Outcome 的成功值包含终态和退出码；错误区分 Failed、Denied、Un
 
 pvisor 准备驱动后提交启动事实，成功后才调用执行器。必要事实提交失败会阻止派发，准备资源需要清理。执行后记录失败以 failure／warning 报告；记录失败不会撤销已经发生的效果。
 
+保留存储的 Attempt 在发布 `Completed` 和生命周期终态事件之前提交[完成回执](execution-model.md#attempt-completion)。回执已提交而终态事件写入失败时，结果保持有效，事件覆盖存在审计缺口；事件订阅方需要结合持久结果核对完成，不能用缺少事件推断命令未执行。
+
 Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。提交结果未知时，先核对已发生的效果，再决定是否重试外部操作。`RunHandle` 的订阅提供本次 Run 的已提交事件，包括共享 Journal 中的 Gateway 观察；实时接收方还须处理断开与落后，完整历史从 Journal 读取。
 
 关闭文件记录时仍可使用内存事件流，但不产生可供重启恢复的文件日志。结构化 Event 是事实格式，`Event::to_text` 只是人读投影。
@@ -83,7 +85,7 @@ Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。
 
 事件快照可以重建已观察到的请求、改写、放置及结果。完整恢复外部行为还需要初始文件状态、实际环境、外部输入及对应执行机制；当前 Trace 不包含这些全部信息。事件日志、文件检查点和 Agent 轨迹 replay 各有不同的恢复范围。
 
-当前 Run Bundle 为 schema 4；旧 Bundle 和旧 Event／Journal 格式拒绝读取，不静默混用。版本由代码中的常量维护，跨记录兼容边界见[记录与版本矩阵](records-and-versions.md#execution-records)，详细强制力口径见[能力与证据](../concepts/capabilities-and-evidence.md)。提交失败、断连和重试的核对顺序见[失败语义](failure-semantics.md)。
+Bundle 的完成绑定与旧格式读取、Event／Journal 的精确版本检查分别由各自 reader 负责，兼容范围见[记录与版本矩阵](records-and-versions.md#execution-records)。详细强制力口径见[能力与证据](../concepts/capabilities-and-evidence.md)，提交失败、断连和重试的核对顺序见[失败语义](failure-semantics.md)。
 
 ## 代码与验证
 
