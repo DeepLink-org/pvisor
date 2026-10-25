@@ -260,7 +260,7 @@ M11三轮累计同步完成时间下降76.7%，但首轮前台读时间比为1.2
 
 ### 普通 CLI：流式写显著加快，七工具累计未检出改善 {#guest-writeback-cli}
 
-同一新 host 与修复后的 0049 固件，两臂仅切换 guest writeback（host 写缓存与 DAX 关闭）。真实普通 CLI 通过 prepared rootfs/workspace 启动，每个样本独立 private Host+VM；正式 10/10 环境有效，预检 2/2、独立计数 2/2 均通过真实 semspec 入口。五对新环境各内部三轮，不能按 N15 计算。guest与父组内存均为16 GiB；固定 cgroup 的实际 memory.max=16GiB、swap.max=0、cpu.max=200000/100000（两核配额），测量继承 CPU0,1 affinity，启动服务设置 NOFILE=65536；没有 quiet/干扰/全清单门禁，保留全部有效慢样本。
+同一新 host 与修复后的 0049 固件，两臂仅切换 guest writeback（host 写缓存与 DAX 关闭）。真实普通 CLI 通过 prepared rootfs/workspace 启动，每个样本独立 private Host+VM；正式 10/10 环境有效，预检 2/2、独立计数 2/2 均通过真实 semaspec 入口。五对新环境各内部三轮，不能按 N15 计算。guest与父组内存均为16 GiB；固定 cgroup 的实际 memory.max=16GiB、swap.max=0、cpu.max=200000/100000（两核配额），测量继承 CPU0,1 affinity，启动服务设置 NOFILE=65536；没有 quiet/干扰/全清单门禁，保留全部有效慢样本。
 
 主指标三轮七工具累计 4372.600→4373.951ms，耗时比 1.0003 [0.9658,1.0415]，降幅 −0.03% [−4.15,+3.42]，未检出整体收益。Ready 855.526→855.989ms，比值 1.0005 [0.9923,1.0062]，也未检出收益；Ready 包含新 Host+VM，排除退出。三轮 seven_tools 各自的区间同样跨 1。全部 32 项是未做多重校正的配对 bootstrap 区间（5000 次、seed20261017），只有累计为预登记主指标；R1 cargo 的 1.61% [1.05,4.87] 降幅属于单项探索结果，后两轮没有同方向统计支持。
 
@@ -358,7 +358,7 @@ M11三轮累计同步完成时间下降76.7%，但首轮前台读时间比为1.2
 | 旧 0047 | 1,503.3 ms | 否 |
 | 新 0048 | 203.1 ms | 是 |
 
-该结果证实后续 batch 能绕过前一 batch 的完成等待；不把人为延迟的 1.3 秒差额解释为生产任务加速。流水事件数据。原始前期失败、修正前对照和最终 `semspec bench` 证据分别保留在 `.data/guest-writeback-pipeline-*`，没有合并为重复样本。
+该结果证实后续 batch 能绕过前一 batch 的完成等待；不把人为延迟的 1.3 秒差额解释为生产任务加速。流水事件数据。原始前期失败、修正前对照和最终 `semaspec bench` 证据分别保留在 `.data/guest-writeback-pipeline-*`，没有合并为重复样本。
 
 关闭后的 unlink/rename 会再次弄脏 guest 时间戳，因此 host 对象不能随路径移除立即消失。新实现按 guest ENTRY/FORGET 引用保留已脱名 regular inode：upper 使用固定的原生 O_PATH 身份，lower 仅维护逻辑 metadata，不能修改物理 immutable lower。snapshot 在仍有这类身份时返回 Unsupported。真实 KVM 覆盖关闭后删除／替换再 syncfs、128 MiB 单次写、16,384 次同页覆盖、O_SYNC、共享 mmap 与子挂载卸载；后台 I/O 错误仍使 supervisor 按预期退出 125。VM 单元测试 511 通过、8 跳过，固件测试 5 通过。
 

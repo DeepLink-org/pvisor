@@ -72,9 +72,9 @@ required.
 
 ## Semantic preservation specifications
 
-Follow `tools/semspec/DESIGN.md` for semspec. AI may draft new cases, repair the
+Follow `tools/semaspec/DESIGN.md` for semaspec (short command: `sspec`). AI may draft new cases, repair the
 subject implementation and maintain conventional runner tests. AI must not run
-`semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
+`semaspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
 snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.
-Use `mise run test-semspec` to validate the standalone runner and `mise run semspec -- lint docs/src/zh/cases`
+Use `mise run test-semaspec` to validate the standalone runner and `mise run semaspec -- lint docs/src/zh/cases`
 for specifications. Human approval is distinct from a passing test.

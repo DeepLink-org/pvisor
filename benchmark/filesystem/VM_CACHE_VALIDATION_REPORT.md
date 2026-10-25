@@ -134,7 +134,7 @@ rootfs 数据缓存现默认选择 `root-data`，但仅在 `/dev/root` 的实际
 
 ### 本地证据
 
-主归档：`benchmark/filesystem/.data/vm-cache-verify-20261012/`。CLI 原始批次分别在 `benchmark/.data/vmc-screen-retry/`、`vmc-confirm/`、`vmc-diagnostic-retry/`；只读在 `vmc-ro-screen/`、`vmc-ro-diag/`。冻结执行入口均通过 semspec bench 运行，正式与诊断分开。失败或验收拒绝的尝试单独保留，见主归档 `report-outline.json` 与各 launch/validity 收据，不进入上述统计。
+主归档：`benchmark/filesystem/.data/vm-cache-verify-20261012/`。CLI 原始批次分别在 `benchmark/.data/vmc-screen-retry/`、`vmc-confirm/`、`vmc-diagnostic-retry/`；只读在 `vmc-ro-screen/`、`vmc-ro-diag/`。冻结执行入口均通过 semaspec bench 运行，正式与诊断分开。失败或验收拒绝的尝试单独保留，见主归档 `report-outline.json` 与各 launch/validity 收据，不进入上述统计。
 
 实际 CLI 实验二进制 SHA256：`683e0ed29b501ceaeb841271dd618765acdc47abc12c581748115740fe40a190`；固件 SHA256：`b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4`。CLI 冻结源码清单 2,228 个文件；只读源码与制品保护清单 2,238 个文件，完整内容留在本地，来源、CSV 与报告摘要见验收摘要（本地归档：`.data/derived-tables-20261018/vm-cache-validation.provenance.json`）。
 

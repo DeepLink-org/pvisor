@@ -34,7 +34,7 @@ def table_preprocessor():
         "zensical.extensions.context": SimpleNamespace(ContextPreprocessor=context),
     }
     with mock.patch.dict(sys.modules, modules):
-        extension = runpy.run_path(str(ROOT / "docs/semspec_tables.py"))
+        extension = runpy.run_path(str(ROOT / "docs/semaspec_tables.py"))
     return extension["TablePreprocessor"](None)
 
 
@@ -43,7 +43,7 @@ class LiveTableTests(unittest.TestCase):
         lines = ['{{ table("missing.json") }}']
         preprocessor = table_preprocessor()
         with (
-            mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": "1", "SEMSPEC_BIN": "/semspec"}),
+            mock.patch.dict(os.environ, {"PVISOR_DOCS_LIVE": "1", "SEMSPEC_BIN": "/semaspec"}),
             mock.patch(
                 "subprocess.run",
                 return_value=SimpleNamespace(
@@ -60,7 +60,7 @@ class LiveTableTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.args[0],
             [
-                "/semspec",
+                "/semaspec",
                 "filter",
                 "--source",
                 "/workspace/docs/src/zh/page.md",
@@ -72,7 +72,7 @@ class LiveTableTests(unittest.TestCase):
     def test_renderer_failures_leave_page_text_in_live_mode_but_fail_strict_mode(self):
         lines = ["# Page", "", '{{ table("missing.json") }}', "", "Body"]
         preprocessor = table_preprocessor()
-        errors = [FileNotFoundError("<renderer>"), subprocess.TimeoutExpired("semspec", 30)]
+        errors = [FileNotFoundError("<renderer>"), subprocess.TimeoutExpired("semaspec", 30)]
         for live in ("0", "1"):
             for error in errors:
                 with (

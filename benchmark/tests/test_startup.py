@@ -1,4 +1,4 @@
-"""Fixed JSON subjects, fresh trial evidence and paired document data publication."""
+"""Markdown subject plans, fresh trial evidence and paired data publication."""
 
 import csv
 import importlib.util
@@ -23,7 +23,7 @@ from public_assets import csv_path as public_csv_path  # noqa: E402 - import aft
 from publish import compact_configuration, publish_startup  # noqa: E402
 
 OUTPUT = 'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
+SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semaspec/debug/semaspec"))
 
 
 class StartupContracts(unittest.TestCase):
@@ -36,7 +36,7 @@ class StartupContracts(unittest.TestCase):
             "source_commit_scope": "binary source is not attested",
             "artifacts": {
                 str(ROOT / "startup/hooks.py"): "a" * 64,
-                str(ROOT / "startup/timing.json"): "b" * 64,
+                str(ROOT / "startup/timing.md"): "b" * 64,
                 "/local/.data/cohort/pvisor": "c" * 64,
                 "/local/.data/cohort/fixtures/a/trajectory.json": "d" * 64,
                 "/local/.data/cohort/fixtures/b/trajectory.json": "e" * 64,
@@ -112,16 +112,21 @@ class StartupContracts(unittest.TestCase):
             destination = Path(temporary) / ".data/batch"
             with self.assertRaisesRegex(ValueError, "prepared inputs required"):
                 STARTUP.prepare_template(
-                    ROOT / "startup/pvisor_vm_timing.json",
+                    ROOT / "startup/pvisor_vm_timing.md",
                     destination,
                     cpu_affinity="0",
                 )
             self.assertFalse((destination / "protocol.json").exists())
 
     def test_eight_subjects_exclude_python_taskset_and_timeout_wrappers(self):
-        from subjects import SUBJECTS
+        from subjects import NAMES
 
-        subjects = SUBJECTS
+        subjects = {
+            name: STARTUP.COMMON.markdown_inventory(
+                ROOT / "startup" / (name.replace("-", "_") + "_timing.md")
+            )["experiments"][0]["plan"]["argv"]
+            for name in NAMES
+        }
         self.assertEqual(set(subjects), set(STARTUP.BACKENDS))
         for subject in subjects.values():
             self.assertNotIn(subject[0], ("python3", "taskset", "timeout"))
@@ -192,7 +197,7 @@ class StartupIntegration(unittest.TestCase):
             root = Path(temporary)
             affinity = str(min(os.sched_getaffinity(0)))
             batch = STARTUP.prepare_template(
-                ROOT / "startup/native_timing.json", root / ".data/batch", cpu_affinity=affinity
+                ROOT / "startup/native_timing.md", root / ".data/batch", cpu_affinity=affinity
             )
             result = subprocess.run(
                 [str(SEMSPEC), "bench", "--cwd", str(batch / "workspace"), str(batch / "in.json")],
@@ -264,7 +269,7 @@ class StartupIntegration(unittest.TestCase):
             root = Path(temporary)
             affinity = {min(os.sched_getaffinity(0))}
             batch = STARTUP.prepare_template(
-                ROOT / "startup/native_timing.json",
+                ROOT / "startup/native_timing.md",
                 root / ".data" / "startup",
                 cpu_affinity=str(next(iter(affinity))),
             )
@@ -321,6 +326,50 @@ class StartupIntegration(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing preflight"):
                 publish_startup(batch, source)
             self.assertEqual(published, csv_path.read_bytes())
+
+
+class MarkdownPreparationContracts(unittest.TestCase):
+    def test_changing_source_during_inventory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "plan.md"
+            source.write_bytes(b"original\r\n")
+
+            def changed(*args, **kwargs):
+                self.assertEqual(kwargs["input"], b"original\r\n")
+                source.write_text("changed")
+                return subprocess.CompletedProcess(args[0], 0, b'{"format": 1}')
+
+            with patch.object(STARTUP.COMMON.subprocess, "run", side_effect=changed):
+                with self.assertRaisesRegex(ValueError, "changed while parsing"):
+                    STARTUP.COMMON.markdown_inventory(source)
+
+    def test_paired_table_freezes_source_and_keeps_spaced_paths_as_single_arguments(self):
+        import shlex
+
+        from specification import prepare_table
+
+        with tempfile.TemporaryDirectory(prefix="startup spec ") as temporary:
+            root = Path(temporary)
+            source = root / "paired.md"
+            source.write_text(
+                "<!-- semspec: table id=paired -->\n```json\n"
+                + json.dumps({"paired": "$ python3 @HARNESS@/probe.py --measure @BATCH@"})
+                + "\n```\n"
+            )
+            batch = root / ".data/batch with spaces"
+            (batch / "harness").mkdir(parents=True)
+            rows = prepare_table(source, batch)
+            self.assertEqual(
+                shlex.split(rows["paired"][2:]),
+                [sys.executable, str(batch / "harness/probe.py"), "--measure", str(batch)],
+            )
+            self.assertEqual((batch / "harness/paired.md").read_bytes(), source.read_bytes())
+            self.assertFalse((batch / "measured-row.json").exists())
+            source.write_text(source.read_text().replace("@BATCH@", "@MISSING@"))
+            with self.assertRaisesRegex(ValueError, "unresolved"):
+                prepare_table(source, batch)
+            # Invalid preparation cannot replace the frozen, validated source.
+            self.assertNotEqual((batch / "harness/paired.md").read_bytes(), source.read_bytes())
 
 
 if __name__ == "__main__":

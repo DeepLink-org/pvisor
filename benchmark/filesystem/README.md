@@ -22,7 +22,7 @@ python3 benchmark/filesystem/user_workloads.py --prepare NEW_BATCH_UNDER_DOT_DAT
   --artifacts FROZEN_CLI_BUILD_DIRECTORY --samples 3 \
   --docker-setup PRIVATE_ROOTLESS_DOCKER_BUDGET_SETUP_JSON \
   --stock-kernel-receipt VERIFIED_STOCK_KERNEL_RECEIPT_JSON
-target/semspec/debug/semspec bench --cwd ABS_BATCH ABS_BATCH/in.json
+target/semaspec/debug/semaspec bench --cwd ABS_BATCH ABS_BATCH/in.json
 PYTHON_WITH_MATPLOTLIB benchmark/filesystem/user_workloads_analysis.py ABS_BATCH
 python3 benchmark/filesystem/publish_user_workloads.py --batch ABS_BATCH --check
 python3 benchmark/filesystem/publish_user_workloads.py --batch ABS_BATCH
@@ -104,7 +104,7 @@ host只隐藏已验证的OverlayFS内部标记，不放过意外应用文件。
 python3 benchmark/filesystem/workloads_v2_run.py --prepare NEW_BATCH_UNDER_DOT_DATA \
   --rootfs PREPARED_ROOTFS --firmware PREPARED_FIRMWARE \
   --firmware-source MATCHING_SOURCE_JSON --samples 3
-target/semspec/debug/semspec bench --cwd ABS_BATCH ABS_BATCH/in.json
+target/semaspec/debug/semaspec bench --cwd ABS_BATCH ABS_BATCH/in.json
 PYTHON_WITH_MATPLOTLIB benchmark/filesystem/workloads_v2_analysis.py ABS_BATCH
 python3 benchmark/filesystem/workloads_v2_audit.py ABS_BATCH
 ```
@@ -145,7 +145,7 @@ I/O 曲线发布器只复制当前文章或主题引用的 SVG；未引用的图
 注册条目为 [B-FS-TOOLS](../../benchmark/REGISTRY.md#b-fs-tools)。当前入口只覆盖两项原生探针；
 七工具内部阶段、跨后端任务及工程 A/B 的范围仍由各自注册条目约束。
 
-[tools.md](tools.md) 同时保存实验说明与两行可执行表定义。semspec 每行调用脚本一次，
+[tools.md](tools.md) 同时保存实验说明与两行可执行表定义。semaspec 每行调用脚本一次，
 脚本拥有采样和统计，不在外层重复计时。
 
 ```sh
@@ -176,7 +176,7 @@ read 读取完整数据并校验 SHA256。输入大小、目录结构及所有�
 - `prepare.py`：核对固定行命令，创建共享输入并执行逐行预检。
 - `workload.py`：输入生成、完整校验与两种单次负载。
 - `fs_timing.py BATCH MODE`：metadata/read 共用的入口、采样、时钟和统计。
-- `audit.py`：校验逐次命令、零退出、单调时钟、样本统计与 semspec 行映射。
+- `audit.py`：校验逐次命令、零退出、单调时钟、样本统计与 semaspec 行映射。
 
 保留批次含 `in.json`、`in.render.json`、`in.bench.json`、manifest 和冻结 harness，
 逐次日志在 `trials/<mode>/`，正式样本在 `<mode>.samples.json`。
@@ -197,7 +197,7 @@ phase-clock 配对实验，不写入 `tools.render.json`，不代表 CLI 可写 
 ```sh
 python3 benchmark/filesystem/dax_ab.py --prepare benchmark/filesystem/.data/dax-UNIQUE \
   --rootfs PREPARED_ROOTFS --firmware PREPARED_FIRMWARE
-tools/semspec/target/debug/semspec bench benchmark/filesystem/.data/dax-UNIQUE/in.json
+tools/semaspec/target/debug/semaspec bench benchmark/filesystem/.data/dax-UNIQUE/in.json
 ```
 
 真实测量需要 Linux x86_64 的 `/dev/kvm` 和可安装 CPU/memory 限制的 user systemd。
@@ -229,12 +229,12 @@ CLI 独立确认每臂 N30；快速筛选 N10、只读阶段 N5 与请求诊断�
 收据（本地归档：`.data/derived-tables-20261018/vm-cache-validation.provenance.json`）。冻结源码、二进制、输入、运行入口和失败
 尝试保留在 `.data/vm-cache-verify-20261012/`；复核使用其中的 `confirm.json`、
 `screen-retry.json`、`diagnostic-retry.json`、`ro-screen.json` 和
-`ro-diag.json`，均经 semspec bench 执行。复跑必须先为输出配置新的批次目录，
+`ro-diag.json`，均经 semaspec bench 执行。复跑必须先为输出配置新的批次目录，
 避免覆盖原始证据，并满足报告列出的 KVM、预算和干扰门禁。
 
 ## 公共执行层
 
-原生命令探针的 `fs_timing.py` 复用 `tools/semspec/runtime.py` 的直接 argv 计时、
+原生命令探针的 `fs_timing.py` 复用 `tools/semaspec/runtime.py` 的直接 argv 计时、
 预热/采样循环、统计和逐次记录；本目录继续负责 fixture、精确输出和负载协议。
 公共库与其他 harness 一起冻结到新批次，现有指标、样本数及发布审计保持原口径。
 小型诊断可以用 Markdown bench cell，但不能替代本目录正式实验的注册和校验。

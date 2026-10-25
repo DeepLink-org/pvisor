@@ -152,7 +152,7 @@ the complete application for speed.
 macOS ARM64 builds the three CLI executables and `pvisor-daemon`.
 The daemon cache service supports both platforms; sandbox
 serving, shim and the standalone guest executable require Linux. VM builds share one firmware
-resolution. Standalone tools outside the workspace, such as semspec, retain their
+resolution. Standalone tools outside the workspace, such as semaspec, retain their
 own build/test entries.
 
 `mise run build -- PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
@@ -167,7 +167,7 @@ Rust test options follow `--`, for example
 `mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
 On macOS, VM test signing uses the same features, Cargo profile and build-target
 selection as the test run. Default and Gateway-enabled runtime/CLI tests both
-run in CI. All repository semspec recipes share `target/semspec` (beneath
+run in CI. All repository semaspec recipes share `target/semaspec` (beneath
 `CARGO_TARGET_DIR` when set), including documentation rendering, lint and tests.
 The Python format/lint entries also cover packaging and CI scripts plus `setup.py`.
 
@@ -185,7 +185,7 @@ runs; other tests keep their normal parallelism. See [.config/nextest.toml](.con
 See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
 
 Complex task implementations live in `scripts/tasks/`; `mise.toml` declares their
-names and the shared environment. CI installs tool subsets for Python, semspec,
+names and the shared environment. CI installs tool subsets for Python, semaspec,
 documentation and release checks. Guest targets are prepared only by full setup.
 The optional Podman Go contracts retain their pinned `setup-go` environment;
 native libraries and virtualization prerequisites use the host package manager.

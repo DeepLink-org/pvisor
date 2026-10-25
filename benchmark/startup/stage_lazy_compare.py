@@ -63,6 +63,9 @@ def prepare(args):
     batch.mkdir(mode=0o755)
     for name in ("harness", "tools", "trials", "pairs"):
         (batch / name).mkdir()
+    from specification import prepare_table
+
+    table = prepare_table(HERE / "stage_lazy_compare.md", batch)
     sources = [
         "stage_lazy_compare.py",
         "stage_lazy_analysis.py",
@@ -243,20 +246,7 @@ def prepare(args):
     ):
         protocol["artifacts"][str(batch / name)] = sha(batch / name)
     save(batch / "protocol.json", protocol)
-    save(
-        batch / "in.json",
-        {
-            "same-stage-cold-warm-paired": "$ "
-            + shlex.join(
-                [
-                    sys.executable,
-                    str(batch / "harness/stage_lazy_compare.py"),
-                    "--measure",
-                    str(batch),
-                ]
-            )
-        },
-    )
+    save(batch / "in.json", table)
     print(batch)
 
 

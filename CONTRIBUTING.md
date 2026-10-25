@@ -80,16 +80,16 @@ CI's mise 2026.10.18 when intentionally updating shared tool versions.
 
 ## Semantic specifications
 
-Product promises are written as semantic specifications (semspec) under
+Product promises are written as semantic specifications (semaspec) under
 `docs/src/zh/cases/` and `docs/src/zh/reference/cases.md`. A passing case is not
 an approval:
 
 - you may draft new cases and fix the implementation;
 - you must not weaken existing claims, checks, or `xfail` annotations to get a pass;
-- approving a case (`semspec approve`) and editing `REVIEWED.toml` or `.approved/`
+- approving a case (`semaspec approve`) and editing `REVIEWED.toml` or `.approved/`
   snapshots are human-only maintainer actions.
 
-Run `mise run cases -- --suite stage` for the STAGE domain and `mise run semspec -- lint docs/src/zh/cases` for the
+Run `mise run cases -- --suite stage` for the STAGE domain and `mise run semaspec -- lint docs/src/zh/cases` for the
 specifications. Details: [testing](https://deeplink-org.github.io/pvisor/en/community/testing/).
 
 ## Pull requests

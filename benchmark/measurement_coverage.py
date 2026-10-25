@@ -143,7 +143,7 @@ def coverage():
         if filesystem_page:
             current = ["B-FS-TOOLS accepted reference cohort " + filesystem_evidence["batch"]]
         if page["page"] == "benchmarks/lazy-image-startup.md" and lazy_stage_evidence is not None:
-            current.append("startup/stage_lazy_compare.json " + lazy_stage_evidence["batch"])
+            current.append("startup/stage_lazy_compare.md " + lazy_stage_evidence["batch"])
         rows.append(
             dict(
                 page=page["page"],

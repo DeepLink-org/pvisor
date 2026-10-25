@@ -37,8 +37,8 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -eq 0 ]]; then set -- smoke; fi
-cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
+cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec"
+export SEMSPEC_BIN="$CARGO_TARGET_DIR/semaspec/debug/semaspec"
 process_build="$(python3 "$MISE_PROJECT_ROOT/benchmark/run.py" --check "$@")"
 if [[ "$process_build" == process ]]; then
   benchmark_repo="${PVISOR_BENCHMARK_REPO:-$MISE_PROJECT_ROOT}"
@@ -128,7 +128,7 @@ if [[ $# -gt 0 ]]; then echo "too many arguments for clean" >&2; exit 2; fi
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile dev
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile release
 cargo clean --target-dir "$CARGO_TARGET_DIR" --profile performance
-cargo clean --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --profile dev
+cargo clean --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --profile dev
 rm -rf build dist docs/site "$CARGO_TARGET_DIR/fw"
 '''
 
@@ -149,10 +149,10 @@ set -euo pipefail
 python3 benchmark/docs.py check
 python3 scripts/check-reference.py
 python3 scripts/check-docs.py --preflight-build
-cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"
+cargo build --quiet --locked --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec"
 rm -rf docs/site
-PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
-PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.en.toml
+PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semaspec/debug/semaspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
+PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semaspec/debug/semaspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.en.toml
 cp docs/index.html docs/site/index.html
 python3 scripts/check-docs.py "$@"
 '''
@@ -171,12 +171,12 @@ shift
 if ! python3 scripts/check-docs.py --preflight-build; then
   echo "warning: documentation preflight failed; continuing live preview" >&2
 fi
-if ! cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"; then
-  echo "warning: semspec build failed; continuing live preview with the existing renderer when available" >&2
+if ! cargo build --quiet --locked --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec"; then
+  echo "warning: semaspec build failed; continuing live preview with the existing renderer when available" >&2
 fi
 export PVISOR_DOCS_LIVE=1
 export PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec"
+export SEMSPEC_BIN="$CARGO_TARGET_DIR/semaspec/debug/semaspec"
 exec uv run --locked --only-group dev zensical serve -f "$config" "$@"
 '''
 
@@ -454,7 +454,7 @@ description = "支持 --check 等 formatter 参数"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-ruff format pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py "$@"
+ruff format pvisor tests examples benchmark tools/semaspec docs/semaspec_tables.py scripts/packaging scripts/ci setup.py "$@"
 '''
 
 [tasks.fmt-rust]
@@ -465,14 +465,14 @@ set -euo pipefail
 cargo fmt --all -- "$@"
 '''
 
-[tasks.fmt-semspec]
-description = "fmt-semspec"
+[tasks.fmt-semaspec]
+description = "fmt-semaspec"
 hide = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for fmt-semspec" >&2; exit 2; fi
-cargo fmt --manifest-path tools/semspec/Cargo.toml --check
+if [[ $# -gt 0 ]]; then echo "too many arguments for fmt-semaspec" >&2; exit 2; fi
+cargo fmt --manifest-path tools/semaspec/Cargo.toml --check
 '''
 
 [tasks.fw]
@@ -532,7 +532,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for lint-py" >&2; exit 2; fi
-ruff check pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py
+ruff check pvisor tests examples benchmark tools/semaspec docs/semaspec_tables.py scripts/packaging scripts/ci setup.py
 '''
 
 [tasks.lint-rust]
@@ -544,14 +544,14 @@ if [[ $# -eq 0 ]]; then set -- --workspace; fi
 cargo clippy --all-targets --locked "$@" -- -D warnings
 '''
 
-[tasks.lint-semspec]
-description = "lint-semspec"
+[tasks.lint-semaspec]
+description = "lint-semaspec"
 hide = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for lint-semspec" >&2; exit 2; fi
-cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
+if [[ $# -gt 0 ]]; then echo "too many arguments for lint-semaspec" >&2; exit 2; fi
+cargo clippy --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --all-targets --locked -- -D warnings
 '''
 
 [tasks.lint-workflows]
@@ -580,13 +580,14 @@ mkdir -p "$(dirname "$PVISOR_FW_SOURCE_ARCHIVE")"
 mise run fw -- build --source-output "$CARGO_TARGET_DIR/libkrunfw.SOURCE" --source-archive "$PVISOR_FW_SOURCE_ARCHIVE"
 '''
 
-[tasks.semspec]
-description = "semspec"
+[tasks.semaspec]
+alias = "sspec"
+description = "semaspec"
 hide = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- "$@"
+cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- "$@"
 '''
 
 [tasks.set-nightly-version]
@@ -696,7 +697,7 @@ done
 if [[ "$selected" == 0 ]]; then
   uv run --locked --only-group dev python -m unittest discover -s tests "$@"
   uv run --locked --only-group dev python -m unittest discover -s benchmark/support "$@"
-  uv run --locked --only-group dev python -m unittest discover -s tools/semspec "$@"
+  uv run --locked --only-group dev python -m unittest discover -s tools/semaspec "$@"
   for suite in tests filesystem memory; do
     uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite" "$@"
   done
@@ -709,14 +710,28 @@ fi
 description = "Debug nextest；支持 Cargo 包名和已有简称，-- 后转发 nextest 参数"
 file = "scripts/tasks/test-rust.sh"
 
-[tasks.test-semspec]
-description = "test-semspec"
+[tasks.test-startup]
+description = "由 semaspec 驱动 startup 的 Markdown 检查与原生端到端验证"
 hide = true
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked "$@"
-python3 -m unittest discover -s tools/semspec -p 'test_*.py'
+mise run semaspec -- lint benchmark/startup
+if [[ "$(uname -s)" == Linux ]]; then
+  mise run semaspec -- run benchmark/startup/checks.md --require-pass "$@"
+else
+  mise run semaspec -- run benchmark/startup/checks.md --require-pass --case S-STARTUP-001,S-STARTUP-003,S-STARTUP-004,S-STARTUP-005 "$@"
+fi
+'''
+
+[tasks.test-semaspec]
+description = "test-semaspec"
+hide = true
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo nextest run --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked "$@"
+python3 -m unittest discover -s tools/semaspec -p 'test_*.py'
 '''
 
 [tasks.test-vm-snapshot-state]

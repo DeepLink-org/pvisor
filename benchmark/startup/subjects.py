@@ -1,4 +1,4 @@
-"""Fixed startup argv; preparation and timing live outside the subject command."""
+"""Startup labels and expansion of explicit semaspec plans; no hidden subject argv."""
 
 import re
 
@@ -27,162 +27,24 @@ LABELS = dict(
         ),
     )
 )
-SUBJECTS = {
-    "native": [
-        "/bin/sh",
-        "-c",
-        'printf \'REFERENCE_READY\\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\\n\'',
-    ],
-    "pvisor-host": [
-        "@BINARY@",
-        "spawn",
-        "--no-agent-defaults",
-        "--overlaynet",
-        "off",
-        "--stdio",
-        "inherit",
-        "--timeout",
-        "30s",
-        "--filesystem",
-        "host",
-        "--",
-        "/bin/sh",
-        "-c",
-        'printf \'REFERENCE_READY\\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\\n\'',
-    ],
-    "pvisor-staged": [
-        "@BINARY@",
-        "spawn",
-        "--no-agent-defaults",
-        "--overlaynet",
-        "off",
-        "--stdio",
-        "inherit",
-        "--timeout",
-        "30s",
-        "--stage",
-        "@BATCH@/current/stage",
-        "--",
-        "/bin/sh",
-        "-c",
-        'printf \'REFERENCE_READY\\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\\n\'',
-    ],
-    "pvisor-vm": [
-        "@BINARY@",
-        "spawn",
-        "--no-agent-defaults",
-        "--overlaynet",
-        "off",
-        "--stdio",
-        "inherit",
-        "--timeout",
-        "30s",
-        "--stage",
-        "@BATCH@/current/stage",
-        "--vm",
-        "--rootfs",
-        "@ASSETS@/rootfs",
-        "--cpu",
-        "2",
-        "--memory",
-        "128MiB",
-        "--",
-        "/bin/sh",
-        "-c",
-        'printf \'REFERENCE_READY\\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\\n\'',
-    ],
-    "docker": [
-        "docker",
-        "run",
-        "--rm",
-        "--pull",
-        "never",
-        "--network",
-        "none",
-        "--name",
-        "@CONTAINER@",
-        "--label",
-        "pvisor.startup.batch=@BATCH_NAME@",
-        "--mount",
-        "type=bind,source=@BATCH@/workspace,target=/work",
-        "--workdir",
-        "/work",
-        "--entrypoint",
-        "/bench/affinity",
-        "@IMAGE@",
-        "@CPU@",
-        "/bin/sh",
-        "-c",
-        'printf \'REFERENCE_READY\\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\\n\'',
-    ],
-    "fc-system": ["firecracker", "--no-api", "--config-file", "@BATCH@/current/firecracker.json"],
-    "qemu": [
-        "qemu-system-x86_64",
-        "-machine",
-        "q35",
-        "-accel",
-        "kvm",
-        "-cpu",
-        "host",
-        "-smp",
-        "2",
-        "-m",
-        "128",
-        "-nodefaults",
-        "-display",
-        "none",
-        "-serial",
-        "stdio",
-        "-no-reboot",
-        "-kernel",
-        "@VMLINUX@",
-        "-append",
-        "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/bench/init quiet "
-        "pvbench.mode=ready pvbench.scratch=executor",
-        "-drive",
-        "file=@BATCH@/current/rootfs.ext4,format=raw,if=none,id=root",
-        "-device",
-        "virtio-blk-pci,drive=root",
-        "-initrd",
-        "@INITRD@",
-    ],
-    "qemu-microvm": [
-        "qemu-system-x86_64",
-        "-machine",
-        "microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=on",
-        "-accel",
-        "kvm",
-        "-cpu",
-        "host",
-        "-smp",
-        "2",
-        "-m",
-        "128",
-        "-nodefaults",
-        "-display",
-        "none",
-        "-serial",
-        "stdio",
-        "-no-reboot",
-        "-kernel",
-        "@VMLINUX@",
-        "-append",
-        "console=ttyS0 reboot=t panic=1 root=/dev/vda rw init=/bench/init quiet "
-        "pvbench.mode=ready pvbench.scratch=executor pci=off",
-        "-drive",
-        "file=@BATCH@/current/rootfs.ext4,format=raw,if=none,id=root",
-        "-device",
-        "virtio-blk-device,drive=root",
-        "-initrd",
-        "@INITRD@",
-    ],
-}
 
 
-def subject(backend, variables):
+def timing_rows(document):
+    """Map semaspec-validated subject plans to script-owned Ready/Exit rows."""
+    plans = document["experiments"]
+    if document["tables"] or not plans or any(cell["id"] not in NAMES for cell in plans):
+        raise ValueError("expected known startup benchmark plans")
+    return {
+        LABELS[cell["id"]]: "$ python3 @REPO@/benchmark/startup/timing.py @BATCH@ --backend "
+        + cell["id"]
+        for cell in plans
+    }
+
+
+def subject(plan, variables):
     """Expand prepared paths in each argv element without invoking a shell."""
     argv = []
-    for value in SUBJECTS[backend]:
+    for value in plan["argv"]:
         for name, replacement in variables.items():
             value = value.replace("@" + name + "@", str(replacement))
         if re.search(r"@[A-Z_]+@", value):

@@ -5,7 +5,7 @@ Read the [benchmark registry](../../benchmark/REGISTRY.md) and
 B-MEMORY-SCALE engineering extension; results do not populate user benchmarks.
 The other null JSON templates remain unprepared and are not elapsed-time
 substitutes for phase memory accounting. `scanner_compare.json` is a Python paired
-row; `--prepare` expands its inputs, and `semspec bench` executes the coordinator.
+row; `--prepare` expands its inputs, and `semaspec bench` executes the coordinator.
 
 `opensandbox_memory.json` registers the separate B-OPENSANDBOX-MEMORY-ENG
 phase-memory experiment. Its generic JSON row remains deliberately unprepared;
@@ -15,7 +15,7 @@ the preparation, preflight, five randomized rounds and audit described in that
 [experiment manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/README.md#full-service-and-instance-memory).
 Do not substitute campaign elapsed time for memory or fill this placeholder
 with historical measurements. The related native engine old/new diagnostic is
-registered by `startup/sandbox_engine.json` and uses the retired `engine_ab.py` in that archived manual.
+registered by `startup/sandbox_engine.md` and uses the retired `engine_ab.py` in that archived manual.
 
 ## Adaptive page scanner versus KSM
 
@@ -78,7 +78,7 @@ python3 benchmark/memory/scanner_compare.py \
   --rootfs PREPARED_TOOL_ROOTFS \
   --firmware benchmark/memory/.data/build-20261018/firmware \
   --output benchmark/memory/.data/f1 --samples 5 --prepare
-target/semspec/debug/semspec bench --cwd "$PWD" \
+target/semaspec/debug/semaspec bench --cwd "$PWD" \
   benchmark/memory/.data/f1.input.json
 ```
 
@@ -255,13 +255,13 @@ cannot prewarm the timed first readback. No target sharing in a physical
 arm is valid zero benefit; a DAX arm without any shared target page fails its
 data-path check. Guest STATX DAX attributes, rootfs/source hashes and all failed
 conditions are retained. Use the common preparation helper's `--library-rootfs`
-option, then the independent semspec input:
+option, then the independent semaspec input:
 
 ```sh
 python3 benchmark/memory/library_compare.py --inputs /short/frozen-inputs \
   --docker-inputs /short/frozen-docker-inputs \
   --output /short/new-library-preflight --preflight --prepare
-target/semspec/debug/semspec bench --cwd "$PWD" /short/new-library-preflight.input.json
+target/semaspec/debug/semaspec bench --cwd "$PWD" /short/new-library-preflight.input.json
 ```
 
 Formal library sampling requires all seven variants and at least five randomized
@@ -273,7 +273,7 @@ python3 benchmark/memory/pool_compare.py \
   --inputs benchmark/memory/.data/pool-build-5 \
   --docker-inputs benchmark/memory/.data/docker-inputs-1 \
   --output /short/new-static-preflight --preflight --prepare
-target/semspec/debug/semspec bench --cwd "$PWD" \
+target/semaspec/debug/semaspec bench --cwd "$PWD" \
   /short/new-static-preflight.input.json
 ```
 

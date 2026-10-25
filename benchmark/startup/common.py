@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -61,15 +62,26 @@ def prepare_template(
     template, output=None, assets=None, binary=None, receipt=None, cpu_affinity="0,1", row=None
 ):
     template = Path(template).resolve()
-    table = json.loads(template.read_text())
+    table = COMMON.table_template(template)
     if row is None and len(table) != 1:
         raise ValueError("select one startup row during preparation")
     row = row or next(iter(table))
     backend = next((key for key, label in LABELS.items() if label == row), None)
     if backend is None or row not in table:
         raise ValueError("one registered startup condition is required")
-    script = backend.replace("-", "_") + "_timing"
-    if table[row] != f"$ python3 @REPO@/benchmark/startup/{script}.py @BATCH@":
+    source = template.with_name(backend.replace("-", "_") + "_timing.md")
+    document = COMMON.markdown_inventory(source)
+    if len(document["experiments"]) != 1 or document["experiments"][0]["id"] != backend:
+        raise ValueError("one matching startup plan is required")
+    plan = document["experiments"][0]["plan"]
+    if (
+        plan["prepare"]
+        or plan["conclude"]
+        or plan["cleanup"]
+        or plan["expected_stdout"] is not None
+    ):
+        raise ValueError("startup correctness uses the Ready/Exit adapter, not process hooks")
+    if table[row] != f"$ python3 @REPO@/benchmark/startup/timing.py @BATCH@ --backend {backend}":
         raise ValueError("startup row differs from its fixed timing script")
     import timing as ready
 
@@ -86,7 +98,10 @@ def prepare_template(
             raise ValueError("prepared inputs required: use --assets or PVISOR_BENCHMARK_ASSETS")
         assets = None if backend == "native" else Path(asset_path).resolve()
         before = verify_reference_inputs(assets) if assets else None
-        artifacts = []
+        artifacts = [
+            source,
+            Path(os.environ.get("SEMSPEC_BIN", REPO / "target/semaspec/debug/semaspec")),
+        ]
         if assets:
             artifacts += [assets / "assets.json", assets / "input-manifest.json"]
         binary = Path(binary or REPO / "target/release/pvisor").resolve()
@@ -156,6 +171,14 @@ def prepare_template(
             scope=COMMON.READY_EXIT_SCOPE,
             measurement_engine="python-perf_counter_ns",
             ready="exact REFERENCE_READY line received",
+            plan=plan,
+            specification_sha256=document["source_sha256"],
+            host=dict(machine=platform.machine(), processor=platform.processor() or "unavailable"),
+            inherited_environment={
+                key: os.environ[key]
+                for key in ("PATH", "LANG", "LC_ALL", "TZ")
+                if key in os.environ
+            },
         )
         COMMON.save(batch / "protocol.json", protocol)
         artifacts.append(batch / "protocol.json")
@@ -163,12 +186,13 @@ def prepare_template(
             Path(__file__),
             template.with_name("hooks.py"),
             template.with_name("audit.py"),
+            REPO / "benchmark/run.py",
             REPO / "benchmark/support/reference_inputs.py",
             REPO / "benchmark/support/firecracker_kernels.py",
         ]
-        helpers += [
-            template.with_name(name) for name in ("timing.py", "subjects.py", script + ".py")
-        ]
+        helpers += [template.with_name(name) for name in ("timing.py", "subjects.py")]
+        if source != template:
+            helpers.append(source)
         variables = dict(
             BINARY=binary,
             ASSETS=assets,
@@ -179,8 +203,21 @@ def prepare_template(
             VMLINUX=kernel["paths"]["vmlinuz"] if kernel else "",
             INITRD=kernel["paths"].get("initrd", "") if kernel else "",
         )
-        protocol["subject"] = subject(backend, variables | {"REPO": REPO, "BATCH": batch})
+        expanded = variables | {"REPO": REPO, "BATCH": batch}
+        protocol["subject"] = subject(plan, expanded)
+        executable = shutil.which(protocol["subject"][0])
+        if executable is None:
+            raise ValueError("missing subject executable: " + protocol["subject"][0])
+        executable = Path(executable).resolve(strict=True)
+        protocol["subject_executable"] = str(executable)
+        artifacts.append(executable)
+        protocol["environment"] = {
+            key: subject({"argv": [value]}, expanded)[0] for key, value in plan["env"].items()
+        }
+        protocol["cwd"] = subject({"argv": [plan["cwd"] or "@BATCH@/workspace"]}, expanded)[0]
         COMMON.save(batch / "protocol.json", protocol)
+        if COMMON.digest(source) != document["source_sha256"]:
+            raise ValueError("startup specification changed during preparation")
         prepare(batch, backend)
         COMMON.materialize(
             template,
@@ -189,7 +226,7 @@ def prepare_template(
             artifacts,
             batch / "workspace",
             helpers,
-            row_config=dict(rows={row: backend}, runs=ready.RUNS, warmup=ready.WARMUP),
+            row_config=dict(rows={row: backend}, runs=plan["runs"], warmup=plan["warmup"]),
         )
         ready.run_trial(batch, "preflight", 0, reset=False)
         return batch
@@ -210,6 +247,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("template", type=Path)
     p.add_argument("--output", type=Path)
+    p.add_argument("--row")
     p.add_argument("--assets", type=Path)
     p.add_argument("--binary", type=Path)
     p.add_argument("--kernel-receipt", type=Path)
@@ -224,6 +262,7 @@ if __name__ == "__main__":
                 args.binary,
                 args.kernel_receipt,
                 args.cpu_affinity,
+                row=args.row,
             )
         )
     except (ValueError, OSError, subprocess.SubprocessError) as error:

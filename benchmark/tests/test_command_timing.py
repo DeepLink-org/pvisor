@@ -19,15 +19,15 @@ sys.path.append(str(ROOT / "startup"))
 import common as COMMON  # noqa: E402
 from update import display_table, publish, validate_batch  # noqa: E402
 
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
+SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semaspec/debug/semaspec"))
 LIVE = SEMSPEC.is_file()
 
 
 class RegistryTests(unittest.TestCase):
     def test_public_summary_excludes_harnesses_from_both_directory_names(self):
         artifacts = {
-            "/repo/benchmark/startup/timing.json": "current-harness",
-            "/repo/benchmark.new/startup/timing.json": "historical-harness",
+            "/repo/benchmark/startup/timing.md": "current-harness",
+            "/repo/benchmark.new/startup/timing.md": "historical-harness",
             "/repo/benchmark/.data/cohort/inputs/rootfs.img": "input-bytes",
         }
         self.assertEqual(COMMON.artifact_summary(artifacts), {"inputs/rootfs.img": "input-bytes"})
@@ -79,19 +79,19 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(row["benchmark_id"], "B-FS-TOOLS")
                 self.assertEqual(path.suffix, ".md")
                 continue
-            self.assertEqual(path.suffix, ".json")
-            table = json.loads(path.read_text())
+            table = COMMON.table_template(path)
             self.assertTrue(table)
-            if row["status"].startswith("prepared-python-ready"):
+            if row["status"] == "prepared-markdown-ready-exit":
                 from subjects import LABELS
 
                 self.assertEqual(row["benchmark_id"], "B-STARTUP")
                 backends = {label: backend for backend, label in LABELS.items()}
                 for label, command in table.items():
                     backend = backends[label]
-                    script = backend.replace("-", "_") + "_timing"
+                    script = "timing"
                     self.assertEqual(
-                        command, f"$ python3 @REPO@/benchmark/startup/{script}.py @BATCH@"
+                        command,
+                        f"$ python3 @REPO@/benchmark/startup/{script}.py @BATCH@ --backend {backend}",
                     )
                     self.assertTrue(path.with_name(script + ".py").is_file())
                 continue
@@ -121,19 +121,19 @@ class RegistryTests(unittest.TestCase):
             existing_python_tables = {
                 "explicit-python-paired-prepared-images": (
                     "B-LAZY-STARTUP",
-                    "startup/image_compare.json",
+                    "startup/image_compare.md",
                     "warm-prepared-paired",
                     "$ python3 @HARNESS@/image_compare.py --measure @BATCH@",
                 ),
                 "explicit-python-paired-cold-warm-images": (
                     "B-LAZY-STARTUP",
-                    "startup/image_lazy_compare.json",
+                    "startup/image_lazy_compare.md",
                     "cold-warm-client-paired",
                     "$ python3 @HARNESS@/image_lazy_compare.py --measure @BATCH@",
                 ),
                 "explicit-python-paired-same-staged-executor": (
                     "B-LAZY-STARTUP",
-                    "startup/stage_lazy_compare.json",
+                    "startup/stage_lazy_compare.md",
                     "same-stage-cold-warm-paired",
                     "$ python3 @HARNESS@/stage_lazy_compare.py --measure @BATCH@",
                 ),
@@ -202,7 +202,7 @@ class RegistryTests(unittest.TestCase):
             if entry["status"] in ("prepared-markdown-command", "prepared-markdown-filesystem"):
                 self.assertEqual(Path(entry["entry"]).suffix, ".md")
                 continue
-            table = json.loads((ROOT / entry["entry"]).read_text())
+            table = COMMON.table_template(ROOT / entry["entry"])
             if entry["status"] == "requires-single-condition-command":
                 self.assertTrue(
                     all(

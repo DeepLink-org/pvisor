@@ -9,7 +9,7 @@
 也可以对已有二进制运行：
 
 ```sh
-mise run semspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+mise run semaspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
 ```
 
 macOS 必须设置 `PVISOR_CASE_ROOTFS` 为 Linux guest rootfs；Linux 默认使用 `/`。

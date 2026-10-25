@@ -1993,7 +1993,7 @@ rglob 之后也等待 1.2 秒。候选 VM 结果如下，单位 ms；tmpfs 已�
 
 验证：Core **97 项（5 跳过）**、overlayfs **12 项**、VM **294 项（2 跳过）**、
 基准 **25 项**通过；三个相关包的 all-targets Clippy 和基准 Ruff 通过。
-没有修改或批准 semspec ledger/snapshot。完整样本和失败，不只成功摘要，
+没有修改或批准 semaspec ledger/snapshot。完整样本和失败，不只成功摘要，
 保存在下列证据中；macOS、启动、网络和完整 Agent 闭环不由这些数字推算。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/filesystem-kernel-20261005/full-same-source.tsv` ·

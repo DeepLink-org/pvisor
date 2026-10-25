@@ -21,11 +21,11 @@ pvisor apply ../stage-reference-001 --path report.txt
 
 ## 核对可执行行为
 
-[场景附录](cases.md)保留产品命令、语义声明与断言，也是 semspec 的 DOC 规格源。代码块中的 runner 夹具不能直接当作普通 shell 命令运行；仓库入口 `mise run cases` 执行对应检查。检查成功与人工批准分别记录，不因 PASS 改写人工审核账本。
+[场景附录](cases.md)保留产品命令、语义声明与断言，也是 semaspec 的 DOC 规格源。代码块中的 runner 夹具不能直接当作普通 shell 命令运行；仓库入口 `mise run cases` 执行对应检查。检查成功与人工批准分别记录，不因 PASS 改写人工审核账本。
 
 ## 场景检查准备
 
-下列 Markdown 函数供场景附录和 VM 检查共用。semspec 自动抽取标记的准备块，每个 case 使用独立 CASE_ROOT、WS 和显式 SUBJECT_BIN；准备与断言全部参与审核摘要。
+下列 Markdown 函数供场景附录和 VM 检查共用。semaspec 自动抽取标记的准备块，每个 case 使用独立 CASE_ROOT、WS 和显式 SUBJECT_BIN；准备与断言全部参与审核摘要。
 
 <!-- semspec: setup -->
 ````bash
@@ -80,7 +80,7 @@ case_run() {
 _pvisor_helper() {
   python3 - "$@" <<'PYTHON'
 #!/usr/bin/env python3
-"""Sealed Run Bundle accessors for the semspec DOC catalog."""
+"""Sealed Run Bundle accessors for the semaspec DOC catalog."""
 
 from __future__ import annotations
 

@@ -37,8 +37,8 @@ jobs:
       - run: mise run lint-rust
       - run: mise run lint-api-docs
 
-  semspec:
-    name: semspec / ${{ matrix.os }}
+  semaspec:
+    name: semaspec / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -53,13 +53,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/semspec -> ../../target/semspec
-      - run: mise run fmt-semspec
-      - run: mise run lint-semspec
-      - run: mise run test-semspec
-      - run: mise run semspec -- --spec-dir docs/src/zh/reference lint
-      - run: mise run semspec -- lint docs/src/zh/cases
-      - run: mise run semspec -- --spec-dir tools/semspec/semantics lint
+          workspaces: tools/semaspec -> ../../target/semaspec
+      - run: mise run fmt-semaspec
+      - run: mise run lint-semaspec
+      - run: mise run test-semaspec
+      - run: mise run test-startup
+      - run: mise run semaspec -- --spec-dir docs/src/zh/reference lint
+      - run: mise run semaspec -- lint docs/src/zh/cases
+      - run: mise run semaspec -- --spec-dir tools/semaspec/semantics lint
       # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
   python:
@@ -434,7 +435,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, firmware, native-components, rust-test, pvisor-isolation-regression, examples, semspec]
+    needs: [checks, python, firmware, native-components, rust-test, pvisor-isolation-regression, examples, semaspec]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

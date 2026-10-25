@@ -13,11 +13,12 @@
 ## 模板与执行
 
 [process/smoke.md](process/smoke.md) 与 [process/nightly.md](process/nightly.md) 把各自采样配置、四个直接 argv 条件与
-校验 hooks 放在同一份可读规格中。`mise run benchmark -- smoke` 先通过 semspec 的 JSON
+校验 hooks 放在同一份可读规格中。`mise run benchmark -- smoke` 先通过 semaspec 的 JSON
 计划清单读取 Markdown，准备器只展开路径和执行预检；行模板自动生成，不维护配套
 `.json` 和 `.commands.json`。批次仍保留现有逐次计时、完整审计与 CI 阈值比较。
 [replay/replay.md](replay/replay.md) 同样统一七种轨迹格式的计划，复用相同入口；
-fixture、原生前缀及工作区校验由 replay 适配器负责。其余注册实验仍用以下 JSON 格式。
+fixture、原生前缀及工作区校验由 replay 适配器负责。startup 的八个 Ready/Exit 计划、聚合表、专用配对表与未准备入口也由 Markdown 承载；
+`startup/checks.md` 通过 semaspec 驱动正确性回归与原生端到端验证。其余主题保留以下 JSON 格式。
 
 每个条件对应一个 Python 行命令，脚本返回 N、Median ms、Mean ms、SD ms、Min ms、Max ms。
 旧 JSON 入口的固定 argv、准备/校验命令、环境、样本数和预热数登记在同名
@@ -28,18 +29,18 @@ fixture、原生前缀及工作区校验由 replay 适配器负责。其余注�
 ```
 
 计时器使用标准库 `perf_counter_ns` 与 `statistics`，只计时被测进程的创建至正常退出；
-准备和校验命令不计时，但每次（包括预热）必须成功。解释器启动、semspec 和统计处理不计时。
+准备和校验命令不计时，但每次（包括预热）必须成功。解释器启动、semaspec 和统计处理不计时。
 公共时钟、预热/采样、统计、逐次记录及命令证据审核现在由
-[semspec runtime](../tools/semspec/runtime.py) 提供。`command_timing.py`、startup 的
+[semaspec runtime](../tools/semaspec/runtime.py) 提供。`command_timing.py`、startup 的
 `timing.py`、filesystem 的 `fs_timing.py` 是实验适配器，只保留各自的准备、Ready
 协议、fixture 与正确性检查。批次同时冻结公共 runtime 摘要和源码，沿用现有时钟
 与统计字段；不合并或改写历史样本。复杂专用实验暂时保留自己的执行协议。
 
 小型本地实验可直接在 Markdown 中写 `semspec: bench id=NAME` TOML cell，
-用 `semspec filter experiment.md --execute` 得到表格；无需手写采样循环或 result.json。
+用 `semaspec filter experiment.md --execute` 得到表格；无需手写采样循环或 result.json。
 已有自有采样协议的实验使用 `semspec: table id=NAME` JSON cell，返回完整行，避免重复计时。
 同一文档中的 case、期待输出、结果和说明也由 filter 统一渲染。
-格式见 [semspec](../tools/semspec/README.md#shared-experiment-runtime)。
+格式见 [semaspec](../tools/semaspec/README.md#shared-experiment-runtime)。
 公开 benchmark 仍必须经过本目录的注册、准备、完整逐次审计和发布门禁。
 
 ```sh
@@ -53,11 +54,11 @@ mise run benchmark -- replay --binary target/release/pvisor-replay
 ```
 
 `mise run benchmark` 直接输出渲染后的 Markdown 表格，并在模板旁生成同名 `.render.json`：
-例如 `docker_timing.json` → `docker_timing.render.json`。默认使用自动清理的临时目录，
+例如 `docker_timing.md` → `docker_timing.render.json`。默认使用自动清理的临时目录，
 只保留最终表格；不追加 CSV、不自动更新用户文档。部分行失败时不覆盖已有结果。
 第二个位置参数或 `--row` 可指定启动或文件系统表的一行；行名忽略大小写和多余空格。
 复测仅执行该行，更新同名结果文件中的该行并输出合并表格，已有其他行保留，顺序跟随模板。
-没有旧结果时只含已测行；整表执行会替换全部结果。入口先构建 semspec 以解析 Markdown；
+没有旧结果时只含已测行；整表执行会替换全部结果。入口先构建 semaspec 以解析 Markdown；
 拼错行名会在产品构建和实验准备前报错并列出可选行。
 启动默认选当前可用的前两个 CPU，可用 `--cpu-affinity` 指定；pVisor、镜像与内核需要预先准备。
 process smoke/nightly 保留自动构建；其他表使用预构建制品。
@@ -70,16 +71,20 @@ mise run benchmark -- smoke --output benchmark/process/.data/measurement
 ```
 
 启动每行保存在 `row-0-<id>/`、`row-1-<id>/` 等子目录中；其他表直接使用指定目录。
+启动整次选择写入 `run.json`，记录所有选中行与完成状态。用
+`python3 benchmark/run.py --audit EVIDENCE_DIR` 独立复核整次选择或通用单行批次，
+不重新测量、不发布；startup 的干净源码复现与输入缺口见
+[startup/REPRODUCING.md](startup/REPRODUCING.md)。
 `PVISOR_BENCHMARK_OUTPUT` 仍按表名创建子目录，供 CI 保留 `smoke/in.bench.json`。
 可对保留批次单独执行 `update.py`；文档发布必须使用完整审计证据。
 
-安装 Python 3.10+ 并构建独立的 semspec CLI；无需外部计时工具。
-准备脚本只冻结输入、展开私有路径和做预检；真正执行实验的入口是 **semspec bench**。
+安装 Python 3.10+ 并构建独立的 semaspec CLI；无需外部计时工具。
+准备脚本只冻结输入、展开私有路径和做预检；真正执行实验的入口是 **semaspec bench**。
 例如 process smoke（2 次预热、10 次样本；nightly 为 10 / 50）：
 
 ```sh
-cargo build --locked --manifest-path tools/semspec/Cargo.toml --target-dir target/semspec
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
+cargo build --locked --manifest-path tools/semaspec/Cargo.toml --target-dir target/semaspec
+export SEMSPEC_BIN="$PWD/target/semaspec/debug/semaspec"
 batch=$(python3 benchmark/process/prepare.py benchmark/process/smoke.md --binary target/release/pvisor)
 "$SEMSPEC_BIN" bench --cwd "$batch/workspace" "$batch/in.json"
 python3 benchmark/update.py "$batch"
@@ -103,7 +108,7 @@ python3 benchmark/update.py "$batch"
 新 Python 计时口径不能与历史 hyperfine 批次合并，历史文件与 provenance 保持原样。
 历史 replay 文档绑定明确保留旧口径，拒绝把新计时结果直接覆盖成旧口径；新公开批次须登记新绑定。
 
-`run.py` 统一解析表名、行名和选项；mise 只负责按解析结果构建 process 二进制与 semspec。
+`run.py` 统一解析表名、行名和选项；mise 只负责按解析结果构建 process 二进制与 semaspec。
 准备和发布只接受整行命令，旧的逐单元格命令与 `| json ... * ...` 提取分支已删除。
 历史展示 JSON 仍可直接渲染；旧逐单元格批次不再由当前发布器发布，需要按当前模板重新测量。
 
@@ -143,14 +148,14 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 活动入口由 registry.csv 登记，已迁移的 smoke、nightly 和 replay 使用 Markdown，其他保留 JSON。启动、process、filesystem/tools、replay 有具体命令；其他条目的
 `requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需实现单次负载及正确性 hooks，不能用历史统计或任意命令填充。
 
-`mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
+`mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semaspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
 Linux CI 失败时，在比较之后按各批次冻结的 argv 额外执行 status/review，
 将 strace 与可用的 CLI 入口 profile 写到各批次 `diagnostics/`。
 同时单独保留无 strace 的 `*.profile.stderr`，用于区分读取与验证阶段；
 启用 profile 的额外命令仍含诊断写入成本，不是原始性能样本。
 这些调用不进入样本或阈值计算，不覆盖原始统计；它们只用于 B-PROCESS 工程诊断。
-验证：`mise run test-semspec` 和 `mise run test-py -- discover -s benchmark/tests`。
+验证：`mise run test-semaspec` 和 `mise run test-py -- discover -s benchmark/tests`。
 
 ## 文档表格
 
@@ -162,7 +167,7 @@ Linux CI 失败时，在比较之后按各批次冻结的 argv 额外执行 stat
 正文已有的静态表、逐轮逐环境记录、历史和工程中间表不默认另行导出。
 完整 CSV/JSON 留在原批次的本地 publication 目录或 `.data/` 归档，动态 JSON 只保留构建所需投影。
 本地化展示 JSON 留在文章旁。
-复测发布的结果与自动生成的覆盖范围表继续通过 `semspec render` 读取 JSON。
+复测发布的结果与自动生成的覆盖范围表继续通过 `semaspec render` 读取 JSON。
 重复表头可使用 `headers`，链接、代码和对齐通过显式渲染选项保留。
 
 ```sh
@@ -200,14 +205,14 @@ B-REPLAY 使用七个固定适配器，每个一条 task 0 合成轨迹，60 次
 未提供 source-build receipt 时，不能声称冻结二进制来自当前源码。
 
 ```sh
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
+export SEMSPEC_BIN="$PWD/target/semaspec/debug/semaspec"
 batch=$(taskset -c 0,1 python3 benchmark/replay/prepare.py benchmark/replay/replay.md --binary target/release/pvisor-replay)
 taskset -c 0,1 "$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"
 python3 benchmark/update.py "$batch"
 python3 benchmark/docs.py publish "$batch"
 ```
 
-亲和性在准备与 semspec 外层设置，manifest 记录实际选择；被测命令没有 Python 或
+亲和性在准备与 semaspec 外层设置，manifest 记录实际选择；被测命令没有 Python 或
 `taskset` 包裹。所有适配器按独立条件采样，不声称随机配对改善比例。
 
 ## 公开图表清理

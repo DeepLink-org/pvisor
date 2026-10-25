@@ -1,15 +1,15 @@
 benchmark_id,role,entry,status
-B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.json,requires-single-condition-command
-B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.json,requires-single-condition-command
-B-OPENSANDBOX-BURST-DIAG,diagnostic,startup/opensandbox_burst.json,requires-single-condition-command
+B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.md,requires-single-condition-command
+B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.md,requires-single-condition-command
+B-OPENSANDBOX-BURST-DIAG,diagnostic,startup/opensandbox_burst.md,requires-single-condition-command
 B-OPENSANDBOX-MEMORY-ENG,engineering A/B,memory/opensandbox_memory.json,requires-single-condition-command
-B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command
-B-LAZY-STARTUP,user-facing,startup/image_compare.json,explicit-python-paired-prepared-images
-B-LAZY-STARTUP,user-facing,startup/image_lazy_compare.json,explicit-python-paired-cold-warm-images
-B-LAZY-STARTUP,user-facing,startup/stage_lazy_compare.json,explicit-python-paired-same-staged-executor
-B-STARTUP-ENG,engineering A/B,startup/guest_init.json,requires-single-condition-command
-B-KERNEL-ENG,engineering A/B,startup/kernel.json,requires-single-condition-command
-B-STARTUP-DIAG,diagnostic,startup/diagnostic.json,requires-single-condition-command
+B-LAZY-STARTUP,user-facing,startup/lazy_startup.md,requires-single-condition-command
+B-LAZY-STARTUP,user-facing,startup/image_compare.md,explicit-python-paired-prepared-images
+B-LAZY-STARTUP,user-facing,startup/image_lazy_compare.md,explicit-python-paired-cold-warm-images
+B-LAZY-STARTUP,user-facing,startup/stage_lazy_compare.md,explicit-python-paired-same-staged-executor
+B-STARTUP-ENG,engineering A/B,startup/guest_init.md,requires-single-condition-command
+B-KERNEL-ENG,engineering A/B,startup/kernel.md,requires-single-condition-command
+B-STARTUP-DIAG,diagnostic,startup/diagnostic.md,requires-single-condition-command
 B-FS-TOOLS,user-facing,filesystem/tools.md,prepared-markdown-filesystem
 B-FS-TOOLS,user-facing,filesystem/user_workloads.json,explicit-python-layered-nine-mode-cross-runtime
 B-FS-ENG,engineering A/B,filesystem/ab.json,requires-single-condition-command
@@ -40,17 +40,17 @@ B-VCPU-IDLE-ENG,engineering A/B,memory/vcpu_idle.json,requires-single-condition-
 B-COLD-STORAGE-DIAG,diagnostic,memory/cold_storage.json,requires-single-condition-command
 B-MACOS,user-facing,agent/macos.json,requires-single-condition-command
 B-MACOS-ENG,engineering A/B,agent/macos_ab.json,requires-single-condition-command
-B-STARTUP,user-facing,startup/pvisor_vm_timing.json,prepared-python-ready-exit
+B-STARTUP,user-facing,startup/pvisor_vm_timing.md,prepared-markdown-ready-exit
 B-PROCESS,engineering A/B,process/smoke.md,prepared-markdown-command
 B-PROCESS,engineering A/B,process/nightly.md,prepared-markdown-command
-B-STARTUP,user-facing,startup/native_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/pvisor_host_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/pvisor_staged_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/docker_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/fc_system_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/qemu_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/qemu_microvm_timing.json,prepared-python-ready-exit
-B-STARTUP,user-facing,startup/timing.json,prepared-python-ready-exit
-B-STARTUP-REVISION-ENG,engineering A/B,startup/revision.json,requires-single-condition-command
+B-STARTUP,user-facing,startup/native_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/pvisor_host_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/pvisor_staged_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/docker_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/fc_system_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/qemu_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/qemu_microvm_timing.md,prepared-markdown-ready-exit
+B-STARTUP,user-facing,startup/timing.md,prepared-markdown-ready-exit
+B-STARTUP-REVISION-ENG,engineering A/B,startup/revision.md,requires-single-condition-command
 B-SWE-RESIDENT-ENG,engineering A/B,agent/swe_resident.json,requires-single-condition-command
 B-IMAGE-STORAGE-ENG,engineering A/B,storage/image_storage.json,requires-single-condition-command

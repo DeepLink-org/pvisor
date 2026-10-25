@@ -118,8 +118,8 @@ if [[ $# -gt 0 ]]; then echo "too many arguments for test-vocabulary" >&2; exit 
 work=$(mktemp -d)
 trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
 trap 'rm -rf "$work"' EXIT
-mise -C "$MISE_PROJECT_ROOT" run semspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/reference/index.md" > "$work/reference.bash"
-mise -C "$MISE_PROJECT_ROOT" run semspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/reference/cases-vm.md" > "$work/vm.bash"
+mise -C "$MISE_PROJECT_ROOT" run semaspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/reference/index.md" > "$work/reference.bash"
+mise -C "$MISE_PROJECT_ROOT" run semaspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/reference/cases-vm.md" > "$work/vm.bash"
 export CASE_ROOT="$work/case with spaces" WS="$work/case with spaces/ws" SUBJECT_BIN=/usr/bin/true
 mkdir -p "$WS"
 cd "$WS"
@@ -192,13 +192,13 @@ test "$got" -ne 0
 grep -Fq sdk-failure-detail "$work/stdout"
 grep -Fq exit=23 "$work/stderr"
 
-mise -C "$MISE_PROJECT_ROOT" run semspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/cases/06-stage-apply.md" > "$work/stage.bash"
+mise -C "$MISE_PROJECT_ROOT" run semaspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/cases/06-stage-apply.md" > "$work/stage.bash"
 mkdir "$work/bin"
 cp "$SUBJECT_BIN" "$work/bin/pvisor"
 bash -euo pipefail -c 'unset SUBJECT_BIN; export PATH="$2:$PATH"; source "$1"; pvisor' vocab-test "$work/stage.bash" "$work/bin" > "$work/stdout"
 test "$(cat "$work/stdout")" == 'chosen subject'
 
-mise -C "$MISE_PROJECT_ROOT" run semspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/cases/index.md" > "$work/journey.bash"
+mise -C "$MISE_PROJECT_ROOT" run semaspec -- helper setup "$MISE_PROJECT_ROOT/docs/src/zh/cases/index.md" > "$work/journey.bash"
 export DOCUMENT="$work/value.json"
 printf '%s' '{"flag":true,"changes":[]}' > "$DOCUMENT"
 for assertion in 'json_expect "$DOCUMENT" /flag 1' 'json_expect "$DOCUMENT" /missing null' 'json_paths "$DOCUMENT"'; do

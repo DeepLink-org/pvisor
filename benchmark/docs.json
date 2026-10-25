@@ -538,49 +538,49 @@
         "swe-agent": "swe-agent"
       }
     },
-    "startup/native_timing.json": {
+    "startup/native_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/pvisor_host_timing.json": {
+    "startup/pvisor_host_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/pvisor_staged_timing.json": {
+    "startup/pvisor_staged_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/pvisor_vm_timing.json": {
+    "startup/pvisor_vm_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/docker_timing.json": {
+    "startup/docker_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/fc_system_timing.json": {
+    "startup/fc_system_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/qemu_timing.json": {
+    "startup/qemu_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",
       "metric_scope": "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
     },
-    "startup/qemu_microvm_timing.json": {
+    "startup/qemu_microvm_timing.md": {
       "kind": "startup",
       "benchmark_id": "B-STARTUP",
       "page": "benchmarks/startup.md",

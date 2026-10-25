@@ -1,3 +1,0 @@
-{
-  "Firecracker": "$ python3 @REPO@/benchmark/startup/fc_system_timing.py @BATCH@"
-}

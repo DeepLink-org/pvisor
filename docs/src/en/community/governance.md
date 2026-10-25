@@ -1,6 +1,6 @@
 # Governance and maintainers
 
-pVisor is currently decided by a single maintainer: code merges, releases, semspec approvals, and the authoritative documentation all go through the same entry point. There is no formal committee or multi-maintainer voting mechanism. This page describes current practice, not a charter that has yet to be established.
+pVisor is currently decided by a single maintainer: code merges, releases, semaspec approvals, and the authoritative documentation all go through the same entry point. There is no formal committee or multi-maintainer voting mechanism. This page describes current practice, not a charter that has yet to be established.
 
 ## How contributions land {#workflow}
 
@@ -10,9 +10,9 @@ pVisor is currently decided by a single maintainer: code merges, releases, semsp
 
 Code review, merging, and semantic-spec approval are handled separately: a passing PR does not automatically approve a product commitment; new user-visible boundaries need corresponding specs and human review.
 
-## semspec approval {#semspec}
+## semaspec approval {#semaspec}
 
-Contributors may draft cases, fix implementations, and maintain runner tests. semspec approve/revoke and the real `REVIEWED.toml` and `.approved/` snapshots are executed only by the maintainer; AI does not perform approvals and does not weaken existing checks to obtain PASS. See [Testing and semspec](testing.md) for the commands and rules.
+Contributors may draft cases, fix implementations, and maintain runner tests. semaspec approve/revoke and the real `REVIEWED.toml` and `.approved/` snapshots are executed only by the maintainer; AI does not perform approvals and does not weaken existing checks to obtain PASS. See [Testing and semaspec](testing.md) for the commands and rules.
 
 ## Not yet established {#records}
 

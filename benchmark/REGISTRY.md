@@ -134,11 +134,11 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
-- **入口脚本：** `benchmark/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`mise run benchmark -- startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark/startup/README.md`](../benchmark/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
+- **入口脚本：** `benchmark/startup/timing.md` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动 argv、环境、超时和采样参数由各自 `*_timing.md` 的 semaspec bench cell 唯一定义；解释器启动和输入准备不计时。`mise run benchmark -- startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.md` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。回归契约在 `startup/checks.md`，经 semaspec 执行输出/超时/审计和原生 64 次完整链路，PASS 不代表人工批准。整次选择保留 `run.json`，`benchmark/run.py --audit` 检查完整性与各行证据；工具、输入与已验证复现范围见 `startup/REPRODUCING.md`。复现见 [`benchmark/startup/README.md`](../benchmark/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
 
 ### B-LAZY-STARTUP：远程镜像按需读取能缩短多少启动等待 {#b-lazy-startup}
 
-- **JSON 入口状态：** 可执行 [startup/image_compare.json](startup/image_compare.json)、[startup/image_lazy_compare.json](startup/image_lazy_compare.json)、[startup/stage_lazy_compare.json](startup/stage_lazy_compare.json)；未准备 [startup/lazy_startup.json](startup/lazy_startup.json)（拒绝测量）。
+- **Markdown 入口状态：** 可执行 [startup/image_compare.md](startup/image_compare.md)、[startup/image_lazy_compare.md](startup/image_lazy_compare.md)、[startup/stage_lazy_compare.md](startup/stage_lazy_compare.md)；未准备 [startup/lazy_startup.md](startup/lazy_startup.md)（拒绝测量）。
 
 - **文档：** `lazy-image-startup.md`（中英文同步）。
 - **角色：** user-facing。
@@ -149,7 +149,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **TurboOCI 对照协议：** [具体协议](../benchmark/startup/TURBO_OCI.md)回答“相同 OCI 来源与应用下，TurboOCI 和 pVisor 的按需路径分别缩短多少客户端等待，准备和传输成本是多少”。四组为相同 containerd/runc 的 eager OCI 与 TurboOCI，以及相同 pVisor VM 的 eager OCI 与文件索引 lazy；内部比较加载路径，跨运行时仅比较完整产品路径。原四项公开表缺少镜像身份和负载脚本，不称精确复现；先固定 shell 与 NumPy 同类负载。独立服务、namespace 和缓存，禁止调用上游全局清理脚本；Range 206 与 200 的实际字节、元数据与内容分别计数。先预检，再按轮随机交替冷客户端及紧随其后的热客户端，3 次预热、30 个正式样本，正确性与证据门禁同上。独立 OverlayBD/TCMU 后端已部署并通过 TurboOCI shell 功能验证，操作见[部署记录](../benchmark/startup/OVERLAYBD_LAB.md)；正式四组采样/审计尚未接通，不产生或发布新性能结果。
 - **历史入口：** `lazy_startup.py`。
 
-- **已准备镜像的启动对照：** `benchmark/startup/image_compare.py` 是同源 Ubuntu shell 的独立补充批次，经单个 Python 配对行走 prepare → semspec bench → 专用 audit/render。普通 OCI/overlayfs 容器、TurboOCI/OverlayBD 容器与 pVisor 本地预准备 rootfs VM，每组 3 次预热、30 次随机交替，新执行实例和可写状态；镜像输入与宿主页缓存保留，不包含 pull、格式转换或解包。CPU 12,13，容器 2 CPU 配额/2 GiB，guest 2 vCPU/2 GiB；服务开销及 Docker exec 调用差异明确披露，不视为等整机预算或纯镜像格式比较。独立样本保存 Popen→唯一正确输出的 Ready 和同次正常退出的 Completion，校验输出、VM Bundle、实际后端与清理，配对 bootstrap 95% CI。记录其他 CPU 上的后台负载，不清理或停止无关任务；采样 CPU 上出现并发构建/其他已识别 benchmark 时整批标记受干扰，不事后剔除慢样本。不与 cold-client/warm-client 样本混合，不冒充完整四组冷镜像对照。
+- **已准备镜像的启动对照：** `benchmark/startup/image_compare.py` 是同源 Ubuntu shell 的独立补充批次，经单个 Python 配对行走 prepare → semaspec bench → 专用 audit/render。普通 OCI/overlayfs 容器、TurboOCI/OverlayBD 容器与 pVisor 本地预准备 rootfs VM，每组 3 次预热、30 次随机交替，新执行实例和可写状态；镜像输入与宿主页缓存保留，不包含 pull、格式转换或解包。CPU 12,13，容器 2 CPU 配额/2 GiB，guest 2 vCPU/2 GiB；服务开销及 Docker exec 调用差异明确披露，不视为等整机预算或纯镜像格式比较。独立样本保存 Popen→唯一正确输出的 Ready 和同次正常退出的 Completion，校验输出、VM Bundle、实际后端与清理，配对 bootstrap 95% CI。记录其他 CPU 上的后台负载，不清理或停止无关任务；采样 CPU 上出现并发构建/其他已识别 benchmark 时整批标记受干扰，不事后剔除慢样本。不与 cold-client/warm-client 样本混合，不冒充完整四组冷镜像对照。
 
 - **冷/热客户端镜像路径：** `benchmark/startup/image_lazy_compare.py` 单独比较 OCI/overlayfs 容器、TurboOCI/OverlayBD 容器和 pVisor lazy VM。固定上述同源 shell、CPU 和预算，每组 3 次预热、30 轮预定随机顺序，每轮冷客户端后紧接热客户端，均创建新执行实例。OCI/TurboOCI 冷条件在释放本实验任务/挂载/TCMU设备后，重启同一私有lab并将仅本lab的 containerd root、cache、run 目录归档后建立空目录；保留 registry 源内容和宿主页缓存，重启后恢复服务 CPU 14,15，故不能称冷磁盘或暖进程缓存。pVisor 使用新的空客户端缓存键及同一键的热复用，独立镜像服务预准备。客户端时钟包含 pull+run 或 pVisor CLI 的实际取数至唯一 marker/正常退出，环境重置与服务准备不计时。逐请求保留 registry 200/206 实际响应 body 和 pVisor framed 响应，content/metadata/total 分列；流量截止为完成后的明确观测点，不提供未经真实截点测量的 Ready 流量。冷内容必须非零、热内容必须为零；命令/输出/Bundle/制品/清理或流量校验失败使整批无效。两种缓存状态分别统计，不与 prepared 批次混合；缺少 pVisor eager OCI 冷准备条件，不称完整四组实验或纯格式贡献。
 
@@ -206,7 +206,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分别报告每项工具耗时和完整任务耗时（包括启动与收尾）。
   - 每个样本都要校验工具输出；暂存模式还要校验宿主原文件未被写入、upper 内容完整。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
-- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark/filesystem/tools.md` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`mise run benchmark -- filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark/filesystem/README.md)。
+- **历史及独立入口：** `reference_baselines.py`（历史跨运行时对照）。 新框架的 `benchmark/filesystem/tools.md` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`mise run benchmark -- filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semaspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark/filesystem/README.md)。
 
 **历史 Ready 与驻留环境快速对照：** `filesystem_rounds.py` / `filesystem_rounds_workload.py`
 回答“启动到首条负载 Ready 要多久，同一环境连续执行三轮工具后要等多久”。
@@ -259,7 +259,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   guest WB、host WB与lower DATA分别进行隔离A/B，native仅参考；先逐family的
   N5探索及独立N1诊断，再按问题扩展单轴曲线。保留慢值和失败，无安静/干扰/清单门禁。
   离线计划不构建、不启动VM、不产生计时；独立`workloads_v2_run.py`接入19点的
-  静态Rust payload、私有输入及真实git/C增量构建/Python离线解包发布，使用semspec
+  静态Rust payload、私有输入及真实git/C增量构建/Python离线解包发布，使用semaspec
   执行。按用户快速采样要求可先N3配对，内部三轮，明确低样本探索范围；仅guest
   WB 0/1已接入执行。正式计时关闭profile，独立N1诊断只解释整case生命周期请求。
   工作与同步完成分列，准备/全量验证/退出另记；host验证最终保留字节与逻辑命名空间。
@@ -307,7 +307,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   每个 request virtqueue 启动时预分配最多516项 SG 和指针暂存区，提交时在原队列锁
   内复用；它只缓存传输元数据，逐请求 argbuf 与数据页的所有权不变。
   逐 folio 的真实压力、近阈值 full sum、10ms timer、256 leases、双屏障及同步语义不变。
-  仍为四臂 N5、内部三轮、15 cells/900 行和独立 N1 计数，使用真实 semspec bench；
+  仍为四臂 N5、内部三轮、15 cells/900 行和独立 N1 计数，使用真实 semaspec bench；
   同时报告 completed 和 accepted，不把1KiB已有 WB 收益算作0049增量。全部有效
   慢值保留，无干扰/清单门禁；新结果使用独立 tuning namespace，不覆盖0048来源。
 - **普通 CLI guest writeback 落地对照：** 问题是“当前 host 与最终固件下，开启
@@ -323,7 +323,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   N1 profile，核对13个注册/final实例、每 mount 54个
   token、每 VM 216个 component interval、两设备实际 WB/批量 WB 协商及 WRITE 尺寸桶。
   32指标的5000次配对 bootstrap 不作多重比较校正，不将三轮当作N15；保留全部有效
-  慢值和失败，无安静期、外部干扰或逐轮全量清单门禁。通过实际 `semspec bench`
+  慢值和失败，无安静期、外部干扰或逐轮全量清单门禁。通过实际 `semaspec bench`
   执行新批次；旧制品、旧时序和旧 SDK 数据不混入。准备与编译在测量外，只复用输入
   generation，不伪称重新封存，也不把该对照当作某个内核补丁的独立增量。
 - **不可变 lower 读缓存曲线：** 问题是“同一物理不可变输入上，保留 guest 数据页
@@ -569,7 +569,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **新增独立 kernel-cache 实验：** `kernel_cache_runner.py` / `kernel_cache_driver.rs`，同一冻结 release 制品 native、legacy-writable（immutable 物理缓存开启，默认 1s）、metadata-writable60s、metadata-readonly60s、metadata-and-data-readonly60s；2048/32 half-deep、全字节验证、3 warmups/30 seed-shuffled samples、CPU 0,1；hot、legacy-TTL-expired/extended-TTL-warm、single-pass readsearch、verified git/rg 与 startup/mount/task/unmount。 全部 native/lower/upper/work 使用相同 private user/mount/PID namespace 的真正 noatime tmpfs backing；保留 mountinfo、past-atime 读验证、监督/终止回执；旧 Btrfs/future-atime kernel-cache 批次未验收，只作历史诊断，raw 保留且不可拼接。writable 必须保留 fusectl abort guard；独占 fresh upper/work、稳定 immutable lower，无 journal/preimage/metrics/custom policy/exclusions；KEEP_CACHE 只在两种 readonly 条件间归因。报告 `benchmark/pvisor/KERNEL_CACHE_REPORT.md` 仅属 Linux HOST API 工程实验，不代表 pvisor run/VM/review guarantees。
 - **历史入口：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
 
-- **宿主请求结果复用对照：** `host_hotpath_ab.py` / `host_hotpath_driver.rs`；从当前源码冻结两份 release，仅恢复保存的优化前 `core.rs`、`service.rs`、`fs.rs` 为基线，其他修改保持一致。真实 macOS FSKit 挂载，Immutable/no-journal 与 Mutable/compact 两个独立配置，每格 3 次预热、30 个 seeded 随机配对、新 upper/work，测首次/重复 stat、小文件 append/truncate open、mkdir/FIFO/symlink。逐项验证结果、完整 lower 清单、compact 观察和正常卸载；保留全部有效慢值和失败，不作事后剔除。准备生成固定 Python 配对行 `in.json`，由 semspec bench 执行；使用 Python 阶段时钟，非 hyperfine。配对 bootstrap 95% CI 和分布检查，另跑 profile 诊断，不将诊断耗时混入正式计时。报告留在 `benchmark/pvisor/HOST_HOTPATH_REPORT.md`，不外推 Linux、VM、冷磁盘或整个 Agent 任务。
+- **宿主请求结果复用对照：** `host_hotpath_ab.py` / `host_hotpath_driver.rs`；从当前源码冻结两份 release，仅恢复保存的优化前 `core.rs`、`service.rs`、`fs.rs` 为基线，其他修改保持一致。真实 macOS FSKit 挂载，Immutable/no-journal 与 Mutable/compact 两个独立配置，每格 3 次预热、30 个 seeded 随机配对、新 upper/work，测首次/重复 stat、小文件 append/truncate open、mkdir/FIFO/symlink。逐项验证结果、完整 lower 清单、compact 观察和正常卸载；保留全部有效慢值和失败，不作事后剔除。准备生成固定 Python 配对行 `in.json`，由 semaspec bench 执行；使用 Python 阶段时钟，非 hyperfine。配对 bootstrap 95% CI 和分布检查，另跑 profile 诊断，不将诊断耗时混入正式计时。报告留在 `benchmark/pvisor/HOST_HOTPATH_REPORT.md`，不外推 Linux、VM、冷磁盘或整个 Agent 任务。
   FSKit 不可用时，`host_hotpath_phase_ab.py` / `host_hotpath_probe.rs` 独立测实际私有适配器的 LOOKUP、无句柄 GETATTR、写 OPEN 与创建回调：两份冻结源码插入同一仅测试 probe 和 fuser ReplySender 导出，回复只检查成功，不经过内核或调度队列；其余配对、校验和分布规则相同。阶段计时使用 Rust Instant，排除初始化、退出、最终校验；与真实挂载失败或其他批次不合并。
   单写 stage 清理复测通过 `--before` 恢复清理前的 Core、service、legacy journal 和宿主适配器四份源码，其他源码相同。另插入相同的 `host_cleanup_probe.rs`，测 4096 次热 GETATTR、128/2048 项目录（四分之一 whiteout）的快照、未加载/已加载子 inode 的关闭回收；校验完整名称、回收映射和已有节点存活。沿用两个配置、3 次预热/30 随机配对、完整输入与输出校验、独立 profile、全部慢值及失败保留和配对 bootstrap 规则，不归因于此前的请求复用优化，也不代表 VM 路径。
 
@@ -581,7 +581,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **Linux VM worker 调度对照：** 同一冻结源码的三版本配对：撤销 `65e65c93`/`09bd1d59` 的优化前版本、保留当前优化与 host 修复的基线、仅修改 VM worker 调度/私有测试及 README 的候选。每版本 3 warmups、30 个随机同轮样本；独立 namespace、owned pivot_root、fresh VM/Host listener，整父组 CPU 0,1 / quota 两核 / 16 GiB / swap 0，同 B-FS-TOOLS 七工具及输入、缓存、逐字节 upper、宿主隔离与干扰门禁。使用原 reference timer，profiling 关闭；与当前基线的差异用于候选归因，优化前版本只用于同批恢复程度对照。5,000 次配对 bootstrap，分离簇不报整体排名；各候选批次独立保留，只发布通过门禁的最终制品，不合并样本。原始 helper、冻结源码、构建和诊断在 `.data/`，加工 CSV 与结果仅进入 `lab-notes/filesystem-performance-analysis.md#vm-completion-dispatch`，不重算跨运行时用户表，不外推 macOS、冷磁盘或并发吞吐。
 
-- **不可变 share 的 DAX 开关对照：** `benchmark/filesystem/dax_ab.py` 准备同一优化制品、固件和物理不可变输入，生成 `in.json` 后通过 `semspec bench` 执行 Python 配对行；不使用 hyperfine。两组均通过公开 VM API 建立只读 DAX-capable share 和 128 MiB 窗口，仅 guest 挂载选项 `dax=never` / `dax=inode` 不同；statx 必须验证实际 DAX 属性。宿主热缓存、新 guest、独占 rootfs upper/work；完整 VM 组 CPU 0,1、两核 quota、2 GiB、swap 0，guest 2 vCPU/512 MiB。静态 C 探针测独立 64 MiB 文件的顺序读取、双线程读取和 mmap 页遍历，以及 128×64 KiB 小文件 open/read/close、2,048 路径 metadata；首次数据访问与 guest 内重复访问分列，全量内容验证在阶段计时之外。小文件组有超过窗口容量的映射，保留其正常回收成本。各组 3 次预热、30 个预先随机平衡配对，共 60 个正式 VM；5,000 次配对 bootstrap，先检查分布，保留有效慢样本，不报告 P99。校验错误、输入/制品变化、非零退出、预算不符、OOM 或外部构建/测试干扰使批次失败；报告失败和剔除数。冻结 harness、源码、制品、全部日志与样本在 `.data/`，加工表和 CSV 为工程报告；不将只读 share 的结果外推到 CLI 可写 workspace、启动退化或磁盘冷缓存。
+- **不可变 share 的 DAX 开关对照：** `benchmark/filesystem/dax_ab.py` 准备同一优化制品、固件和物理不可变输入，生成 `in.json` 后通过 `semaspec bench` 执行 Python 配对行；不使用 hyperfine。两组均通过公开 VM API 建立只读 DAX-capable share 和 128 MiB 窗口，仅 guest 挂载选项 `dax=never` / `dax=inode` 不同；statx 必须验证实际 DAX 属性。宿主热缓存、新 guest、独占 rootfs upper/work；完整 VM 组 CPU 0,1、两核 quota、2 GiB、swap 0，guest 2 vCPU/512 MiB。静态 C 探针测独立 64 MiB 文件的顺序读取、双线程读取和 mmap 页遍历，以及 128×64 KiB 小文件 open/read/close、2,048 路径 metadata；首次数据访问与 guest 内重复访问分列，全量内容验证在阶段计时之外。小文件组有超过窗口容量的映射，保留其正常回收成本。各组 3 次预热、30 个预先随机平衡配对，共 60 个正式 VM；5,000 次配对 bootstrap，先检查分布，保留有效慢样本，不报告 P99。校验错误、输入/制品变化、非零退出、预算不符、OOM 或外部构建/测试干扰使批次失败；报告失败和剔除数。冻结 harness、源码、制品、全部日志与样本在 `.data/`，加工表和 CSV 为工程报告；不将只读 share 的结果外推到 CLI 可写 workspace、启动退化或磁盘冷缓存。
 
 - **guest 写合并开关对照：** 同一冻结的直接队列 GNU release/gateway 制品，仅切换宿主 runner 的 `PVISOR_VM_FS_WRITEBACK=1` / `0`，由专用 worker 恢复并校验原环境。Linux VM 的 rootfs/workspace 均无 DAX 窗口；与 B-FS-TOOLS 相同的七项操作、完整任务和校验，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，guest 2 vCPU/16 GiB。热宿主缓存、每次私有 namespace/pivot_root、独立工作区与工具缓存；每臂 3 warmups、30 个 seeded 随机配对，共 60 个正式任务。输入与制品摘要、完整 upper 字节、Run Bundle、正常退出、预算和外部构建/测试门禁通过后才能发布；保留慢有效样本，分离簇不给整体排名，5,000 次配对 bootstrap，不报告 P95/P99。原始及冻结执行入口保留 `.data/writeback-ab-*` 与 `.data/writeback-quick-*`；工程表和 CSV 进入 `lab-notes/filesystem-performance-analysis.md#writeback-ab`，生产默认值和跨运行时用户表不由该开关实验改写。
 
@@ -598,7 +598,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   只在独立诊断中用 LD_PRELOAD 将文件 A 的首次 backing pwrite 延迟 1.5s；guest 在
   A close 后 200ms 写文件 B，以宿主单调时钟记录 A/B backing 写入开始、完成。
   核查真实拦截、全部字节、正常退出，判断 B 是否在 A 完成前到达 backing；保留未命中
-  和失败，不作为性能时钟、吞吐或真实设备延迟结论。通过 semspec bench 执行，
+  和失败，不作为性能时钟、吞吐或真实设备延迟结论。通过 semaspec bench 执行，
   原始源码、制品摘要和日志在独立 `.data/guest-writeback-pipeline-*`。
   0049 后续用同一 payload/延迟与新冻结 SDK host，再以 0048/0049 各 WB=1
   独立复核，检查放大合批提示后仍能推进后续文件；不复用旧事件或混作性能样本。
@@ -607,7 +607,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **大 WRITE 内存失败定位：** `guest_writeback_memory.py` 对失败批次冻结的
   plan001、同 SDK host、同512 MiB guest/2 GiB父组和全部三轮做独立复现；
   只在128 MiB同步前及操作错误时读取guest meminfo/buddyinfo与klogctl。
-  五个fresh复现上限，首次失败后停止，保留所有尝试、源码/制品及实际semspec入口；
+  五个fresh复现上限，首次失败后停止，保留所有尝试、源码/制品及实际semaspec入口；
   不扩大RAM、不dropcache、不减少校验，也不把插桩时钟当正式性能数据。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
 - **同次 OPEN 资格复用计数：** 在上述 SQ0/1 的独立 N1 owned-input 环境中，
@@ -642,7 +642,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-OPENSANDBOX-ENG：本地兼容后端的就绪等待 {#b-opensandbox-eng}
 
-- **JSON 入口状态：** 未准备 [startup/opensandbox.json](startup/opensandbox.json)（拒绝测量）。
+- **Markdown 入口状态：** 未准备 [startup/opensandbox.md](startup/opensandbox.md)（拒绝测量）。
 
 - **角色：** engineering A/B。
 - **Motivation：** 判断本地 pVisor OpenSandbox 后端是否能缩短 SDK 创建到可执行命令的等待。
@@ -653,7 +653,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-SANDBOX-ENGINE-ENG：原生 guest 执行后端的启动与命令延迟 {#b-sandbox-engine-eng}
 
-- **JSON 入口状态：** 未准备 [startup/sandbox_engine.json](startup/sandbox_engine.json)（拒绝测量）。
+- **Markdown 入口状态：** 未准备 [startup/sandbox_engine.md](startup/sandbox_engine.md)（拒绝测量）。
 
 - **角色：** engineering A/B；完整证据保留 `benchmark/.data/sandbox-engine-*`，不进入用户 benchmark 页。
 - **Motivation：** 判断以共享 Rust guest 引擎替代每 VM 官方 execd/envd 后，SDK 首次/稳态创建与命令完成是否改善。
@@ -666,7 +666,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-OPENSANDBOX-BURST-DIAG：低内存预算下十请求突发 {#b-opensandbox-burst-diag}
 
-- **JSON 入口状态：** 未准备 [startup/opensandbox_burst.json](startup/opensandbox_burst.json)；通用行计时未接线，本地诊断使用冻结在 `.data/` 的专用 harness。
+- **Markdown 入口状态：** 未准备 [startup/opensandbox_burst.md](startup/opensandbox_burst.md)；通用行计时未接线，本地诊断使用冻结在 `.data/` 的专用 harness。
 - **角色：** diagnostic；原始证据与结论仅留 `.data/`，不进入用户 benchmark 页。
 - **Motivation：** 回答当前 OpenSandbox 接口同时收到 10 个创建请求时，整批到可用/首命令完成需要多久，并确认小内存设置不会耗尽宿主内存。
 - **想要的结论：** 分列每批全部 create 返回、全部首命令正确完成、每请求时延与发起偏移、实验 cgroup 内存峰值、宿主可用内存下界、失败和 OOM；只解释单机串行批次的突发场景，不作 A/B 加速、并发容量上限或吞吐排名。
@@ -684,14 +684,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
-- **JSON 入口状态：** 未准备 [startup/guest_init.json](startup/guest_init.json)（拒绝测量）。
+- **Markdown 入口状态：** 未准备 [startup/guest_init.md](startup/guest_init.md)（拒绝测量）。
 
 - **角色：** engineering A/B
 - **Motivation：** 判断 guest init 实现变化是否改变启动等待。
 - **想要的结论：** 同输入就绪中位数差异及 95% bootstrap 区间。
 - **实验设计：** 相同 runner、rootfs 与 payload，随机交错实现，不作为跨产品用户对照。
 - **历史入口：** `guest_init.py`。
-- **当前启动优化工程 cohort：** 固定 GNU release 制品、同一动态固件和静态 Ready 负载，对照基线、仅 FD 预扩容、FD＋并行 checkpoint 校验。独立 1 vCPU / 128 MiB cohort（不与 2 vCPU 诊断混合），固定两个宿主 CPU；3 轮预热、30 轮 seeded 随机三条件交替，Ready/Exit 同次记录。采样前冻结二进制、输入、顺序和 observer 源码，使用独立 Run store/stage；校验唯一正确输出、零退出、实际 VM 隔离、空 workspace changeset 与 canary 未变，任一失败使整批无效且保留现场。经冻结的 `semspec bench` 执行本批次 Python 行，复算逐次时钟并报告配对差的 bootstrap 区间。源码/制品及全部结果留在 `.data/startup-opt-*/`；不发布为用户启动水位，默认 2 vCPU 的既有 guest 早退另列。
+- **当前启动优化工程 cohort：** 固定 GNU release 制品、同一动态固件和静态 Ready 负载，对照基线、仅 FD 预扩容、FD＋并行 checkpoint 校验。独立 1 vCPU / 128 MiB cohort（不与 2 vCPU 诊断混合），固定两个宿主 CPU；3 轮预热、30 轮 seeded 随机三条件交替，Ready/Exit 同次记录。采样前冻结二进制、输入、顺序和 observer 源码，使用独立 Run store/stage；校验唯一正确输出、零退出、实际 VM 隔离、空 workspace changeset 与 canary 未变，任一失败使整批无效且保留现场。经冻结的 `semaspec bench` 执行本批次 Python 行，复算逐次时钟并报告配对差的 bootstrap 区间。源码/制品及全部结果留在 `.data/startup-opt-*/`；不发布为用户启动水位，默认 2 vCPU 的既有 guest 早退另列。
 
 
 ### B-STARTUP-REVISION-ENG：提交版本的启动与收尾对照 {#b-startup-revision-eng}
@@ -700,13 +700,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 定位指定提交与父提交或已归档历史版本是否改变首条有效输出和正常退出等待。
 - **想要的结论：** host、staged、VM 的 Ready / Exit 统计及同轮中位数差的 95% 配对 bootstrap 区间；不能用跨批次数字归因。
 - **实验设计：** 精确源码归档、相同 release/musl/gateway 构建参数和冻结内核；相同 rootfs、探针、CPU 0,1、2 vCPU / 128 MiB、热缓存。各条件 3 次预热、60 对正式样本，固定 seed 随机交替两个版本；Ready / Exit 同次采样。版本在独立 user/mount/PID namespace 中运行，私有 Host 状态目录，退出 namespace 时销毁自有服务；不重启宿主已有 Host。复用当前启动 observer 与完整正确性门禁，保留全部有效慢样本，无事后剔除。
-- **保留批次入口：** 每次生成并冻结的 `.data/revision-<commit>/bench.py`，由同目录 `in.json` 经 `semspec bench` 执行；构建收据、轮次顺序、逐次输出与统计一起归档。
+- **保留批次入口：** 每次生成并冻结的 `.data/revision-<commit>/bench.py`，由同目录 `in.json` 经 `semaspec bench` 执行；构建收据、轮次顺序、逐次输出与统计一起归档。
 - **历史差距复核：** 先以同一 observer、探针和私有环境随机配对历史原始二进制与指定提交，明确 GNU 动态 / musl 静态等构建差异；此对照只能判断制品差距。确认差距后，以同一固件和构建目标重建源码版本，再判断源码贡献。原始固件提取出的内核摘要必须与冻结内核逐字节核对，不能仅根据链接方式断言固件不同。
 - **构建控制：** 历史 GNU、指定提交 GNU、指定提交 musl 可在同轮三条件随机顺序中采样，各 3 次预热 / 60 次正式试次，固定同一历史内核；分别报告 GNU 源码对照及指定提交 GNU/musl 路径对照的配对区间。内核差异另用同源码、同 musl 参数的两条件对照，不能从多个批次差值相减估算贡献。
 
 ### B-KERNEL-ENG：裁剪固件是否缩短当前产品的启动 {#b-kernel-eng}
 
-- **JSON 入口状态：** 未准备 [startup/kernel.json](startup/kernel.json)（拒绝测量）。
+- **Markdown 入口状态：** 未准备 [startup/kernel.md](startup/kernel.md)（拒绝测量）。
 
 - **角色：** engineering A/B；放入 `docs/src/*/lab-notes/vm-startup-performance-analysis.md`，不作为跨产品用户排名。
 - **Motivation：** 判断裁剪 guest 内核的收益，以及它是否仍支持工作区、开发工具和网络所需能力。
@@ -716,7 +716,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-STARTUP-DIAG：固件启动阶段诊断 {#b-startup-diag}
 
-- **JSON 入口状态：** 未准备 [startup/diagnostic.json](startup/diagnostic.json)（拒绝测量）。
+- **Markdown 入口状态：** 未准备 [startup/diagnostic.md](startup/diagnostic.md)（拒绝测量）。
 
 - **角色：** diagnostic
 - **Motivation：** 定位内核、初始化和宿主启动/收尾阶段对就绪时间及正常退出的贡献。
@@ -887,7 +887,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 训练和复现需要把历史轨迹准确还原到同一个起点。用户需要知道支持哪些轨迹格式、准备是否有副作用、成本是多少。
 - **想要的结论：** "支持的格式全部通过一致性校验，准备阶段不执行工具也不修改工作区，每条轨迹的准备耗时为 X ms"。
 - **实验设计：** 对每个适配器使用固定的原生格式样本，校验前缀结构、工具参数和观测内容，同时校验工作区没有被修改。
-- **入口脚本：** `benchmark/replay/replay.md`（七个 bench cell；`prepare.py` 冻结和预检，semspec bench 与公共 runtime 测量，hooks 逐次验证；旧公开绑定保留历史时钟，拒绝被新 Python 口径覆盖）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
+- **入口脚本：** `benchmark/replay/replay.md`（七个 bench cell；`prepare.py` 冻结和预检，semaspec bench 与公共 runtime 测量，hooks 逐次验证；旧公开绑定保留历史时钟，拒绝被新 Python 口径覆盖）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
 
 ### B-VM-MEMORY：VM 闲置时能省多少内存，恢复要付出什么 {#b-vm-memory}
 
@@ -1023,7 +1023,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
 - **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
-- **入口脚本：** `benchmark/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semspec bench 与公共 runtime 测量，`mise run benchmark -- smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
+- **入口脚本：** `benchmark/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semaspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semaspec bench 与公共 runtime 测量，`mise run benchmark -- smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
 
 ## 检查清单 {#checklist}
 

@@ -21,11 +21,11 @@ Shared image cache handles, authentication, and failures follow the [cache proto
 
 ## Check executable behavior
 
-The [scenario appendix](cases.md) retains product commands, semantic claims, and assertions, and serves as the DOC semspec source. Runner fixtures in its code blocks cannot be run as ordinary shell commands; the repository entry `mise run cases` executes the checks. Execution success and human approval are recorded separately; PASS does not authorize changes to human review ledgers.
+The [scenario appendix](cases.md) retains product commands, semantic claims, and assertions, and serves as the DOC semaspec source. Runner fixtures in its code blocks cannot be run as ordinary shell commands; the repository entry `mise run cases` executes the checks. Execution success and human approval are recorded separately; PASS does not authorize changes to human review ledgers.
 
 ## Scenario check preparation
 
-These Markdown functions are shared by the scenario appendix and VM checks. semspec extracts the marked preparation; each case has independent CASE_ROOT and WS and an explicit SUBJECT_BIN. All preparation and assertions participate in review digests.
+These Markdown functions are shared by the scenario appendix and VM checks. semaspec extracts the marked preparation; each case has independent CASE_ROOT and WS and an explicit SUBJECT_BIN. All preparation and assertions participate in review digests.
 
 <!-- semspec: setup -->
 ````bash
@@ -80,7 +80,7 @@ case_run() {
 _pvisor_helper() {
   python3 - "$@" <<'PYTHON'
 #!/usr/bin/env python3
-"""Sealed Run Bundle accessors for the semspec DOC catalog."""
+"""Sealed Run Bundle accessors for the semaspec DOC catalog."""
 
 from __future__ import annotations
 

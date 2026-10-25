@@ -518,7 +518,7 @@ burst 间静默 12 秒。按 baseline/cold、cold/baseline、baseline/cold 顺�
 证据为 `matched-net-3-rounds-vm-release.json`。六次运行的全部 36 个 burst
 内容、宿主累计字节、RAM / 零页、引用与 runner 退出检查通过；冷模式
 采样 / 完整事务 / 文件回收记录数量一致，pending 均归零，运行源码哈希
-已核验。没有修改任何 semspec 人工批准账本。
+已核验。没有修改任何 semaspec 人工批准账本。
 
 | 配对 | baseline 静默 RAM 加池 | cold 静默 RAM 加池 | 代理降幅 | baseline burst 中位数 | cold burst 中位数 |
 |---|---:|---:|---:|---:|---:|

@@ -23,7 +23,7 @@ Each promise below corresponds to a case in `docs/src/zh/cases/06-stage-apply.md
 | Return values agree with effects | Successful link creation leaves a link; failed creation leaves none | S-STAGE-013 (known macOS gap below) |
 | Executable bits and link targets survive | Executable bits and symbolic link targets are preserved without dereferencing links | S-STAGE-014 |
 
-These cases are drafts without human approval. A passing test demonstrates that the implementation satisfies the script; it does not mean the semantics have been reviewed. See [Testing and semspec](../community/testing.md).
+These cases are drafts without human approval. A passing test demonstrates that the implementation satisfies the script; it does not mean the semantics have been reviewed. See [Testing and semaspec](../community/testing.md).
 
 ## Known gaps
 

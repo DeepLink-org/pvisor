@@ -267,10 +267,10 @@ seek table 中每个 frame 的输入必须为 1..66560 字节（64 KiB＋1024）
 
 ## 4. 实验数据支撑 {#experiments}
 
-2026-10-03 **只读检查已有产物**：`target/offload-validation/final-diagnostics/workdirs/semspec-S-DOC-062-8Fsw80/`。不是本轮新 VM 测试，也不作为当前实验工作树的通过证据。样本 committed layout 为 256 MiB；只剩一个 base＋一个 delta，未见 pin / 活动 staging。
+2026-10-03 **只读检查已有产物**：`target/offload-validation/final-diagnostics/workdirs/semaspec-S-DOC-062-8Fsw80/`。不是本轮新 VM 测试，也不作为当前实验工作树的通过证据。样本 committed layout 为 256 MiB；只剩一个 base＋一个 delta，未见 pin / 活动 staging。
 
 ```text
-semspec-S-DOC-062-8Fsw80/
+semaspec-S-DOC-062-8Fsw80/
 ├── startup.ram                  999 B 逻辑；4096 B allocated
 └── startup.ram.layers/
     ├── a8c9862d…f8b08ab.pvdelta  22486063 B 逻辑；22487040 B allocated；base

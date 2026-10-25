@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
-RUNTIME_PATH = REPO / "tools/semspec/runtime.py"
+RUNTIME_PATH = REPO / "tools/semaspec/runtime.py"
 _runtime_spec = importlib.util.spec_from_file_location("semspec_runtime", RUNTIME_PATH)
 RUNTIME = importlib.util.module_from_spec(_runtime_spec)
 _runtime_spec.loader.exec_module(RUNTIME)
@@ -47,12 +47,12 @@ def artifact_summary(artifacts):
     for name, sha256 in artifacts.items():
         path = Path(name)
         if (
-            path.suffix in (".py", ".rs")
+            path.suffix in (".py", ".rs", ".md")
             or path.suffix == ".json"
             # Retained manifests may still name the directory before its rename.
             and {"benchmark", "benchmark.new"}.intersection(path.parts)
             and ".data" not in path.parts
-            or path.name == "semspec"
+            or path.name in {"semspec", "semaspec", "sspec"}
             or re.fullmatch(r"python3(?:\.\d+)?", path.name)
         ):
             continue
@@ -95,17 +95,22 @@ def create_batch(template, output=None):
 
 
 def markdown_inventory(template):
-    """Read semspec's validated Markdown inventory without executing subjects."""
-    semspec = os.environ.get("SEMSPEC_BIN", str(REPO / "target/semspec/debug/semspec"))
+    """Parse one stable source snapshot through semaspec without executing subjects."""
+    path = Path(template).resolve()
+    source = path.read_bytes()
+    semspec = os.environ.get("SEMSPEC_BIN", str(REPO / "target/semaspec/debug/semaspec"))
     output = subprocess.run(
-        [semspec, "filter", str(Path(template).resolve()), "--format", "json"],
+        [semspec, "filter", "--source", str(path), "--stdin", "--format", "json"],
+        input=source,
         check=True,
         capture_output=True,
-        text=True,
     )
+    if path.read_bytes() != source:
+        raise ValueError("Markdown specification changed while parsing: " + str(path))
     document = json.loads(output.stdout)
     if document["format"] != 1:
-        raise ValueError("unsupported semspec Markdown inventory")
+        raise ValueError("unsupported semaspec Markdown inventory")
+    document["source_sha256"] = hashlib.sha256(source).hexdigest()
     return document
 
 
@@ -142,6 +147,13 @@ def table_template(template):
             if len(document["tables"]) != 1 or document["experiments"]:
                 raise ValueError("a batch requires one inline table or direct command plans")
             return document["tables"][0]["table"]
+        if template.parent.name == "startup":
+            spec = importlib.util.spec_from_file_location(
+                "startup_plan_rows", ROOT / "startup/subjects.py"
+            )
+            adapter = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(adapter)
+            return adapter.timing_rows(document)
         return {
             name: "$ python3 @REPO@/benchmark/command_timing.py @BATCH@ " + shlex.quote(name)
             for name in command_definition(template, document)["commands"]
@@ -188,9 +200,9 @@ def materialize(
         startup = (
             metadata["benchmark_id"] == "B-STARTUP"
             and (
-                metadata["entry"] == "startup/timing.json"
+                metadata["entry"] == "startup/timing.md"
                 or metadata["entry"].startswith("startup/")
-                and metadata["entry"].endswith("_timing.json")
+                and metadata["entry"].endswith("_timing.md")
             )
             and len(row_config["rows"]) == 1
             and row_config.get("metric_scope", READY_EXIT_SCOPE) == READY_EXIT_SCOPE
@@ -300,7 +312,7 @@ def materialize_commands(template, batch, variables=None, artifacts=(), cwd=None
     if template.suffix == ".md":
         artifacts = [
             *artifacts,
-            os.environ.get("SEMSPEC_BIN", REPO / "target/semspec/debug/semspec"),
+            os.environ.get("SEMSPEC_BIN", REPO / "target/semaspec/debug/semaspec"),
         ]
     return materialize(
         template,

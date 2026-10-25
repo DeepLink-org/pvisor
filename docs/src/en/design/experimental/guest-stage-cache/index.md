@@ -422,13 +422,13 @@ Expand only with scoped net benefit, permitted non-target regression and accepta
 | Image/import format | [Shared-image design](../../shared-image-cache-storage.md) | Revision, index, content checks, complete permissions, format/build evidence |
 | Guest userspace | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | Necessary initialization/ACK, keeping ordinary stat/open in kernel |
 | Lifecycle/integration | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime), [environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | Admission/freeze/restore/fork/configuration/Host authority |
-| Validation/performance | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md), [benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | Candidate cases, fault/interleaving tests, real VM harness, raw evidence/statistics |
+| Validation/performance | [semaspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md), [benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | Candidate cases, fault/interleaving tests, real VM harness, raw evidence/statistics |
 
 Review shared identity/profile/failure contracts before splitting work. Owners define shared APIs without duplicate DTOs. `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` retain current boundaries; unconverted crates receive necessary local changes rather than workspace-wide rewrites. Read each directory README before edits.
 
 #### 2.9.3 Correctness acceptance matrix
 
-These are candidate cases, not human-approved semspec. Record profile, initial state, interleavings, result, errors and release behavior; distinguish unit and real VM tests.
+These are candidate cases, not human-approved semaspec. Record profile, initial state, interleavings, result, errors and release behavior; distinguish unit and real VM tests.
 
 | Case group | Operations/interference | Required verification |
 |---|---|---|
@@ -476,7 +476,7 @@ mise run fw -- test
 
 Firmware tests check build/bundle contracts, not real guest filesystems. Record kernel, patches, configuration, VMM/firmware hashes and `libkrunfw.SOURCE`. Missing `/dev/kvm`, `/dev/fuse`, permissions or platform produce explicit failures/skips and uncovered scope.
 
-Public API edits require external tests through `api`, existing boundary guards and warnings-denied rustdoc. Keep internals private. Follow [Semspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md) for case changes with `mise run semspec -- lint docs/src/zh/cases`; runner edits use `mise run test-semspec`. AI does not approve/revoke, edit real `REVIEWED.toml`/`.approved/`, or weaken claims/checks/xfail.
+Public API edits require external tests through `api`, existing boundary guards and warnings-denied rustdoc. Keep internals private. Follow [Semaspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md) for case changes with `mise run semaspec -- lint docs/src/zh/cases`; runner edits use `mise run test-semaspec`. AI does not approve/revoke, edit real `REVIEWED.toml`/`.approved/`, or weaken claims/checks/xfail.
 
 #### 2.9.5 Performance protocol
 
@@ -555,7 +555,7 @@ The first handoff is M0 contracts plus the restricted M1 read-only loop. Select 
 3. Separate directory, attribute and data versions from backing identity. Lost updates and unknown commits enter explicit recovery/failure paths.
 4. Follow [Benchmark rules](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md), locate the registered experiment before measurement, and store raw data in its `.data/` directory.
 5. Keep implementation in existing crates and `fw/`; follow directory READMEs and API boundaries. Registration does not create an empty CLI switch.
-6. Follow the [Semspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md). Candidate acceptance, test PASS and human approval remain separate; AI does not edit real approval ledgers/snapshots.
+6. Follow the [Semaspec design](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md). Candidate acceptance, test PASS and human approval remain separate; AI does not edit real approval ledgers/snapshots.
 
 ## 3. Alternatives and comparison {#alternatives}
 

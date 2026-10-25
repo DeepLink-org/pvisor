@@ -311,7 +311,7 @@ metadata，最后再次等待新提交 WRITE；双屏障都保留。
 不能称为全部写入持久化完成时间。完整stage字节、正常退出和Bundle校验在时钟外；
 独立N1诊断检查两个设备的实际协商状态和全部13个注册/final实例。
 
-准备与构建发生在时钟外；三个入口生成 `in.json` 后统一通过 `semspec bench` 执行。
+准备与构建发生在时钟外；三个入口生成 `in.json` 后统一通过 `semaspec bench` 执行。
 四臂时钟由 `guest_writeback_analysis.py` 单独加工，输出 completed/accepted 时间比及
 每个独立环境原值；候选/基线时间比小于 1 表示更快。加工后用
 `publish_guest_writeback.py --check` 核验，`--publish` 发布到独立 guest-writeback
@@ -327,7 +327,7 @@ metadata，最后再次等待新提交 WRITE；双屏障都保留。
 需要可用 `/dev/kvm` 的 Linux x86_64 主机、CPU 0,1、可安装上述 cgroup 限制
 的 user systemd、Python 3.11+、Rust 和 `x86_64-unknown-linux-musl` target、
 离线可用的 Cargo 依赖、预先准备且受调用方控制的兼容 rootfs/固件，以及已构建
-的独立 semspec CLI。绘图另需 matplotlib；`--no-plots` 只生成 CSV/JSON。
+的独立 semaspec CLI。绘图另需 matplotlib；`--no-plots` 只生成 CSV/JSON。
 
 `--prepare` 会构建机制 subject 和静态 payload，并复制固件、harness、源码和
 输入计划；构建不计入样本。它不供应或下载 rootfs。当前 rootfs 在协议中记录
@@ -345,7 +345,7 @@ runner 已独立证明 rootfs 不变。backing 挂载选项和缓存状态也须
 shape/confirm 为 `sync`，parameters 为 `async`。
 
 ```sh
-export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
+export SEMSPEC_BIN="$PWD/target/semaspec/debug/semaspec"
 curves_rootfs=/absolute/path/to/prepared-rootfs
 curves_firmware=/absolute/path/to/libkrunfw.so
 shape_batch="$PWD/benchmark/filesystem/.data/curves-shape-UNIQUE"
@@ -357,7 +357,7 @@ python3 benchmark/filesystem/curves.py --prepare "$shape_batch" \
 python3 "$shape_batch/harness/curves_analysis.py" "$shape_batch"
 ```
 
-`in.json` 的一行执行完整预先登记 campaign；semspec 外层 wall time 不是曲线
+`in.json` 的一行执行完整预先登记 campaign；semaspec 外层 wall time 不是曲线
 样本，也不产生额外独立重复。真正数据来自 payload 的 event clocks。
 
 参数探索与确认分别建新目录，不与 shape 合并：
@@ -428,11 +428,11 @@ python3 benchmark/filesystem/guest_writeback_analysis.py "$guest_timing" \
 绘图命令在装有matplotlib的环境中执行，本轮保留的依赖版本为3.11.2；缺依赖时
 可先用 `--no-plots` 生成数值，再在依赖齐全后重新加工同一原始批次。内存定位
 入口的 `--source-batch` 指向有完整 `plan-001.tsv` 的N5准备目录，生成独立诊断
-`in.json`，同样通过semspec执行，不能把插桩计时并入正式数据。
+`in.json`，同样通过semaspec执行，不能把插桩计时并入正式数据。
 
 普通CLI入口的 `--build`、`--prepare` 和 `--setup` 分别记录GNU制品构建、冻结
 输入及委托cgroup；它需要既有owned输入generation的准备收据。PRE、profiles、
-timing分别由冻结config引用实际semspec入口，具体参数保存在该批次的
+timing分别由冻结config引用实际semaspec入口，具体参数保存在该批次的
 config、manifest和build-receipt中。SDK路径不替代这条普通CLI执行链。
 
 ### 证据清单与分析
@@ -441,7 +441,7 @@ config、manifest和build-receipt中。SDK路径不替代这条普通CLI执行�
 | --- | --- |
 | `protocol.json`, `plan-*.tsv` | 固定问题、suite、全部 cell/条件、配对随机顺序、预算、来源和摘要 |
 | `source/`, `driver/`, `build.log`, `bin/`, `harness/` | 源码归档、构建参数、实际执行制品和冻结入口 |
-| `in.json` 及 semspec 导出/日志 | 实际外层入口与执行收据，不能替代内部样本 |
+| `in.json` 及 semaspec 导出/日志 | 实际外层入口与执行收据，不能替代内部样本 |
 | `campaign-command.json`, `campaign.*.log`, `budget-*.json` | systemd/taskset 命令、campaign 输出和父组预算 |
 | `trials/NNN-CONDITION/{stdout.log,stderr.log,result.json,host-verification.log}` | 每个独立环境的完整行输出、错误、资源和宿主验证收据 |
 | `records.partial.json`, `records.json`, `status.json` | 中间证据、最终 trial 库存和失败总数 |

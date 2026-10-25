@@ -1,3 +1,0 @@
-{
-  "same-stage-cold-warm-paired": "$ python3 @HARNESS@/stage_lazy_compare.py --measure @BATCH@"
-}

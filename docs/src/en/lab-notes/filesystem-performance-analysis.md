@@ -2053,7 +2053,7 @@ All normal staged writes remain in upper, with lower unchanged.
 
 Validation passes: **97 Core tests (five skipped)**, **12 overlayfs tests**,
 **294 VM tests (two skipped)**, **25 benchmark tests**, all-targets Clippy for
-three relevant packages and benchmark Ruff. No semspec ledgers/snapshots were
+three relevant packages and benchmark Ruff. No semaspec ledgers/snapshots were
 modified or approved. Evidence includes samples and failures, not only successful
 summaries. These numbers do not update macOS, startup, networking or complete
 Agent-loop measurements.

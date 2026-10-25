@@ -6,7 +6,7 @@ on:
     paths:
       - 'docs/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
+      - 'tools/semaspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/test_docs.py'
@@ -24,7 +24,7 @@ on:
     paths:
       - 'docs/**'
       - 'benchmark/**'
-      - 'tools/semspec/**'
+      - 'tools/semaspec/**'
       - 'scripts/*docs*.py'
       - 'scripts/check-reference.py'
       - 'tests/test_docs.py'
@@ -59,8 +59,8 @@ jobs:
           setup: python
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: docs-semspec
-          workspaces: tools/semspec -> ../../target/semspec
+          shared-key: docs-semaspec
+          workspaces: tools/semaspec -> ../../target/semaspec
       - name: Test documentation checks
         run: mise run test-py -- tests/test_docs.py
       - name: Build and check documentation

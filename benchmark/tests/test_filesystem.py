@@ -39,7 +39,7 @@ from fs_timing import (  # noqa: E402
 from update import publish, validate_batch  # noqa: E402
 from workload import execute, prepare_fixture, validate_fixture  # noqa: E402
 
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
+SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semaspec/debug/semaspec"))
 
 
 class FilesystemContracts(unittest.TestCase):

@@ -17,7 +17,6 @@ import json
 import os
 import platform
 import random
-import shlex
 import shutil
 import subprocess
 import sys
@@ -155,6 +154,9 @@ def prepare(args):
     batch.mkdir(parents=True, exist_ok=False)
     harness = batch / "harness"
     harness.mkdir()
+    from specification import prepare_table
+
+    table = prepare_table(HERE / "image_compare.md", batch)
     for name in ("image_compare.py", "image_compare_analysis.py", "pvisor_image_perf.py"):
         shutil.copy2(HERE / name, harness / name)
     overlay_source = args.overlay_adapter.resolve()
@@ -259,10 +261,7 @@ def prepare(args):
         protocol["background_before"] = process_snapshot(protocol["owned_process_roots"])
         protocol["status"] = "prepared"
         save(batch / "protocol.json", protocol)
-        command = "$ " + shlex.join(
-            [sys.executable, str(harness / "image_compare.py"), "--measure", str(batch)]
-        )
-        save(batch / "in.json", {"warm-prepared-paired": command})
+        save(batch / "in.json", table)
         print(batch)
     except BaseException:
         protocol["status"] = "prepare-failed"

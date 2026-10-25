@@ -19,7 +19,7 @@ spec.loader.exec_module(PREPARE)
 from replay_hooks import prepare, verify  # noqa: E402
 
 BINARY = Path(os.environ.get("PVISOR_REPLAY_BIN", ROOT.parent / "target/release/pvisor-replay"))
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
+SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semaspec/debug/semaspec"))
 SOURCE = ROOT / "replay/replay.md"
 
 

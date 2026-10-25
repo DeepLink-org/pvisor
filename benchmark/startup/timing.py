@@ -18,14 +18,12 @@ import subprocess
 from pathlib import Path
 
 from hooks import archive, cleanup_container, prepare, validate
+from subjects import NAMES
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("ready_common", ROOT / "common.py")
 COMMON = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(COMMON)
-RUNS = 60
-WARMUP = 3
-TIMEOUT = 30
 READY_FIELDS = COMMON.RUNTIME.READY_FIELDS
 EXIT_FIELDS = COMMON.RUNTIME.EXIT_FIELDS
 FIELDS = (*READY_FIELDS, *EXIT_FIELDS[1:])
@@ -39,12 +37,14 @@ def run_trial(batch, phase, index, reset=True):
     backend = protocol["backends"][0]
     if reset:
         prepare(batch, backend)
-    env = os.environ.copy() | {
-        "PVISOR_RUN_HOME": str(batch / "current/runs"),
-        "PVISOR_STARTUP_TIMING": "0",
-        "PVISOR_FS_PROFILE": "0",
-    }
-    record = capture(protocol["subject"], batch / "workspace", env, batch / "current/stdout")
+    env = os.environ.copy() | protocol["environment"]
+    record = capture(
+        protocol["subject"],
+        Path(protocol["cwd"]),
+        env,
+        batch / "current/stdout",
+        timeout=protocol["plan"]["timeout"],
+    )
     record.update(phase=phase, index=index)
     COMMON.save(batch / "current/timing.json", record)
     (batch / "current/stdout.timing.json").unlink()
@@ -63,7 +63,7 @@ def measure(batch):
         if COMMON.digest(path) != sha:
             raise ValueError("prepared artifact changed: " + path)
     samples = COMMON.RUNTIME.repeat(
-        WARMUP, RUNS, lambda phase, index: run_trial(batch, phase, index)
+        manifest["warmup"], manifest["runs"], lambda phase, index: run_trial(batch, phase, index)
     )
     result = summarize_pairs(samples)
     COMMON.save(
@@ -78,10 +78,12 @@ def measure(batch):
     return result
 
 
-def main(backend):
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("batch", type=Path)
+    parser.add_argument("--backend", required=True, choices=NAMES)
     args = parser.parse_args()
+    backend = args.backend
     try:
         batch = args.batch.resolve()
         protocol = json.loads((batch / "protocol.json").read_text())
@@ -97,3 +99,7 @@ def main(backend):
         if (args.batch / "protocol.json").exists():
             cleanup_container(args.batch)
         parser.exit(1, f"{error}\n")
+
+
+if __name__ == "__main__":
+    main()

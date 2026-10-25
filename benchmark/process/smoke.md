@@ -12,7 +12,7 @@ Design: 四个固定 argv，逐条件顺序运行；每条件 2 次预热、10 �
 
 ## Experiment design
 
-计时使用 semspec 公共运行库的 `perf_counter_ns`，从直接 argv 创建进程到正常零退出，
+计时使用 semaspec 公共运行库的 `perf_counter_ns`，从直接 argv 创建进程到正常零退出，
 包含管道捕获；准备、Bundle 校验、解释器和统计处理在计时之外。保留全部慢样本。
 预检创建一个独立 Run store 和已完成 Run，status/review 读取该 Run；host-run 每次
 必须恰好新增一个成功完成的 Bundle，预热与正式样本使用相同校验。
@@ -26,9 +26,9 @@ mise run benchmark -- smoke
 mise run benchmark -- smoke --binary target/release/pvisor --output benchmark/process/.data/smoke-new
 ```
 
-Markdown 是四个条件的唯一声明；准备器通过 `semspec filter --format json` 读取已验证
-的计划，生成私有批次输入，再由 `semspec bench` 和公共运行库执行。不要直接执行含
-占位符的源文档。`mise run semspec -- filter benchmark/process/smoke.md` 仅渲染规格。
+Markdown 是四个条件的唯一声明；准备器通过 `semaspec filter --format json` 读取已验证
+的计划，生成私有批次输入，再由 `semaspec bench` 和公共运行库执行。不要直接执行含
+占位符的源文档。`mise run semaspec -- filter benchmark/process/smoke.md` 仅渲染规格。
 
 ### native
 
@@ -102,7 +102,7 @@ PVISOR_FS_PROFILE = "0"
 
 `mise run benchmark -- smoke` 审核成功后输出四行 Markdown 表格，并生成 `smoke.render.json`。
 默认临时证据在审核后清理；`--output` 显式保留新 `.data/` 批次，包括冻结规格、
-公共 runtime、二进制和配置摘要、所有预热与正式记录、原始样本和 semspec 导出。
+公共 runtime、二进制和配置摘要、所有预热与正式记录、原始样本和 semaspec 导出。
 任何命令、校验、制品摘要、样本数量或统计复算失败都阻止发布，旧结果不被覆盖。
 
 CI 用相同候选 harness 测量基线和候选，逐条件比较中位数，默认阈值 15%。

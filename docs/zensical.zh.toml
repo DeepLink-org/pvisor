@@ -4,7 +4,7 @@ site_name = "PolicyVisor"
 site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
 site_url = "https://deeplink-org.github.io/pvisor/zh/"
 docs_dir = "src/zh"
-watch = ["src/zh/benchmarks", "semspec_tables.py"]
+watch = ["src/zh/benchmarks", "semaspec_tables.py"]
 site_dir = "site/zh"
 cache_dir = ".cache/zh"
 dev_addr = "127.0.0.1:3000"
@@ -193,7 +193,7 @@ nav = [
       { "社区" = "community/index.md" },
       { "贡献指南" = "community/contributing.md" },
       { "工程说明" = "community/development.md" },
-      { "测试与 semspec" = "community/testing.md" },
+      { "测试与 semaspec" = "community/testing.md" },
       { "复现 Run 生命周期" = "community/examples.md" },
       { "发布 PolicyVisor" = "community/releasing.md" },
       { "路线图" = "community/roadmap.md" },
@@ -263,7 +263,7 @@ alternate_style = true
 
 [project.markdown_extensions."tables"]
 
-[project.markdown_extensions."docs.semspec_tables"]
+[project.markdown_extensions."docs.semaspec_tables"]
 
 [project.markdown_extensions."toc"]
 permalink = true

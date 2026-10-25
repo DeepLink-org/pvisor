@@ -1,6 +1,6 @@
 # 治理与维护者
 
-pVisor 目前由单一维护者决策：代码合并、发布、semspec 批准和文档权威版本都由同一入口处理，没有正式的委员会或多维护者投票机制。本页描述当前的实际做法，而不是一套尚未建立的章程。
+pVisor 目前由单一维护者决策：代码合并、发布、semaspec 批准和文档权威版本都由同一入口处理，没有正式的委员会或多维护者投票机制。本页描述当前的实际做法，而不是一套尚未建立的章程。
 
 ## 贡献如何进入 {#workflow}
 
@@ -10,9 +10,9 @@ pVisor 目前由单一维护者决策：代码合并、发布、semspec 批准�
 
 代码评审、合并与语义规格批准分别处理：一个 PR 的测试通过不自动批准产品承诺；新增用户可见边界需要对应的规格与人工审核。
 
-## semspec 批准 {#semspec}
+## semaspec 批准 {#semaspec}
 
-贡献者可以起草案例、修复实现并维护 runner 测试。semspec 的 approve/revoke 与真实 `REVIEWED.toml`、`.approved/` 快照只由维护者人工执行；AI 不执行批准，也不弱化现有检查来获得 PASS。具体命令与规则见[测试与 semspec](testing.md)。
+贡献者可以起草案例、修复实现并维护 runner 测试。semaspec 的 approve/revoke 与真实 `REVIEWED.toml`、`.approved/` 快照只由维护者人工执行；AI 不执行批准，也不弱化现有检查来获得 PASS。具体命令与规则见[测试与 semaspec](testing.md)。
 
 ## 尚未建立的部分 {#records}
 

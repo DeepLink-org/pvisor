@@ -49,7 +49,7 @@ mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json be
 mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
 ```
 
-The process regression gate uses semspec bench and a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. `benchmark-compare` accepts validated `in.bench.json` files from matching configurations and harnesses; measure the baseline separately with the same suite into `.data/main`.
+The process regression gate uses semaspec bench and a Python `perf_counter_ns` command timer; preparation and correctness hooks are outside timing: smoke has 2 warmups/10 samples, nightly has 10 warmups/50 samples. It measures native launch, minimal host Run, status and review as independent conditions. `benchmark-compare` accepts validated `in.bench.json` files from matching configurations and harnesses; measure the baseline separately with the same suite into `.data/main`.
 
 The startup event-clock table uses 3 warmups/60 samples per condition and records Ready and normal Exit from the same launch. It does not replace the retired startup/resource matrix or reproduce its historical sampling settings. See the [current benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md) for prepared binary, rootfs, image and kernel prerequisites. Every explicit output directory must be new; failures retain evidence and block publication. Building and input preparation occur outside these timers.
 

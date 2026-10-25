@@ -44,21 +44,21 @@ Gateway capture requires a build with the gateway feature; wheels and `mise run 
 
 ## Execute the documentation
 
-Each case has a Bash block preceded by a single `<!-- semspec: case id=S-USE-001 -->` comment (using that case’s ID), containing product commands, semantic assertions, and failure conditions. Preparation and assertion functions live in the Markdown block below, marked with `<!-- semspec: setup -->`. Case comments also accept timeout=60s, xfail-on=linux, and the paired xfail-reason. semspec extracts only marked code blocks, independently of heading levels, leaving ordinary tutorial examples unexecuted. Copy this directory’s Markdown documents to run them without configuration files or external shell scripts. Supply one or more Markdown files/directories explicitly on the command line; semspec does not infer search paths. Running one chapter also reads preparation from its sibling index.md.
+Each case has a Bash block preceded by a single `<!-- semspec: case id=S-USE-001 -->` comment (using that case’s ID), containing product commands, semantic assertions, and failure conditions. Preparation and assertion functions live in the Markdown block below, marked with `<!-- semspec: setup -->`. Case comments also accept timeout=60s, xfail-on=linux, and the paired xfail-reason. semaspec extracts only marked code blocks, independently of heading levels, leaving ordinary tutorial examples unexecuted. Copy this directory’s Markdown documents to run them without configuration files or external shell scripts. Supply one or more Markdown files/directories explicitly on the command line; semaspec does not infer search paths. Running one chapter also reads preparation from its sibling index.md.
 
 ```bash
-mise run semspec -- list docs/src/zh/cases --domain USE
-mise run semspec -- lint docs/src/zh/cases
-mise run semspec -- run docs/src/zh/cases/01-first-job.md
-mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+mise run semaspec -- list docs/src/zh/cases --domain USE
+mise run semaspec -- lint docs/src/zh/cases
+mise run semaspec -- run docs/src/zh/cases/01-first-job.md
+mise run semaspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
 mise run cases -- --suite use
 mise run cases -- --suite use --case S-USE-005,S-USE-007 --keep
 mise run cases -- --suite use --output target/pvisor-learning-report.json
 ```
 
-`mise run cases -- --suite use` builds the release product and companions, then executes all 16 cases in isolated temporary workspaces, HOME, XDG, and Job data directories. Linux CI checks FUSE and user/mount/network namespaces first. Missing prerequisites do not become SKIP; environment and execution failures fail the gate. The report is target/pvisor-learning-report.json. Failures retain their workspaces; --keep also retains successful ones. Selected runs require exactly the requested IDs. Full runs discover all S-USE IDs from this documentation directory, automatically including new cases. Empty reports, missing cases, duplicates, SKIP, XFAIL, and any other non-PASS verdict fail the gate. The entry uses semspec’s `--require-pass` directly, sharing the same parsed inventory for discovery, selection, and report validation. With `--output`, valid selection clears an old report before atomically publishing fresh results; no additional validation script is needed.
+`mise run cases -- --suite use` builds the release product and companions, then executes all 16 cases in isolated temporary workspaces, HOME, XDG, and Job data directories. Linux CI checks FUSE and user/mount/network namespaces first. Missing prerequisites do not become SKIP; environment and execution failures fail the gate. The report is target/pvisor-learning-report.json. Failures retain their workspaces; --keep also retains successful ones. Selected runs require exactly the requested IDs. Full runs discover all S-USE IDs from this documentation directory, automatically including new cases. Empty reports, missing cases, duplicates, SKIP, XFAIL, and any other non-PASS verdict fail the gate. The entry uses semaspec’s `--require-pass` directly, sharing the same parsed inventory for discovery, selection, and report validation. With `--output`, valid selection clears an old report before atomically publishing fresh results; no additional validation script is needed.
 
-Specifications and the complete Markdown documents containing preparation participate in semspec digests. New cases remain UNREVIEWED: execution success and human semantic approval are separate. After human review of the engine, vocabulary, and cases, add --require-reviewed. Test execution does not approve cases or update the review ledger.
+Specifications and the complete Markdown documents containing preparation participate in semaspec digests. New cases remain UNREVIEWED: execution success and human semantic approval are separate. After human review of the engine, vocabulary, and cases, add --require-reviewed. Test execution does not approve cases or update the review ledger.
 
 [DOC cases](../reference/cases.md), [VM control cases](../reference/cases-vm.md), STAGE and USE scenarios run through `mise run cases`, selected with `--suite doc/stage/use/vm`; `mise run examples` runs examples/pvisor. CI runs existing isolation regressions and network/Gateway mock scenarios alongside this learning path. Retired standalone snapshot hardware records remain historical evidence. Legacy Controller/Worker acceptance records are not validation of the new daemon. Validate native execution restoration separately against the [execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); the daemon's [runtime boundaries](../guides/daemon/index.md) do not include VM restore. This learning path does not count unexecuted VM/Gateway capabilities as success.
 
@@ -66,7 +66,7 @@ The full execution gate currently targets Linux. On macOS, select applicable cas
 
 ## Preparation and assertion functions
 
-These functions are shared by the chapters. For manual execution, install semspec and pvisor, set CASE_ROOT, WS, and SEMSPEC_BIN (the absolute semspec path) in a temporary workspace, copy this block, then run a selected case. The runner supplies these variables and an independent workspace for each case. pvisor resolves through PATH by default; --subject-bin selects a tested binary. Preparation reads no other repository scripts.
+These functions are shared by the chapters. For manual execution, install semaspec and pvisor, set CASE_ROOT, WS, and SEMSPEC_BIN (the absolute semaspec path) in a temporary workspace, copy this block, then run a selected case. The runner supplies these variables and an independent workspace for each case. pvisor resolves through PATH by default; --subject-bin selects a tested binary. Preparation reads no other repository scripts.
 
 <!-- semspec: setup -->
 ```bash

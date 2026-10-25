@@ -264,7 +264,7 @@ python3 benchmark/filesystem/workloads_v2.py --profile curves \
 python3 benchmark/filesystem/workloads_v2_run.py --prepare NEW_BATCH_UNDER_DOT_DATA \
   --rootfs PREPARED_ROOTFS --firmware PREPARED_FIRMWARE \
   --firmware-source FIRMWARE_SOURCE_JSON --samples 3
-target/semspec/debug/semspec bench NEW_BATCH_UNDER_DOT_DATA/in.json
+target/semaspec/debug/semaspec bench NEW_BATCH_UNDER_DOT_DATA/in.json
 python3 benchmark/filesystem/workloads_v2_analysis.py NEW_BATCH_UNDER_DOT_DATA
 ```
 
@@ -272,7 +272,7 @@ python3 benchmark/filesystem/workloads_v2_analysis.py NEW_BATCH_UNDER_DOT_DATA
 `--cases M06,M07`可采集明确子集，正式19点省略该选项。计数使用独立新批次的
 `--diagnostic --samples 1`，其计数是包含setup、验证和退出的case生命周期范围，
 不是逐轮工作阶段计数。分析需要matplotlib才能生成SVG/PDF；`--no-plots`仅生成
-CSV/JSON和报告。测量必须经真实`semspec bench`入口，不能把离线计划JSON交给
+CSV/JSON和报告。测量必须经真实`semaspec bench`入口，不能把离线计划JSON交给
 旧发布器或填进用户表作为新结果。现有`curves.py`、`guest_writeback_curves.py`
 和CLI冻结入口不改写；扩展曲线、阶段压力插桩与新对照继续单独实施。
 

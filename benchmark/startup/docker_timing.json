@@ -1,3 +1,0 @@
-{
-  "Docker": "$ python3 @REPO@/benchmark/startup/docker_timing.py @BATCH@"
-}

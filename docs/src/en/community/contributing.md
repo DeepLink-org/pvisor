@@ -19,7 +19,7 @@ mise run lint             # clippy 与 ruff
 mise run docs-build       # 构建并检查文档站点
 ```
 
-See [Development environment and engineering](development.md) for FUSE/macFUSE, KVM/HVF and OCI runtime preparation, and [Testing and semspec](testing.md) for test responsibilities.
+See [Development environment and engineering](development.md) for FUSE/macFUSE, KVM/HVF and OCI runtime preparation, and [Testing and semaspec](testing.md) for test responsibilities.
 
 ## Semantic specification rules
 
@@ -27,7 +27,7 @@ Product promises are semantic specifications under `docs/src/zh/cases/` and [`re
 
 - You may draft new cases and repair implementations;
 - Never weaken existing claims, checks or `xfail` annotations to obtain a pass;
-- Maintainers must manually approve cases with `semspec approve` and edit `REVIEWED.toml`/`.approved/` snapshots.
+- Maintainers must manually approve cases with `semaspec approve` and edit `REVIEWED.toml`/`.approved/` snapshots.
 
 ## Submit a PR
 

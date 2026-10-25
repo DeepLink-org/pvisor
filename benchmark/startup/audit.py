@@ -7,7 +7,7 @@ from pathlib import Path
 
 from hooks import validate_output
 from subjects import LABELS, NAMES
-from timing import COMMON, FIELDS, ROOT, RUNS, TIMEOUT, WARMUP, summarize_pairs
+from timing import COMMON, FIELDS, ROOT, summarize_pairs
 
 
 def audit_startup(directory, manifest, results):
@@ -54,14 +54,17 @@ def audit_timing(batch, manifest, evidence, resolved, template):
         raise ValueError("expected one known startup backend")
     backend = manifest["conditions"][0]
     label = LABELS[backend]
-    entry = "startup/" + backend.replace("-", "_") + "_timing.json"
+    protocol = json.loads((batch / "protocol.json").read_text())
+    plan = protocol["plan"]
+    runs, warmup, timeout = plan["runs"], plan["warmup"], plan["timeout"]
+    entry = "startup/" + backend.replace("-", "_") + "_timing.md"
     if (
-        manifest["entry"] not in (entry, "startup/timing.json")
+        manifest["entry"] not in (entry, "startup/timing.md")
         or manifest["metric_scope"] != COMMON.READY_EXIT_SCOPE
         or manifest["benchmark_id"] != "B-STARTUP"
         or manifest.get("measurement_engine") != "python-perf_counter_ns"
-        or manifest["runs"] != RUNS
-        or manifest["warmup"] != WARMUP
+        or manifest["runs"] != runs
+        or manifest["warmup"] != warmup
         or manifest["rows"] != {label: backend}
     ):
         raise ValueError("unexpected Ready measurement protocol")
@@ -69,8 +72,7 @@ def audit_timing(batch, manifest, evidence, resolved, template):
     expression = template.get(label)
     if not isinstance(expression, str) or not expression.startswith("$ "):
         raise ValueError("expected one Ready script row")
-    script = backend.replace("-", "_") + "_timing.py"
-    expected_argv = ["python3", str(ROOT / "startup" / script), str(batch)]
+    expected_argv = ["python3", str(ROOT / "startup/timing.py"), str(batch), "--backend", backend]
     if len(template) != 1 or shlex.split(expression[2:]) != expected_argv:
         raise ValueError("Ready script command differs from the fixed entry")
     commands = evidence["commands"]
@@ -103,8 +105,8 @@ def audit_timing(batch, manifest, evidence, resolved, template):
     history = sorted((batch / "trials").glob("*/timing.json"))
     phases = (
         [("preflight", 0)]
-        + [("warmup", i) for i in range(WARMUP)]
-        + [("sample", i) for i in range(RUNS)]
+        + [("warmup", i) for i in range(warmup)]
+        + [("sample", i) for i in range(runs)]
     )
     if len(history) != len(phases):
         raise ValueError("missing Ready trial evidence")
@@ -123,7 +125,7 @@ def audit_timing(batch, manifest, evidence, resolved, template):
             or not previous_end < start < ready <= end
         ):
             raise ValueError("invalid Ready monotonic timestamps")
-        if trial["ready_duration_ns"] != ready - start or end - start > TIMEOUT * 1_000_000_000:
+        if trial["ready_duration_ns"] != ready - start or end - start > timeout * 1_000_000_000:
             raise ValueError("invalid Ready duration/timeout")
         if trial.get("exit_duration_ns") != end - start:
             raise ValueError("invalid Exit duration")

@@ -14,7 +14,6 @@ import json
 import os
 import platform
 import random
-import shlex
 import shutil
 import sys
 import time
@@ -57,6 +56,9 @@ def prepare(args):
     batch.mkdir(parents=True, exist_ok=False)
     harness = batch / "harness"
     harness.mkdir()
+    from specification import prepare_table
+
+    table = prepare_table(HERE / "image_lazy_compare.md", batch)
     for name in (
         "image_lazy_compare.py",
         "image_lazy_analysis.py",
@@ -159,10 +161,7 @@ def prepare(args):
         protocol["background_before"] = common.process_snapshot(protocol["owned_process_roots"])
         protocol["status"] = "prepared"
         common.save(batch / "protocol.json", protocol)
-        command = "$ " + shlex.join(
-            [sys.executable, str(harness / "image_lazy_compare.py"), "--measure", str(batch)]
-        )
-        common.save(batch / "in.json", {ROW: command})
+        common.save(batch / "in.json", table)
         print(batch)
     except BaseException:
         protocol["status"] = "prepare-failed"

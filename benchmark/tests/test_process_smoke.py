@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 import common as COMMON  # noqa: E402
 from update import validate_batch  # noqa: E402
 
-SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
+SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semaspec/debug/semaspec"))
 SOURCE = ROOT / "process/smoke.md"
 
 
@@ -107,7 +107,7 @@ class ProcessSmokeContracts(unittest.TestCase):
             manifest = json.loads((batch / "manifest.json").read_text())
             self.assertEqual((manifest["warmup"], manifest["runs"]), (2, 10))
             self.assertIn("process-smoke.md", manifest["harness"])
-            self.assertIn("semspec-runtime.py", manifest["harness"])
+            self.assertIn("semaspec-runtime.py", manifest["harness"])
             self.assertIn(str(SEMSPEC.resolve()), manifest["artifacts"])
             self.assertFalse(
                 any(name.endswith("smoke.commands.json") for name in manifest["harness"])

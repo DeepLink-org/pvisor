@@ -1,74 +1,57 @@
-# 启动时间：一张表，一个 JSON
+# 启动实验：先看协议，再运行并保留证据
 
-这里回答的问题：环境已准备好时，各执行模式到首条 Ready 输出与正常退出要等多久？
-注册条目为 [B-STARTUP](../../benchmark/REGISTRY.md#b-startup)。
+这里测量预准备环境从进程创建到首条正确输出的 Ready 时间，并保留同一次启动的正常 Exit。
+[公共协议与复现步骤](REPRODUCING.md) 说明工具版本、输入来源、测量边界、成功判据、
+原始证据和已验证范围；从干净源码目录先走 Native，不依赖本机历史资产。
+注册需求见 [B-STARTUP](../REGISTRY.md#b-startup)。
 
-[timing.json](timing.json) 是八行对比表，每行调用 `<backend>_timing.py`；
-各后端也有独立的 `<backend>_timing.json`，输出与输入同名的 `.render.json`。
-
-```sh
-mise run benchmark -- startup/timing
-mise run benchmark -- startup/timing --row Docker
-mise run benchmark -- docker_timing
-mise run benchmark -- pvisor_vm_timing
-mise run benchmark -- native_timing
-```
-
-`--row` 只执行并渲染选中的行。默认使用自动清理的临时目录，只保存最终表格。
-需要保留原始证据或发布文档时：
+## 运行与审计
 
 ```sh
-mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
-python3 benchmark/update.py benchmark/startup/.data/measurement/row-0-* --startup-docs docs/src
+mise trust
+mise install --locked
+mise run test-startup
+out=benchmark/startup/.data/native-repro-01
+mise run benchmark -- startup/native_timing --output "$out"
+mise exec -- python3 benchmark/run.py --audit "$out"
 ```
 
-每行证据保存在独立的 `row-<index>-<id>/`，显式输出目录拒绝复用。
-`update.py` 的本地 CSV / Markdown 默认放在 `.data/results/`。
+输出目录必须不存在。每次实验换一个新目录；省略 `--output` 会在审计后清理临时证据。
+`--audit` 核对保留记录并重算统计，不执行测量、不发布数据。
+整次选择的完成情况记在 `run.json`；失败、缺行或修改过的证据不能作为完整实验。
+模板旁的预览表可能保留其他批次的行，复核以证据目录为准。
 
-## 制品与输入
+## 实验入口与当前范围
 
-非原生后端通过 `--assets PATH` 或 `PVISOR_BENCHMARK_ASSETS` 指定共同输入；
-FC/QEMU 通过 `--kernel-receipt PATH` 或 `PVISOR_BENCHMARK_KERNEL_RECEIPT` 指定 stock 内核收据。
-代码不绑定历史批次路径或日期。Docker 默认使用输入 `assets.json` 的不可变 `docker_image`，
-也可通过 `PVISOR_BENCHMARK_DOCKER_IMAGE` 指定；镜像必须预先存在。
-
-pVisor 默认使用 `target/release/pvisor`，可用 `--binary PATH` 指定。
-已有 Host listener 必须与二进制匹配。默认选当前可用的前两个 CPU；
-`--cpu-affinity` 可指定准备和采样共同使用的亲和性。
+| 入口 | 内容 | 当前复现范围 |
+| --- | --- | --- |
+| [timing.md](timing.md)、各 `*_timing.md` | 八种基本后端的定义与采样参数 | Native 已验证；其他后端需要外部参考输入和运行环境，尚未验证干净环境复现 |
+| [image_compare.md](image_compare.md) | 同源预准备镜像的三组配对 | 专用脚本协议；依赖预准备 lab/store，未验证干净环境复现 |
+| [image_lazy_compare.md](image_lazy_compare.md) | 冷暖客户端的三组配对 | 另需已验证的 warm-batch 收据；未验证干净环境复现 |
+| [stage_lazy_compare.md](stage_lazy_compare.md) | 相同 staged 执行器的两组文件加载 | 另需匹配 runtime rlib 和私有挂载环境；未验证干净环境复现 |
+| [checks.md](checks.md) | 输出、超时、完整链路、缺失输入与诊断契约 | `mise run test-startup` 通过 semaspec 执行，新规格保持未审核 |
+| 其他注册 Markdown | 初始化、内核、SDK 等实验需求 | 通用入口尚未准备，不能用 null 表或历史值冒充测量 |
 
 ## 当前运行链路
 
-- `subjects.py`：八个后端的名称、标签和固定被测 argv。
-- `common.py`：展开输入、核对制品、准备工作区并执行预检。
-- `hooks.py`：重置每次输入，校验输出、canary、Run Bundle 和只读 stage。
-- `timing.py`：启动实验适配器，复用 `tools/semspec/runtime.py` 的 Ready/Exit 观察、采样和统计；各 `*_timing.py` 固定后端。
-- `audit.py`：复算当前批次的配对样本并校验逐次证据。
-- `publish.py`：将成功批次发布为双语 Ready / Exit 结果 JSON。
+`Markdown → semaspec 计划 → 准备与预检 → semaspec bench → 逐次观察与校验 → 独立审计`
 
-公开 CSV 同时保留 Ready 与 Exit 两列；用户页只引用 Ready 表，因为退出时间不改变读者的选型。来源摘要共用
-`docs/overrides/assets/benchmarks/startup-timing.provenance.json`，单行复测保留其他
-条件的批次和配置。完整 manifest、输入清单与内核收据留在试验 `.data/`。
+八份 `*_timing.md` 定义 argv、cwd、环境、采样次数和超时。三个镜像配对实验的
+Markdown 定义单次脚本入口，其分组、随机顺序、缓存和采样协议由专用 Python 脚本拥有。
+`common.py` 准备输入，`timing.py` 调用公共 Ready/Exit 观察器，`hooks.py` 校验输出和
+Bundle，`audit.py` 重算全部样本；`publish.py` 只负责已经审核的公开数据更新。
+具体字段与输入限制以公共协议和对应实验为准。
 
-每行固定 3 次预热、60 次正式样本，VM 为 2 vCPU / 128 MiB，热缓存。
-时钟在 Popen 前开始，收到唯一且精确的 `REFERENCE_READY` 行时记录 Ready，
-正常零退出时记录 Exit。两个指标来自同次运行，使用标准库样本标准差。
-解释器启动和输入准备不计时；Popen、管道观察与调度包含在内。
-
-预检、预热与正式样本都要求正确有序输出、输入未变和零退出。
-pVisor 还校验实际隔离模式与 Run Bundle；FC/QEMU 要求有序 Exit0 且无 panic。
-FC 使用 stock 内核/MMIO，受控停止不能算正常退出。任何失败都阻止更新结果。
-日志直接保存在试验目录；成功验证后丢弃可重建磁盘，保留纳秒记录、输出与 Bundle。
-
-历史报告、CSV 和旧 results 已归档到 `.data/history/`，不参与当前采样、审计或发布。
-工程与诊断占位表仍由 registry 登记，尚未准备的负载拒绝执行。
+以下保留历史证据范围与原有链接锚点。原始路径与摘要代表当时的实验身份，
+不会自动提供新 checkout 所需的资产，也不随新协议改写。
 
 ## OpenSandbox 十请求突发证据 {#opensandbox-burst-evidence}
 
 问题：相同完整产品预算下，pVisor 与官方 OpenSandbox 同时接收十个创建请求，
 整批创建、首命令完成、失败和内存表现如何？此对照属于
 [B-OPENSANDBOX-ENG](../REGISTRY.md#b-opensandbox-eng) 的低内存突发协议，
-独立于单请求启动和 pVisor 单臂突发诊断，不通过未准备的 `opensandbox.json`
-或 `opensandbox_burst.json` 重新测量或发布。
+独立于单请求启动和 pVisor 单臂突发诊断，不通过未准备的 `opensandbox.md`
+或 `opensandbox_burst.md` 重新测量或发布。
 
 2026-10-24 批次保存在本地 `.data/opensandbox-pvisor-burst-ab-20261024/`，
 包含完整预检、预热及正式批次，不随 checkout 或站点分发：
@@ -94,7 +77,7 @@ FC 使用 stock 内核/MMIO，受控停止不能算正常退出。任何失败�
 [TurboOCI 对照协议](TURBO_OCI.md)属于 B-LAZY-STARTUP，分别比较客户端准备、
 Ready、正常退出和传输成本，与上面的已准备环境热缓存启动表保持独立。
 独立 OverlayBD/TCMU 环境已部署，操作和功能验证见
-[部署记录](OVERLAYBD_LAB.md)。`lazy_startup.json` 仍为未准备的占位表，
+[部署记录](OVERLAYBD_LAB.md)。`lazy_startup.md` 仍为未准备的占位表，
 正式四组采样与审计尚未接通，不发布新成绩。
 
 ```sh
@@ -116,25 +99,14 @@ pVisor 本地预准备 rootfs VM 中的 Ready / Completion；不包含镜像拉�
 解包。每组 3 次预热、30 次随机交替正式启动，专用审计复算时钟、Bundle、
 制品、清理和后台负载，生成本批次的 Markdown/CSV。
 
-```sh
-python3 benchmark/startup/image_compare.py \
-  --prepare benchmark/startup/.data/image-compare-prepared-new \
-  --lab benchmark/startup/.data/overlaybd-lab-20261017 \
-  --prepared-store PREPARED_IMAGE_STORE \
-  --binary-dir target/release --cpus 12,13 --service-cpus 14,15
-target/semspec/debug/semspec bench \
-  --cwd benchmark/startup/.data/image-compare-prepared-new \
-  benchmark/startup/.data/image-compare-prepared-new/in.json
-python3 benchmark/startup/.data/image-compare-prepared-new/harness/image_compare.py \
-  --audit benchmark/startup/.data/image-compare-prepared-new
-```
+准备、执行和审计步骤见 [image_compare.md](image_compare.md)；旧 `.data/` 路径只标识历史证据，不能作为新 checkout 的输入。
 
 实验目录必须全新，不能并行复用同一 lab。采样包含容器的 Docker exec 客户端，
 VM 的 2 GiB guest RAM 与容器硬限制不代表等整机内存预算。宿主页缓存保留，
 其他 CPU 上的后台负载单列；不清理或停止其他测试。
 结果保留在 `.data/image-compare-prepared-20261017-a/`，含 99 次完整启动证据、
 专用审计和 `report.md`；这是独立 prepared scope，不填充仍未准备的四组
-`lazy_startup.json`，也不通过通用 `update.py` 发布为用户 benchmark 表。
+`lazy_startup.md`，也不通过通用 `update.py` 发布为用户 benchmark 表。
 
 ### 相同 stage 执行器的惰性文件加载 {#stage-lazy}
 
@@ -145,22 +117,11 @@ ext4 挂载；两侧均使用相同 Docker exec 包装器、CLI、探针与应�
 它不执行镜像内的程序，不代表 CLI 已支持 host executor 的 OCI rootfs。
 `--stage` 只暂存工作区；不能用 `--executor host --rootfs image=…` 冒充这个路径。
 
-```sh
-python3 benchmark/startup/stage_lazy_compare.py \
-  --prepare benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-new \
-  --lab benchmark/startup/.data/overlaybd-lab-20261017 \
-  --prepared-store PREPARED_IMAGE_STORE \
-  --binary-dir target/release --runtime-rlib target/release/deps/libpvisor-<hash>.rlib
-target/semspec/debug/semspec bench \
-  --cwd "$PWD/benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-new" \
-  "$PWD/benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-new/in.json"
-python3 benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-new/harness/stage_lazy_compare.py \
-  --audit benchmark/startup/.data/overlaybd-lab-20261017/stage-lazy-new
-```
+准备、执行和审计步骤见 [stage_lazy_compare.md](stage_lazy_compare.md)；旧 `.data/` 路径只标识历史证据，不能作为新 checkout 的输入。
 
 `--runtime-rlib` 指定现有 release 构建的 runtime 库，仅链接 benchmark owner
 helper，不改产品 API。准备时核对原始 OCI TAR 中的文件摘要，冻结工具和
-harness。正式入口为单个 semspec Python 配对行，3 轮预热、30 轮随机配对；
+harness。正式入口为单个 semaspec Python 配对行，3 轮预热、30 轮随机配对；
 每组冷客户端后紧接热客户端，每次均使用新挂载和新 stage。只重置本 lab 的
 私有客户端状态，保留 registry 源内容及宿主页缓存；两种服务均在本机，无 WAN。
 OverlayBD 使用官方带 lease 的 `images mount/unmount`，并在必要时正常卸载
@@ -175,7 +136,7 @@ batch 下，不与原 VM/容器批次拼接，也不通过通用发布器覆盖�
 已完成批次位于
 `.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`，包括 132 次执行、
 逐次原始日志、`audit.json`、`summary.json`、`samples.csv` 和 `report.md`。
-独立离线审计通过，并已核对 semspec 导出与复算结果一致。
+独立离线审计通过，并已核对 semaspec 导出与复算结果一致。
 正式输入、两种原始/派生 OCI 身份和 helper 链接收据均保留在该批次；
 功能预检失败记录留在独立目录，未混入正式数据。
 

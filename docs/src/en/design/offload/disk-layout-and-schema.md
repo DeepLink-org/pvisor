@@ -258,10 +258,10 @@ Each seek-table frame must have 1..66560 input bytes (64 KiB plus 1024) and 1..6
 
 ## 4. Experimental evidence {#experiments}
 
-On 2026-10-03, existing artifacts at `target/offload-validation/final-diagnostics/workdirs/semspec-S-DOC-062-8Fsw80/` were read without running a VM. This is not a new test or evidence for the current uncommitted experiment. The committed layout is 256 MiB; only base and delta remain, with no observed pin/active staging.
+On 2026-10-03, existing artifacts at `target/offload-validation/final-diagnostics/workdirs/semaspec-S-DOC-062-8Fsw80/` were read without running a VM. This is not a new test or evidence for the current uncommitted experiment. The committed layout is 256 MiB; only base and delta remain, with no observed pin/active staging.
 
 ```text
-semspec-S-DOC-062-8Fsw80/
+semaspec-S-DOC-062-8Fsw80/
 ├── startup.ram                 999 logical B; 4096 allocated B
 └── startup.ram.layers/
     ├── a8c9862d…f8b08ab.pvdelta 22486063 logical B; 22487040 allocated B; base

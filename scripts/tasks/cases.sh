@@ -17,11 +17,11 @@ case "$suite" in
       spec=docs/src/zh/reference/cases-vm.md
       report="$CARGO_TARGET_DIR/pvisor-vm-case-report.json"
     fi
-    mise run semspec -- run "$spec" --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$report" "$@"
+    mise run semaspec -- run "$spec" --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$report" "$@"
     ;;
   stage)
     mise run build -- debug
-    mise run semspec -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" "$@"
+    mise run semaspec -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" "$@"
     ;;
   use)
     mise run build -- release
@@ -46,7 +46,7 @@ case "$suite" in
         *) echo "unknown USE case argument: $1" >&2; exit 2 ;;
       esac
     done
-    mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$subject" --format json --output "$report" ${run_args[@]+"${run_args[@]}"}
+    mise run semaspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$subject" --format json --output "$report" ${run_args[@]+"${run_args[@]}"}
     ;;
   *) echo "expected doc, stage, use or vm, got: $suite" >&2; exit 2 ;;
 esac

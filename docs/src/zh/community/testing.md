@@ -1,6 +1,6 @@
-# 测试与 semspec
+# 测试与 semaspec
 
-pVisor 把正确性分成两层：代码层面由单元测试和集成测试保证，可以交给自动化；产品承诺由语义规格（semspec）表达，必须经过人工审核。
+pVisor 把正确性分成两层：代码层面由单元测试和集成测试保证，可以交给自动化；产品承诺由语义规格（semaspec）表达，必须经过人工审核。
 
 ## 常用命令
 
@@ -14,8 +14,8 @@ pVisor 把正确性分成两层：代码层面由单元测试和集成测试保�
 | `mise run examples -- [场景]` | 运行 `examples/pvisor/` 下的端到端示例 |
 | `mise run cases -- --suite stage` | 在全新临时工作区运行 STAGE 领域的语义规格 |
 | `mise run cases` | 运行文档语义规格（S-DOC，来源 [`reference/cases.md`](../reference/cases.md)） |
-| `mise run semspec -- lint docs/src/zh/cases` | 静态检查规格格式 |
-| `mise run test-semspec` | 测试 semspec 工具本身 |
+| `mise run semaspec -- lint docs/src/zh/cases` | 静态检查规格格式 |
+| `mise run test-semaspec` | 测试 semaspec 工具本身 |
 
 `tests/tasks.toml` 中的私有任务检查 mise 参数转发、Bash 断言词汇和离线安装器。单独运行用 `mise run test-scripts`；CI 同时运行 `mise run test-scripts` 与 `mise run test-py`。Python 测试负责 Python 契约、结构化数据、PTY 交互和进程生命周期。
 
@@ -34,7 +34,7 @@ pVisor 把正确性分成两层：代码层面由单元测试和集成测试保�
 
 - PASS 只说明当前实现满足脚本，不说明语义本身正确；
 - 新用例和修改过的用例是 UNREVIEWED 或 STALE，发布门禁不把它们当作已批准；
-- `semspec approve`/`revoke` 以及编辑 `REVIEWED.toml`、`.approved/` 快照只能由维护者人工执行；
+- `semaspec approve`/`revoke` 以及编辑 `REVIEWED.toml`、`.approved/` 快照只能由维护者人工执行；
 - 任何人（包括 AI 工具）都不得为了通过而削弱已有的声明、检查或 `xfail` 标注。
 
-完整设计见 `tools/semspec/DESIGN.md`。
+完整设计见 `tools/semaspec/DESIGN.md`。

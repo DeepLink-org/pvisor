@@ -74,6 +74,13 @@ class TableRunnerContracts(unittest.TestCase):
         with workspace() as (root, resources):
             batches = self.execute(root, fail=True, output=root / ".data/retained")
             self.assertTrue(all(batch.exists() for batch in batches))
+            record = json.loads((root / ".data/retained/run.json").read_text())
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual([b["status"] for b in record["batches"]], ["passed", "failed"])
+            with patch.object(RUN, "validate_batch") as validate:
+                with self.assertRaisesRegex(ValueError, "incomplete"):
+                    RUN.audit_retained(root / ".data/retained")
+                validate.assert_not_called()
 
     def test_single_row_preserves_other_rows_and_failure_preserves_table(self):
         for fail in (False, True):
@@ -84,7 +91,7 @@ class TableRunnerContracts(unittest.TestCase):
 
     def test_selection_accepts_positional_row_and_keeps_multiple_tables(self):
         templates, row = RUN.resolve_selection(["startup/timing", "  pvisor   vm "])
-        self.assertEqual(templates, [ROOT / "startup/timing.json"])
+        self.assertEqual(templates, [ROOT / "startup/timing.md"])
         self.assertEqual(row, "pVisor VM")
         # Selection consumes validated inventory; the Rust table tests and
         # filesystem integration exercise the actual Markdown parser and source.
@@ -126,8 +133,68 @@ class TableRunnerContracts(unittest.TestCase):
         self.assertEqual(RUN.resolve_entry("process/smoke.md"), ROOT / "process/smoke.md")
         self.assertEqual(RUN.resolve_entry("replay"), ROOT / "replay/replay.md")
         self.assertEqual(RUN.resolve_entry("nightly"), ROOT / "process/nightly.md")
-        self.assertEqual(RUN.resolve_entry("startup/timing"), ROOT / "startup/timing.json")
-        self.assertEqual(RUN.resolve_entry("docker_timing"), ROOT / "startup/docker_timing.json")
+        self.assertEqual(RUN.resolve_entry("startup/timing"), ROOT / "startup/timing.md")
+        self.assertEqual(RUN.resolve_entry("docker_timing"), ROOT / "startup/docker_timing.md")
         for value in ("missing", "startup/timing.render"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 RUN.resolve_entry(value)
+
+
+class RetainedStartupContracts(unittest.TestCase):
+    execute = TableRunnerContracts.execute
+
+    def test_complete_selection_audits_without_running_subjects_or_publishing(self):
+        with workspace() as (root, resources):
+            output = root / ".data/retained"
+            self.execute(root, output=output)
+            record_path = output / "run.json"
+            original = record_path.read_bytes()
+            record = json.loads(original)
+            self.assertEqual(record["selected_rows"], ["Docker", "Firecracker"])
+            self.assertEqual(record["status"], "passed")
+
+            def audit(path):
+                row = json.loads((path / "manifest.json").read_text())["row"]
+                return (
+                    dict(
+                        benchmark_id="B-STARTUP",
+                        entry=record["entry"],
+                        template_sha256=record["specification_sha256"],
+                    ),
+                    {row: {"N": 60}},
+                    {},
+                )
+
+            with (
+                patch.object(RUN, "validate_batch", side_effect=audit),
+                patch.object(RUN.subprocess, "run") as run,
+            ):
+                self.assertEqual(len(RUN.audit_retained(output)), 2)
+                run.assert_not_called()
+            self.assertEqual(record_path.read_bytes(), original)
+            for transform, message in [
+                (lambda r: r["batches"].pop(), "incomplete"),
+                (lambda r: r["batches"][0].update(directory="../outside"), "direct child"),
+                (lambda r: r["batches"][0].update(manifest_sha256="0" * 64), "manifest changed"),
+            ]:
+                changed = json.loads(original)
+                transform(changed)
+                RUN.save(record_path, changed)
+                with self.assertRaisesRegex(ValueError, message):
+                    RUN.audit_retained(output)
+
+    def test_individual_batch_audit_uses_the_existing_validator(self):
+        with (
+            workspace() as (root, resources),
+            patch.object(RUN, "validate_batch", return_value=({}, {}, {})) as validate,
+        ):
+            RUN.save(root / "manifest.json", {"benchmark_id": "B-PROCESS"})
+            self.assertEqual(RUN.audit_retained(root), [(root, {}, {})])
+            validate.assert_called_once_with(root)
+
+    def test_startup_audit_rejects_a_different_auditor_before_validation(self):
+        with workspace() as (root, resources), patch.object(RUN, "validate_batch") as validate:
+            RUN.save(root / "manifest.json", {"benchmark_id": "B-STARTUP", "harness": {}})
+            with self.assertRaisesRegex(ValueError, "audit code differs"):
+                RUN.audit_retained(root)
+            validate.assert_not_called()

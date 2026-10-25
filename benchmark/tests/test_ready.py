@@ -96,7 +96,11 @@ class ReadyContracts(unittest.TestCase):
             (root / "manifest.json").write_text(
                 json.dumps(
                     dict(
-                        status="prepared", metric_scope=READY.COMMON.READY_EXIT_SCOPE, artifacts={}
+                        status="prepared",
+                        metric_scope=READY.COMMON.READY_EXIT_SCOPE,
+                        artifacts={},
+                        runs=60,
+                        warmup=3,
                     )
                 )
             )
@@ -128,7 +132,11 @@ class ReadyContracts(unittest.TestCase):
             (root / "manifest.json").write_text(
                 json.dumps(
                     dict(
-                        status="prepared", metric_scope=READY.COMMON.READY_EXIT_SCOPE, artifacts={}
+                        status="prepared",
+                        metric_scope=READY.COMMON.READY_EXIT_SCOPE,
+                        artifacts={},
+                        runs=60,
+                        warmup=3,
                     )
                 )
             )
@@ -147,6 +155,7 @@ class ReadyContracts(unittest.TestCase):
             subject = ["/frozen/pvisor", "run"]
             protocol = dict(
                 subject=subject,
+                plan=dict(runs=60, warmup=3, timeout=30),
                 scope=READY.COMMON.READY_EXIT_SCOPE,
                 measurement_engine="python-perf_counter_ns",
                 ready="exact REFERENCE_READY line received",
@@ -205,7 +214,9 @@ class ReadyContracts(unittest.TestCase):
                     result=result,
                 ),
             )
-            command = shlex.join(["python3", str(ROOT / "startup/pvisor_vm_timing.py"), str(root)])
+            command = shlex.join(
+                ["python3", str(ROOT / "startup/timing.py"), str(root), "--backend", "pvisor-vm"]
+            )
             evidence = dict(
                 commands=[dict(kind="script-row", command=command, raw=result, value=result)],
                 cells=[],
@@ -220,7 +231,7 @@ class ReadyContracts(unittest.TestCase):
             )
             manifest = dict(
                 metric_scope=READY.COMMON.READY_EXIT_SCOPE,
-                entry="startup/pvisor_vm_timing.json",
+                entry="startup/pvisor_vm_timing.md",
                 conditions=["pvisor-vm"],
                 benchmark_id="B-STARTUP",
                 measurement_engine="python-perf_counter_ns",

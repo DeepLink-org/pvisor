@@ -1,3 +1,0 @@
-{
-  "Native": "$ python3 @REPO@/benchmark/startup/native_timing.py @BATCH@"
-}

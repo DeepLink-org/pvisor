@@ -8,7 +8,7 @@ TurboOCI 复现、pVisor 性能结论或用户 benchmark 成绩页。
 归属 [B-LAZY-STARTUP](../../benchmark/REGISTRY.md#b-lazy-startup)，遵守
 [benchmark 规则](../../benchmark/REGISTRY.md)和
 [新入口的证据与发布规则](../README.md)。
-[registry.csv](../registry.csv) 已登记 `startup/lazy_startup.json`，但
+[registry.csv](../registry.csv) 已登记 `startup/lazy_startup.md`，但
 [该模板](lazy_startup.json)目前仍为未准备的占位表。四组设计已登记于
 B-LAZY-STARTUP；正式测量前，仍须接通、预检实际的单条件命令；不能将
 占位表或历史 campaign 当作可执行的新对照。
@@ -75,7 +75,7 @@ pVisor 本地预准备 rootfs VM。三者从同一源镜像派生，均运行相
 慢样本。容器时钟包含 Docker exec 客户端，VM 时钟从 CLI Popen 开始；两边
 观察者解释器及未计时输入/清理均不计时。这些完整调用路径不能解释为纯后端成本。
 
-准备生成固定 Python 配对行 `in.json`，由 `semspec bench` 采样；专用审计从
+准备生成固定 Python 配对行 `in.json`，由 `semaspec bench` 采样；专用审计从
 逐次证据重算统计后生成 Markdown/CSV。未通过专用审计不更新用户 benchmark 页，
 也不使用通用 `update.py` 白名单以外的格式冒充已审核结果。
 
@@ -262,8 +262,8 @@ CI 包含零时写“未检出差异”。分离／双峰分布报告各簇比�
 
 实现优先复用现有代码中的固定负载、私有 registry、缓存状态检查与传输记录，
 以及 [startup runner](README.md)的 Ready/Exit 事件时钟、输入冻结和审计逻辑。
-本协议没有新增一个已能运行的命令；`startup/lazy_startup.json` 仍须接通实际
-条件，统一走 prepare → semspec bench → audit → render。统计工具和是否使用
+本协议没有新增一个已能运行的命令；`startup/lazy_startup.md` 仍须接通实际
+条件，统一走 prepare → semaspec bench → audit → render。统计工具和是否使用
 Python 事件时钟须明确，不能把 Python 时钟标成 hyperfine 数据。
 
 证据存入新的 `benchmark/startup/.data/` 批次目录，不复用已有输出。

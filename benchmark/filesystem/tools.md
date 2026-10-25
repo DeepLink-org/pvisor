@@ -15,7 +15,7 @@ Benchmark: B-FS-TOOLS ([注册表](../REGISTRY.md#b-fs-tools)), role user-facing
 
 `fs_timing.py` 用公共 runtime 的 `perf_counter_ns`，从创建子进程前计到正常退出并收集输出后。
 解释器启动、管道和负载自身校验计入时间；输入准备、观察者启动、行前后完整 fixture 校验及审计不计时。
-每次要求对应操作的精确成功 JSON。semspec 每行调用脚本一次，接收完整统计行，不再套一层计时。
+每次要求对应操作的精确成功 JSON。semaspec 每行调用脚本一次，接收完整统计行，不再套一层计时。
 
 ```sh
 mise run benchmark -- filesystem/tools

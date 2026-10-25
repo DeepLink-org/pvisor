@@ -13,7 +13,7 @@ Design: 每个适配器固定 task 0，截取一个完整工具批次；零预�
 
 ## Experiment design
 
-使用 semspec 公共运行库的 `perf_counter_ns`，计时直接 argv 创建进程至正常零退出，
+使用 semaspec 公共运行库的 `perf_counter_ns`，计时直接 argv 创建进程至正常零退出，
 包括命令本身和管道捕获；外层 Python、准备/校验 hooks、归档和统计不计时。
 七种适配器逐条件顺序采样，不宣称随机配对或跨适配器的因果性能排名。
 
@@ -27,9 +27,9 @@ mise run benchmark -- replay --binary target/release/pvisor-replay
 mise run benchmark -- replay --binary target/release/pvisor-replay --output benchmark/replay/.data/replay-new
 ```
 
-Markdown 中的 bench cell 是唯一命令定义。准备器经 `semspec filter --format json`
+Markdown 中的 bench cell 是唯一命令定义。准备器经 `semaspec filter --format json`
 读取计划，展开 `@BINARY@`、`@BATCH@` 和 `@REPO@`，生成批次输入；然后由
-`semspec bench` 执行并审计。占位符是独立 argv，不经过 shell 解释。
+`semaspec bench` 执行并审计。占位符是独立 argv，不经过 shell 解释。
 未展开的源文档仅供只读渲染，不直接使用 `filter --execute` 测量。
 
 ### claude-code

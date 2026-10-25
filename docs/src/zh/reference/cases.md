@@ -25,7 +25,7 @@
 | 准备轨迹回放 | M01 |
 | 验证终端界面与权限弹窗 | D06、M02 |
 
-本文件同时是用户文档和 semspec 的 DOC 规格源。每个场景包含用途、语义、违反示例、
+本文件同时是用户文档和 semaspec 的 DOC 规格源。每个场景包含用途、语义、违反示例、
 命令和断言；`mise run cases` 直接执行下方 Bash 检查。原 A01–M02 编号保留在标题中。
 
 ## 如何使用
@@ -41,18 +41,18 @@ cd /tmp/pvisor-cases/workspace
 从仓库根目录运行自动检查：
 
 ```bash
-mise run semspec -- --spec-dir docs/src/zh/reference list --domain DOC
-mise run semspec -- run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
+mise run semaspec -- --spec-dir docs/src/zh/reference list --domain DOC
+mise run semaspec -- run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
 mise run cases -- --case S-DOC-001,S-DOC-012 --keep
 mise run cases
-mise run semspec -- --spec-dir docs/src/zh/reference show S-DOC-001
+mise run semaspec -- --spec-dir docs/src/zh/reference show S-DOC-001
 ```
 
 `mise run cases` 构建 release pVisor，发现本页的 54 个有效 DOC 规格和
 [VM 控制与 RAM backing 的六条场景](cases-vm.md)，输出 JSON 报告到
 `target/pvisor-case-report.json`。使用 S-DOC ID 选择 case；A01 对应 S-DOC-001，
 C01 对应 S-DOC-012。标题保留完整的场景编号。也可以通过
-`mise run semspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH` 使用已有二进制。
+`mise run semaspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH` 使用已有二进制。
 L01、L02 和 S-DOC-053、S-DOC-054 随 `env` 功能移除；这些 ID 不再复用。
 
 每条规格把原来的命令、退出预期和全部断言放在同一个审核摘要内。预期非零退出必须
@@ -61,7 +61,7 @@ L01、L02 和 S-DOC-053、S-DOC-054 随 `env` 功能移除；这些 ID 不再复
 临时 CASE_ROOT；失败保留现场，`--keep` 保留所有现场。缺少声明的前提条件报告 SKIP。
 
 新增规格保持 UNREVIEWED。检查成功不等于人工批准；人工完成规格、词汇和引擎审核后，
-才使用 `mise run cases -- --require-reviewed` 作为门禁。semspec 支持的选项以 `mise run semspec -- run --help`
+才使用 `mise run cases -- --require-reviewed` 作为门禁。semaspec 支持的选项以 `mise run semaspec -- run --help`
 为准。
 
 | 测试资源 | 环境变量 |

@@ -422,13 +422,13 @@ M1 可不修改 guest 内核；它验证预热后的机制，不能证明已实�
 | image 与导入格式 | [共享镜像设计](../../shared-image-cache-storage.md) | revision、索引、内容校验、权限数据完整性、格式与构建证据 |
 | guest 用户态控制 | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | 必要的初始化/确认；不把常规 stat/open 转到 guest 用户态服务 |
 | 生命周期与接入 | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime)、[environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | 准入、freeze、恢复、fork、实验配置与 Host 权限边界 |
-| 验证与性能 | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)、[benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | 候选规格、故障与交错测试、真实 VM harness、原始证据和统计 |
+| 验证与性能 | [semaspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md)、[benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | 候选规格、故障与交错测试、真实 VM harness、原始证据和统计 |
 
 先共同评审对象模型、profile 和失败合同，再拆分工作包。共享接口由拥有者定义，不复制 DTO；`pvisor-vm`、`pvisor-overlayfs`、`pvisor-journal` 保持现有 API 边界。尚未迁移的 crate 只做必要的局部修改，不借实验改成全工作区重构。改文件前逐级阅读目录 README。
 
 #### 2.9.3 正确性验收矩阵
 
-以下是候选用例，不是已人工批准的 semspec。每例记录 profile、前置状态、并发顺序、结果、错误和资源释放；单元测试与真实 VM 测试分别标识。
+以下是候选用例，不是已人工批准的 semaspec。每例记录 profile、前置状态、并发顺序、结果、错误和资源释放；单元测试与真实 VM 测试分别标识。
 
 | 用例组 | 操作与干扰 | 必须验证 |
 |---|---|---|
@@ -476,7 +476,7 @@ mise run fw -- test
 
 固件测试验证构建/打包合同，不能替代真实 guest 文件系统测试。记录固定内核、patch 集、配置、VMM/固件哈希与 `libkrunfw.SOURCE`。测试所需 `/dev/kvm`、`/dev/fuse`、权限或平台不具备时，报告失败/跳过及未覆盖能力。
 
-修改公开 API 时，从 crate 外部经 `api` 测试合同，执行已有边界 guards，并以 warnings denied 检查 rustdoc；不为测试暴露内部状态。修改 semspec 用例时遵守 [semspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)，执行 `mise run semspec -- lint docs/src/zh/cases`；修改 runner 时用 `mise run test-semspec`。AI 不执行 approve/revoke，不改真实 `REVIEWED.toml` 或 `.approved/`，不弱化已有 claims/checks/xfail。
+修改公开 API 时，从 crate 外部经 `api` 测试合同，执行已有边界 guards，并以 warnings denied 检查 rustdoc；不为测试暴露内部状态。修改 semaspec 用例时遵守 [semaspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md)，执行 `mise run semaspec -- lint docs/src/zh/cases`；修改 runner 时用 `mise run test-semaspec`。AI 不执行 approve/revoke，不改真实 `REVIEWED.toml` 或 `.approved/`，不弱化已有 claims/checks/xfail。
 
 #### 2.9.5 性能实验协议
 
@@ -555,7 +555,7 @@ mise run fw -- test
 3. 将目录版本、属性版本、内容版本和后端身份分别建模；丢失更新或提交结果不明时进入明确的恢复或失败路径。
 4. 性能实验遵守 [benchmark 规则](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md)，找到对应注册条目后再测量；原始数据保存到所属实验目录的 `.data/`。
 5. 实现归属现有 crate 与 `fw/`，遵守各目录 README 和 API 边界；设计登记不创建空 CLI 开关。
-6. 新语义规格遵守 [semspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)。候选验收项、测试 PASS 和人工批准分别记录，AI 不操作真实审批账本或批准快照。
+6. 新语义规格遵守 [semaspec 设计](https://github.com/DeepLink-org/pvisor/blob/main/tools/semaspec/DESIGN.md)。候选验收项、测试 PASS 和人工批准分别记录，AI 不操作真实审批账本或批准快照。
 
 ## 3. 方案讨论和对比 {#alternatives}
 

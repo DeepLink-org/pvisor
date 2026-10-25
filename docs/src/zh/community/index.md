@@ -18,9 +18,9 @@ pVisor 是 Apache-2.0 开源项目。
 
 ## 分开验证与批准
 
-单元和集成测试检查实现；semspec 把产品承诺写成声明、违反示例和可执行检查。可以起草新用例、修复实现和维护 runner 测试，不得削弱已有 claims、checks 或 `xfail` 来获得 PASS。
+单元和集成测试检查实现；semaspec 把产品承诺写成声明、违反示例和可执行检查。可以起草新用例、修复实现和维护 runner 测试，不得削弱已有 claims、checks 或 `xfail` 来获得 PASS。
 
-人工语义审核独立于测试和 PR 合并。AI 不运行 `semspec approve` / `revoke`，不编辑真实 `REVIEWED.toml` 或 `.approved/` 快照；具体规则见[测试与 semspec](testing.md)。贡献内容按 Apache-2.0 授权。
+人工语义审核独立于测试和 PR 合并。AI 不运行 `semaspec approve` / `revoke`，不编辑真实 `REVIEWED.toml` 或 `.approved/` 快照；具体规则见[测试与 semaspec](testing.md)。贡献内容按 Apache-2.0 授权。
 
 ## 讨论约定
 

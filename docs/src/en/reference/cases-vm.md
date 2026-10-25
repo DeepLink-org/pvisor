@@ -10,7 +10,7 @@ SDK driver is unavailable. `mise run cases -- --suite vm` builds the driver, sig
 and runs all six cases on this page. To use existing binaries:
 
 ```sh
-mise run semspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+mise run semaspec -- run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
 ```
 
 macOS requires `PVISOR_CASE_ROOTFS` pointing to a Linux guest rootfs; Linux defaults

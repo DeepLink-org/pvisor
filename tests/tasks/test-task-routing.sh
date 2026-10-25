@@ -30,8 +30,8 @@ for plugin in github:nextest-rs/nextest cargo:cargo-zigbuild; do
   esac
 done
 # Markdown selection exercises the real parser, including on a clean checkout.
-cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
-export PVISOR_TASK_TEST_SEMSPEC="$CARGO_TARGET_DIR/semspec/debug/semspec"
+cargo build --quiet --locked --manifest-path "$MISE_PROJECT_ROOT/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec"
+export PVISOR_TASK_TEST_SEMSPEC="$CARGO_TARGET_DIR/semaspec/debug/semaspec"
 export PVISOR_TASK_TEST_LOG="$work/commands" CARGO_TARGET_DIR="$work/target with spaces" CARGO_INSTALL_ROOT="$work/install"
 export PVISOR_TASK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
 mkdir "$work/bin" "$work/tests"
@@ -83,9 +83,9 @@ if [[ "$name" == codesign && "${PVISOR_TASK_TEST_BAD_CODESIGN:-0}" == 1 ]]; then
 if [[ "$name" == codesign && "$1" == --verify && "${PVISOR_TASK_TEST_BAD_VERIFY:-0}" == 1 ]]; then exit 1; fi
 if [[ "$name" == cargo && "$1" == build ]]; then
   if [[ "${PVISOR_TASK_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
-  if [[ " $* " == *"/tools/semspec/Cargo.toml "* ]]; then
-    mkdir -p "$CARGO_TARGET_DIR/semspec/debug"
-    cp "$PVISOR_TASK_TEST_SEMSPEC" "$CARGO_TARGET_DIR/semspec/debug/semspec"
+  if [[ " $* " == *"/tools/semaspec/Cargo.toml "* ]]; then
+    mkdir -p "$CARGO_TARGET_DIR/semaspec/debug"
+    cp "$PVISOR_TASK_TEST_SEMSPEC" "$CARGO_TARGET_DIR/semaspec/debug/semaspec"
   fi
   profile=debug
   for ((i=0; i<$#; i++)); do
@@ -197,12 +197,12 @@ if [[ "$(uname -s)" == Darwin ]]; then
   PVISOR_TASK_TEST_BAD_LIST=1 expect_failure test cli -- --features pvisor-cli/gateway
   test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 fi
-run test-semspec --test-threads 1
-{ command_line cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked --test-threads 1
-  command_line python3 -m unittest discover -s tools/semspec -p 'test_*.py'; } > "$work/expected"
+run test-semaspec --test-threads 1
+{ command_line cargo nextest run --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked --test-threads 1
+  command_line python3 -m unittest discover -s tools/semaspec -p 'test_*.py'; } > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
-run lint-semspec
-check_line cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
+run lint-semaspec
+check_line cargo clippy --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --all-targets --locked -- -D warnings
 run test shim -- --features vm
 check_line cargo nextest run --locked -p pvisor-shim --features vm
 run check -p pvisor-shim --target x86_64-unknown-linux-musl
@@ -314,7 +314,7 @@ for recipe in fw cases benchmark doctor; do
     *) expect_failure "$recipe" unknown ;;
   esac
   if [[ "$recipe" == benchmark ]]; then
-    command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+    command_line cargo build --quiet --locked --manifest-path "$work/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec" > "$work/expected"
     command_line python3 "$work/benchmark/run.py" --check smoke unknown >> "$work/expected"
     diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
   else
@@ -324,22 +324,22 @@ done
 run benchmark startup/timing 'pvisor vm'
 check_line python3 "$work/benchmark/run.py" --check startup/timing 'pvisor vm'
 check_line python3 "$work/benchmark/run.py" startup/timing 'pvisor vm'
-SEMSPEC_BIN="$work/missing-semspec" run benchmark filesystem/tools native-read
+SEMSPEC_BIN="$work/missing-semaspec" run benchmark filesystem/tools native-read
 check_line python3 "$work/benchmark/run.py" filesystem/tools native-read
 expect_failure benchmark filesystem/tools 'pvisor vm'
-command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+command_line cargo build --quiet --locked --manifest-path "$work/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec" > "$work/expected"
 command_line python3 "$work/benchmark/run.py" --check filesystem/tools 'pvisor vm' >> "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 grep -Fq 'available: native-metadata, native-read' "$work/stderr"
 run benchmark smoke --binary /already-built/pvisor
 {
-  command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec"
+  command_line cargo build --quiet --locked --manifest-path "$work/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec"
   command_line python3 "$work/benchmark/run.py" --check smoke --binary /already-built/pvisor
   command_line python3 "$work/benchmark/run.py" smoke --binary /already-built/pvisor
 } > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 PVISOR_TASK_TEST_BAD_BUILD=1 expect_failure benchmark filesystem/tools native-read
-command_line cargo build --quiet --locked --manifest-path "$work/tools/semspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semspec" > "$work/expected"
+command_line cargo build --quiet --locked --manifest-path "$work/tools/semaspec/Cargo.toml" --target-dir "$CARGO_TARGET_DIR/semaspec" > "$work/expected"
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 run benchmark smoke
 check_line python3 "$work/benchmark/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke
@@ -356,20 +356,20 @@ PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 expect_failure docs-build
 diff -u "$work/expected" "$PVISOR_TASK_TEST_LOG"
 selection="S-DOC-001,\$(touch $work/injected)"
 run cases --case "$selection" --keep --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
+check_line cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
 test ! -e "$work/injected"
 run cases --suite vm --case S-DOC-060 --keep
 check_line cargo build --locked -p pvisor --release --example vm_control_case --target-dir "$CARGO_TARGET_DIR"
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
+check_line cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
 run cases --suite stage --case S-STAGE-001 --keep
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
+check_line cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
 run cases --suite use
 run cases --suite use --case S-USE-001,S-USE-002 --case=S-USE-003 --output "$work/report with spaces.json" --keep --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
+check_line cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
 PVISOR_TASK_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001 --require-reviewed
-check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
+check_line cargo run --quiet --manifest-path tools/semaspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semaspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
 expect_failure cases --suite use --case
-if grep -Fq $'cargo\trun\t' "$PVISOR_TASK_TEST_LOG"; then echo 'invalid selection reached semspec' >&2; exit 1; fi
+if grep -Fq $'cargo\trun\t' "$PVISOR_TASK_TEST_LOG"; then echo 'invalid selection reached semaspec' >&2; exit 1; fi
 
 run accept-wheel "$work/wheel with spaces.whl" "$work/evidence with spaces.json"
 check_line python3 scripts/packaging/verify_wheel.py "$work/wheel with spaces.whl" --install-smoke --acceptance-log "$work/evidence with spaces.json"

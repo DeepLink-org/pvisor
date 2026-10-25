@@ -27,7 +27,7 @@ Use `tests.fixtures.workspace()` for an isolated canonical temporary path and an
 before removing the directory, including when an assertion fails.
 
 Semantic specifications live in user Markdown under `docs/src/zh/cases/` and
-`docs/src/zh/reference/`, following `tools/semspec/DESIGN.md`. Moving conventional regression checks does not approve
+`docs/src/zh/reference/`, following `tools/semaspec/DESIGN.md`. Moving conventional regression checks does not approve
 specifications or change their claims, vocabulary, review ledger or snapshots.
 
 ## Docker CLI compatibility
