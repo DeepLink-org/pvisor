@@ -55,11 +55,11 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 `PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。`qualification_lock` 和 `synchronous` 用于保留旧资格锁或等待 owned worker 完成的消融；不属于稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../lab-notes/filesystem-io-performance-analysis.md)。
 
-下面两个变量影响 Linux x86_64 musl **构建时**嵌入的 guest 内核：
+下面两个变量影响 Linux x86_64 musl 与 macOS ARM64 产品**构建时**嵌入的 guest 内核：
 
 | 变量 | 输入 | 优先级 |
 | --- | --- | --- |
 | `PVISOR_KRUNFW_KERNEL_BUNDLE` | 含 `kernel.bin` 与 `kernel.json` 的目录 | 设置时优先使用 |
-| `PVISOR_KRUNFW_PATH` | 要提取内核的 `libkrunfw.so.5` 文件 | 未设置 bundle 时使用 |
+| `PVISOR_KRUNFW_PATH` | 要提取内核的宿主可加载 libkrunfw 库（Linux `.so`，macOS `.dylib`） | 未设置 bundle 时使用 |
 
-更换这两个输入后重新构建 CLI。运行已经构建好的 musl 二进制时设置这些变量，不会替换其中的内核；动态固件入口与平台条件见[平台矩阵](platforms.md)。构建源见 `crates/pvisor-vm/build_kernel.rs`。
+更换这两个输入后重新构建 CLI。运行已经构建好的产品二进制时设置这些变量，不会替换其中的内核；动态固件入口与平台条件见[平台矩阵](platforms.md)。构建源见 `crates/pvisor-vm/build_kernel.rs`。

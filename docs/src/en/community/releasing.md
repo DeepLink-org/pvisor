@@ -7,11 +7,11 @@ Each platform wheel is tagged `py3-none-<platform>` and contains:
 - The Python `pvisor` version marker, not a launcher;
 - Three native scripts `pvisor`, `pvisor-tui` and `pvisor-replay`, installed directly into the environment's bin directory;
 - Independently built `pvisor-daemon` in Linux x86_64 and macOS ARM64 wheels;
-- `libkrunfw.5.dylib` only on Apple Silicon macOS; Linux embeds the kernel at build time.
+- A `libkrunfw.SOURCE` provenance receipt; both platforms embed the compressed guest kernel and ship no firmware shared library.
 
-The current release set contains Linux x86_64 and Apple Silicon macOS wheels and their corresponding firmware sources. Python source distributions (sdists) are not part of the release set.
+The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.tar.gz` archives, corresponding firmware sources, `SHA256SUMS`, and a generated `pvisor.rb` Homebrew formula. Native archives reuse the exact wheel payloads without recompiling. Python source distributions (sdists) are not part of the release set.
 
-## One-time setup
+## One-time setup {#one-time-setup}
 
 1. Create a GitHub environment named `pypi`. Do not require reviewers; restrict deployments to tags matching `v*`.
 2. Add a pending Trusted Publisher in PyPI settings:
@@ -28,6 +28,8 @@ The current release set contains Linux x86_64 and Apple Silicon macOS wheels and
    remove previous Job state between runs. Missing runners or virtualization
    permissions block publication.
 
+4. For automatic Homebrew publication, create the project-owned `DeepLink-org/homebrew-pvisor` tap with an initial commit. Set repository variable `HOMEBREW_TAP_REPOSITORY` to `DeepLink-org/homebrew-pvisor` and secret `HOMEBREW_TAP_TOKEN` to a token with Contents write access to that tap only. When the variable is absent, tap publication is skipped; formula generation and the macOS Homebrew installation test still run. The release workflow commits `Formula/pvisor.rb` only after installation, command discovery and `brew test` pass. No service is registered or started.
+
 No PyPI API token is stored in GitHub. A pending publisher can create the project on the first successful upload but does not reserve its name.
 
 Before pushing the first release tag, verify that the `pvisor` Trusted Publisher matches the current repository, workflow and environment.
@@ -42,7 +44,7 @@ Before pushing the first release tag, verify that the `pvisor` Trusted Publisher
    ```
 
 3. Commit version changes and merge into `main`. The workflow rejects tags whose commit is not reachable from `main`.
-4. Optionally run **Publish PyPI** manually. It builds/validates all wheels without publishing.
+4. Optionally run **Publish Release** manually. It runs required CI and native acceptance, validates all wheels, and retains `release-native` with the archives, checksums and formula without publishing. This dry run still requires both native acceptance runners.
 5. Create/push the matching stable tag:
 
    ```bash
@@ -61,7 +63,7 @@ corresponding firmware sources for publication alongside the wheels.
 
 Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the libkrunfw kernel; the wheel does not include firmware shared libraries. The manylinux_2_28 tag remains for glibc Python installers. Building requires Zig, cargo-zigbuild and the Rust musl target; firmware is loaded only during the build.
 
-Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and packages `libkrunfw.5.dylib`. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
+Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and embeds the compressed guest kernel, just like Linux. The built firmware dylib is consumed during compilation only. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
 
 Stable releases first run the required CI workflow at the release commit, then
 build wheels. Each final wheel is installed in a fresh environment on its native
@@ -79,6 +81,8 @@ Release-set validation requires exactly one supported wheel per platform,
 matching versions, valid metadata and bounded artifact sizes. Both platform
 acceptances and the complete set must pass before either publication channel.
 
+Native archives are also tested on the build runners through a Homebrew-style symlink layout, including host execution and companion discovery. Archives copy signed macOS binaries unchanged; their guest kernel is embedded and the provenance receipt remains beside the executables. The stable Homebrew job downloads the published archive and runs `brew install`, `brew test`, and `brew uninstall` on macOS before updating the tap. Linux Homebrew installation and upgrade/rollback acceptance still need native coverage.
+
 Stable versions are immutable. A retry verifies existing GitHub/PyPI file
 SHA-256 values before publishing. Identical files are retained and missing files
 can be added; different bytes under an existing filename fail and require a new
@@ -94,20 +98,19 @@ require their own acceptance evidence. See [daemon setup](../guides/daemon/index
 
 ## Nightly builds
 
-**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish validated wheels and corresponding firmware sources to GitHub Release before uploading the wheels to PyPI. Install the daemon from either platform’s nightly wheel or build it locally. Cache serving supports both; sandbox serving retains the Linux prerequisites above. Standalone daemon archives are not published.
+**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish the validated wheels, native archives, checksums, formula and corresponding firmware sources to GitHub Release before uploading only the wheels to PyPI. Nightly publishes native archives and checksums alongside its wheels and sources, without a Homebrew formula or tap update. Install the daemon from either platform’s nightly wheel or build it locally. Cache serving supports both; sandbox serving retains the Linux prerequisites above. Standalone daemon archives are not published.
 
 ## Distribution evolution {#distribution-plan}
 
-!!! note "Proposal — not implemented"
-    Prioritize native binary installation, the CLI and structured output, then extend package-manager channels and SDKs according to integration needs. The channel extensions, shared release manifest and installer below are not part of the current workflow.
+The release workflow now derives native downloads and the Homebrew formula from verified wheels. A standalone version-selecting installer, a structured release manifest and additional package-manager channels remain proposals.
 
 ### Channel roles
 
 | Channel | Users | Current status and direction |
 | --- | --- | --- |
 | PyPI | CLI users in Python environments | Wheel workflow exists; add installation and upgrade acceptance for isolated tool environments |
-| GitHub Release | CI, servers and offline installation | Wheels and firmware sources exist; propose binary archives and a versioned installer requiring neither Python nor Rust |
-| Homebrew | macOS developers | Propose an initial project-owned tap reusing versioned native artifacts |
+| GitHub Release | CI, servers and offline installation | Wheels, native archives, firmware sources and SHA-256 checksums; a version-selecting installer remains proposed |
+| Homebrew | Apple Silicon macOS and Linux x86_64 users | Generated formula and macOS installation test; automatic project tap update requires the repository variable and token above |
 | npm | CLI users in Node toolchains | Add a native-program installation entry point when needed; deliver it separately from a TypeScript SDK |
 | crates.io / Cargo | Rust embedding and source-build users | Evaluate later, after addressing internal path dependencies, build resources and public API publication boundaries |
 
@@ -115,7 +118,7 @@ require their own acceptance evidence. See [daemon setup](../guides/daemon/index
 
 After each platform's native build, wheels, binary archives and package-manager entry points reuse the same component set. A proposed release manifest records the version, commit, platform, component hashes and firmware sources; each archive has its own SHA-256. Publication uploads accepted artifacts without recompiling. Upgrade the matching CLI, companions, daemon and firmware as one installation unit to avoid incompatible partial updates.
 
-Each new channel needs final-layout validation, including companion and firmware discovery through Homebrew symlinks and Python tool environments. The installer should support version selection, user-level directories, verification, upgrades, rollback and removal while retaining Jobs and user caches. Package-manager installations use that manager for upgrades. Installing the daemon executable remains separate from registering and starting a system service.
+Final-layout smoke tests cover companion discovery through native archive symlinks and Python environments; stable releases additionally run Homebrew installation tests on macOS. The installer should support version selection, user-level directories, verification, upgrades, rollback and removal while retaining Jobs and user caches. Package-manager installations use that manager for upgrades. Installing the daemon executable remains separate from registering and starting a system service.
 
 Keep the initial matrix at Linux x86_64 and macOS arm64. Add native acceptance before expanding platform support. Channel acceptance should cover first useful execution, the existing staged-review workflow, upgrades and removal as well as version output. VM capabilities retain real-hardware acceptance. Stable releases remain immutable, with a separate nightly entry point.
 

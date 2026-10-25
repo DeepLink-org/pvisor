@@ -460,7 +460,7 @@ class FirmwareBuildTests(unittest.TestCase):
             resources.enter_context(
                 mock.patch.dict(os.environ, {"PVISOR_KRUNFW_KERNEL_BUNDLE": str("bundle")})
             )
-            resolved = firmware.module.resolve_firmware(TARGET)
+            resolved = firmware.module.resolve_firmware("aarch64-apple-darwin")
             assert resolved.cargo_env == {"PVISOR_KRUNFW_KERNEL_BUNDLE": str(bundle)}
             assert resolved.library_name is None
             record = json.loads(resolved.source_record)
@@ -468,8 +468,8 @@ class FirmwareBuildTests(unittest.TestCase):
                 name: firmware.module.sha256(bundle / name)
                 for name in ("kernel.bin", "kernel.json")
             }
-            with self.assertRaisesRegex(RuntimeError, "supported only on Linux"):
-                firmware.module.resolve_firmware("aarch64-apple-darwin")
+            linux = firmware.module.resolve_firmware(TARGET)
+            assert linux == resolved
             firmware.tools.assert_not_called()
 
     def test_resolver_ignores_empty_selectors_and_preserves_build_receipt(self):

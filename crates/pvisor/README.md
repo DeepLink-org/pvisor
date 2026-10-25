@@ -1239,8 +1239,8 @@ without a shell helper, and reports their exit codes through the VM runtime's ro
 The Rust `pvisor-vm` runtime is linked into `pvisor`, with KVM on Linux and
 HVF on macOS. Its implementation derives from libkrun components, but no separate
 vendored libkrun `rlib`, `libkrun.so` or `libkrun.dylib` is required. The separate guest
-kernel is embedded in Linux static musl builds; macOS loads `libkrunfw.5.dylib`
-at runtime. Linux source builds require Zig, `cargo-zigbuild`, and
+kernel is compressed and embedded in both Linux static musl and macOS ARM64
+product builds; published executables need no firmware shared library. Linux source builds require Zig, `cargo-zigbuild`, and
 `rustup target add x86_64-unknown-linux-musl`. Use `mise run build` so target
 selection and kernel preparation match release builds.
 

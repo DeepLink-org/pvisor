@@ -274,12 +274,8 @@ def _build_component(
         raise RuntimeError(
             f"Cargo did not report expected {component} binaries: {', '.join(missing)}"
         )
-    if _is_macos(options) and firmware is not None:
-        assert firmware.library_name is not None
+    if firmware is not None:
         for directory in {path.parent for path in artifacts.values()}:
-            destination = directory / firmware.library_name
-            if firmware.path != destination.resolve():
-                copy_artifact(firmware.path, destination)
             (directory / "libkrunfw.SOURCE").write_text(firmware.source_record)
     return artifacts
 
@@ -354,14 +350,6 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
 
         if options.bundle_firmware:
-            if _is_macos(options):
-                assert firmware.library_name is not None
-                firmware_destination = staged / firmware.library_name
-                shutil.copy2(firmware.path, firmware_destination)
-                print(
-                    f"Staged libkrunfw: {firmware.path} -> {firmware_destination}",
-                    file=sys.stderr,
-                )
             (staged / "libkrunfw.SOURCE").write_text(firmware.source_record, encoding="utf-8")
         if _is_macos(options):
             for name in EXPECTED_BINARIES:
@@ -411,11 +399,11 @@ def main() -> None:
         artifacts = _build_component(options, component=args.component)
     else:
         artifacts = _build(options)
-    if _is_macos(options):
+    if args.component != "shim":
         directory = next(iter(artifacts.values())).parent
-        artifacts.update(
-            {name: directory / name for name in ("libkrunfw.5.dylib", "libkrunfw.SOURCE")}
-        )
+        receipt = directory / "libkrunfw.SOURCE"
+        if receipt.is_file():
+            artifacts[receipt.name] = receipt
     directory = Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile)
     directory.mkdir(parents=True, exist_ok=True)
     for name, source in artifacts.items():

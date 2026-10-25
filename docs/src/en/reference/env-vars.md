@@ -55,11 +55,11 @@ Read `/sys/module/fuse/parameters/pvisor_wb_budget_bytes` inside the guest to in
 
 `PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` is a private engineering JSON control: `capacity_mib` is 4–256, `jobs` 1–4096, `batch_kib` 4–4096 and no larger than capacity, `chunks` 1–64, and `delay_us` 0–50000. Unset preserves the defaults above; unknown or duplicate fields, incorrect types and out-of-range values are rejected. `qualification_lock` and `synchronous` provide the old qualification lock and an owned-worker completion ablation. These are not stable product settings. See the [filesystem I/O experiments](../lab-notes/filesystem-io-performance-analysis.md) for curves and scope.
 
-The following configure the guest kernel embedded **at build time** in Linux x86_64 musl builds:
+The following configure the guest kernel embedded **at build time** in Linux x86_64 musl and macOS ARM64 product builds:
 
 | Variable | Input | Precedence |
 | --- | --- | --- |
 | `PVISOR_KRUNFW_KERNEL_BUNDLE` | Directory containing `kernel.bin` and `kernel.json` | Takes precedence when set |
-| `PVISOR_KRUNFW_PATH` | `libkrunfw.so.5` file from which to extract the kernel | Used when the bundle is unset |
+| `PVISOR_KRUNFW_PATH` | Host-loadable libkrunfw library (`.so` on Linux, `.dylib` on macOS) from which to extract the kernel | Used when the bundle is unset |
 
-Rebuild the CLI after changing these inputs. Setting them while running an already-built musl binary does not replace its embedded kernel. See [Platform support](platforms.md) for dynamic firmware entry points and platform requirements. The build implementation is `crates/pvisor-vm/build_kernel.rs`.
+Rebuild the CLI after changing these inputs. Setting them while running an already-built product binary does not replace its embedded kernel. See [Platform support](platforms.md) for dynamic firmware entry points and platform requirements. The build implementation is `crates/pvisor-vm/build_kernel.rs`.

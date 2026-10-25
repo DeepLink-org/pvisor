@@ -15,7 +15,6 @@ WHEEL_PAYLOADS = {
     "pvisor-tui",
     "pvisor-replay",
     "pvisor-daemon",
-    "libkrunfw.5.dylib",
     "libkrunfw.SOURCE",
 }
 

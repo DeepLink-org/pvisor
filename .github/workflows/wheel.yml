@@ -52,6 +52,14 @@ jobs:
             PVISOR_FW_SOURCE_ARCHIVE={project}/dist/pvisor-firmware-source-macos-arm64.tar.gz
             mise -C {project} run repair-wheel -- {wheel} {dest_dir}
 
+      - name: Verify native archive installation and companion symlinks
+        shell: bash
+        run: |
+          for wheel in dist/*.whl; do
+            version="$(python3 -c 'from pvisor import __version__; print(__version__)')"
+            python3 scripts/ci/build_release_assets.py "$wheel" --version "$version" --smoke-wheel
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-${{ matrix.platform }}

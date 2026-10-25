@@ -57,6 +57,10 @@ class ReleasePublicationTests(unittest.TestCase):
             source = root / "pvisor-firmware-source-linux-x86_64.tar.gz"
             wheel.write_bytes(b"accepted")
             source.write_bytes(b"corresponding source")
+            native = root / "pvisor-0.3.0-linux-x86_64.tar.gz"
+            native.write_bytes(b"native archive")
+            (root / "SHA256SUMS").write_text("checksums")
+            (root / "pvisor.rb").write_text("formula")
             with (
                 mock.patch.object(publication, "fetch_json", return_value=None),
                 mock.patch.object(publication.subprocess, "run") as run,
@@ -66,6 +70,9 @@ class ReleasePublicationTests(unittest.TestCase):
             self.assertEqual(args[:4], ["gh", "release", "create", "v0.3.0"])
             self.assertIn(str(wheel), args)
             self.assertIn(str(source), args)
+            self.assertIn(str(native), args)
+            self.assertIn(str(root / "SHA256SUMS"), args)
+            self.assertIn(str(root / "pvisor.rb"), args)
             self.assertNotIn("--clobber", args)
 
     def test_pypi_retry_prunes_only_verified_identical_files(self):

@@ -245,8 +245,6 @@ class ReleasePackagingTests(unittest.TestCase):
                         from types import SimpleNamespace
                         from unittest.mock import Mock
 
-                        if macos and selector == "PVISOR_KRUNFW_KERNEL_BUNDLE":
-                            self.skipTest("kernel bundles are Linux-only")
                         for variable in (
                             "PVISOR_LIBKRUNFW_PATH",
                             "PVISOR_KRUNFW_PATH",
@@ -357,12 +355,11 @@ class ReleasePackagingTests(unittest.TestCase):
                             assert record["firmware_sha256"] == wheel_stage.firmware_build.sha256(
                                 source
                             )
-                        if macos:
-                            assert (staged / source.name).read_bytes() == source.read_bytes()
-                            assert (binaries / source.name).read_bytes() == source.read_bytes()
-                            assert (binaries / "libkrunfw.SOURCE").read_bytes() == (
-                                staged / "libkrunfw.SOURCE"
-                            ).read_bytes()
+                        assert not (staged / source.name).exists()
+                        assert not (binaries / source.name).exists()
+                        assert (binaries / "libkrunfw.SOURCE").read_bytes() == (
+                            staged / "libkrunfw.SOURCE"
+                        ).read_bytes()
 
     def test_build_backend_options_accept_explicit_cargo_settings(self):
         options = wheel_stage.options_from_build_backend(
@@ -946,7 +943,7 @@ class ReleasePackagingTests(unittest.TestCase):
                         assert set(artifacts) == set(names)
                         assert events == ["firmware", "limit", "cargo"]
 
-    def test_macos_build_prepares_and_bundles_firmware_before_cargo(self):
+    def test_macos_build_embeds_selected_firmware_without_copying_library(self):
         with workspace() as (tmp_path, resources):
             import json
             from types import SimpleNamespace
@@ -988,7 +985,7 @@ class ReleasePackagingTests(unittest.TestCase):
             resources.enter_context(mock.patch.object(wheel_stage.subprocess, "Popen", popen))
             wheel_stage._build_component(wheel_stage.BuildOptions(target="aarch64-apple-darwin"))
             assert events == ["firmware", "cargo"]
-            assert (binaries / source.name).read_bytes() == source.read_bytes()
+            assert not (binaries / source.name).exists()
             record = json.loads((binaries / "libkrunfw.SOURCE").read_text())
             assert record["origin"] == "explicit-firmware-input"
             assert record["firmware_sha256"] == wheel_stage.firmware_build.sha256(source)
@@ -1030,13 +1027,25 @@ class ReleasePackagingTests(unittest.TestCase):
                     binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
                     binary.external_attr = 0o100755 << 16
                     archive.writestr(binary, b"Mach-O")
-                archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
             _, scripts, firmware = wheel_verify._wheel_contents(wheel)
             assert set(scripts) == set(wheel_stage.EXPECTED_BINARIES)
-            assert firmware is not None
+            assert firmware is None
             with zipfile.ZipFile(wheel, "a") as archive:
                 archive.writestr("pvisor-1.2.3.data/scripts/pvisor-cache", b"unsupported")
             with self.assertRaisesRegex(RuntimeError, "retired executable pvisor-cache"):
+                wheel_verify._wheel_contents(wheel)
+
+    def test_macos_wheel_rejects_external_firmware_dependency(self):
+        with workspace() as (root, _):
+            wheel = root / "pvisor-1.2.3-py3-none-macosx_11_0_arm64.whl"
+            _write_wheel(wheel, "1.2.3")
+            with zipfile.ZipFile(wheel, "a") as archive:
+                for name in wheel_stage.EXPECTED_BINARIES:
+                    binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+                    binary.external_attr = 0o100755 << 16
+                    archive.writestr(binary, b"Mach-O")
+                archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
+            with self.assertRaisesRegex(RuntimeError, "expected 0 libkrunfw"):
                 wheel_verify._wheel_contents(wheel)
 
     def test_releases_publish_wheels_and_sources_without_standalone_daemon(self):
@@ -1058,7 +1067,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     assert retired not in contents
                 assert "dist/*.whl" in contents
                 if workflow == "nightly.yml":
-                    assert "dist/pvisor-firmware-source-*.tar.gz" in contents
+                    assert "dist/pvisor-*.tar.gz" in contents
                 else:
                     assert "publish-release -- github dist" in contents
                 assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
@@ -1273,10 +1282,14 @@ class ReleasePackagingTests(unittest.TestCase):
             payloads = {
                 *APPLICATION_BINARIES,
                 "pvisor-daemon",
-                "libkrunfw.5.dylib",
                 "libkrunfw.SOURCE",
             }
-            for name in payloads | {"pvisor-memory-pool", "pvisor-cache", "unrelated-binary"}:
+            for name in payloads | {
+                "libkrunfw.5.dylib",
+                "pvisor-memory-pool",
+                "pvisor-cache",
+                "unrelated-binary",
+            }:
                 (scripts / name).write_bytes(b"payload")
             resources.enter_context(mock.patch.dict(os.environ))
             os.environ.pop("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS", None)
@@ -1342,9 +1355,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     build.assert_called_once_with(options)
                     daemon.assert_not_called()
                 directory = root / "output" / ("debug" if profile == "dev" else profile)
-                expected = (
-                    {binary} if selector else {binary, "libkrunfw.5.dylib", "libkrunfw.SOURCE"}
-                )
+                expected = {binary} if selector == "--shim" else {binary, "libkrunfw.SOURCE"}
                 assert {path.name for path in directory.iterdir()} == expected
                 for name in expected:
                     assert (directory / name).read_bytes() == (source / name).read_bytes()

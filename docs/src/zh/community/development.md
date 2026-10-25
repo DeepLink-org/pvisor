@@ -208,7 +208,7 @@ Python 包、安装后的 CLI 和运行时 Rust crate 使用 `pvisor`；应用 c
 | 宿主 CLI | 静态 Linux musl ELF | 原生 Darwin 可执行文件，签署 HVF entitlement |
 | 内嵌 guest | 静态 Linux musl ELF | 静态 Linux musl ELF |
 | `pvisor-vm` | 单一 Rust 运行时 crate | 单一 Rust 运行时 crate |
-| guest 内核 | 构建时内嵌 | 运行时加载 `libkrunfw.5.dylib` |
+| guest 内核 | 构建时压缩并内嵌 | 构建时压缩并内嵌 |
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。
 wheel 使用全新的暂存目录进行验证，避免误把 `dist/` 中的旧包当作本次产物。

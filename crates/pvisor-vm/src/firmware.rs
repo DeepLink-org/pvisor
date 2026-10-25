@@ -118,13 +118,13 @@ impl KernelOwner {
     }
 }
 
-#[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+#[cfg(pvisor_embedded_kernel)]
 mod built_in {
     include!(concat!(env!("OUT_DIR"), "/embedded_kernel.rs"));
 }
 
 pub(crate) fn embedded_kernel() -> Option<crate::api::KernelImage> {
-    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
+    #[cfg(pvisor_embedded_kernel)]
     {
         let mut span = crate::startup_profile::Span::new("embedded_kernel_init", "runtime");
         let bytes = built_in::KERNEL.clone();
@@ -135,7 +135,7 @@ pub(crate) fn embedded_kernel() -> Option<crate::api::KernelImage> {
             entry_address: built_in::ENTRY_ADDR,
         })
     }
-    #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
+    #[cfg(not(pvisor_embedded_kernel))]
     {
         None
     }

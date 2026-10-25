@@ -83,7 +83,7 @@ def _wheel_contents(
             if ".data/scripts/" in info.filename
             and info.filename.rsplit("/", 1)[-1] in FIRMWARE_NAMES
         ]
-        expected_firmware = 1 if "macosx" in wheel.name.lower() else 0
+        expected_firmware = 0
         if len(firmware) != expected_firmware:
             raise RuntimeError(
                 f"expected {expected_firmware} libkrunfw payloads, found {len(firmware)}"

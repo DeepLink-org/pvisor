@@ -9,12 +9,14 @@ wheel 不包含 PyO3 扩展，也不使用 Maturin。
 - Python `pvisor` 版本标记，不是启动器；
 - 三个原生脚本 `pvisor`、`pvisor-tui`、`pvisor-replay`，直接安装到环境的 bin 目录；
 - 独立构建的 `pvisor-daemon`，Linux x86_64 和 macOS ARM64 wheel 均包含；
-- `libkrunfw.5.dylib`，仅 Apple Silicon macOS 包含；Linux 在构建时内嵌内核。
+- `libkrunfw.SOURCE` 来源记录；两个平台都内嵌压缩 guest 内核，不交付固件共享库。
 
-当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel，以及对应固件源码。
+发布集包含 Linux x86_64 和 Apple Silicon macOS wheel、原生 `.tar.gz` 归档、
+对应固件源码、`SHA256SUMS` 和生成的 Homebrew 配方 `pvisor.rb`。
+原生归档复用 wheel 中完全相同的载荷，不重新编译。
 Python 源码分发包（sdist）不在发布集中。
 
-## 一次性设置
+## 一次性设置 {#one-time-setup}
 
 1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；把部署限制到
    匹配 `v*` 的 tag。
@@ -30,6 +32,12 @@ Python 源码分发包（sdist）不在发布集中。
    Python/Rust 与对应的 Linux musl Rust target（`mise run setup`）。这些 runner
    应专用于可信发布提交，并在各次运行间清理旧 Job 状态。缺少 runner 或虚拟化
    权限会阻止发布。
+
+4. 如需自动发布 Homebrew，先创建项目自有的 `DeepLink-org/homebrew-pvisor` tap 并初始化一次提交。
+   设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/homebrew-pvisor`，以及仅对此 tap
+   拥有 Contents 写权限的 secret `HOMEBREW_TAP_TOKEN`。变量未配置时跳过 tap 更新，
+   仍生成配方并运行 macOS Homebrew 安装测试。安装、命令定位及 `brew test` 通过后，
+   工作流才提交 `Formula/pvisor.rb`，不注册或启动系统服务。
 
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
@@ -48,8 +56,9 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
    的 tag。
-4. 可选地手动运行 **Publish PyPI**。手动运行会构建并校验全部 wheel，但不
-   发布它们。
+4. 可选地手动运行 **Publish Release**。它执行必需 CI 和原生验收、校验全部 wheel，
+   并保留含归档、校验清单和配方的 `release-native` 制品，不对外发布。
+   这次 dry run 仍需要两个平台的原生验收 runner。
 5. 创建并推送匹配的稳定 tag：
 
    ```bash
@@ -73,7 +82,7 @@ wheel 不包含固件共享库。wheel 保留 manylinux_2_28 标签以支持 gli
 安装器。构建需要 Zig、cargo-zigbuild 和 Rust musl target；固件只在构建时加载。
 
 Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitlement，
-并打包 `libkrunfw.5.dylib`。两个平台都内嵌静态 Linux musl Rust guest，
+并与 Linux 一样内嵌压缩 guest 内核。构建出来的固件 dylib 仅在编译阶段读取。两个平台都内嵌静态 Linux musl Rust guest，
 由 `rust-lld` 自动构建。macOS 需要 `aarch64-unknown-linux-musl` Rust stdlib，
 构建 guest 不需要 Zig。
 
@@ -87,6 +96,11 @@ review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必�
 
 发布集检查要求每个平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及产物
 大小有界。两个平台的验收与完整发布集均通过后，才能向任一渠道发布。
+
+构建 runner 还通过 Homebrew 式软链接布局测试原生归档，包括 host 执行和 companion
+定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
+Homebrew 任务在 macOS 下载已发布的归档，运行 `brew install`、`brew test` 和
+`brew uninstall`，通过后更新 tap。Linux Homebrew 安装及升级／回退仍缺少原生验收。
 
 稳定版本不可变。重跑在发布前核对 GitHub/PyPI 现有文件的 SHA-256；相同内容
 保留，缺失文件可以补齐，同文件名内容不同则失败，必须发布新版本。GitHub 上传
@@ -104,21 +118,20 @@ wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度
 触发；普通 push 运行 CI，不构建 nightly wheel。Nightly 与稳定发布共用
 Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
-稳定 tag 发布先把已校验 wheel 与对应固件源码上传到 GitHub Release，再将 wheel 上传到 PyPI。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
+稳定 tag 先把已校验 wheel、原生归档、校验清单、配方和对应固件源码上传到 GitHub Release，再仅将 wheel 上传到 PyPI。Nightly 同时发布原生归档和校验清单，但不生成 Homebrew 配方或更新 tap。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
 
 ## 分发演进 {#distribution-plan}
 
-!!! note "提案，尚未实现"
-    优先完善原生二进制安装、CLI 和结构化输出，再按接入需求扩展包管理器与 SDK。
-    以下渠道扩展、统一发行清单和安装器尚未接入当前发布流程。
+发布流程已从校验过的 wheel 派生原生下载包和 Homebrew 配方。
+可选版本的独立安装器、结构化发行清单及其他包管理渠道仍属提案。
 
 ### 渠道定位
 
 | 渠道 | 面向用户 | 当前状态与方向 |
 | --- | --- | --- |
 | PyPI | Python 环境中的 CLI 用户 | 已有 wheel 流程；补充独立工具环境的安装、升级验收 |
-| GitHub Release | CI、服务器与离线安装 | 已有 wheel 和固件源码；拟增加无需 Python/Rust 的二进制归档与版本化安装器 |
-| Homebrew | macOS 开发者 | 拟先提供自有 tap，复用固定版本的原生产物 |
+| GitHub Release | CI、服务器与离线安装 | 已有 wheel、原生归档、固件源码及 SHA-256 清单；可选版本的安装器仍属提案 |
+| Homebrew | Apple Silicon macOS 与 Linux x86_64 用户 | 生成配方并测试 macOS 安装；自动更新自有 tap 需要上述仓库变量与 token |
 | npm | Node 工具链中的 CLI 用户 | 按需求增加原生程序安装入口；与 TypeScript SDK 分开交付 |
 | crates.io / Cargo | Rust 嵌入与源码构建用户 | 后续评估；先处理内部 path 依赖、构建资源和公开 API 的发布边界 |
 
@@ -129,8 +142,8 @@ Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` 
 SHA-256。发布阶段上传已验收的产物，不再次编译。同版本的 CLI、companion、
 daemon 与固件作为一个安装单元升级，避免部分更新造成不兼容。
 
-新增渠道需验证最终安装布局，包括 Homebrew 软链接、Python 工具环境中的
-companion 和固件定位。安装器应支持指定版本、用户级目录、校验、升级、回退和
+最终布局 smoke test 覆盖原生归档软链接和 Python 环境中的 companion 定位；
+稳定发布还在 macOS 执行 Homebrew 安装测试。安装器应支持指定版本、用户级目录、校验、升级、回退和
 卸载；卸载保留 Job 与用户缓存。包管理器安装的程序由该包管理器升级。
 安装 daemon 可执行文件与注册、启动系统服务分开进行。
 

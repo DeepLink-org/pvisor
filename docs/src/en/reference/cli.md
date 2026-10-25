@@ -983,13 +983,13 @@ The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
 Linux and macOS, `pvisor-vm` serves pVisor's rootfs and workspace
 copy-on-write unions directly over virtio-fs. The VMM never re-exports a host
 FUSE mount and does not materialize or reconcile either tree. Linux uses KVM and
-Apple Silicon macOS uses HVF through the same executor. Linux static musl builds
-embed the guest kernel and require no firmware shared library at runtime, and
-they reject `--vm-library-dir`. macOS wheels install `libkrunfw.5.dylib` beside
-pVisor. Source builds prepare the repository-maintained firmware through
+Apple Silicon macOS uses HVF through the same executor. Linux static musl and
+macOS ARM64 product builds embed the compressed guest kernel, require no firmware
+shared library at runtime. Linux static builds reject `--vm-library-dir`;
+macOS product builds use the embedded kernel regardless of that directory. Source builds prepare the repository-maintained firmware through
 `mise run build` or `mise run fw -- build`. Runtime resolution only uses local
 firmware and fails when it is missing; it neither downloads nor compiles it.
-On macOS, `--vm-library-dir` selects an existing firmware directory. OverlayNet `auto` uses the non-bypassable VM smoltcp IPv4
+For standalone macOS Cargo builds without a build-time kernel input, `--vm-library-dir` selects an existing firmware directory. OverlayNet `auto` uses the non-bypassable VM smoltcp IPv4
 TCP/DNS driver, while Gateway capture uses an internal route through the guest
 virtual router. Linux additionally confines the VMM with namespaces and
 Landlock. The macOS VMM still has the invoking user's host permissions, so
