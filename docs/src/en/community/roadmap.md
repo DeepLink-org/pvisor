@@ -22,12 +22,12 @@ Linux host selective egress still uses a cooperative proxy, so the `--safe` labe
 
 ## Small-file delivery for lazy images {#lazy-image-small-files}
 
-Implemented: V2 places all metadata in compressed directory radix indexes, packs small files by directory, and independently decompresses data frames. Server, filesystem, S3 and Docker local pools share this format. Storage V1 is retired and requires republication from OCI. See [Lazy Image V2](../design/lazy-image-v2.md) for contracts/limits and the [engineering A/B](../lab-notes/image-format-performance-analysis.md) for local synthetic results.
+Implemented: V2 places all metadata in compressed directory radix indexes, packs small files by directory, and independently decompresses data frames. Server, filesystem, S3 and Docker local pools share this format. Storage V1 is retired and requires republication from OCI. See [Lazy Image V2](../design/lazy-image-v2.md) for contracts/limits. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately covers real inventories, native Docker cold/warm clients, first/repeated local mmap and whole-group memory. Disk and small-working-set benefits do not establish universal performance superiority.
 
 Next acceptance work:
 
 - Measure first useful tool call, complete-task time, P95/P99, S3 requests, downloaded bytes and decompression amplification for real Python imports, Node.js dependency loading and builds/tests.
-- Cover cold metadata, cold content, warm caches and concurrent tasks separately, including first-publication cost. Local storage microbenchmarks cannot replace these conclusions.
+- Cover cold metadata, cold content and concurrent tasks separately, including first publication and service-side staging. Profile guest execution, metadata, verification and decompression in local scans before attributing whole-path differences to one component.
 - Evaluate adjacent-request coalescing and prefetch beyond existing bounded caches/miss coalescing, avoiding useless reads; validate mmap, copy-up, exports and remote faults.
 - Improve O(N) publication metadata planning and the 64 MiB single-index limit; design pack retention and safe GC without age-based deletion of shared content.
 

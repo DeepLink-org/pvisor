@@ -29,12 +29,12 @@ Linux host 的选择性出口目前仍使用协作式代理，不能因 `--safe`
 
 ## 惰性镜像的小文件供给优化 {#lazy-image-small-files}
 
-已实现：V2 将全部元数据放入压缩目录 radix 索引，小文件按目录打包，数据 frame 独立解压；服务器、文件系统、S3 和 Docker 本地池统一使用这套格式。V1 存储已退役，需要从 OCI 重新发布；细节与限制见 [Lazy Image V2](../design/lazy-image-v2.md)，本地合成负载结果见[工程 A/B](../lab-notes/image-format-performance-analysis.md)。
+已实现：V2 将全部元数据放入压缩目录 radix 索引，小文件按目录打包，数据 frame 独立解压；服务器、文件系统、S3 和 Docker 本地池统一使用这套格式。V1 存储已退役，需要从 OCI 重新发布；细节与限制见 [Lazy Image V2](../design/lazy-image-v2.md)。[惰性镜像基准](../benchmarks/lazy-image-startup.md)分别覆盖真实库存、原生 Docker 冷／热对照、本地首次／重复 mmap 和整组内存；磁盘与小工作集收益不能推导全面性能领先。
 
 下一步验收：
 
 - 在真实 Python import、Node.js 依赖加载和编译／测试中测量首次有效工具调用、完整任务耗时、P95/P99、S3 请求数、下载字节与解压放大。
-- 分开覆盖冷元数据、冷内容、暖缓存与多任务并发，计入首次发布成本；当前本地存储微基准不能代替这些结论。
+- 分开覆盖冷元数据、冷内容和多任务并发，计入首次发布成本及服务端 staging；先 profile 分离本地扫描中的 guest 执行、元数据、校验和解压开销，现有完整路径对照不能归因到单个组件。
 - 在现有有界缓存与 miss 合并之上评估相邻请求合并及预取，避免无用读取；验证 mmap、copy-up、导出及远端故障。
 - 改善发布器 O(N) 元数据规划与单索引 64 MiB 上限；设计 pack 引用保留和安全 GC，不按年龄删除共享内容。
 

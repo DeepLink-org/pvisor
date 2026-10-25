@@ -170,7 +170,7 @@ class Evidence:
 
 
 class Docker:
-    def __init__(self, evidence, directory, slice_unit=None):
+    def __init__(self, evidence, directory, slice_unit=None, insecure_registries=()):
         self.e = evidence
         self.directory = directory
         self.runtime = Path(tempfile.mkdtemp(prefix="pvnd-"))
@@ -179,6 +179,8 @@ class Docker:
         self.process = None
         self.unit = None
         config = {"features": {"containerd-snapshotter": True}}
+        if insecure_registries:
+            config["insecure-registries"] = list(insecure_registries)
         if slice_unit:
             config.update(
                 {"cgroup-parent": slice_unit, "exec-opts": ["native.cgroupdriver=systemd"]}
@@ -435,6 +437,9 @@ class Product:
             if backend == "pvisor"
             else {}
         )
+        # Without delegated cpuset, runc restores init's unrestricted CPU mask.
+        # Both arms execute the image's taskset first, using their CPU namespaces.
+        self.payload = ["/usr/bin/taskset", "-c", "0,1,2,3" if backend == "docker" else "0"]
         properties = [
             ("CPUAccounting", "b", "true"),
             ("MemoryAccounting", "b", "true"),
@@ -613,6 +618,7 @@ def runtime(e, args):
                         "--cpus=1",
                         "--memory=256m",
                         image["pinned"],
+                        *product.payload,
                         "/bin/sh",
                         "-ec",
                         'test ! -e /tmp/pv-private; printf check >/tmp/pv-private; test "$(cat /tmp/pv-private)" = check; printf "REFERENCE_READY\\n"',
@@ -662,6 +668,7 @@ def runtime(e, args):
                             "--cpus=1",
                             "--memory=256m",
                             image["pinned"],
+                            *product.payload,
                             "/bin/sh",
                             "-ec",
                             f'test ! -e /tmp/pv-private; printf "{name}" >/tmp/pv-private; printf "{name}\\n"; exec /bin/sleep 180',
@@ -674,7 +681,10 @@ def runtime(e, args):
                         time.sleep(0.05)
                     for peer in names:
                         assert (
-                            product.command(["exec", peer, "/bin/cat", "/tmp/pv-private"]) == peer
+                            product.command(
+                                ["exec", peer, *product.payload, "/bin/cat", "/tmp/pv-private"]
+                            )
+                            == peer
                         )
                     if index in [0, 3]:
                         key = "one" if index == 0 else "four"

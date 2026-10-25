@@ -35,7 +35,9 @@ python3 benchmark/filesystem/publish_user_workloads.py --batch ABS_BATCH
 `--destination-root`只改变公开材料的审阅目录，本地归档始终跟随输入批次。
 
 payload/fixture批次只需完成`workloads_v2_run.py --prepare`，不需要先运行工程A/B；
-其准备协议与固定工具环境见[WORKLOADS.md](WORKLOADS.md)。CLI目录须包含
+其准备协议与固定工具环境见[WORKLOADS.md](WORKLOADS.md)。当前适配器使用 `pvisor spawn` 创建 Job（host、staged 和 VM），与 Docker 风格的
+`pvisor run` 容器入口区分。本次静态 musl release 使用内嵌固件，不传动态构建专用的
+`--vm-library-dir`；仍冻结匹配的固件及 SOURCE 收据供核对。CLI目录须包含
 `build-receipt.json`和`bin/{pvisor,pvisor-guest}`。新批次冻结这些制品，
 原始payload字节不变；共同静态包装器按执行器实际cwd解析workspace/input、output，
 避免绝对宿主路径绕过stage。fixture只读挂载在workspace内，读操作也经过对应文件系统。
@@ -49,7 +51,8 @@ Docker使用新建私有rootless overlay2 daemon，工具镜像预先导入，�
 真实root filesystem、payload affinity和父组cgroup，退出后复制输出供共同host oracle。
 失败保留日志、inspect和尽力复制的输出，再移除仅该trial拥有的容器。
 Firecracker、QEMU q35及QEMU microvm共用同一收据冻结的官方stock内核、模块initrd和
-最小PID1，不启动发行版服务。每trial使用私有ext4 root/work磁盘、virtio-blk、2vCPU/
+最小PID1，不启动发行版服务。当前 QEMU microvm 启用 ACPI，让未修改的 stock
+内核通过 ACPI 枚举 virtio-mmio；该启动配置与历史批次独立保留。每trial使用私有ext4 root/work磁盘、virtio-blk、2vCPU/
 512MiB；root最终只读，input只读bind。FC显式Writeback、QEMU显式cache=writeback，
 均保留FLUSH，工作盘正常卸载和VMM退出后由debugfs只读导出给共同host oracle。
 这些是各产品存储路径的比较，不是纯VMM开销或同一种文件系统的比较。

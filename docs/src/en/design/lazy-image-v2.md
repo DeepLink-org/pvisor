@@ -9,7 +9,7 @@ V2 is the shared storage format for server, filesystem, S3 and Docker local pool
 | Integrity | SHA-256; the fast routing hash provides no integrity guarantee |
 | Compression | Independent Zstd level 3 frames with the standard seekable footer |
 | Migration | V1 reader and publisher removed; republish OCI sources into an empty directory/prefix |
-| Performance evidence | [Storage backend engineering A/B](../lab-notes/image-format-performance-analysis.md); not VM startup or S3 latency conclusions |
+| Performance evidence | [Native Docker comparison](../lab-notes/image-format-performance-analysis.md); storage, startup and memory measured separately |
 
 ## Metadata and directory boundaries {#architecture}
 
@@ -77,3 +77,27 @@ VM direct lowers and host FUSE share the reader. VMs use private metadata/sparse
 Arbitrary xattrs, ACLs and security labels are not represented. Local pool imports reject unrepresentable xattrs; direct publication also provides no xattr/ACL fidelity contract. Existing ownership/mode overrides remain supported; macOS local pools ignore only the host provenance attribute. Protocols 1/2, connection pools and reader-prefetch switches belong to transport and are independent of storage V1 retirement.
 
 V1 handles, formats and pool markers fail explicitly, without in-place rewriting or automatic deletion. A new pull can rebuild V2 from OCI; containers pinned to old handles need recreation. Old directory-based instances keep their existing path behavior. RAFS is not binary-compatible with this format, and standard seekable framing does not make it directly mountable as a Nydus image.
+
+## Cache boundaries and cost model {#cache-costs}
+
+Compressed storage and remote on-demand delivery share a format but incur different costs. A Docker-style local pool already holds all encoded content after pull. A remote client can read files on demand only after the image service has prepared them. Initial OCI download, extraction and publication move to the service and can be amortized across clients; they do not disappear.
+
+| Path | Persistent storage | First read | Subsequent reads |
+| --- | --- | --- | --- |
+| Local Docker-style pool | Complete compressed indexes/content, without a complete extracted tree | Load directory frames, authenticate and decompress content frames | Bounded decoded LRU and guest page cache; a new instance still boots a VM |
+| Direct filesystem/S3 | Complete publisher-side encoded pool; clients may cache fetched encoded frames | Controls and relevant index/content ranges | Encoded cache and decoded LRU; no aggregate disk-cache eviction quota |
+| Cache server/remote VM | Service-side encoded pool and potentially retained OCI staging; client indexes and verified raw file blocks | Metadata RPCs and accessed file content, potentially decoded for transport | A new VM can reuse client blocks; each guest also has its own page cache |
+
+Local disk savings therefore do not equal remote transfer savings. Raw Read data from the file service can exceed compressed OCI layers. Full scans, verification, exports and copy-up enlarge the working set. Small-file packing reduces stored object counts without guaranteeing a matching reduction in file RPCs. Inline metadata returns attributes with a hit, but cold lookups still resolve parent paths and relevant leaf frames.
+
+Capacity savings mainly avoid resident extracted copies. Indexes, placement tables and pack layouts add overhead, so the encoded pool need not be smaller than original compressed OCI blobs. Individual mechanisms need separate experiments; a whole-inventory difference cannot assign benefits to each optimization.
+
+`mmap` does not directly map compressed blobs. Guest faults fill the page cache through virtio-fs READs, with backend authentication/decompression on that path; warm pages can hide cold-miss cost. Sequential scans, random first touches, repeated warm reads and writable copy-up are distinct workloads. One startup probe cannot establish mmap performance for all of them. Decoded-cache budgets are not whole-VM, service or host memory limits.
+
+## Benefit validation and scope {#validation}
+
+The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) owns user decisions: complete local inventories, prepared instances, remote cold/warm clients and large-working-set read costs are measured separately against same-digest native Docker. Capacity includes metadata and normal content sharing on both sides; service preparation and client waiting have separate clocks. Cold clients have empty private caches, not cold host page caches. Loopback results do not establish WAN performance.
+
+The [native Docker engineering record](../lab-notes/image-format-performance-analysis.md) retains full launch/exit and whole-group memory accounting. Separate guest kernels, container memory limits and guest RAM have different scopes. Lower image disk usage does not establish a universal startup, per-instance memory or throughput advantage. Storage V1 is no longer the main benefit comparator, and historical transport-optimization switches must not be confused with storage-format versions.
+
+Real S3/WAN, concurrent startup, random mmap working sets, writes/copy-up, import peaks and long-term cache reclamation still require independent validation. O(N) publisher planning, the individual index-object limit and missing online GC remain scaling boundaries. Static compression ratios establish neither unlimited image capacity nor stable long-term disk use.

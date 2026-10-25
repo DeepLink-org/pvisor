@@ -62,8 +62,8 @@
           "kind": "coverage",
           "rows": 12,
           "columns": [
-            "数据状态",
-            "实测范围"
+            "\u6570\u636e\u72b6\u6001",
+            "\u5b9e\u6d4b\u8303\u56f4"
           ],
           "options": {
             "markdown": true
@@ -93,10 +93,7 @@
       ],
       "role": "user-facing",
       "tables": [],
-      "source_csv": [
-        "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv",
-        "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv"
-      ]
+      "source_csv": []
     },
     {
       "locale": "zh",
@@ -147,11 +144,11 @@
           "kind": "published",
           "columns": [
             "N",
-            "Ready 中位数 ms",
-            "Ready 均值 ms",
-            "Ready 标准差 ms",
-            "Ready 最小 ms",
-            "Ready 最大 ms"
+            "Ready \u4e2d\u4f4d\u6570 ms",
+            "Ready \u5747\u503c ms",
+            "Ready \u6807\u51c6\u5dee ms",
+            "Ready \u6700\u5c0f ms",
+            "Ready \u6700\u5927 ms"
           ],
           "rows": 8,
           "options": {}
@@ -351,10 +348,7 @@
       ],
       "role": "user-facing",
       "tables": [],
-      "source_csv": [
-        "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv",
-        "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv"
-      ]
+      "source_csv": []
     },
     {
       "locale": "en",
@@ -523,7 +517,8 @@
       "locale": "zh",
       "page": "lab-notes/image-format-performance-analysis.md",
       "benchmark_ids": [
-        "B-IMAGE-FORMAT-ENG"
+        "B-IMAGE-STORAGE-ENG",
+        "B-NATIVE-DOCKER-ENG"
       ],
       "role": "engineering evidence",
       "tables": [],
@@ -533,7 +528,8 @@
       "locale": "en",
       "page": "lab-notes/image-format-performance-analysis.md",
       "benchmark_ids": [
-        "B-IMAGE-FORMAT-ENG"
+        "B-IMAGE-STORAGE-ENG",
+        "B-NATIVE-DOCKER-ENG"
       ],
       "role": "engineering evidence",
       "tables": [],

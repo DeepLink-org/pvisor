@@ -23,6 +23,7 @@ PUBLIC_PROVENANCE = frozenset(
         "startup-timing.provenance.json",
         "replay-semspec.provenance.json",
         "lazy-stage.provenance.json",
+        "lazy-image-v2.provenance.json",
         "filesystem-layered-references/provenance.json",
     }
 )

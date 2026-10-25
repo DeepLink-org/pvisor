@@ -151,6 +151,8 @@ A VM lazy lower directly uses the shared file service. A private metadata projec
 
 Lazy loading consequently moves some preparation work into first access. Hot-cache benefits, cold misses, metadata and copy-up costs need separate measurements. See [Shared image cache](lazy-image-v2.md) for storage and publication contracts. Source entry points are `pvisor/src/image/cache/backend.rs`, `direct.rs` and `storage.rs`.
 
+Current Docker-style local storage also uses this compressed pool. After pull, complete encoded content is read through directory hash-radix indexes and independent frames without a resident complete extracted tree. This differs from remote working-set delivery: the cache service still prepares all source content, and remote VM clients may persist raw file blocks. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately reports disk, cold/warm clients, first/repeated mmap and instance memory. Compression ratios do not establish universal performance superiority.
+
 ## 7. Networking: the interception point determines control strength {#network-mechanism}
 
 ### From a hostname to two TCP connections

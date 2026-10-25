@@ -6,7 +6,7 @@ benchmark launcher owns the fresh user/mount/PID namespace, private Host socket
 namespace, prepared tool root, resource budget and the pre-exec launch marker.
 No VM, build or measurement runs while importing this module.
 
-The two configurations use the same product binaries and source-built firmware.
+The two configurations use the same static product binaries and embedded source-built firmware.
 They differ only in guest writeback; host writeback remains disabled.  The normal
 CLI OverlayFS device path disables DAX in product code rather than through an
 invented environment setting.  A supplied directory rootfs has no authenticated
@@ -70,7 +70,7 @@ def vm_payload_argv(case, backend, rounds=3, ram_mib=512):
         raise ValueError("the shallow user protocol requires 3 rounds and 512 MiB")
     return [
         VM_ARTIFACT_ROOT + "/pvisor",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--pass-env",
         "PYTHONDONTWRITEBYTECODE",
@@ -91,8 +91,6 @@ def vm_payload_argv(case, backend, rounds=3, ram_mib=512):
         str(ram_mib) + "MiB",
         "--stage",
         VM_STAGE_ROOT,
-        "--vm-library-dir",
-        VM_ARTIFACT_ROOT,
         "--",
         VM_ARTIFACT_ROOT + "/payload",
         case,
@@ -118,6 +116,7 @@ def vm_configuration(backend):
     """Return descriptive inputs; formal measurements are recorded elsewhere."""
     return {
         "executor": "ordinary pvisor CLI VM",
+        "firmware_binding": "static musl product embeds the selected source-built firmware",
         "guest_vcpus": 2,
         "guest_memory_mib": 512,
         "requested_guest_writeback": VM_BACKENDS[backend],

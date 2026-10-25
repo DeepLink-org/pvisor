@@ -2,241 +2,203 @@
 
 ## Motivation {#motivation}
 
-Agent 会反复检查仓库、搜索、增量构建和发布产物，这些任务以文件读写为主。在 host、staged、容器和 VM 之间选择，是在隔离需求与等待之间取舍，需要完整任务耗时而不是只看启动。
+pVisor host 在所测仓库巡检和增量编译中接近直接执行；需要 VM 隔离且写入能在同步前合并时，guest writeback 可以缩短发布等待。VM 的文件访问仍有额外成本，启动更快不保证任务更快，大工作集也可能超时。
 
-在所测任务上，pVisor host 接近直接执行；需要 VM 隔离时，guest writeback 缩短批量产物写入。writeback 只在写入能在同步前合并时有效：解包与发布明显变短，读和元数据密集的仓库检查没有收益，每 4 KiB 同步一次时反而比默认 VM 更慢。640 MiB 工作集下，两种 VM 配置在该批次都超时。
+三轮解包发布的中位数为 Native 1.545 s、pVisor 默认 VM 11.675 s、writeback VM 6.171 s；默认 VM 的 Ready 为 101.75 ms。完整任务、启动与资源失败分别报告。
 
 ## 实验设计 {#interpretation}
 
-测量完成一个完整任务——仓库检查、增量构建或产物发布——所需的时间，作为完整任务耗时。它是文件密集任务在该模式下付出的时间；耗时越短，同一预算内完成的任务越多。
+测量仓库检查、增量编译和同步发布的工作加最终同步时间，称为任务完成耗时。它代表所选执行模式处理文件任务的等待。耗时越短，同一预算内完成任务越快。
 
-同机九种配置——原生、pVisor host、staged、默认 VM、启用 guest writeback 的 VM、Docker、Firecracker、QEMU q35、QEMU microvm——使用相同输入、程序和工具。镜像与 VM 磁盘预先准备。
+同机九种模式共用静态负载、确定性只读输入和 Python/git/C 工具链，镜像和磁盘预先准备。Linux x86_64 / Ryzen 7 9700X / Btrfs；整个进程树与私有 Docker 共享两核 quota、2 GiB、零 swap，CPU affinity 0,1。VM 为 2 vCPU/512 MiB；Native、host、容器的父组限额与 guest RAM 不等价。工具来自固定的 Fedora 45 环境，stock 参考内核为 7.2.11-300.fc45，pVisor 使用静态 release 及匹配的内嵌固件。
 
-| 负载 | 覆盖内容 | 回答的问题 |
-| --- | --- | --- |
-| 3 个完整任务 | 仓库检查/搜索；编辑、增量编译并运行；离线解包、产物生成与同步发布 | 缓存和 writeback 的收益能否进入真实工作流 |
-| 12 项基本操作 | 文件查询、目录遍历、重复读取、不同大小写入、小文件、逐写同步、混合读写、创建删除 | 哪些访问模式受益，哪些仍有额外等待 |
-| 4 种资源组合 | 128 或 640 MiB 工作集，1 或 4 个并发写入者；每轮固定写 1 GiB | 工作集或并发增长时任务是否仍能完成，吞吐如何变化 |
+12 个机制负载、4 个资源负载、3 个完整工作流，每个负载/模式三个新环境，顺序随机，每环境三轮相关执行。主指标先把三轮完成时间相加，再对三个环境取中位数；宿主页缓存不清理，后续轮次继承验证预热。Ready 从共同的执行器启动标记到 payload Ready，排除 namespace 准备、任务、退出和清理；不能与任务时钟混为一项。
 
-每个负载/配置使用三个独立新环境，模式顺序随机，每个环境三轮，运行在 Linux x86_64 / Ryzen 7 9700X / Btrfs 上。被测进程树共享两核与 2 GiB、禁用 swap；VM 为 2 vCPU / 512 MiB。宿主缓存保持温热；中位数取自三个环境，不代表九个独立样本。
-
-任务耗时包含实际工作和最终同步；Ready 只到测试程序就绪，不含任务、退出和清理。每个环境限时 90 秒，校验输出、最终内容和隔离；某配置首次失败后，剩余计划观察标记为未执行。首次镜像获取、冷磁盘、尾延迟和更大并发需要单独测量。
+每个被测执行器进程限时 90 秒，必须正常退出、逐轮校验并通过独立 host 最终内容核对；暂存模式还须保持原工作区未变。某模式/负载首次失败后，余下计划样本记为未执行；不足三个有效环境不报中位数，不补零，不剔除有效慢样本。N=3 为探索性数据，不支持稳定尾延迟、冷磁盘或跨机器排名。
 
 ## 实验数据和分析 {#results}
 
-写回的收益取决于写入能否合并，以及任务要求多频繁地同步。
-
 ### 启动与完整任务 {#complete-task}
 
-同批九种配置，每格 **N=3 中位数**。Ready 单位 **ms**，来自固定负载的三个新环境；任务单位 **s**，为每个环境连续三轮完成时间之和，再对三个环境取中位数，排除启动与退出。范围及逐轮数据见折叠明细。
+| 模式 | Ready ms | 仓库巡检 s | 增量编译 s | 解包发布 s |
+| --- | --- | --- | --- | --- |
+| Native | 0.56 | 0.051 | 0.045 | 1.545 |
+| pVisor host | 17.64 | 0.050 | 0.045 | 1.549 |
+| pVisor staged | 22.79 | 0.454 | 0.083 | 4.556 |
+| pVisor VM | 101.75 | 2.376 | 0.557 | 11.675 |
+| pVisor VM + writeback | 103.45 | 2.289 | 0.353 | 6.171 |
+| Docker | 52.60 | 0.052 | 0.048 | 1.637 |
+| Firecracker (stock kernel) | 302.11 | 0.137 | 0.061 | 5.074 |
+| QEMU q35 | 636.23 | 0.099 | 0.058 | 3.170 |
+| QEMU microvm | 247.87 | 0.133 | 0.055 | 3.433 |
 
-| 模式 | Ready（ms） | 仓库巡检（s） | 增量编译（s） | 解包发布（s） |
-| --- | ---: | ---: | ---: | ---: |
-| Native | 2.63 | 0.055 | 0.051 | 1.733 |
-| pVisor host | 18.31 | 0.054 | 0.051 | 2.038 |
-| pVisor staged | 23.07 | 0.525 | 0.090 | 4.703 |
-| pVisor VM | 111.88 | 2.155 | 0.543 | 11.271 |
-| pVisor VM + writeback | 115.65 | 2.128 | 0.346 | 5.928 |
-| Docker | 70.15 | 0.057 | 0.054 | 2.053 |
-| Firecracker (stock kernel) | 355.85 | 0.151 | 0.081 | 4.305 |
-| QEMU q35 | 690.86 | 0.105 | 0.061 | 4.065 |
-| QEMU microvm | 319.05 | 0.143 | 0.062 | 3.851 |
+Ready 单位 ms；任务单位 s，均为三个新环境的中位数。任务列先在每个环境内累计三轮，排除初始准备和额外验收；编译每轮真实修改一个编译单元，发布每轮生成新目录。首次镜像拉取不在此范围。
 
-写回能改善包含批量产物写入的任务，仓库巡检中的读取与元数据成本仍然存在。pVisor host 的巡检和编译接近直接运行；进入暂存或虚拟机路径后，启动、读取、同步的额外成本需要按任务分别预算。
+host 的巡检和编译接近 Native，暂存与 VM 的文件访问增加等待。pVisor VM 就绪早于同批 stock 参考 VM，但这不抵消巡检和发布的访问成本；writeback 缩短发布任务，仍需按完整任务判断是否适合。
 
 <details markdown="1">
 <summary>查看完整任务范围与三轮变化</summary>
 
-单位 **s**，每格为“每个环境内三轮完成时间之和”的 N=3 中位数 [最小–最大]；三个工作流各自报告。完成时间为工作加最终同步/发布阶段，排除 Ready 和退出。
+N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样本。
 
-| Runtime | 仓库巡检与搜索 | 修改、编译、执行 | 解包与产物发布 |
+| 模式 | 仓库巡检 s | 增量编译 s | 解包发布 s |
 | --- | --- | --- | --- |
-| Native | 0.055 [0.053–0.056] | 0.051 [0.049–0.053] | 1.733 [1.724–1.808] |
-| pVisor host | 0.054 [0.053–0.054] | 0.051 [0.050–0.166] | 2.038 [1.963–3.531] |
-| pVisor staged | 0.525 [0.524–0.527] | 0.090 [0.088–0.223] | 4.703 [4.623–4.830] |
-| pVisor VM | 2.155 [2.040–2.253] | 0.543 [0.504–0.543] | 11.271 [10.954–11.488] |
-| pVisor VM + writeback | 2.128 [2.059–2.238] | 0.346 [0.337–0.350] | 5.928 [5.901–6.624] |
-| Docker | 0.057 [0.053–0.062] | 0.054 [0.053–0.058] | 2.053 [2.030–2.146] |
-| Firecracker (stock kernel) | 0.151 [0.141–0.157] | 0.081 [0.063–0.082] | 4.305 [4.299–4.336] |
-| QEMU q35 | 0.105 [0.101–0.105] | 0.061 [0.059–0.062] | 4.065 [2.169–5.487] |
-| QEMU microvm | 0.143 [0.128–0.147] | 0.062 [0.061–0.074] | 3.851 [2.703–4.827] |
+| Native | 0.051 [0.051–0.056] | 0.045 [0.045–0.046] | 1.545 [1.540–1.619] |
+| pVisor host | 0.050 [0.049–0.051] | 0.045 [0.045–0.046] | 1.549 [1.527–1.578] |
+| pVisor staged | 0.454 [0.449–0.454] | 0.083 [0.083–0.085] | 4.556 [4.528–4.593] |
+| pVisor VM | 2.376 [2.109–2.392] | 0.557 [0.556–0.576] | 11.675 [11.218–11.910] |
+| pVisor VM + writeback | 2.289 [2.280–2.371] | 0.353 [0.349–0.366] | 6.171 [6.047–6.517] |
+| Docker | 0.052 [0.051–0.057] | 0.048 [0.047–0.052] | 1.637 [1.561–1.644] |
+| Firecracker (stock kernel) | 0.137 [0.136–0.154] | 0.061 [0.061–0.073] | 5.074 [5.005–5.081] |
+| QEMU q35 | 0.099 [0.095–0.101] | 0.058 [0.055–0.059] | 3.170 [3.160–3.288] |
+| QEMU microvm | 0.133 [0.132–0.143] | 0.055 [0.055–0.056] | 3.433 [3.350–4.858] |
 
 ![三个完整任务的逐轮完成时间](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg)
 
-散点是三个独立环境，连线是对应轮次的中位数。编译每轮都有真实修改；发布每轮产生新目录，后两轮没有变成空操作。发布与编译包含可合并的小写，仓库巡检主要读取和查询元数据；写回不覆盖全部成本。普通可变工作区也不会因重复运行自动取得封存输入的缓存资格。各任务独立判断，不将发布收益外推到所有工具。
+散点为独立环境，连线为对应轮次中位数。各任务分别判断，不合成总分；普通可变工作区不会因重复访问自动取得 Immutable lower 缓存资格。
 
 </details>
 
 ### 小写合并与同步边界 {#cache-status}
 
-单位 **ms**，每环境三轮完成时间之和的 **N=3 中位数**。小写任务每轮写入 4 MiB，每次 1 KiB；逐次同步任务每轮写入 1 MiB，每次 4 KiB 后立即同步。
+| 模式 | 1 KiB 写 ms | 1 MiB 写 ms | 逐 4 KiB 同步 ms |
+| --- | --- | --- | --- |
+| Native | 18.904 | 11.367 | 261.038 |
+| pVisor host | 17.623 | 10.722 | 254.600 |
+| pVisor staged | 193.411 | 13.740 | 280.462 |
+| pVisor VM | 649.800 | 24.794 | 303.493 |
+| pVisor VM + writeback | 31.084 | 31.827 | 396.031 |
+| Docker | 20.274 | 12.177 | 250.648 |
+| Firecracker (stock kernel) | 30.513 | 22.107 | 831.941 |
+| QEMU q35 | 17.759 | 14.857 | 882.360 |
+| QEMU microvm | 17.777 | 14.844 | 909.498 |
 
-| 配置 | 密集小写完成（ms） | 逐次同步完成（ms） |
-| --- | ---: | ---: |
-| Native | 25.61 | 298.14 |
-| pVisor host | 24.77 | 608.67 |
-| pVisor staged | 193.37 | 356.77 |
-| pVisor VM | 649.99 | 404.73 |
-| pVisor VM + writeback | 36.49 | 543.49 |
-| Docker | 31.66 | 355.65 |
-| Firecracker (stock kernel) | 45.98 | 1015.66 |
-| QEMU q35 | 24.17 | 1043.30 |
-| QEMU microvm | 24.62 | 1160.67 |
-
-允许缓冲合并时，写回模式的密集小写（36.49 ms）与 Native（25.61 ms）、Docker（31.66 ms）处于相近水位，默认 VM 则明显更慢；每次写后立即同步限制了合并空间，开启写回后反而更慢，而默认 VM 在这项负载上短于同批 Firecracker 与 QEMU 参照。评估持续写入应计入最终同步，不能只看写入调用返回。
+单位 ms，三轮完成时间之和的 N=3 中位数。连续写每轮 4 MiB；逐写同步每轮 1 MiB、每 4 KiB fsync。延迟合并的空间由同步语义决定，不能只用 write 返回时间评估完成成本。
 
 <details markdown="1">
 <summary>请求粒度、同步边界与全部机制明细</summary>
 
-单位 **ms**，三轮完成时间之和的 N=3 中位数。顺序写每轮 4 MiB；逐写同步每轮写 1 MiB、每 4 KiB fsync；命名空间任务每轮 128 个文件，保留内容读回与删除后的目录同步。
+| 操作 ms | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker | Firecracker (stock kernel) | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 正项元数据 | 4.545 | 4.588 | 32.248 | 105.383 | 139.245 | 5.397 | 14.812 | 8.118 | 8.381 |
+| 缺项元数据 | 2.498 | 2.403 | 77.970 | 432.963 | 432.771 | 2.988 | 15.931 | 15.233 | 15.304 |
+| 目录枚举 | 2.466 | 2.505 | 9.566 | 16.214 | 16.132 | 2.749 | 4.623 | 3.289 | 3.950 |
+| 重开顺序读 | 28.535 | 27.980 | 37.146 | 40.205 | 39.982 | 28.597 | 37.083 | 33.021 | 31.538 |
+| 固定乱序读 | 10.357 | 10.240 | 27.742 | 137.974 | 163.752 | 10.479 | 139.761 | 100.418 | 154.622 |
+| 1 KiB 写 | 18.904 | 17.623 | 193.411 | 649.800 | 31.084 | 20.274 | 30.513 | 17.759 | 17.777 |
+| 1 MiB 写 | 11.367 | 10.722 | 13.740 | 24.794 | 31.827 | 12.177 | 22.107 | 14.857 | 14.844 |
+| 4 KiB 乱序覆盖 | 11.668 | 11.893 | 55.527 | 150.683 | 26.931 | 12.081 | 38.049 | 14.445 | 16.400 |
+| 小文件 | 280.802 | 277.178 | 380.104 | 820.276 | 691.822 | 276.624 | 391.725 | 357.702 | 403.307 |
+| 逐写 fsync | 261.038 | 254.600 | 280.462 | 303.493 | 396.031 | 250.648 | 831.941 | 882.360 | 909.498 |
+| 混合读写 | 16.069 | 16.855 | 64.701 | 174.719 | 37.030 | 22.251 | 34.416 | 23.280 | 22.606 |
+| 创建与删除 | 145.796 | 146.854 | 266.569 | 668.033 | 626.365 | 141.702 | 442.769 | 449.161 | 472.677 |
 
-| Runtime | 4 MiB / 1 KiB 写 | 4 MiB / 1 MiB 写 | 逐 4 KiB fsync | 创建、同步、重命名、删除 |
-| --- | --- | --- | --- | --- |
-| Native | 25.61 | 18.60 | 298.14 | 198.68 |
-| pVisor host | 24.77 | 17.35 | 608.67 | 212.09 |
-| pVisor staged | 193.37 | 20.63 | 356.77 | 335.82 |
-| pVisor VM | 649.99 | 29.89 | 404.73 | 682.79 |
-| pVisor VM + writeback | 36.49 | 36.82 | 543.49 | 696.58 |
-| Docker | 31.66 | 21.72 | 355.65 | 165.90 |
-| Firecracker (stock kernel) | 45.98 | 29.67 | 1015.66 | 564.97 |
-| QEMU q35 | 24.17 | 21.24 | 1043.30 | 547.26 |
-| QEMU microvm | 24.62 | 22.26 | 1160.67 | 585.23 |
+单位 ms，同样累计三轮并包含最终同步。逻辑操作数不等于 guest→host 请求数。
 
 ![请求粒度与工作、同步完成吞吐](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg)
 
-1 MiB 粒度每轮只有四次应用写入，与 1 KiB 的 4,096 次写入具有不同的合并空间；逐写 fsync 又限制了延迟空间。两种请求粒度只构成两个实测锚点，连线不代表中间粒度已测。左图为工作阶段吞吐，右图计入最终同步；逐写 fsync 等工作负载的工作阶段本身也包含同步。只报告写入返回会漏掉排空成本。
+两个粒度是实测锚点，连线不表示中间粒度已测。
 
 ![全部机制的工作与同步完成耗时比](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
-横轴为同批中位数之比，Native = 1，越小越短；各机制独立，未计算总分。N=3 的描述性水位不能充当确认性加速比或稳定尾延迟。混合任务分别记录前台读与整体完成，防止用后台吞吐改善掩盖响应变慢。下表为首轮 N=3 中位数；后台写和前台读使用不同文件。
+同批 Native 中位数为 1，越小越短；这是描述性水位，不是确认性加速比。
 
-| Runtime | 首轮前台读 ms | 首轮混合任务完成 ms |
+| 模式 | 首轮前台读 ms | 首轮整体完成 ms |
 | --- | --- | --- |
-| Native | 3.83 | 13.23 |
-| pVisor host | 4.01 | 15.69 |
-| pVisor staged | 5.86 | 30.47 |
-| pVisor VM | 13.21 | 70.84 |
-| pVisor VM + writeback | 11.41 | 24.33 |
-| Docker | 4.55 | 17.61 |
-| Firecracker (stock kernel) | 11.51 | 22.32 |
-| QEMU q35 | 8.51 | 24.17 |
-| QEMU microvm | 8.31 | 13.14 |
+| Native | 3.365 | 5.706 |
+| pVisor host | 4.986 | 7.904 |
+| pVisor staged | 5.549 | 22.133 |
+| pVisor VM | 13.722 | 70.610 |
+| pVisor VM + writeback | 12.131 | 21.692 |
+| Docker | 3.410 | 7.124 |
+| Firecracker (stock kernel) | 14.161 | 17.317 |
+| QEMU q35 | 8.167 | 11.158 |
+| QEMU microvm | 7.893 | 11.203 |
+
+前台读与后台写使用不同文件，单列首轮读等待，避免整体吞吐掩盖前台响应。
 
 </details>
 
 ### 工作集与并发边界 {#resource-boundary}
 
-每轮写入 **1 GiB**，只改变工作集 **128/640 MiB** 和并发写入者 **1/4**。128 MiB 下九种配置均完成，三轮完成时间之和的 N=3 中位数如下（单位 **s**，每轮四个文件、合计写入 1 GiB）：
+| 模式 | 128 MiB × 1 s | 128 MiB × 4 s | 640 MiB × 1 s | 640 MiB × 4 s |
+| --- | --- | --- | --- | --- |
+| Native | 2.446 | 1.362 | 2.672 | 2.529 |
+| pVisor host | 2.431 | 1.337 | 3.365 | 1.576 |
+| pVisor staged | 13.149 | 9.064 | 14.070 | 9.295 |
+| pVisor VM | 43.460 | 16.411 | — | — |
+| pVisor VM + writeback | 4.412 | 1.816 | — | — |
+| Docker | 2.527 | 1.424 | 3.150 | 2.352 |
+| Firecracker (stock kernel) | 2.802 | 1.615 | 5.348 | 2.577 |
+| QEMU q35 | 2.284 | 1.400 | 3.875 | 1.866 |
+| QEMU microvm | 2.464 | 1.386 | 3.900 | 2.010 |
 
-| 配置 | 128 MiB、1 写入者（s） | 128 MiB、4 写入者（s） |
-| --- | ---: | ---: |
-| Native | 2.676 | 1.571 |
-| pVisor host | 2.722 | 1.494 |
-| pVisor staged | 13.182 | 9.247 |
-| pVisor VM | 41.545 | 15.751 |
-| pVisor VM + writeback | 4.195 | 2.073 |
-| Docker | 2.822 | 1.550 |
-| Firecracker (stock kernel) | 3.006 | 1.825 |
-| QEMU q35 | 2.566 | 1.685 |
-| QEMU microvm | 2.605 | 2.414 |
-
-128 MiB 下，写回 VM 与容器及参考 VM 处于同一量级，默认 VM 的持续同步写入成本明显更高；四个写入者分摊每轮固定的 1 GiB 写入，合计完成时间相应更短。640 MiB 工作集下，默认与开启写回的 pVisor VM 各有两个单元在 90 秒内未完成；这四个单元均没有完整 N=3 结果。超时不计作零吞吐，也不能换算成正常耗时。
+单位 s，三轮完成时间之和的 N=3 中位数；每轮逻辑写入 1 GiB、固定四文件，只改变工作集与 worker 数。`—` 表示未取得完整 N=3，不能解释为零耗时。工作集扩大也增加最终保留与同步的字节，四个锚点不证明容量拐点。
 
 <details markdown="1">
 <summary>查看工作集、并发曲线与失败明细</summary>
 
-![四个资源锚点的完成吞吐与最终同步占比](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg)
+![工作集和 worker 数下的完成吞吐与失败](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg)
 
-每轮固定 1 GiB 逻辑写入、四文件、4 KiB 请求；只改变工作集 128/640 MiB 与 worker 数 1/4。吞吐使用完成时间，散点表示独立环境；缺失点表示该单元没有完整 N=3 结果，不表示零吞吐。工作集变化也改变保留内容量与最终同步成本，四点不足以定位容量拐点。
-
-| 负载 | 配置 | 已执行失败 / 后续未执行 | 结果 |
+| 模式 | 负载 | 环境 | 结果 |
 | --- | --- | --- | --- |
-| 640 MiB 工作集、1 worker | pVisor VM | 1 / 2 | 90 秒超时；无耗时中位数 |
-| 640 MiB 工作集、1 worker | pVisor VM + writeback | 1 / 2 | 90 秒超时；无耗时中位数 |
-| 640 MiB 工作集、4 worker | pVisor VM | 1 / 2 | 90 秒超时；无耗时中位数 |
-| 640 MiB 工作集、4 worker | pVisor VM + writeback | 1 / 2 | 90 秒超时；无耗时中位数 |
+| pVisor VM + writeback | 640 MiB × 1 | 1 | 超时 |
+| pVisor VM | 640 MiB × 1 | 1 | 超时 |
+| pVisor VM | 640 MiB × 4 | 1 | 超时 |
+| pVisor VM + writeback | 640 MiB × 4 | 1 | 超时 |
 
-超时只能说明这些配置没有在协议上限内完成任务，不能换算成正常耗时或精确吞吐，也不能仅凭现象认定根因。对持续大批量写入的判断，应先解决这些完成性问题，再扩大扫描。
+失败现场和超时保留在原始批次；不以成功轮次补齐失败环境。
 
 </details>
 
 ### 启动等待的取值范围 {#quick-results}
 
-共同静态 payload 的 Ready 中位数：pVisor VM 111.88 ms、Firecracker 355.85 ms、QEMU q35 690.86 ms、QEMU microvm 319.05 ms。启动等待与后续任务耗时分别判断。
-
 <details markdown="1">
 <summary>查看九种配置的 Ready 与范围</summary>
 
-单位 **ms**，固定元数据负载启动前的共同静态 payload Ready，每配置三个新环境；未把所有负载的启动混为更多独立样本。中位数与范围排除 namespace 准备、任务执行、退出和收尾；这不是旧版 Python Ready 或完整发行版启动。
+| 模式 | Ready ms [min–max] |
+| --- | --- |
+| Native | 0.56 [0.56–0.61] |
+| pVisor host | 17.64 [17.34–18.25] |
+| pVisor staged | 22.79 [22.79–22.87] |
+| pVisor VM | 101.75 [100.73–104.92] |
+| pVisor VM + writeback | 103.45 [101.50–106.76] |
+| Docker | 52.60 [49.85–57.38] |
+| Firecracker (stock kernel) | 302.11 [296.11–325.60] |
+| QEMU q35 | 636.23 [634.79–655.04] |
+| QEMU microvm | 247.87 [240.66–284.25] |
 
-| Runtime | Ready ms | Min–max ms |
-| --- | --- | --- |
-| Native | 2.63 | 0.81–2.64 |
-| pVisor host | 18.31 | 16.57–19.51 |
-| pVisor staged | 23.07 | 22.34–28.14 |
-| pVisor VM | 111.88 | 111.37–112.75 |
-| pVisor VM + writeback | 115.65 | 115.32–138.86 |
-| Docker | 70.15 | 68.53–75.74 |
-| Firecracker (stock kernel) | 355.85 | 354.80–388.50 |
-| QEMU q35 | 690.86 | 685.43–707.84 |
-| QEMU microvm | 319.05 | 299.70–327.80 |
+固定正项元数据负载的 N=3，中位数 [最小–最大]；未把各负载 Ready 混为更大的 N。这是共同静态程序就绪，参考 VM 包含内核启动，不是完整发行版服务启动。
 
 </details>
 
 ### 复现配置与数据覆盖 {#configuration-details}
 
-<details markdown="1">
-<summary>查看存储路径、计时细节与有效样本数</summary>
-
 <!-- measurement-status:start -->
 
-计划 19 项负载 × 9 种配置 × 3 个新环境，共 513 个。实际执行 505 个，501 个通过，4 个失败；另有 8 个按既定规则未执行。167 / 171 个负载配置单元具有完整 N=3 结果。每个通过的环境内部执行三轮，共 1503 条有效轮记录；三轮相关，不作为独立样本。
+计划 19 项负载 × 9 种配置 × 3 个新环境，共 513 个。实际执行 505 个，501 个通过，4 个失败；另有 8 个按既定规则未执行。167 / 171 个单元具有完整 N=3 结果，1503 条有效轮记录。
 
 <!-- measurement-status:end -->
 
-对照 Native、pVisor host、staged、默认 CLI VM、显式开启 guest writeback 的 CLI VM、Docker、Firecracker、QEMU q35 和 QEMU microvm。九种配置在同一批次随机交替，使用相同字节的静态负载、离线输入与 Python/git/C 工具链，不拼接此前五模式数据。输入只读、输出写入各模式的工作区；普通 CLI 使用 Mutable 所有权，不宣称启用了 Immutable lower 缓存，两种 pVisor VM 的 host writeback 关闭、产品路径关闭 DAX，仅 guest writeback 显式设为 0/1。
+<details markdown="1">
+<summary>查看存储路径、计时细节与有效样本数</summary>
 
-| 配置 | 工作区存储路径 |
-| --- | --- |
-| Native / pVisor host | 宿主 Btrfs 目录 |
-| pVisor staged | FUSE 暂存文件系统 |
-| pVisor CLI VM，两种写回配置 | virtio-fs、OverlayFS 与暂存输出 |
-| Docker | 预准备私有 rootless overlay2；输出在容器可写层，输入只读 bind |
-| Firecracker / QEMU q35 / QEMU microvm | 私有 ext4 root/work 镜像、virtio-blk；相同官方 stock 内核、模块 initrd 与最小 PID1 |
+此对照使用共同的目录 rootfs，不经过 lazy cache；压缩镜像的文件访问成本见[镜像实验](lazy-image-startup.md#local-access)。
 
-参考 VM 仅启动共同负载所需的最小 userspace，不启动发行版服务。Firecracker 显式 Writeback、QEMU 显式 cache=writeback，保留 FLUSH；正常卸载和 VMM 退出后只读导出输出，交给共同 host oracle。Docker 在退出后复制容器输出。磁盘准备、容器创建与输出导出不计入 Ready 或任务；Ready 从执行器启动前的共同标记至 payload Ready，包含参考 VM 的内核启动。内核、存储栈与缓存边界的差异属于所测配置，不能解释为纯 VMM 开销。
+Native/host 输出在 Btrfs；staged 使用 FUSE 暂存；两种 pVisor VM 使用 virtio-fs、OverlayFS 与暂存输出。普通 CLI Job 入口为 `spawn`，host writeback 关闭，产品关闭 DAX，guest writeback 分别请求关闭/开启。Docker 使用新私有 rootless overlay2，可写层承载输出、输入只读 bind，退出后复制输出供独立校验。
 
-| 层次 | 固定负载 | 用途 |
-| --- | --- | --- |
-| 12 个机制负载 | 正项/缺项查询、目录枚举、重开顺序读、固定乱序读、1 KiB/1 MiB 连续写、4 KiB 乱序覆盖、256 个小文件、逐写 fsync、前台读与后台写、创建—同步—重命名—删除 | 区分请求粒度、复用、同步与元数据成本 |
-| 4 个资源负载 | worker 数为 1 或 4，工作集为 128 或 640 MiB；固定四文件、4 KiB 写、每轮合计 1 GiB 逻辑写入 | 比较并发和工作集变化，不预设已经达到稳态或容量拐点 |
-| 3 个完整任务 | 仓库巡检与搜索；修改—增量编译—执行校验；离线解包—小文件及 32 MiB 产物生成—同步发布 | 分别衡量任务完成时间，不合成通用总分 |
+Firecracker、QEMU q35、QEMU microvm 共用未修改的官方 stock 内核、匹配模块 initrd、最小 PID1 和私有 ext4 root/work 磁盘，virtio-blk、FLUSH 与正常卸载保持启用。QEMU microvm 开启 ACPI 进行设备发现。磁盘准备、容器创建和输出导出均不计入 Ready/任务。工具、内核和存储栈差异属于配置，不解释为纯 VMM 开销。
 
-Linux x86_64 / Ryzen 7 9700X / Btrfs，宿主页缓存不清理。仓库与离线包各含 1,024 个 4 KiB 文件；发布另生成 128 个 4 KiB 小文件和 32 MiB 流写产物。整个串行 campaign、私有 Docker daemon/container 共用两核 quota、2 GiB 内存及零 swap 父组；所有 VM 配置 2 vCPU/512 MiB，实际 guest MemTotal 另记在来源摘要。宿主未向 user cgroup 委派 cpuset，daemon 和观察者继承 CPU 0、1 affinity，Docker payload 单独设置并记录实际 affinity；不宣称 early runc 阶段也有硬 cpuset 约束。
-
-Native/host/容器使用父组内存，VM 另受 guest 内存边界限制；不能声称可用缓存等量。资源负载以固定 512 MiB 为尺度，128/640 MiB 不代表原生或容器的实际内存比例；更大工作集也增加最终保留和同步的数据量。
-
-每个“负载 × 配置”计划三个独立新环境，配置顺序随机交替；每环境连续三轮，保留状态与校验预热的页，每格九条轮记录只有三个独立环境，不跨负载互相预热。Ready 从执行器前的共同启动标记计至负载 Ready，排除 namespace 准备、任务和退出。任务完成为工作时间加最终同步，保留周期性 fsync、文件/目录同步及检查后的 close；准备、额外全量验证和退出另记；工作流自带的内容验收和程序运行检查保留在工作时间内。增量编译每轮真实修改一个编译单元；初始 100 个单元的完整编译属于计时外准备。
-
-每次执行器进程运行限 90 秒。正常退出、逐轮结果、命名空间和暂存隔离均须通过；确定性数据逐字节核对，编译产物在任务内执行校验，退出后完整读回并检查 ELF 与文件清单。首个失败后，该负载与配置余下的计划样本明确跳过，不补跑、不记为零；不足三个有效环境的格子不报中位数。保留有效慢值与失败，不设安静期、外部干扰或全量清单门禁。N=3 仅作探索，不支持稳定尾延迟、冷磁盘或跨机器的普遍排名。
+仓库与离线包各 1,024 个 4 KiB 文件，增量编译有 100 个翻译单元，发布另生成 128 个 4 KiB 文件和 32 MiB 流写产物。资源负载的 128/640 MiB 按固定 512 MiB 参考尺度定义，不是 Native/容器实际内存比例。宿主 user cgroup 未委派 cpuset，报告继承 affinity，不宣称早期 runc 有硬 cpuset 保证。完整文件及目录同步、内容校验和暂存隔离均未减少。
 
 </details>
 
 ### 历史数据 {#reference-fs}
 
-<details markdown="1">
-<summary>查看独立保留的历史口径</summary>
-
-原七工具的 N=5 Ready/驻留环境统计与来源、历史 N=30 统计，以及此前五模式分层对照，各自保留原始口径；不填入新的 19 项表格，也不计算跨批次优化幅度。
-
-</details>
+此前七工具、五模式与九模式结果各自保留原始口径，不与当前样本拼接，不由跨批次差异计算优化幅度。
 
 ### 来源与复现 {#run}
 
-[工作流图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg) · [请求粒度图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg) · [资源图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg) · [机制图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
-
 [全部分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [失败与缺失](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
-本地完整统计中的 write_ops/read_ops 是负载显式逻辑操作数，不是 guest→host 请求数，也不包含子工具内部全部 I/O。
-
-2026-10-17，独立用户配置批次；完整 CSV/JSON、原始记录、冻结入口、工具及固件收据保存在本地 `benchmark/filesystem/.data/user-layered-references-v2-20261017/`。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md#user-workloads)。[缓存与异步写工程分析](../lab-notes/filesystem-io-performance-analysis.md)独立解释实现开关与请求计数，不用于补齐用户对照。
+2026-10-25，源码 `9e1b8f15`，基于 main `92a4ce4e`。完整原始记录、冻结工具、二进制与固件、预检失败和派生图表保留在本地 `benchmark/filesystem/.data/user-rebase-20261025-c/`；此前公开材料也已归档。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md#user-workloads) · [缓存与异步写工程分析](../lab-notes/filesystem-io-performance-analysis.md)。工程开关归因不用于补齐用户数据。

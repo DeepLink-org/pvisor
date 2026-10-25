@@ -1,0 +1,1 @@
+{"runtime":"$ python3 @REPO@/benchmark/storage/lazy_benefits.py --phase runtime --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"}

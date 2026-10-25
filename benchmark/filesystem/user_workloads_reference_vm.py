@@ -404,7 +404,7 @@ def build_command(batch, protocol, folder, case, backend):
         ]
     else:
         machine = (
-            "microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=on"
+            "microvm,acpi=on,x-option-roms=off,pit=off,pic=off,rtc=on"
             if backend == "qemu-microvm"
             else "q35"
         )

@@ -1,4 +1,8 @@
 benchmark_id,role,entry,status
+B-LAZY-STARTUP,user-facing,storage/lazy_local_reads.json,explicit-python-lazy-local-reads
+B-LAZY-STARTUP,user-facing,storage/lazy_storage.json,explicit-python-lazy-benefits
+B-LAZY-STARTUP,user-facing,storage/lazy_runtime.json,explicit-python-lazy-benefits
+B-LAZY-STARTUP,user-facing,storage/lazy_remote.json,explicit-python-lazy-benefits
 B-OPENSANDBOX-ENG,engineering A/B,startup/opensandbox.json,requires-single-condition-command
 B-SANDBOX-ENGINE-ENG,engineering A/B,startup/sandbox_engine.json,requires-single-condition-command
 B-OPENSANDBOX-BURST-DIAG,diagnostic,startup/opensandbox_burst.json,requires-single-condition-command

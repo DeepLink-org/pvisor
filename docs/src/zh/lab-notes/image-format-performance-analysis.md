@@ -1,141 +1,120 @@
-# 镜像 V2：存储与读取性能的工程对照
+# pVisor V2 与原生 Docker：镜像存储、启动和内存
 
-2026-10-25，B-IMAGE-FORMAT-ENG。V2 明显缩小本实验的小文件镜像库存，并改善打开、稳态查询和枚举；冷随机读取高熵文件仍有代价，完整流程的进程峰值 RSS 也没有全面下降。这里记录同机存储后端 A/B，不是 Docker／OpenSandbox 对比、VM 启动时间或真实应用吞吐结论。当前存储合同见 [Lazy Image V2](../design/lazy-image-v2.md)。
+## Motivation {#motivation}
 
-## 动机与实验设计 {#method}
+pVisor V2 在这组真实镜像上明显减少磁盘库存；原生 Docker 容器在轻量 shell 负载下启动更快、每实例内存增量更低。选择 V2 的收益主要是压缩镜像供给和每实例 VM 边界，不能把镜像压缩解释为所有运行指标都优于原生容器。 该记录保留独立的本地工程批次；当前完整供给、远程取数和本地重复 mmap 结果见[惰性镜像基准](../benchmarks/lazy-image-startup.md)，批次不合并。
 
-对比固定的旧 V1 本地压缩池／文件系统后端与本次 V2，检验独立压缩目录索引和小文件打包的实际收益及代价。两个版本编入相同测量逻辑（源码仅 rustfmt 排版不同，逐批校验归一化后完全相同），冻结为 release 测试制品。基线的 pool 已有 Zstd 压缩，不能把本实验解释成“压缩对未压缩”的比较。
+四种固定镜像的独立库存节省 71%–73%，真实四镜像共享库存节省 74%。已准备 Ubuntu 的 Ready 中位数为 Docker 80.69 ms、pVisor VM 106.38 ms；四实例时，扣除空基线后的平均增量分别为 8.46 MiB、48.83 MiB/实例。完整部署计费还受镜像页缓存和 daemon 固定开销影响，不能只用总量判断每实例成本。
 
-| 组 | 文件数／目录数 | 后端 | 每个文件的 1 KiB 内容 |
+## 实验设计 {#interpretation}
+
+测量相同 OCI 镜像的文件分配量、启动到首条正确输出的等待和完整产品组内存计费，作为磁盘、启动和部署内存成本。这些指标反映镜像准备好之后的本地使用开销。数值越低，所需磁盘或内存预算越少、短任务等待越短。
+
+2026-10-25，Linux x86_64/KVM、AMD Ryzen 7 9700X、内核 7.2.11-300.fc45。使用 rebase 到 main 前冻结的 V2 release/musl CLI，对照原生 Docker Engine 29.7.2/runc；没有 OpenSandbox、E2B、execd 或额外 API 服务。每个容器是 Linux namespace 容器或独立 pVisor guest kernel，隔离机制不同；没有启用额外物理内存池。
+
+容量和运行时是两个独立批次，不合并样本。容量使用 Alpine 3.20、Ubuntu 24.04、Python 3.12/3.13 slim-bookworm 的固定 linux/amd64 manifest。逐个验证 manifest、config 和全部压缩 layer 的 SHA-256；Docker 的 RootFS diff_ids 和 pVisor catalog 身份也须相符。双方全部从新私有 store 导入，每个单镜像与真实四镜像组合各测三次。Docker 是独立 rootless/containerd overlayfs，包含正常层共享、压缩 blobs、解包 snapshots 和元数据，单列并扣除空 daemon 库存。pVisor 包含整个 Docker-profile store 的压缩内容、索引、config 和 catalog，不保留解包树或 layer archives。导入源、测量工具、二进制和运行写层不计入。
+
+容量在运行校验前采集，硬链接 inode 只计一次，symlink 不跟随；不可读的子树使测量失败，不静默漏计。双方实验目录关闭 Btrfs 透明压缩，宿主全局配置未改。分配量为 `st_blocks × 512`，不等于独占物理设备字节，也不含全局文件系统元数据。逐实例校验 `/etc/os-release`、`/bin/sh` 摘要一致，重复 pull 不增加池内容。
+
+启动使用同 digest Ubuntu，镜像和私有 daemon 预先准备。每次创建新实例，3 对预热、30 对 seed 819 随机交替；保留宿主页缓存，不含镜像拉取和服务启动。双方执行相同 shell：检查私有文件不存在、写入并读回 token、输出唯一 Ready 行，然后正常退出。时钟包含同一小型 cgroup launcher、CLI 创建和输出管道；由 semspec observer 在 Popen 前启动、Ready 行接收时停止，正常退出另计。不是存储索引 Open、冷磁盘或 SDK 创建耗时。所有有效慢样本保留，30 个样本不报告 P99。
+
+运行组限制为 4 CPU quota、4 GiB、零 swap；CLI/服务固定 CPU 0–3。宿主没有委派 cpuset，使用同镜像 taskset 在应用前设置 Docker 的宿主 CPU mask 与单 vCPU VM 的 guest CPU 0；窗口内验证实际成员亲和性，不能据此证明所有短暂 init 线程过去的亲和性。双方请求 1 CPU/256 MiB，VM 的 guest RAM 与容器内存 limit 范围不同，不能称为等价隔离或相同应用可用内存。
+
+内存另测五个随机配对的新产品组，一次只运行一组；dockerd、rootlesskit/pasta、containerd、shim 和容器，或 supervisor/VMM 全部纳入。镜像导入先在同组完成，空基线包含其页缓存／残留管理开销，以及双方相同的委派叶保持进程。无实例、1 实例、4 实例各观察三秒，每 200 ms 采集、取最后两秒中位数，再汇总五组。核对存活 owner/VMM、容器 PID、实际 cgroup 上限与归属、零 OOM/swap、私有 token 和原生删除；预检失败单独保留，不计入正式结果。观察者在组外，预先计费在组外的共享页缓存不计入，所以它不是整机新增物理内存。
+
+## 实验数据和分析 {#results}
+
+### 真实镜像磁盘库存 {#disk}
+
+单位 MiB（2²⁰ bytes），N=3 个全新库存的中位数；末列是全部三次的范围，Docker 为扣除空库存后的镜像增量。
+
+| 库存 | Docker MiB | pVisor V2 MiB | 磁盘节省 | Docker / V2 min–max MiB |
+| --- | --- | --- | --- | --- |
+| alpine-3.20 | 12.53 | 3.59 | 71.3% | 12.52–12.53 / 3.59–3.59 |
+| ubuntu-24.04 | 110.18 | 31.64 | 71.3% | 110.18–110.18 / 31.64–31.64 |
+| python-3.12-slim-bookworm | 176.68 | 47.15 | 73.3% | 176.68–176.68 / 47.15–47.15 |
+| python-3.13-slim-bookworm | 172.34 | 46.18 | 73.2% | 172.34–172.34 / 46.18–46.18 |
+| combined | 363.16 | 94.29 | 74.0% | 363.16–363.16 / 94.29–94.29 |
+
+
+![真实镜像与共享库存的分配量](../assets/benchmarks/image-format-capacity.svg)
+
+四镜像组合来自一个真正共享的 store，Docker 已正常复用公共层，不能把四个独立库存相加作为对照。下表拆出 Docker 原生 blob 和 snapshot 存储，中位数、MiB；主表另外包含数据库和其他元数据，因此各列不保证恰好加总。
+
+| 库存 | Docker blobs MiB | Docker snapshots MiB | Docker empty MiB |
 | --- | --- | --- | --- |
-| P10 | 10,000／1 | pool | 唯一 SHA-256 字节重复 32 次 |
-| P100 | 100,000／1 | pool | 同上 |
-| D100 | 100,000／100 | pool | 同上，轮转分配目录 |
-| E10 | 10,000／1 | pool | 确定性 SHAKE256 高熵字节 |
-| F10 | 10,000／1 | filesystem | 唯一 SHA-256 字节重复 32 次 |
-
-同一组共用一个固定时间戳、相同内容的源目录，两个 cache 均新建。文件都不同，不以大量重复文件夸大逐文件去重。重复字节组有较强的文件内可压缩性，不能代表真实镜像的压缩率。首次存储发布排除 OCI 下载／层解包；容量包含 format、pool marker、全部 meta、上传记录和 data，排除源目录、制品及测量证据。物理块库存使用 `st_blocks × 512`，不是独占设备占用，也不包含文件系统自身的 inode／目录树开销。
-
-环境：AMD Ryzen 7 9700X，Linux 7.2.11-300.fc45 x86_64，rustc 1.98.0，Btrfs（宿主已有 `compress=zstd:1`，未修改配置），固定 CPU 7。机器未独占，负载在逐批 manifest 中保存，未删除慢样本。每组 3 轮预热、30 轮正式配对，seed 437 随机交替版本顺序；置信区间是对配对差的中位数进行 5,000 次 bootstrap，95% 区间，不是中位数比值的区间。
-
-每轮新进程、空解码缓存，但保留宿主页缓存，不能称“冷磁盘”。顺序为 Open → 1,000 次随机 Stat → 重复同序 Stat → 128 次完整 1 KiB Read → 重复同序 Read → 全树 List。C 表示该阶段第一次访问，R 表示立即重复，不保证所有重复访问都命中缓存；冷 Read 前元数据已经经过 Stat，List 也并非独立冷扫描。逐次校验属性类型／长度、读取的完整字节和枚举总条目数，任何失败使批次失效。进程创建、预读校验输入及 semspec 调度不计入阶段时钟。
-
-本次是整个后端替换：节点 LRU 保留 16 MiB 驻留预算，条目上限从 256 调整为 4,096；内容缓存保留 64 MiB 上限，小 frame 可容纳更多条目。缓存计量改为加载时计算、常数时间维护总字节。不能把全部收益归因于 XXH3 或某个单独编码变化。
-
-## 库存与延迟 {#results}
-
-下表均为 V1 → V2，MiB = 2²⁰ bytes。metadata 包含所有控制／索引／清单／上传记录，不仅是 index.bin；allocated 是 metadata 与 data 的合计。
-
-| 组 | metadata MiB | total logical MiB | total allocated MiB | 分配量下降 | data objects |
-| --- | --- | --- | --- | --- | --- |
-| P10 | 6.005 → 0.649 | 6.616 → 1.050 | 45.102 → 1.113 | 97.5% | 10,000 → 10 |
-| P100 | 55.279 → 6.571 | 61.383 → 10.579 | 445.938 → 10.809 | 97.6% | 100,000 → 98 |
-| D100 | 55.279 → 4.363 | 61.383 → 8.381 | 445.938 → 8.703 | 98.0% | 100,000 → 100 |
-| E10 | 6.005 → 0.645 | 15.895 → 10.476 | 45.102 → 10.531 | 76.6% | 10,000 → 10 |
-| F10 | 6.005 → 0.649 | 15.771 → 1.049 | 45.098 → 1.109 | 97.5% | 10,000 → 10 |
+| alpine-3.20 | 3.47 | 9.05 | 0.24 |
+| ubuntu-24.04 | 28.40 | 81.78 | 0.24 |
+| python-3.12-slim-bookworm | 43.19 | 133.45 | 0.24 |
+| python-3.13-slim-bookworm | 42.17 | 130.13 | 0.24 |
+| combined | 90.29 | 272.75 | 0.24 |
 
 
-![索引与文件分配量对照](../assets/benchmarks/image-format-capacity.svg)
+V2 的容量收益来自保留压缩内容和索引、按目录打包小文件以及内容复用。该结果适用于所测 Docker 29/containerd overlayfs 与这组镜像，不代表所有镜像或所有 Docker 存储驱动；不包含导入峰值，也不证明 mmap／读吞吐或 GC 优势。
 
-延迟是各阶段整组操作的中位数。差值为逐对 V2−V1，负值代表改善；最后一列由两个版本的中位数计算，负百分比代表回退。
+### 已准备镜像的原生启动 {#startup}
 
-| 组 | 阶段 | V1 ms | V2 ms | 配对差 [95% CI] ms | 耗时下降 |
-| --- | --- | --- | --- | --- | --- |
-| P10 | Open | 0.525 | 0.136 | -0.388 [-0.401, -0.377] | +74.0% |
-| P10 | Stat C | 6.779 | 6.553 | -0.228 [-0.266, -0.131] | +3.3% |
-| P10 | Stat R | 1.338 | 0.821 | -0.517 [-0.529, -0.508] | +38.7% |
-| P10 | Read C | 2.620 | 1.729 | -0.888 [-0.944, -0.850] | +34.0% |
-| P10 | Read R | 1.159 | 0.364 | -0.799 [-0.804, -0.793] | +68.6% |
-| P10 | List | 8.698 | 6.358 | -2.367 [-2.392, -2.279] | +26.9% |
-| P100 | Open | 0.569 | 0.190 | -0.378 [-0.387, -0.365] | +66.7% |
-| P100 | Stat C | 102.807 | 63.297 | -39.478 [-39.767, -38.943] | +38.4% |
-| P100 | Stat R | 96.130 | 56.218 | -39.804 [-40.604, -39.229] | +41.5% |
-| P100 | Read C | 25.371 | 9.724 | -15.628 [-15.736, -15.410] | +61.7% |
-| P100 | Read R | 23.852 | 0.400 | -23.441 [-23.509, -23.370] | +98.3% |
-| P100 | List | 135.320 | 92.275 | -43.013 [-43.649, -42.538] | +31.8% |
-| D100 | Open | 0.607 | 0.185 | -0.421 [-0.430, -0.411] | +69.6% |
-| D100 | Stat C | 117.911 | 22.207 | -95.720 [-96.168, -95.536] | +81.2% |
-| D100 | Stat R | 111.072 | 1.401 | -109.683 [-110.066, -109.267] | +98.7% |
-| D100 | Read C | 29.103 | 2.833 | -26.179 [-26.283, -26.020] | +90.3% |
-| D100 | Read R | 27.188 | 0.377 | -26.800 [-26.864, -26.739] | +98.6% |
-| D100 | List | 140.178 | 99.080 | -40.367 [-41.130, -40.025] | +29.3% |
-| E10 | Open | 0.519 | 0.137 | -0.389 [-0.395, -0.369] | +73.5% |
-| E10 | Stat C | 6.683 | 6.534 | -0.168 [-0.221, -0.119] | +2.2% |
-| E10 | Stat R | 1.337 | 0.810 | -0.526 [-0.531, -0.513] | +39.4% |
-| E10 | Read C | 2.774 | 4.036 | +1.316 [+1.253, +1.356] | -45.5% |
-| E10 | Read R | 1.295 | 0.358 | -0.937 [-0.949, -0.924] | +72.4% |
-| E10 | List | 8.574 | 6.311 | -2.255 [-2.315, -2.201] | +26.4% |
-| F10 | Open | 0.537 | 0.148 | -0.394 [-0.400, -0.381] | +72.4% |
-| F10 | Stat C | 6.635 | 6.281 | -0.397 [-0.431, -0.359] | +5.3% |
-| F10 | Stat R | 1.337 | 0.814 | -0.526 [-0.534, -0.520] | +39.1% |
-| F10 | Read C | 2.531 | 1.663 | -0.854 [-0.895, -0.819] | +34.3% |
-| F10 | Read R | 1.141 | 0.362 | -0.781 [-0.788, -0.775] | +68.2% |
-| F10 | List | 8.626 | 6.284 | -2.320 [-2.373, -2.282] | +27.2% |
+单位 ms，N=30 对的中位数；差值为逐对 pVisor−Docker 的中位数，95% CI 为 5,000 次配对 bootstrap。两项中位数之差不必等于中位配对差。
+
+| 指标 | Docker ms | pVisor VM ms | 配对差 [95% CI] ms |
+| --- | --- | --- | --- |
+| 首条校验输出 Ready | 80.69 | 106.38 | +24.67 [+22.63, +26.21] |
+| 启动到正常退出 | 109.98 | 146.64 | +34.23 [+30.66, +36.03] |
 
 
-图中比值为 V1／V2，大于 1 表示 V2 更快。
+![首条输出与正常退出的全部配对样本](../assets/benchmarks/image-format-latency.svg)
 
-![各阶段相对加速比](../assets/benchmarks/image-format-latency.svg)
+每个点保留一个正式样本，连线表示同一轮；箱体给出分位范围，不隐藏慢样本。该轻负载中原生 Docker 更快。V2 的小索引和压缩池并未让完整 VM 创建成本消失；这组结果不能与带 SDK／服务适配层的历史对照混用，也不能把 Ready 的差异归为单独的索引算法成本。
 
-## 发布、内存与参数修正 {#tradeoffs}
+### 完整部署内存与实例增量 {#memory}
 
-发布只有一次观测，没有置信区间，不能将该列当作稳态统计。RSS 是测量进程在完整流程结束读取的 VmHWM 的 30 轮中位数，包含测试框架、校验输入、索引／内容缓存及分配器，既不是实例内存，也不是仅 Open 的驻留量；它不证明 guest mmap 或应用内存收益。
+单位 MiB，N=5 个新产品组的中位数，方括号为 min–max；差值为五对组的中位配对差及 bootstrap 95% CI。每实例增量先在各组计算 `(阶段总量−同组空基线)/实例数`，再取中位数，不用两项总体 P50 相减。
 
-| 组 | 发布 s（单次） | 进程峰值 RSS MiB |
-| --- | --- | --- |
-| P10 | 2.136 → 0.494 | 20.45 → 22.54 |
-| P100 | 23.044 → 5.092 | 31.99 → 37.11 |
-| D100 | 23.455 → 5.562 | 33.07 → 37.07 |
-| E10 | 2.271 → 0.552 | 20.10 → 22.58 |
-| F10 | 2.007 → 0.469 | 20.24 → 22.42 |
-
-
-首次候选采用约 128 KiB 数据 frame 和 256 节点缓存。在 1 万文件下，重复 Stat 为 3.485 ms（基线 1.340 ms）；原因包括小 frame 过早被条目数限制淘汰，以及每次 miss 重算全部驻留节点内存。改为 4,096 项／原有字节预算和常数时间计量后，重复 Stat 降至 0.810 ms。以上独立批次保留在 `format-v2-pool-10000-1` 与 `format-v2-final-pool-10000-1`，不混入最终样本。
-
-高熵 E10 在大数据 frame 下的冷 Read 为 11.713 ms（基线 2.774 ms）。最终改为 16 KiB payload 目标，单个 ≤64 KiB 文件保持完整，数据 frame 的硬上限与目标分开验证；边界测试仍检查 1、65,535、65,536、65,537 字节及越 EOF 的随机读取。最终 E10 结果见上表：放大显著减轻但未消失。较小 frame 会增加布局／压缩开销，并可能增加顺序远端访问的请求数，不能由本地结果推断 S3 更快。
-
-磁盘减少主要来自压缩索引、较少的小对象及分配块浪费。高熵组能区分打包收益与文件内压缩收益。共享旧 pack 的稳定性、rename／移动／chmod 后数据字节不变、源删除后的读取、硬链接、非 UTF-8、损坏拒绝、发布 CAS 与缓存预算由回归测试另行验证；这些不是容量百分比的来源。
-
-## 验证与待补充范围 {#validation}
-
-最终验证：
-
-- `mise run test -- pvisor pvisor-cli pvisor-daemon -- --no-fail-fast`：1,053 通过；30 项显式 ignored，含专用测量 runner，未计入通过数。
-- 真实 Linux/KVM：文件系统与本地 SigV4 S3 夹具均在删除发布源后通过 guest 内容与凭据隔离校验。额外读取全部 100 个打包小文件，并校验打包文件／跨多个 1 MiB 块文件的 mmap；关闭 fd 后映射仍能正确读取。这是正确性验收，不是 mmap 性能结果。
-- 三个原生容器／构建验收通过：持久 upper、流与终端，构建失败／超时，多步构建及前端死亡后的 VM 清理。
-- 完整 Podman 移植契约：35 Bats + 83 Go 全部通过、零跳过；使用冻结的静态二进制、私有 store、Bats 1.11.0、Go 1.27.1 和下方固定 Alpine manifest。
-- Python 共 516 项，498 通过、18 按既有条件跳过。首次并行固件构建时一个超时清理测试出现时序失败，保留失败日志；完整重跑通过，没有更改该断言。
-- Clippy warnings-denied、Rust／Python 格式与静态检查、双语文档构建／链接检查通过；semspec lint：30 cases、2 preparation documents 有效，没有编辑审批 ledger／快照或运行 approve。
-- 脚本回归在宿主 mise 2026.8.5 上因嵌套配置丢失带空格 target-dir 的路由断言失败；在 `/tmp` 使用 mise 2026.10.19 完整重跑通过，未改系统工具、固件路由或测试断言。
-
-静态验收二进制 SHA-256：`51622bc0f32900e67b6aeceb9666899ce0803c97ccdb35fa63b2fa9d7c60d089`。Alpine 来源：`mirror.gcr.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`。验收制品、命令、逐例 TAP／Go JSON 与检查日志保留在 `benchmark/storage/.data/format-v2-16k-analysis/`。
+| 阶段 | Docker MiB | pVisor VM MiB | 配对差 [95% CI] MiB |
+| --- | --- | --- | --- |
+| 无实例，镜像已准备 | 211.47 [208.08, 212.85] | 35.36 [34.44, 35.57] | -176.27 [-178.41, -172.68] |
+| 服务与 1 个空闲实例 | 219.44 [215.38, 220.75] | 84.14 [83.68, 84.37] | -135.07 [-137.00, -131.12] |
+| 服务与 4 个空闲实例 | 245.33 [242.00, 247.25] | 230.67 [230.36, 231.05] | -14.66 [-16.19, -11.32] |
+| 1 实例：扣基线后每实例增量 | 7.86 [7.30, 7.97] | 48.86 [48.32, 49.30] | +41.20 [+40.46, +41.56] |
+| 4 实例：扣基线后每实例增量 | 8.46 [8.09, 8.93] | 48.83 [48.70, 49.15] | +40.42 [+39.90, +40.74] |
 
 
-下一步应测真实 Python import、Node.js 和编译／测试、S3 请求／下载字节、顺序与随机读放大、多 VM 并发、copy-up 与 mmap。当前未测这些性能；没有据此宣称 VM 首次／稳态创建提速。发布器仍需 O(N) 元数据规划内存，单 index.bin 最多 64 MiB，磁盘配额／在线 GC 未实现。
+![部署总量、实例增量与内存分类](../assets/benchmarks/native-docker-memory.svg)
 
-## 复现与证据 {#evidence}
+完整组计费包含 daemon、镜像缓存、匿名内存与内核开销；不是 `docker stats`、配置的 256 MiB 或单个进程 RSS。pVisor 的较小固定库存／管理开销可以降低整组读数，但原生容器的实例增量更低。若共享既有 Docker daemon，不能将本实验的全部固定成本归到每个新容器。四实例不能建立最大密度或盈亏平衡规模。
 
-入口 `benchmark/storage/image_format.py` 复用 semspec 的 repeat、命令证据与保存机制，注册在 `benchmark/REGISTRY.md#b-image-format-eng`。先在基线提交与候选中分别接入相同的 `portable/measurement.rs` ignored runner，构建 release 测试可执行文件并冻结；不要用普通单元测试的进程耗时代替内部阶段时钟。
+以下是同一批次 `memory.stat` 分类的五组中位数，MiB；分类和总量分别读取，可能略有统计偏差。
 
-```sh
-python3 benchmark/storage/image_format.py \
-  --baseline FROZEN_V1_TEST_BINARY --candidate FROZEN_V2_TEST_BINARY \
-  --baseline-runner ORIGINAL_V1_MEASUREMENT_RS \
-  --output benchmark/storage/.data/NEW_BATCH \
-  --files 100000 --directories 100 --backend pool --runs 30 --warmup 3 --cpu 7
-```
+| 后端／阶段 | anon MiB | file MiB | kernel MiB |
+| --- | --- | --- | --- |
+| docker / empty | 90.47 | 109.70 | 8.91 |
+| pvisor / empty | 0.11 | 31.64 | 1.90 |
+| docker / four | 116.65 | 110.22 | 13.32 |
+| pvisor / four | 190.46 | 31.83 | 6.93 |
 
-最终各组的原始制品、harness/runtime、plan、command 日志、每对象 SHA-256／逻辑与分配库存、30 对计时及 summary 保留在 `benchmark/storage/.data/format-v2-16k-*`，不随站点发布。初次诊断和 128 KiB 候选批次保留原名，不替换历史数据。
 
-| Identity | SHA-256 / revision |
+镜像文件页缓存通常可回收，不能与 guest 匿名 RAM 当作等价的长期占用。容量规划应同时看 anon/file/kernel 和实例增量，不把本实验的 `memory.current` 差异解释为所有真实应用都更省物理内存。这里仅测空闲 shell/sleep，没有共享／独有大工作集、内存压力或长期稳定性结果。
+
+### 来源与复现 {#evidence}
+
+双方各 15 个容量库存与全部正式启动／内存组均通过身份、内容和生命周期校验，主对照均为原生 Docker/runc。完整 manifest、逐文件库存、CPU／内存见证、配对时钟、失败预检、冻结源码与制品保留在 `benchmark/storage/.data/native-docker-storage-formal-20261025/` 和 `native-docker-runtime-formal-20261025/`，不随站点发布。原始比较对象均为原生 Docker；内部格式回归另存本地证据。
+
+固定镜像输入为下列平台 manifest；每个 config/layer 的完整收据在批次 inputs.json。
+
+| Image | linux/amd64 manifest |
 | --- | --- |
-| Baseline source | `05eda815da818815c5c7507d1017688ff0c7d241` + ignored runner |
-| Baseline binary | `f26e5c0c153578220bfb5b151e77083dd22b8068ce91e3f7b3720599be5727fa` |
-| Candidate binary | `9db67593ed0c023aab8fee3a1aa453e8dfb8876c2730e072efc0b0810287e3f9` |
-| Runtime | `c67093d6eb672a1464c83efdfce1c4fbaac8f346837413a291849be63dbbd337` |
-| P10 summary | `4e55658d5af78477ac45fed81b757e51649a51e6a6808dbfaa419cf73c176cbe` |
-| P100 summary | `b41e67e22d0c8570ff34ed92f7a97b0e2db3cc6305e7a804e8a4fae8ca87a60f` |
-| D100 summary | `da8e56af60a5dc7e38fad0f6fcda66d3fd676ad40a9ac639be03ea5d77f17d40` |
-| E10 summary | `54a132485539e4a9b2525b8d94ae35d9da328273461c4c26bb2388cba70d0f47` |
-| F10 summary | `a93e0eb8344369f9995ad0ab5f9d7ed3561ff7ae69a24a62a1cd282b84029123` |
+| alpine-3.20 | `sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e` |
+| ubuntu-24.04 | `sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc` |
+| python-3.12-slim-bookworm | `sha256:57d96f71de145a98e7ceca18ee4ade77bba4103a33a72dfaea026b23625c6bf0` |
+| python-3.13-slim-bookworm | `sha256:4cea12ab7d78a3312c85f8cab19b6971d4fe9704da25443986c0bc20a6678850` |
 
+
+| Artifact | SHA-256 |
+| --- | --- |
+| release CLI | 6f83d7e7e872761df9563137496bc5cb1286c842bd74b37c2ed28a0cd2c722fe |
+| disk summary | eed2086cb76fa1d10ecdfa382cc7320583d9abd2593ba26aed822807068c2041 |
+| startup summary | 3e16093d217c8a371d8bf9d171b7c2218edce9ca4e68e1396f731538fc7ba622 |
+| memory summary | 70100c63051c078eaf5cb16f461ba7503b3ac3a3c875f6e74c9ec955a5f05376 |
+
+
+实验分别登记为 B-IMAGE-STORAGE-ENG、B-NATIVE-DOCKER-ENG。复现入口与前提见[存储实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/storage/README.md)。新 runner 的库存链接／权限边界测试和 benchmark 注册／文档测试通过；未修改存储实现、语义审批 ledger 或快照。

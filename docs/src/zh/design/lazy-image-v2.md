@@ -9,7 +9,7 @@ V2 是服务器、文件系统、S3 与 Docker 本地池共同使用的存储格
 | 完整性 | SHA-256；快速路由 hash 不承担完整性校验 |
 | 压缩 | 独立 Zstd level 3 frame，标准 seekable 尾表 |
 | 迁移 | V1 读取器与发布器已删除；从 OCI 重新发布到空目录／前缀 |
-| 性能证据 | [存储后端工程 A/B](../lab-notes/image-format-performance-analysis.md)；不是 VM 启动或 S3 延迟结论 |
+| 性能证据 | [原生 Docker 对照](../lab-notes/image-format-performance-analysis.md)；存储、启动与内存分开测量 |
 
 ## 元数据与目录边界 {#architecture}
 
@@ -77,3 +77,27 @@ VM direct lower 与 host FUSE 共用读取器。VM 使用私有元数据／稀�
 任意 xattr、ACL 与安全标签未纳入格式。本地池导入拒绝无法表示的 xattr；直接发布也不提供 xattr／ACL 保真合同。保留现有 ownership/mode override；macOS 本地池只忽略宿主 provenance 属性。协议 1／2、连接池与 reader prefetch 的开关属于传输层，与存储格式 V1 的退役无关。
 
 V1 handle／format／pool marker 会返回明确错误，不原地改写，也不自动删除旧目录。新 pull 可以从 OCI 构建 V2，已经固定旧 handle 的容器需要重新创建。旧目录型实例仍按其原有路径处理。RAFS 不与此格式二进制兼容；标准 seekable framing 也不意味着可以直接挂载为 Nydus 镜像。
+
+## 缓存边界与成本模型 {#cache-costs}
+
+压缩存储与远程按需供给共享格式，但承担不同成本。Docker-style 本地池在 pull 完成后已有全部编码内容；远程客户端只在镜像服务完成准备后，才可以按文件读取。后者没有把首次 OCI 下载、解包和发布成本消除，只把它移到服务端并供客户端摊销。
+
+| 路径 | 持久存储 | 首次读取 | 后续读取 |
+| --- | --- | --- | --- |
+| 本地 Docker-style 池 | 全部压缩索引与数据，无完整解压树 | 加载目录 frame，验证并解压内容 frame | 有界解码 LRU、guest page cache；新实例仍需启动 VM |
+| 直接 filesystem／S3 | 发布端完整编码池；客户端可缓存已取编码 frame | 控制对象、相关索引与数据 Range | 编码缓存和解码 LRU；缓存目录无总量淘汰配额 |
+| cache server／远程 VM | 服务端编码池及可能保留的 OCI staging；客户端索引与已验证原始文件块 | RPC 元数据和实际文件内容；传输内容可能已解压 | 新 VM 可复用客户端块缓存，VM 内另有页缓存 |
+
+因此本地磁盘节省率不能直接当作远程传输节省率。文件型服务返回的原始 Read 数据可能大于 OCI 压缩 layer；完整扫描、校验、导出或 copy-up 会放大读取工作集。小文件聚合减少存储对象数量，不保证减少同等数量的远程文件 RPC。元数据 inline 让一次命中取得属性，但冷 lookup 仍需解析父路径和相应叶 frame。
+
+容量主要减少的是常驻解包副本；索引、定位表和 pack 布局会产生开销，编码池不保证小于原始 OCI 压缩 blobs。不同机制的贡献需要独立实验，不能仅凭完整库存的差值给每个优化分配收益。
+
+`mmap` 不会直接映射压缩 blob。guest 缺页由 virtio-fs READ 填充页缓存，后端验证与解压发生在这个路径上；热页复用可以掩盖冷 miss 成本。顺序遍历、随机首次触页、热重复读取和可写 copy-up 是不同负载，不能由一个启动探针推断全部 mmap 性能。缓存的解码预算也不等于整个 VM、服务或宿主的内存上限。
+
+## 收益验证与适用范围 {#validation}
+
+[惰性镜像基准](../benchmarks/lazy-image-startup.md)负责用户选型：分别统计本地完整库存、预准备实例、远程冷／热客户端以及大工作集的读取代价，主对照是同 digest 的原生 Docker。容量包含双方元数据和正常内容共享；服务端准备与客户端等待分开计量。客户端冷表示私有缓存为空，不表示宿主页缓存冷；本机 loopback 结果不能外推 WAN。
+
+[原生 Docker 工程记录](../lab-notes/image-format-performance-analysis.md)保留完整启动／退出和整组内存口径。独立 guest kernel、容器内存 limit 和 VM guest RAM 不等价；较少的镜像磁盘占用不构成启动、每实例内存或吞吐全面领先的证据。V1 存储格式不再作为当前收益的主对照，历史传输优化开关也不能与存储格式版本混称。
+
+尚需独立验证真实 S3／WAN、并发启动、随机 mmap 工作集、写入／copy-up、导入峰值及长期缓存回收。发布器 O(N) 规划、单索引对象上限和无在线 GC 仍是扩展边界，不能用静态压缩率推导无限镜像数量或长期磁盘稳定性。
