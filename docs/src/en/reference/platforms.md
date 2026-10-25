@@ -2,7 +2,7 @@
 
 Choose an executor for your platform, then check its prerequisites. Host tasks are a quick starting point on Linux; choose a VM when you need Linux userspace or a separate kernel. VMs on Apple Silicon use Linux aarch64 userspace.
 
-Package availability and installed controls should be checked separately. The table below describes current implementation paths; the executor observations in each Run Bundle identify its effective boundaries.
+After installation, check that the controls you need are active. The executor observations in each Run Bundle identify that run's effective boundaries.
 
 ## Mechanisms and prerequisites today
 

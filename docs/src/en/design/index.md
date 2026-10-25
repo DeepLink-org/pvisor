@@ -12,7 +12,7 @@ The runtime organizes an execution as a Session: admission resolves effective co
 
 Files and networks have different publication behavior. File changes can remain in a private upper until someone accepts them; a request sent to a remote service may already have produced an effect. File apply is consequently a separate publication action, while execution controls must act before requests leave. Examining logs afterwards cannot replace runtime restrictions.
 
-The layer-to-crate mapping for requests, Attempt ownership and state lives in the ownership tables in [Core architecture](architecture.md). The walkthrough below connects the layers through one task.
+A task passes through admission, execution, state preservation and result publication. The [Core architecture](architecture.md) ownership table maps requests, Attempt ownership and state to crates.
 
 The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and guest process/file protocol adapters, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
 

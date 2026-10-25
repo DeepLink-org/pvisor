@@ -58,7 +58,7 @@ Linux host 的选择性出口目前仍使用协作式代理，不能因 `--safe`
 
 ### L3：集群化执行、集中证据
 
-进入条件（待定稿）：明确与调度器的边界——pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行](../design/research/index.md)。
+进入条件（待定稿）：明确与调度器的分工。pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行](../design/research/index.md)。
 
 验收标准：
 

@@ -8,10 +8,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## What `--safe` does for Codex
 
-- **Network:** the preset matches the `codex` executable and allows only port 443 on `api.openai.com`, `chatgpt.com`, and `ab.chatgpt.com`.
-- **Workspace:** changes go to the stage and are applied after review.
-- **HOME and `CODEX_HOME`:** separate private stages; Codex state changes are discarded when the Run ends and never enter the workspace Run Bundle.
-- **Sensitive paths:** `.ssh`, `.gnupg`, and private-key files within the view are denied.
+The network preset matches the `codex` executable and allows only port 443 on `api.openai.com`, `chatgpt.com` and `ab.chatgpt.com`. HOME and `CODEX_HOME` use separate private stages; state changes are discarded when the Run ends and never enter the workspace Run Bundle. Workspace staging and sensitive-path rules follow the [common Agent settings](index.md).
 
 ## Without `--safe`
 
@@ -33,7 +30,7 @@ The image must contain Codex. See [libkrun VM](../executors/vm.md) for prerequis
 
 ## Fork
 
-To keep a stopped run's file state but try a different continuation:
+To keep file state and try another approach, first confirm that the stopped host Job meets the [workspace fork prerequisites](../fork-checkpoint.md):
 
 ```bash
 pvisor fork last -- codex

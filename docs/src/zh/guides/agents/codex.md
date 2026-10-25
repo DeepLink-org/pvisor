@@ -8,10 +8,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## `--safe` 为 Codex 做了什么
 
-- **网络**：按命令名 `codex` 匹配预设，只放行 `api.openai.com`、`chatgpt.com`、`ab.chatgpt.com` 的 443 端口；
-- **工作区**：改动进入暂存区，审查后再 apply；
-- **HOME 与 `CODEX_HOME`**：使用独立的私有 stage，Codex 的状态改动在 Run 结束后丢弃，不进入工作区 Run Bundle；
-- **敏感路径**：视图内的 `.ssh`、`.gnupg` 与私钥文件被拒绝。
+网络预设按命令名 `codex` 匹配，只放行 `api.openai.com`、`chatgpt.com`、`ab.chatgpt.com` 的 443 端口。HOME 与 `CODEX_HOME` 使用独立的私有 stage，状态改动在 Run 结束后丢弃，不进入工作区 Run Bundle。工作区暂存与敏感路径规则沿用[Agent 通用设置](index.md)。
 
 ## 不加 `--safe` 时
 
@@ -33,7 +30,7 @@ pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
 
 ## 分叉
 
-对一次运行的结果不满意、但想保留它的文件状态换种方式继续时：
+对符合[工作区分叉前提](../fork-checkpoint.md)的已停止 host Job，可以保留文件状态，换种方式继续：
 
 ```bash
 pvisor fork last -- codex

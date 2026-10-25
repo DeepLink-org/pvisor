@@ -1,9 +1,8 @@
 # Job、Operation、Attempt 与 Event
 
-**Job** 是 CLI 中持久的一项工作。`pvisor spawn` 创建 Job；`status`、`kill`、
-`inspect`、`fork`、`apply`、`drop` 无需额外命令层级即可操作它。当前每个 Job
-对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
-名称保持不变。
+Job 表示用户的一项持久工作，Run 保存它的内部记录，Attempt 标识一次实际执行，Event 记录处理过程中发生的事实。一次执行结束后，记录和待接受的文件仍有自己的生命周期。
+
+命令如何创建和查找 Job，见[Job 与存储](../concepts/jobs.md)。当前每个 Job 对应一条内部 Run 记录；为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle 名称保持不变。
 
 [单节点 daemon](daemon/index.md) 通过 VM-only NativeRuntime 管理 OpenSandbox profile 的 `sb-*` sandbox。私有 supervisor 记录把 generation 绑定到原生 Run/Attempt ID；sandbox ID 不是公开 Job ID。API 不实现 stage/apply、checkpoint 或 Run Bundle 导出。它嵌入原生执行，但不自动暴露下列 Job 工作流；跨主机身份属于外部编排。
 

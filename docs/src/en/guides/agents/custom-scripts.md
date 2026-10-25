@@ -1,6 +1,6 @@
 # Scripts and automation commands
 
-pVisor requires no agent: any command can run inside the boundary with the same staging, review, and evidence.
+Scripts and automation commands can use pVisor's execution boundaries, staging, review and records too.
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
@@ -10,10 +10,10 @@ pvisor apply last --path src
 
 ## Behavior
 
-- **Working directory:** the command's working directory is the staged view, which contains the project's current files; writes go to the stage.
-- **Exit code:** the command's exit code is returned unchanged as the `pvisor spawn` exit code, so scripts and CI can judge success or failure.
-- **Review failures too:** when the command exits nonzero, its file changes stay in the stage for you to review and apply or drop.
-- **Arguments:** everything after `--` is passed through unchanged as the command and arguments.
+- The command runs in the staged view, which contains the project's current files; writes go to the stage.
+- `pvisor spawn` returns the command's exit code unchanged, so scripts and CI can judge success or failure.
+- If the command exits nonzero, its file changes stay staged for you to review and apply or drop.
+- Everything after `--` is passed through unchanged as the command and arguments.
 
 ## Networking
 

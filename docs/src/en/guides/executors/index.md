@@ -12,10 +12,10 @@ The command must be installed in the chosen environment; for a container or VM, 
 
 ## Choosing
 
-- **Just want to review file changes with local tooling**: host with `--safe`.
-- **A mandatory network boundary**: VM (`--overlaynet auto`), or host with `--overlaynet-deny-all`.
-- **A fixed Linux userspace**: container or VM with an OCI image.
-- **An independent kernel**: VM.
+- To review file changes using local tools, choose host with `--safe`.
+- For a mandatory network boundary, choose VM (`--overlaynet auto`), or host with `--overlaynet-deny-all`.
+- For fixed Linux userspace, choose container or VM with an OCI image.
+- For an independent kernel, choose VM.
 
 Select the executor with `--executor`. `--safe` requires the chosen executor to enforce file and network isolation and refuses to start if it cannot. The current container executor does not satisfy complete capability enforcement and cannot use `--safe`. Use an explicit `--stage PATH` for reviewable container workspace changes, and `--container-network none` for offline execution. Container host networking with selective proxies remains cooperative; see [container execution](container.md) for the conditions.
 

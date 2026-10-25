@@ -8,10 +8,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## `--safe` 为 Claude Code 做了什么
 
-- **网络**：按命令名 `claude` 匹配预设，只放行 `api.anthropic.com:443`，其他目标默认拒绝；
-- **工作区**：改动进入暂存区，审查后再 apply；
-- **HOME**：使用独立的私有 stage，Claude Code 在 HOME 里写的状态在 Run 结束后丢弃，不进入 Run Bundle；
-- **敏感路径**：视图内的 `.ssh`、`.gnupg` 与私钥文件被拒绝。
+网络预设按命令名 `claude` 匹配，只放行 `api.anthropic.com:443`，其他目标默认拒绝。工作区暂存、HOME 状态丢弃和敏感路径规则沿用[Agent 通用设置](index.md)。
 
 ## 凭据
 

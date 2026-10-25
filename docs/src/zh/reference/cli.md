@@ -163,7 +163,7 @@ pvisor cache --help
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/executors/index.md)。
 - **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/replay.md)。
 
-第一次使用时，先复制最小闭环：
+第一次使用时，可以先运行并审查一个 Job：
 
 ```bash
 pvisor spawn --safe -- codex
@@ -821,8 +821,8 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 会自动启用代理 driver。`--safe` 默认暂存工作区，`--mount` 添加显式底层；
 工作区写入去向见 [暂存与存储](#暂存与存储)。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
 隐藏该子树，并拒绝 guest 重建它。VM Run 不创建 live host mountpoint，
-防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower
-层——会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
+防止 host indexer 递归进入 `<stage>/merged`。若 stage 包含 lower
+层，则会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
 拒绝随后的 `pvisor apply` 命令。
 host/container 的选择性网络规则作用于经过显式代理的流量。host deny-all 使用
 namespace 或 Seatbelt 阻止直接出口；容器离线使用 `--container-network none`。

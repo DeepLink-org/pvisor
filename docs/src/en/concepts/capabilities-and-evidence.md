@@ -1,10 +1,10 @@
 # Capabilities, evidence, and guarantees
 
-To judge what a Job actually guarantees, check the requested permissions, admission plans, installed controls and observed outcomes separately. `--safe`, a stage directory, or an executor name alone does not prove that every capability is enforced.
+To assess a Job's guarantees, check its requested permissions, admission plan, installed controls and observed outcomes separately. `--safe`, a stage directory, or an executor name alone does not prove that every capability is enforced.
 
 ## Policy layering rules {#layering}
 
-Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default; with no policy configured at all, the network runs public and reads are unrestricted—to restrict them you must declare it. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets, see the [policy fields reference](../reference/policy.md).
+Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default. With no policy configured, the network runs public and reads are unrestricted; declare any restrictions explicitly. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets, see the [policy fields reference](../reference/policy.md).
 
 ## Check each dimension
 

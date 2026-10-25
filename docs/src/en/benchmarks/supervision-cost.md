@@ -2,7 +2,7 @@
 
 ## Motivation {#motivation}
 
-An Agent task needs a private workspace, diff review, selective application and disposal as well as tool execution, and per-operation timings miss these costs. Compare the whole workflow that produces the same result, and keep machine time separate from human reading and decisions.
+Stage takes less machine time for the complete workflow when retaining sparse changes in a large workspace; Git workflows are faster for small workspaces or prepared views. The complete workflow includes private-workspace creation, diff review, selective application and disposal. Human reading and decision time is unmeasured, so these results do not estimate human supervision savings.
 
 Creating a fresh workspace, changing 20 of 10,000 files and retaining ten takes 141 ms with pVisor stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Applying prepared changes alone takes 17 ms, 0.93 s and 14.26 s for 10, 1,000 and 10,000 small files, all above Git patches; at 100,000 files two clusters center at 109.73 s and 196.87 s. The complete workflow applies only ten files, so its 141 ms cannot estimate a full 10,000-file apply. On a prepared twenty-file view, review, application and disposal take 27.71 ms for stage and 4.69 ms for Git.
 
@@ -14,9 +14,9 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
-Measure the machine time of the complete workflow — create the view, review, apply selected paths, discard the rest — as complete-workflow time. That time is the overhead between an Agent finishing and a change landing; shorter time means more changes are reviewed per hour.
+Measure the machine time to create a view, review changes, apply selected paths and discard the rest as complete-workflow time. It represents the machine overhead of reviewing and landing changes. Shorter times allow more reviews and applications per hour.
 
-Three backends — pVisor stage, a detached Git worktree and a btrfs reflink copy — run identical prepared repositories of 100 or 10,000 files. Each task changes twenty files, applies the first ten and discards the rest. Timing covers view creation, edits, content review, selective application and disposal; input preparation and resets are excluded. Each cell has thirty samples and three warmups, randomized with a fixed seed, warm caches, on CPUs 0–1.
+pVisor stage, a detached Git worktree and a btrfs reflink copy use identical prepared repositories of 100 or 10,000 files. Each task changes twenty files, applies the first ten and discards the rest. Timing covers view creation, edits, content review, selective application and disposal; input preparation and resets are excluded. Each cell has thirty samples and three warmups, randomized with a fixed seed, warm caches, on CPUs 0–1.
 
 Every sample passes full inventory and content checks: the original stays unchanged, a normal apply changes only the ten selected files, and a conflict case must refuse the whole batch while preserving host content. Failures are counted, never timed as zero. A separate prepared-view experiment measures review, apply and drop over twenty files, and an apply-scale experiment covers 10 to 100,000 files with SIGKILL and host-edit injections. The fixed editing task excludes inference, compilation and human reading, and is not a container, VM or security ranking.
 

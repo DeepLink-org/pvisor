@@ -2,9 +2,9 @@
 
 ## Motivation {#motivation}
 
-Agent 应用存在大量突发、短时的调用：一个任务结束就丢弃环境，下一个任务重新创建。每次调用都要重新支付启动等待，成本随调用量累积。启动延迟决定第一条命令多久能开始，也决定开发者愿意多频繁地为单个任务创建隔离环境。
+在用户态环境已准备好、页缓存为热的条件下，pVisor VM 的首条命令等待接近容器，短于所测参考 VM；host 与 staged 的等待更短。一次性短任务每次都要新建环境，这部分等待会随调用量累积。选择执行器时，要将启动等待与所需隔离边界一起考虑。
 
-pVisor 在 VM 上的优化把启动压到接近容器：Ready 中位数 130.71 ms，对比 Docker rootless 的 105.03 ms，也低于参考 VM（Firecracker MMIO 287.13 ms、QEMU microvm 260.10 ms、QEMU q35 663.25 ms）。host 与 staged 更快，分别为 33.52 ms 和 50.59 ms。
+pVisor VM 的 Ready 中位数为 130.71 ms，对比 Docker rootless 的 105.03 ms，也低于参考 VM（Firecracker MMIO 287.13 ms、QEMU microvm 260.10 ms、QEMU q35 663.25 ms）。host 与 staged 更快，分别为 33.52 ms 和 50.59 ms。
 
 ## 实验设计 {#interpretation}
 
