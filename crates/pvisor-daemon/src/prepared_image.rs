@@ -168,10 +168,6 @@ impl PrepareImage {
                 output: None,
             },
         )?;
-        ensure!(
-            image.cache.is_some(),
-            "prepared template must use the compressed image pool"
-        );
         let manifest = PreparedImage {
             rootfs: store_root,
             entrypoint: if native_guest {
@@ -185,7 +181,7 @@ impl PrepareImage {
             env: image.env.clone(),
             library_dir: self.library_dir.map(|p| p.canonicalize()).transpose()?,
             e2b: e2b.clone(),
-            pooled_image: Some(image),
+            pooled_image: image,
             native_opensandbox: !native_guest && e2b.is_none(),
             native_e2b: !native_guest && e2b.is_some(),
             native_guest,

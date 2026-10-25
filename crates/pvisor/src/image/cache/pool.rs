@@ -68,6 +68,24 @@ pub(crate) fn publish_local_image(
     Ok(image_handle)
 }
 
+/// Look up an already published reference without resolving the registry.
+/// Only absence is a miss; malformed or corrupt pool metadata remains an error.
+pub(crate) fn published_local_image(
+    location: &Path,
+    reference: &str,
+    architecture: &str,
+) -> anyhow::Result<Option<Response>> {
+    if !location.try_exists()? {
+        return Ok(None);
+    }
+    super::portable::PortableCache::new(
+        Storage::Pool(Arc::new(PoolStorage::open(location.into(), false)?)),
+        None,
+        true,
+    )
+    .published(reference, architecture)
+}
+
 pub(crate) fn open_local_image(
     location: &Path,
     handle: &str,

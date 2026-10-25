@@ -691,12 +691,7 @@ pub(crate) fn cache_reference(image: &str) -> anyhow::Result<(String, bool)> {
 }
 
 fn default_store_dir() -> anyhow::Result<PathBuf> {
-    if let Some(value) = std::env::var_os("PVISOR_IMAGE_STORE") {
-        return Ok(PathBuf::from(value));
-    }
-    Ok(dirs::cache_dir()
-        .unwrap_or(std::env::current_dir()?.join(".pvisor/cache"))
-        .join("pvisor/images"))
+    Ok(crate::image::store::LocalStore::discover(None)?.root)
 }
 
 fn host_architecture() -> anyhow::Result<&'static str> {

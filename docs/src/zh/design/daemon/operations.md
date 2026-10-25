@@ -34,7 +34,7 @@ pvisor-daemon serve --sandbox \
 
 新模板默认 `native_guest: true`：`pvisor-guest` 的 PID 1、进程组和 reaper 管理工作负载；主机 `native/opensandbox.rs` 或 `native/e2b.rs` 适配 HTTP/SSE、JSON/Connect，经 host-CID-only vsock 1025 调用 guest 进程和文件引擎。创建就绪检查绑定 sandbox/generation，主 entrypoint 退出会结束沙箱；没有宿主执行降级。
 
-显式 `--execd` 或 `--envd` 保留上游兼容后端。准备器验证静态 Linux ELF 并注入受管理 bootstrap，由私有握手初始化真实服务并验证绑定、鉴权与就绪。旧独立 rootfs manifest 不自动转换：其 bootstrap 必须继续提供对应 guest 服务和 vsock bridge。文件格式与旧后端要求见[crate 合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#runtime-boundary-native-vm-and-prepared-images)。
+显式 `--execd` 或 `--envd` 保留上游兼容后端。准备器验证静态 Linux ELF 并注入受管理 bootstrap，由私有握手初始化真实服务并验证绑定、鉴权与就绪。每份 manifest 都必须包含 `pooled_image`，使用 Docker API 的固定 V2 binding；`rootfs` 表示其私有 Docker 存储。独立 rootfs manifest 会被拒绝，请用 `prepare-image` 重新准备，不提供迁移或兼容读取器。当前格式见[crate 合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#runtime-boundary-native-vm-and-prepared-images)。
 
 模板与宿主侧代码都属于可信输入；ELF/摘要检查不证明第三方程序来源安全。准备发布失败时保留旧 manifest；若 rename 或目录同步结果不确定，先检查已发布状态再重试。
 

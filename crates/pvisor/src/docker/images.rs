@@ -4,7 +4,6 @@ use crate::image::{
     cache,
     oci::{ImageStore, PreparedImage},
 };
-use pvisor_journal::api::{DurableFiles, Persistence};
 
 impl Store {
     pub(super) fn image_pull_lock(
@@ -12,46 +11,31 @@ impl Store {
         reference: &str,
         architecture: &str,
     ) -> anyhow::Result<File> {
-        let directory = self.root.join("images/pull-locks");
-        private_directory(&directory)?;
-        let (reference, _) = crate::image::oci::cache_reference(reference)?;
-        use sha2::{Digest, Sha256};
-        let key = crate::util::encode_hex(&Sha256::digest(serde_json::to_vec(&(
-            reference,
-            architecture,
-        ))?));
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(key))?;
-        file.lock_exclusive()?;
-        Ok(file)
+        self.images.pull_lock(reference, architecture)
     }
     /// Open a pinned image without registry access. Pool metadata/content errors
     /// fail rather than falling back to an unverified directory or mutable tag.
     /// Keep the returned owner until OverlayCore and VM consumers have stopped.
     /// Foreign images may be inspected; VM admission still requires native CPU.
     pub fn open_image(&self, image: &Image) -> anyhow::Result<ImageRoot> {
-        let Some(cached) = &image.cache else {
-            ensure!(image.rootfs.is_dir(), "legacy image rootfs is missing");
-            return Ok(ImageRoot {
-                root: image.rootfs.clone(),
-                _owner: None,
-            });
-        };
-        let scratch = self.root.join("images/projections");
+        self.open_cached(&image.cache, &image.digest, &image.platform)
+    }
+
+    pub(super) fn open_cached(
+        &self,
+        cached: &CachedImage,
+        digest: &str,
+        platform: &str,
+    ) -> anyhow::Result<ImageRoot> {
+        let scratch = self.images.projections();
         private_directory(&scratch)?;
         let owner = cache::open_local_image(
             &cached.location,
             &cached.handle,
-            canonical_platform(&image.platform)?
+            canonical_platform(platform)?
                 .strip_prefix("linux/")
                 .unwrap(),
-            &image.digest,
+            digest,
             &scratch,
         )?;
         Ok(ImageRoot {
@@ -60,25 +44,17 @@ impl Store {
         })
     }
 
-    pub(super) fn pool_image(
+    pub(super) fn pool_image<Backing>(
         &self,
-        image: &mut Image,
+        image: Image<Backing>,
+        rootfs: &Path,
         source: &ImageStore,
         config: &[u8],
-    ) -> anyhow::Result<()> {
-        let hex = crate::image::oci::digest_hex(&image.id)?;
-        use sha2::{Digest, Sha256};
-        ensure!(
-            crate::util::encode_hex(&Sha256::digest(config)) == hex,
-            "image config digest mismatch"
-        );
-        let configs = self.root.join("images/configs");
-        private_directory(&configs)?;
-        Persistence::atomic_write(&configs.join(format!("{hex}.json")), config, 0o600)?;
-        let location = self.root.join("images/pool-v2");
-        private_directory(&location)?;
+    ) -> anyhow::Result<Image> {
+        self.images.retain_config(&image.id, config)?;
+        let location = self.images.writable_pool()?;
         let prepared = PreparedImage {
-            rootfs: image.rootfs.clone(),
+            rootfs: rootfs.into(),
             digest: image.digest.clone(),
             env: image.env.clone(),
             entrypoint: image.entrypoint.clone(),
@@ -93,39 +69,20 @@ impl Store {
                 .strip_prefix("linux/")
                 .unwrap(),
         )?;
-        image.cache = Some(CachedImage { location, handle });
-        image.rootfs = PathBuf::new();
-        Ok(())
+        Ok(image.map_cache(|_| CachedImage { location, handle }))
     }
 
     pub(super) fn image_config_path(&self, image: &Image) -> anyhow::Result<PathBuf> {
-        if let Some(cache) = &image.cache {
-            return Ok(cache
-                .location
-                .parent()
-                .context("pool has no owner directory")?
-                .join("configs")
-                .join(format!(
-                    "{}.json",
-                    crate::image::oci::digest_hex(&image.id)?
-                )));
-        }
-        Ok(
-            if image
-                .rootfs
-                .parent()
-                .is_some_and(|p| p.join("blobs").exists())
-            {
-                image
-                    .rootfs
-                    .parent()
-                    .unwrap()
-                    .join("blobs/sha256")
-                    .join(&image.id[7..])
-            } else {
-                self.root.join("images/blobs/sha256").join(&image.id[7..])
-            },
-        )
+        Ok(image
+            .cache
+            .location
+            .parent()
+            .context("pool has no owner directory")?
+            .join("configs")
+            .join(format!(
+                "{}.json",
+                crate::image::oci::digest_hex(&image.id)?
+            )))
     }
 }
 
@@ -133,6 +90,7 @@ impl Store {
 mod tests {
     use super::super::build::{BuildOptions, build};
     use super::*;
+
     use pvisor_overlay_core::backend;
 
     fn options(context: &Path, tag: &str) -> BuildOptions {
@@ -214,7 +172,12 @@ mod tests {
         .unwrap();
         let second = build(&store, &opts).unwrap();
         assert_ne!(first.id, second.id);
-        assert!(first.rootfs.as_os_str().is_empty() && second.rootfs.as_os_str().is_empty());
+        assert!(
+            serde_json::to_value(&first)
+                .unwrap()
+                .get("rootfs")
+                .is_none()
+        );
         let objects = files(&store.root.join("images/pool-v2/data"));
         assert_eq!(
             objects.len(),
@@ -269,7 +232,12 @@ mod tests {
         .unwrap();
         let store = Store::open(temporary.path().join("docker")).unwrap();
         let image = build(&store, &options(&context, "sharing:test")).unwrap();
-        assert!(image.rootfs.as_os_str().is_empty());
+        assert!(
+            serde_json::to_value(&image)
+                .unwrap()
+                .get("rootfs")
+                .is_none()
+        );
         let private = temporary.path().join("pool");
         fs::create_dir(&private).unwrap();
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();

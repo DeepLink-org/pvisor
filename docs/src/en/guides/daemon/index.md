@@ -12,7 +12,7 @@ Preflight checks perform real controller writes and KVM API calls. There is no h
 
 Create requests use a local template key in `images_dir/<key>.json`; creation performs no registry pull or complete image extraction. First use `prepare-image` to prepare a trusted image and pin its revision; prefer digests in deployments. The base must contain `/bin/sh`, `/bin/sleep` and the workload tools; E2B shell commands also require `/bin/bash`.
 
-New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Legacy standalone-rootfs manifests retain their bootstrap contract; see the [image contract](../../design/daemon/operations.md#image-contract).
+New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Every template requires a pinned V2 pool binding; standalone-rootfs manifests are rejected; see the [image contract](../../design/daemon/operations.md#image-contract).
 
 ## Install and start {#install}
 

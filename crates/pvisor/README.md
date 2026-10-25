@@ -788,33 +788,45 @@ remain silent. Download counts use received compressed bytes, and layer readines
 follows verification and extraction rather than merely reaching an expected size.
 `pull_for_platform_with_progress` selects `linux/amd64` or `linux/arm64`
 (`linux/arm64/v8` is an alias), independently of the host. Image records retain
-their canonical platform; legacy records default to native because previous
-versions only pulled native images. A reference holds one platform, replaced
+their explicit canonical platform; records missing it are rejected. A reference holds one platform, replaced
 atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
-New Docker pulls and completed builds default to the local immutable cache pool
-under `PVISOR_DOCKER_HOME/images/pool-v2` (beneath the default user-local
-`pvisor/docker` directory when unset). They use the cache's V2 compressed directory radix
-index, authenticated fixed revision, conditional publication and direct VM
-backend. They do not retain a complete extracted rootfs or OCI layer archives.
-Original OCI configuration bytes are retained separately under `images/configs`
-so subsequent builds preserve configuration such as labels and SHELL. A repeated
-pull still resolves the registry manifest/config, but a matching catalogued pool
-revision skips layer download and extraction. Pulls of the same reference/platform
-serialize without holding the catalog lock across network I/O.
+Docker pull/build, daemonless Job image preparation and the cache service share
+one local V2 image store under the user data directory, `pvisor/docker/images`.
+`PVISOR_IMAGE_STORE` overrides this root for all three entry points. An explicit
+Job/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
+set, the common image root is that directory's `images`, preserving isolated
+stores; embedded `Store::open(root)` always keeps images under `root/images`
+and ignores environment defaults. See [local image storage](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
+for platform paths and layout.
 
-`Image.cache` binds the pool location and immutable handle; its legacy `rootfs`
-field is empty. Embedded consumers call `Store::open_image`, retain the returned
+The common root owns `pool-v2`, original OCI `configs`, temporary `staging`,
+reference/platform `locks` and lifetime-owned `projections`. Imports use one
+temporary OCI store and remove downloaded layers/extracted roots on normal
+success/failure. Docker pull still resolves manifest/config, then reuses a
+matching shared pool revision without downloading layers. Local pool tags remain
+available offline until an explicit pull/refresh or another publication replaces
+them. Build tags also publish V2 references usable by Jobs without a registry.
+Each tag commits independently;
+there is no multi-tag filesystem transaction. Container `images.json` remains
+its frontend catalog; `rmi` removes catalog references, not shared pool objects.
+
+Published `Image` records require `CachedImage`, binding the pool location and
+immutable handle. There is no directory-root field or fallback. Private builds
+use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;
+their working-tree descriptors cannot deserialize as published images. Embedded
+consumers call `Store::open_image`, retain the returned
 `ImageRoot` through all OverlayCore/VM access, and use its `rootfs()` as the lower.
 That path is a temporary metadata/sparse-file projection: native host reads must
 not bypass the filesystem backend. Ordinary VM reads fetch only needed content
 blocks, with bounded decoded memory caches and no persistent raw block mirror.
 Copy-up may materialize a whole file in the projection before copying into upper;
-normal projection teardown removes it. Legacy records without `cache` continue
-to use their existing directories, including already created containers. No
-existing image directories are automatically deleted or migrated.
+normal projection teardown removes it. Old directory records, missing platform
+fields and obsolete storage formats are rejected. Use a fresh store and re-pull
+or rebuild images; no compatibility reader or automatic migration is provided.
+Stop and clean up old containers through the old version before switching stores.
 
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
@@ -830,9 +842,8 @@ and standard seekable footers, without the old pool-only envelope/raw fallback.
 
 `pool-format.json` rejects retired physical encodings without modifying them.
 V1 handles/readers/publishers are removed: republish OCI images into an empty V2
-prefix. Re-pulling an old catalogued image rebuilds its pool entry; containers
-pinned to an old cache handle need recreation. No old cache directory is deleted
-automatically. Storage versions are independent of transport protocols 1/2.
+prefix. Old catalog/container records require recreation in the current format.
+Existing files are not automatically deleted. Storage versions are independent of transport protocols 1/2.
 The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
 and 2,000,000 content spans; object limits can be reached first. Publication still
 plans metadata in O(N) memory while staging encoded content on disk and bounding

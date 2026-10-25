@@ -141,6 +141,14 @@ impl ClientBinding {
     }
 }
 impl CacheClient {
+    pub(in crate::image) fn local(store: &crate::image::store::LocalStore) -> anyhow::Result<Self> {
+        Self::configured(
+            format!("pool+file://{}", store.writable_pool()?.display()),
+            None,
+            Some(store.root.clone()),
+            false,
+        )
+    }
     pub(super) fn configured_pool(
         location: &std::path::Path,
         read_only: bool,

@@ -4,7 +4,7 @@ use super::protocol::{Envelope, read_frame, write_frame};
 use super::storage::Storage;
 use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV, endpoint};
 use super::{Request, Response};
-use crate::image::oci::ImageStore;
+use crate::image::store::LocalStore;
 use anyhow::{Context, bail, ensure};
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
@@ -19,9 +19,13 @@ use std::time::Duration;
 #[cfg(test)]
 mod tests;
 
-fn reader(store: &ImageStore) -> anyhow::Result<PortableCache> {
+fn reader(root: &std::path::Path) -> anyhow::Result<PortableCache> {
+    let store = LocalStore::open(root.to_owned())?;
     Ok(PortableCache::new(
-        Storage::filesystem(store.root.join("cache-v2"), true)?,
+        Storage::Pool(Arc::new(super::pool::PoolStorage::open(
+            store.writable_pool()?,
+            true,
+        )?)),
         Some(store.root.clone()),
         false,
     ))
@@ -320,11 +324,11 @@ fn write_result(
 
 pub(super) fn serve(
     address: String,
-    store: ImageStore,
+    store: LocalStore,
     token: Option<String>,
     ready: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let store = Arc::new(reader(&store)?);
+    let store = Arc::new(reader(&store.root)?);
     let token = Arc::new(token);
     // Bind before starting workers so address conflicts fail without orphan workers.
     enum Listener {

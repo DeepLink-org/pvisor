@@ -55,25 +55,21 @@ fn require_native_platform(platform: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Persistent image identity and the image's launch defaults.
+/// Persistent image identity and launch defaults. Published records require a
+/// V2 binding; the backing parameter also models private, unpublished build stages.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Image {
+#[serde(deny_unknown_fields)]
+pub struct Image<Backing = CachedImage> {
     /// User-visible image reference, including its tag or digest selector.
     pub reference: String,
     /// OCI configuration digest, used as the Docker image ID.
     pub id: String,
     /// Selected platform-specific manifest digest.
     pub digest: String,
-    /// Canonical OCI platform (`linux/amd64` or `linux/arm64`). Older records
-    /// default to the host platform because they only supported native pulls.
-    #[serde(default = "native_platform")]
+    /// Canonical OCI platform (`linux/amd64` or `linux/arm64`).
     pub platform: String,
-    /// Legacy prepared root directory. Empty for pooled images; use
-    /// [`Store::open_image`] and retain its owner while accessing files.
-    pub rootfs: PathBuf,
-    /// Immutable local content-pool binding. Absent in legacy directory records.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache: Option<CachedImage>,
+    /// Immutable V2 binding for published images; private builds use a distinct backing type.
+    pub cache: Backing,
     /// Image environment. Host environment is never implicitly inherited.
     pub env: BTreeMap<String, String>,
     /// Executable prefix from image configuration.
@@ -92,10 +88,31 @@ pub struct Image {
     pub created_ms: u64,
 }
 
+impl<Backing> Image<Backing> {
+    fn map_cache<T>(self, map: impl FnOnce(Backing) -> T) -> Image<T> {
+        Image {
+            reference: self.reference,
+            id: self.id,
+            digest: self.digest,
+            platform: self.platform,
+            env: self.env,
+            entrypoint: self.entrypoint,
+            cmd: self.cmd,
+            cwd: self.cwd,
+            user: self.user,
+            stop_signal: self.stop_signal,
+            volumes: self.volumes,
+            created_ms: self.created_ms,
+            cache: map(self.cache),
+        }
+    }
+}
+
 /// A fixed cache revision; tags and later pulls cannot change its contents.
 /// The host-only pool location must remain available while any image or stopped
 /// container references it. Removing a catalog tag does not delete pool objects.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CachedImage {
     /// Absolute local pool directory, shared by images in this Docker store.
     pub location: PathBuf,
@@ -104,7 +121,7 @@ pub struct CachedImage {
 }
 
 /// Owns a usable root directory and its lazy backend through file/VM access.
-/// Dropping it removes a pooled image's temporary projection. Legacy roots stay.
+/// Dropping it removes the published image's temporary projection.
 pub struct ImageRoot {
     root: PathBuf,
     _owner: Option<crate::image::cache::DirectImage>,
@@ -212,7 +229,7 @@ pub struct Create {
 
 /// Stable container identity plus the current launch generation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Instance {
+pub struct Instance<Backing = CachedImage> {
     /// Schema version; unknown versions refuse mutation.
     pub schema: u32,
     /// Full 64-hex container ID.
@@ -220,7 +237,7 @@ pub struct Instance {
     /// Unique user-visible name.
     pub name: String,
     /// Image pinned at creation; tag updates never change this instance.
-    pub image: Image,
+    pub image: Image<Backing>,
     /// Effective launch options.
     pub config: Create,
     /// Effective argv after entrypoint/CMD resolution.
@@ -297,6 +314,7 @@ impl Output {
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
+    images: crate::image::store::LocalStore,
 }
 
 fn private_directory(path: &Path) -> anyhow::Result<()> {
@@ -346,26 +364,40 @@ fn signal(value: &str) -> anyhow::Result<i32> {
 }
 
 impl Store {
-    /// Open user-private storage. `PVISOR_DOCKER_HOME` overrides the default.
+    /// Open user-private container state and the common local image store.
+    /// `PVISOR_DOCKER_HOME` selects container state; images use `PVISOR_IMAGE_STORE`,
+    /// then that explicit Docker home's `images`, then the user data directory.
+    /// Both roots must be owned private directories.
     pub fn discover() -> anyhow::Result<Self> {
-        Self::open(
-            std::env::var_os("PVISOR_DOCKER_HOME")
-                .map(PathBuf::from)
-                .unwrap_or(
-                    dirs::data_local_dir()
-                        .context("no user data directory")?
-                        .join("pvisor/docker"),
-                ),
-        )
+        let root = std::env::var_os("PVISOR_DOCKER_HOME")
+            .map(PathBuf::from)
+            .unwrap_or(
+                dirs::data_local_dir()
+                    .context("no user data directory")?
+                    .join("pvisor/docker"),
+            );
+        private_directory(&root)?;
+        Self::open_with_images(root, crate::image::store::LocalStore::discover(None)?)
     }
-    /// Open isolated storage for this UID; symlink roots and shared permissions fail.
+    /// Open isolated storage for this UID, including images beneath `root/images`.
+    /// Environment image defaults do not affect this explicit root. Symlink roots
+    /// and shared permissions fail. Published records require V2 bindings.
     pub fn open(root: PathBuf) -> anyhow::Result<Self> {
+        private_directory(&root)?;
+        let images = crate::image::store::LocalStore::open(root.join("images"))?;
+        Self::open_with_images(root, images)
+    }
+
+    fn open_with_images(
+        root: PathBuf,
+        images: crate::image::store::LocalStore,
+    ) -> anyhow::Result<Self> {
         private_directory(&root)?;
         let root = root.canonicalize()?;
         for name in ["instances", "volumes", "images", "results"] {
             private_directory(&root.join(name))?;
         }
-        let store = Self { root };
+        let store = Self { root, images };
         store.initialize_networks()?;
         Ok(store)
     }
@@ -394,7 +426,7 @@ impl Store {
     fn directory(&self, id: &str) -> PathBuf {
         self.root.join("instances").join(id)
     }
-    fn save(&self, instance: &Instance) -> anyhow::Result<()> {
+    fn save<Backing: Serialize>(&self, instance: &Instance<Backing>) -> anyhow::Result<()> {
         crate::util::write_private_json(
             &self.directory(&instance.id).join("instance.json"),
             instance,
@@ -473,25 +505,23 @@ impl Store {
         let reference = reference.as_str();
         progress(PullProgress::Waiting);
         let _pull = self.image_pull_lock(reference, arch)?;
-        let staging = tempfile::Builder::new()
-            .prefix(".import-")
-            .tempdir_in(self.root.join("images"))?;
+        let staging = self.images.staging()?;
         let store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
         let resolved = store.resolve_with_progress(reference, arch, progress)?;
-        let cached = self.images()?.into_iter().find(|image| {
-            image.digest == resolved.prepared.digest
-                && image.platform == platform
-                && image
-                    .cache
-                    .as_ref()
-                    .is_some_and(|cached| cached.handle.starts_with("pvisor-v2:"))
-        });
-        if let Some(image) = &cached {
-            let _verified = self.open_image(image)?;
-            ensure!(
-                image.id == resolved.config_digest,
-                "cached image config mismatch"
-            );
+        let cached =
+            match crate::image::cache::published_local_image(&self.images.pool(), reference, arch)?
+            {
+                Some(crate::image::cache::Response::Prepared {
+                    digest,
+                    image_handle,
+                    ..
+                }) if digest == resolved.prepared.digest => Some(CachedImage {
+                    location: self.images.pool(),
+                    handle: image_handle,
+                }),
+                _ => None,
+            };
+        if cached.is_some() {
             resolved.report_cached(progress);
         } else {
             store.extract_resolved(&resolved, progress)?;
@@ -511,17 +541,12 @@ impl Store {
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("/");
-        let mut image = Image {
+        let image = Image {
             reference: reference.into(),
             id,
             digest: prepared.digest,
             platform: platform.into(),
-            rootfs: if cached.is_some() {
-                PathBuf::new()
-            } else {
-                prepared.rootfs
-            },
-            cache: cached.and_then(|image| image.cache),
+            cache: (),
             env: prepared.env,
             entrypoint: prepared.entrypoint,
             cmd: prepared.cmd,
@@ -534,9 +559,12 @@ impl Store {
                 .unwrap_or_default(),
             created_ms: crate::unix_now_ms(),
         };
-        if image.cache.is_none() {
-            self.pool_image(&mut image, &store, &config_bytes)?;
-        }
+        let image = if let Some(cache) = cached {
+            self.images.retain_config(&image.id, &config_bytes)?;
+            image.map_cache(|()| cache)
+        } else {
+            self.pool_image(image, &prepared.rootfs, &store, &config_bytes)?
+        };
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
         images.retain(|i| i.reference != reference);
@@ -545,7 +573,7 @@ impl Store {
         Ok(image)
     }
     /// Remove a local image reference. Images used by any instance are refused.
-    /// Shared pool objects and legacy OCI data are not deleted here; existing
+    /// Shared pool objects are not deleted here; existing
     /// containers retain their pinned revision even after forced tag removal.
     pub fn rmi(&self, selector: &str, force: bool) -> anyhow::Result<Vec<String>> {
         let _guard = self.lock()?;
@@ -769,6 +797,15 @@ impl Store {
                 !source.starts_with(&self.root) && !self.root.starts_with(&source)
                     || mount.volume.is_some() && source.starts_with(self.root.join("volumes")),
                 "mount overlaps private container storage"
+            );
+            ensure!(
+                !source.starts_with(&self.images.root) && !self.images.root.starts_with(&source),
+                "mount overlaps private image storage"
+            );
+            ensure!(
+                !source.starts_with(&image.cache.location)
+                    && !image.cache.location.starts_with(&source),
+                "mount overlaps pinned image storage"
             );
         }
         for port in &config.ports {
@@ -1213,7 +1250,7 @@ fn socket_directory() -> anyhow::Result<PathBuf> {
     Ok(directory.canonicalize()?)
 }
 
-fn socket(instance: &Instance) -> anyhow::Result<PathBuf> {
+fn socket<Backing>(instance: &Instance<Backing>) -> anyhow::Result<PathBuf> {
     ensure!(
         instance.generation.len() == 32
             && instance.generation.bytes().all(|c| c.is_ascii_hexdigit()),
@@ -1227,7 +1264,8 @@ fn socket(instance: &Instance) -> anyhow::Result<PathBuf> {
 }
 
 /// Dispatch private self-exec modes before threads, Tokio, or normal CLI parsing.
-/// Normal invocations return false. Private modes validate catalog identities.
+/// Normal invocations return false. Private modes validate saved identities and
+/// generations; build stages use a distinct unpublished backing type.
 /// A VMM mode consumes its process on normal guest exit.
 pub fn internal_if_requested() -> anyhow::Result<bool> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -1236,12 +1274,22 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
     };
     if !matches!(
         mode,
-        "--pvisor-internal-docker-owner" | "--pvisor-internal-docker-vm"
+        "--pvisor-internal-docker-owner"
+            | "--pvisor-internal-docker-vm"
+            | "--pvisor-internal-docker-build-vm"
     ) {
         return Ok(false);
     }
     ensure!(args.len() == 5, "invalid private container invocation");
     let store = Store::open(PathBuf::from(&args[2]))?;
+    if mode == "--pvisor-internal-docker-build-vm" {
+        build::run_internal(
+            &store,
+            args[3].to_str().context("invalid ID")?,
+            args[4].to_str().context("invalid generation")?,
+        )?;
+        return Ok(true);
+    }
     let instance = store.resolve(args[3].to_str().context("invalid ID")?)?;
     ensure!(
         instance.generation == args[4].to_str().context("invalid generation")?,
@@ -1250,7 +1298,8 @@ pub fn internal_if_requested() -> anyhow::Result<bool> {
     if mode.ends_with("-owner") {
         owner(&store, instance)?;
     } else {
-        run_vm(&store, instance)?;
+        let lower = store.open_image(&instance.image)?;
+        run_vm(&store, instance, lower)?;
     }
     Ok(true)
 }
@@ -1520,16 +1569,20 @@ fn prepare_resolver(
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
+fn run_vm<Backing>(
+    store: &Store,
+    instance: Instance<Backing>,
+    image_root: ImageRoot,
+) -> anyhow::Result<()> {
     use pvisor_vm::api::{
         OverlayConfig, PermissionSemantics, RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform,
         VmRuntime,
     };
+    require_native_platform(&instance.image.platform)?;
     if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
         VmPlatform::init_logging("debug");
     }
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
-    let image_root = store.open_image(&instance.image)?;
     let endpoint = socket(&instance)?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
     if VmPlatform::embedded_kernel().is_none() {
@@ -1696,7 +1749,7 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn run_vm(_: &Store, _: Instance) -> anyhow::Result<()> {
+fn run_vm<Backing>(_: &Store, _: Instance<Backing>, _: ImageRoot) -> anyhow::Result<()> {
     bail!("container VMs require Apple Silicon macOS or Linux x86_64")
 }
 
@@ -1822,25 +1875,28 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, Store, Image) {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("docker")).unwrap();
-        let rootfs = directory.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let image = Image {
-            reference: "fixture:latest".into(),
-            id: format!("sha256:{}", "1".repeat(64)),
-            digest: format!("sha256:{}", "2".repeat(64)),
-            platform: native_platform(),
-            rootfs,
-            cache: None,
-            env: BTreeMap::from([("IMAGE_ENV".into(), "image".into())]),
-            entrypoint: vec!["/entry".into()],
-            cmd: vec!["default".into()],
-            cwd: "/work".into(),
-            user: "1000:1000".into(),
-            stop_signal: 15,
-            volumes: Vec::new(),
-            created_ms: 1,
-        };
-        store.save_catalog(std::slice::from_ref(&image)).unwrap();
+        let context = directory.path().join("context");
+        fs::create_dir(&context).unwrap();
+        fs::write(context.join("Dockerfile"), "FROM scratch\nENV IMAGE_ENV=image\nENTRYPOINT [\"/entry\"]\nCMD [\"default\"]\nWORKDIR /work\nUSER 1000:1000\n").unwrap();
+        let image = build::build(
+            &store,
+            &build::BuildOptions {
+                context: context.clone(),
+                file: context.join("Dockerfile"),
+                tags: vec!["fixture:latest".into()],
+                build_args: BTreeMap::new(),
+                target: None,
+                platform: None,
+                pull: false,
+                cpus: 1,
+                memory_mib: 32,
+                network: false,
+                timeout: Duration::from_secs(30),
+                quiet: true,
+                output: None,
+            },
+        )
+        .unwrap();
         (directory, store, image)
     }
     fn request() -> Create {
@@ -1946,7 +2002,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_memory_pool_is_persisted_private_and_optional_for_legacy_records() {
+    fn docker_memory_pool_is_persisted_private_and_optional_in_requests() {
         use std::os::unix::fs::PermissionsExt;
         let (directory, store, _) = fixture();
         let private = directory.path().join("pool");
@@ -2037,13 +2093,12 @@ mod tests {
         );
     }
     #[test]
-    fn docker_platform_selection_and_legacy_records_preserve_native_defaults() {
+    fn docker_platform_selection_requires_explicit_platform_in_records() {
         assert_eq!(canonical_platform("linux/arm64/v8").unwrap(), "linux/arm64");
         let (_temporary, store, image) = fixture();
         let mut legacy = serde_json::to_value(&image).unwrap();
         legacy.as_object_mut().unwrap().remove("platform");
-        let restored: Image = serde_json::from_value(legacy).unwrap();
-        assert_eq!(restored.platform, native_platform());
+        assert!(serde_json::from_value::<Image>(legacy).is_err());
         for invalid in [
             "",
             "amd64",

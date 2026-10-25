@@ -3,11 +3,13 @@ use super::*;
 use crate::image::cache::CacheClient;
 use crate::image::cache::client::tests::{client_at_with_reuse, use_server_reuse};
 use crate::image::cache::protocol::hash;
+use crate::image::oci::ImageStore;
 use std::os::unix::fs::symlink;
 
 fn fixture() -> (tempfile::TempDir, ImageStore, String) {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ImageStore::new(Some(tmp.path().join("store"))).unwrap();
+    let root = LocalStore::open(tmp.path().join("store")).unwrap();
+    let store = ImageStore::new(Some(root.root)).unwrap();
     let digest = format!("sha256:{}", "a".repeat(64));
     let root = store.root.join("rootfs-v3/sha256").join("a".repeat(64));
     fs::create_dir(&root).unwrap();
@@ -21,7 +23,7 @@ fn fixture() -> (tempfile::TempDir, ImageStore, String) {
 #[test]
 fn prepare_queue_is_bounded_and_does_not_block_ping() {
     let (_tmp, store, _) = fixture();
-    let store = reader(&store).unwrap();
+    let store = reader(&store.root).unwrap();
     let (queue, pending) = mpsc::sync_channel(1);
     let exchange = |request| {
         let (mut client, server) = UnixStream::pair().unwrap();
@@ -59,7 +61,7 @@ fn prepare_queue_is_bounded_and_does_not_block_ping() {
 #[test]
 fn unix_client_roundtrip_and_parallel_reads() {
     let (tmp, store, digest) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let image = crate::image::oci::PreparedImage {
         digest: digest.clone(),
         rootfs: store.root.join("rootfs-v3/sha256").join(&digest[7..]),
@@ -122,7 +124,7 @@ fn rejects_bad_frames_versions_and_tokens() {
         (2, None),
     ] {
         let (_tmp, store, digest) = fixture();
-        let store = reader(&store).unwrap();
+        let store = reader(&store.root).unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
             serve_connection(Stream::Unix(server), &store, Some("secret"), None).unwrap()
@@ -197,7 +199,7 @@ fn client_rejects_corrupt_content() {
 fn server_and_direct_readers_share_revisions_after_source_removal() {
     for reuse in [false, true] {
         let (tmp, store, digest) = fixture();
-        let cache = reader(&store).unwrap();
+        let cache = reader(&store.root).unwrap();
         let image = crate::image::oci::PreparedImage {
             digest: digest.clone(),
             rootfs: store.root.join("rootfs-v3/sha256").join(&digest[7..]),
@@ -216,7 +218,7 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
         };
         fs::remove_dir_all(store.root.join("rootfs-v3")).unwrap();
         let direct = CacheClient::new(
-            format!("file://{}", store.root.join("cache-v2").display()),
+            format!("file://{}", store.root.join("pool-v2").display()),
             None,
         )
         .unwrap();
@@ -305,7 +307,7 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
 #[test]
 fn tcp_persistent_file_bodies_and_ping_share_one_connection() {
     let (_tmp, store, digest) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let image = crate::image::oci::PreparedImage {
         digest: digest.clone(),
         rootfs: store.root.join("rootfs-v3/sha256").join(&digest[7..]),
@@ -380,7 +382,7 @@ fn persistent_connections_recheck_token_and_refuse_version_changes() {
         (1, "secret", "unsupported_version"),
     ] {
         let (_tmp, store, _) = fixture();
-        let cache = reader(&store).unwrap();
+        let cache = reader(&store.root).unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         let worker = std::thread::spawn(move || {
             serve_connection(Stream::Unix(server), &cache, Some("secret"), None).unwrap();
@@ -417,7 +419,7 @@ fn persistent_connections_recheck_token_and_refuse_version_changes() {
 #[test]
 fn v2_preparation_queue_returns_result_without_handing_off_persistent_stream() {
     let (_tmp, store, _) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let (queue, pending) = mpsc::sync_channel(1);
     let (mut client, server) = UnixStream::pair().unwrap();
     client
@@ -469,7 +471,7 @@ fn v2_preparation_queue_returns_result_without_handing_off_persistent_stream() {
 #[test]
 fn persistent_idle_connection_closes_stream() {
     let (_tmp, store, _) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let (mut client, server) = UnixStream::pair().unwrap();
     client
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -498,7 +500,7 @@ fn persistent_idle_connection_closes_stream() {
 #[test]
 fn tcp_authorization_refusal_is_not_hidden_by_legacy_fallback() {
     let (_tmp, store, _) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("tcp://{}", listener.local_addr().unwrap());
     let worker = std::thread::spawn(move || {
@@ -517,7 +519,7 @@ fn tcp_authorization_refusal_is_not_hidden_by_legacy_fallback() {
 #[test]
 fn v1_still_closes_after_one_request() {
     let (_tmp, store, _) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let (mut client, server) = UnixStream::pair().unwrap();
     write_frame(
         &mut client,
@@ -538,7 +540,7 @@ fn v1_still_closes_after_one_request() {
 
 fn published_fixture() -> (tempfile::TempDir, PortableCache, String) {
     let (tmp, store, digest) = fixture();
-    let cache = reader(&store).unwrap();
+    let cache = reader(&store.root).unwrap();
     let image = crate::image::oci::PreparedImage {
         digest: digest.clone(),
         rootfs: store.root.join("rootfs-v3/sha256").join(&digest[7..]),

@@ -1,6 +1,14 @@
 use super::*;
 use std::os::unix::fs::symlink;
 
+#[test]
+fn draft_records_cannot_be_read_as_published_images() {
+    let work = tempfile::tempdir().unwrap();
+    let draft = scratch(work.path()).unwrap();
+    let record = serde_json::to_value(&draft.image).unwrap();
+    assert!(serde_json::from_value::<Image>(record).is_err());
+}
+
 fn options(context: &Path) -> BuildOptions {
     BuildOptions {
         context: context.into(),
@@ -25,8 +33,9 @@ fn stage_root_enables_virtual_metadata_without_opening_host_storage() {
     let context = work.path().join("context");
     fs::create_dir(&context).unwrap();
     let base = scratch(work.path()).unwrap();
-    let metadata = fs::symlink_metadata(&base.image.rootfs).unwrap();
-    let expected = filesystem::identity(&base.image.rootfs, &metadata).unwrap();
+    let metadata = fs::symlink_metadata(base.image.cache.temporary_root().unwrap()).unwrap();
+    let expected =
+        filesystem::identity(base.image.cache.temporary_root().unwrap(), &metadata).unwrap();
     let store = Store::open(work.path().join("store")).unwrap();
     let stage = Stage::new(store, base, "test".into(), &options(&context)).unwrap();
     let upper = stage.store.directory(&stage.instance.id).join("upper");

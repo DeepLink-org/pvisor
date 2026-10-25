@@ -216,7 +216,7 @@ pub struct NativeRuntimeConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedImage {
-    /// Immutable root tree, or the Docker store directory when pooled_image is set.
+    /// Private Docker image-store directory owning the pinned V2 pool.
     pub rootfs: PathBuf,
     pub entrypoint: Vec<String>,
     #[serde(default)]
@@ -232,8 +232,7 @@ pub struct PreparedImage {
     pub e2b: Option<E2bTemplate>,
     /// Pinned shared-pool image. Its projection owner lives until VM teardown;
     /// mutable registry tags are never resolved during sandbox creation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pooled_image: Option<pvisor::docker::Image>,
+    pub pooled_image: pvisor::docker::Image,
     /// Managed execd/vsock bootstrap with pVisor's explicit unsupported-policy
     /// adapter, rather than a guest upstream egress process. Requires pooled_image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1068,16 +1067,9 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     // its backend registration alive while VmExecutor exports it to the runner.
     let run_dir = sandbox_dir.join("run");
     private_directory(&run_dir)?;
-    let pooled_root = identity
-        .image
-        .pooled_image
-        .as_ref()
-        .map(|image| {
-            // Scratch belongs to this VM; cache.location still reads the shared
-            // pool. Confirmed crash cleanup does not depend on TempDir Drop.
-            pvisor::docker::Store::open(run_dir.join("image"))?.open_image(image)
-        })
-        .transpose()?;
+    // Scratch belongs to this VM; the binding reads the shared V2 pool.
+    let pooled_root = pvisor::docker::Store::open(run_dir.join("image"))?
+        .open_image(&identity.image.pooled_image)?;
     startup.insert("image_opened_us", startup_clock.elapsed().as_micros());
     let settings = pvisor::VmSettings {
         ram_backing: identity
@@ -1085,13 +1077,8 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             .is_none()
             .then(|| run_dir.join("live-ram")),
         memory_pool: identity.memory_pool.clone(),
-        rootfs: Some(
-            pooled_root
-                .as_ref()
-                .map(|root| root.rootfs().to_path_buf())
-                .unwrap_or_else(|| identity.image.rootfs.clone()),
-        ),
-        rootfs_immutable: pooled_root.is_none(),
+        rootfs: Some(pooled_root.rootfs().to_path_buf()),
+        rootfs_immutable: false,
         library_dir: identity.image.library_dir.clone(),
         memory_mib: u32::try_from(identity.spec.memory_bytes / MIB)?,
         cpus: u16::try_from(identity.spec.cpu_millis.div_ceil(1000).min(8))?,
@@ -2192,36 +2179,29 @@ fn validate_owner(owner: &str) -> Result<()> {
 }
 fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
     ensure!(
-        !image.native_guest
-            || (image.pooled_image.is_some() && !image.native_opensandbox && !image.native_e2b),
+        !image.native_guest || (!image.native_opensandbox && !image.native_e2b),
         "native guest requires an exclusive pooled engine profile"
     );
     ensure!(
-        !image.native_e2b
-            || (image.pooled_image.is_some() && image.e2b.is_some() && !image.native_opensandbox),
+        !image.native_e2b || (image.e2b.is_some() && !image.native_opensandbox),
         "managed E2B requires a pooled E2B-only image"
     );
     ensure!(
-        !image.native_opensandbox || (image.pooled_image.is_some() && image.e2b.is_none()),
+        !image.native_opensandbox || image.e2b.is_none(),
         "managed OpenSandbox requires a pooled non-E2B image"
     );
-    if let Some(pooled) = &image.pooled_image {
-        let cache = pooled
-            .cache
-            .as_ref()
-            .context("pooled manifest requires a cache binding")?;
-        ensure!(
-            cache.location.is_absolute()
-                && cache.location.starts_with(&image.rootfs)
-                && !cache.location.components().any(|p| matches!(
-                    p,
-                    std::path::Component::ParentDir | std::path::Component::CurDir
-                ))
-                && pooled.platform == "linux/amd64"
-                && pooled.rootfs.as_os_str().is_empty(),
-            "invalid native pooled image binding"
-        );
-    }
+    let pooled = &image.pooled_image;
+    let cache = &pooled.cache;
+    ensure!(
+        cache.location.is_absolute()
+            && cache.location.starts_with(&image.rootfs)
+            && !cache.location.components().any(|p| matches!(
+                p,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            ))
+            && pooled.platform == "linux/amd64",
+        "invalid native pooled image binding"
+    );
     ensure!(
         image.rootfs.is_absolute()
             && image.rootfs != Path::new("/")
@@ -2775,13 +2755,34 @@ mod tests {
             generation: generation.clone(),
             spec: spec(),
             image: PreparedImage {
-                rootfs,
+                rootfs: rootfs.clone(),
                 entrypoint: vec!["/guest/bootstrap".into(), "--".into()],
                 cmd: vec!["/guest/default".into()],
                 env: BTreeMap::from([("PATH".into(), "/guest/bin".into())]),
                 library_dir: None,
                 e2b: None,
-                pooled_image: None,
+                pooled_image: pvisor::docker::Image {
+                    reference: "fixture:latest".into(),
+                    id: format!("sha256:{}", "1".repeat(64)),
+                    digest: format!("sha256:{}", "2".repeat(64)),
+                    platform: "linux/amd64".into(),
+                    cache: pvisor::docker::CachedImage {
+                        location: rootfs.join("images/pool-v2"),
+                        handle: format!(
+                            "pvisor-v2:{}:linux-amd64:{}",
+                            "3".repeat(64),
+                            "4".repeat(64)
+                        ),
+                    },
+                    env: BTreeMap::new(),
+                    entrypoint: vec![],
+                    cmd: vec![],
+                    cwd: "/".into(),
+                    user: String::new(),
+                    stop_signal: 15,
+                    volumes: vec![],
+                    created_ms: 0,
+                },
                 native_opensandbox: false,
                 native_e2b: false,
                 native_guest: false,
@@ -3031,20 +3032,23 @@ mod tests {
     }
 
     #[test]
-    fn managed_profile_requires_a_pinned_pool_and_preserves_legacy_manifests() {
+    fn prepared_manifests_require_pool_binding_and_exclusive_profiles() {
         let temp = tempfile::tempdir().unwrap();
         let (mut identity, _) = identity_fixture(temp.path());
-        let legacy = serde_json::to_value(&identity.image).unwrap();
-        assert!(legacy.get("pooled_image").is_none());
-        assert!(legacy.get("native_opensandbox").is_none());
-        let legacy: PreparedImage = serde_json::from_value(legacy).unwrap();
-        assert!(validate_image_shape(&legacy, &temp.path().join("state")).is_ok());
+        let mut directory_record = serde_json::to_value(&identity.image).unwrap();
+        directory_record
+            .as_object_mut()
+            .unwrap()
+            .remove("pooled_image");
+        assert!(serde_json::from_value::<PreparedImage>(directory_record).is_err());
         identity.image.native_opensandbox = true;
+        assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_ok());
+        identity.image.native_e2b = true;
         assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_err());
     }
 
     #[test]
-    fn native_engine_launches_workload_directly_and_preserves_legacy_default() {
+    fn native_engine_launches_workload_directly_with_a_pinned_pool() {
         let temp = tempfile::tempdir().unwrap();
         let (mut identity, _) = identity_fixture(temp.path());
         assert!(!identity.image.native_guest);
@@ -3061,10 +3065,7 @@ mod tests {
             .spec
             .env
             .insert("PVISOR_EXECD_ACCESS_TOKEN".into(), "secret".into());
-        assert!(
-            validate_image_shape(&identity.image, &temp.path().join("state")).is_err(),
-            "native engine must retain a pinned pool owner"
-        );
+        assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_ok());
         let run = make_run_spec(&identity).unwrap();
         let pvisor_core::RunInvocation::Process(process) = run.invocation;
         assert_eq!(process.program, "/bin/sleep");

@@ -1,6 +1,31 @@
 # Shared image cache and storage backends
 
-`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-daemon serve --cache` prepares OCI images and generates paged indexes and content objects under `<image-store>/cache-v2/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-daemon serve --cache` prepares OCI images and generates paged indexes and content objects under `<image-store>/pool-v2/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+
+## Local image directory {#local-image-store}
+
+Docker-compatible commands, spawn without a selected remote backend, and the cache server share one local image directory. Its default is `~/Library/Application Support/pvisor/docker/images/` on macOS and `$XDG_DATA_HOME/pvisor/docker/images/` on Linux, usually `~/.local/share/pvisor/docker/images/`. Revisions referenced by tasks belong in persistent user data storage.
+
+An explicit Job/cache image-store option takes precedence, followed by `PVISOR_IMAGE_STORE`. With only `PVISOR_DOCKER_HOME` set, all local entry points use its `images/`, preserving isolated storage. Embedded `Store::open(root)` always uses `root/images`, independently of environment defaults. Container state, Job records and writable layers keep their separate owners. The local image root and its control directories must be owned by the current user, private (0700) and not symlinks; incompatible existing directories fail without changing their permissions.
+
+```text
+<image-store>/
+├── configs/<config-digest>.json
+├── pool-v2/
+│   ├── format.json
+│   ├── pool-format.json
+│   ├── meta/<image-key>/...
+│   └── data/{packs,sha256}/...
+├── staging/.import-*/
+├── locks/
+└── projections/
+```
+
+Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. All new local image publication uses `pool-v2`. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build tags also publish V2 references, committing each tag independently without a multi-tag transaction. `rmi` removes container frontend catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
+
+Local pool tags stay available offline until an explicit pull/refresh or another publication replaces them. The five-minute automatic tag refresh applies to writable filesystem/S3 backends, not the local pool.
+
+Only current V2 image records and pool formats are accepted. Directory-root records, missing platform/binding fields and old cache layouts are rejected; no migration or compatibility reader is provided. Stop and clean up old containers through the old version, then re-pull or rebuild into a fresh store and recreate containers. Existing files are not automatically deleted.
 
 ## Choose a backend
 
@@ -10,7 +35,7 @@ Server, filesystem, and S3 caches share the same prepare/list/stat/read interfac
 
 | Backend | Configuration | Use case |
 |---|---|---|
-| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Reuse an extracted OCI store on one host or an existing central service |
+| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Serve the host's V2 image pool or an existing central service |
 | `filesystem` | PVISOR_CACHE_BACKEND=filesystem and PVISOR_CACHE_LOCATION=/absolute/directory | Multiple local processes or a shared disk/NFS cache |
 | `s3` | PVISOR_CACHE_BACKEND=s3 and PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX | Share images across machines through object storage without a cache service |
 
@@ -136,7 +161,7 @@ cache/
 └── progress.rs         # Image totals and loading/transfer progress
 ```
 
-`image/oci.rs` owns registry resolution, prepared records, blob validation and layer extraction. Local loading/cache servers share `ImageStore`. External callers keep the exported `cache` API; protocol/transport helpers stay internal.
+`image/store.rs` owns local path selection, temporary imports and shared pull locks. `image/oci.rs` owns registry resolution, prepared records, blob validation and layer extraction. Local VM preparation, Docker commands and cache servers share `LocalStore` and the V2 pool. External callers keep the exported `cache` API; protocol/transport helpers stay internal.
 
 ## Usage
 
@@ -159,23 +184,23 @@ pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - macOS: `~/Library/Caches/pvisor/cache.sock`
 - Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, usually `~/.cache/pvisor/cache.sock`
 
-Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` for the server’s existing OCI storage. The server does not start automatically.
+Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` to select the server’s local image directory, shared with Docker and daemonless VM Jobs. The server does not start automatically.
 
 ## Automatic VM lazy loading
 
-When no filesystem/S3 backend is selected and `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
+When no filesystem/S3 backend is selected and `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) prepare and read through the same local V2 pool. Authentication, protocol and timeout errors are reported rather than bypassed silently.
 
-An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit directory rootfs and native containers retain their behavior.
+An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces the local V2 pool. Explicit directory rootfs and native containers retain their behavior.
 
-VM clients attach an immutable read-only lower directly to the virtio-fs service, retaining their writable upper without an intermediate host FUSE mount. Host tools retain the FUSE adapter over the same backend. Metadata is fetched on demand and cached in memory for the backend lifetime. `metadata_generation` is the revision COMMIT digest. Verified attributes and directory pages can persist across runs; rebuilding OCI extraction does not change a published revision.
+VM clients attach an immutable read-only lower directly to the virtio-fs service, retaining their writable upper without an intermediate host FUSE mount. Host tools retain the FUSE adapter over the same backend. Metadata is fetched on demand and cached in memory for the backend lifetime. `metadata_generation` is the revision COMMIT digest. For socket/filesystem/S3 clients, verified attributes and directory pages can persist across runs; rebuilding OCI extraction does not change a published revision.
 
-Content uses 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
+Socket/filesystem/S3 clients cache content in 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
 
 Each backend retains validated content in a per-file memory cache capped at 64 MiB/4096 blocks with FIFO eviction. Hot reads copy the requested slice without reopening/rehashing disk blocks. Memory misses revalidate disk content; disk corruption cannot alter already validated in-memory bytes. Validated new blocks publish atomically and use file locks for local process sharing; corrupt blocks are fetched again. VMs maintain a private metadata projection with sparse placeholders, but guest READ uses backend content instead of placeholder holes. Kernel readahead may fetch adjacent bytes; copy-up and file digests require complete originals, and complete checkpoints or self-contained exports populate the full tree. Ordinary lazy reads do not extract the complete image.
 
 Direct backends stay attached until VM completion, then release their private projections; host FUSE mounts remain until their users exit. Cached blocks remain. Cached content survives service failure, but missing blocks return I/O errors. Digest/endpoint stay fixed for a Run with no mid-run registry fallback. Cache endpoint/token are removed from implicitly inherited guest environment.
 
-Before responding to `prepare`, the server still fully prepares an uncached image. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
+Before responding to `prepare`, the server fully prepares an uncached image and generates indexes/content objects in a temporary import directory, removed after success or an ordinary error. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
 
 The public blocking Rust client is `pvisor::cache::CacheClient::from_env()`. Explicit `pvisor cache prepare/list/stat/read` commands do not use the VM's local fallback policy.
 

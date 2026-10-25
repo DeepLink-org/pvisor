@@ -70,7 +70,7 @@ Charges survive eviction until the last active reference is released. One `index
 
 ## Filesystem integration and local storage {#filesystem-access}
 
-New Docker pulls/builds default to `images/pool-v2`; daemon cache services use `<image-store>/cache-v2`. Local pools have a `pool-format.json` marker but share the filesystem/S3 compressed physical format, without a separate PVPOOL envelope. Ordinary pool reads retain bounded decoded memory rather than a persistent complete extracted image. Non-pool direct readers may persist encoded frames under `<user-cache>/pvisor/cache-v2/objects/`; disk caches have no aggregate eviction quota.
+Docker pulls/builds, daemonless VM Jobs and cache services use the same `<image-store>/pool-v2`; see the [local image directory](../reference/shared-image-cache.md#local-image-store) for defaults and overrides. Local pools have a `pool-format.json` marker but share the filesystem/S3 compressed physical format, without a separate PVPOOL envelope. Ordinary pool reads retain bounded decoded memory rather than a persistent complete extracted image. Non-pool direct readers may persist encoded frames under `<user-cache>/pvisor/cache-v2/objects/`; disk caches have no aggregate eviction quota.
 
 VM direct lowers and host FUSE share the reader. VMs use private metadata/sparse-file projections; ordinary guest READs use backend content, while copy-up, complete exports and checksums may read whole files. Guest mmap still uses virtio-fs and the guest page cache, with no new DAX path. Existing verified file-block caches in remote VM adapters may still persist raw blocks and must be distinguished from local pools. First preparation still downloads and applies OCI layers; this format does not provide lazy registry-layer extraction.
 
