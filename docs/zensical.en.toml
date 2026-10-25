@@ -27,8 +27,8 @@ nav = [
     { "Core capabilities" = [
       { "File-level oversight and isolation" = "concepts/staging.md" },
       { "Sandbox lifecycle management" = "concepts/lifecycle.md" },
-      { "State preservation and branch reuse" = "concepts/resource-reuse.md" },
       { "Image and memory optimization" = "concepts/resource-optimization.md" },
+      { "State preservation and branch reuse" = "concepts/resource-reuse.md" },
     ] },
     { "Security and support scope" = "security/index.md" },
   ] },
@@ -67,6 +67,7 @@ nav = [
       { "Agent execution infrastructure" = "guides/infrastructure/index.md" },
       { "Integration and capability matrix" = "guides/infrastructure/integration.md" },
     ] },
+    { "VM lifecycle operations" = "guides/infrastructure/lifecycle.md" },
     { "Daemon quickstart" = [
       { "Run the single-node daemon" = "guides/daemon/index.md" },
     ] },

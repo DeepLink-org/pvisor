@@ -387,8 +387,8 @@ class DocsTests(unittest.TestCase):
                 "concepts/jobs.md",
                 "concepts/staging.md",
                 "concepts/lifecycle.md",
-                "concepts/resource-reuse.md",
                 "concepts/resource-optimization.md",
+                "concepts/resource-reuse.md",
                 "security/index.md",
             ]
             concepts = config["nav"][5][expected_sections[locale][5]]

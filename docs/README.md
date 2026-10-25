@@ -232,15 +232,17 @@ live Agent loop. Run the checked-in example directly rather than duplicating
 its Python source or requiring readers to create scripts. Installation owns Host
 prerequisites; the image supplies guest dependencies. Retain the two scenario
 entry points without introducing a separate single-node onboarding route.
-Keep the verified live pause/offload/resume walkthrough at `concepts/lifecycle.md`;
-retain old quick-start anchors as links to the moved example. Keep onboarding
+Keep `concepts/lifecycle.md` focused on Agent-native wait management and the
+Pause/Offload/Resume relationship. The verified live CLI walkthrough belongs at
+`guides/infrastructure/lifecycle.md` under Execution infrastructure; retain old
+concept-page walkthrough anchors as links to the matching guide steps. Keep onboarding
 separate from checkpoint restoration and performance claims, and record the
 version and platform actually verified. Keep optional setup and detailed
 policies in their owning guides, linked from the onboarding pages.
 Understanding pVisor opens with Introduction and Core concepts, followed by a
 Core capabilities group with four articles: file-level oversight and isolation,
-sandbox lifecycle management, state preservation and branch reuse, and image
-and memory optimization. Security/support scope follows the group. Core concepts
+sandbox lifecycle management, image and memory optimization, and state
+preservation and branch reuse. Security/support scope follows the group. Core concepts
 explains the Agent/Host/environment, file/network, task/record and state/resource
 relationships; Job commands, selectors and storage live at `reference/jobs.md`.
 Keep existing paths and anchors under `why/`, `concepts/` and `security/`.

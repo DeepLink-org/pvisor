@@ -27,8 +27,8 @@ nav = [
     { "核心功能" = [
       { "文件级监管与隔离" = "concepts/staging.md" },
       { "沙箱生命周期管理" = "concepts/lifecycle.md" },
-      { "状态保存与分支复用" = "concepts/resource-reuse.md" },
       { "镜像与内存优化" = "concepts/resource-optimization.md" },
+      { "状态保存与分支复用" = "concepts/resource-reuse.md" },
     ] },
     { "安全与支持范围" = "security/index.md" },
   ] },
@@ -67,6 +67,7 @@ nav = [
       { "Agent 执行基础设施" = "guides/infrastructure/index.md" },
       { "接入方式与能力矩阵" = "guides/infrastructure/integration.md" },
     ] },
+    { "VM 生命周期操作" = "guides/infrastructure/lifecycle.md" },
     { "Daemon 上手" = [
       { "运行单机 daemon" = "guides/daemon/index.md" },
     ] },

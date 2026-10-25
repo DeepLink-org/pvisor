@@ -61,4 +61,4 @@ See the [example README](https://github.com/DeepLink-org/pvisor/tree/main/exampl
 <a id="pause-resume"></a>
 <a id="offload-resume"></a>
 
-Next: [Sandbox lifecycle management](../concepts/lifecycle.md#cli-example) · [Runtime and Daemon integration](../guides/infrastructure/integration.md)
+Next: [Pause, offload and resume a VM](../guides/infrastructure/lifecycle.md) · [Runtime and Daemon integration](../guides/infrastructure/integration.md)

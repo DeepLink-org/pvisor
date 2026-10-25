@@ -61,4 +61,4 @@ feedback = execute(task, EXAMPLE / "candidate.patch")
 <a id="pause-resume"></a>
 <a id="offload-resume"></a>
 
-下一步：[沙箱生命周期管理](../concepts/lifecycle.md#cli-example) · [Runtime 与 Daemon 接入方式](../guides/infrastructure/integration.md)
+下一步：[暂停、卸载与恢复 VM](../guides/infrastructure/lifecycle.md) · [Runtime 与 Daemon 接入方式](../guides/infrastructure/integration.md)
