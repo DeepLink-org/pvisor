@@ -8,67 +8,57 @@
   <section class="pc-home-hero">
     <div class="pc-home-hero-grid">
       <div class="pc-home-copy">
-        <p class="pc-home-kicker">PolicyVisor · pVisor</p>
-        <h1>{% if zh %}让自主 Agent 的执行可以规模化{% else %}Scaling autonomous agent execution{% endif %}</h1>
-        <p class="pc-home-lede"><strong>{% if zh %}提升执行密度，降低监督成本。{% else %}Higher execution density. Lower supervision cost.{% endif %}</strong></p>
-        <p>{% if zh %}pVisor 通过资源共享与闲置回收优化机器承载能力，通过文件暂存、运行记录与审查机制降低监督负担，让更多 Agent 任务在有限资源下运行。{% else %}pVisor uses resource sharing and idle-memory reclamation to improve machine capacity, and staged file changes, execution records, and review mechanisms to reduce supervision overhead—supporting more agent tasks within limited resources.{% endif %}</p>
-        <p>{% if zh %}今天：在本机放手运行 Claude Code、Codex 或任意命令，结束后审查改动和证据，只合入你要的部分。{% else %}Today: run Claude Code, Codex, or any command unattended on your machine, then review the changes and evidence and keep only what you want.{% endif %}</p>
-        <div class="pc-home-actions">
-          <a class="pc-home-btn primary" href="start/first-run/">{% if zh %}开始第一次运行{% else %}Start your first Run{% endif %}</a>
-          <a class="pc-home-btn" href="why/">{% if zh %}为什么是 pVisor{% else %}Why pVisor{% endif %}</a>
-        </div>
+        <p class="pc-home-kicker">PolicyVisor (pVisor)</p>
+        <h1>{% if zh %}Agent 原生沙箱框架{% else %}An agent-native sandbox framework{% endif %}</h1>
+        <p>{% if zh %}在本地运行 Agent，提供执行隔离、访问控制、任务管理与文件改动审查，让执行更安全、可控。{% else %}Run agents locally with execution isolation, access controls, task management, and file change review for safer execution and greater control.{% endif %}</p>
+        <p>{% if zh %}在集群中集成 pVisor，为 Agentic 场景下的大规模推理、评测与 RL 后训练提供高效执行环境。{% else %}Integrate pVisor into clusters to provide efficient execution environments for large-scale agentic inference, evaluation, and RL post-training.{% endif %}</p>
       </div>
       <div class="pc-home-terminal-wrap">
-        <div class="pc-home-tabs"><span class="active">{% if zh %}以 Agent CLI 为例{% else %}Example: an Agent CLI{% endif %}</span></div>
-        <div class="pc-home-terminal">
-          <div class="pc-home-terminal-bar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
-          <pre class="pc-home-terminal-body"><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pip install pvisor</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor spawn --safe -- codex</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor status --review last</span><span class="pc-home-command-line"><span class="pc-home-prompt">$ </span>pvisor apply last --path src</span></pre>
-        </div>
-        <p>{% if zh %}安装包与 CLI 均为 <code>pvisor</code>。首次使用请先完成<a href="start/installation/">平台配置</a>。{% else %}The package and CLI are both <code>pvisor</code>. Complete the <a href="start/installation/">platform setup</a> before your first Run.{% endif %}</p>
+        <a class="pc-home-mode" href="guides/">
+          <strong>{% if zh %}本地 Agent 工作流{% else %}Local agent workflows{% endif %}</strong>
+          <span>{% if zh %}准备任务 → 暂存执行 → 审查改动 → 选择合入。{% else %}Prepare a task → execute with staging → review changes → apply selected paths.{% endif %}</span>
+          <span>{% if zh %}从一次离线演示开始，再接入你的 Agent。{% else %}Start with an offline demonstration, then connect your agent.{% endif %}</span>
+        </a>
+        <a class="pc-home-mode" href="guides/infrastructure/">
+          <strong>{% if zh %}Agent 执行基础设施{% else %}Agent execution infrastructure{% endif %}</strong>
+          <span>{% if zh %}准备环境 → 运行工具 → 交付状态与结果 → 回收资源。{% else %}Prepare an environment → run tools → deliver state and results → reclaim resources.{% endif %}</span>
+          <span>{% if zh %}为推理、评测和 rollout 选择接口与生命周期。{% else %}Choose interfaces and lifecycles for inference, evaluation, and rollouts.{% endif %}</span>
+        </a>
       </div>
     </div>
   </section>
   <section class="pc-home-value">
-    <p class="pc-home-badge">{% if zh %}规模化的两条主线{% else %}Two paths to scale{% endif %}</p>
-    <h2>{% if zh %}高密度执行，低成本监督{% else %}Execution density and supervision efficiency{% endif %}</h2>
+    <h2>{% if zh %}核心能力{% else %}Core capabilities{% endif %}</h2>
     <div class="pc-home-cards pc-cols-2">
-      <article><h3>{% if zh %}高密度执行{% else %}High-density execution{% endif %}</h3><p>{% if zh %}资源共享、闲置回收与受限状态恢复，优化 Agent 环境的资源占用。具体收益通过工作负载与完整资源成本衡量。{% else %}Resource sharing, idle-memory reclamation, and scoped state restoration optimize agent environment resource use. Evaluate the gains against your workload and full resource costs.{% endif %}</p></article>
-      <article><h3>{% if zh %}低成本监督{% else %}Lower-cost supervision{% endif %}</h3><p>{% if zh %}文件改动暂存、运行记录与选择性合入，支持集中审查，并为自动检查提供基础。{% else %}Staged file changes, execution records, and selective apply support centralized review and provide a basis for automated checks.{% endif %}</p></article>
+      <article>
+        <h3>{% if zh %}文件级监管与隔离{% else %}File-level oversight and isolation{% endif %}</h3>
+        <p>{% if zh %}以文件为粒度限定访问与修改范围，结合网络策略约束 Agent 行为；启用暂存后隔离候选改动，支持审查与选择性接受。{% else %}Define access and modification boundaries at file level and constrain agent behavior with network policies. With staging enabled, isolate candidate changes for review and selective acceptance.{% endif %}</p>
+        <a href="security/executor-boundaries/">{% if zh %}执行器边界{% else %}Executor boundaries{% endif %}</a> · <a href="guides/review-apply/">{% if zh %}审查并应用改动{% else %}Review and apply changes{% endif %}</a>
+      </article>
+      <article>
+        <h3>{% if zh %}沙箱生命周期管理{% else %}Sandbox lifecycle management{% endif %}</h3>
+        <p>{% if zh %}管理沙箱的运行、暂停、内存卸载与恢复，在保留执行上下文的同时，按需释放和恢复运行资源。{% else %}Manage sandbox execution, pause, memory offload, and resume to release and restore runtime resources as needed while preserving execution context.{% endif %}</p>
+        <a href="design/memory-optimization/offload/">{% if zh %}VM 内存卸载与恢复{% else %}VM memory offload and resume{% endif %}</a>
+      </article>
+      <article>
+        <h3>{% if zh %}状态保存与分支复用{% else %}State preservation and branch reuse{% endif %}</h3>
+        <p>{% if zh %}通过工作区检查点、受支持的执行快照与分叉机制保存任务状态，为分支探索、回退重试与 rollout 复用执行起点。{% else %}Save task state through workspace checkpoints, supported execution snapshots, and forks. Reuse execution starting points for branch exploration, rollback and retry, and rollouts.{% endif %}</p>
+        <a href="guides/fork-checkpoint/">{% if zh %}工作区检查点{% else %}Workspace checkpoints{% endif %}</a> · <a href="reference/cli/#full-vm-execution-checkpoints">{% if zh %}执行快照{% else %}Execution snapshots{% endif %}</a>
+      </article>
+      <article>
+        <h3>{% if zh %}镜像与内存优化{% else %}Image and memory optimization{% endif %}</h3>
+        <p>{% if zh %}通过镜像按需加载、基础环境复用、内存共享与压缩，减少环境准备开销和重复资源占用，支持高密度并发。{% else %}Use on-demand image loading, base environment reuse, memory sharing, and compression to reduce setup overhead and redundant resource use, supporting high-density concurrency.{% endif %}</p>
+        <a href="reference/shared-image-cache/">{% if zh %}镜像按需加载{% else %}On-demand image loading{% endif %}</a> · <a href="design/memory-optimization/">{% if zh %}内存优化{% else %}Memory optimization{% endif %}</a>
+      </article>
     </div>
-  </section>
-  <section class="pc-home-value">
-    <p class="pc-home-badge">{% if zh %}执行基础{% else %}Execution foundations{% endif %}</p>
-    <h2>{% if zh %}有界、可恢复、可核查{% else %}Bounded, recoverable, checkable{% endif %}</h2>
-    <p class="pc-home-lede">{% if zh %}明确执行边界、保留候选改动与运行记录，为审查和自动检查提供基础。{% else %}Explicit execution boundaries, staged changes, and execution records provide a basis for review and automated checks.{% endif %}</p>
-    <div class="pc-home-cards">
-      <article><h3>{% if zh %}有界{% else %}Bounded{% endif %}</h3><p>{% if zh %}出错的影响范围事先可知。选择执行器与能力要求，落实可强制的控制，并显式暴露不支持的缺口与降级。{% else %}The blast radius is known up front. Choose the executor and capability requirements, install the controls that can be enforced, and surface the gaps that cannot.{% endif %}</p></article>
-      <article><h3>{% if zh %}可恢复{% else %}Recoverable{% endif %}</h3><p>{% if zh %}改动先进暂存区，应用前可选择性合入、丢弃或分叉。像审 PR 一样挑选要合入的路径。{% else %}Changes land in a stage and can be selectively merged, discarded, or forked before apply. Pick the paths to keep like a PR.{% endif %}</p></article>
-      <article><h3>{% if zh %}可核查{% else %}Checkable{% endif %}</h3><p>{% if zh %}每次运行留下一份可核对的记录：实际生效的限制、被拦下的访问，以及可选的模型请求。{% else %}Every run leaves a checkable record: the limits actually in effect, the access that was blocked, and optional model requests.{% endif %}</p></article>
-    </div>
-  </section>
-  <section class="pc-home-value">
-    <p class="pc-home-badge">{% if zh %}价值随规模展开{% else %}Value by scale{% endif %}</p>
-    <h2>{% if zh %}从一个 Agent 到一个平台{% else %}From one agent to a platform{% endif %}</h2>
-    <div class="pc-home-cards pc-cols-2">
-      <article><h3>{% if zh %}一个人 · 一个 Agent{% else %}One person, one agent{% endif %}</h3><p>{% if zh %}放手跑完，事后像审 PR 一样挑着合入。{% else %}Run it to completion, then review like a PR and keep only what you want.{% endif %}</p></article>
-      <article><h3>{% if zh %}一个人 · 多个 Agent（下一步）{% else %}One person, many agents (next){% endif %}</h3><p>{% if zh %}每个 Agent 各自隔离、各自留证据，可以批量审查，只合入需要的部分。{% else %}Each agent stays isolated and keeps its own evidence, so you can review in batches and merge only what is needed.{% endif %}</p></article>
-      <article><h3>{% if zh %}团队与平台{% else %}Team and platform{% endif %}</h3><p>{% if zh %}今天就能按 L1 方式接入 CI：跑完、审查、只合入想要的；跨节点集群和策略/证据免审是下一步。{% else %}Use it in CI today the L1 way: run, review, merge only what you want; cross-node clusters and policy/evidence exemption are next.{% endif %}</p></article>
-      <article><h3>{% if zh %}研究与训练（方向）{% else %}Research and training (direction){% endif %}</h3><p>{% if zh %}Agentic RL 与评测需要集群化、可记录、可分叉的批量执行基座，正是这三种性质的组合。{% else %}Agentic RL and evaluation need clustered, recorded, forkable batch execution—the same three properties.{% endif %}</p></article>
-    </div>
+    <p>{% if zh %}具体能力与支持范围取决于接入方式、执行器和平台。{% else %}Capabilities and support depend on the integration interface, executor, and platform.{% endif %} <a href="why/">{% if zh %}查看 pVisor 概览{% else %}Explore the pVisor overview{% endif %}</a></p>
   </section>
   <section class="pc-home-modes">
-    <p class="pc-home-badge">{% if zh %}文档入口{% else %}Documentation{% endif %}</p>
-    <h2>{% if zh %}从你当前的问题开始{% else %}Start with the question you have.{% endif %}</h2>
-    <div class="pc-home-mode-grid">
-      <a class="pc-home-mode" href="start/first-run/"><strong>{% if zh %}快速开始{% else %}Get started{% endif %}</strong><span>{% if zh %}完成运行、审查与应用的第一个闭环。{% else %}Run your first workflow through to apply.{% endif %}</span></a>
-      <a class="pc-home-mode" href="why/"><strong>{% if zh %}为什么是 pVisor{% else %}Why pVisor{% endif %}</strong><span>{% if zh %}愿景、信任阶梯、用例与现成方案对比。{% else %}Vision, trust ladder, use cases, and comparisons.{% endif %}</span></a>
-      <a class="pc-home-mode" href="security/"><strong>{% if zh %}安全{% else %}Security{% endif %}</strong><span>{% if zh %}威胁模型、执行器边界、已知限制与漏洞披露。{% else %}Threat model, executor boundaries, known limitations, and disclosure.{% endif %}</span></a>
-      <a class="pc-home-mode" href="benchmarks/"><strong>{% if zh %}基准与对比{% else %}Benchmarks{% endif %}</strong><span>{% if zh %}可复现的测量方法与已有数据。{% else %}Reproducible methods and current data.{% endif %}</span></a>
-      <a class="pc-home-mode" href="design/"><strong>{% if zh %}设计与研究{% else %}Design and research{% endif %}</strong><span>{% if zh %}架构、隔离、契约与研究方向。{% else %}Architecture, isolation, contracts, and research directions.{% endif %}</span></a>
-      <a class="pc-home-mode" href="community/"><strong>{% if zh %}社区{% else %}Community{% endif %}</strong><span>{% if zh %}贡献、测试、发布与路线图。{% else %}Contributing, testing, releases, and roadmap.{% endif %}</span></a>
-    </div>
+    <h2>{% if zh %}性能与验证{% else %}Performance and validation{% endif %}</h2>
+    <p class="pc-home-lede">{% if zh %}通过基准测试与验证实验，展示 pVisor 的启动延迟、内存占用、并发密度，以及执行隔离与轨迹回放的表现。{% else %}Benchmarks and validation experiments show pVisor’s startup latency, memory use, concurrency density, and behavior in execution isolation and trajectory replay.{% endif %}</p>
+    <p><a href="benchmarks/">{% if zh %}查看基准测试与验证结果{% else %}View benchmarks and validation results{% endif %}</a></p>
   </section>
-  <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a></p></footer>
+  <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a> · <a href="community/">{% if zh %}参与开发{% else %}Contribute{% endif %}</a></p></footer>
 </div>
     {% endblock %}
   </article>

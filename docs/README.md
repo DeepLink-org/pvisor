@@ -1,9 +1,11 @@
 # PolicyVisor Documentation
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
-`pvisor` for the CLI. The positioning is **scaling autonomous agent execution**;
-in Chinese, **让自主 Agent 的执行可以规模化**, with the subtitle
-**提升执行密度，降低监督成本。** / **Higher execution density. Lower supervision cost.**
+`pvisor` for the CLI. The homepage positioning is **an agent-native sandbox framework**;
+in Chinese, **Agent 原生沙箱框架**. Introduce local isolation, access controls,
+task management and file review in one paragraph, and execution environments for
+large-scale agentic inference, evaluation and RL post-training in a second.
+Do not use execution density or supervision-cost goals as the homepage subtitle.
 Describe the two supporting paths: resource sharing and idle-memory reclamation
 for machine capacity; staged file changes, execution records and review for
 supervision efficiency. Quantified gains require workload-specific evidence.
@@ -147,11 +149,22 @@ locale directly into `site/zh` and `site/en`. `docs/index.html` is a small stati
 language selector copied unchanged to the published root; it needs no third
 Zensical project. Builds start with a clean `docs/site/` to remove stale outputs.
 Both locale configurations own their translated navigation and native search.
-The language selector keeps the current article. Preview one locale at a time
-with the native server; alternate-language links use absolute published-site URLs, preserving the article
-path. A local preview serves one locale, so switching language opens the published
-translation. To inspect unpublished translations, preview the other locale
-separately (`just docs-serve en` or `just docs-serve zh`).
+The language selector keeps the current article. Published pages retain absolute
+published-site language links. On loopback hosts (`127.0.0.1`, `localhost`, or
+`[::1]`), the theme's `alternate.js` points the menu to the local preview and
+preserves the current section anchor. Run both native servers in separate
+terminals to preview unpublished translations. Use adjacent ports: Chinese on N,
+English on N + 1. The defaults are 3000 and 3001; for example:
+
+```bash
+just docs-serve zh -a 127.0.0.1:3040
+# In another terminal:
+just docs-serve en -a 127.0.0.1:3041
+```
+
+Both processes must remain running for language switching to work. A single
+locale server does not serve the other language. Stop both previews before
+`just docs-build`, which clears their shared output directory, then restart them.
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
 
@@ -179,22 +192,28 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 ## Information architecture
 
 Value before mechanism, mechanism before implementation. Keep Home as the first
-top-level tab, followed by seven sections: Quick start → User guide → Core concepts
-→ Benchmarks → Design and research → Lab notes → Contributing
-(首页 → 快速开始 → 用户指南 → 基础概念 → 基准测试 → 设计与研究 → 实验记录 → 参与开发).
-Quick start includes the product introduction and `why/` articles; User guide
-includes the task learning path and reference pages; Core concepts includes
-Security as a subsection. The homepage remains accessible through its own tab
-and the site logo. This grouping changes navigation, not article
-paths or the separation between tutorials, guides, references and explanations.
+top-level tab, followed by seven sections: Local workflows → Execution infrastructure
+→ Foundations and reference → Benchmarks → Design and research → Lab notes → Contributing
+(首页 → 本地工作流 → 执行基础设施 → 基础与参考 → 基准测试 → 设计与研究 → 实验记录 → 参与开发).
+The homepage gives equal entry points to local review and agent execution
+infrastructure. Local workflows owns preparation, review and accepting file
+results; Execution infrastructure owns inference/evaluation/rollout integration
+and links to the current interface matrix. Foundations and reference shares
+the product introduction, concepts, executors, policies, reference and security.
+Keep existing articles at their current paths: `why/index.md` is the product
+introduction, `guides/index.md` is the local overview, and the infrastructure
+overview and interface matrix live under `guides/infrastructure/`. This first
+stage reorganizes entry points without migrating the topic articles or cases.
+The homepage remains accessible through its own tab and the site logo. Preserve
+the separation between tutorials, guides, references and explanations.
 Within each tab, keep the sidebar to two levels: topic group → article. Flatten
 subgroups into their parent group; do not add a third sidebar level.
 
 The canonical Chinese documentation uses these sections:
 
-- `why/`: the case for pVisor — the supervision-bandwidth argument, trust ladder with use cases, and fit check with comparisons.
+- `why/`: product scope, the two workflows, independent supervision and scale axes, and fit checks with comparisons.
 - `start/`: installation and the first reproducible Job, ending with where to go next.
-- `guides/`: tasks, commands and expected results, grouped by job (`agents/`, `policies/`, `executors/`).
+- `guides/`: the local workflow overview and task guides; `infrastructure/` owns the platform overview and integration matrix, with shared policies and executors linked from both routes.
 - `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
 - `benchmarks/`: reproducible measurements and dated comparisons.
 - `security/`: what is protected, what is not, and how to report issues.
@@ -226,10 +245,10 @@ Readers and entry points:
 
 | Reader | Entry | Main path |
 | --- | --- | --- |
-| Developer using an agent | home | why → first run → connect your agent → review and merge |
-| Platform / DevOps | home → use cases | use cases → benchmarks → CI → configuration |
+| Developer using an agent | home → local workflows | local overview → first run → connect your agent → review and apply |
+| Platform / DevOps | home → execution infrastructure | infrastructure overview → integration matrix → executor/daemon setup → capacity evidence |
 | Security reviewer | security | threat model → executor boundaries → capabilities and evidence → disclosure |
-| Researcher (MLSys, agentic RL) | use cases → research | research/training use case → replay and fork → architecture → research directions |
+| Researcher (MLSys, agentic RL) | home → execution infrastructure | interface selection → rollout/evaluation handoff → state reuse → evidence and research |
 | Contributor | community | contributing → development → testing → architecture |
 
 Keep one canonical article per subject and link to it instead of repeating its
@@ -237,6 +256,14 @@ contract. Start task guides with prerequisites and executable examples. Separate
 implemented behavior from design goals; describe a guarantee only with its
 executor and scope. Review/apply examples must enable staging with `--safe`,
 `--ask` or `--stage`. If a path is specified, put it outside the project.
+
+The integration matrix distinguishes native CLI Jobs, embedded Rust Runtime,
+daemon Sandbox API and containerd shim identities and exposed capabilities.
+It summarizes the owning references and source contracts; it must not promote
+underlying VM or pool tests into daemon SDK conformance or deployment evidence.
+Cache clients use `pvisor cache`; the cache server uses
+`pvisor-daemon serve --cache`. Human review and execution volume are independent:
+more parallel tasks alone do not establish automatic acceptance or RL benefits.
 
 The CLI reference owns staging/storage defaults and parameter grammar; the
 network policy guide owns the executor boundary matrix (summarized in

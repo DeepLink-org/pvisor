@@ -25,7 +25,7 @@
   "community/governance.md": "ccf42470c2ecacdafaa878114bb2d387a4f5b2fb300d3a26cce346e56b2f6f63",
   "community/index.md": "e7bd392882cfb197fe143ce4890ef30f448c3a59f67a2477703fadf405ed6168",
   "community/releasing.md": "8ea638c738a2a85f49e04edcef06e2e87f6338dc8f2b6daedfa2d36a9b073959",
-  "community/roadmap.md": "7e1b9b629df58056a6d6087ca8d6accb670fe1bb35e3007e64bc5cff7ca33990",
+  "community/roadmap.md": "8cab75ebb0ca657560d9415f06528ff7054777c3f75c1bc608352165853686fe",
   "community/testing.md": "d37f0d56c81044733d93bd677b58d9f9599c7c92bb6cf08ddf7985d698158f72",
   "concepts/capabilities-and-evidence.md": "cc92c913753741bf0c05fc683538931d57b8856c686ba18303344bc4659add1b",
   "concepts/jobs.md": "cbbd8d7d6dff14ba7e64a4d6a7f1599f0c017a8502ade0cac361270755f47f0b",
@@ -81,7 +81,9 @@
   "guides/executors/index.md": "6dccca6d0ebc4a000cfe8f0a65eac4f451df16552195fb56b9cf677e649f075c",
   "guides/executors/vm.md": "13685f93fce6f079fbdcdb5979abd4aa87719ffcdbc6c62e7457b60a5384b2dd",
   "guides/fork-checkpoint.md": "4098f19475e3a2bfaa192975fc6dcd4859d64dafa427d706df652479dfc42746",
-  "guides/index.md": "235e153adedab50311580a97d9e9e28dd705c2f41fc87deb218bb78e10db4a23",
+  "guides/index.md": "9163cbef8df38792944d41743296413fc41c10c8f1bcaca1c62aa3589250cc73",
+  "guides/infrastructure/index.md": "27b7af25357966f9e9c03f2cee4fc0a357b362a8bc33b4d277f95df319baca87",
+  "guides/infrastructure/integration.md": "d346a4d8e156b0d8cdbd89ccb783987c9d697ff4cd239b560c75bfb16307a4e9",
   "guides/parallel-agents.md": "6d9941d33d453be0d5b07cbe6c6e7241e0ac5fd7418d60189c74b16c3d2ac13a",
   "guides/policies/credentials.md": "3616fd6dd989aa5e0f9a09df423545dceeb640a940bd0861bde12cfd19c30ae9",
   "guides/policies/files.md": "c699322935ad6860e99914e80913101883101ead6369ea4fb6f53f64ccae7356",
@@ -90,7 +92,7 @@
   "guides/review-apply.md": "a6693bb6e94258e8881a9ced534552fbb6c7b927011020deaa9d0d877b74a22f",
   "guides/rl-rollouts.md": "f73f7181ee2622aa90f0964b9349c17be3f23f340c3926833cf56ca8f5b690e0",
   "guides/troubleshooting.md": "3b96a6a0b114ad165b524565d6f974e969eaecca0f9f9f494b8752a1d75c5ad0",
-  "index.md": "95eb7d1529227e2a5bc1873c7771b2952debfbd08865e158acb060a90abf6dec",
+  "index.md": "ab5dbc589663b525c795464c55c41882ad89cdc599b31ad06200e893970aae8d",
   "lab-notes/agent-task-performance-analysis.md": "e4a0e4b27a0436487a51975764179fa35c75dcb7509e5b60289138931b3c928a",
   "lab-notes/benchmark-methodology-evidence.md": "781e384425bd9a2248ced5344af5a7cd8c739e30f042b5c31c020997b5f7eaac",
   "lab-notes/filesystem-io-performance-analysis.md": "68e6676f593699ab3b19e30521b764e207aa48827dd3dcfcdcac881264357d4b",
@@ -121,6 +123,6 @@
   "security/threat-model.md": "cb0d5f6a4bfd014e416f36c1dcf48462aee32ca1fb2dfc669aae7ead747c9fcc",
   "start/first-run.md": "75ba3bd807f27bc039f6d3c2e52a9fbc4998e365e8cff6f75d1decaa120dfc66",
   "start/installation.md": "5e2a5f0113d2d8a4294c116eb40444bf21cc97e42ef85dff2913f662ef9e4827",
-  "why/comparisons.md": "31d7a4aa35aedfc5c9dde35de6f693d17f112a8985e2dd66fa0392990e6326a9",
-  "why/index.md": "7bd43a500051aebe5c77f3b6eae82c65d2f7469269951899c170a900ae334f8a"
+  "why/comparisons.md": "5f7dadab929c7449b227323a58e9e3e118746256d48172b8f32c20a181d0f858",
+  "why/index.md": "9ad2ba90a883091724c078e512cfe3321724e6f6e0be2d05407aa12c74b32ce8"
 }
