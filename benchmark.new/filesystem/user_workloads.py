@@ -6,7 +6,9 @@ user execution mode, and which I/O shapes and resource conditions explain it?
 Design: identical frozen static payload, fixture and toolroot; N3 fresh case
 environments/configuration, three dependent rounds, randomized mode order.
 Ready excludes isolation-harness preparation and exit; work plus checked final
-sync is task completion. No interference gate or deletion of valid slow values.
+sync is task completion for the existing suite. Original-AgentENV comparisons
+use work as the primary metric and report final sync separately without an
+equal-persistence claim. No interference gate or deletion of valid slow values.
 This is a new user cohort; engineering writeback A/B observations are not inputs.
 """
 
@@ -41,6 +43,7 @@ LABELS = {
     "fc-system": "Firecracker (stock kernel)",
     "qemu": "QEMU q35",
     "qemu-microvm": "QEMU microvm",
+    "agentenv": "AgentENV",
 }
 HARNESS = (
     "user_workloads.py",
@@ -53,6 +56,7 @@ HARNESS = (
     "user_workloads_docker.py",
     "user_workloads_docker_launch.rs",
     "user_workloads_reference_vm.py",
+    "user_workloads_agentenv.py",
 )
 save, sha, require = SHARED.save, SHARED.sha, SHARED.require
 
@@ -115,6 +119,16 @@ def prepare(args):
     prepared = BACKENDS.prepare_rootfs(
         batch, args.rootfs.resolve(), source, args.artifacts.resolve()
     )
+    if getattr(args, "toolroot_storage", None):
+        destination = args.toolroot_storage.resolve()
+        require(not destination.exists(), "toolroot destination already exists")
+        shutil.move(str(prepared), str(destination))
+        prepared.symlink_to(destination, target_is_directory=True)
+        prepared = destination
+    stage_storage = getattr(args, "stage_storage", None)
+    if stage_storage:
+        stage_storage = stage_storage.resolve()
+        stage_storage.mkdir(mode=0o700, exist_ok=False)
     source_protocol = json.loads((source / "protocol.json").read_text())
     catalog = source_protocol["catalog"]
     for case in catalog:
@@ -129,9 +143,18 @@ def prepare(args):
             len(set(selected)) == len(selected) and set(selected) <= set(cases), "invalid cases"
         )
         cases = selected
-    modes = args.backends.split(",") if args.backends else list(LABELS)
+    modes = args.backends.split(",") if args.backends else [m for m in LABELS if m != "agentenv"]
     require(len(set(modes)) == len(modes) and set(modes) <= set(LABELS), "invalid backends")
     references = {}
+    if "agentenv" in modes:
+        require(args.agentenv_setup is not None, "AgentENV template setup required")
+        require(
+            args.samples == 3 and args.timeout == 90,
+            "AgentENV common-operation protocol requires N3 and 90 seconds",
+        )
+        import user_workloads_agentenv as AGENTENV
+
+        references["agentenv"] = AGENTENV.prepare_assets(batch, args.agentenv_setup.resolve())
     if "docker" in modes:
         require(args.docker_setup is not None, "private Docker budget setup required")
         import user_workloads_docker as DOCKER
@@ -161,7 +184,7 @@ def prepare(args):
         ]
         if p.is_file()
     }
-    for directory in ("reference-assets", "docker-assets"):
+    for directory in ("reference-assets", "docker-assets", "agentenv-assets"):
         if (batch / directory).exists():
             artifacts.update(
                 {
@@ -187,15 +210,7 @@ def prepare(args):
         reference_configuration=references,
         toolroot=str(prepared),
         prepared_toolroot_receipt="toolroot-receipt.json",
-        prepared_tools={
-            name: sha(prepared / name)
-            for name in (
-                "usr/bin/cc",
-                "usr/bin/git",
-                "usr/bin/python3",
-                "usr/libexec/gcc/x86_64-redhat-linux/16/cc1",
-            )
-        },
+        prepared_tools={name: sha(prepared / name) for name in BACKENDS.tool_paths(prepared)},
         fixture=str(batch / "fixture-layer/fs-v2-fixture"),
         artifacts=artifacts,
         fixture_manifest_sha256=sha(batch / "fixture-manifest.json"),
@@ -216,6 +231,9 @@ def prepare(args):
         timing="Ready from common pre-exec launch marker; isolation harness preparation and exit excluded; completed=work+final_sync, setup/validation separate",
         cache="fresh case environment; three dependent rounds reuse state and verification-warmed pages; shared prepared host inputs; no cold-disk claim",
         quiet_gate=False,
+        apparmor_profile=getattr(args, "apparmor_profile", None),
+        krun_enomem_workaround=getattr(args, "krun_enomem_workaround", "auto"),
+        stage_storage=str(stage_storage) if stage_storage else None,
         interference_gate=False,
         inventory_gate=False,
         skip_remaining_on_case_failure=True,
@@ -235,6 +253,62 @@ def prepare(args):
             ),
         ),
     )
+    if "agentenv" in modes:
+        protocol["limitations"].append(
+            "AgentENV persistent service has a separately recorded host cgroup; "
+            "coordinator 2-GiB cap is not a whole-system equal-budget claim"
+        )
+        protocol["comparison_scope"] = dict(
+            primary_metric="work_ns",
+            separate_metric="final_sync_ns",
+            excluded="create/upload/Ready/Bundle+exit/export/host validation/cleanup",
+            durability="original backend defaults; no equal persistence guarantee",
+            inline_sync="M10/M12 retain their workload-defined inline fsync in work_ns",
+        )
+    for name in ("prepared_inputs", "runtime_artifacts"):
+        receipt = getattr(args, name, None)
+        if receipt:
+            protocol[name] = json.loads(receipt.read_text())
+            shutil.copy2(receipt, batch / (name + ".json"))
+            protocol["artifacts"][name + ".json"] = sha(batch / (name + ".json"))
+    protocol["immutable_input_cache"] = args.immutable_input_cache
+    protocol["cleanup_verified_external_stage"] = bool(stage_storage)
+    require(
+        not args.immutable_input_cache or protocol.get("prepared_inputs"),
+        "immutable input caches require authenticated prepared inputs",
+    )
+    if protocol.get("runtime_artifacts"):
+        runtime = BACKENDS.runtime_artifact_source(protocol["runtime_artifacts"])
+        for name in ("payload", "workload"):
+            require(
+                sha(runtime / name) == sha(prepared / "bench-artifacts" / name),
+                "runtime override changed the common payload: " + name,
+            )
+    for config in protocol["vm_configuration"].values():
+        if protocol.get("prepared_inputs"):
+            config["rootfs_ownership"] = "authenticated prepared rootfs/workspace generations"
+            config["environment"].update(
+                PVISOR_VM_GUEST_CACHE="1", PVISOR_VM_CACHE_EXPERIMENT="root-data"
+            )
+        if args.immutable_input_cache:
+            config["environment"].update(
+                PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE="1", PVISOR_VM_FS_LOWER_DATA_CACHE="1"
+            )
+        if args.krun_enomem_workaround != "auto":
+            config["environment"]["PVISOR_KRUN_ENOMEM_WORKAROUND"] = args.krun_enomem_workaround
+    storage = {"toolroot": str(prepared)}
+    if stage_storage:
+        storage["stage"] = str(stage_storage)
+    for kind, selector in protocol.get("prepared_inputs", {}).items():
+        storage[kind + "_store"] = selector["store"]
+    protocol["host"]["selected_storage"] = {
+        label: json.loads(
+            subprocess.check_output(
+                ["findmnt", "-T", path, "-o", "TARGET,SOURCE,FSTYPE,OPTIONS", "--json"], text=True
+            )
+        )
+        for label, path in storage.items()
+    }
     save(batch / "protocol.json", protocol)
     save(
         batch / "in.json",
@@ -251,6 +325,11 @@ def prepare(args):
 
 
 def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
+    require(
+        not protocol.get("diagnostic_profile")
+        or (preflight and protocol.get("role") == "diagnostic"),
+        "instrumented execution is limited to separate diagnostic preflight",
+    )
     folder = batch / ("preflight" if preflight else "trials") / f"{case}-{pair:03}-{backend}"
     folder.mkdir(parents=True, exist_ok=False)
     record = dict(
@@ -343,10 +422,16 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
         )
         for row in rows:
             SHARED.validate_row(row, case)
+        diagnostic = protocol.get("diagnostic_profile", False)
         require(
-            "pvisor-fs-profile " not in (folder / "stderr.log").read_text(),
+            not diagnostic or (preflight and protocol.get("role") == "diagnostic"),
+            "instrumented execution is limited to separate diagnostic preflight",
+        )
+        require(
+            diagnostic or "pvisor-fs-profile " not in (folder / "stderr.log").read_text(),
             "diagnostics present in timing",
         )
+        record["diagnostic_only"] = diagnostic
         if backend in ("staged", "vm", "vm-writeback"):
             require(
                 {p.name for p in (folder / "work").iterdir()} == {"input", "output"}
@@ -354,9 +439,17 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
                 "staged execution modified the original workspace",
             )
             record["original_workspace_unchanged"] = True
+        export_started = time.monotonic_ns()
         work, overlay = BACKENDS.finalize_output(batch, protocol, folder, case, backend)
+        record["output_export_ns"] = time.monotonic_ns() - export_started
+        verification_started = time.monotonic_ns()
         view = folder / "host-view"
         if overlay:
+            if protocol.get("stage_storage"):
+                # The read-only oracle view uses hardlinks, so keep it on the
+                # external stage filesystem after the measured process exits.
+                view = work.parent.parent / "host-view"
+                record["host_verification_view"] = str(view)
             record["physical_overlay_markers"] = SHARED.materialize_upper_view(work, view, case)
         else:
             view = work
@@ -384,6 +477,7 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
             verified.returncode == 0 and len(receipt) == 1 and receipt[0].get("verified") is True,
             "independent final host verification failed",
         )
+        record["host_validation_ns"] = time.monotonic_ns() - verification_started
         record.update(host_verified=True, host_verification=receipt[0], valid=True)
     except Exception as error:
         if process is not None and process.poll() is None:
@@ -391,11 +485,13 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
             process.wait()
         record["error"] = repr(error)
     finally:
+        cleanup_started = time.monotonic_ns()
         try:
             BACKENDS.cleanup_trial(batch, protocol, folder, case, backend)
         except Exception as error:
             record["valid"] = False
             record["cleanup_error"] = repr(error)
+    record["cleanup_ns"] = time.monotonic_ns() - cleanup_started
     save(folder / "result.json", record)
     if record["valid"]:
         # Retain logs/receipts; discard only this trial's generated multi-GiB data.
@@ -408,12 +504,20 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
             "exported-work",
             "reference-output",
             "docker-output",
+            "agentenv-output",
         ):
             path = folder / name
             if path.exists():
                 shutil.rmtree(path)
-        for name in ("work.ext4", "root.ext4"):
+        for name in ("work.ext4", "root.ext4", "agentenv-output.tar"):
             (folder / name).unlink(missing_ok=True)
+        if protocol.get("cleanup_verified_external_stage") and protocol.get("stage_storage"):
+            # Match the existing successful-trial stage reclamation on SSD.
+            # The launch adapter creates this exact child exclusively per trial.
+            stage = Path(protocol["stage_storage"]).resolve(strict=True) / folder.name
+            if backend in ("staged", "vm", "vm-writeback") and stage.exists():
+                require(not stage.is_symlink(), "external stage was replaced by a symlink")
+                shutil.rmtree(stage)
     return record
 
 
@@ -550,6 +654,14 @@ def main():
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--docker-setup", type=Path)
     parser.add_argument("--stock-kernel-receipt", type=Path)
+    parser.add_argument("--agentenv-setup", type=Path)
+    parser.add_argument("--prepared-inputs", type=Path)
+    parser.add_argument("--runtime-artifacts", type=Path)
+    parser.add_argument("--immutable-input-cache", action="store_true")
+    parser.add_argument("--toolroot-storage", type=Path)
+    parser.add_argument("--stage-storage", type=Path)
+    parser.add_argument("--apparmor-profile")
+    parser.add_argument("--krun-enomem-workaround", choices=("auto", "0", "1"), default="auto")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--cases")
     parser.add_argument("--backends")
@@ -576,6 +688,7 @@ def main():
         ]
         save(batch / "preflight-results.json", results)
         print(json.dumps([{k: r.get(k) for k in ("backend", "valid", "error")} for r in results]))
+        require(all(r["valid"] for r in results), "preflight failed; retained evidence")
 
 
 if __name__ == "__main__":
