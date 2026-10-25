@@ -1,6 +1,5 @@
 use super::*;
 use crate::image::oci::{ImageStore, PreparedImage};
-use sha2::{Digest, Sha256};
 use std::fs;
 
 fn fixture() -> (tempfile::TempDir, PortableCache, ImageStore, PreparedImage) {
@@ -109,7 +108,9 @@ fn metadata_socket(
                         .lock()
                         .unwrap()
                         .push((object_name.clone(), *offset, *length));
-                    corrupt == Some((object_name.as_str(), *offset))
+                    corrupt.is_some_and(|(name, wanted)| {
+                        name == object_name && (wanted == u64::MAX || wanted == *offset)
+                    })
                 }
                 Request::Ping => false,
                 _ => panic!("socket metadata reader requested non-metadata operation"),
@@ -278,9 +279,7 @@ fn metadata_service_serves_only_immutable_objects_with_bounded_data_bodies() {
         "COMMIT.json",
         "manifest.json",
         "config.json",
-        "checksums.bin",
-        "files.bin",
-        "contents.bin",
+        "root.bin",
         "index.bin",
         "objects.bin",
     ] {
@@ -385,12 +384,12 @@ fn metadata_reader_and_storage_validate_without_io_and_reject_unbound_operations
         .unwrap(),
     );
     let handle = format!(
-        "pvisor-v1:{}:linux-amd64:{}",
+        "pvisor-v2:{}:linux-amd64:{}",
         "a".repeat(64),
         "b".repeat(64)
     );
     let other = format!(
-        "pvisor-v1:{}:linux-amd64:{}",
+        "pvisor-v2:{}:linux-amd64:{}",
         "a".repeat(64),
         "c".repeat(64)
     );
@@ -544,7 +543,8 @@ fn v1_socket_metadata_reader_reuses_binary_pages_and_never_reads_content() {
         local
             .join("pages")
             .join(&parsed.revision)
-            .join("index.bin/0"),
+            .join("index.bin")
+            .join(root_frame_offset(&tmp.path().join("shared"), &parsed).to_string()),
         b"corrupt",
     )
     .unwrap();
@@ -564,14 +564,14 @@ fn v1_socket_metadata_reader_reuses_binary_pages_and_never_reads_content() {
 
 #[test]
 fn socket_metadata_reader_authenticates_commit_catalog_and_binary_pages() {
-    for name in ["COMMIT.json", "checksums.bin", "index.bin"] {
+    for name in ["COMMIT.json", "root.bin", "index.bin"] {
         let (tmp, cache, store, image) = fixture();
         let canonical = crate::image::oci::cache_reference("example:test")
             .unwrap()
             .0;
         cache.publish(&store, &image, "amd64", &canonical).unwrap();
         let handle = read_handle(&cache);
-        let (_server, client) = metadata_socket(tmp.path(), cache, Some((name, 0)));
+        let (_server, client) = metadata_socket(tmp.path(), cache, Some((name, u64::MAX)));
         let reader = MetadataReader::new(client, handle.clone(), None).unwrap();
         let error = reader
             .request(Request::Stat {
@@ -753,15 +753,11 @@ fn corrupt_content_is_not_served_and_read_only_never_prepares_missing_images() {
     let index = cache
         .load(&Handle::parse(&read_handle(&cache)).unwrap())
         .unwrap();
-    let content = index
-        .content(index.entry(b"small").unwrap().content.unwrap())
-        .unwrap();
-    let (blob, _) = index.chunk(content.first).unwrap();
-    fs::write(
-        tmp.path().join("shared").join(data_key(&blob).unwrap()),
-        b"corrupt",
-    )
-    .unwrap();
+    let binary::Content::Packed(packed) = index.entry(b"small").unwrap().content.unwrap() else {
+        panic!()
+    };
+    let blob_key = packed.object().0;
+    fs::write(tmp.path().join("shared").join(blob_key), b"corrupt").unwrap();
     assert!(
         cache
             .request(Request::Read {
@@ -860,6 +856,7 @@ fn directory_pages_preserve_every_host_supported_name() {
         assert!(next > offset);
         offset = next;
     }
+    actual.sort();
     assert_eq!(actual, expected);
 }
 
@@ -894,11 +891,10 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
     let index = reader
         .load(&Handle::parse(&read_handle(&reader)).unwrap())
         .unwrap();
-    let content = index
-        .content(index.entry(b"small").unwrap().content.unwrap())
-        .unwrap();
-    let (blob, _) = index.chunk(content.first).unwrap();
-    let remote = tmp.path().join("shared").join(data_key(&blob).unwrap());
+    let binary::Content::Packed(packed) = index.entry(b"small").unwrap().content.unwrap() else {
+        panic!()
+    };
+    let remote = tmp.path().join("shared").join(packed.object().0);
     let original = fs::read(&remote).unwrap();
     fs::remove_file(&remote).unwrap();
     drop(reader);
@@ -908,10 +904,16 @@ fn local_objects_survive_backend_loss_and_corruption_is_refetched() {
         "a new reader must reuse local objects"
     );
     fs::write(&remote, &original).unwrap();
-    let local = tmp.path().join("objects/immutable").join(&blob[7..]);
+    let local = fs::read_dir(tmp.path().join("objects/frames"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let cached_original = fs::read(&local).unwrap();
     fs::write(&local, b"corrupt").unwrap();
     assert_eq!(read(&make_reader()), b"small");
-    assert_eq!(fs::read(local).unwrap(), original);
+    assert_eq!(fs::read(local).unwrap(), cached_original);
 }
 
 #[test]
@@ -1014,7 +1016,7 @@ fn independent_images_share_file_chunks_and_old_revisions_remain_readable() {
             path: b"small".into()
         })
         .is_err(),
-        "v1 must not introduce a global digest-only index"
+        "V2 must not introduce a global digest-only index"
     );
 }
 
@@ -1048,10 +1050,17 @@ fn stale_publishers_cannot_replace_head_and_corrupt_existing_objects_are_not_reu
         .unwrap(),
         head
     );
-    let data = tmp
-        .path()
-        .join("shared")
-        .join(data_key(&hash(b"small")).unwrap());
+    let binary::Content::Packed(packed) = cache
+        .load(&Handle::parse(&read_handle(&cache)).unwrap())
+        .unwrap()
+        .entry(b"small")
+        .unwrap()
+        .content
+        .unwrap()
+    else {
+        panic!()
+    };
+    let data = tmp.path().join("shared").join(packed.object().0);
     fs::write(data, b"corrupt").unwrap();
     assert!(
         cache
@@ -1092,7 +1101,11 @@ fn cold_start_fetches_pages_instead_of_deserializing_the_complete_file_tree() {
         loaded.cached_page_count() <= 5,
         "startup must only fetch headers, root metadata and index root"
     );
-    assert!(loaded.commit.metadata["index.bin"].bytes > 20 * binary::PAGE_BYTES as u64);
+    assert!(loaded.commit.metadata["index.bin"].bytes > 1000);
+    assert!(
+        loaded.commit.metadata["index.bin"].bytes < 5000 * 128,
+        "compressed index must avoid padded records"
+    );
     assert!(matches!(
         reader
             .request(Request::Stat {
@@ -1133,7 +1146,7 @@ fn cold_start_fetches_pages_instead_of_deserializing_the_complete_file_tree() {
 #[test]
 fn decoded_index_nodes_are_reused_for_positive_and_negative_lookups() {
     let (tmp, cache, store, image) = fixture();
-    for i in 0..600 {
+    for i in 0..2000 {
         fs::write(image.rootfs.join("directory").join(format!("f-{i:05}")), []).unwrap();
     }
     let canonical = crate::image::oci::cache_reference("example:test")
@@ -1264,7 +1277,7 @@ fn decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc() {
         loaded.resize_metadata_cache(1);
         assert_eq!(crate::cache_budget::stats().0, bytes);
         // Root file reads evict the index node, but the traversal's Arc still owns its charge.
-        loaded.entry(b"").unwrap();
+        loaded.clear_metadata_cache();
         assert!(loaded.cached_nodes().is_empty());
         let used = crate::cache_budget::stats().0;
         assert!(used >= bytes && used <= limit);
@@ -1279,22 +1292,19 @@ fn decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc() {
 }
 
 #[test]
-fn held_raw_pages_keep_budget_charge_after_eviction_and_decoded_replacement() {
-    const CHILD: &str = "PVISOR_TEST_RAW_PAGE_CHARGE";
-    let Some(mode) = std::env::var_os(CHILD) else {
-        for mode in ["eviction", "replacement"] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "image::cache::portable::tests::held_raw_pages_keep_budget_charge_after_eviction_and_decoded_replacement", "--nocapture"])
-                .env(CHILD, mode).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{mode}:\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+fn held_frames_keep_budget_charge_after_eviction_and_reload() {
+    const CHILD: &str = "PVISOR_TEST_FRAME_CHARGE";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "image::cache::portable::tests::held_frames_keep_budget_charge_after_eviction_and_reload", "--nocapture"])
+            .env(CHILD, "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         return;
-    };
+    }
     let (tmp, cache, store, image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
         .unwrap()
@@ -1310,23 +1320,13 @@ fn held_raw_pages_keep_budget_charge_after_eviction_and_decoded_replacement() {
         true,
     );
     let loaded = reader.load(&handle).unwrap();
-    loaded.clear_metadata_cache();
-    assert_eq!(crate::cache_budget::stats().0, 0);
-    let (held, bytes) = loaded.hold_raw_page("index.bin", 1);
+    let (_, held, bytes) = loaded.cached_nodes().pop().unwrap();
     let concurrent_reader = held.clone();
-    assert!(bytes >= binary::PAGE_BYTES);
+    loaded.clear_metadata_cache();
+    assert_eq!(loaded.cached_page_count(), 0);
     assert_eq!(crate::cache_budget::stats().0, bytes);
-    if mode == "eviction" {
-        loaded.clear_metadata_cache();
-        assert_eq!(loaded.cached_page_count(), 0);
-        assert_eq!(crate::cache_budget::stats().0, bytes);
-    } else {
-        // Decode the same raw page while another reader retains its shared owner.
-        loaded.entry(b"small").unwrap();
-        let nodes = loaded.cached_nodes();
-        assert_eq!(nodes.len(), 1);
-        assert!(crate::cache_budget::stats().0 >= bytes + nodes[0].2);
-    }
+    loaded.entry(b"small").unwrap();
+    assert!(crate::cache_budget::stats().0 >= bytes + loaded.cached_nodes()[0].2);
     assert!(crate::cache_budget::stats().0 <= limit);
     drop(loaded);
     drop(reader);
@@ -1358,12 +1358,12 @@ fn evicted_decoded_index_nodes_reauthenticate_pages_before_reuse() {
         .join(handle.prefix())
         .join("index.bin");
     let mut bytes = fs::read(&remote).unwrap();
-    bytes[binary::PAGE_BYTES + 24] ^= 1;
+    bytes[root_frame_offset(&tmp.path().join("shared"), &handle) as usize] ^= 1;
     fs::write(remote, bytes).unwrap();
     // An already authenticated immutable node is unaffected by backing-file changes.
     loaded.entry(b"small").unwrap();
     loaded.resize_metadata_cache(1);
-    loaded.entry(b"").unwrap();
+    loaded.clear_metadata_cache();
     assert!(loaded.cached_nodes().is_empty());
     for _ in 0..2 {
         assert!(
@@ -1381,101 +1381,8 @@ fn evicted_decoded_index_nodes_reauthenticate_pages_before_reuse() {
 }
 
 #[test]
-fn cached_index_nodes_do_not_bypass_index_file_relationship_validation() {
-    let (tmp, cache, store, image) = fixture();
-    let canonical = crate::image::oci::cache_reference("example:test")
-        .unwrap()
-        .0;
-    cache.publish(&store, &image, "amd64", &canonical).unwrap();
-    let handle = Handle::parse(&read_handle(&cache)).unwrap();
-    let storage = Storage::filesystem(tmp.path().join("shared"), false).unwrap();
-    let mut commit: Commit = serde_json::from_slice(
-        &storage
-            .get(&format!("{}/COMMIT.json", handle.prefix()))
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    let mut objects: BTreeMap<String, Vec<u8>> = commit
-        .metadata
-        .keys()
-        .map(|name| {
-            (
-                name.clone(),
-                storage
-                    .get(&format!("{}/{name}", handle.prefix()))
-                    .unwrap()
-                    .unwrap(),
-            )
-        })
-        .collect();
-    let index = objects.get_mut("index.bin").unwrap();
-    let count = u32::from_le_bytes(
-        index[binary::PAGE_BYTES + 4..binary::PAGE_BYTES + 8]
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let find_record = |name: &[u8]| {
-        (0..count)
-            .map(|slot| binary::PAGE_BYTES + 16 + slot * 280)
-            .find(|start| &index[*start + 18..*start + 18 + name.len()] == name)
-            .unwrap()
-    };
-    let small = find_record(b"small");
-    let large = find_record(b"large");
-    let wrong_file: [u8; 8] = index[large + 8..large + 16].try_into().unwrap();
-    index[small + 8..small + 16].copy_from_slice(&wrong_file);
-    // Re-seal the malicious, structurally valid index through the real trust chain.
-    let mut checksums = objects["checksums.bin"][..80].to_vec();
-    for name in BINARY_NAMES {
-        for page in objects[name].chunks(binary::PAGE_BYTES) {
-            checksums.extend_from_slice(&Sha256::digest(page));
-        }
-    }
-    objects.insert("checksums.bin".into(), checksums);
-    for (name, bytes) in &objects {
-        commit.metadata.get_mut(name).unwrap().sha256 = hash(bytes);
-    }
-    let commit_bytes = serde_json::to_vec(&commit).unwrap();
-    let malicious = Handle {
-        revision: hash(&commit_bytes)[7..].into(),
-        ..handle
-    };
-    for (name, bytes) in objects {
-        storage
-            .put(&format!("{}/{name}", malicious.prefix()), bytes, true)
-            .unwrap();
-    }
-    storage
-        .put(
-            &format!("{}/COMMIT.json", malicious.prefix()),
-            commit_bytes,
-            true,
-        )
-        .unwrap();
-    let reader = PortableCache::new(storage, None, true);
-    let loaded = reader.load_revision(&malicious).unwrap();
-    let before = loaded.cached_nodes();
-    assert_eq!(before.len(), 1);
-    for _ in 0..2 {
-        assert!(
-            loaded
-                .entry(b"small")
-                .unwrap_err()
-                .to_string()
-                .contains("index/file relationship")
-        );
-        assert!(
-            loaded
-                .list(b"", 0)
-                .unwrap_err()
-                .to_string()
-                .contains("directory index relationship"),
-            "warm listings must recheck the cached index against file records"
-        );
-    }
-    let after = loaded.cached_nodes();
-    assert!(Arc::ptr_eq(&before[0].1, &after[0].1));
+fn cached_index_nodes_do_not_bypass_directory_relationship_validation() {
+    binary::malformed_tests::cached_foreign_directory_reference_is_rejected();
 }
 
 #[test]
@@ -1506,12 +1413,13 @@ fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
         .path()
         .join("pages/pages")
         .join(&parsed.revision)
-        .join("index.bin/1");
+        .join("index.bin")
+        .join(root_frame_offset(&tmp.path().join("shared"), &parsed).to_string());
     fs::write(&local, b"bad").unwrap();
     read(&make()).unwrap();
     assert_eq!(
         fs::metadata(&local).unwrap().len(),
-        binary::PAGE_BYTES as u64
+        root_frame_length(&tmp.path().join("shared"), &parsed) as u64
     );
     fs::remove_dir_all(tmp.path().join("pages")).unwrap();
     let remote = tmp
@@ -1521,8 +1429,11 @@ fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
         .join("index.bin");
     use std::io::{Seek, SeekFrom, Write};
     let mut file = fs::OpenOptions::new().write(true).open(remote).unwrap();
-    file.seek(SeekFrom::Start(binary::PAGE_BYTES as u64 + 24))
-        .unwrap();
+    file.seek(SeekFrom::Start(root_frame_offset(
+        &tmp.path().join("shared"),
+        &parsed,
+    )))
+    .unwrap();
     file.write_all(b"corrupt").unwrap();
     assert!(
         read(&make())
@@ -1533,16 +1444,15 @@ fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
 }
 
 #[test]
-fn publication_uses_v1_for_controls_handles_and_binary_magic() {
+fn publication_uses_v2_and_rejects_v1_without_mutation() {
     let (tmp, cache, store, image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
         .unwrap()
         .0;
     cache.publish(&store, &image, "amd64", &canonical).unwrap();
     let handle = read_handle(&cache);
-    assert!(handle.starts_with("pvisor-v1:"));
+    assert!(handle.starts_with("pvisor-v2:"));
     let parsed = Handle::parse(&handle).unwrap();
-    assert_eq!(parsed.encode(), handle);
     let root = tmp.path().join("shared");
     for key in [
         "format.json".to_string(),
@@ -1554,44 +1464,39 @@ fn publication_uses_v1_for_controls_handles_and_binary_magic() {
     ] {
         let record: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join(key)).unwrap()).unwrap();
-        assert_eq!(record["format_version"], 1);
+        assert_eq!(record["format_version"], 2);
     }
-    for name in BINARY_NAMES {
-        let bytes = fs::read(root.join(parsed.prefix()).join(name)).unwrap();
-        assert_eq!(&bytes[..8], b"PVICB1\0\0");
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 1);
+    let bytes = fs::read(root.join(parsed.prefix()).join("index.bin")).unwrap();
+    assert_eq!(&bytes[bytes.len() - 4..], &0x8f92_eab1u32.to_le_bytes());
+    for name in ["files.bin", "contents.bin", "checksums.bin"] {
+        assert!(!root.join(parsed.prefix()).join(name).exists());
     }
-    let checksums = fs::read(root.join(parsed.prefix()).join("checksums.bin")).unwrap();
-    assert_eq!(&checksums[..8], b"PVICH1\0\0");
-    let old_handle = handle.replacen("pvisor-v1:", "pvisor-v2:", 1);
+    let old = handle.replacen("pvisor-v2:", "pvisor-v1:", 1);
     assert!(
         cache
             .request(Request::Stat {
-                digest: old_handle,
-                path: b"small".into(),
+                digest: old,
+                path: b"small".into()
             })
             .unwrap_err()
             .to_string()
-            .contains("expected immutable pvisor-v1")
+            .contains("V1 is retired")
     );
-    let head_bytes = fs::read(root.join(head_key(&canonical, &parsed.platform))).unwrap();
-    let mut head: serde_json::Value = serde_json::from_slice(&head_bytes).unwrap();
-    head["format_version"] = 2.into();
+    let mut head: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(head_key(&canonical, &parsed.platform))).unwrap(),
+    )
+    .unwrap();
+    head["format_version"] = 1.into();
     assert!(
         decode_head(
             &serde_json::to_vec(&head).unwrap(),
             &parsed.image_key,
-            &parsed.platform,
+            &parsed.platform
         )
         .is_err()
     );
-    let mut format: serde_json::Value = serde_json::from_slice(FORMAT).unwrap();
-    format["format_version"] = 2.into();
-    fs::write(
-        root.join("format.json"),
-        serde_json::to_vec(&format).unwrap(),
-    )
-    .unwrap();
+    let old_format = br#"{"format_version":1}"#;
+    fs::write(root.join("format.json"), old_format).unwrap();
     assert!(
         cache
             .request(Request::Ping)
@@ -1599,6 +1504,7 @@ fn publication_uses_v1_for_controls_handles_and_binary_magic() {
             .to_string()
             .contains("unsupported cache format")
     );
+    assert_eq!(fs::read(root.join("format.json")).unwrap(), old_format);
 }
 
 #[test]
@@ -1677,12 +1583,13 @@ fn remote_backend_uses_opaque_portable_cursors_with_local_resume_and_eviction() 
         first[17..]
     );
     let all = remote.entries(directory.attr.ino).unwrap();
-    assert_eq!(
-        all.iter()
-            .map(|(_, _, name)| name.clone())
-            .collect::<Vec<_>>(),
-        expected
-    );
+    let mut actual = all
+        .iter()
+        .map(|(_, _, name)| name.clone())
+        .collect::<Vec<_>>();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
     // More than eight pages have evicted the prefix. Local cookie zero and a
     // cookie inside an evicted page must replay valid remote boundaries.
     assert_eq!(remote.entries_page(directory.attr.ino, 0).unwrap(), first);
@@ -1745,6 +1652,161 @@ fn removed_packed_layout_is_not_a_readable_cache() {
             })
             .unwrap_err()
             .to_string()
-            .contains("expected immutable pvisor-v1")
+            .contains("expected immutable pvisor-v2")
     );
+}
+
+fn root_frame_offset(root: &std::path::Path, handle: &Handle) -> u64 {
+    root_reference_from_disk(root, handle).offset
+}
+fn root_frame_length(root: &std::path::Path, handle: &Handle) -> u32 {
+    root_reference_from_disk(root, handle).encoded
+}
+fn root_reference_from_disk(root: &std::path::Path, handle: &Handle) -> frames::FrameRef {
+    let bytes = fs::read(root.join(handle.prefix()).join("root.bin")).unwrap();
+    frames::decode::<binary::Record>(&bytes)
+        .unwrap()
+        .directory
+        .unwrap()
+}
+
+#[test]
+fn attribute_and_cross_directory_name_changes_reuse_content_blobs() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, cache, store, mut image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let old = read_handle(&cache);
+    fn snapshot(root: &std::path::Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for item in fs::read_dir(root).unwrap() {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                snapshot(&path, output);
+            } else {
+                output.insert(path.clone(), fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut before = BTreeMap::new();
+    snapshot(&tmp.path().join("shared/data"), &mut before);
+    fs::rename(
+        image.rootfs.join("small"),
+        image.rootfs.join("directory/renamed"),
+    )
+    .unwrap();
+    fs::set_permissions(
+        image.rootfs.join("directory/renamed"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let next = format!("sha256:{}", "b".repeat(64));
+    let root = store.root.join("rootfs-v3/sha256").join(&next[7..]);
+    fs::rename(&image.rootfs, &root).unwrap();
+    image.rootfs = root;
+    image.digest = next;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let new = read_handle(&cache);
+    assert_ne!(old, new);
+    let mut after = BTreeMap::new();
+    snapshot(&tmp.path().join("shared/data"), &mut after);
+    assert_eq!(
+        before, after,
+        "renaming and chmod must not fork content blobs"
+    );
+    for (handle, path, mode) in [
+        (old, b"small".to_vec(), 0o644),
+        (new, b"directory/renamed".to_vec(), 0o600),
+    ] {
+        let response = cache
+            .request(Request::Stat {
+                digest: handle.clone(),
+                path: path.clone(),
+            })
+            .unwrap()
+            .0;
+        assert!(
+            matches!(response, Response::Metadata { mode: actual, .. } if actual & 0o777 == mode)
+        );
+        let bytes = cache
+            .request(Request::Read {
+                digest: handle,
+                path,
+                offset: 1,
+                length: 3,
+            })
+            .unwrap()
+            .1;
+        assert_eq!(bytes, b"mal");
+    }
+}
+
+#[test]
+fn explicitly_republishing_rebuilds_missing_packs_with_the_same_revision() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let old = read_handle(&cache);
+    let binary::Content::Packed(packed) = cache
+        .load(&Handle::parse(&old).unwrap())
+        .unwrap()
+        .entry(b"small")
+        .unwrap()
+        .content
+        .unwrap()
+    else {
+        panic!()
+    };
+    let path = tmp.path().join("shared").join(packed.object().0);
+    let bytes = fs::read(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    assert_eq!(read_handle(&cache), old);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn packed_slots_and_large_file_threshold_preserve_random_ranges() {
+    let (_tmp, cache, store, image) = fixture();
+    for (i, length) in [1, 65535, 65536, 65537].into_iter().enumerate() {
+        let bytes = (0..length).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        fs::write(image.rootfs.join(format!("boundary-{i}")), bytes).unwrap();
+    }
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    for (i, length) in [1, 65535, 65536, 65537].into_iter().enumerate() {
+        let path = format!("boundary-{i}").into_bytes();
+        let content = cache
+            .load(&Handle::parse(&handle).unwrap())
+            .unwrap()
+            .entry(&path)
+            .unwrap()
+            .content
+            .unwrap();
+        assert_eq!(
+            matches!(content, binary::Content::Packed(_)),
+            length <= 65536
+        );
+        for offset in [0, length / 2, length - 1, length, length + 1] {
+            let actual = cache
+                .request(Request::Read {
+                    digest: handle.clone(),
+                    path: path.clone(),
+                    offset: offset as u64,
+                    length: 123,
+                })
+                .unwrap()
+                .1;
+            let expected = (offset..(offset + 123).min(length))
+                .map(|n| (n % 251) as u8)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
 }

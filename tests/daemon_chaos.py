@@ -806,7 +806,7 @@ def main():
     assert manifest.get("native_guest"), "requires a native guest template"
     manifest["rootfs"] = str(args.pool_store.resolve(strict=True))
     manifest["pooled_image"]["cache"]["location"] = str(
-        (args.pool_store / "images/pool-v1").resolve(strict=True)
+        (args.pool_store / "images/pool-v2").resolve(strict=True)
     )
     manifest["library_dir"] = str(args.binary.resolve().parent)
     images = root / "images"

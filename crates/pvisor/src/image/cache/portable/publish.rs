@@ -79,6 +79,17 @@ impl PortableCache {
         // Stage file-independent chunks on disk so the source is read once and
         // publication never races re-reading a changed source file.
         let staging = tempfile::tempdir_in(&store.root)?;
+        let previous = if let Some(object) = &observed {
+            let head = decode_head(&object.bytes, &key, platform)?;
+            self.load(&Handle {
+                image_key: key.clone(),
+                platform: platform.into(),
+                revision: head.revision[7..].into(),
+            })?
+            .packed_contents()?
+        } else {
+            BTreeMap::new()
+        };
         let mut entries = Vec::new();
         let mut pending = vec![Vec::new()];
         while let Some(path) = pending.pop() {
@@ -238,6 +249,7 @@ impl PortableCache {
                         SourceContent {
                             size: *size,
                             chunks,
+                            packed: None,
                         },
                     );
                 }
@@ -248,12 +260,39 @@ impl PortableCache {
             }
             entry.content = content_digest;
         }
+        let mut uploads = self.plan_packs(&entries, &mut contents, staging.path(), previous)?;
+        let mut inventory = BTreeMap::<String, u64>::new();
+        for content in contents.values() {
+            if let Some(packed) = &content.packed {
+                let (key, length) = packed.object();
+                inventory.insert(key, length);
+            } else {
+                for (digest, _) in &content.chunks {
+                    let key = data_key(digest)?;
+                    if !inventory.contains_key(&key) {
+                        let encoded = content::encode_chunk(std::fs::read(
+                            staging.path().join(&digest[7..]),
+                        )?)?;
+                        inventory.insert(key.clone(), encoded.len() as u64);
+                        let directory = staging.path().join("encoded-chunks");
+                        std::fs::create_dir_all(&directory)?;
+                        let path = directory.join(&digest[7..]);
+                        std::fs::write(&path, encoded)?;
+                        uploads.insert(key, path);
+                    }
+                }
+            }
+        }
         let mut metadata = binary::encode(&entries, &contents)?;
+        metadata.insert(
+            "objects.bin".into(),
+            frames::encode(&inventory.into_iter().collect::<Vec<_>>())?,
+        );
         let (config_digest, layer_digests) = provenance(store, &image.digest)?;
         metadata.insert(
             "manifest.json".into(),
             serde_json::to_vec(&Manifest {
-                format_version: 1,
+                format_version: 2,
                 reference: canonical.into(),
                 platform: platform.into(),
                 manifest_digest: image.digest.clone(),
@@ -262,7 +301,7 @@ impl PortableCache {
             })?,
         );
         let configuration = Configuration {
-            format_version: 1,
+            format_version: 2,
             architecture: architecture.into(),
             env: image.env.clone(),
             entrypoint: image.entrypoint.clone(),
@@ -283,7 +322,7 @@ impl PortableCache {
             })
             .collect();
         let commit = Commit {
-            format_version: 1,
+            format_version: 2,
             image_key: key.clone(),
             platform: platform.into(),
             manifest_digest: image.digest.clone(),
@@ -310,26 +349,25 @@ impl PortableCache {
         self.put_verified(
             &format!("meta/{key}/identity.json"),
             serde_json::to_vec(&Identity {
-                format_version: 1,
+                format_version: 2,
                 image_key: key,
                 reference: canonical.into(),
             })?,
         )?;
         self.put_verified(&format!("{upload_prefix}/plan.json"),serde_json::to_vec(&serde_json::json!({
-            "format_version":1,"platform":platform,"revision":revision,"manifest_digest":image.digest,
+            "format_version":2,"platform":platform,"revision":revision,"manifest_digest":image.digest,
             "expected_head":observed.as_ref().map(|o|&o.version.e_tag)
         }))?)?;
+        // Bound upload workers; all staged data is immutable and source bytes
+        // have already been verified. Reused packs are referenced, never rewritten.
+        let uploads = uploads.into_iter().collect::<Vec<_>>();
         std::thread::scope(|scope| {
-            let workers = (0..objects.len().min(8))
+            let workers = (0..uploads.len().min(8))
                 .map(|worker| {
-                    let objects = &objects;
-                    let staging = &staging;
+                    let uploads = &uploads;
                     scope.spawn(move || -> anyhow::Result<()> {
-                        for digest in objects.keys().skip(worker).step_by(8) {
-                            self.put_verified(
-                                &data_key(digest)?,
-                                std::fs::read(staging.path().join(&digest[7..]))?,
-                            )?;
+                        for (key, path) in uploads.iter().skip(worker).step_by(8) {
+                            self.put_verified(key, std::fs::read(path)?)?;
                         }
                         Ok(())
                     })
@@ -348,7 +386,7 @@ impl PortableCache {
         self.put_verified(&format!("{}/COMMIT.json", handle.prefix()), commit_bytes)?;
         let loaded = self.load(&handle)?;
         let head = Head {
-            format_version: 1,
+            format_version: 2,
             image_key: handle.image_key.clone(),
             platform: platform.into(),
             revision,

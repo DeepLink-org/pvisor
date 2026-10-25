@@ -149,7 +149,9 @@ A `read(offset, length)` locates the inode and file-content index, computes inte
 
 A VM lazy lower directly uses the shared file service. A private metadata projection preserves structures needed for native inode/FD and path checks, while file contents come from the content backend on a FUSE `READ`; sparse placeholder holes are not returned as actual file bytes. A first ordinary modification must materialize the original file and copy it up. Complete export or snapshot can also fetch previously untouched content.
 
-Lazy loading consequently moves some preparation work into first access. Hot-cache benefits, cold misses, metadata and copy-up costs need separate measurements. See [Shared image cache](shared-image-cache-storage.md) for storage and publication contracts. Source entry points are `pvisor/src/image/cache/backend.rs`, `direct.rs` and `storage.rs`.
+Lazy loading consequently moves some preparation work into first access. Hot-cache benefits, cold misses, metadata and copy-up costs need separate measurements. See [Shared image cache](lazy-image-v2.md) for storage and publication contracts. Source entry points are `pvisor/src/image/cache/backend.rs`, `direct.rs` and `storage.rs`.
+
+Current Docker-style local storage also uses this compressed pool. After pull, complete encoded content is read through directory hash-radix indexes and independent frames without a resident complete extracted tree. This differs from remote working-set delivery: the cache service still prepares all source content, and remote VM clients may persist raw file blocks. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately reports disk, cold/warm clients, first/repeated mmap and instance memory. Compression ratios do not establish universal performance superiority.
 
 ## 7. Networking: the interception point determines control strength {#network-mechanism}
 

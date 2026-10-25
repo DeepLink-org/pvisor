@@ -268,7 +268,7 @@ fn serve_s3(
                     Some(body) => {
                         if read_only.load(Ordering::Relaxed)
                             && first[1].ends_with(".bin")
-                            && !first[1].ends_with("checksums.bin")
+                            && !first[1].ends_with("root.bin")
                         {
                             assert!(
                                 headers.contains_key("range"),

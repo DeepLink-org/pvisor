@@ -43,6 +43,25 @@ SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug
 
 
 class FilesystemContracts(unittest.TestCase):
+    def test_user_jobs_use_spawn_with_workspace_relative_payload(self):
+        from user_workloads_backends import _host_argv
+        from user_workloads_vm import vm_payload_argv
+
+        for backend in ("host", "staged"):
+            argv = _host_argv("S02", backend)
+            self.assertEqual(argv[:2], ["/bench-artifacts/pvisor", "spawn"])
+            self.assertEqual(
+                argv[-6:], ["/bench-artifacts/payload", "S02", "output", "input", "3", "512"]
+            )
+        for backend in ("vm", "vm-writeback"):
+            argv = vm_payload_argv("S02", backend)
+            self.assertEqual(argv[:2], ["/bench-artifacts/pvisor", "spawn"])
+            self.assertIn("--vm", argv)
+            self.assertNotIn("--vm-library-dir", argv)
+            self.assertEqual(
+                argv[-6:], ["/bench-artifacts/payload", "S02", "output", "input", "3", "512"]
+            )
+
     def test_interpreter_alias_requires_same_bin_directory_binary_and_remaining_arguments(self):
         with workspace() as (root, resources):
             binary = root / "interpreter"

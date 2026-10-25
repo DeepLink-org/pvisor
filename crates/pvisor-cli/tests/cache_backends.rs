@@ -98,14 +98,11 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
     let objects = s3.objects.lock().unwrap();
-    let blobs = objects
-        .keys()
-        .filter(|key| key.contains("/data/sha256/"))
-        .count();
+    let blobs = objects.keys().filter(|key| key.contains("/data/")).count();
     drop(objects);
     assert!(
-        blobs == 102,
-        "100 independent small files plus two distinct chunks of the large file"
+        blobs == 3,
+        "one small-file pack plus two distinct chunks of the large file"
     );
     fs::remove_dir_all(&source).unwrap();
     s3.read_only.store(true, Ordering::Relaxed);
@@ -259,7 +256,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     drop(restored);
     assert!(
         s3.gets.load(Ordering::Relaxed) > 0,
-        "v1 CAS and immutable reuse verification require GetObject"
+        "V2 CAS and immutable reuse verification require GetObject"
     );
     let head_key = original
         .keys()
@@ -406,8 +403,29 @@ fn vm_reads_daemonless_filesystem_and_s3_images_without_projecting_storage_crede
         &guest_source,
         r#"
 fn main() {
-    let data = std::fs::read("/large").unwrap();
-    assert_eq!(data, vec![42u8; 2 * 1024 * 1024 + 13]);
+    let data = vec![42u8; 2 * 1024 * 1024 + 13];
+    // Exercise guest page faults through both packed and multi-chunk lowers,
+    // retaining mappings after closing their file descriptors.
+    unsafe extern "C" {
+        fn mmap(address: *mut std::ffi::c_void, length: usize, protection: i32,
+                flags: i32, fd: i32, offset: i64) -> *mut std::ffi::c_void;
+        fn munmap(address: *mut std::ffi::c_void, length: usize) -> i32;
+    }
+    use std::os::fd::AsRawFd;
+    for (path, expected) in [("/large", data), ("/small-099", b"value-99".to_vec())] {
+        let file = std::fs::File::open(path).unwrap();
+        unsafe {
+            let address = mmap(std::ptr::null_mut(), expected.len(), 1, 2, file.as_raw_fd(), 0);
+            assert_ne!(address as isize, -1);
+            drop(file);
+            assert_eq!(std::slice::from_raw_parts(address.cast::<u8>(), expected.len()), expected);
+            assert_eq!(munmap(address, expected.len()), 0);
+        }
+    }
+    assert_eq!(std::fs::read("/large").unwrap(), vec![42u8; 2 * 1024 * 1024 + 13]);
+    for n in 0..100 {
+        assert_eq!(std::fs::read(format!("/small-{n:03}")).unwrap(), format!("value-{n}").as_bytes());
+    }
     assert_eq!(std::env::var("EXAMPLE").unwrap(), "value");
     for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
         "PVISOR_CACHE_BACKEND", "PVISOR_CACHE_LOCATION", "PVISOR_CACHE_READ_ONLY"] {

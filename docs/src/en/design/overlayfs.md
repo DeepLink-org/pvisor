@@ -66,7 +66,7 @@ VM staged workspaces continue serving virtio-fs directly; host staged execution
 continues through host FUSE. The backend preserves immutable handles, hard-link
 identity, metadata generations and content digests. Shared image caches do not
 share writable uppers or journals. Storage contracts are in
-[Shared image cache v1](shared-image-cache-storage.md#filesystem-access).
+[Shared image cache V2](lazy-image-v2.md#filesystem-access).
 
 The direct backend creates a private metadata projection to retain existing local
 inode/FD, path checks and snapshot contracts. It consists of ordinary directories

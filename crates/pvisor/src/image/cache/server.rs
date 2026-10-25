@@ -21,7 +21,7 @@ mod tests;
 
 fn reader(store: &ImageStore) -> anyhow::Result<PortableCache> {
     Ok(PortableCache::new(
-        Storage::filesystem(store.root.join("cache-v1"), true)?,
+        Storage::filesystem(store.root.join("cache-v2"), true)?,
         Some(store.root.clone()),
         false,
     ))

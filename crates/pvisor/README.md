@@ -774,8 +774,8 @@ atomically on successful pull; existing instances keep their pinned image.
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
 New Docker pulls and completed builds default to the local immutable cache pool
-under `PVISOR_DOCKER_HOME/images/pool-v1` (beneath the default user-local
-`pvisor/docker` directory when unset). They reuse the cache's V1 file/metadata
+under `PVISOR_DOCKER_HOME/images/pool-v2` (beneath the default user-local
+`pvisor/docker` directory when unset). They use the cache's V2 compressed directory radix
 index, authenticated fixed revision, conditional publication and direct VM
 backend. They do not retain a complete extracted rootfs or OCI layer archives.
 Original OCI configuration bytes are retained separately under `images/configs`
@@ -795,17 +795,27 @@ normal projection teardown removes it. Legacy records without `cache` continue
 to use their existing directories, including already created containers. No
 existing image directories are automatically deleted or migrated.
 
-Pool data is deduplicated by raw content SHA-256 across files, paths and images.
-Each existing V1 content chunk (at most 1 MiB) is independently encoded using
-Zstd level 3 when it saves more than 64 bytes, otherwise raw, in a versioned
-13-byte envelope containing magic, codec and decoded length. Reads bound input
-and decoded size, then verify the raw digest before returning bytes. Metadata
-remains uncompressed for indexed range reads. `pool-format.json` and the internal
-`pool+file://` binding identify this separate physical encoding. Its physical
-`format.json` also rejects ordinary raw V1 readers/publishers; the pool adapter
-supplies the unchanged logical index format. Ordinary
-filesystem/S3 V1 prefixes remain raw and are not converted in place. This is not
-the proposed small-file-pack V2 format. Current index entry/object limits remain.
+Pool, filesystem and S3 stores use one V2 physical format. All filesystem
+metadata is inline in independently compressed directory radix frames, routed by
+fixed-seed XXH3-64 with SHA-256 integrity. Oversized directories split recursively
+into 16 buckets. Small files (at most 64 KiB) pack by directory into at most
+1 MiB raw payloads, with independently decoded 16 KiB target data frames. Indexes hold
+blob/frame/slot references; slot offsets live in data frames. File attributes
+never enter content blobs. Previous-HEAD content placements survive rename,
+cross-directory moves and chmod; partially overlapping packs across images do
+not guarantee per-file physical deduplication. Large files retain independently
+addressed 1 MiB chunks, now also seekable Zstd frames. The format uses Zstd level 3
+and standard seekable footers, without the old pool-only envelope/raw fallback.
+
+`pool-format.json` rejects retired physical encodings without modifying them.
+V1 handles/readers/publishers are removed: republish OCI images into an empty V2
+prefix. Re-pulling an old catalogued image rebuilds its pool entry; containers
+pinned to an old cache handle need recreation. No old cache directory is deleted
+automatically. Storage versions are independent of transport protocols 1/2.
+The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
+and 2,000,000 content spans; object limits can be reached first. Publication still
+plans metadata in O(N) memory while staging encoded content on disk and bounding
+upload concurrency. See [the storage design](../../docs/src/en/design/lazy-image-v2.md).
 
 Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
 not enable DAX or make the mutable physical projection Immutable. A cold small
@@ -912,24 +922,25 @@ The detailed command, platform, storage and memory limits above remain relevant
 to embedded callers where they describe runtime behavior, and to the installed
 application where they describe frontend behavior.
 
-## Lazy image V2
+## Lazy image reader and transport
 
-Lazy images keep the existing immutable published-image format and handles.
-V2 optimizes the private host reader; it does not change OCI contents, guest
-commands, copy-up/export ownership, or the physical-lower stability declaration.
+Lazy storage V2 uses compressed directory frames and `pvisor-v2:` immutable
+handles. Reader and transport capabilities below are independent of the storage
+version; OCI contents, guest commands, copy-up/export ownership and the
+physical-lower stability declaration retain their contracts.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
-  The client reads the existing 64 KiB binary B+tree and file records locally,
-  including permissions, ownership and symlink metadata, instead of issuing
-  Stat/List RPCs. The pinned COMMIT authenticates the checksum catalog and pages;
-  only eight immutable metadata basenames are readable, with bounded ranges.
-  Legacy JSON response receipts are neither trusted nor written in this mode.
-  Invalid metadata propagates an error without silently falling back to RPC;
-  invalid local binary cache entries may be refetched and authenticated.
-  Authenticated raw pages and decoded B+tree nodes share a 256-entry LRU.
-  Nodes are validated once per residency rather than decoded on every lookup;
-  raw/node allocations remain budget-charged through their last active reference.
-  Persistent disk caches have no aggregate eviction quota. File-content reads remain unchanged. Initial immutable-object,
+  The client loads authenticated directory radix frames, including permissions,
+  ownership and symlink metadata, rather than issuing Stat/List RPCs. COMMIT
+  authenticates root.bin, which anchors the frame-reference tree. Only six
+  immutable metadata basenames are accepted, with bounded ranges. Legacy JSON
+  response receipts are neither trusted nor written in this mode. Invalid
+  metadata fails without silently falling back to RPC; invalid local encoded
+  cache frames may be refetched. Decoded nodes have a 16 MiB/4,096-entry LRU;
+  allocations stay budget-charged through the last active reference. Content
+  frames have a separate 64 MiB/4,096-entry cache. Same-key misses coalesce with
+  bounded concurrent admission. Persistent encoded disk caches have no total
+  eviction quota. Initial immutable-object,
   header and root-page reads are synchronous: runner lower reconstruction happens
   before Linux user-namespace setup, which requires kernel-level single-threadedness;
   joining temporary reader threads is not a safe substitute.
@@ -944,7 +955,7 @@ commands, copy-up/export ownership, or the physical-lower stability declaration.
   Prefetch never downloads file content or projects speculative guest names.
 - Remote list continuations are opaque and separate from local directory/FUSE
   cookies. Resume after page eviction replays from a retained boundary or zero;
-  local ordinals are never passed to the portable B-tree as remote cursors.
+  local ordinals are never passed to the portable index as remote cursors.
 - TCP/Unix readers negotiate framed protocol 2 with harmless Ping requests and
   reuse up to four connections per client. TCP uses NODELAY on both endpoints.
   Idle client streams expire after four seconds, before the server's five-second

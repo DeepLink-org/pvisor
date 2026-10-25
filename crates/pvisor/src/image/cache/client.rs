@@ -161,7 +161,7 @@ impl CacheClient {
             return None;
         }
         dirs::cache_dir().map(|root| {
-            root.join("pvisor/cache-v1/objects")
+            root.join("pvisor/cache-v2/objects")
                 .join(&hash(self.address().as_bytes())[7..])
         })
     }
@@ -261,7 +261,7 @@ impl CacheClient {
             }
         };
         let local_objects = (!pooled).then(dirs::cache_dir).flatten().map(|root| {
-            root.join("pvisor/cache-v1/objects")
+            root.join("pvisor/cache-v2/objects")
                 .join(&hash(address.as_bytes())[7..])
         });
         Ok(Self {
@@ -766,7 +766,7 @@ pub(super) mod retry_tests {
 
     pub(in crate::image::cache) fn handle() -> String {
         format!(
-            "pvisor-v1:{}:linux-amd64:{}",
+            "pvisor-v2:{}:linux-amd64:{}",
             "a".repeat(64),
             "b".repeat(64)
         )

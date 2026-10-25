@@ -1,4 +1,4 @@
-//! Per-image v1 metadata, paged indexes, and file-independent content chunks.
+//! V2 compressed directory radix indexes and content-only seekable blobs.
 use super::storage::{MAX_OBJECT, Storage, StoredObject};
 use super::{ImageTotals, MAX_READ, Request, Response, hash};
 use anyhow::{Context, bail, ensure};
@@ -11,27 +11,33 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 mod binary;
+mod content;
+mod frames;
+#[cfg(test)]
+mod measurement;
 mod publish;
 #[cfg(test)]
 mod tests;
 use binary::LoadedImage;
-const MAX_ENTRIES: usize = 200_000;
-const MAX_SPANS: usize = 500_000;
+pub(super) use binary::name_order;
+#[cfg(test)]
+pub(super) fn root_offset_for_test(bytes: &[u8]) -> usize {
+    frames::decode::<binary::Record>(bytes)
+        .unwrap()
+        .directory
+        .unwrap()
+        .offset as usize
+}
+const MAX_ENTRIES: usize = 1_000_000;
+const MAX_SPANS: usize = 2_000_000;
 pub(super) const MAX_CONTROL: usize = 1024 * 1024;
-const BINARY_NAMES: [&str; 4] = ["files.bin", "contents.bin", "index.bin", "objects.bin"];
-pub(super) const FORMAT: &[u8] = b"{\"format_version\":1,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
+const BINARY_NAMES: [&str; 2] = ["index.bin", "objects.bin"];
+pub(super) const FORMAT: &[u8] = br#"{"format_version":2,"hash_algorithm":"sha256","encoding":"zstd-seekable","chunk_bytes":1048576,"metadata_encoding":"pvisor-radix-v2","metadata_frame_bytes":65536,"route_hash":"xxh3-64","route_seed":"707669736f727632","route_radix_bits":4}"#;
 /// Exact immutable metadata basenames accepted by services and pinned proxies.
 pub(super) fn metadata_object_name(name: &str) -> bool {
     matches!(
         name,
-        "COMMIT.json"
-            | "manifest.json"
-            | "config.json"
-            | "checksums.bin"
-            | "files.bin"
-            | "contents.bin"
-            | "index.bin"
-            | "objects.bin"
+        "COMMIT.json" | "manifest.json" | "config.json" | "root.bin" | "index.bin" | "objects.bin"
     )
 }
 
@@ -157,8 +163,8 @@ impl Handle {
     fn parse(value: &str) -> anyhow::Result<Self> {
         let parts: Vec<_> = value.split(':').collect();
         ensure!(
-            parts.len() == 4 && parts[0] == "pvisor-v1",
-            "expected immutable pvisor-v1 image handle"
+            parts.len() == 4 && parts[0] == "pvisor-v2",
+            "expected immutable pvisor-v2 image handle; V1 is retired, republish into a new V2 prefix"
         );
         check_hex(parts[1])?;
         check_hex(parts[3])?;
@@ -171,7 +177,7 @@ impl Handle {
     }
     fn encode(&self) -> String {
         format!(
-            "pvisor-v1:{}:{}:{}",
+            "pvisor-v2:{}:{}:{}",
             self.image_key, self.platform, self.revision
         )
     }
@@ -188,7 +194,8 @@ pub(super) struct PortableCache {
     read_only: bool,
     local_objects: Option<PathBuf>,
     images: Mutex<LruCache<String, Arc<LoadedImage>>>,
-    blobs: Mutex<LruCache<String, Arc<Vec<u8>>>>,
+    blobs: Mutex<content::DataCache>,
+    flights: frames::Flights,
 }
 impl PortableCache {
     pub(super) fn publish_prepared(
@@ -210,7 +217,8 @@ impl PortableCache {
             read_only,
             local_objects: None,
             images: Mutex::new(LruCache::new(NonZeroUsize::new(4).unwrap())),
-            blobs: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
+            blobs: Mutex::new(content::DataCache::new()),
+            flights: frames::Flights::default(),
         }
     }
     pub(super) fn with_local_objects(mut self, root: Option<PathBuf>) -> Self {
@@ -285,23 +293,37 @@ impl PortableCache {
                 let end = offset.saturating_add(length as u64).min(*size);
                 let mut body = Vec::new();
                 if offset < end {
-                    let content = image.content(entry.content.context("file lacks content")?)?;
-                    ensure!(content.size == *size, "file content size mismatch");
-                    let first = offset / MAX_READ as u64;
-                    let last = (end - 1) / MAX_READ as u64;
-                    for ordinal in first..=last {
-                        ensure!(ordinal < content.count, "file chunk index out of range");
-                        let (digest, len) = image.chunk(content.first + ordinal)?;
-                        ensure!(
-                            len as u64 == (*size - ordinal * MAX_READ as u64).min(MAX_READ as u64),
-                            "invalid file chunk length"
-                        );
-                        let bytes = self.blob(&digest)?;
-                        ensure!(bytes.len() == len as usize, "cache data length mismatch");
-                        let position = ordinal * MAX_READ as u64;
-                        let start = offset.saturating_sub(position) as usize;
-                        let stop = (end.min(position + len as u64) - position) as usize;
-                        body.extend_from_slice(&bytes[start..stop]);
+                    match entry.content.context("file lacks content")? {
+                        binary::Content::Empty => bail!("nonempty file has empty content"),
+                        binary::Content::Packed(packed) => {
+                            body = self.read_packed(
+                                &packed,
+                                &entry.digest.context("file lacks digest")?,
+                                *size,
+                                offset,
+                                end,
+                            )?;
+                        }
+                        binary::Content::Chunks(root) => {
+                            ensure!(
+                                root.count == size.div_ceil(MAX_READ as u64),
+                                "file chunk count mismatch"
+                            );
+                            for ordinal in offset / MAX_READ as u64..=(end - 1) / MAX_READ as u64 {
+                                let (digest, len) = image.chunk(&root, ordinal)?;
+                                let position = ordinal * MAX_READ as u64;
+                                ensure!(
+                                    len as u64 == (*size - position).min(MAX_READ as u64),
+                                    "invalid file chunk length"
+                                );
+                                body.extend(self.read_chunk(
+                                    &digest,
+                                    len,
+                                    offset.saturating_sub(position) as usize,
+                                    (end.min(position + len as u64) - position) as usize,
+                                )?);
+                            }
+                        }
                     }
                 }
                 ensure!(
@@ -439,7 +461,7 @@ impl PortableCache {
     }
 
     // Socket readers have no access to global format.json. The pinned COMMIT,
-    // inventory, catalog and binary headers authenticate the supported schema.
+    // root descriptor and frame references authenticate the supported schema.
     fn load_revision(&self, handle: &Handle) -> anyhow::Result<Arc<LoadedImage>> {
         let key = handle.encode();
         if let Some(image) = self.images.lock().unwrap().get(&key).cloned() {
@@ -454,7 +476,7 @@ impl PortableCache {
         )?;
         let commit: Commit = serde_json::from_slice(&bytes)?;
         ensure!(
-            commit.format_version == 1
+            commit.format_version == 2
                 && commit.image_key == handle.image_key
                 && commit.platform == handle.platform,
             "COMMIT identity mismatch"
@@ -463,11 +485,9 @@ impl PortableCache {
         let expected = [
             "manifest.json",
             "config.json",
-            "files.bin",
-            "contents.bin",
+            "root.bin",
             "index.bin",
             "objects.bin",
-            "checksums.bin",
         ];
         ensure!(
             commit.metadata.len() == expected.len()
@@ -478,7 +498,7 @@ impl PortableCache {
         );
         for (name, desc) in &commit.metadata {
             crate::image::oci::digest_hex(&desc.sha256)?;
-            let limit = if name.ends_with(".json") || name == "checksums.bin" {
+            let limit = if name.ends_with(".json") || name == "root.bin" {
                 MAX_CONTROL
             } else {
                 MAX_OBJECT
@@ -501,10 +521,10 @@ impl PortableCache {
         // requires kernel-level single-threadedness even after userspace joins.
         let manifest_bytes = get("manifest.json")?;
         let config_bytes = get("config.json")?;
-        let checksums = get("checksums.bin")?;
+        let root = get("root.bin")?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         ensure!(
-            manifest.format_version == 1
+            manifest.format_version == 2
                 && image_key(&manifest.reference) == handle.image_key
                 && manifest.platform == handle.platform
                 && manifest.manifest_digest == commit.manifest_digest,
@@ -512,7 +532,7 @@ impl PortableCache {
         );
         let config: Configuration = serde_json::from_slice(&config_bytes)?;
         ensure!(
-            config.format_version == 1
+            config.format_version == 2
                 && config.architecture == platform_architecture(&handle.platform)?,
             "configuration platform mismatch"
         );
@@ -522,7 +542,7 @@ impl PortableCache {
             handle.clone(),
             commit,
             config,
-            &checksums,
+            &root,
         )?);
         self.images.lock().unwrap().put(key, image.clone());
         Ok(image)
@@ -561,15 +581,6 @@ impl PortableCache {
         if let Some(path) = local {
             cache_local(&path, &bytes);
         }
-        Ok(bytes)
-    }
-    fn blob(&self, digest: &str) -> anyhow::Result<Arc<Vec<u8>>> {
-        if let Some(bytes) = self.blobs.lock().unwrap().get(digest).cloned() {
-            return Ok(bytes);
-        }
-        let bytes =
-            Arc::new(self.immutable(&data_key(digest)?, digest, None, MAX_READ as usize)?);
-        self.blobs.lock().unwrap().put(digest.into(), bytes.clone());
         Ok(bytes)
     }
 }
@@ -651,7 +662,7 @@ fn decode_head(bytes: &[u8], key: &str, platform: &str) -> anyhow::Result<Head> 
     ensure!(bytes.len() <= MAX_CONTROL, "HEAD exceeds size limit");
     let head: Head = serde_json::from_slice(bytes)?;
     ensure!(
-        head.format_version == 1
+        head.format_version == 2
             && head.image_key == key
             && head.platform == platform
             && head.generation > 0,

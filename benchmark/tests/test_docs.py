@@ -20,7 +20,7 @@ spec.loader.exec_module(DOCS)
 class DocumentationTests(unittest.TestCase):
     def test_all_benchmark_articles_and_bound_data_are_consistent(self):
         pages, tables = DOCS.check_inventory()
-        self.assertEqual(pages, 38)
+        self.assertEqual(pages, 40)
         self.assertEqual(tables, 6)
         manifest = json.loads((ROOT / "docs.json").read_text())
         pairs = {}

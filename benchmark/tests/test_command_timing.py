@@ -82,6 +82,67 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(path.suffix, ".json")
             table = json.loads(path.read_text())
             self.assertTrue(table)
+            if row["status"] == "explicit-python-lazy-benefits":
+                self.assertEqual(row["benchmark_id"], "B-LAZY-STARTUP")
+                self.assertEqual(row["role"], "user-facing")
+                phase = path.stem.removeprefix("lazy_")
+                self.assertIn(phase, ["storage", "runtime", "remote"])
+                extra = " --daemon @DAEMON@" if phase == "remote" else ""
+                self.assertEqual(
+                    table,
+                    {
+                        phase: "$ python3 @REPO@/benchmark/storage/lazy_benefits.py "
+                        f"--phase {phase} --binary @BINARY@{extra} --inputs @INPUTS@ --output @OUTPUT@"
+                    },
+                )
+                self.assertTrue((ROOT / "storage/lazy_benefits.py").is_file())
+                continue
+            if row["status"] == "explicit-python-lazy-local-reads":
+                self.assertEqual(row["benchmark_id"], "B-LAZY-STARTUP")
+                self.assertEqual(row["role"], "user-facing")
+                self.assertEqual(row["entry"], "storage/lazy_local_reads.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "local-reads": "$ python3 @REPO@/benchmark/storage/local_reads.py "
+                        "--binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"
+                    },
+                )
+                self.assertTrue((ROOT / "storage/local_reads.py").is_file())
+                continue
+            if row["status"] == "explicit-python-native-docker":
+                self.assertEqual(row["role"], "engineering A/B")
+                variants = {
+                    "B-IMAGE-STORAGE-ENG": ("storage", "storage/image_storage.json"),
+                    "B-NATIVE-DOCKER-ENG": ("runtime", "storage/native_runtime.json"),
+                }
+                phase, entry = variants[row["benchmark_id"]]
+                self.assertEqual(row["entry"], entry)
+                self.assertEqual(
+                    table,
+                    {
+                        f"native-{phase}": "$ python3 @REPO@/benchmark/storage/native_docker.py "
+                        f"--phase {phase} --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"
+                    },
+                )
+                self.assertTrue((ROOT / "storage/native_docker.py").is_file())
+                continue
+            if row["status"] == "explicit-python-paired-storage":
+                self.assertEqual(row["benchmark_id"], "B-IMAGE-FORMAT-ENG")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "storage/image_format.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "paired-storage": "$ python3 @REPO@/benchmark/storage/image_format.py "
+                        "--baseline @BASELINE@ --candidate @CANDIDATE@ "
+                        "--baseline-runner @BASELINE_RUNNER@ --output @OUTPUT@ "
+                        "--files @FILES@ --directories @DIRECTORIES@ --backend @BACKEND@ "
+                        "--payload @PAYLOAD@ --runs 30 --warmup 3 --cpu @CPU@"
+                    },
+                )
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             if row["status"].startswith("prepared-python-ready"):
                 from subjects import LABELS
 

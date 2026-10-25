@@ -12,6 +12,7 @@ Complete CSV/JSON, provenance summaries and raw records remain in each batch's l
 | [End-to-end task performance analysis](agent-task-performance-analysis.md) | End-to-end measurements of real agent tasks across executors |
 | [VM memory performance analysis](vm-memory-performance-analysis.md) | Static curves and readback costs for deduplication, shared libraries, and pooling |
 | [OpenSandbox: startup, disk and memory](opensandbox-performance-analysis.md) | Native guest creation wait, compressed image inventory and complete service-group memory |
+| [V2 versus native Docker: storage, startup and memory](image-format-performance-analysis.md) | Same-digest native Docker inventories, CLI readiness and complete deployment memory |
 | [Filesystem performance analysis](filesystem-performance-analysis.md) | Load measurements and retest records for OverlayFS configurations |
 | [Cache and asynchronous-write performance curves](filesystem-io-performance-analysis.md) | Engineering curves for request size, concurrency, synchronization, and write coalescing |
 | [Benchmark methodology and evidence](benchmark-methodology-evidence.md) | Measurement scope and evidence inventory of historical cohorts |

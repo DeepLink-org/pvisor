@@ -1,10 +1,10 @@
 # 共享镜像缓存与存储后端
 
-`pvisor cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor-daemon serve --cache` 自动准备 OCI 镜像并生成分页索引和内容对象，存放在 `<image-store>/cache-v1/`。三个后端共用不可变 revision、对象格式和镜像读取器。客户端使用 `image_handle` 查询，不接收宿主路径；文件查询不访问 registry。
+`pvisor cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor-daemon serve --cache` 自动准备 OCI 镜像并生成分页索引和内容对象，存放在 `<image-store>/cache-v2/`。三个后端共用不可变 revision、对象格式和镜像读取器。客户端使用 `image_handle` 查询，不接收宿主路径；文件查询不访问 registry。
 
 ## 选择后端
 
-服务器、文件系统与 S3 使用[共享镜像缓存 v1](../design/shared-image-cache-storage.md)：每个镜像独立 meta、跨镜像共享 data、二进制分页文件表与索引。只保留这一套格式实现。
+服务器、文件系统、S3 与本地 pool 使用[共享镜像缓存 V2](../design/lazy-image-v2.md)：独立镜像元数据、压缩目录 radix 索引与共享内容池。V1 存储实现已删除，旧缓存需要从 OCI 重新发布到空目录／前缀；不会自动删除旧数据。
 
 服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `pvisor-daemon serve --cache`。
 
@@ -24,7 +24,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
 pvisor cache --backend filesystem --location /mnt/pvisor-cache \
-  --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+  --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
 `--location` 是新的共享缓存目录，`--image-store` 是发布时用来拉取/解包 OCI 镜像的本地暂存目录；两者不同。也可以复用现有 `PVISOR_IMAGE_STORE`。发布完成后读取不依赖暂存目录，CI 可把它设为任务临时目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
@@ -41,7 +41,7 @@ pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
 # Native cache consumers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
 pvisor cache prepare alpine:latest
-pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor spawn --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
@@ -69,7 +69,7 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v1:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
+`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -81,27 +81,27 @@ s3://your-bucket/pvisor-cache/
 │       ├── revisions/<revision-hex>/
 │       │   ├── manifest.json
 │       │   ├── config.json
-│       │   ├── files.bin
-│       │   ├── contents.bin
+│       │   ├── root.bin
 │       │   ├── index.bin
 │       │   ├── objects.bin
-│       │   ├── checksums.bin
 │       │   └── COMMIT.json
 │       └── uploads/<upload-id>/
 │           ├── plan.json
 │           └── progress.json
-└── data/sha256/<first-two-hex>/<next-two-hex>/<full-object-hex>
+└── data/
+    ├── packs/<first-two-hex>/<next-two-hex>/<encoded-blob-sha256>
+    └── sha256/<first-two-hex>/<next-two-hex>/<plaintext-chunk-sha256>
 ```
 
-每个文件从自身 offset 0 开始独立切成至多 1 MiB 的 raw 块，不合并相邻小文件。相同文件换路径、权限或镜像仍引用相同 data 对象；文件表、目录索引与内容描述属于各自 revision。文件名与符号链接保持原始字节，硬链接保持同一 inode，属性范围沿用现有 cache，不新增 xattr。
+≤64 KiB 小文件按目录聚合为不可变压缩 pack，索引记录 blob/frame/slot，偏移保存在数据 frame 的 slot 表；大文件按自身 offset 0 切成至多 1 MiB 的内容块。数据对象不含文件系统元数据，旧 HEAD 中的内容位置可复用于 rename、移动和 chmod。部分重叠的小文件集合不保证跨镜像逐文件物理去重。路径与符号链接保留原始字节，硬链接保持 inode 身份，不新增 xattr。
 
 ### 存储布局与请求成本
 
-每个二进制元数据对象最多 64 MiB，控制 JSON 与页校验目录最多各 1 MiB；最多 200,000 个文件条目与 500,000 个内容块描述。S3 兼容服务必须支持 Range GET、If-None-Match 条件创建与 If-Match 条件更新。
+每个二进制元数据对象最多 64 MiB，控制对象最多 1 MiB；最多 1,000,000 个条目与 2,000,000 个内容跨度，可能先达到对象大小上限。S3 兼容服务必须支持 Range GET、If-None-Match 条件创建与 If-Match 条件更新。
 
 发布先写并校验全部共享内容、镜像元数据与 COMMIT，再 CAS 更新自身平台的 HEAD。同一旧 HEAD 只有一个发布者能提交；冲突明确失败，不盲目覆盖。损坏的已存在不可变对象也拒绝复用，不覆盖其他镜像正在使用的数据。失败会留下尚未引用的版本/对象。上传完成记录保留在 uploads，清理留给离线维护。
 
-启动只获取控制对象、紧凑页校验目录、表头与根页，不完整解析全文件列表。lookup/readdir 按需取 64 KiB 索引页，read 仅取相关描述与数据块。校验过的页与数据对象有有界内存缓存，并持久保存到 <user-cache>/pvisor/cache-v1/objects/<location-hash>/。损坏的本地缓存会重新获取；远端损坏、缺失和权限错误会失败，不填零，不改走 registry。
+打开只获取控制对象、root.bin 与根目录 frame，不完整解析文件列表。lookup/readdir 按需取独立压缩索引 frame，read 获取相关布局与数据 frame。索引 LRU 限制为 16 MiB 解码驻留，内容为 64 MiB／4,096 项；非池读取器可将编码 frame 持久保存到 <user-cache>/pvisor/cache-v2/objects/<location-hash>/。本地池普通读取没有持久 raw 镜像副本。本地缓存损坏后重新获取；远端缺失、损坏和鉴权失败明确报错，不填零、不改走 registry。
 
 读写模式的可变 tag HEAD 在五分钟内复用；--refresh 由发布端显式更新。只读模式始终使用已发布 HEAD，无 registry 查询。每个任务固定返回的 image_handle，旧 revision 保留时仍可读取。IMAGE@sha256:… 是独立引用，需要另行发布其 meta；持有 tag 返回的 image_handle 已能固定那个版本。
 
@@ -149,9 +149,9 @@ pvisor cache prepare alpine:latest
 # 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
 pvisor cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
-pvisor cache list pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
-pvisor cache stat pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
+pvisor cache stat pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
 `PVISOR_CACHE_SERVER` 为客户端和服务端选择端点。服务端用 `pvisor-daemon serve --cache --cache-listen` 覆盖它。没有覆盖时端点为 `unix://<dirs::cache_dir()>/pvisor/cache.sock`：
@@ -206,23 +206,25 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 ## 线格式
 
-每个连接只承载一个请求和一个响应，然后关闭。一帧是四字节无符号大端 JSON 字节长度，后接 UTF-8 JSON。JSON 帧上限 1 MiB。成功的 `read` 响应帧之后紧跟恰好 `length` 个原始字节。其他响应没有二进制体。没有未经请求的消息或压缩。
+协议 1 每连接一次交换；协议 2 经无副作用 Ping 协商后允许顺序复用，客户端最多保留四条连接。存储格式 V2 与传输协议版本独立。帧为四字节大端长度和 UTF-8 JSON，JSON 上限 1 MiB；read 与 metadata 的成功响应之后携带声明长度的原始字节。传输体不压缩（metadata 对象自身可以压缩），必须校验长度与 SHA-256。
 
 请求信封：
 
 ```json
-{"version":1,"token":null,"request":{"op":"read","digest":"pvisor-v1:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
+{"version":1,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
 ```
 
 路径和目录名是 Unix 文件名字节的 JSON 数组，以保留非 UTF-8 文件名。路径相对于镜像根；空路径表示根目录。绝对路径、向上遍历和 NUL 会被拒绝。符号链接作为元数据返回，服务端路径解析绝不跟随它们。guest 文件系统遍历在 guest 树内解析符号链接。
 
 | `op` | 字段 | 响应 `status` |
 | --- | --- | --- |
-| `ping` | 无 | `ready`（协议 v1） |
+| `ping` | 无 | `ready` |
 | `prepare` | `image`、`architecture`（`amd64` 或 `arm64`）、可选 `refresh`（默认 false） | `prepared`：`digest`、`architecture`、`env`、`entrypoint`、`cmd`、可选 `totals`（`files`、`bytes`）、必填 `metadata_generation` 和 `image_handle` |
-| `list` | `digest`、`path`、`offset`（条目索引，从 0 开始） | `entries`：已排序的 `names`、必填且对齐的 `metadata` 数组、`next_offset`（完成时为 null） |
+| `list` | `digest`、`path`、`offset`（初始为 0，之后使用 opaque continuation） | `entries`：已排序的 `names`、必填且对齐的 `metadata` 数组、`next_offset`（完成时为 null） |
 | `stat` | `digest`、`path` | `metadata`：`kind`、`size`、`mode`、`uid`、`gid`、`inode`、`nlink`、`mtime`、`mtime_nsec`、`target` |
 | `read` | `digest`、`path`、`offset`（字节偏移）、`length`（1..1048576） | `data`：`length`、`sha256`，后接原始字节 |
+| `open` | `handle`, `architecture` | `prepared` |
+| `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
 `prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。成功的已准备镜像记录持久化到
 `<image-store>/metadata/prepared-v1/`，包含平台摘要和启动配置。可变 tag 复用记录五分钟；不可变摘要记录在其解包 root 存在期间不过期。`pvisor cache prepare IMAGE
@@ -234,7 +236,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 目录页包含与 `stat` 相同的属性，避免为每个子项单独请求。页最多 256 个条目，并会缩小以适应 JSON
 帧上限（含长字节数组名和符号链接目标）。目录属性为必填字段，仅包含名字的响应会被拒绝。持久化的页在多次挂载间保留其属性。
 
-`kind` 为 `file`、`directory`、`symlink` 或 `special`。`mode` 包含 Unix 类型与权限位。`target` 包含符号链接字节或 null。属性反映服务端解包后的文件系统；v1 不重建原始 tar 所有权、不提供 xattr，也不定义跨服务端可移植的 inode ID。只有常规文件可读。短读（包括零字节）表示 EOF。客户端必须在校验通过后才把字节放入缓存，检查内容体长度和 SHA-256。所提供的哈希用于检测传输损坏；它不是对不可信服务端的独立证明。服务端及其本地镜像存储是受信任的。
+`kind` 为 `file`、`directory`、`symlink` 或 `special`。`mode` 含 Unix 类型／权限位，`target` 为链接字节或 null。保留已准备源的 ownership/mode override；不提供任意 xattr 或跨服务端可移植 inode ID。只有常规文件可读，短读（包括零字节）表示 EOF。客户端校验长度与 SHA-256 后才能缓存。哈希检测损坏，不构成对不可信服务端的独立证明。
 
 错误是如下帧：
 
@@ -246,18 +248,18 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 服务端读取使用与文件系统/S3 相同的有界镜像、元数据页和内容对象缓存。OCI 源目录检查及其目录缓存用于发布，不再用于处理 guest 文件请求。
 
-服务端有 16 个请求/文件 worker，最多 16 个排队连接。多余连接会被关闭；客户端可以重试。带认证的 prepare 请求转入单独的 2 worker 池，队列 16 个请求；满时服务端返回显式 busy 错误。registry 等待与解包不占用文件 worker。入站请求读取有五秒不活动超时；响应读写保留 300 秒超时，TCP 连接有 10 秒超时。长时间准备可能比断开的客户端活得更久；重试是安全的。关闭时不会优雅取消单个 OCI 下载。registry 下载限制和缓存淘汰沿用现有镜像存储；v1 不增加配额或淘汰。
+服务端最多接纳 64 个连接，分帧／空闲等待与 16 个文件 worker 分离；文件队列上限 16。准备任务有独立的两个 worker 与 16 项队列。饱和时返回 busy 或关闭未接纳连接。服务端空闲超时五秒，客户端池四秒过期。长准备任务可能在客户端断开后继续，关闭不会优雅取消独立 OCI 下载；自动磁盘配额与 GC 未实现。
 
-不存在 vCPU 暂停/恢复消息。VM 文件服务在隔离 runner 中处理请求，本地文件与 Unix socket 缓存直接访问。Linux 的 TCP/S3 下载经私有 Unix socket 委托给宿主访问进程，以保留 runner 的网络隔离；通道只允许固定不可变镜像的 stat/list/read，禁止 prepare、open 和其他镜像。凭据描述文件保存在隐藏的私有 owner 中，访问进程随 VM teardown 终止。host FUSE 入口继续在宿主获取缓存内容。
+不存在 vCPU 暂停／恢复消息。VM 文件服务在隔离 runner 中处理请求，本地文件与 Unix socket 缓存直接访问。Linux TCP/S3 经私有 Unix socket 委托宿主访问进程，只允许绑定镜像的 stat/list/read 及白名单 metadata，禁止 prepare、open 与其他镜像。凭据留在隐藏 owner，进程随 VM teardown 终止。host FUSE 在宿主取内容。
 
 ## 验证后端
 
-`mise run test -- pvisor` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
+`mise run test -- pvisor pvisor-cli` 包含服务器兼容性、文件系统/S3 独立 CLI 读写、只读权限、损坏拒绝与配置优先级检查。S3 本地夹具独立验算 SigV4（包括临时会话令牌），不使用真实账号、公网请求或外部 daemon。
 
 有 KVM 与静态 musl guest target 的 Linux x86_64 主机可以执行真实 VM 验收：
 
 ```sh
-cargo nextest run --locked -p pvisor --test cache_backends --run-ignored ignored-only
+cargo nextest run --locked -p pvisor-cli --test cache_backends --run-ignored only
 ```
 
 此验收从两个后端启动 VM，删除发布端暂存目录后校验 guest 文件内容，并验证继承宿主环境时不会泄漏存储凭据。

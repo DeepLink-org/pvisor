@@ -173,7 +173,7 @@ A read-only export can be cached as a whole. A mixed view additionally requires 
 
 Bootstrap delivers bounded version/checksum metadata, root/necessary pages and capabilities; fetch additional metadata pages on demand. Represent directory indexes, inode attributes, symlinks, hardlink groups and content locations explicitly. Package construction, page delivery and inode/dentry creation are separate costs.
 
-[pvisor-paged-v1](../../shared-image-cache-storage.md) provides fields/building foundations, while the guest format requires review. It currently omits xattr, so it does not establish complete ACL/security input. Incomplete permissions exclude local open; missing attribute fields require backend queries.
+[pvisor-radix-v2](../../lazy-image-v2.md) provides fields/building foundations, while the guest format requires review. It currently omits xattr, so it does not establish complete ACL/security input. Incomplete permissions exclude local open; missing attribute fields require backend queries.
 
 Before kernel consumption, limit bytes, records, page references, depth, name/target lengths and offset arithmetic. Reject cycles, duplicates, out-of-bounds references and unknown required features. Retain both host validation and kernel boundary checks. Fix format version/endian layout; do not map native Rust/C struct memory.
 
@@ -419,7 +419,7 @@ Expand only with scoped net benefit, permitted non-target regression and accepta
 | VMM filesystem | [virtio-fs](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor-vm/src/devices/virtio/fs), [VM API](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md) | Trusted references, handleless service, binding, queues/updates and capture |
 | Stage/observation | [OverlayCore](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlay-core/README.md), [FilesystemService](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlay-core/src/service.rs) | Composition/copy-up, baseline, actual effects, partial failures and seal |
 | Host-cache lessons | [OverlayFs](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlayfs/README.md) | Owned-view contracts, invalidation/failure cases within adapter boundaries |
-| Image/import format | [Shared-image design](../../shared-image-cache-storage.md) | Revision, index, content checks, complete permissions, format/build evidence |
+| Image/import format | [Shared-image design](../../lazy-image-v2.md) | Revision, index, content checks, complete permissions, format/build evidence |
 | Guest userspace | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | Necessary initialization/ACK, keeping ordinary stat/open in kernel |
 | Lifecycle/integration | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime), [environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | Admission/freeze/restore/fork/configuration/Host authority |
 | Validation/performance | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md), [benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | Candidate cases, fault/interleaving tests, real VM harness, raw evidence/statistics |

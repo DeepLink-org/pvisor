@@ -49,7 +49,7 @@ impl MetadataStorage {
             ensure!(
                 matches!(
                     name,
-                    "COMMIT.json" | "manifest.json" | "config.json" | "checksums.bin"
+                    "COMMIT.json" | "manifest.json" | "config.json" | "root.bin"
                 ),
                 "whole binary metadata reads are forbidden"
             );

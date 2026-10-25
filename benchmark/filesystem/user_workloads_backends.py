@@ -168,7 +168,7 @@ def _host_argv(case, backend, rounds=3, ram_mib=512):
         return payload
     argv = [
         "/bench-artifacts/pvisor",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--pass-env",
         "PYTHONDONTWRITEBYTECODE",

@@ -1,7 +1,3 @@
 {
-  "unprepared": {
-    "Allocated bytes": null,
-    "Apparent bytes": null,
-    "Files": null
-  }
+  "native-storage": "$ python3 @REPO@/benchmark/storage/native_docker.py --phase storage --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"
 }

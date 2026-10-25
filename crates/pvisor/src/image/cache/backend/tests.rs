@@ -1355,7 +1355,7 @@ fn index_pages_ignore_rechecksummed_positive_and_negative_receipts_after_reconst
 
 #[test]
 fn index_pages_old_receipts_cannot_mask_corrupt_remote_metadata() {
-    for name in ["COMMIT.json", "checksums.bin", "index.bin"] {
+    for name in ["COMMIT.json", "root.bin", "index.bin"] {
         let (temp, server, client, handle, pages) = portable_fixture(false);
         let binding = client.binding();
         let blocks = temp.path().join("blocks");
@@ -1378,9 +1378,14 @@ fn index_pages_old_receipts_cannot_mask_corrupt_remote_metadata() {
         let lists = server.lists.load(Ordering::Relaxed);
         drop(legacy);
         let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
-        let object = temp.path().join("shared").join(prefix).join(name);
+        let object = temp.path().join("shared").join(&prefix).join(name);
         let mut bytes = fs::read(&object).unwrap();
-        bytes[0] ^= 1;
+        let position = if name == "index.bin" {
+            metadata_root_offset(&temp.path().join("shared").join(prefix))
+        } else {
+            0
+        };
+        bytes[position] ^= 1;
         fs::write(object, bytes).unwrap();
         let client = crate::image::cache::client::tests::use_server_reuse(
             CacheClient::from_binding(binding).unwrap(),
@@ -1446,9 +1451,10 @@ fn index_page_rollout_requires_all_gates_and_only_exact_zero_disables() {
 fn index_page_corruption_and_transport_failure_never_fall_back_to_guest_rpcs() {
     let (temp, server, client, handle, pages) = portable_fixture(false);
     let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
-    let index = temp.path().join("shared").join(prefix).join("index.bin");
+    let root = temp.path().join("shared").join(prefix);
+    let index = root.join("index.bin");
     let mut bytes = fs::read(&index).unwrap();
-    bytes[0] ^= 1;
+    bytes[metadata_root_offset(&root)] ^= 1;
     fs::write(index, bytes).unwrap();
     assert!(
         RemoteFs::new_with_overrides(
@@ -1532,4 +1538,10 @@ fn index_page_authorization_failure_is_not_a_legacy_downgrade_signal() {
         std::io::ErrorKind::PermissionDenied
     );
     worker.join().unwrap();
+}
+
+fn metadata_root_offset(root: &std::path::Path) -> usize {
+    // root.bin begins with a bincode Record. Decode via the test-only format
+    // helper rather than relying on the retired fixed-page layout.
+    crate::image::cache::portable::root_offset_for_test(&fs::read(root.join("root.bin")).unwrap())
 }

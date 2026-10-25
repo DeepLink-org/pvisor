@@ -67,4 +67,4 @@
 
 Daemon 池与 node backing 恢复分开。物理池丢失会使依赖 VM 失败；sealed 压缩客户端保留已交付句柄的本地恢复并停止新发布；API 重启保留独立组件，但不能恢复已失败的池内容。见[启用、所有权和限制](../../guides/daemon/index.md#memory-pool)。
 
-相关设计：[Daemon 架构](index.md)、[共享镜像存储](../shared-image-cache-storage.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。
+相关设计：[Daemon 架构](index.md)、[共享镜像存储](../lazy-image-v2.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。

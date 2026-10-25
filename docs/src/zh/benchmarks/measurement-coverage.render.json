@@ -25,7 +25,7 @@
   },
   "[lazy-image-startup](lazy-image-startup.md)": {
     "数据状态": "部分复测",
-    "实测范围": "同一 host staged 执行器的四文件惰性加载；冷/热各 N30，含取数和挂载；VM 应用启动保留独立历史数据"
+    "实测范围": "当前 V2 对原生 Docker：四镜像库存 N3；预准备启动 N30／内存 N5；shell、Python、标准库 mmap 冷热各 N30；WAN／并发未测"
   },
   "[network](network.md)": {
     "数据状态": "历史数据",

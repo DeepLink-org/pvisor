@@ -1,0 +1,1 @@
+{"remote":"$ python3 @REPO@/benchmark/storage/lazy_benefits.py --phase remote --binary @BINARY@ --daemon @DAEMON@ --inputs @INPUTS@ --output @OUTPUT@"}

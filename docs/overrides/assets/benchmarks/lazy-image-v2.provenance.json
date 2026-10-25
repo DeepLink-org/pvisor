@@ -1,0 +1,165 @@
+{
+  "benchmark_id": "B-LAZY-STARTUP",
+  "role": "user-facing",
+  "state": "passed",
+  "scope": "v2-native-docker-local-and-remote",
+  "date": "2026-10-25",
+  "source_revision": "9e1b8f1543ed25e2c2fd9690e5d8cca7b2487d1f",
+  "base_revision": "92a4ce4eb6b1f239a71db9ec353e863ad5ac1a04",
+  "counts": {
+    "storage_pairs": 15,
+    "startup_pairs": 30,
+    "memory_pairs": 5,
+    "remote_pairs": 90,
+    "remote_formal_trials": 360,
+    "remote_warmup_trials": 36,
+    "local_read_pairs": 60,
+    "local_read_trials": 120,
+    "local_read_warmup_trials": 12
+  },
+  "cohorts": {
+    "storage": {
+      "batch": "lazy-benefits-storage-rebase-20261025",
+      "state": "complete",
+      "manifest_sha256": "ca783f5de0b6c8aa766a0d3bcd304e96b64746797d7d0196e9ee8866d0198e6a",
+      "summary_sha256": "8888bffda76e68e904ef3288d55d495050e049f7c2e0c2d0a937912ae292297d",
+      "binary_sha256": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f"
+    },
+    "runtime": {
+      "batch": "lazy-benefits-runtime-rebase-20261025",
+      "state": "complete",
+      "manifest_sha256": "601ce84e6e98441ca74ab3ac3de8288a4dafc7df01de3f98473e4d956f34e138",
+      "summary_sha256": "8bdcb10ffe4c34f2396d1d1e202271a41fa548c9f63d03a4b77a1b4dbc4e94ff",
+      "binary_sha256": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f",
+      "memory_summary_sha256": "b5028f092995b47f18e4749bcd09f3daba72c948e7e5be95846ac108bf7e27c1"
+    },
+    "remote": {
+      "batch": "lazy-benefits-remote-rebase-20261025",
+      "state": "complete",
+      "manifest_sha256": "b90e0022268eaccf92c2ddef0a4dd7fcc7d21a1c68cc3ecd9b16d179353f3422",
+      "summary_sha256": "453fd7d642d0314281326977039f8282dfce424b09a4da0a3f4bbd381fbd48aa",
+      "binary_sha256": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f",
+      "cache_daemon_sha256": "73d481ac623f281cfe205f5f9f65e461f865685f2c9e5394e62e5eab00dbaab2"
+    },
+    "local-reads": {
+      "batch": "lazy-benefits-local-reads-rebase-20261025",
+      "state": "complete",
+      "manifest_sha256": "48334f009a765fb5ffc5a4bad1f83c261edcf1ca0fd7888761aafaf191869219",
+      "summary_sha256": "68da35a00e0c1b25c29027a2bab92866dbfb4c15178f02520955a4bdc7a13c18",
+      "binary_sha256": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f"
+    }
+  },
+  "inputs": [
+    {
+      "name": "alpine-3.20",
+      "digest": "sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e"
+    },
+    {
+      "name": "ubuntu-24.04",
+      "digest": "sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc"
+    },
+    {
+      "name": "python-3.12-slim-bookworm",
+      "digest": "sha256:57d96f71de145a98e7ceca18ee4ade77bba4103a33a72dfaea026b23625c6bf0"
+    },
+    {
+      "name": "python-3.13-slim-bookworm",
+      "digest": "sha256:4cea12ab7d78a3312c85f8cab19b6971d4fe9704da25443986c0bc20a6678850"
+    }
+  ],
+  "scope_notes": [
+    "same-digest native rootless Docker/containerd overlayfs vs current V2",
+    "local inventories include complete content and metadata; Btrfs per-directory compression disabled",
+    "remote loopback HTTPS registry vs token cache TCP; host page caches retained",
+    "container memory limits and guest RAM differ; whole-group memory is not net host physical memory",
+    "mmap scans include enumeration and SHA-256; repeat scans reuse pages"
+  ],
+  "excluded_attempts": [
+    {
+      "batch": "lazy-benefits-local-reads-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-local-reads-20261025-b",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-local-reads-preflight-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-local-reads-preflight2-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-local-reads-preflight3-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight2-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight3-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight4-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight5-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight6-20261025",
+      "state": "failed",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-remote-preflight7-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-runtime-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    },
+    {
+      "batch": "lazy-benefits-storage-20261025",
+      "state": "complete",
+      "usage": "prior independent cohort or rejected attempt; not pooled with current rebased cohorts"
+    }
+  ],
+  "audit_sha256": "ed840ee7c8abce38188eca0aa2104d14e17ff036e828e77e7ac411a763ebd8dc",
+  "generator_sha256": "9426f8c26ed1821910a059641a2ec6ebba4c75387e61ba78f20a416e1682d2ae",
+  "plotting_versions": {
+    "matplotlib": "3.11.2",
+    "numpy": "2.5.4"
+  },
+  "outputs": {
+    "docs/overrides/assets/benchmarks/lazy-v2-capacity.svg": "0e73985b087a4d7d7ef8320bea285b3b36573490893e418728adb5ef8d50aacb",
+    "docs/overrides/assets/benchmarks/lazy-v2-remote.svg": "56f6707ac6049affd12d8fbd8b3ce9061a3a216562242213a6cc10ce89002e46",
+    "docs/overrides/assets/benchmarks/lazy-v2-runtime.svg": "3cf12fe2c3bf5af016e59f71fe1b20877a51c2ee3369732e0923e84a13325bad"
+  }
+}

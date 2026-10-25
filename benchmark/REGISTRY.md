@@ -136,18 +136,22 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
 - **入口脚本：** `benchmark/startup/timing.json` 是八个后端的 Ready / Exit 对比表，每行调用固定的 Python timing 脚本（3 次预热、60 次样本，同一次 Popen 记录精确 Ready 行与正常退出）。启动命令由 `subjects.py` 固定；解释器启动和输入准备不计时。`mise run benchmark -- startup/timing` 输出整表并生成 `timing.render.json`；`--row` 可选择单行。单后端 `*_timing.json` 可独立执行。旧 hyperfine completion 模板已删除，历史完成时间数据保留原口径。显式保留的成功批次可通过 `update.py --startup-docs` 发布，历史报告归档于 `benchmark/startup/.data/history/`。Firecracker 使用 stock 内核/MMIO，预检失败不报告有效 Exit。复现见 [`benchmark/startup/README.md`](../benchmark/startup/README.md)。历史 runner 已退役，冻结制品和原批次保留原口径；工程实验与诊断见下列独立条目。
 
-### B-LAZY-STARTUP：远程镜像按需读取能缩短多少启动等待 {#b-lazy-startup}
+### B-LAZY-STARTUP：惰性镜像的本地与远程供给成本 {#b-lazy-startup}
 
-- **JSON 入口状态：** 可执行 [startup/image_compare.json](startup/image_compare.json)、[startup/image_lazy_compare.json](startup/image_lazy_compare.json)、[startup/stage_lazy_compare.json](startup/stage_lazy_compare.json)；未准备 [startup/lazy_startup.json](startup/lazy_startup.json)（拒绝测量）。
+- **JSON 入口状态：** 当前 V2 对原生 Docker 的入口为 [storage/lazy_storage.json](storage/lazy_storage.json)、[storage/lazy_runtime.json](storage/lazy_runtime.json)、[storage/lazy_remote.json](storage/lazy_remote.json)、[storage/lazy_local_reads.json](storage/lazy_local_reads.json)，复现前提见 [storage/README.md](storage/README.md)。已有制品的专项入口保留 [startup/image_compare.json](startup/image_compare.json)、[startup/image_lazy_compare.json](startup/image_lazy_compare.json)、[startup/stage_lazy_compare.json](startup/stage_lazy_compare.json)；完整 TurboOCI 四组 [startup/lazy_startup.json](startup/lazy_startup.json) 尚未准备（拒绝测量）。
 
 - **文档：** `lazy-image-startup.md`（中英文同步）。
 - **角色：** user-facing。
-- **Motivation：** 频繁创建短任务环境时，用户需要判断客户端按需读取是否比完整拉取、解包更划算，以及镜像服务端准备成本如何摊销。
-- **想要的结论：** 同一固定 linux/amd64 digest、同一负载下（Ubuntu shell、Python/NumPy 脚本与可选 PyTorch CPU 导入分别成批，不合并），Docker 与 pVisor cache-service lazy VM 的客户端冷/热缓存 ready、completion 和传输量；明确服务端预准备成本，不解释为纯 VMM 差异。
+- **Motivation：** 频繁创建短任务环境时，用户需要判断本地压缩池的磁盘收益、已有镜像的启动／读取与实例内存成本，及远程按需读取相对完整拉取是否划算，明确服务准备如何摊销。
+- **想要的结论：** 同一固定 linux/amd64 digest、同一负载下（Ubuntu shell、Python 标准库／NumPy 脚本与可选 PyTorch CPU 导入分别成批，不合并），原生 Docker 与 pVisor 的完整本地库存、预准备运行成本、cache-service 客户端冷/热 ready／completion／响应量与首次／重复读取；明确服务端准备与 staging，不解释为纯 VMM 或解压差异。
 - **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-daemon serve --cache 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
 - **当前实现复测：** 新静态 release 的 Docker/lazy 对照按负载独立成批，显式启用客户端索引页、上游连接池及持久私有桥；私有 namespace 隔离已有 Host listener。可使用校验后的原始压缩 OCI blobs 发布新 registry，并复制支持的 cache store，此时仅报告缓存准备成本，不沿用历史首次拉取耗时；Read Data、Metadata Data 和总响应分别计数。旧批次保留且不与新批次合并或计算实现加速比。
 - **TurboOCI 对照协议：** [具体协议](../benchmark/startup/TURBO_OCI.md)回答“相同 OCI 来源与应用下，TurboOCI 和 pVisor 的按需路径分别缩短多少客户端等待，准备和传输成本是多少”。四组为相同 containerd/runc 的 eager OCI 与 TurboOCI，以及相同 pVisor VM 的 eager OCI 与文件索引 lazy；内部比较加载路径，跨运行时仅比较完整产品路径。原四项公开表缺少镜像身份和负载脚本，不称精确复现；先固定 shell 与 NumPy 同类负载。独立服务、namespace 和缓存，禁止调用上游全局清理脚本；Range 206 与 200 的实际字节、元数据与内容分别计数。先预检，再按轮随机交替冷客户端及紧随其后的热客户端，3 次预热、30 个正式样本，正确性与证据门禁同上。独立 OverlayBD/TCMU 后端已部署并通过 TurboOCI shell 功能验证，操作见[部署记录](../benchmark/startup/OVERLAYBD_LAB.md)；正式四组采样/审计尚未接通，不产生或发布新性能结果。
 - **历史入口：** `lazy_startup.py`。
+
+- **当前压缩存储全路径复测：** `benchmark/storage/lazy_benefits.py` 复用原生 Docker 库存／运行时适配器，分别以独立 `storage`、`runtime`、`remote` 批次回答本地磁盘、预准备实例成本和按需供给收益。四种固定 amd64 镜像单独及组合库存各三次；运行时三次预热、三十轮随机配对和五组内存协议不变。远程批次以同 digest Ubuntu shell、Python 标准库校验和完整文件遍历／mmap 校验三种工作集独立统计，三次预热、三十轮随机配对，每臂冷客户端后紧接热客户端。Docker 从新的私有 rootless daemon 空库存经只读本机 OCI registry 拉取；pVisor 从预先发布的同镜像 cache 服务经计数代理取数，每对使用空客户端目录，热复用内容但创建新 VM；不清全局页缓存。应用 CPU 0,1、服务 2,3，2 CPU／512 MiB 容器限额与 2 vCPU／512 MiB guest RAM，明确不同边界与辅助进程预算，不声称等整机内存。时钟包括 pull+run 或实际 lazy spawn 到正确 Ready／正常退出，排除服务准备和私有 daemon 启动；服务发布从已验证的压缩 OCI blobs 出发，registry manifest 解析仍需访问上游，单列准备耗时和完整服务库存，不与 loopback Docker 导入作速度比。逐次核对 digest、内容／版本、私有文件、VM Bundle、冷非零／热零内容响应、完整响应计数与资源清理；代理保留原始帧并校验 body digest，统计应用响应而非 WAN wire bytes。任何错误使批次无效，不删慢样本，N30 不报告 P99；分布分离报告簇比例和中位数。整文件扫描不能外推随机写入或 DAX，mmap 指 guest page cache。此用户决策批次不与旧格式、旧 OverlayBD 或 OpenSandbox 工程批次拼接；本地结果可改变用户页的容量／启动判断。
+- **当前批次分布规则：** 排序时钟的相邻间隔超过 `max(5 ms, 0.1 × 该条件中位数)`，且切分后每组至少 3 个样本时，按该间隔分组，报告各组比例与中位数并展示全部点，不用一个 P50 概括分离分布。区间为 5,000 次固定 seed 的配对 bootstrap；所有正确慢样本保留。HTTPS registry 仅绑定该 Docker 私有网络 namespace 的 loopback，专属 daemon 仅放行该 endpoint 的自签名证书，宿主服务及全局 TLS 信任不变；pVisor cache 为 token 鉴权的 loopback TCP，两路径传输不同，TLS／框架开销包含在各自完整计时，不解释为纯格式性能。
+- **本地文件访问补充：** `storage/local_reads.py` 独立批次比较已完整准备的 Python 3.12 镜像，双方新实例、私有写入，原生 Docker 与默认 V2 Docker-style 本地压缩池，不经远程服务。使用同一完整产品四核／4 GiB／零 swap 资源组、2 CPU／512 MiB 实例配置，客户端／辅助进程亲和性 0–3，单线程应用 Docker host CPU 0,1 与 guest CPU 0,1；仍不称等价隔离或纯格式 A/B。三次预热、三十轮随机配对，分别测标准库加载 Ready，以及完整 Python 库树只读 mmap 两遍：每遍校验文件数、字节与 OCI 派生 SHA-256 聚合值，应用进程内单调时钟只测遍历／mmap／hash阶段，分别报告首次页访问与同 VM 重复页访问。前者仍保留宿主编码页缓存，不是冷磁盘；第二遍是页缓存复用，不能当成解码吞吐。Ready 与阶段时间分开、不相加，所有输出／组限制／实例清理必须通过，使用上述分布和配对区间规则。本地与远程批次独立，不相减来估算网络贡献。
 
 - **已准备镜像的启动对照：** `benchmark/startup/image_compare.py` 是同源 Ubuntu shell 的独立补充批次，经单个 Python 配对行走 prepare → semspec bench → 专用 audit/render。普通 OCI/overlayfs 容器、TurboOCI/OverlayBD 容器与 pVisor 本地预准备 rootfs VM，每组 3 次预热、30 次随机交替，新执行实例和可写状态；镜像输入与宿主页缓存保留，不包含 pull、格式转换或解包。CPU 12,13，容器 2 CPU 配额/2 GiB，guest 2 vCPU/2 GiB；服务开销及 Docker exec 调用差异明确披露，不视为等整机预算或纯镜像格式比较。独立样本保存 Popen→唯一正确输出的 Ready 和同次正常退出的 Completion，校验输出、VM Bundle、实际后端与清理，配对 bootstrap 95% CI。记录其他 CPU 上的后台负载，不清理或停止无关任务；采样 CPU 上出现并发构建/其他已识别 benchmark 时整批标记受干扰，不事后剔除慢样本。不与 cold-client/warm-client 样本混合，不冒充完整四组冷镜像对照。
 
@@ -195,6 +199,9 @@ Design: 负载、对照、控制变量与有效样本判据。
   逐环境三轮与中位数/范围，N3不提供可靠尾延迟和普遍排名。大规模单轴曲线、
   网络IOCP未测；Docker必须记录工作区存储方式与daemon预算，参考VM必须记录
   stock内核来源、virtio-blk与ext4磁盘路径，不能解释为纯VMM开销。
+  当前 main rebase 后复测使用静态 musl release 的 `spawn` Job 入口和内嵌固件；
+  QEMU microvm 开启 ACPI，供未修改的 stock 内核枚举 virtio-mmio；stock 内核、
+  initrd、工具版本及实际配置单独冻结，不与历史动态构建／ACPI 关闭批次拼样本或计算优化比例。
   不沿用历史七工具数字补格。
   工程开关归因和请求计数保留在B-FS-ENG/B-FS-DIAG分析页。
 - **历史实验设计（原始样本保持原口径）：**
@@ -962,15 +969,31 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 新进程、新的实例独占 CompressedPool，每块 64 KiB，三次独立执行；填充模式允许对象复用，其他模式保持块内容唯一以分开压缩与去重。全字节检查，拒绝校验失败，记录原文/编码 SHA-256 身份、来源/制品摘要和完整失败。编码字节排除索引、allocator、scratch 和原 RAM；不宣称净物理节省或业务延迟。无 VM、无全局 KSM 修改。
 - **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；历史运行命令与报告见[归档手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#cold-runtimestorage-validation)。
 
+### B-IMAGE-FORMAT-ENG：分帧目录索引和小文件聚合的存储对照 {#b-image-format-eng}
+
+- **入口：** `storage/image_format.json` → `storage/image_format.py`；专用、显式运行的 ignored Rust storage runner，两版使用同一 runner 源码，不作为普通测试计时。
+- **角色：** engineering A/B；不进入用户 benchmark 页。
+- **Motivation：** 判断新存储格式相对固定基线的元数据准备、精确查找、小文件读取、全目录枚举及持久存储变化。
+- **想要的结论：** 同源合成目录输入下，各阶段毫秒、索引/内容逻辑与分配字节、对象数，以及配对中位差的 bootstrap 95% CI；不推导 VM 启动、mmap、S3/WAN 或应用吞吐结论。
+- **实验设计：** 冻结基线和候选 release 测试制品及同一 runner；固定 seed 生成唯一 1 KiB 小文件，分别用重复 SHA-256 字节和 SHAKE256 高熵 payload，覆盖平坦大目录和多目录，源和两个 cache 均为本批次新私有目录。两后端分别为 filesystem 和本地 pool，独立成批。保留宿主页缓存，每次新进程、空解码缓存，不称冷磁盘；正式测量随机交替 30 轮、3 轮预热，不丢弃慢样本，任何输出/文件长度/完整内容或枚举计数错误使批次失败。首次发布单独计量，不能将单次构建差异当延迟统计；排除源树、制品和测量证据的容量。固定 CPU，保存全部命令/原始阶段计时、环境、源码与制品摘要、逻辑及分配空间库存；同时记录宿主负载，受干扰批次明确披露。
+
 ### B-IMAGE-STORAGE-ENG：本地镜像池能节省多少磁盘空间 {#b-image-storage-eng}
 
-- **JSON 入口状态：** 未准备 [storage/image_storage.json](storage/image_storage.json)（拒绝测量）。
+- **JSON 入口状态：** 显式 Python 入口 [storage/image_storage.json](storage/image_storage.json)，调用 `storage/native_docker.py --phase storage`。
 
 - **角色：** engineering A/B；库存、日志及来源保留 `benchmark/.data/image-storage-*`，不发布到用户 benchmark 页。
 - **Motivation：** 判断压缩内容池相对完整解包及 Docker 实际镜像存储的容量收益，以及多镜像内容共享是否提供额外节省。
 - **想要的结论：** 固定 linux/amd64 manifest 的单镜像及组合库存，分别报告 pVisor 完整存储、Docker 完整存储、压缩 blobs 和解包树的字节与分配块；明确 metadata、层共享、删除后残留和计量边界。
 - **实验设计：** 同一宿主、文件系统和来源 digest，新的私有 pVisor store 与独立 rootless Docker daemon，禁用实验目录的 Btrfs 透明压缩。Docker 使用 containerd overlayfs snapshotter，并记录与宿主发行配置的差异；不操作既有 daemon 的镜像/容器。按 manifest/config/layer SHA-256 验证来源，检查镜像能读取已知内容；硬链接仅计一次。静态库存可重复采集，报告每次原值及范围；不是延迟采样，不从容量计数推导速度或 mmap 收益。源下载缓存、测量工具和二进制不计入任一镜像存储；包含各后端的镜像内容和元数据，Docker 空 daemon 的固定开销另列。失败保留，不用独立单镜像之和代替真正组合存储。不将 rmi 后未 GC 的空目录当作可回收空间。
 - **历史入口：** `benchmark/image_storage/run.py`，复现与计量边界见该目录 README。
+
+### B-NATIVE-DOCKER-ENG：同镜像原生容器与 V2 VM 的启动和内存 {#b-native-docker-eng}
+
+- **入口：** `storage/native_runtime.json` → `storage/native_docker.py --phase runtime`。
+- **角色：** engineering A/B；与容量库存分开成批，结果写入镜像存储实验记录，不替代用户页数据。
+- **Motivation：** 在同 digest Ubuntu 已准备、无 SDK/API 包装时，直接比较原生 Docker/runc 与 pVisor V2 容器 VM 的首条正确输出和完整部署内存，检验磁盘节省是否伴随运行代价。
+- **想要的结论：** CLI 启动到精确 Ready 行／正常退出的配对中位差与 bootstrap 95% CI；新产品组在零／一／四实例阶段的完整 cgroup memory.current 中位数、范围、anon/file/kernel 分类与扣除空服务后的实例摊销增量。不能把 VM guest RAM 和容器进程限额称为等价隔离或整机新增物理内存。
+- **实验设计：** 相同 linux/amd64 manifest、独立私有 rootless Docker 29/containerd overlayfs 数据目录和 V2 pool、冻结 release CLI。启动三轮预热、三十轮固定种子随机配对，新实例、保留宿主页缓存、不含镜像获取／daemon 启动，计时复用 semspec Ready observer。内存独立五轮随机交替，每臂新受限四核／4 GiB／零 swap slice，包含 dockerd/rootlesskit/containerd/shim/容器或 supervisor/VMM，观察者在组外；镜像导入在同组内先完成，空基线包含其缓存计费，空闲每阶段三秒取最后两秒中位数。每实例 1 CPU／256 MiB 配置，明确 VM 配置 RAM 与容器 limit 的范围差异。两臂使用相同的委派叶保持进程并计入空基线；相同镜像的 taskset 在应用前设置相应 CPU 命名空间的 mask，避免 runc 在无 cpuset 委派时恢复为全宿主 CPU。窗口成员见证不证明所有短暂 init 线程过去的亲和性。核对实际 cgroup 成员、CPU 亲和性、memory/oom/swap、正确内容、私有 token、空容器清理；保留预检与失败，不从短峰值 RSS 或 docker stats 推导容量。无全局 sysctl/KSM/缓存修改，不操作既有 Docker daemon。所有库存和原始时钟留在新 `.data/`，不混入历史 V1 或 OpenSandbox 数字。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 
