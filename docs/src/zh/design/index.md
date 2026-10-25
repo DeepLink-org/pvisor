@@ -149,7 +149,7 @@ apply 在目标锁下恢复已有未完成批次，展开选中路径的必要�
 
 VM 的 lazy lower 直接接入共享文件服务。私有元数据投影保留本地 inode/FD 与路径检查所需结构，文件内容由内容后端通过 FUSE `READ` 提供；占位文件的空洞不作为真实文件内容返回。首次普通修改需要物化原文件并 copy-up，完整导出或快照也可能下载此前未访问的内容。
 
-因此 lazy 的主要取舍是把部分准备成本转到第一次访问。热缓存下减少的读取与冷 miss、元数据、copy-up 的成本需要分别测量。存储格式与发布规则见[共享镜像缓存](shared-image-cache-storage.md)，源码入口是 `pvisor/src/image/cache/backend.rs`、`direct.rs`、`storage.rs`。
+因此 lazy 的主要取舍是把部分准备成本转到第一次访问。热缓存下减少的读取与冷 miss、元数据、copy-up 的成本需要分别测量。存储格式与发布规则见[共享镜像缓存](lazy-image-v2.md)，源码入口是 `pvisor/src/image/cache/backend.rs`、`direct.rs`、`storage.rs`。
 
 ## 7. 网络：为什么拦截点决定权限强度 {#network-mechanism}
 

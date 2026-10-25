@@ -375,6 +375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
 dependencies = [
  "bincode_derive",
+ "serde",
  "unty",
 ]
 
@@ -2134,7 +2135,7 @@ version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11cf0ca75d59e9d298647c59cf6c5286fa048120caa77972a7a504a0824d234f"
 dependencies = [
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
@@ -2158,7 +2159,7 @@ dependencies = [
  "bitflags 2.11.1",
  "kvm-bindings 0.14.1",
  "libc",
- "vmm-sys-util 0.14.0",
+ "vmm-sys-util 0.15.0",
 ]
 
 [[package]]
@@ -2922,6 +2923,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bincode",
  "blake3",
  "clap",
  "dirs",
@@ -2955,6 +2957,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vm-memory",
+ "xxhash-rust",
  "zstd",
 ]
 
@@ -5197,6 +5200,12 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yoke"

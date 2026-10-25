@@ -82,6 +82,36 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(path.suffix, ".json")
             table = json.loads(path.read_text())
             self.assertTrue(table)
+            if row["status"] == "explicit-python-native-docker":
+                self.assertEqual(row["role"], "engineering A/B")
+                variants = {
+                    "B-IMAGE-STORAGE-ENG": ("storage", "storage/image_storage.json"),
+                    "B-NATIVE-DOCKER-ENG": ("runtime", "storage/native_runtime.json"),
+                }
+                phase, entry = variants[row["benchmark_id"]]
+                self.assertEqual(row["entry"], entry)
+                self.assertEqual(table, {
+                    f"native-{phase}": "$ python3 @REPO@/benchmark/storage/native_docker.py "
+                    f"--phase {phase} --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"
+                })
+                self.assertTrue((ROOT / "storage/native_docker.py").is_file())
+                continue
+            if row["status"] == "explicit-python-paired-storage":
+                self.assertEqual(row["benchmark_id"], "B-IMAGE-FORMAT-ENG")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "storage/image_format.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "paired-storage": "$ python3 @REPO@/benchmark/storage/image_format.py "
+                        "--baseline @BASELINE@ --candidate @CANDIDATE@ "
+                        "--baseline-runner @BASELINE_RUNNER@ --output @OUTPUT@ "
+                        "--files @FILES@ --directories @DIRECTORIES@ --backend @BACKEND@ "
+                        "--payload @PAYLOAD@ --runs 30 --warmup 3 --cpu @CPU@"
+                    },
+                )
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             if row["status"].startswith("prepared-python-ready"):
                 from subjects import LABELS
 

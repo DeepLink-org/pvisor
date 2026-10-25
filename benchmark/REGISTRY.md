@@ -962,15 +962,31 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 新进程、新的实例独占 CompressedPool，每块 64 KiB，三次独立执行；填充模式允许对象复用，其他模式保持块内容唯一以分开压缩与去重。全字节检查，拒绝校验失败，记录原文/编码 SHA-256 身份、来源/制品摘要和完整失败。编码字节排除索引、allocator、scratch 和原 RAM；不宣称净物理节省或业务延迟。无 VM、无全局 KSM 修改。
 - **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；历史运行命令与报告见[归档手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#cold-runtimestorage-validation)。
 
+### B-IMAGE-FORMAT-ENG：分帧目录索引和小文件聚合的存储对照 {#b-image-format-eng}
+
+- **入口：** `storage/image_format.json` → `storage/image_format.py`；专用、显式运行的 ignored Rust storage runner，两版使用同一 runner 源码，不作为普通测试计时。
+- **角色：** engineering A/B；不进入用户 benchmark 页。
+- **Motivation：** 判断新存储格式相对固定基线的元数据准备、精确查找、小文件读取、全目录枚举及持久存储变化。
+- **想要的结论：** 同源合成目录输入下，各阶段毫秒、索引/内容逻辑与分配字节、对象数，以及配对中位差的 bootstrap 95% CI；不推导 VM 启动、mmap、S3/WAN 或应用吞吐结论。
+- **实验设计：** 冻结基线和候选 release 测试制品及同一 runner；固定 seed 生成唯一 1 KiB 小文件，分别用重复 SHA-256 字节和 SHAKE256 高熵 payload，覆盖平坦大目录和多目录，源和两个 cache 均为本批次新私有目录。两后端分别为 filesystem 和本地 pool，独立成批。保留宿主页缓存，每次新进程、空解码缓存，不称冷磁盘；正式测量随机交替 30 轮、3 轮预热，不丢弃慢样本，任何输出/文件长度/完整内容或枚举计数错误使批次失败。首次发布单独计量，不能将单次构建差异当延迟统计；排除源树、制品和测量证据的容量。固定 CPU，保存全部命令/原始阶段计时、环境、源码与制品摘要、逻辑及分配空间库存；同时记录宿主负载，受干扰批次明确披露。
+
 ### B-IMAGE-STORAGE-ENG：本地镜像池能节省多少磁盘空间 {#b-image-storage-eng}
 
-- **JSON 入口状态：** 未准备 [storage/image_storage.json](storage/image_storage.json)（拒绝测量）。
+- **JSON 入口状态：** 显式 Python 入口 [storage/image_storage.json](storage/image_storage.json)，调用 `storage/native_docker.py --phase storage`。
 
 - **角色：** engineering A/B；库存、日志及来源保留 `benchmark/.data/image-storage-*`，不发布到用户 benchmark 页。
 - **Motivation：** 判断压缩内容池相对完整解包及 Docker 实际镜像存储的容量收益，以及多镜像内容共享是否提供额外节省。
 - **想要的结论：** 固定 linux/amd64 manifest 的单镜像及组合库存，分别报告 pVisor 完整存储、Docker 完整存储、压缩 blobs 和解包树的字节与分配块；明确 metadata、层共享、删除后残留和计量边界。
 - **实验设计：** 同一宿主、文件系统和来源 digest，新的私有 pVisor store 与独立 rootless Docker daemon，禁用实验目录的 Btrfs 透明压缩。Docker 使用 containerd overlayfs snapshotter，并记录与宿主发行配置的差异；不操作既有 daemon 的镜像/容器。按 manifest/config/layer SHA-256 验证来源，检查镜像能读取已知内容；硬链接仅计一次。静态库存可重复采集，报告每次原值及范围；不是延迟采样，不从容量计数推导速度或 mmap 收益。源下载缓存、测量工具和二进制不计入任一镜像存储；包含各后端的镜像内容和元数据，Docker 空 daemon 的固定开销另列。失败保留，不用独立单镜像之和代替真正组合存储。不将 rmi 后未 GC 的空目录当作可回收空间。
 - **历史入口：** `benchmark/image_storage/run.py`，复现与计量边界见该目录 README。
+
+### B-NATIVE-DOCKER-ENG：同镜像原生容器与 V2 VM 的启动和内存 {#b-native-docker-eng}
+
+- **入口：** `storage/native_runtime.json` → `storage/native_docker.py --phase runtime`。
+- **角色：** engineering A/B；与容量库存分开成批，结果写入镜像存储实验记录，不替代用户页数据。
+- **Motivation：** 在同 digest Ubuntu 已准备、无 SDK/API 包装时，直接比较原生 Docker/runc 与 pVisor V2 容器 VM 的首条正确输出和完整部署内存，检验磁盘节省是否伴随运行代价。
+- **想要的结论：** CLI 启动到精确 Ready 行／正常退出的配对中位差与 bootstrap 95% CI；新产品组在零／一／四实例阶段的完整 cgroup memory.current 中位数、范围、anon/file/kernel 分类与扣除空服务后的实例摊销增量。不能把 VM guest RAM 和容器进程限额称为等价隔离或整机新增物理内存。
+- **实验设计：** 相同 linux/amd64 manifest、独立私有 rootless Docker 29/containerd overlayfs 数据目录和 V2 pool、冻结 release CLI。启动三轮预热、三十轮固定种子随机配对，新实例、保留宿主页缓存、不含镜像获取／daemon 启动，计时复用 semspec Ready observer。内存独立五轮随机交替，每臂新受限四核／4 GiB／零 swap slice，包含 dockerd/rootlesskit/containerd/shim/容器或 supervisor/VMM，观察者在组外；镜像导入在同组内先完成，空基线包含其缓存计费，空闲每阶段三秒取最后两秒中位数。每实例 1 CPU／256 MiB 配置，明确 VM 配置 RAM 与容器 limit 的范围差异。核对实际 cgroup 成员、CPU 亲和性、memory/oom/swap、正确内容、私有 token、空容器清理；保留预检与失败，不从短峰值 RSS 或 docker stats 推导容量。无全局 sysctl/KSM/缓存修改，不操作既有 Docker daemon。所有库存和原始时钟留在新 `.data/`，不混入历史 V1 或 OpenSandbox 数字。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 

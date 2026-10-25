@@ -75,7 +75,7 @@ impl Store {
         let configs = self.root.join("images/configs");
         private_directory(&configs)?;
         Persistence::atomic_write(&configs.join(format!("{hex}.json")), config, 0o600)?;
-        let location = self.root.join("images/pool-v1");
+        let location = self.root.join("images/pool-v2");
         private_directory(&location)?;
         let prepared = PreparedImage {
             rootfs: image.rootfs.clone(),
@@ -215,7 +215,7 @@ mod tests {
         let second = build(&store, &opts).unwrap();
         assert_ne!(first.id, second.id);
         assert!(first.rootfs.as_os_str().is_empty() && second.rootfs.as_os_str().is_empty());
-        let objects = files(&store.root.join("images/pool-v1/data"));
+        let objects = files(&store.root.join("images/pool-v2/data"));
         assert_eq!(
             objects.len(),
             2,

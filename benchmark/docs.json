@@ -518,6 +518,26 @@
       "role": "engineering evidence",
       "tables": [],
       "source_csv": []
+    },
+    {
+      "locale": "zh",
+      "page": "lab-notes/image-format-performance-analysis.md",
+      "benchmark_ids": [
+        "B-IMAGE-FORMAT-ENG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": []
+    },
+    {
+      "locale": "en",
+      "page": "lab-notes/image-format-performance-analysis.md",
+      "benchmark_ids": [
+        "B-IMAGE-FORMAT-ENG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": []
     }
   ],
   "bindings": {

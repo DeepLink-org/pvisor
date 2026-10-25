@@ -99,7 +99,7 @@ pub struct Image {
 pub struct CachedImage {
     /// Absolute local pool directory, shared by images in this Docker store.
     pub location: PathBuf,
-    /// Authenticated immutable `pvisor-v1` metadata revision handle.
+    /// Authenticated immutable `pvisor-v2` metadata revision handle.
     pub handle: String,
 }
 
@@ -481,7 +481,10 @@ impl Store {
         let cached = self.images()?.into_iter().find(|image| {
             image.digest == resolved.prepared.digest
                 && image.platform == platform
-                && image.cache.is_some()
+                && image
+                    .cache
+                    .as_ref()
+                    .is_some_and(|cached| cached.handle.starts_with("pvisor-v2:"))
         });
         if let Some(image) = &cached {
             let _verified = self.open_image(image)?;

@@ -216,7 +216,7 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
         };
         fs::remove_dir_all(store.root.join("rootfs-v3")).unwrap();
         let direct = CacheClient::new(
-            format!("file://{}", store.root.join("cache-v1").display()),
+            format!("file://{}", store.root.join("cache-v2").display()),
             None,
         )
         .unwrap();

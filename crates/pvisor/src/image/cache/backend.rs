@@ -572,6 +572,14 @@ impl RemoteFs {
         Ok(())
     }
 
+    fn directory_name_order(&self, a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+        if self.digest.starts_with("pvisor-v2:") {
+            super::portable::name_order(a, b)
+        } else {
+            a.cmp(b)
+        }
+    }
+
     fn directory_page(
         &mut self,
         node: &Node,
@@ -618,7 +626,9 @@ impl RemoteFs {
             "cache directory page exceeds frame limit"
         );
         ensure!(
-            names.windows(2).all(|pair| pair[0] < pair[1]),
+            names
+                .windows(2)
+                .all(|pair| self.directory_name_order(&pair[0], &pair[1]).is_lt()),
             "unordered cache directory page"
         );
         let previous_last = self
@@ -639,7 +649,9 @@ impl RemoteFs {
                 .flatten()
             });
         ensure!(
-            previous_last.is_none_or(|last| names.first().is_none_or(|first| last < first)),
+            previous_last.is_none_or(|last| names
+                .first()
+                .is_none_or(|first| self.directory_name_order(last, first).is_lt())),
             "unordered cache directory continuation"
         );
         for (name, attr) in names.iter().zip(metadata) {

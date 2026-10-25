@@ -53,4 +53,6 @@ B-STARTUP,user-facing,startup/qemu_microvm_timing.json,prepared-python-ready-exi
 B-STARTUP,user-facing,startup/timing.json,prepared-python-ready-exit
 B-STARTUP-REVISION-ENG,engineering A/B,startup/revision.json,requires-single-condition-command
 B-SWE-RESIDENT-ENG,engineering A/B,agent/swe_resident.json,requires-single-condition-command
-B-IMAGE-STORAGE-ENG,engineering A/B,storage/image_storage.json,requires-single-condition-command
+B-IMAGE-STORAGE-ENG,engineering A/B,storage/image_storage.json,explicit-python-native-docker
+B-IMAGE-FORMAT-ENG,engineering A/B,storage/image_format.json,explicit-python-paired-storage
+B-NATIVE-DOCKER-ENG,engineering A/B,storage/native_runtime.json,explicit-python-native-docker

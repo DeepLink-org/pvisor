@@ -239,14 +239,17 @@ that every flag of a registered Docker command is available.
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
 tests. It must be private to the current user and cannot be a bind-mount source
-or ancestor. New pulls and builds use `images/pool-v1`: the existing cache's
-immutable file index and shared content pool, with independently Zstd-compressed
-chunks when beneficial and raw fallback. VM reads go through the direct lazy
+or ancestor. New pulls and builds use `images/pool-v2`: the cache's
+compressed directory radix index and shared seekable-Zstd content pool. Small
+files pack by directory; large files use independent 1 MiB chunks. VM reads go through the direct lazy
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
 explicit `--output` exports. Original configurations remain under `images/configs`.
 Old directory-based records continue to work and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
+V1 storage handles and pool encodings are retired. Re-pull to publish an image to
+the new pool, then recreate containers pinned to old handles; old data is never
+automatically deleted. Filesystem, S3 and pool use the same V2 physical format.
 Arbitrary xattrs are rejected because the current pool format cannot preserve
 them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
 page caching, with no new DAX path or measured performance claim. See the

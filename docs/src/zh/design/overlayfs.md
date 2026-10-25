@@ -59,7 +59,7 @@ VM 的 lazy image 直接调用远程只读后端，无需中间宿主 FUSE 挂�
 普通本地 lower 和 VM staged workspace 继续经 virtio-fs 直接服务；host
 staged 仍通过宿主 FUSE 执行。不可变句柄、硬链接对象身份、元数据 generation
 和内容摘要由后端保留；共享镜像缓存不共享可写 upper 或 journal。
-镜像存储合同见[共享镜像缓存 v1](shared-image-cache-storage.md#filesystem-access)。
+镜像存储合同见[共享镜像缓存 V2](lazy-image-v2.md#filesystem-access)。
 
 直接后端建立私有元数据投影，以保留现有本地 inode/FD、路径检查和快照合同。
 投影是普通目录及稀疏占位文件，没有 FUSE 挂载；guest 属性来自镜像元数据，

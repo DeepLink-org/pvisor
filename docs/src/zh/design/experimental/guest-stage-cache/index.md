@@ -173,7 +173,7 @@ stage 删除的对象进入待回收状态，最后一个受认可引用释放�
 
 启动交付有界的版本、校验目录、root/必要页及操作能力；后续可以按需取元数据页。目录索引、inode 属性、symlink 目标、硬链接组和内容位置分别表达。包已生成、页已交付和 inode/dentry 已建立是三个成本。
 
-现有 [pvisor-paged-v1](../../shared-image-cache-storage.md) 可以提供字段与构建基础；guest 导入格式需单独评审。当前格式不保存 xattr，不能据此声明已具备 ACL 或完整安全属性。缺少权限输入时，不准入本地 open；属性查询也按所需字段回源。
+现有 [pvisor-radix-v2](../../lazy-image-v2.md) 可以提供字段与构建基础；guest 导入格式需单独评审。当前格式不保存 xattr，不能据此声明已具备 ACL 或完整安全属性。缺少权限输入时，不准入本地 open；属性查询也按所需字段回源。
 
 内核消费前限制总字节、记录数、页引用、深度、名称/目标长度及 offset 运算；拒绝循环、重复、越界和未知必要特性。宿主校验和内核边界检查都保留。编码固定版本和字节序，不映射 Rust/C struct 的本机内存布局。
 
@@ -419,7 +419,7 @@ M1 可不修改 guest 内核；它验证预热后的机制，不能证明已实�
 | VMM 文件服务 | [virtio-fs](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor-vm/src/devices/virtio/fs)、[VM API](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md) | 可信对象引用、无 handle 数据服务、绑定、队列与更新协议、设备保存 |
 | stage 与观察语义 | [OverlayCore](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlay-core/README.md)、[FilesystemService](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlay-core/src/service.rs) | 合成/copy-up、baseline、实际修改效果、部分失败和 seal |
 | host 缓存经验 | [OverlayFs](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-overlayfs/README.md) | 对照已有 owned-view 合同、失效覆盖和失败测试，保留适配器边界 |
-| image 与导入格式 | [共享镜像设计](../../shared-image-cache-storage.md) | revision、索引、内容校验、权限数据完整性、格式与构建证据 |
+| image 与导入格式 | [共享镜像设计](../../lazy-image-v2.md) | revision、索引、内容校验、权限数据完整性、格式与构建证据 |
 | guest 用户态控制 | [pvisor-guest](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-guest/README.md) | 必要的初始化/确认；不把常规 stat/open 转到 guest 用户态服务 |
 | 生命周期与接入 | [runtime](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/runtime)、[environment snapshot](https://github.com/DeepLink-org/pvisor/tree/main/crates/pvisor/src/environment_snapshot) | 准入、freeze、恢复、fork、实验配置与 Host 权限边界 |
 | 验证与性能 | [semspec](https://github.com/DeepLink-org/pvisor/blob/main/tools/semspec/DESIGN.md)、[benchmark](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/README.md) | 候选规格、故障与交错测试、真实 VM harness、原始证据和统计 |
