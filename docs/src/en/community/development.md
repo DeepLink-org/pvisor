@@ -171,7 +171,7 @@ Use the Rust toolchain pinned in `mise.toml`, the default LLVM backend and platf
 | Host CLI | Static Linux musl ELF | Native Darwin executable with HVF entitlement |
 | Embedded guest | Static Linux musl ELF | Static Linux musl ELF |
 | `pvisor-vm` | Single Rust runtime crate | Single Rust runtime crate |
-| Guest kernel | Embedded at build time | Runtime-loaded `libkrunfw.5.dylib` |
+| Guest kernel | Compressed and embedded at build time | Compressed and embedded at build time |
 
 `CARGO_TARGET_DIR` selects native build output shared by build/install/smoke/examples/cases. Wheel verification uses a fresh staging directory so old `dist/` packages cannot be mistaken for new artifacts. Linux CLI links musl statically and embeds the VM kernel. The mise installation and `setup` provide Zig, cargo-zigbuild and the Linux musl target. Linux wheels retain manylinux_2_28 for glibc Python installers.
 

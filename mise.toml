@@ -505,7 +505,6 @@ for binary in "${binaries[@]}"; do
   install -m 755 "$CARGO_TARGET_DIR/release/$binary" "$install_root/bin/$binary"
 done
 if [[ "$(uname -s)" == Darwin ]]; then
-  install -m 755 "$CARGO_TARGET_DIR/release/libkrunfw.5.dylib" "$install_root/bin/libkrunfw.5.dylib"
   install -m 644 "$CARGO_TARGET_DIR/release/libkrunfw.SOURCE" "$install_root/bin/libkrunfw.SOURCE"
 fi
 '''

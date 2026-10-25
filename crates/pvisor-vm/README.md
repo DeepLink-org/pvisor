@@ -69,7 +69,13 @@ VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy
 
 Guest supervisor 的内嵌构建使用相对当前 crate 的源码和产物依赖；多个 checkout
 共享 `CARGO_TARGET_DIR` 时也必须重建并嵌入当前 checkout 的 guest，不能复用
-旧目录的启动协议实现。固件内核仍按原配置选择。
+旧目录的启动协议实现。产品构建在 Linux x86_64 musl 和 macOS ARM64 上都将
+选定的 guest 内核压缩后内嵌进可执行文件，首次使用时解压到共享的只读字节所有权，
+再为 VM 分配私有内核映射；macOS 发布包不再携带 `libkrunfw.5.dylib`。
+构建输入可以是宿主可加载的 libkrunfw 库，也可以是含 `kernel.bin` 和
+`kernel.json` 的原始内核目录。输入缺失或损坏时，已选择的内嵌构建直接失败。
+`mise run build` 和 wheel 构建自动准备该输入；直接 Cargo 构建 macOS crate 且未设置
+任何固件输入时仍保留原有的显式动态固件路径，便于独立 crate 测试与自定义调用方。
 
 普通 READDIR 的仅名称快照使用非零的 unknown-inode 占位值（与 libfuse
 `FUSE_UNKNOWN_INO` 一致）；零值会被 glibc 当作已删除目录项跳过。真实对象

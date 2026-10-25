@@ -75,8 +75,6 @@ def resolve_firmware(
         selector, configured = next(iter(selectors.items()))
         source = Path(configured).expanduser().resolve()
         if selector == "PVISOR_KRUNFW_KERNEL_BUNDLE":
-            if macos:
-                raise RuntimeError("PVISOR_KRUNFW_KERNEL_BUNDLE is supported only on Linux")
             for filename in ("kernel.bin", "kernel.json"):
                 if not (source / filename).is_file():
                     raise RuntimeError(f"Kernel bundle input does not exist: {source / filename}")

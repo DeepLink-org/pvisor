@@ -1,4 +1,4 @@
-name: Publish PyPI
+name: Publish Release
 
 on:
   push:
@@ -120,6 +120,29 @@ jobs:
           mise run check-release-artifacts -- \
             dist --version "${{ needs.validate.outputs.version }}"
 
+      - name: Download corresponding firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-release-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Prepare all distribution channels (dry run included)
+        run: |
+          python3 scripts/ci/build_release_assets.py dist --stable \
+            --version "${{ needs.validate.outputs.version }}" --repository "$GITHUB_REPOSITORY"
+
+      - name: Retain native downloads and Homebrew formula
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-native
+          path: |
+            dist/pvisor-*.tar.gz
+            dist/pvisor.rb
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload verified release set
         uses: actions/upload-artifact@v4
         with:
@@ -139,6 +162,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/pvisor
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -183,14 +207,13 @@ jobs:
           name: release-wheels
           path: dist
 
-      - name: Download corresponding firmware sources
+      - name: Download verified native release set
         uses: actions/download-artifact@v4
         with:
-          pattern: firmware-source-release-wheel-*
-          merge-multiple: true
+          name: release-native
           path: dist
 
-      - name: Require complete corresponding firmware source set
+      - name: Require complete corresponding firmware sources
         run: |
           test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
           test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
@@ -202,3 +225,73 @@ jobs:
         run: |
           mise run publish-release -- github dist --version "$RELEASE_VERSION" \
             --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+
+  homebrew-test:
+    name: Test Homebrew installation
+    if: github.event_name == 'push'
+    needs: [validate, github-release]
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-native
+          path: dist
+      - name: Install and test the published archive through Homebrew
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew tap-new pvisor/release-test
+          cp dist/pvisor.rb "$(brew --repository pvisor/release-test)/Formula/pvisor.rb"
+          brew install pvisor/release-test/pvisor
+          brew test pvisor/release-test/pvisor
+          brew uninstall pvisor/release-test/pvisor
+
+  homebrew-publish:
+    name: Update project Homebrew tap
+    if: github.event_name == 'push' && vars.HOMEBREW_TAP_REPOSITORY != ''
+    needs: [github-release, homebrew-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-native
+          path: dist
+      - name: Commit the tested formula
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          # A delayed older release must never downgrade the current tap.
+          python3 - <<'PYTHON'
+          import re
+          from pathlib import Path
+          def version(path):
+              match = re.search(r'^  version "([0-9]+)\.([0-9]+)\.([0-9]+)"$', path.read_text(), re.M)
+              if not match:
+                  raise SystemExit(f"Cannot read stable formula version: {path}")
+              return tuple(map(int, match.groups()))
+          current = Path("tap/Formula/pvisor.rb")
+          if current.exists() and version(current) > version(Path("dist/pvisor.rb")):
+              raise SystemExit("Refusing to downgrade the Homebrew tap")
+          PYTHON
+          cp dist/pvisor.rb tap/Formula/pvisor.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/pvisor.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "pvisor $RELEASE_TAG"
+            git push
+          fi

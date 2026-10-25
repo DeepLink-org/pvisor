@@ -19,8 +19,9 @@ mise run fw -- test
 
 CLI, daemon and single-wheel builds use firmware compiled from this directory
 by default; no prebuilt upstream firmware is downloaded by the build pipeline.
-Linux x86-64 builds embed the kernel in the executable. macOS ARM64 builds ship
-the built dylib beside the executables. Installing a published wheel does not
+Linux x86-64 and macOS ARM64 product builds both embed the compressed kernel in
+the executables. The firmware library is consumed only during compilation and
+is not shipped beside the executables. Installing a published wheel does not
 require a kernel compiler.
 
 `fw build` uses the native host's default firmware target and supplies
@@ -46,7 +47,7 @@ prebuilt firmware or a VM.
 
 An explicit `PVISOR_LIBKRUNFW_PATH` can select a library file or directory instead.
 The lower-level `PVISOR_KRUNFW_PATH` accepts a library file;
-`PVISOR_KRUNFW_KERNEL_BUNDLE` accepts a Linux kernel bundle directory containing
+`PVISOR_KRUNFW_KERNEL_BUNDLE` accepts a raw kernel bundle directory for either product target containing
 `kernel.bin` and `kernel.json`. Set at most one selector: conflicting inputs are
 rejected. The selected input is resolved once and shared by compilation, payload
 staging and source attribution. These overrides are optional, not required for

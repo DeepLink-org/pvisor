@@ -808,11 +808,11 @@ VM 根目录其他写入使用临时 upper，并在 VM 退出时丢弃。
 macOS 上，`pvisor-vm` 通过 virtio-fs 直接服务 pVisor 的 rootfs 与
 工作区 copy-on-write union。VMM 从不重新导出 host FUSE mount，也不物化或
 对账这两棵树。Linux 使用 KVM，Apple Silicon macOS 通过同一 executor 使用
-HVF。Linux 静态 musl 构建内嵌 guest 内核，运行时不需要固件共享库，
-并拒绝 `--vm-library-dir`。macOS wheel 把 `libkrunfw.5.dylib` 安装在 pVisor
-旁边。源码构建通过 `mise run build` 或 `mise run fw -- build` 准备仓库维护的固件；
+HVF。Linux 静态 musl 和 macOS ARM64 产品构建都内嵌压缩 guest 内核，
+运行时不需要固件共享库。Linux 静态构建拒绝 `--vm-library-dir`；
+macOS 产品构建始终使用内嵌内核，不受该目录设置影响。源码构建通过 `mise run build` 或 `mise run fw -- build` 准备仓库维护的固件；
 运行时只解析本地固件，缺失时报错，不下载或编译。
-macOS 上可用 `--vm-library-dir` 选择已有固件目录。OverlayNet `auto` 使用不可绕过的 VM smoltcp IPv4 TCP/DNS driver，而
+未指定构建时内核输入的独立 macOS Cargo 构建仍可用 `--vm-library-dir` 选择已有固件目录。OverlayNet `auto` 使用不可绕过的 VM smoltcp IPv4 TCP/DNS driver，而
 Gateway capture 使用经 guest virtual router 的内部路由。Linux 另外用
 namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权限，因此
 尽管有 guest-kernel 隔离，第一版 OCI-image 也不应被当成敌对多租户边界。

@@ -61,7 +61,17 @@ def github_publish(directory: Path, version: str, repository: str, tag: str) -> 
         raise ValueError("repository must be owner/name")
     if tag != f"v{version}":
         raise ValueError("tag must match the release version")
-    paths = sorted([*directory.glob("*.whl"), *directory.glob("pvisor-firmware-source-*.tar.gz")])
+    paths = sorted(
+        [
+            *directory.glob("*.whl"),
+            *directory.glob("pvisor-*.tar.gz"),
+            *[
+                directory / name
+                for name in ("SHA256SUMS", "pvisor.rb")
+                if (directory / name).is_file()
+            ],
+        ]
+    )
     if not paths or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", path.name) for path in paths):
         raise ValueError("invalid or empty release artifact set")
     # Check both channels before the first publication mutation.
@@ -110,6 +120,18 @@ def github_publish(directory: Path, version: str, repository: str, tag: str) -> 
                 repository,
                 "--verify-tag",
                 "--generate-notes",
+                "--notes",
+                f"Install from PyPI: `python -m pip install pvisor=={version}`.\n\n"
+                "Native downloads need neither Python nor Rust. Download the matching "
+                f"`pvisor-{version}-linux-x86_64.tar.gz` or "
+                f"`pvisor-{version}-macos-arm64.tar.gz` and `SHA256SUMS`. "
+                "Verify the archive SHA-256, extract it, then add its `bin` directory "
+                "to PATH. Keep the CLI, companions, daemon and firmware together.\n\n"
+                "The generated Homebrew formula is attached as `pvisor.rb`; the "
+                "project tap is updated when configured and after Homebrew acceptance.\n\n"
+                "Corresponding firmware sources are attached. See the "
+                "[installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/) "
+                "for platform and virtualization requirements.",
                 "--latest",
                 "--title",
                 f"pVisor {version}",

@@ -33,7 +33,21 @@ To uninstall:
 python -m pip uninstall pvisor
 ```
 
-Before upgrading, check release notes and deployed `PVISOR_*` settings. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically; uninstalling the Python package also leaves this runtime data in place. Homebrew, npm and Cargo entry points and a standalone binary installer remain part of the [distribution proposal](../community/releasing.md#distribution-plan).
+Before upgrading, check release notes and deployed `PVISOR_*` settings. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically; uninstalling the Python package also leaves this runtime data in place. npm, Cargo and a standalone version-selecting installer remain part of the [distribution proposal](../community/releasing.md#distribution-plan).
+
+### Homebrew and native downloads
+
+After the project tap has been configured and its first stable release published:
+
+```bash
+brew install DeepLink-org/pvisor/pvisor
+brew test DeepLink-org/pvisor/pvisor
+# Upgrade: brew upgrade pvisor / brew uninstall pvisor
+```
+
+The tap uses `DeepLink-org/homebrew-pvisor`; maintainers must complete the [one-time setup](../community/releasing.md#one-time-setup) before this command is available. Supported platforms are Apple Silicon macOS and Linux x86_64. Homebrew does not install Python or build Rust, and does not start the daemon as a service.
+
+For installation without a package manager, open [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) and download `pvisor-X.Y.Z-linux-x86_64.tar.gz` or `pvisor-X.Y.Z-macos-arm64.tar.gz`, together with `SHA256SUMS`. Verify the matching checksum (`sha256sum ARCHIVE` on Linux, `shasum -a 256 ARCHIVE` on macOS), extract the archive into a version-specific directory owned by you (for example under `~/.local/opt/pvisor`) and add its `bin` directory to `PATH`. Keep all files in `bin` together. Replace the complete directory when upgrading; remove it and its `PATH` entry to uninstall. Job state and user caches remain in place. The rolling `nightly` release provides the same native archive layout.
 
 ## 2. Check platform prerequisites
 

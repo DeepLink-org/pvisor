@@ -38,8 +38,28 @@ python -m pip uninstall pvisor
 
 升级前检查发布说明和部署中的 `PVISOR_*` 设置。本地状态（`.pvisor`）和用户缓存
 （`pvisor/`）不会自动搬迁，卸载 Python 包也不清理这些运行数据。
-Homebrew、npm、Cargo 安装入口与独立二进制安装器仍属
+npm、Cargo 安装入口与可选版本的独立安装器仍属
 [分发提案](../community/releasing.md#distribution-plan)。
+
+### Homebrew 与原生下载包
+
+项目 tap 完成配置并发布首个稳定版本后，可运行：
+
+```bash
+brew install DeepLink-org/pvisor/pvisor
+brew test DeepLink-org/pvisor/pvisor
+# Upgrade: brew upgrade pvisor / brew uninstall pvisor
+```
+
+tap 使用 `DeepLink-org/homebrew-pvisor`；维护者需要先完成[一次性设置](../community/releasing.md#one-time-setup)，此命令才能使用。
+支持 Apple Silicon macOS 和 Linux x86_64。Homebrew 不安装 Python、不编译 Rust，也不把 daemon 启动为系统服务。
+
+不使用包管理器时，打开 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases)，下载
+`pvisor-X.Y.Z-linux-x86_64.tar.gz` 或 `pvisor-X.Y.Z-macos-arm64.tar.gz`，以及 `SHA256SUMS`。
+核对对应的校验值（Linux 用 `sha256sum 归档文件`，macOS 用 `shasum -a 256 归档文件`），
+将归档解压到当前用户拥有、按版本命名的目录（例如 `~/.local/opt/pvisor` 下），把其中的 `bin` 加入 `PATH`，并保持 `bin` 中的全部文件在一起。
+升级时替换整个目录；卸载时删除该目录及 `PATH` 项，Job 状态和用户缓存仍保留。
+滚动 `nightly` 发布提供相同布局的原生归档。
 
 ## 2. 检查平台要求
 

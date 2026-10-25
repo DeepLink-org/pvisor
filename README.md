@@ -43,6 +43,10 @@ The rolling nightly build installs the same command without a Rust toolchain:
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
+Stable and nightly GitHub Releases also provide native archives and SHA-256 checksums.
+The stable workflow generates a Homebrew formula and can update the project tap
+after its [one-time setup](docs/src/en/community/releasing.md#one-time-setup).
+
 See the [installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/)
 for platform requirements and executor setup.
 
