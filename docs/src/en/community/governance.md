@@ -1,6 +1,6 @@
 # Governance and maintainers
 
-pVisor is currently decided by a single maintainer: code merges, releases, semspec approvals, and the authoritative documentation all go through the same entry point. There is no formal committee or multi-maintainer voting mechanism. This page describes current practice, not a charter that has yet to be established.
+One maintainer currently handles pVisor's code merges, releases, semspec approvals and final documentation decisions. The project has no formal committee, multi-maintainer voting process or governance charter.
 
 ## How contributions land {#workflow}
 

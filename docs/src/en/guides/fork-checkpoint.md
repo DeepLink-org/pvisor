@@ -1,10 +1,14 @@
 # Logical checkpoints and forks
 
-Before you apply or drop all staged content, fork the current filesystem state into a new Job so the agent can continue a different way:
+Workspace fork keeps a file proposal so you can try another approach with a new command. The parent must be a stopped host Job with reconstructable launch policy, parent and child stages must share a filesystem, and you must fork before a full apply or drop cleans up staging data. VM/container Jobs and Jobs with Gateway routes do not support this workspace fork path.
+
+Once these conditions hold, fork into a new Job so the agent can continue a different way:
 
 ```bash
 pvisor fork last -- codex
 ```
+
+`last` searches default storage only. If the parent Job uses an explicit stage, replace it with that stage path or Job ID; see [Jobs and storage](../concepts/jobs.md) for selection rules.
 
 ## Behavior
 
@@ -21,7 +25,7 @@ pvisor fork last -- codex
 | The conflict preimages recorded at first modification | External service state and network calls that already happened |
 | Lineage from the source Job | Immutable copies of every host lower file |
 
-Fork therefore means "start over from the same file changes", not a process-level snapshot restore. Snapshot content is flushed to disk before the manifest is published.
+The child starts a new command from these file changes; it does not continue the original process memory. Snapshot content is flushed to disk before the manifest is published. To continue VM execution state, use an [execution checkpoint](../reference/cli.md#full-vm-execution-checkpoints) and check its supported profile instead.
 
 ## Embedded API
 

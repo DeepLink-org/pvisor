@@ -8,7 +8,7 @@ Each of seven adapters passes 60/60 checks for fixed task 0, with whole prepare-
 
 ## Experiment design {#interpretation}
 
-Check whether each adapter reconstructs the recorded boundary exactly — digests, arguments, observations, no tool execution — as replay fidelity. Fidelity decides whether a recorded trajectory can serve as a real task input; higher fidelity carries more of the original context into the new run.
+Measure exact reconstruction of recorded digests, arguments and observations without tool execution as replay fidelity. Fidelity determines whether a recorded trajectory can serve as input to a real task. Higher fidelity preserves more of the original context in the new run.
 
 Each adapter receives twenty synthetic native-format trajectories, each with two tool batches, using `after-step=1` and `prepare-only`. Three repetitions shuffle adapter/task order with a fixed seed, giving 420 attempts. The table pins format profiles separately from installed Agent CLI versions.
 

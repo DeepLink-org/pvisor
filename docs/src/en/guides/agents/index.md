@@ -8,7 +8,9 @@ pvisor status --review last
 pvisor apply last --path src
 ```
 
-`--safe` mode matches the executable filename and allows model API destinations on HTTPS port 443; other destinations are denied. Deliver credentials explicitly with `--pass-env NAME` or let the Gateway hold them. HOME writes are discarded after execution, so do not depend on them to persist login state. See [credentials and environment](../policies/credentials.md) for delivery methods.
+`--safe` keeps workspace changes staged for review before apply and denies access to `.ssh`, `.gnupg` and private-key files within the view. HOME uses a separate private stage; writes are discarded after execution and do not enter the workspace Run Bundle, so do not depend on them to persist login state. See [credentials and environment](../policies/credentials.md) for platform-specific HOME and credential handling.
+
+Network presets match the executable filename and allow its model API destinations on HTTPS port 443; other destinations are denied. Deliver credentials explicitly with `--pass-env NAME` or let Gateway hold them.
 
 | Agent | Executable | `--safe` default allowlist | Guide |
 | --- | --- | --- | --- |

@@ -181,7 +181,7 @@ execution.
 - **Continue a trajectory:** use `replay` only when you already have a supported
   trajectory, after reading the [replay guide](../guides/replay.md).
 
-For your first run, copy the smallest loop:
+To get started, run and review a Job:
 
 ```bash
 pvisor spawn --safe -- codex

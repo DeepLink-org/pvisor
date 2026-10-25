@@ -1,10 +1,10 @@
 # Troubleshoot a Run
 
-When a Run does not behave as expected, inspect the Run Bundle before retrying the command with stronger options. The Bundle records the requested boundaries, the mechanisms actually installed, and the warnings that limit what the Run can claim.
+If a Job behaves unexpectedly, inspect its Run Bundle to check requested boundaries, installed mechanisms and warnings before deciding whether to change options and retry.
 
 ## Do three read-only checks first
 
-Run these in the project directory where the command started:
+Run these in the project directory where the command started. If you used an explicit stage, replace `last` with that path. [Jobs and storage](../concepts/jobs.md) explains how to find the task again:
 
 ```bash
 pvisor status last
@@ -43,7 +43,7 @@ The agent modifies the Run-owned view. Writes outside that view may be recorded 
 
 Execution review and model traffic capture are two independent decisions. First confirm the Run has finished and the Bundle is readable, then check the capture configuration and the target path passed to `--record-destination`.
 
-If the target directory is empty, read [Capture agent trajectories](capture.md), confirm the configuration, then start a new Run. A local Run Bundle is the execution record; it carries model requests and responses only when capture is on.
+If the target directory is empty, check proxy or base-URL configuration using the [model traffic capture steps](capture.md), then start a new Job. Use the Run Bundle to inspect execution results; with capture enabled, model requests and responses are recorded in the Gateway Journal in the capture directory.
 
 ## Before filing an issue
 

@@ -106,11 +106,9 @@ Source entries: `ensure_listener`, `connect_vm_egress`, `drive_flows` and `Synth
 
 ## Problem
 
-The host/container data plane is an explicit HTTP/HTTPS proxy. pVisor injects proxy environment variables and configuration arguments for known agent CLIs. Coverage is opt-in: subprocesses ignoring these settings—static Go binaries, raw sockets or processes clearing their environment—access networking directly. This is why host `ProcessExecutor` cannot claim network enforcement and rejects network capability `PolicyMode::Enforce`.
+The host/container data plane is an explicit HTTP/HTTPS proxy. pVisor injects proxy environment variables and configuration arguments for known agent CLIs. Subprocesses can ignore these settings and access networking directly, including static Go binaries, programs using raw sockets and processes clearing their environment. Host `ProcessExecutor` therefore makes no network enforcement claim and rejects network capability `PolicyMode::Enforce`.
 
-The remaining host-driver design aims for **complete interception with low overhead**: every byte from the agent process tree must pass a pVisor-owned choke point regardless of runtime, linking or syscall behavior, without a VM, root daemon or persistent privilege elevation.
-
-Move interception from a convention a subprocess can ignore to a layer it cannot choose to bypass.
+The proposed host driver must intercept all network traffic from the agent process tree with low overhead. Every byte must pass a pVisor-controlled egress point regardless of runtime, linking or syscall behavior, without a VM, root daemon or persistent privilege elevation. Interception must happen at a layer the child cannot bypass; environment-variable conventions alone are insufficient.
 
 ## Design A (primary): unprivileged network namespace and in-process userspace stack
 

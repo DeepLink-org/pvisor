@@ -47,7 +47,7 @@ You (review and apply)
 
 ## What evidence is for
 
-A claim is not evidence. An admission-time plan can be at most `Planned`; actual enforcement comes only from the observations the executor returns at teardown. A security review should therefore read the Run Bundle, not the configuration. See [capabilities, evidence, and assurance boundaries](../concepts/capabilities-and-evidence.md).
+A security review should check the executor observations in the Run Bundle. Admission-time plans can be at most `Planned`, and configuration expresses a request; only the observations returned at executor teardown establish actual enforcement. See [capabilities, evidence, and assurance boundaries](../concepts/capabilities-and-evidence.md).
 
 ## Apply the model to a real review
 

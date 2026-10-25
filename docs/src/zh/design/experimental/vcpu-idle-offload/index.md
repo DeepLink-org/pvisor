@@ -216,7 +216,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 
 #### 当前结论
 
-**已交付 M0 observe-only 观测原型和真实 VM 实验，不是自动 offload 第一版闭环。** KVM 实测证明当前用户态接点不足以识别等待：sleep/busy/短 timer/SMP 条件几乎都为 Unknown。不能为了完成自动策略而把低 CPU、未返回的 KVM_RUN 或 shutdown HLT 改作 idle。
+M0 已交付 observe-only 观测原型并完成真实 VM 实验；自动 offload 仍未实现。KVM 实测中，sleep/busy/短 timer/SMP 条件几乎都为 Unknown，当前用户态接点不足以识别等待。低 CPU、未返回的 KVM_RUN 和 shutdown HLT 都不能据此标为 idle。
 
 HVF 等待路径已接入，但本 Linux 工作区没有实际 macOS 编译或运行验收。M0 未完成全部退出门槛；M1/M2 未实施，不新增自动 offload CLI 开关。
 

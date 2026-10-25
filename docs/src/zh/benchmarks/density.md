@@ -14,7 +14,7 @@
 
 ## 实验设计 {#interpretation}
 
-统计在一个固定 cgroup 预算内通过全部校验的任务数，作为有效完成任务量。它衡量系统真正完成的工作；同一预算下完成得越多，有效容量越高。
+统计固定 cgroup 预算内通过全部校验的任务数，作为有效完成任务量。它表示系统在该预算内交付的有效结果数。同一预算下完成得越多，有效容量越高。
 
 Linux/x86_64 上比较原生进程、pVisor stage、pVisor VM 和 Podman 5.8.7。每批使用独立 cgroup：共同两核配额、CPU 0/1 亲和性、2 GiB 内存上限、零 swap；协调器、payload 和辅助进程包含在预算内，Podman payload/conmon 的归属经过检查。VM 每个配置 2 vCPU/256 MiB，仍受共同总预算限制。
 

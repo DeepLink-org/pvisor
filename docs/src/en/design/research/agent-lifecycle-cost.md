@@ -1,8 +1,8 @@
 # Agent task lifecycle cost
 
-**pVisor aims to establish a new execution model for Agents: Agents retain their sequential programming model, while a shared execution engine takes over supported I/O, reclaims resources during waits, and resumes the original execution timeline when events are ready.**
+pVisor aims to let Agents keep their sequential programming model while a shared execution engine takes over supported I/O, reclaims resources during waits and resumes execution at the original call when events are ready.
 
-Scaling autonomous Agent execution changes how resources must follow tasks. Faster sandbox startup is the foundation. The larger opportunity is keeping many stateful Agents progressing without reserving a complete resident environment for each timeline from start to finish.
+Faster sandbox startup shortens task preparation. For large numbers of stateful Agents, reducing resource use during waits could also avoid keeping a complete resident environment for every task from start to finish.
 
 ## An Agent's timeline is continuous; its resource demand is intermittent {#waiting-cost}
 
@@ -14,9 +14,9 @@ DeepSeek's **DSec (DeepSeek Elastic Compute)** report provides production eviden
 
 ![DSec production statistics and schematic Agent phases: long lifetimes, sparse CPU use, and potentially continuous state residency](assets/agent-workload-phases.svg)
 
-These observations support **intermittent computation over long lifetimes**. Computation and waits recur across interaction turns without a fixed period. The phase timeline above is illustrative, not a measured DSec trace.
+These observations show computation and waiting recurring across turns during long-lived tasks, without a fixed period. The phase timeline is illustrative, not a measured DSec trace.
 
-As concurrency grows, residency during waits accumulates. **Continuous logical execution need not require continuous physical resource occupancy.** The unit to optimize is therefore the Agent's complete lifecycle, from receiving an environment to delivering a result.
+As concurrency grows, residency during waits accumulates. Retaining task state while reducing physical resource use during waits requires examining the Agent's complete lifecycle, from receiving an environment to delivering a result.
 
 ## A familiar transition in I/O execution models {#io-models}
 
@@ -32,7 +32,7 @@ Transparent coroutines concentrate this adaptation in the runtime. Programs cont
 
 The figure uses one worker to illustrate sharing; implementations can use several. A Reactor signals that I/O can be attempted; a Proactor signals completion of a submitted operation. Coroutines let applications avoid splitting their state around those events. Transparency applies to integrated I/O paths and preserves call semantics there. Arbitrary multithreaded programs still need explicit migration.
 
-**pVisor applies this transition to Agent execution.** Agents keep their existing code and Linux tools; the execution engine turns supported waits into event-driven progress and resumption. Adaptation stays in the runtime, so no Agent needs a concurrency rewrite.
+pVisor aims to make a similar adaptation at the execution layer: Agents keep their existing code and Linux tools while the runtime suspends execution at supported waits, advances I/O and resumes on events. Agents need no concurrency rewrite.
 
 ## Use the VM to hold the Agent's execution context {#agent-iocp}
 
@@ -40,7 +40,7 @@ Following the coroutine model, pVisor extends the scheduling unit to the Agent's
 
 ![The mechanism: coroutines adapt waits at call boundaries; pVisor takes over I/O at Linux virtual-device and protocol boundaries, preserving sequential application calls](assets/agent-vm-coroutine-bridge.svg)
 
-**Transparency to the Agent means running its existing code, using its existing Linux tools and keeping its existing blocking calls.** File and network I/O crosses Linux and virtual devices into the host, where pVisor takes ownership on integrated device and protocol paths. Changes to the guest kernel, VMM and host services are concentrated at this layer. In the target design the Agent needs no asynchronous rewrite and no explicit suspend, offload or resume interface. [VM execution path](../vm-runtime.md)
+In the target design, the Agent keeps its existing code, Linux tools and blocking calls. File and network I/O crosses Linux and virtual devices into the host, where pVisor takes ownership on integrated device and protocol paths. Adaptation happens in the guest kernel, VMM and host services. The Agent needs no asynchronous rewrite or explicit suspend, offload or resume interface. [VM execution path](../vm-runtime.md)
 
 ## The Agent sees continuous execution; the host schedules events {#execution-path}
 
@@ -48,11 +48,11 @@ Consider a model request on a supported proxy path. The Agent issues the request
 
 ![Two views: Agent A waits for its original call; the host advances I/O and runs B and C during the wait, then restores A to resume in place](assets/agent-transparent-scheduling.svg)
 
-This places several Agent timelines under a shared execution engine: **each Agent retains its logical progress, while pVisor schedules its physical resource occupancy.** Resumption continues the same process and execution attempt. The VM preserves machine context across the wait; the host retains the I/O state needed to keep the operation progressing.
+A shared execution engine manages physical resources for several Agents, each retaining its own progress. Resumption continues the same process and execution attempt: the VM preserves machine context across the wait, and the host retains the I/O state needed to keep the operation progressing.
 
 Transparency is bounded by the original call's semantics: results, errors, file ordering and synchronization requirements must remain intact. The host must own independent requests and data before removing I/O's dependency on guest RAM. Model requests also require protocol integration; ordinary TCP forwarding cannot automatically take over a TLS session inside the guest. A guest with runnable background work continues executing.
 
-Bulk writes require the same ownership transfer. Once the host owns independent write data, it can queue, coalesce and persist it. While preserving ordering, errors and synchronization semantics, an entire guest waiting only for those operations may become eligible for offload. **A smaller host buffer can release a larger guest memory footprint, which makes asynchronous I/O at scale worth pursuing.** Queue backpressure, synchronization and runnable background tasks affect the eligible window, and the buffer itself counts toward resource cost. [Agent I/O completion](../experimental/agent-io-completion/index.md)
+Bulk writes require the same ownership transfer. Once the host owns independent write data, it can queue, coalesce and persist it. While preserving ordering, errors and synchronization semantics, an entire guest waiting only for those operations may become eligible for offload. A smaller host buffer may release a larger guest memory footprint. Queue backpressure, synchronization and runnable background tasks affect the eligible window, and the buffer itself counts toward resource cost. [Agent I/O completion](../experimental/agent-io-completion/index.md)
 
 A blocked vCPU already lets the host schedule other work. The additional capacity opportunity here comes primarily from reclaiming physical memory still retained by a waiting guest.
 
@@ -112,7 +112,7 @@ N_memory = floor((R_node - S_fixed - P_headroom) / m)
 
 `S_fixed` covers the system and shared services; `P_headroom` reserves memory for active peaks, simultaneous restoration and temporary copies. The table's multiplier assumes the same available budget before and after optimization. Additional shared-engine memory or restoration headroom requires multiplying by the ratio of the new available budget to the old. Staggered waits, restoration admission and hard budgets determine deployable capacity.
 
-Offload and restoration can also extend task duration. In the same historical static batch, raw offload takes about 44–98 ms. The subsequent complete task—including restoration, a 64 MiB digest and write/fsync/read-back verification—takes about 156–178 ms longer than without offload. These are single observations taken during background compilation; they are not isolated resume latency or a tail-latency guarantee. [Timing definitions and data](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history)
+Offload and restoration can also extend task duration. In the same historical static batch, raw offload takes about 44–98 ms. The subsequent complete task takes about 156–178 ms longer than without offload, including restoration, a 64 MiB digest and write/fsync/read-back verification. These are single observations taken during background compilation; they are not isolated resume latency or a tail-latency guarantee. [Timing definitions and data](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history)
 
 If end-to-end task duration increases by a fraction `delta`, calculate average residency over the complete task in each implementation. Memory-time cost per completed task changes by:
 
@@ -134,7 +134,7 @@ Subsequent comparisons should retain existing sharing and reclamation, then meas
 
 ## Complete one transparent wait path first {#validation}
 
-Start with one I/O path and complete the loop: take ownership → offload safely → advance on the host → wake on an event → return from the original call. Then extend to streaming and more tools. Validation must check call semantics and whether fixed resources support more useful execution after counting host buffers, offload and restoration costs.
+Start with one I/O path and verify each step: take ownership → offload safely → advance on the host → wake on an event → return from the original call. Then extend to streaming and more tools. Validation must check call semantics and whether fixed resources support more useful execution after counting host buffers, offload and restoration costs.
 
 The prototype should progressively replace the estimate's assumptions with observations:
 
@@ -147,5 +147,3 @@ The prototype should progressively replace the estimate's assumptions with obser
 | Original-call outputs, errors, ordering, synchronization, cancellation, task completions and end-to-end latency | Whether additional execution contexts preserve correctness and complete useful work |
 
 Existing foundations include controlled file and network paths, pause and RAM-offload primitives, and an experimental host write buffer. Automatic wait detection, I/O handoff, completion-driven wakeups and resumption scheduling still need end-to-end integration and validation. [Wait and offload experiment](../experimental/vcpu-idle-offload/index.md), [Agent I/O completion](../experimental/agent-io-completion/index.md)
-
-**Transparent coroutines are the closest precedent: sequential code, shared resources, runtime-managed waits. pVisor applies that model to Agent execution, with the VM as the context and control boundary.**

@@ -216,7 +216,7 @@ Use targeted `mise run test -- PACKAGE` by default; real VM/special runners foll
 
 #### Current conclusion
 
-**M0 observe-only observation and real VM experiments are delivered; the automatic-offload loop remains pending.** KVM measurements show current userspace integration points cannot identify waiting: sleep/busy/short-timer/SMP observations are almost entirely Unknown. Low CPU, unreturned KVM_RUN and shutdown HLT retain their existing meaning rather than being reclassified as idle to complete the policy.
+M0 delivers an observe-only prototype and real VM experiments; automatic offload remains unimplemented. KVM measurements report almost entirely Unknown for sleep/busy/short-timer/SMP conditions, so current userspace integration points cannot identify waiting. Low CPU, unreturned KVM_RUN and shutdown HLT cannot be classified as idle on this evidence.
 
 HVF wait paths are integrated, but this Linux workspace has no actual macOS compilation or runtime validation. M0 has outstanding exit gates; M1/M2 are unimplemented, with no new automatic-offload CLI switch.
 

@@ -14,7 +14,7 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
-Check each execution mode against a fixture with known paths — what is allowed, what is denied, where writes land — as the isolation boundary it actually enforces. The tighter that boundary, the fewer host paths stay reachable or modifiable.
+Measure allowed and denied accesses and final write destinations in a fixture with known paths as the effective isolation boundary. It represents the access restrictions each mode actually enforces. A tighter boundary leaves fewer host paths reachable or modifiable.
 
 Seven configurations each run three fresh fixtures. A fixed seed shuffles configurations in each repetition, giving 21 attempts. Native and host provide host-accessible controls. Podman uses private overlay storage and a writable workspace mount; pVisor OCI uses crun and an explicit writable mount. VM and OCI use the same prepared Python/Git rootfs.
 

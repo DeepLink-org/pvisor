@@ -4,7 +4,7 @@
 
 ## 1. Motivation {#motivation}
 
-Retaining RAM files requires knowing what they reference, which files are still writable, and which history can be deleted. Compressed backing distributes that information across manifest, generations and staging. This document specifies directories, byte layouts and size formulas for inspection, capacity planning and retention.
+To retain RAM files, check their data references, which files are still writable and which history can be deleted. Compressed backing stores this information across the manifest, generations and staging. Inspection and capacity planning require checking their directories, byte layouts and size formulas together.
 
 ## 2. Core design {#core-design}
 

@@ -51,7 +51,7 @@ Acceptance criteria:
 
 ### L3: clustered execution, centralized evidence
 
-Entry criteria (TBD): the boundary with schedulers is defined—pVisor provides execution semantics and evidence, while cross-node orchestration goes to Kubernetes and Ray; see [cluster execution](../design/research/index.md).
+Entry criteria (TBD): define scheduler responsibilities. pVisor provides execution semantics and evidence; Kubernetes and Ray handle cross-node orchestration; see [cluster execution](../design/research/index.md).
 
 Acceptance criteria:
 

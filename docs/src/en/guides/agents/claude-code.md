@@ -8,10 +8,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## What `--safe` does for Claude Code
 
-- **Network:** the preset matches the `claude` executable and allows only `api.anthropic.com:443`; other destinations are denied by default.
-- **Workspace:** changes go to the stage and are applied after review.
-- **HOME:** a separate private stage; state Claude Code writes under HOME is discarded when the Run ends and never enters the Run Bundle.
-- **Sensitive paths:** `.ssh`, `.gnupg`, and private-key files within the view are denied.
+The network preset matches the `claude` executable and allows only `api.anthropic.com:443`; other destinations are denied by default. Workspace staging, discarded HOME state and sensitive-path rules follow the [common Agent settings](index.md).
 
 ## Credentials
 

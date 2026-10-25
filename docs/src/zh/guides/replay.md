@@ -1,8 +1,42 @@
 # 回放历史轨迹
 
-SandboxReplay 在用户已创建的新沙箱中回放 Agent 轨迹：重新执行恢复边界之前的工具调用，用新沙箱产生的 observation 重建 Agent 原生上下文，再从边界后继续运行。它在 [Run 与 Attempt 模型](../design/execution-model.md) 中创建派生 Run。
+要复现一次失败或从历史步骤重试，先准备新沙箱和 Agent 的原生轨迹，再运行 `pvisor replay`。默认会重新执行选定边界之前的工具调用，用新沙箱的结果重建上下文，然后让 Agent 继续。工具调用可能再次产生文件或远程副作用，运行前应按任务需要设置沙箱权限。
 
-## 1. 基本概念
+原生轨迹由 Agent 自身保存；[Gateway capture](capture.md)产生的是模型流量 Event Journal。SandboxReplay 通过原生轨迹适配器处理会话，并在 [Run 与 Attempt 模型](../design/execution-model.md) 中创建派生 Run。
+
+<span id="3"></span>
+
+## 1. 安装与运行位置 {#installation}
+
+`pvisor replay` 通常直接运行在用户已经创建的新沙箱中，因此 pVisor 必须安装在该沙箱内，或者以只读方式挂载到沙箱的 `PATH`。沙箱内有 Python 3.10 或更高版本时，直接安装发布版：
+
+~~~bash
+python -m pip install pvisor
+
+command -v pvisor
+pvisor --version
+pvisor replay --help
+~~~
+
+如果在沙箱外构建后复制二进制，构建机与目标沙箱的操作系统、CPU 架构和动态链接运行时必须兼容。Agent runtime 也必须与所选 replay profile 的固定版本一致；各适配器的机制与固定版本见[回放设计](../design/replay.md)。
+
+<span id="4"></span>
+
+## 2. 最小用法 {#usage}
+
+~~~bash
+pvisor replay \
+  --agent claude-code \
+  --trajectory /input/session.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/claude
+~~~
+
+执行模式（默认续跑、`--replay-only`、`--prepare-only`）、步数预算、边界提示词、结果协议 `sandbox-playback.result/v3` 与各 Agent 的 CLI/TOML 写法，以 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)为准。
+
+<span id="1"></span>
+
+## 3. 基本概念 {#concepts}
 
 一条 Agent 轨迹可以表示为：
 
@@ -18,7 +52,9 @@ SandboxReplay 在用户已创建的新沙箱中回放 Agent 轨迹：重新执�
 
 如果一个 assistant response 包含多个并行工具调用，它们属于同一个动作批次，恢复边界不能位于批次内部。
 
-## 2. 回放语义
+<span id="2"></span>
+
+## 4. 回放语义 {#replay-semantics}
 
 SandboxReplay 依次完成两件事：
 
@@ -47,32 +83,6 @@ Agent 原生 system prompt + 工具定义 + 原始任务
 该提示词只在 `O′N` 之后、第一次实时模型推理之前注入一次，不替换原始任务。
 `prepare-only` 和 `replay-only` 不发起实时模型请求，因此不会注入。未配置时仍保持
 “请求准确结束在 `O′N`”的原有语义。
-
-## 3. 安装与运行位置
-
-`pvisor replay` 通常直接运行在用户已经创建的新沙箱中，因此 pVisor 必须安装在该沙箱内，或者以只读方式挂载到沙箱的 `PATH`。沙箱内有 Python 3.10 或更高版本时，直接安装发布版：
-
-~~~bash
-python -m pip install pvisor
-
-command -v pvisor
-pvisor --version
-pvisor replay --help
-~~~
-
-如果在沙箱外构建后复制二进制，构建机与目标沙箱的操作系统、CPU 架构和动态链接运行时必须兼容。Agent runtime 也必须与所选 replay profile 的固定版本一致；各适配器的机制与固定版本见[回放设计](../design/replay.md)。
-
-## 4. 最小用法
-
-~~~bash
-pvisor replay \
-  --agent claude-code \
-  --trajectory /input/session.jsonl \
-  --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
-~~~
-
-执行模式（默认续跑、`--replay-only`、`--prepare-only`）、步数预算、边界提示词、结果协议 `sandbox-playback.result/v3` 与各 Agent 的 CLI/TOML 写法，以 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)为准。
 
 ## 实验与开发资料
 

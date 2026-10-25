@@ -1,6 +1,8 @@
 # Research directions
 
-OS and MLSys research concerns correct task completions under a fixed resource budget and the human cost of handling their results. pVisor supplies execution, state and evidence mechanisms; orchestrators and trainers compose workloads and evaluate benefits through controlled experiments. For the full cost narrative across environment preparation, tool execution, model waiting and failure rework, see [Agent task lifecycle cost](agent-lifecycle-cost.md).
+pVisor's research question is how much more work a fixed resource budget can complete while preserving correctness and review, and how much human time handling those results takes. pVisor supplies execution, state preservation and records; orchestrators and trainers compose workloads and test gains through controlled experiments.
+
+[Agent task lifecycle cost](agent-lifecycle-cost.md) examines environment preparation, tool execution, model waits and failure rework to motivate I/O handoff and reclamation during waits. Experiments must turn those design goals into testable hypotheses and count the full execution and supervision costs.
 
 ## From mechanisms to falsifiable conclusions {#research-loop}
 
@@ -64,4 +66,4 @@ Research plans do not create a product scheduler and do not replace production a
 
 ## Public materials and writing references {#references}
 
-No formal papers, external reports or talks are currently registered; the public technical material is the design documentation and benchmark evidence in this repository (for example [replay fidelity](../../benchmarks/replay-fidelity.md)). Cite conclusions with the report date, machine, executor, workload and statistical scope. Design-writing practice and open-source expression references are maintained in the repository's [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md) and are not repeated here.
+No formal papers, external reports or talks about pVisor are currently registered; citable project material consists of the design documentation and benchmark evidence in this repository (for example [replay fidelity](../../benchmarks/replay-fidelity.md)). Cite conclusions with the report date, machine, executor, workload and statistical scope. Design-writing practice and open-source expression references are maintained in the repository's [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md) and are not repeated here.

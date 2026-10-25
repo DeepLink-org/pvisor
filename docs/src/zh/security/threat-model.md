@@ -47,7 +47,7 @@ pVisor 保护项目工作区、HOME、凭据、网络与模型额度，假设工
 
 ## 证据的作用
 
-声明不等于证据。准入阶段的计划最高只能是 `Planned`；实际强制力只来自执行器收尾时返回的观察结果。因此安全评审应当读 Run Bundle，而不是读配置。证据的口径见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)。
+安全评审应核对 Run Bundle 中的执行器观察。准入阶段的计划最高只能是 `Planned`，配置表达的是请求；实际强制力只来自执行器收尾时返回的观察结果。证据的口径见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)。
 
 ## 把模型用于一次真实评审
 

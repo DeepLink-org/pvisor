@@ -48,7 +48,7 @@ pvisor status --review ../stage-001
 
 **File access observations** list operations reaching OverlayFS: writes to `src/app.py` and `scratch.txt`, deletion of `src/legacy.txt`, and denial of the `.ssh/id_rsa` read (`denied=1`). **Network access observations** list destinations reaching OverlayNet, including the rejected `example.com` request.
 
-Selective proxies on ordinary host execution are cooperative: only requests through the proxy are recorded. An absent destination does not prove it was never accessed. Mandatory boundaries come from deny-all, container offline mode, or VM networking; see [network control](../guides/policies/network.md).
+Selective proxies on ordinary host execution depend on client cooperation and record only requests that pass through them. A destination missing from the record may still have been accessed. Mandatory boundaries come from deny-all, container offline mode, or VM networking; see [network control](../guides/policies/network.md).
 
 ## 5. Apply only what you want
 
@@ -71,7 +71,7 @@ Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that pa
 
 ## 7. After switching to a real task
 
-Replace the demo with a narrowly scoped real task: retain the current repository baseline, confirm the agent is installed in the selected execution environment, and configure its model service and credentials—pVisor does not select the agent's provider. For an installed Codex with an explicitly delivered OpenAI key, set `OPENAI_API_KEY` in the host environment first:
+Before running a real task, limit its scope, retain the current repository baseline and confirm the agent is installed in the selected execution environment. Configure its model service and credentials; pVisor does not select the agent's provider. For an installed Codex with an explicitly delivered OpenAI key, set `OPENAI_API_KEY` in the host environment first:
 
 ```bash
 pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
@@ -81,12 +81,6 @@ pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
 
 `--safe` matches network presets by the direct executable filename. Adding `--overlaynet-allow` replaces the preset list, so list model APIs alongside dependency downloads or other model services. HOME writes are discarded after exit; do not depend on this run to persist login state. See [Agent integration](../guides/agents/index.md) for other agents' credentials and prerequisites.
 
-After the Job stops, check its exit code, installed controls, warnings, and changes; a nonzero exit can still leave candidates. Workspace fork can retry from file state when all of these hold:
-
-- the parent Job is a stopped host Job with reconstructable launch policy;
-- parent and child stages share a filesystem;
-- you fork before a full apply or drop cleans up staging data.
-
-VM/container Jobs and Jobs with Gateway routes do not support this path. See [review and apply](../guides/review-apply.md) for conflict handling.
+After the Job stops, check its exit code, installed controls, warnings and changes; a nonzero exit can still leave candidates. Choose which files to keep, then follow [review and apply](../guides/review-apply.md) to handle application and conflicts. To keep the file proposal and try another approach, check the [workspace fork prerequisites](../guides/fork-checkpoint.md) before cleaning up the stage.
 
 Two constraints apply before expanding the task scope. Selective proxies on the Linux host remain cooperative, so prepare a VM with the agent installed when you need mandatory selective egress ([credentials and environment](../guides/policies/credentials.md)). When adding concurrency, give each task a separate worktree and stage, select results by explicit paths, review each separately, and never apply concurrently into the same target tree; the [parallel workspace workflow](../guides/parallel-agents.md#batch) verifies records and merging with two offline tasks before you substitute real agents.

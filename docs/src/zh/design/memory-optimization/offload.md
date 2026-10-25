@@ -20,8 +20,8 @@
 不可变 RAM epoch，也不会提交压缩存储。卸载需要更强的边界：
 停止 CPU 写入，关闭并排空设备 memory gate，再同步 backing 脏页。
 
-卸载操作完成前，CPU 与设备保持静默。runner 的确认
-不是完成点：host 侧的压缩发布工作可能尚未结束。
+卸载操作完成前，CPU 与设备保持静默。即使 runner 已确认，host 侧的压缩发布工作仍可能尚未结束，
+因此还不能视为卸载完成。
 恢复时先重建必要的 hypervisor 映射，再打开设备 gate，最后重启 vCPU。
 
 ## backing 身份与存储选择 {#backing}

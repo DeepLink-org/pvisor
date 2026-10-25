@@ -2,7 +2,7 @@
 
 ## Motivation {#motivation}
 
-Choose a mode by the total cost of producing the same result. Use stage for large workspaces with sparse changes, native workflows for small workspaces or tool-only execution, and a VM only from complete-task measurements. Match evidence to the decision: task comparisons for local execution, startup plus tool data for an independent guest kernel, and success rates with resource accounting for capacity.
+Evaluate stage for sparse changes in large workspaces; small workspaces or tool-only execution may suit native workflows. First choose executors that meet your isolation needs, then compare the total cost of producing the same result. If you need an independent guest kernel, budget for VM startup and tool execution separately. Capacity depends on task success and consistent resource accounting, not idle environment counts alone.
 
 Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink; native workflows are faster on small workspaces. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
 
