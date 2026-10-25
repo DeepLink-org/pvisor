@@ -1,15 +1,8 @@
 # 运行单机 daemon
 
+用 OpenSandbox 1.1.0 或 E2B Python SDK 2.59.0 驱动本机 Linux VM 沙箱。daemon 负责资源准入、持久归属、生命周期与过期清理；每个沙箱由独立 supervisor 持有，API 重启后可重新连接。
 
-缓存是同一 daemon 的可选组件：在 sandbox 启动命令上添加 `--cache`，或单独运行 `pvisor-daemon serve --cache`。`--cache-listen` 和 `--cache-image-store` 配置独立端点与存储。缓存启动失败或异常退出会使 daemon 报错；daemon 关闭或崩溃时缓存 worker 退出。HTTP 关闭最多等待十秒；进行中的缓存请求可能失败。原生 VM supervisor 和共享池保留现有重启生命周期。
-安装 `pvisor-daemon`，通过部分兼容 OpenSandbox 1.1.0 的 API，在一台 Linux 主机上管理镜像沙箱。daemon 负责本机准入、生命周期、持久状态与过期清理。
-
-跨节点调度、全局 DAG 和分布式 lease 由 Kubernetes、Ray 或你的应用管理。daemon 不包含 Controller 或 Worker。
-
-需要本机原生 VM 沙箱生命周期时用 `pvisor-daemon`；公开 Job 与文件审查流程仍用 `pvisor spawn`。
-
-!!! warning
-    项目**尚未提供 guest bootstrap 或镜像配方，也未做端到端验证**；目前没有 SDK 兼容性验证或密度测量结果。下列每一步都需要自行准备镜像与 vsock 桥接。
+需要工作区改动审查与合入时，使用原生 Job 的 `pvisor spawn`。daemon 提供已测试的核心 SDK 子集，不提供 Job 的 stage/apply 或 checkpoint/fork API。跨节点放置、工作流与业务重试由调用方管理。
 
 ## 前提条件 {#prerequisites}
 
@@ -17,9 +10,9 @@
 
 前置检查会实际写入 controller 并调用 KVM API。没有 host、OCI 命令或 registry-pull 降级。
 
-镜像是可信本机 `images_dir/<key>.json` manifest，不是 registry reference。字段包括绝对路径的独立 Linux `rootfs`（不能是宿主 `/` 或与 daemon 状态重叠）、绝对路径的 guest bootstrap `entrypoint` argv、可选 `cmd`、可选 `env` 与可选绝对路径 firmware `library_dir`。请求的工作负载 argv（为空则使用 `cmd`）追加到 `entrypoint`，请求 env 覆盖 manifest env，不继承宿主环境，也不经 shell 插值。
+创建请求使用本机 `images_dir/<key>.json` 中的模板 key，创建期间不从 registry 拉取或整体解压镜像。先用 `prepare-image` 准备可信镜像并固定 revision；实际部署优先使用 digest。基础镜像需包含工作负载需要的 shell、工具和语言。
 
-长期运行的 guest bootstrap 必须监督工作负载、真实 OpenSandbox 1.1.0 execd 与 egress，自行初始化／鉴权服务、转发信号并回收子进程。它必须在 guest **CID 3** 的 **44772/18080** 端口提供字节透明的 AF_VSOCK listener，桥接真实服务。Supervisor 的 loopback TCP 发布经私有 Unix socket 与原生 vsock 转发连接 guest。普通 rootfs 或只运行 sleep 的进程不够。Create、对 Running VM 的 Inspect 与 resume 就绪检查经 bridge 要求真实 HTTP 200 的 execd `/ping`、JSON `initialized: true` 的 `/ready` 和 egress `/healthz`，响应体有界。daemon 不注入／初始化 execd，也不合成 command/SSE/file 响应。
+新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；旧独立 rootfs manifest 保留其 bootstrap 合同，见[镜像合同](../../design/daemon/operations.md#image-contract)。
 
 ## 安装与启动 {#install}
 
@@ -31,7 +24,12 @@ pvisor-daemon --help
 pvisor-daemon protocol
 ```
 
-需要 `main` 最新构建时，使用 [nightly wheel 安装器](../../start/installation.md)。`protocol` 打印固定的 OpenSandbox 版本与 commit。源码 revision、SDK 1.1.0 与镜像内容应一起固定。本地源码安装路径（`cargo install --locked --path crates/pvisor-daemon`）尚未验证。
+需要最新构建时使用 [nightly wheel 安装器](../../start/installation.md)；源码构建用 `mise run build -- performance daemon`。将 daemon revision、SDK 版本与镜像内容一并固定。准备两个独立协议模板：
+
+```bash
+pvisor-daemon prepare-image --name ubuntu --image ubuntu:24.04 --images-dir /srv/pvi
+pvisor-daemon prepare-image --name e2b-base --image ubuntu:24.04 --e2b --images-dir /srv/pvi
+```
 
 `serve` 使用已实现且必需的 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`：
 
@@ -65,7 +63,7 @@ EOF
 
 ## OpenSandbox 接口范围 {#profile}
 
-兼容基线固定为 OpenSandbox **1.1.0**，tag `release-1.1.0`，commit `b1a29cf93a823a95913f7943010febb3f29de05c`。支持范围限于下表中的部分 API；完整 OpenSandbox 与未经修改 SDK 的端到端兼容性尚未验证。
+兼容基线固定为 OpenSandbox **1.1.0**（`release-1.1.0`）；未修改的官方 Python SDK 已验证下列核心流程。完整 API、notebook/session kernel 和所有 SDK 功能不在支持范围，逐项合同见[协议与测试](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#protocol-baseline)。
 
 | 能力 | 当前行为 |
 | --- | --- |
@@ -73,11 +71,61 @@ EOF
 | Pause / resume | 同一 Attempt 上已确认的 live vCPU pause/resume，不是 checkpoint |
 | 续期 | 未来 RFC3339 时间，必须延长已有 TTL |
 | 端点 | 仅 daemon 路由的 execd 44772 与 egress 18080 |
-| 命令、文件、health、metrics | 流式转发到 prepared image 中的真实 upstream 服务 |
+| 命令、文件、health、metrics | 默认原生 guest 引擎；显式上游模板使用服务代理 |
 | 快照、templates/pools、metadata 修改、hooks | 不支持 |
 | 网络策略、credential proxy、secure access、volumes、image auth | 不支持的创建选项被拒绝 |
 | 任意应用端口、签名端点、WebSocket、CONNECT | 不支持 |
 | Stage/apply、checkpoint/fork、offload | 未接入此 daemon 后端 |
+
+安装 `opensandbox==1.1.0`，在具有同一 API key 的进程中运行：
+
+```python
+import asyncio
+import os
+from opensandbox.config import ConnectionConfig
+from opensandbox.sandbox import Sandbox
+
+async def main():
+    config = ConnectionConfig(
+        domain="127.0.0.1:8080", protocol="http",
+        api_key=os.environ["OPEN_SANDBOX_API_KEY"], use_server_proxy=True,
+    )
+    sandbox = await Sandbox.create("ubuntu", connection_config=config,
+                                   resource={"cpu": "1", "memory": "512Mi"})
+    try:
+        result = await sandbox.commands.run("printf 'hello from pVisor'")
+        print(result.logs.stdout[0].text)
+    finally:
+        await sandbox.kill()
+        await sandbox.close()
+
+asyncio.run(main())
+```
+
+## E2B 接口 {#e2b}
+
+为 `e2b-base` 模板使用固定的官方 SDK，并将数据端点设为包含 `/e2b` 的 URL：
+
+```bash
+pip install 'e2b==2.59.0'
+export E2B_API_KEY="$OPEN_SANDBOX_API_KEY"
+export E2B_API_URL='http://127.0.0.1:8080'
+export E2B_SANDBOX_URL='http://127.0.0.1:8080/e2b'
+```
+
+```python
+from e2b import Sandbox
+
+sandbox = Sandbox.create("e2b-base", timeout=300)
+try:
+    print(sandbox.commands.run("printf 'hello from pVisor'").stdout)
+    sandbox.files.write("/tmp/hello.txt", "private VM file")
+    print(sandbox.files.read("/tmp/hello.txt"))
+finally:
+    sandbox.kill()
+```
+
+E2B 支持同步/异步生命周期、命令、stdin、后台进程、文件和 PTY。原生适配器支持 JSON/Connect，不支持二进制 protobuf、云端模板构建、notebook kernel、任意应用端口或自动 pause/resume。Pause 保留 live VM 与资源预留，TTL 继续计时；不生成持久快照。详见[部分协议合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#local-e2b-sdk-interface)。
 
 ## 查询、删除与过期 {#operations}
 
@@ -104,17 +152,21 @@ EOF
 - 默认模式在端点 `headers` 中提供随机、沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`。客户端必须保留这些 header；该 token 不授权生命周期操作或访问其他沙箱。
 - 转发到 guest 前会移除控制凭据。调用方提供的 guest execd access token 不会被生命周期 key 替换。
 
-不支持签名端点过期、任意应用端口、WebSocket 或 CONNECT。请求/响应流式转发，包括 multipart 与 SSE。上传加等待 upstream header 的上限为 120 秒；已建立的响应流没有总超时。输出/流量配额仍由 upstream 服务负责。
+OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CONNECT。默认原生后端按沙箱限制响应流、进程数、输出留存和上传大小，超限明确失败；显式上游后端保留其服务配额。边界值见[原生引擎合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#native-guest-execution-default-for-new-templates)。
 
 默认只监听 loopback。对外访问前，在可信反向代理上配置 TLS，并用 `--public-endpoint HOST:PORT` 指定外部路由可达的 authority，不带 scheme 或路径。
 
-## 启用 daemon 内存池 {#memory-pool}
+## 可选缓存与内存池 {#memory-pool}
+
+添加 `--cache` 启用独立缓存服务，用 `--cache-listen` 与 `--cache-image-store` 配置其端点和存储。也可单独运行 `pvisor-daemon serve --cache`。缓存 worker 由 daemon 监督，异常退出使 daemon 失败；daemon 关闭/崩溃会停止 worker，进行中的请求可能失败，不能据此判定准备操作未发生。
 
 在 `serve` 命令中添加 `--memory-pool`，即可让新沙箱接入 daemon 持有的物理共享页池；默认关闭。运行时扫描已驻留的 4 KiB 页面，优先收纳跨实例重复内容，daemon 保存一份物理页。VM 读取时保持共享，写入时由内核 COW 生成私有页。这个 Linux 路径不需要 userfaultfd，也不压缩独有页。实际占用与重复程度、扫描和写入有关，见[内存 benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle)。
 
 池组件独立于 API 进程，可跨 API 重启保留页面。连接断开后，用 pidfd 确认 VM 进程退出才释放映射引用。池进程丢失会使依赖 VM 失败，不会自动替换活动池。默认上限为 512 MiB 页面数据、32,768 个对象、32 个连接，每个连接 32,768 个引用：4 KiB 对象数限制使默认池最多保存 128 MiB 不同页面，每 VM 最多引用 128 MiB。索引、映射、线程和分配器另有开销；池在单个沙箱 cgroup 与准入额度之外，需预留宿主余量。升级旧压缩池时先排空旧 VM，再使用新状态目录。
 
 若要选择实验性压缩模式，改为添加 `--memory-pool --memory-pool-mode compressed`。相同的解码后 64 KiB 块共享 sealed fill/zstd 对象，独有可压缩内容也能入池。VM 启动需要内核缺页 userfaultfd 权限。池丢失后已持有句柄仍可用，新发布停止。模式绑定持久配置，切换需排空旧实例并使用新状态目录。进程级共享与服务退出测试通过，双 VM 探针也已验证池终止后的 guest UFFD 回收/refault 与文件 I/O。见 [sealed 压缩池合同](../../design/memory-optimization/compression-pool.md)。这个开关的 VM/池测试不等于完整 OpenSandbox SDK 端到端验证。
+
+缓存与池也可以独立运行，不需要开启 sandbox API。Linux 与 Apple Silicon macOS 都支持这两个组件；macOS 默认使用压缩池，也可在全新状态目录中显式选择 `--memory-pool-mode physical-pages`。接入命令、预算与池丢失的处理见[内存优化](../../design/memory-optimization/index.md)。
 
 ## 重启与状态所有权 {#restart}
 
@@ -155,7 +207,7 @@ daemon sandbox ID 不是 Job ID，不要传给 `pvisor checkpoint`、`fork`、`a
 | v2 header 缺原生 `owner.json`，即使 map 为空 | 恢复原始归属状态；不要删除 `records/`、预留或伪造 marker |
 | 状态目录忙 | 其他 daemon 持有独占锁；不要删锁或状态绕过 |
 | 镜像不可用 | 先在本机准备镜像；不支持自动 pull 或 image auth |
-| SDK 创建无法就绪 | 真实 execd 初始化与 `/ping`/`/ready`、egress `/healthz` 及 guest CID 3 的 44772/18080 vsock bridge；普通 rootfs 不够 |
+| SDK 创建无法就绪 | 确认模板后端、guest 绑定与主进程状态；显式上游模板另查 execd/envd 初始化和 bridge |
 | 外部端点不可达 | TLS 代理路由、domain/protocol、`--public-endpoint` 与端点提供的 headers |
 | 失败/pause 后准入仍满 | Failed/uncertain/paused 保留硬预留；查询并确认删除 |
 | 过期沙箱仍存在 | 清理是 best effort；检查 daemon 在线时间、生命周期锁与原生清理错误 |

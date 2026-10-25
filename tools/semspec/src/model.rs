@@ -16,6 +16,12 @@ pub struct Case {
     pub script: String,
     pub annotation: Annotation,
     pub preparation: Vec<String>,
+    pub expectations: Vec<Expectation>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Expectation {
+    pub stream: String,
+    pub text: String,
 }
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Annotation {
@@ -59,7 +65,7 @@ impl ReviewState {
         }
     }
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Verdict {
     Pass,
@@ -98,21 +104,38 @@ impl Verdict {
         )
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Evidence {
+    pub digest: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    #[serde(default)]
+    pub cancelled: Option<i32>,
+    pub truncated: bool,
+}
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CaseResult {
     pub id: String,
     pub verdict: Verdict,
     pub review: ReviewState,
     pub duration_ms: u128,
     pub workdir: Option<PathBuf>,
+    #[serde(default)]
+    pub evidence: Option<Evidence>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunReport {
-    pub engine_semantics: &'static str,
+    #[serde(default)]
+    pub benchmarks: Vec<crate::experiment::Outcome>,
+    pub engine_semantics: String,
     pub engine_review: ReviewState,
     pub vocab_review: Vec<(String, ReviewState)>,
     pub platform: String,
     pub results: Vec<CaseResult>,
+    #[serde(default)]
+    pub root: Option<PathBuf>,
 }
 impl RunReport {
     /// Require a complete, unique report inventory; ERROR keeps precedence over gate failures.

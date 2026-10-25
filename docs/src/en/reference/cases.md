@@ -23,11 +23,11 @@ Start with a simple Job, add limits, staging, VM, container and networking, then
 | Prepare trajectory replay | M01 |
 | Terminal UI and permission prompts | D06, M02 |
 
-This appendix is both user documentation and the DOC semspec source. Each scenario includes purpose, semantics, a violation example, commands and assertions. `just cases` executes the Bash checks below. Original A01–M02 labels remain in headings.
+This appendix is both user documentation and the DOC semspec source. Each scenario includes purpose, semantics, a violation example, commands and assertions. `mise run cases` executes the Bash checks below. Original A01–M02 labels remain in headings.
 
 ## How to use
 
-For manual product commands, prepare a test working directory and ensure `pvisor` is on `PATH`. Full check blocks use runner fixtures/assertion functions; execute them with `just cases`.
+For manual product commands, prepare a test working directory and ensure `pvisor` is on `PATH`. Full check blocks use runner fixtures/assertion functions; execute them with `mise run cases`.
 
 ```bash
 mkdir -p /tmp/pvisor-cases/workspace
@@ -37,18 +37,18 @@ cd /tmp/pvisor-cases/workspace
 Run automated checks from the repository root:
 
 ```bash
-just semspec --spec-dir docs/src/zh/reference list --domain DOC
-just semspec run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
-just cases --case S-DOC-001,S-DOC-012 --keep
-just cases
-just semspec --spec-dir docs/src/zh/reference show S-DOC-001
+mise run semspec -- --spec-dir docs/src/zh/reference list --domain DOC
+mise run semspec -- run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
+mise run cases -- --case S-DOC-001,S-DOC-012 --keep
+mise run cases
+mise run semspec -- --spec-dir docs/src/zh/reference show S-DOC-001
 ```
 
-`just cases` builds release pVisor, discovers the 54 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `just semspec --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
+`mise run cases` builds release pVisor, discovers the 54 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `mise run semspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
 
 Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion functions come from preparation blocks in the sibling `index.md`, which reads this case's Bundle, run record and command logs. Configuration, Jobs and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
 
-New cases remain UNREVIEWED. Passing checks are separate from human approval. Use `just cases --require-reviewed` as a gate only after humans review cases, vocabulary and engine. See `just semspec run --help` for supported options.
+New cases remain UNREVIEWED. Passing checks are separate from human approval. Use `mise run cases -- --require-reviewed` as a gate only after humans review cases, vocabulary and engine. See `mise run semspec -- run --help` for supported options.
 
 | Test resource | Environment variable |
 | --- | --- |

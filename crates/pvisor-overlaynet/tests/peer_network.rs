@@ -5,6 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use pvisor_overlaynet::vm::{VmNetwork, VmNetworkConfig, guest_mac};
@@ -343,6 +347,7 @@ mod tcp_guests {
     use smoltcp::time::Instant as SmolInstant;
     use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
     use std::collections::VecDeque;
+    use std::os::fd::AsRawFd;
 
     #[derive(Default)]
     struct Link {
@@ -400,6 +405,8 @@ mod tcp_guests {
     struct Guest {
         stream: UnixStream,
         input: Vec<u8>,
+        output: VecDeque<Vec<u8>>,
+        output_offset: usize,
         link: Link,
         interface: Interface,
         sockets: SocketSet<'static>,
@@ -427,6 +434,8 @@ mod tcp_guests {
             Self {
                 stream,
                 input: vec![],
+                output: VecDeque::new(),
+                output_offset: 0,
                 link,
                 interface,
                 sockets,
@@ -436,6 +445,12 @@ mod tcp_guests {
         }
         fn socket(&mut self) -> &mut tcp::Socket<'static> {
             self.sockets.get_mut(self.handle)
+        }
+        fn queue_frame(&mut self, frame: &[u8]) {
+            let mut bytes = Vec::with_capacity(4 + frame.len());
+            bytes.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(frame);
+            self.output.push_back(bytes);
         }
         fn poll(&mut self, now: SmolInstant) {
             self.stream.set_nonblocking(true).unwrap();
@@ -457,7 +472,6 @@ mod tcp_guests {
                 self.input.drain(..4 + length);
             }
             self.interface.poll(now, &mut self.link, &mut self.sockets);
-            self.stream.set_nonblocking(false).unwrap();
             let delayed = self.faults.delayed.take();
             let mut overtook_delayed = false;
             while let Some(frame) = self.link.tx.pop_front() {
@@ -472,11 +486,11 @@ mod tcp_guests {
                         continue;
                     }
                     if self.faults.seen.is_multiple_of(13) {
-                        send(&mut self.stream, &frame);
+                        self.queue_frame(&frame);
                         self.faults.duplicated += 1;
                     }
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
                 overtook_delayed = true;
             }
             // Release after newer output, or on the next poll if idle. This
@@ -485,9 +499,129 @@ mod tcp_guests {
                 if overtook_delayed {
                     self.faults.reordered += 1;
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
+            }
+            // Both simulated guests share this thread. Never block writes while
+            // the peer needs its next poll to drain the opposite direction.
+            while let Some(bytes) = self.output.front() {
+                match self.stream.write(&bytes[self.output_offset..]) {
+                    Ok(0) => panic!("guest link stopped accepting frames"),
+                    Ok(count) => {
+                        self.output_offset += count;
+                        if self.output_offset == bytes.len() {
+                            self.output.pop_front();
+                            self.output_offset = 0;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("write guest link: {error}"),
+                }
             }
         }
+    }
+
+    fn next_guest_tick(now: SmolInstant, guests: &mut [&mut Guest]) -> SmolInstant {
+        let next = guests
+            .iter_mut()
+            .filter_map(|guest| guest.interface.poll_at(now, &guest.sockets))
+            .min();
+        // Newly queued application bytes, window updates and delayed fault
+        // injection frames need another poll before waiting for host I/O.
+        if next.is_some_and(|next| next <= now)
+            || guests.iter().any(|guest| guest.faults.delayed.is_some())
+        {
+            return now;
+        }
+        let mut fds: Vec<_> = guests
+            .iter()
+            .map(|guest| libc::pollfd {
+                fd: guest.stream.as_raw_fd(),
+                events: libc::POLLIN
+                    | if guest.output.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    },
+                revents: 0,
+            })
+            .collect();
+        // The backend runs on real threads: first allow in-flight frames to
+        // arrive. Only a quiet link may jump to the next simulated TCP timer.
+        // This wait is bounded by the independent wall-clock watchdog.
+        // SAFETY: all descriptors remain owned by guests throughout poll, and
+        // fds is a writable array of the supplied number of pollfd entries.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 10) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
+            return now;
+        }
+        if ready > 0 || guests.iter().any(|guest| !guest.output.is_empty()) {
+            return now;
+        }
+        next.unwrap_or(now)
+    }
+
+    #[test]
+    fn guest_clock_drains_io_before_advancing_to_tcp_timer() {
+        let (stream, mut backend) = UnixStream::pair().unwrap();
+        let mut guest = Guest::new(stream, 11);
+        let now = SmolInstant::ZERO;
+        guest
+            .sockets
+            .get_mut::<tcp::Socket>(guest.handle)
+            .connect(guest.interface.context(), (address(12), 9000), 49152)
+            .unwrap();
+        guest.poll(now);
+        let timer = guest.interface.poll_at(now, &guest.sockets).unwrap();
+        assert!(timer > now);
+
+        // A real backend can deliver framing in separate writes. Even a partial
+        // prefix must get a poll before advancing virtual retransmission time.
+        backend.write_all(&[0]).unwrap();
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        guest.poll(now);
+        assert_eq!(guest.input, [0]);
+
+        // A retained fault frame must be released by another poll, even if the
+        // stack itself has only a future retransmission timer.
+        guest.faults.delayed = Some(arp(11, 12, false));
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        guest.poll(now);
+        assert!(guest.faults.delayed.is_none());
+
+        // With all ready I/O serviced, reach the actual TCP timer directly,
+        // without sleeping for its simulated duration or using host elapsed time.
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), timer);
+    }
+
+    #[test]
+    fn guest_clock_does_not_advance_past_backpressured_output() {
+        let (stream, _backend) = UnixStream::pair().unwrap();
+        let mut guest = Guest::new(stream, 11);
+        let now = SmolInstant::ZERO;
+        guest
+            .sockets
+            .get_mut::<tcp::Socket>(guest.handle)
+            .connect(guest.interface.context(), (address(12), 9000), 49152)
+            .unwrap();
+        guest.poll(now);
+        assert!(guest.interface.poll_at(now, &guest.sockets).unwrap() > now);
+
+        let bytes = [0; 16384];
+        loop {
+            match guest.stream.write(&bytes) {
+                Ok(0) => panic!("guest link stopped accepting frames"),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => panic!("fill guest link: {error}"),
+            }
+        }
+        guest.queue_frame(&arp(11, 12, false));
+        assert_eq!(next_guest_tick(now, &mut [&mut guest]), now);
+        assert_eq!(guest.output.len(), 1);
     }
 
     #[test]
@@ -573,17 +707,22 @@ mod tcp_guests {
         let (mut sent_left, mut sent_right) = (0, 0);
         let (mut received_left, mut received_right) = (Vec::new(), Vec::new());
         let started = Instant::now();
+        let mut now = SmolInstant::ZERO;
         while received_left.len() < reverse.len() || received_right.len() < forward.len() {
             assert!(
                 started.elapsed() < Duration::from_secs(20),
-                "TCP failed to recover: left={}/{}, right={}/{}",
+                "TCP failed to recover: left={}/{}, right={}/{}, \
+                 sent={sent_left}/{sent_right}, simulated={now:?}, \
+                 dropped={}/{}, peer_dropped={}/{}",
                 received_left.len(),
                 reverse.len(),
                 received_right.len(),
-                forward.len()
+                forward.len(),
+                left.faults.dropped,
+                right.faults.dropped,
+                ma.snapshot().peer_packets_dropped,
+                mb.snapshot().peer_packets_dropped
             );
-            // Accelerate retransmission time without depending on long sleeps.
-            let now = SmolInstant::from_micros(started.elapsed().as_micros() as i64 * 4);
             left.poll(now);
             right.poll(now);
             for (guest, payload, sent, received) in [
@@ -603,7 +742,7 @@ mod tcp_guests {
                         .unwrap();
                 }
             }
-            std::thread::sleep(Duration::from_millis(1));
+            now = next_guest_tick(now, &mut [&mut left, &mut right]);
         }
         assert_eq!(received_left, reverse);
         assert_eq!(received_right, forward);
@@ -638,10 +777,12 @@ fn sequenced_frame(src: u8, dst: u8, length: usize, sequence: u64) -> Vec<u8> {
 fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
     let root = directory();
     let members: Vec<_> = (11..15).map(|last| start(root.path(), last)).collect();
+    let completed = Arc::new([const { AtomicU64::new(0) }; 4]);
     let mut owners = Vec::new();
     let mut workers = Vec::new();
     for (index, (owner, mut stream, metrics)) in members.into_iter().enumerate() {
         owners.push((owner, metrics));
+        let completed = completed.clone();
         workers.push(std::thread::spawn(move || {
             stream
                 .set_write_timeout(Some(Duration::from_secs(5)))
@@ -650,7 +791,12 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
             let destination = 11 + (index as u8 + 1) % 4;
             let previous = 11 + (index as u8 + 3) % 4;
             let mut seed = 0x504e_4554_u64 + index as u64;
+            let started = Instant::now();
             for batch in 0..256 {
+                assert!(started.elapsed() < Duration::from_secs(20));
+                if batch % 64 == index as u64 {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 for offset in 0..4 {
                     let sequence = batch * 4 + offset;
                     let length = if sequence % 2 == 0 { 1514 } else { 66 };
@@ -675,6 +821,13 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
                         sequenced_frame(previous, source, length, sequence)
                     );
                 }
+                // Keep one burst per destination in flight on the lossy packet link.
+                completed[index].store(batch + 1, Ordering::Release);
+                wait_until(|| {
+                    completed
+                        .iter()
+                        .all(|done| done.load(Ordering::Acquire) > batch)
+                });
             }
         }));
     }

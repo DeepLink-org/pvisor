@@ -22,12 +22,43 @@ struct Cli {
     /// Explicit Markdown inputs; repeat, or pass paths after the command. At least one path is required.
     #[arg(long, global = true, value_name = "PATH")]
     spec_dir: Vec<PathBuf>,
+    /// Stable review root; otherwise preserve legacy nearest-common-directory behavior.
+    #[arg(long, global = true)]
+    root: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// Execute command cells or rows in a JSON table; write INPUT.render.json and INPUT.bench.json.
+    /// Transform executable Markdown; execution is explicit and needs no report file.
+    Filter {
+        input: Option<PathBuf>,
+        #[arg(long, conflicts_with = "input")]
+        source: Option<PathBuf>,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long, conflicts_with = "results")]
+        execute: bool,
+        #[arg(long)]
+        results: Option<PathBuf>,
+        #[arg(long, requires = "execute")]
+        artifacts: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "markdown", value_parser = ["markdown", "json"])]
+        format: String,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        best_effort: bool,
+        #[arg(long, env = "SEMSPEC_SUBJECT_BIN")]
+        subject_bin: Option<PathBuf>,
+        #[arg(long, default_value = "180s", value_parser = semspec::parse::parse_timeout)]
+        timeout: Duration,
+        #[arg(long)]
+        require_reviewed: bool,
+    },
+    /// Execute a JSON or inline Markdown table; write INPUT.render.json and INPUT.bench.json.
     Bench {
         input: PathBuf,
         /// Working directory for commands; defaults to the template directory.
@@ -131,16 +162,209 @@ enum Helper {
 }
 fn main() {
     let cli = Cli::parse();
+    if let Err(error) = runner::install_signal_handlers() {
+        eprintln!("semspec: {error:#}");
+        std::process::exit(3);
+    }
     match dispatch(cli) {
-        Ok(code) => std::process::exit(code),
+        Ok(code) => std::process::exit(if runner::interruption() != 0 {
+            128 + runner::interruption()
+        } else {
+            code
+        }),
         Err(error) => {
             eprintln!("semspec: {error:#}");
-            std::process::exit(2);
+            std::process::exit(if runner::interruption() != 0 {
+                128 + runner::interruption()
+            } else {
+                2
+            });
         }
     }
 }
 fn dispatch(cli: Cli) -> Result<i32> {
     match cli.command {
+        Commands::Filter {
+            input,
+            source,
+            stdin,
+            execute,
+            results,
+            artifacts,
+            output,
+            format,
+            strict,
+            best_effort,
+            subject_bin,
+            timeout,
+            require_reviewed,
+        } => {
+            ensure!(
+                cli.spec_dir.is_empty(),
+                "filter accepts one explicit Markdown source"
+            );
+            let input = input
+                .or(source)
+                .ok_or_else(|| anyhow::anyhow!("filter requires INPUT or --source PATH"))?
+                .canonicalize()?;
+            let text = if stdin {
+                std::io::read_to_string(io::stdin())?
+            } else {
+                fs::read_to_string(&input)?
+            };
+            let loaded: Option<semspec::model::RunReport> = results
+                .as_ref()
+                .map(|path| -> Result<_> {
+                    let path = if path.is_dir() {
+                        path.join("report.json")
+                    } else {
+                        path.clone()
+                    };
+                    Ok(serde_json::from_slice(&fs::read(path)?)?)
+                })
+                .transpose()?;
+            let has_cases = !semspec::parse::parse_document(&input, &text)?.is_empty();
+            let experiments = semspec::experiment::cells(&text)?;
+            let tables = semspec::table::cells(&text)?;
+            ensure!(
+                !execute || has_cases || !experiments.is_empty() || !tables.is_empty(),
+                "no executable cells in document"
+            );
+            ensure!(
+                !execute || text == fs::read_to_string(&input)?,
+                "execution requires the canonical source bytes"
+            );
+            let root = cli
+                .root
+                .as_deref()
+                .or_else(|| loaded.as_ref().and_then(|r| r.root.as_deref()));
+            let project = has_cases
+                .then(|| Project::load_at(&[&input], root))
+                .transpose()?;
+            if let Some(output) = &output {
+                protect_output(output, &input, project.as_ref())?;
+            }
+            if let Some(path) = &artifacts {
+                fs::create_dir(path)?;
+                if let Some(output) = &output {
+                    ensure!(
+                        resolved_target(&absolute(output)?)?
+                            != resolved_target(&path.canonicalize()?.join("report.json"))?,
+                        "filter output must not overwrite its artifact report"
+                    );
+                }
+            }
+            let mut code = 0;
+            let generated = if execute {
+                if let Some(output) = &output
+                    && output.exists()
+                {
+                    fs::remove_file(output)?;
+                }
+                let mut report = if let Some(project) = project.as_ref() {
+                    let cases = project.select(&[], None)?;
+                    let report = runner::run(
+                        project,
+                        &cases,
+                        &runner::Options {
+                            timeout,
+                            subject: subject_bin,
+                            keep: artifacts.is_some(),
+                            artifact_root: artifacts
+                                .as_ref()
+                                .map(|p| p.canonicalize())
+                                .transpose()?,
+                        },
+                    )?;
+                    code = report.exit_code(
+                        &cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                        require_reviewed,
+                        true,
+                    );
+                    report
+                } else {
+                    ensure!(
+                        !require_reviewed,
+                        "benchmark observations do not have approval records"
+                    );
+                    semspec::model::RunReport {
+                        engine_semantics: semspec::seal::ENGINE_SEMANTICS.into(),
+                        engine_review: semspec::model::ReviewState::Unreviewed,
+                        vocab_review: vec![],
+                        platform: std::env::consts::OS.into(),
+                        results: vec![],
+                        benchmarks: vec![],
+                        root: None,
+                    }
+                };
+                for cell in &experiments {
+                    if runner::interruption() != 0 {
+                        break;
+                    }
+                    let outcome = semspec::experiment::run(cell, &input)?;
+                    if outcome.data["status"] != "PASS" {
+                        code = code.max(1);
+                    }
+                    report.benchmarks.push(outcome);
+                }
+                for cell in &tables {
+                    if runner::interruption() != 0 {
+                        break;
+                    }
+                    let outcome = semspec::table::run(cell, &input, artifacts.as_deref())?;
+                    if outcome.data["status"] != "PASS" {
+                        code = code.max(1);
+                    }
+                    report.benchmarks.push(outcome);
+                }
+                if let Some(path) = &artifacts {
+                    atomic_write(
+                        &path.join("report.json"),
+                        &serde_json::to_vec_pretty(&report)?,
+                    )?;
+                }
+                Some(report)
+            } else {
+                None
+            };
+            let report = generated.as_ref().or(loaded.as_ref());
+            let mut document = semspec::filter::render(
+                &text,
+                &input,
+                project.as_ref(),
+                report,
+                strict,
+                best_effort,
+            )?;
+            if let Some(path) = results {
+                document.dependencies.push(if path.is_dir() {
+                    path.join("report.json").canonicalize()?
+                } else {
+                    path.canonicalize()?
+                });
+            }
+            if let Some(output) = &output {
+                let target = resolved_target(&absolute(output)?)?;
+                for dependency in &document.dependencies {
+                    ensure!(
+                        target != resolved_target(dependency)?,
+                        "filter output must not overwrite dependency {}",
+                        dependency.display()
+                    );
+                }
+            }
+            let text = if format == "json" {
+                format!("{}\n", serde_json::to_string_pretty(&document)?)
+            } else {
+                document.markdown
+            };
+            if let Some(output) = output {
+                atomic_write(&absolute(&output)?, text.as_bytes())?;
+            } else {
+                print!("{text}");
+            }
+            return Ok(code);
+        }
         Commands::Bench { input, cwd } => {
             ensure!(cli.spec_dir.is_empty(), "bench does not accept --spec-dir");
             let output = semspec::table::bench_at(&input, cwd.as_deref())?;
@@ -221,7 +445,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
         !inputs.is_empty(),
         "specify at least one Markdown file or directory"
     );
-    let mut project = Project::load(&inputs)?;
+    let mut project = Project::load_at(&inputs, cli.root.as_deref())?;
     match cli.command {
         Commands::List { domain, .. } => {
             if let Some(d) = &domain {
@@ -281,6 +505,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             let expected: Vec<_> = cases.iter().map(|case| case.id.as_str()).collect();
             let output = output.map(|path| -> Result<PathBuf> {
                 let path = absolute(&path)?;
+                protect_output(&path, &project.root.join("REVIEWED.toml"), Some(&project))?;
                 if path.exists() {
                     let target = path.canonicalize()?;
                     ensure!(target != project.root.join("REVIEWED.toml")
@@ -299,6 +524,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     timeout,
                     subject: subject_bin,
                     keep,
+                    artifact_root: None,
                 },
             )?;
             let code = report.exit_code(&expected, require_reviewed, require_pass);
@@ -374,10 +600,46 @@ fn dispatch(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Commands::Helper { .. }
+        | Commands::Filter { .. }
         | Commands::Init { .. }
         | Commands::Bench { .. }
         | Commands::Render { .. } => unreachable!(),
     }
+}
+fn protect_output(output: &Path, source: &Path, project: Option<&Project>) -> Result<()> {
+    let output = absolute(output)?;
+    let target = resolved_target(&output)?;
+    ensure!(
+        target != source,
+        "filter output must not overwrite its Markdown source"
+    );
+    if let Some(project) = project {
+        ensure!(
+            target != project.root.join("REVIEWED.toml")
+                && !project
+                    .cases
+                    .iter()
+                    .any(|c| project.root.join(&c.file) == target)
+                && !project
+                    .preparation
+                    .keys()
+                    .any(|p| project.root.join(p) == target),
+            "output must not overwrite specifications, preparation or the review ledger"
+        );
+    }
+    Ok(())
+}
+fn resolved_target(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return Ok(path.canonicalize()?);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("output requires a parent"))?;
+    Ok(resolved_target(parent)?.join(
+        path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("invalid output path"))?,
+    ))
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(std::env::current_dir()?.join(path))

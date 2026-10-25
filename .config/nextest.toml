@@ -1,0 +1,4 @@
+# The real-time TCP recovery contract needs both guest stacks and backend threads.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'
+threads-required = "num-test-threads"

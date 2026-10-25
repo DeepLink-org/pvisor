@@ -25,6 +25,12 @@ pub struct InProcessCapture {
 /// drivers owned by pVisor.
 #[derive(Clone)]
 pub struct InProcessRuntime {
+    /// Host-owned Run identity for capture routing. Client headers identify only sub-sessions.
+    pub run_id: Option<String>,
+    /// Attempt-local model Gateway credential, kept in memory and never snapshotted.
+    /// When set, SDK requests must supply it as Bearer, x-api-key or x-goog-api-key;
+    /// Gateway consumes it before upstream forwarding. Plain proxy traffic is unchanged.
+    pub client_token: Option<String>,
     pub controller: Arc<dyn ControlController>,
     pub interception_metrics: InterceptionMetrics,
     pub bandwidth_registry: BandwidthRegistry,
@@ -37,6 +43,8 @@ pub struct InProcessRuntime {
 impl Default for InProcessRuntime {
     fn default() -> Self {
         Self {
+            run_id: None,
+            client_token: None,
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
@@ -82,6 +90,8 @@ impl InProcessCapture {
                     storage,
                     sink,
                     crate::gateway::GatewayRuntimeControl {
+                        run_id: runtime.run_id,
+                        client_token: runtime.client_token,
                         controller: runtime.controller,
                         interception_metrics: thread_metrics,
                         bandwidth_registry: runtime.bandwidth_registry,

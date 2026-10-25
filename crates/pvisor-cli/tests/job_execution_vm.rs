@@ -106,6 +106,90 @@ fn native_job_nested_stage_chunked_filesystems_preserve_guest_projection() {
     acceptance(true, true);
 }
 
+#[test]
+#[ignore = "real KVM; static C compiler; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio() {
+    let temp = tempfile::tempdir().unwrap();
+    let rootfs = temp.path().join("rootfs");
+    let workspace = temp.path().join("workspace");
+    let home = temp.path().join("home");
+    for path in [rootfs.join("bin"), workspace.clone(), home.clone()] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let source = temp.path().join("ready.c");
+    fs::write(
+        &source,
+        "#include <stdio.h>\nint main(void) { puts(\"PVISOR_STARTUP_READY\"); return fflush(stdout) != 0; }\n",
+    )
+    .unwrap();
+    assert!(
+        Command::new("cc")
+            .args(["-O2", "-static"])
+            .arg(&source)
+            .arg("-o")
+            .arg(rootfs.join("bin/ready"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // No /dev, /proc, /sys, shell or init is supplied by the image. Captured
+    // streams also exercise the transition from bootstrap fds to named ports.
+    for cpus in [1, 2] {
+        for trial in 0..10 {
+            let attempt = temp.path().join(format!("{cpus}cpu-{trial}"));
+            fs::create_dir(&attempt).unwrap();
+            let mut cmd = command();
+            cmd.current_dir(&workspace)
+                .env("HOME", &home)
+                .env("PVISOR_RUN_HOME", attempt.join("runs"))
+                .env("PVISOR_STARTUP_PROFILE", "0")
+                .args([
+                    "spawn",
+                    "--no-agent-defaults",
+                    "--vm",
+                    "--overlaynet",
+                    "off",
+                    "--stdio",
+                    "inherit",
+                    "--memory",
+                    "128MiB",
+                    "--cpu",
+                ])
+                .arg(cpus.to_string())
+                .arg("--timeout")
+                .arg("10s")
+                .arg("--rootfs")
+                .arg(&rootfs)
+                .arg("--stage")
+                .arg(attempt.join("stage"))
+                .stdin(Stdio::null());
+            if let Some(directory) = std::env::var_os("PVISOR_TEST_LIBRARY_DIR") {
+                cmd.arg("--vm-library-dir").arg(directory);
+            }
+            let output = cmd.args(["--", "/bin/ready"]).output().unwrap();
+            fs::write(attempt.join("stdout.log"), &output.stdout).unwrap();
+            fs::write(attempt.join("stderr.log"), &output.stderr).unwrap();
+            let ready = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| *line == "PVISOR_STARTUP_READY")
+                .count();
+            if !output.status.success() || ready != 1 {
+                let artifacts = temp.keep();
+                panic!(
+                    "minimal guest {cpus}cpu trial {trial}: {}, Ready={ready}; evidence: {}\n{}",
+                    output.status,
+                    artifacts.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert!(!rootfs.join("dev").exists(), "guest modified image lower");
+        }
+    }
+    if std::env::var("PVISOR_TEST_KEEP_JOB_ARTIFACTS").as_deref() == Ok("1") {
+        eprintln!("minimal guest artifacts: {}", temp.keep().display());
+    }
+}
+
 fn acceptance(nested: bool, pooled: bool) {
     struct Artifacts(Option<tempfile::TempDir>);
     impl Artifacts {

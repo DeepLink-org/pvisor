@@ -35,10 +35,16 @@ crates/pvisor-vm/upstream/
 .data/
 
 # Local benchmark previews and derived tables; public assets live under docs/.
-/benchmark.new/**/*.render.json
-/benchmark.new/*/results/*.csv
-/benchmark/pvisor/*.csv
-/benchmark.new/filesystem/vm-cache-*.csv
-/benchmark.new/filesystem/vm-cache-validation.provenance.json
+/benchmark/**/*.render.json
+/benchmark/*/results/*.csv
+/benchmark/filesystem/vm-cache-*.csv
+/benchmark/filesystem/vm-cache-validation.provenance.json
 .VSCodeCounter/
 .workbuddy/
+
+# Machine-specific mise overrides stay local.
+mise.local.toml
+.mise.local.toml
+mise.local.lock
+.mise.local.lock
+review2/

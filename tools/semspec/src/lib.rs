@@ -1,5 +1,6 @@
 //! Semantic specifications. Parsing, sealing and review state are pure logic;
 //! project I/O and execution are separate modules. No product-specific dependency.
+pub mod filter;
 pub mod helpers;
 pub mod ledger;
 pub mod model;
@@ -8,3 +9,5 @@ pub mod project;
 pub mod runner;
 pub mod seal;
 pub mod table;
+
+pub mod experiment;

@@ -24,6 +24,12 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
    - Workflow: `release.yml`
    - Environment: `pypi`
 
+3. 注册带 `pvisor-release` 标签的可信原生 runner：Linux x86_64 需要 KVM
+   权限，Apple Silicon macOS 需要 Hypervisor.framework 权限。安装 mise 锁定的
+   Python/Rust 与对应的 Linux musl Rust target（`mise run setup`）。这些 runner
+   应专用于可信发布提交，并在各次运行间清理旧 Job 状态。缺少 runner 或虚拟化
+   权限会阻止发布。
+
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
@@ -57,10 +63,9 @@ PEP 517 backend 是 setuptools，配合仓库自有的
 CLI 等原生组件并暂存平台载荷。`setup.py` 直接安装二进制脚本，不使用 Python console-entry-point 包装器，并把 wheel 标为
 平台相关，同时把 Python 与 ABI tag 保持为 `py3-none`。
 
-打包脚本会拉取 pinned 的 libkrun firmware 归档（Linux x86_64 与 Apple
-Silicon macOS），除非 `PVISOR_LIBKRUNFW_PATH` 指向已有 payload。本地
-wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错误，而不是不完整
-的 wheel。
+打包使用 `fw/` 中固定版本的固件源码，校验下载的内核输入，并按输入缓存构建。
+`PVISOR_LIBKRUNFW_PATH` 可选择已有 payload。缺少固件是构建错误。各平台导出
+对应固件源码，与 wheel 一起发布。
 
 Linux CLI 使用 `x86_64-unknown-linux-musl` 全静态链接，并内嵌 libkrunfw 内核，
 wheel 不包含固件共享库。wheel 保留 manylinux_2_28 标签以支持 glibc Python
@@ -71,13 +76,26 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 由 `rust-lld` 自动构建。macOS 需要 `aarch64-unknown-linux-musl` Rust stdlib，
 构建 guest 不需要 Zig。
 
-每个 wheel 都会检查组件集和安装时 CLI smoke test。发布集检查随后要求每个
-平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及发布前产物大小有界。
+稳定发布先在发布提交上执行必需 CI，再构建 wheel。每个最终 wheel 在对应
+原生 runner 的全新环境中安装。验收覆盖 host 退出码、strict host 执行拒绝、真实
+VM 启动、暂停／冷恢复后内存进度继续、Job 身份保持且 Attempt 更换、文件暂存、
+review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必须拒绝当前不支持
+的 apply。小型静态 guest 由仓库源码编译，缺少硬件会导致验收失败。
+`release-acceptance-*` 制品保存 wheel 与安装后二进制的 SHA-256 及命令结果。
+本地运行同一验收：`mise run accept-wheel -- WHEEL LOG_JSON`。
 
-对部分完成的 tagged 发布再跑一遍时，会跳过 PyPI 已经接受的文件，并补齐
-缺失的 GitHub Release 资源。
+发布集检查要求每个平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及产物
+大小有界。两个平台的验收与完整发布集均通过后，才能向任一渠道发布。
 
-Linux x86_64 daemon 使用原生 `pvisor-vm`，不是 rootless Podman。其 `serve` 命令需要 KVM 权限、委派 cgroup v2，以及可信预制镜像 manifest/rootfs；bootstrap 须监督真实 execd/egress 服务，并提供 guest CID 3、44772/18080 端口的 vsock bridge。Bootstrap／镜像配方未提供或端到端验证。分发程序不建立 SDK 兼容或密度证据。见 [daemon 准备](../guides/daemon/index.md)。
+稳定版本不可变。重跑在发布前核对 GitHub/PyPI 现有文件的 SHA-256；相同内容
+保留，缺失文件可以补齐，同文件名内容不同则失败，必须发布新版本。GitHub 上传
+不覆盖已有资源，PyPI 不再仅凭文件名跳过。先在 GitHub 发布对应固件源码，再向
+PyPI 发布 wheel。配置了门禁不等于验收已经通过。
+
+Linux x86_64 daemon 使用原生 `pvisor-vm`，需要 KVM 和委派 cgroup v2。新模板
+使用共享 Rust guest 引擎与宿主协议适配，显式提供 execd/envd 时保留上游后端。
+wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度仍需各自的
+验收证据。见 [daemon 准备](../guides/daemon/index.md)。
 
 ## Nightly 构建
 

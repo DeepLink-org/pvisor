@@ -123,9 +123,10 @@ pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sl
 
 ## Daemon 与缓存命令 {#service}
 
-顶层 `pvisor` 命令操作原生 Job。直接调用 `pvisor-daemon` 管理 sandbox 生命周期及可选池；独立使用 `pvisor cache` 管理 OCI 缓存。
+`pvisor spawn` 与后续 Job 命令提供原生执行与审查；`pvisor run` 等容器命令管理独立 VM。直接调用 `pvisor-daemon` 准备模板并运行部分 OpenSandbox/E2B profile，或单独启用缓存/池组件；`pvisor cache` 是缓存客户端。
 
 ```bash
+pvisor-daemon prepare-image --help
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
 pvisor cache --help

@@ -9,8 +9,12 @@ Do not use execution density or supervision-cost goals as the homepage subtitle.
 Describe the two supporting paths: resource sharing and idle-memory reclamation
 for machine capacity; staged file changes, execution records and review for
 supervision efficiency. Quantified gains require workload-specific evidence.
-The product covers Agent CLIs, scripts, and
-automation commands; describe Agent-specific integrations as such.
+The product covers Agent CLIs, scripts, and automation commands. Distinguish
+three current interfaces: native Jobs with stage/review/apply, Docker-style
+per-container VMs, and local daemon OpenSandbox/E2B SDK profiles. The shared
+runtime does not make their controls, records, defaults or lifecycle APIs
+interchangeable. Describe Agent-specific integrations as such; keep supervision
+levels independent of concurrency and deployment scale.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
 prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
@@ -28,7 +32,7 @@ behavior, examples, evidence and known limitations.
 Benchmark articles under `docs/src/{zh,en}/benchmarks/` are user decisions, not
 engineering reports: a reader must be able to choose a mode or size a deployment
 from them. Registration, data and publication rules live in
-[`benchmark/README.md`](../benchmark/README.md#structure). The rules below are the
+[`benchmark/REGISTRY.md`](../benchmark/REGISTRY.md#structure). The rules below are the
 failure modes that have actually reached the site; treat them as hard rules.
 
 **Structure**
@@ -88,15 +92,15 @@ Example, from startup latency:
   Anchor churn breaks lab-note links and is not a formatting cleanup.
 - Do not put a benchmark registry ID (`B-*`) or an internal switch name on a
   user page; link to the topic page or the runner manual instead.
-- Run `python3 benchmark.new/docs.py check` after touching a `{{ table(...) }}`
-  macro, `benchmark.new/docs.json` or a `*.render.json` file.
+- Run `python3 benchmark/docs.py check` after touching a `{{ table(...) }}`
+  macro, `benchmark/docs.json` or a `*.render.json` file.
 
 ```bash
-just docs-serve         # native Chinese preview on 127.0.0.1:3000
-just docs-serve en      # native English preview on 127.0.0.1:3001
-just docs-serve zh -a 127.0.0.1:3002
-just docs-build         # clean-build both languages and validate generated pages
-just docs-build --require-recorded  # same build with CI's strict translation check
+mise run docs-serve         # native Chinese preview on 127.0.0.1:3000
+mise run docs-serve -- en      # native English preview on 127.0.0.1:3001
+mise run docs-serve -- zh -a 127.0.0.1:3002
+mise run docs-build         # clean-build both languages and validate generated pages
+mise run docs-build -- --require-recorded  # same build with CI's strict translation check
 ```
 
 The recipes call `zensical build` and `zensical serve` directly. Configuration is
@@ -110,20 +114,25 @@ custom search index or custom HTTP server is involved.
 `docs.semspec_tables` is a Python-Markdown preprocessor registered in both native
 configurations. A standalone `{{ table("file.render.json") }}` line loads a JSON
 table relative to its article and becomes ordinary Markdown before HTML rendering;
-the source file retains the placeholder. `just docs-build` and `just docs-serve`
+the source file retains the placeholder. The adapter calls `semspec filter --source
+PATH --stdin`; annotated case cells also become ordinary Markdown with NOT RUN
+or a recorded verdict. It never supplies `--execute`. `SEMSPEC_RESULTS` may
+explicitly select a saved case/experiment report; missing and stale evidence are
+visible and do not become PASS. Other SSGs can use `filter --format json` for
+Markdown, source byte edits, dependencies and diagnostics. `mise run docs-build` and `mise run docs-serve`
 build the standalone semspec CLI and set `SEMSPEC_BIN` and `PYTHONPATH` for the
 extension. The documentation recipes therefore also require the Rust toolchain.
-Rendering reads completed results only. Run `just semspec bench path/to/in.json`
+Rendering reads completed results only. Run `mise run semspec -- bench path/to/in.json`
 explicitly to execute a template and create `in.render.json` plus raw evidence in
 `in.bench.json`. See [semspec's table format](../tools/semspec/README.md#executable-benchmark-tables).
 Fixed historical benchmark tables are written directly in Markdown, retaining
 their measured values, statistical scope and source links. Tables updated by
 benchmark publication and the generated measurement-coverage table use JSON;
 their bindings are registered in
-[`benchmark.new/docs.json`](../benchmark.new/docs.json). Run
-`python3 benchmark.new/docs.py check` before building. Historical tables retain
+[`benchmark/docs.json`](../benchmark/docs.json). Run
+`python3 benchmark/docs.py check` before building. Historical tables retain
 their original statistics and claims; only explicit live bindings are updated
-by `python3 benchmark.new/docs.py publish BATCH`. Links/code in dynamic JSON
+by `python3 benchmark/docs.py publish BATCH`. Links/code in dynamic JSON
 tables opt into `markdown: true`, with `row_names: false` when the first column
 is already present. Semspec validates optional alignments and displayed headers.
 
@@ -157,14 +166,14 @@ terminals to preview unpublished translations. Use adjacent ports: Chinese on N,
 English on N + 1. The defaults are 3000 and 3001; for example:
 
 ```bash
-just docs-serve zh -a 127.0.0.1:3040
+mise run docs-serve -- zh -a 127.0.0.1:3040
 # In another terminal:
-just docs-serve en -a 127.0.0.1:3041
+mise run docs-serve -- en -a 127.0.0.1:3041
 ```
 
 Both processes must remain running for language switching to work. A single
 locale server does not serve the other language. Stop both previews before
-`just docs-build`, which clears their shared output directory, then restart them.
+`mise run docs-build`, which clears their shared output directory, then restart them.
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
 
@@ -174,8 +183,8 @@ Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the 
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
-The Zensical version is pinned once in `justfile`. CI runs the documentation
-regression tests and `just docs-build --require-recorded` before uploading
+The Zensical version is declared in the `dev` group in `pyproject.toml` and resolved in `uv.lock`. CI runs the documentation
+regression tests and `mise run docs-build -- --require-recorded` before uploading
 `docs/site`; do not duplicate the build commands in the workflow.
 
 ## Layout
@@ -274,7 +283,7 @@ method, environment and date, and keep dated raw samples in local `.data/` direc
 Version the Markdown tables and only the resolved JSON projections needed by the
 build. Static tables already in articles, per-round/per-environment records,
 historical tables and engineering intermediate tables do not receive public
-downloads by default. `benchmark.new/public_assets.py` allowlists the necessary
+downloads by default. `benchmark/public_assets.py` allowlists the necessary
 user-statistics CSVs; `csv_path(repo, filename, locale)` resolves their shared
 download path under `docs/overrides/assets/benchmarks/data/`. Both languages use
 one copy. Keep localized `.render.json` projections beside articles and complete
@@ -289,7 +298,7 @@ Full manifests, per-file harness records, host paths and complete package receip
 remain in the benchmark's ignored `.data/`. Publishers update the shared summary
 and only the JSON projections needed by the build. Historical and engineering
 CSV/JSON and replaced provenance remain in
-`benchmark.new/.data/docs-assets-prune-20261018/`; its migration inventory preserves
+`benchmark/.data/docs-assets-prune-20261018/`; its migration inventory preserves
 original paths, byte hashes and destinations. Reducing public files must preserve
 article tables and figures, measurement values, statistical scope and evidence hashes.
 Keep executable benchmark templates and raw `*.bench.json`
@@ -392,7 +401,7 @@ reintroduce them.
    up.
 
 `scripts/check-docs.py` enforces the mechanical parts in CI (via
-`just docs-build`): bilingual pairing, navigation targets, link/anchor/image
+`mise run docs-build`): bilingual pairing, navigation targets, link/anchor/image
 resolution — and a **duplicate-paragraph gate** that fails the build when the
 same substantive prose paragraph (≥150 chars) appears in two pages. Intentional
 shared boilerplate must use a recognized convention instead of raw repetition:
@@ -453,8 +462,8 @@ After reviewing both versions, record the pair and build:
 
 ```bash
 python3 scripts/check-docs.py --record-translations
-just docs-build
-just test-py tests/test_docs.py
+mise run docs-build
+mise run test-py -- tests/test_docs.py
 ```
 
 `translations.json` stores a combined SHA-256 of each pair. Structural
@@ -482,7 +491,7 @@ Linux host, Cursor occupied about 270,412 watches against a 271,298 limit;
 reading the article tree. This is a host resource failure, not a Markdown error.
 The page checker must still run after the generator.
 
-`just docs-build` and `just docs-serve` check available native watches before
+`mise run docs-build` and `mise run docs-serve` check available native watches before
 invoking Zensical. A failed preflight stops before deleting the existing site.
 The check cannot reserve capacity against concurrent editor activity.
 
@@ -527,10 +536,10 @@ or evidence of completed research:
 
 ### Verified reference and example coverage
 
-- `reference/config`: all 113 fields in the configured serde structures, including
+- `reference/config`: the fields in the configured serde structures, including
   nested mount, route, resource, and policy entries, now have names, types,
   defaults, and usage. `scripts/check-reference.py` compares names and types
-  against source during `just docs-build`; Rust documentation tests compare raw
+  against source during `mise run docs-build`; Rust documentation tests compare raw
   defaults against serialization and parse the actual TOML fences. CLI precedence
   remains behavioral review, with existing `cli_lists_replace_config_lists` and
   file-access-priority tests. This covers fields, not a complete TOML schema.
@@ -554,10 +563,10 @@ or evidence of completed research:
 Validate content and build before updating bilingual revision hashes:
 
 ```bash
-just test pvisor
-just test-py tests/test_docs.py
+mise run test -- pvisor
+mise run test-py -- tests/test_docs.py
 python3 scripts/check-docs.py --record-translations
-just docs-build
+mise run docs-build
 ```
 
 To validate a TOML file without launching an executor:
@@ -644,7 +653,7 @@ charter and conduct reporting channel are not yet established.
 
 **Acceptance criteria**
 
-- Generate at `just docs-build`, or check the generated result against the code in CI.
+- Generate at `mise run docs-build`, or check the generated result against the code in CI.
 - Cover `[run]`, top-level `filesystem`, `[overlayfs]`, `[overlaynet]`, `[gateway]`, `[record]`, `[policies.*]`, `[container]` and `[vm]`.
 
 ### reference/env-vars.md

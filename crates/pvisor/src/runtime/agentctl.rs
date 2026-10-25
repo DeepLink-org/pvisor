@@ -128,7 +128,6 @@ impl AgentCtlState {
 pub struct AgentCtlControl {
     endpoint: PathBuf,
     state: Arc<Mutex<AgentCtlState>>,
-    delegated_snapshot: Arc<Mutex<Option<AgentCtlSnapshot>>>,
 }
 
 /// Cancellation-safe ownership of one live checkpoint transition.
@@ -218,26 +217,7 @@ impl AgentCtlControl {
 
     /// Return the latest cooperative observation.
     pub fn snapshot(&self) -> AgentCtlSnapshot {
-        if let Some(snapshot) = self
-            .delegated_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        {
-            return snapshot;
-        }
         lock_state(&self.state).snapshot()
-    }
-
-    pub(crate) fn import_delegated_snapshot(&self, mut snapshot: AgentCtlSnapshot) {
-        let state = lock_state(&self.state);
-        snapshot.run_id = state.run_id.clone();
-        snapshot.attempt_id = state.attempt_id.clone();
-        drop(state);
-        *self
-            .delegated_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot);
     }
 
     /// Freeze all currently live Sessions and request a checkpoint boundary.
@@ -435,7 +415,6 @@ impl AgentCtlServer {
         let control = AgentCtlControl {
             endpoint: socket_path.clone(),
             state,
-            delegated_snapshot: Arc::new(Mutex::new(None)),
         };
         Ok(Self {
             stop,
@@ -958,28 +937,6 @@ mod tests {
         let snapshot = server.control.snapshot();
         assert_eq!(snapshot.clients.len(), 1);
         assert!(snapshot.clients[0].stale);
-    }
-
-    #[test]
-    fn delegated_snapshot_preserves_outer_identity() {
-        let server =
-            AgentCtlServer::start(&RunId::new("outer-run"), &AttemptId::new("outer-attempt"))
-                .unwrap();
-        let delegated = AgentCtlSnapshot {
-            run_id: "inner-run".into(),
-            attempt_id: "inner-attempt".into(),
-            directive: AgentDirective::Shutdown { reason: None },
-            clients: Vec::new(),
-        };
-        server.control.import_delegated_snapshot(delegated);
-
-        let imported = server.control.snapshot();
-        assert_eq!(imported.run_id, "outer-run");
-        assert_eq!(imported.attempt_id, "outer-attempt");
-        assert!(matches!(
-            imported.directive,
-            AgentDirective::Shutdown { .. }
-        ));
     }
 
     #[test]

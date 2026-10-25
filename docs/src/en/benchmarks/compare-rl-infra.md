@@ -59,4 +59,6 @@ Training throughput, useful-sample success, reward, retries and end-to-end resou
 
 Complete CSV/JSON, artifact digests, controls and raw records for each topic remain in their local cohorts or the documentation data archive, retaining provenance and statistical scope.
 
-[Comparison method](index.md#interpretation) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
+
+> Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.

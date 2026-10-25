@@ -1,3 +1,0 @@
-{
-  "pVisor host": "$ python3 @REPO@/benchmark.new/startup/pvisor_host_timing.py @BATCH@"
-}

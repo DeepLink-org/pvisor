@@ -49,6 +49,9 @@ pub(super) async fn start(
         image_store,
     )?;
     let mut command = Command::new(std::env::current_exe()?);
+    command
+        .env_clear()
+        .envs(worker_environment(std::env::vars_os()));
     command.args(["cache-worker", "--listen", &config.location]);
     if let Some(store) = config.image_store {
         command.arg("--image-store").arg(store);
@@ -81,6 +84,40 @@ pub(super) async fn wait(child: &mut Option<RunningCache>) -> anyhow::Result<()>
     std::future::pending().await
 }
 
+fn worker_environment(
+    env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    const ALLOWED: &[&str] = &[
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "DOCKER_CONFIG",
+        "RUST_LOG",
+        "PVISOR_CACHE_TOKEN",
+    ];
+    env.into_iter()
+        .filter(|(key, _)| ALLOWED.iter().any(|allowed| key == *allowed))
+        .collect()
+}
+
 pub(super) async fn stop(service: &mut RunningCache) -> anyhow::Result<()> {
     let child = &mut service.child;
     if child.try_wait()?.is_none() {
@@ -88,4 +125,27 @@ pub(super) async fn stop(service: &mut RunningCache) -> anyhow::Result<()> {
     }
     child.wait().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cache_worker_does_not_inherit_lifecycle_or_unrelated_secrets() {
+        let input = [
+            "OPEN_SANDBOX_API_KEY",
+            "E2B_API_KEY",
+            "UNRELATED_SECRET",
+            "PVISOR_CACHE_TOKEN",
+            "PATH",
+            "HTTPS_PROXY",
+            "SSL_CERT_FILE",
+        ];
+        let env =
+            super::worker_environment(input.into_iter().map(|key| (key.into(), "value".into())));
+        let keys: Vec<_> = env.iter().map(|(key, _)| key.to_str().unwrap()).collect();
+        assert_eq!(
+            keys,
+            ["PVISOR_CACHE_TOKEN", "PATH", "HTTPS_PROXY", "SSL_CERT_FILE"]
+        );
+    }
 }

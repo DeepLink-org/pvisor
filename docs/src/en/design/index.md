@@ -14,7 +14,7 @@ Files and networks have different publication behavior. File changes can remain 
 
 The layer-to-crate mapping for requests, Attempt ownership and state lives in the ownership tables in [Core architecture](architecture.md). The walkthrough below connects the layers through one task.
 
-The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and service proxies, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
+The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and guest process/file protocol adapters, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
 
 Memory, filesystems and networking are organized around address mappings, exported file trees and the virtual NIC. Snapshots combine their local state at a consistent cut; execution records retain reconcilable operation facts. The single-node daemon manages admission, ownership and shared resources across VMs. Each subsystem owns state while sharing lifecycle requirements with the VM and Session.
 

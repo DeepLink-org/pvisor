@@ -11,12 +11,12 @@
 ## 开发循环
 
 ```bash
-just build            # debug 构建
-just test             # 通过 cargo nextest 运行 Rust 测试，再运行 Python 测试
-just test pvisor-core # 只运行一个包的 Rust 测试
-just ci "fmt-rust --check" "fmt-py --check"        # 格式检查
-just lint             # clippy 与 ruff
-just docs-build       # 构建并检查文档站点
+mise run build            # debug 构建
+mise run test             # 通过 cargo nextest 运行 Rust 测试，再运行 Python 测试
+mise run test -- pvisor-core # 只运行一个包的 Rust 测试
+mise run ci -- "fmt-rust --check" "fmt-py --check"        # 格式检查
+mise run lint             # clippy 与 ruff
+mise run docs-build       # 构建并检查文档站点
 ```
 
 平台准备（FUSE/macFUSE、KVM/HVF、OCI runtime）见[开发环境与工程说明](development.md)，测试分工见[测试与 semspec](testing.md)。
@@ -32,7 +32,7 @@ just docs-build       # 构建并检查文档站点
 ## 提交 PR
 
 - 每个 PR 聚焦一件事，说明行为变化以及你如何验证；
-- 运行 `just ci "fmt-rust --check" "fmt-py --check"`、`just lint` 和相关的 `just test`；
+- 运行 `mise run ci -- "fmt-rust --check" "fmt-py --check"`、`mise run lint` 和相关的 `mise run test`；
 - 同步更新负责该行为的权威文档页，遵守 `docs/README.md` 的约定：每个主题只有一篇权威页面，其他页面一句话加链接。
 
 贡献内容按 [Apache License 2.0](https://github.com/DeepLink-org/pvisor/blob/main/LICENSE) 授权。

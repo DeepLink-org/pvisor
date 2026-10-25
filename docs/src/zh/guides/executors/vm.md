@@ -36,7 +36,7 @@ pvisor spawn --executor vm --rootfs image=ubuntu:24.04 \
 ## 平台准备
 
 - **Linux**：需要可访问的 `/dev/kvm`；静态 musl 构建内嵌 guest 内核，运行时不需要固件共享库；
-- **macOS**：用 `just build release` 构建并签署 Hypervisor entitlement；wheel 自带 `libkrunfw`，源码运行时会下载经 SHA-256 校验的固定版本。
+- **macOS**：用 `mise run build -- release` 构建并签署 Hypervisor entitlement；wheel 自带 `libkrunfw`，源码运行时会下载经 SHA-256 校验的固定版本。
 
 ## 已知缺口
 

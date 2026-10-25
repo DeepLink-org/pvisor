@@ -1,6 +1,0 @@
-{
-  "native": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ native",
-  "host-run": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ host-run",
-  "status": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ status",
-  "review": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ review"
-}

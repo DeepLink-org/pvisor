@@ -41,11 +41,17 @@ claimed. HTTP and CLI streams are compared byte-for-byte. Network and read-only
 checks include positive controls. Expected faults are explicitly distinguished
 from an unexpected command or content failure.
 
+For a longer local campaign, `--product-slice TEST_OWNED.slice` places every
+instance scope under an already configured test-owned systemd slice. Set its
+aggregate memory/CPU/swap limits before starting; per-instance limits still apply.
+The runner does not configure or stop that parent slice. Keep the controller and
+evidence-size/host-memory monitor bounded separately, and retain failed stores.
+
 The existing `chaos.py` retains its independent lightweight macOS profile.
 
 ## Scenarios and failure rules
 
-The first 14 rounds always cover every scenario, followed by seeded selections.
+The first 15 rounds always cover every scenario, followed by seeded selections.
 A continuous host HTTP reader runs alongside the controller. Only connection
 errors that overlap a declared restart/crash/recreate epoch are expected;
 content corruption is always a failure. After each transition, exact current
@@ -69,6 +75,7 @@ whole new body. Background responses must match a known published SHA-256.
 | Image replacement | Failed RUN reports status 7; tag replacement affects new containers while an existing VM retains its pinned image |
 | In-flight exec | Stop/restart terminates the old exec; fresh concurrent execs retain their own streams and statuses |
 | Slow HTTP reader | A reader stops consuming a 512 KiB response while independent HTTP and guest requests still finish |
+| Guest permissions | Root reads a synchronized `000` file before/after a cold VM restart; an unprivileged guest user remains denied. Permitted unprivileged write/truncate clears setuid/setgid and retains exact bytes/zero extension. Guest-owned new directories/files preserve the creator's UID/GID and mode |
 
 Expected errors are checked by cause as well as status, so an unrelated startup
 125 or build failure is not accepted as a collision or deliberate RUN failure.
@@ -76,6 +83,11 @@ Scope disappearance accepts only ENOENT/ENODEV; permission and other I/O errors
 remain failures. Cleanup also checks every recorded owned cgroup for survivors.
 The read-only audit verifies saved rounds, payload digests, error causes, limits,
 resource events, HTTP results, half-close checks and cleanup without starting VMs.
+Host HTTP probes bind source address `127.0.0.2`, keeping it distinct from the
+published `127.0.0.1` endpoint during outages. This avoids Linux TCP self-connect
+artifacts. The fixture requires complete Content-Length headers; EOF inside a
+header block is a transport failure, even though `http.client` may accept it as
+an empty 200 response. Complete responses still require exact known content.
 
 ## Observed runtime defects and repair
 

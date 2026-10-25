@@ -358,6 +358,32 @@ fn restart_reuses_receipt_and_repairs_only_incomplete_tail() {
 }
 
 #[test]
+fn restart_preserves_float_content_and_the_original_retry_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    let journal = Journal::open(&path).unwrap();
+    let mut e = event(&journal);
+    e.data = Fact::Observation {
+        domain: "test".into(),
+        name: "numeric".into(),
+        version: 1,
+        payload: serde_json::json!([
+            -1.2385131597440577e-185_f64,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::from_bits(1),
+            -0.0_f64,
+        ]),
+    };
+    let receipt = journal.append(e.clone()).unwrap();
+    drop(journal);
+    let reopened = Journal::open(&path).unwrap();
+    assert_eq!(reopened.records().unwrap()[0].event, e);
+    assert_eq!(reopened.append(e).unwrap(), receipt);
+    assert_eq!(reopened.records().unwrap().len(), 1);
+}
+
+#[test]
 fn complete_semantic_corruption_is_not_repaired() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("trace");

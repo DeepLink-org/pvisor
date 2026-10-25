@@ -28,12 +28,12 @@ Eight conditions measured on 2026-10-11, N=60 formal samples after three warmups
 
 pVisor VM starts at a median 130.71 ms, between rootless Docker at 105.03 ms and the reference VMs at 260–663 ms. Host and staged skip the kernel and device path and stop at 33.52 ms and 50.59 ms.
 
-The table selects the latest validated row for each `condition` from the [statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv); `condition` and `batch` together identify a result. Standard deviation uses the formal samples and the sample formula. Rerun the table with `just benchmark startup/timing`, or only the VM with `just benchmark startup/timing "pvisor vm"`.
+The table selects the latest validated row for each `condition` from the [statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv); `condition` and `batch` together identify a result. Standard deviation uses the formal samples and the sample formula. Rerun the table with `mise run benchmark -- startup/timing`, or only the VM with `mise run benchmark -- startup/timing "pvisor vm"`.
 
 For cold-image client waiting and content downloads, see the separate [on-demand image startup](lazy-image-startup.md) experiment. Image-service preparation is recorded separately, and its samples are not pooled with these prepared-environment results.
 
 ### Sources and reproduction {#run}
 
-Complete statistics, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the experiment, and the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json) for the measured artifacts.
+Complete statistics, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md) to reproduce the experiment, and the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json) for the measured artifacts.
 
 [Comparison method](index.md#interpretation)

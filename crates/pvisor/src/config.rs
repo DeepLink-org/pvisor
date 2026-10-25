@@ -138,6 +138,9 @@ impl RunConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunSettings {
+    /// Requested shared execution profile. CLI `--safe` selects `Safe`.
+    /// Effective controls still depend on the selected executor and capability plan.
+    pub profile: pvisor_core::RunProfile,
     /// Internally resolved project association; not a user-facing configuration parameter.
     #[serde(skip)]
     pub workspace: Option<PathBuf>,
@@ -160,6 +163,7 @@ pub struct RunSettings {
 impl Default for RunSettings {
     fn default() -> Self {
         Self {
+            profile: pvisor_core::RunProfile::Default,
             workspace: None,
             agent: "agent".into(),
             executor: RunExecutorKind::Host,

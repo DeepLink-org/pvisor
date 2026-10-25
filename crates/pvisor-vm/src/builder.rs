@@ -288,6 +288,7 @@ impl<B: Backend> Builder<B> {
     /// Build, invoke the ready callback, then enter the runner's event loop.
     /// Guest shutdown exits this isolated runner process.
     pub fn run(mut self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
+        let mut startup = crate::startup_profile::Span::new("vm.runtime_configure", "runner");
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
@@ -413,9 +414,11 @@ impl<B: Backend> Builder<B> {
         let mut events =
             EventManager::new().map_err(|e| io::Error::other(format!("event manager: {e:?}")))?;
         let (sender, receiver) = crossbeam_channel::unbounded();
+        startup = startup.next("vm.build");
         let vm = B::build(&self.resources, &mut events, None, sender).map_err(|e| {
             io::Error::other(format!("build {} {} VM: {e:?}", B::NAME, B::Arch::NAME))
         })?;
+        startup = startup.next("vm.ready_callback");
         let idle = vm.lock().unwrap().device_memory_gate().idle.clone();
         if self.guest_idle {
             idle.configure_cpus(self.resources.vcpu_config().vcpu_count);
@@ -428,7 +431,10 @@ impl<B: Backend> Builder<B> {
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })?;
+        startup = startup.next("vm.start_worker");
         B::start_worker(&self.resources, vm.clone(), receiver)?;
+        startup.complete(None);
+        drop(startup);
         loop {
             events
                 .run()

@@ -1,3 +1,0 @@
-{
-  "pVisor VM": "$ python3 @REPO@/benchmark.new/startup/pvisor_vm_timing.py @BATCH@"
-}

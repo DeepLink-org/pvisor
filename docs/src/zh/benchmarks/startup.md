@@ -28,12 +28,12 @@ Ready 截止到校验后的首条 shell 标记。Firecracker 在校验标记和�
 
 pVisor VM 的 Ready 中位数为 130.71 ms，位于 Docker rootless 的 105.03 ms 与参考 VM 的 260–663 ms 之间。host 与 staged 跳过内核和设备路径，分别为 33.52 ms 和 50.59 ms。
 
-表格按每个 `condition` 取[统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv)中最新的有效行；`condition` 与 `batch` 共同定位结果。标准差采用正式样本的样本标准差。整表复测使用 `just benchmark startup/timing`；仅复测 VM 使用 `just benchmark startup/timing "pvisor vm"`。
+表格按每个 `condition` 取[统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv)中最新的有效行；`condition` 与 `batch` 共同定位结果。标准差采用正式样本的样本标准差。整表复测使用 `mise run benchmark -- startup/timing`；仅复测 VM 使用 `mise run benchmark -- startup/timing "pvisor vm"`。
 
 冷镜像的客户端等待与内容下载见独立的[镜像按需启动](lazy-image-startup.md)实验；镜像服务准备成本单列，样本不与这里的预准备环境合并。
 
 ### 来源与复现 {#run}
 
-统计、源码与制品来源和原始记录保存在对应本地批次或文档数据归档。复现见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md)，被测制品见[来源 JSON](../assets/benchmarks/startup-timing.provenance.json)。
+统计、源码与制品来源和原始记录保存在对应本地批次或文档数据归档。复现见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md)，被测制品见[来源 JSON](../assets/benchmarks/startup-timing.provenance.json)。
 
 [比较方法](index.md#interpretation)

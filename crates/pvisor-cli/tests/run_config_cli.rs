@@ -6,6 +6,23 @@ use pvisor_journal::api::{Journal, JournalStore};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+const FAKE_OCI_RUNTIME: &str = r#"#!/bin/sh
+set -eu
+bundle=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$bundle" ] || exit 0
+control=$(dirname "$bundle")
+exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
+  --spec "$control/run-spec.json" \
+  --result-file "$control/output/run-result.json"
+"#;
+
 fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
     let runs = std::fs::read_dir(run_home)
         .expect("list Run Home")
@@ -122,6 +139,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("warn-only-fixture"));
     assert!(stderr.contains("cannot distinguish inference"));
     let bundle = RunBundle::read(&stage).unwrap();
+    assert!(bundle.safety.safe_profile_requested);
     assert!(
         bundle
             .filesystem
@@ -224,7 +242,7 @@ fn toml_and_cli_share_one_run_configuration() {
     let bundle = RunBundle::read(&run_dir).expect("read generated Run Bundle");
     assert_eq!(bundle.run.run_id, record["run_id"]);
     assert_eq!(bundle.run.agent, "from-cli");
-    assert!(bundle.safety.safe_profile_requested);
+    assert!(!bundle.safety.safe_profile_requested);
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["status", "--review", "--json"])
@@ -333,6 +351,50 @@ fn record_destination_survives_toml_round_trip() {
 
 #[cfg(unix)]
 #[test]
+fn fake_oci_uses_control_input_instead_of_rootfs_mountpoint() {
+    let temporary = tempfile::tempdir().unwrap();
+    let control = temporary.path().join("control with spaces");
+    let bundle = control.join("oci-bundle");
+    let placeholder = bundle.join("rootfs/run/pvisor/run-spec.json");
+    std::fs::create_dir_all(placeholder.parent().unwrap()).unwrap();
+    std::fs::write(&placeholder, b"").unwrap();
+    std::fs::write(control.join("run-spec.json"), b"real input").unwrap();
+    let runtime = temporary.path().join("fake-oci");
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pvisor = temporary.path().join("pvisor-argv");
+    std::fs::write(&pvisor, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&pvisor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(&runtime)
+        .args(["run", "--bundle"])
+        .arg(&bundle)
+        .arg("test-container")
+        .env("PVISOR_TEST_PVISOR", &pvisor)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "spawn\n--executor\nhost\n--stdio\ncapture\n--spec\n{}\n--result-file\n{}\n",
+            control.join("run-spec.json").display(),
+            control.join("output/run-result.json").display()
+        )
+    );
+    let management = Command::new(&runtime)
+        .args(["kill", "test-container", "TERM"])
+        .env("PVISOR_TEST_PVISOR", &pvisor)
+        .output()
+        .unwrap();
+    assert!(management.status.success());
+    assert!(
+        management.stdout.is_empty(),
+        "management launched a workload"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 #[cfg_attr(
     target_os = "macos",
     ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
@@ -343,25 +405,7 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
     std::fs::create_dir(&workspace).unwrap();
     let run_home = temporary.path().join("runs");
     let runtime = temporary.path().join("fake-oci");
-    std::fs::write(
-        &runtime,
-        r#"#!/bin/sh
-set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle) bundle="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
-control=$(dirname "$spec")
-exec "$PVISOR_TEST_PVISOR" spawn --executor host \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/run-result.json"
-"#,
-    )
-    .unwrap();
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
@@ -423,25 +467,7 @@ fn container_executor_deadline_stops_the_runtime_client() {
     std::fs::create_dir(&workspace).unwrap();
     let run_home = temporary.path().join("runs");
     let runtime = temporary.path().join("fake-oci");
-    std::fs::write(
-        &runtime,
-        r#"#!/bin/sh
-set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle) bundle="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -n "$bundle" ] || exit 0
-control=$(dirname "$bundle")
-exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/run-result.json"
-"#,
-    )
-    .unwrap();
+    std::fs::write(&runtime, FAKE_OCI_RUNTIME).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let started = std::time::Instant::now();
@@ -478,11 +504,63 @@ exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
     let failure_kind = bundle.run.failure.as_ref().map(|failure| failure.kind);
     assert_eq!(
         failure_kind,
-        Some(pvisor_core::RunFailureKind::DeadlineExceeded),
-        "expected a running agent to reach its deadline: {:?}",
+        Some(pvisor_core::RunFailureKind::ProcessExit),
+        "nested deadline must remain a host-observed process exit, not imported failure evidence: {:?}",
         bundle.run.failure
     );
     assert!(!bundle.safety.host_process);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn container_executor_watchdog_stops_an_unresponsive_runtime() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let runtime = temporary.path().join("unresponsive-oci");
+    std::fs::write(
+        &runtime,
+        "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = --bundle ]; then\n    printf '%s' \"$$\" > \"$PVISOR_TEST_RUNTIME_PID\"\n    exec /bin/sleep 30\n  fi\ndone\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run_home = temporary.path().join("runs");
+    let runtime_pid = temporary.path().join("runtime.pid");
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
+        .arg(&runtime)
+        .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
+        .arg("--container-rootfs")
+        .arg(&workspace)
+        .args(["--container-network", "none", "--", "/usr/bin/true"])
+        .current_dir(&workspace)
+        .env("PVISOR_RUN_HOME", &run_home)
+        .env("PVISOR_TEST_RUNTIME_PID", &runtime_pid)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let bundle = RunBundle::read(&only_run_dir(&run_home)).unwrap();
+    assert_eq!(bundle.run.state, pvisor_core::RunState::Failed);
+    assert_eq!(
+        bundle.run.failure.unwrap().kind,
+        pvisor_core::RunFailureKind::DeadlineExceeded
+    );
+    assert!(!bundle.safety.host_process);
+    let pid: i32 = std::fs::read_to_string(runtime_pid)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "runtime survived watchdog"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }
 
 #[test]

@@ -151,6 +151,11 @@ class ApplicationChaos:
                 "--user",
                 "--scope",
                 "--quiet",
+                *(
+                    [f"--slice={self.args.product_slice}"]
+                    if getattr(self.args, "product_slice", None)
+                    else []
+                ),
                 f"--unit={unit}",
                 "-p",
                 "MemoryMax=512M",
@@ -299,12 +304,31 @@ class ApplicationChaos:
         self.port = port
 
     def http(self, expected=None, path="/state"):
-        client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        # During an injected outage Linux can otherwise choose the destination
+        # port as the client's source and create a TCP connection to itself.
+        client = http.client.HTTPConnection(
+            "127.0.0.1", self.port, timeout=5, source_address=("127.0.0.2", 0)
+        )
         started = time.monotonic()
         try:
             client.request("GET", path)
             response = client.getresponse()
+            length = response.getheader("Content-Length")
+            if length is None or not length.isdecimal():
+                # http.client accepts EOF inside a header block. This fixture
+                # always supplies Content-Length; a killed VM can truncate it.
+                save(
+                    self.output / f"http-incomplete-{uuid.uuid4().hex}.json",
+                    {
+                        "step": self.step,
+                        "status": response.status,
+                        "headers": response.getheaders(),
+                    },
+                )
+                raise http.client.HTTPException("incomplete application response headers")
             payload = response.read()
+            if len(payload) != int(length):
+                raise http.client.IncompleteRead(payload, int(length) - len(payload))
             valid = response.status == 200 and (expected is None or payload == expected)
             with self.lock:
                 with (self.output / "http.jsonl").open("a") as log:
@@ -315,6 +339,7 @@ class ApplicationChaos:
                                 "bytes": len(payload),
                                 "sha256": hashlib.sha256(payload).hexdigest(),
                                 "status": response.status,
+                                "content_length": length,
                                 "verified": valid,
                                 "seconds": time.monotonic() - started,
                             }
@@ -476,7 +501,31 @@ class ApplicationChaos:
     def port_free(self):
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind(("127.0.0.1", self.port))
+            try:
+                listener.bind(("127.0.0.1", self.port))
+            except OSError as error:
+                try:
+                    diagnostic = subprocess.run(
+                        ["ss", "-tanp", f"( sport = :{self.port} or dport = :{self.port} )"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    tcp = diagnostic.stdout.decode(errors="replace")
+                    diagnostic_error = diagnostic.stderr.decode(errors="replace")
+                except (OSError, subprocess.TimeoutExpired) as diagnostic_failure:
+                    tcp = ""
+                    diagnostic_error = repr(diagnostic_failure)
+                save(
+                    self.output / "port-release-failure.json",
+                    {
+                        "step": self.step,
+                        "port": self.port,
+                        "error": repr(error),
+                        "tcp": tcp,
+                        "diagnostic_stderr": diagnostic_error,
+                    },
+                )
+                raise
 
     def restart(self):
         count = self.boots()
@@ -674,6 +723,67 @@ class ApplicationChaos:
         )
         values = self.parallel(*[lambda: self.call("logs", self.web) for _ in range(4)])
         assert all(value == before for value in values), "logs were consumed or cross-routed"
+
+    def permissions(self):
+        payload = self.rng.randbytes(16387)
+        self.call(
+            "exec",
+            "-i",
+            self.web,
+            "sh",
+            "-c",
+            "cat > /mode-check && chmod 000 /mode-check && sync",
+            data=payload,
+        )
+        self.check_file(self.web, "/mode-check", payload)
+        _, error = self.call("exec", "-u", "65534", self.web, "cat", "/mode-check", code=1)
+        assert b"Permission denied" in error, error
+        self.restart()
+        self.check_file(self.web, "/mode-check", payload)
+        mode, _ = self.call("exec", self.web, "stat", "-c", "%a", "/mode-check")
+        assert mode == b"0\n", mode
+        _, error = self.call("exec", "-u", "65534", self.web, "cat", "/mode-check", code=1)
+        assert b"Permission denied" in error, error
+        self.call("exec", self.web, "rm", "/mode-check")
+        self.call(
+            "exec",
+            self.web,
+            "sh",
+            "-c",
+            "printf initial > /mode-priv && chown 65534:65534 /mode-priv && chmod 6777 /mode-priv",
+        )
+        self.call("exec", "-u", "65534", self.web, "sh", "-c", "printf guest-write > /mode-priv")
+        mode, _ = self.call("exec", self.web, "stat", "-c", "%a", "/mode-priv")
+        assert mode == b"777\n", ("guest write retained privilege bits", mode)
+        self.check_file(self.web, "/mode-priv", b"guest-write")
+        self.call("exec", self.web, "rm", "/mode-priv")
+        self.call(
+            "exec",
+            self.web,
+            "sh",
+            "-c",
+            "printf short > /mode-truncate && chown 65534:65534 /mode-truncate && chmod 6777 /mode-truncate",
+        )
+        self.call("exec", "-u", "65534", self.web, "truncate", "-s", "20", "/mode-truncate")
+        truncated, _ = self.call("exec", self.web, "stat", "-c", "%a:%s", "/mode-truncate")
+        assert truncated == b"777:20\n", (
+            "truncate retained privilege bits or wrong size",
+            truncated,
+        )
+        self.check_file(self.web, "/mode-truncate", b"short" + b"\0" * 15)
+        self.call("exec", self.web, "rm", "/mode-truncate")
+        created, _ = self.call(
+            "exec",
+            "-u",
+            "65534",
+            self.web,
+            "sh",
+            "-c",
+            "umask 022; mkdir /tmp/guest-mode-dir && printf guest-created > /tmp/guest-mode-dir/file && stat -c '%u:%g:%a' /tmp/guest-mode-dir/file",
+        )
+        assert created == b"65534:65534:644\n", ("wrong guest creator identity or mode", created)
+        self.check_file(self.web, "/tmp/guest-mode-dir/file", b"guest-created")
+        self.call("exec", self.web, "rm", "-rf", "/tmp/guest-mode-dir")
 
     def conflicts(self):
         stdout, stderr = self.call(
@@ -875,6 +985,10 @@ class ApplicationChaos:
                     digest = hashlib.sha256(payload).hexdigest()
                     with self.lock:
                         valid = digest in self.allowed_hashes
+                    if not valid:
+                        (self.output / f"background-corrupt-{uuid.uuid4().hex}.bin").write_bytes(
+                            payload
+                        )
                     assert valid, "background HTTP received uncommitted or corrupted content"
                     record.update(verified=True, sha256=digest, bytes=len(payload))
                 except (OSError, http.client.HTTPException) as error:
@@ -899,7 +1013,14 @@ class ApplicationChaos:
             assert time.monotonic() < self.deadline, "application chaos time budget exceeded"
             self.step = f"{index:03d}-{case}"
             started = time.monotonic()
-            if case in {"restart", "crash_vm", "crash_owner", "recreate", "exec_restart"}:
+            if case in {
+                "restart",
+                "crash_vm",
+                "crash_owner",
+                "recreate",
+                "exec_restart",
+                "permissions",
+            }:
                 with self.expected_fault():
                     getattr(self, case)()
             else:
@@ -976,7 +1097,12 @@ def main():
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--rounds", type=int, default=36)
     parser.add_argument("--seconds", type=int, default=900)
+    parser.add_argument(
+        "--product-slice", help="Existing test-owned parent slice for all VM scopes"
+    )
     args = parser.parse_args()
+    if args.product_slice:
+        assert re.fullmatch(r"[A-Za-z0-9_-]+\.slice", args.product_slice), "invalid product slice"
     assert sys.platform == "linux" and "@sha256:" in args.image
     args.binary = str(Path(args.binary).resolve(strict=True))
     args.http_binary = str(Path(args.http_binary).resolve(strict=True))
@@ -995,6 +1121,7 @@ def main():
         "image_replace",
         "exec_restart",
         "slow_http",
+        "permissions",
     ]
     assert args.rounds >= len(cases) and args.seconds > 0
     args.output = args.output.resolve()

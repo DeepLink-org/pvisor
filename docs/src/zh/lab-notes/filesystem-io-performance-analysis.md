@@ -57,7 +57,7 @@ flowchart LR
 
 每case各用独立VM，R1表示fresh guest，宿主缓存未控制；R2/R3继承该case状态，资源case包含前轮写入、同步和完整读回验证历史。资源四点保持4个文件、4 KiB请求、每轮2倍配置RAM的逻辑写量和最多1 MiB payload缓冲，仅改变1/4 worker及0.25/1.25 RAM工作集。guest逐轮校验，host退出后只核对最终保留状态，并检查物理OverlayFS标记；这些检查不证明中间状态独立落盘。分析在环境内先累加三轮，再取三个配对耗时比的中位数，保留全部点、范围和5000次环境对bootstrap探索性95%区间，逐项且未校正多重比较；N3不变成N9，也不足以稳定确认或估计操作尾延迟。计数另用N1，保留慢值和失败，不设安静、干扰或逐轮全量清单门禁。
 
-当前四组主图分别展示机制归一化耗时、资源吞吐、环境CPU/采样内存成本及完整任务耗时；独立进度helper另画资源首轮worker 0的提交进度，不能解释成四worker总进度或host应用前缀。更密集的单轴曲线、guest dirty/temp页峰值、队列占用和操作P99仍待实现，有限写量不能证明稳态、饱和、IOCP或guest RAM offload。仓库协议为`benchmark.new/filesystem/WORKLOADS.md`，实际入口为`workloads_v2_run.py`；`workloads_v2.py`中保留的N5离线提案及未实现标记描述原计划，不代表当前运行库存。
+当前四组主图分别展示机制归一化耗时、资源吞吐、环境CPU/采样内存成本及完整任务耗时；独立进度helper另画资源首轮worker 0的提交进度，不能解释成四worker总进度或host应用前缀。更密集的单轴曲线、guest dirty/temp页峰值、队列占用和操作P99仍待实现，有限写量不能证明稳态、饱和、IOCP或guest RAM offload。仓库协议为`benchmark/filesystem/WORKLOADS.md`，实际入口为`workloads_v2_run.py`；`workloads_v2.py`中保留的N5离线提案及未实现标记描述原计划，不代表当前运行库存。
 
 ### 既有结果的实验设计
 
@@ -538,4 +538,4 @@ SDK upper 热读负对照与不可变 lower 重读是不同实验；SDK native �
 操作级尾延迟、开放到达负载、公平的多 VM 竞争、掉电或崩溃耐久、跨硬件和冷磁盘均未测量。队列持有 host 字节与固定 handle 的语义测试也不能证明完整 VM offload 期间的吞吐、释放的物理 RAM 或恢复成本。
 
 
-复现命令、完整实验矩阵和剩余论文强度验证见仓库 `benchmark.new/filesystem/CURVES.md`。批次归档约定见[实验记录索引](index.md)。
+复现命令、完整实验矩阵和剩余论文强度验证见仓库 `benchmark/filesystem/CURVES.md`。批次归档约定见[实验记录索引](index.md)。

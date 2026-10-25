@@ -138,6 +138,42 @@ pub struct Job {
 }
 
 impl Job {
+    pub(crate) fn finish_result(&mut self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
+        ensure!(
+            matches!(
+                result.state,
+                pvisor_core::RunState::Completed
+                    | pvisor_core::RunState::Failed
+                    | pvisor_core::RunState::Cancelled
+                    | pvisor_core::RunState::Hibernated
+            ),
+            "cannot finish a Job with a nonterminal result"
+        );
+        ensure!(
+            self.run_id == result.run_id.as_str()
+                && self.active_attempt == result.attempt_id.as_str(),
+            "terminal Attempt identity mismatch"
+        );
+        if result.state == pvisor_core::RunState::Hibernated {
+            let receipt = ExecutionSuspension::from_result(result)?;
+            let id = receipt.checkpoint.snapshot_id.clone();
+            self.checkpoints.entry(id.clone()).or_insert(Capture {
+                checkpoint: receipt.checkpoint,
+                branches: BTreeMap::new(),
+            });
+            self.requests
+                .get_mut(&receipt.request_id)
+                .context("suspend receipt has no Job request")?
+                .checkpoint = Some(id.clone());
+            self.head = Some(id);
+            self.state = JobState::Suspended;
+        } else {
+            self.state = JobState::Terminal;
+            self.head = None;
+        }
+        self.write()
+    }
+
     pub fn read(record: &RunRecord) -> anyhow::Result<Option<Self>> {
         Self::read_stage(&record.stage_dir())
     }
@@ -172,13 +208,29 @@ impl Job {
         RunLease::acquire(&self.root.join("execution-operation"))
     }
     async fn lock_wait(&self) -> anyhow::Result<RunLease> {
+        self.lock_wait_until(tokio::time::Instant::now() + CONTROL_IO_TIMEOUT)
+            .await
+    }
+
+    async fn lock_wait_until(&self, deadline: tokio::time::Instant) -> anyhow::Result<RunLease> {
         // Metadata sections never await VM work. Retry contention without
         // treating a second client as a capture/storage failure.
         loop {
             match self.lock() {
                 Ok(lease) => return Ok(lease),
-                Err(error) if error.to_string().contains("already leased") => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+                {
+                    anyhow::ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "execution Job lease wait timed out; operation outcome may be unknown"
+                    );
+                    tokio::time::sleep_until(
+                        deadline.min(tokio::time::Instant::now() + Duration::from_millis(10)),
+                    )
+                    .await;
                 }
                 Err(error) => return Err(error),
             }
@@ -410,7 +462,14 @@ impl Server {
         let task = tokio::spawn(async move {
             let admission =
                 std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONTROL_CONNECTIONS));
-            while let Ok((mut stream, _)) = listener.accept().await {
+            loop {
+                let (mut stream, _) = match super::host_transport::accept_control(&listener).await {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        tracing::error!(%error, "execution control listener failed");
+                        break;
+                    }
+                };
                 if authorize_host_peer(&stream).is_err() {
                     continue;
                 }
@@ -464,29 +523,7 @@ impl Server {
         // exit, so terminal receipt persistence cannot deadlock the VM teardown.
         let _lease = job.lock_wait().await?;
         let mut job = job.current()?;
-        ensure!(
-            job.run_id == result.run_id.as_str()
-                && job.active_attempt == result.attempt_id.as_str(),
-            "terminal Attempt identity mismatch"
-        );
-        if result.state == pvisor_core::RunState::Hibernated {
-            let receipt = ExecutionSuspension::from_result(result)?;
-            let id = receipt.checkpoint.snapshot_id.clone();
-            job.checkpoints.entry(id.clone()).or_insert(Capture {
-                checkpoint: receipt.checkpoint,
-                branches: BTreeMap::new(),
-            });
-            job.requests
-                .get_mut(&receipt.request_id)
-                .context("suspend receipt has no Job request")?
-                .checkpoint = Some(id.clone());
-            job.head = Some(id);
-            job.state = JobState::Suspended;
-        } else {
-            job.state = JobState::Terminal;
-            job.head = None;
-        }
-        job.write()
+        job.finish_result(result)
     }
 }
 
@@ -801,6 +838,19 @@ pub fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn job_lease_wait_has_a_deadline_and_does_not_steal_a_live_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, job) = fixture(temp.path());
+        let owner = job.lock().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
+        let error = job.lock_wait_until(deadline).await.err().expect("deadline");
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+        assert!(job.lock().is_err());
+        drop(owner);
+        assert!(job.lock_wait().await.is_ok());
+    }
 
     #[tokio::test]
     async fn long_attempt_paths_use_a_private_short_socket_and_clean_up() {

@@ -1,6 +1,24 @@
 # Engineering guide
 
-Run commands from the repository root. `just` lists public recipes in twelve groups. `just ci` runs the local check sequence; `just ci check "test pvisor-core"` runs selected commands in order and stops on failure. Internal recipes stay callable but are hidden from the default help.
+
+Run commands from the repository root. `mise tasks ls` lists public tasks; `mise run ci` runs the local check sequence, and `mise run ci -- check "test pvisor-core"` runs selected tasks in order and stops on failure. Internal tasks stay callable but are hidden from the default help.
+
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 or newer, then prepare the development environment:
+
+```bash
+mise trust
+mise install --locked
+mise run setup
+mise run doctor
+```
+
+`mise.toml` pins Rust (including rustfmt and Clippy), Python 3.12, uv, Ruff, actionlint, jq, Zig, nextest and cargo-zigbuild. `setup` installs the current architecture's Linux musl guest target and syncs development dependencies into `.venv` from `uv.lock`; it neither installs pVisor itself nor builds firmware. The Python product still supports 3.10+; development tools use 3.12.
+
+CI and wheel builds use mise 2026.10.18 with the committed tool versions and lockfiles. For compatible local tools already on `PATH`, set `disable_tools = ["python", "uv", "jq"]` in the `[settings]` table of the ignored `mise.local.toml`; disabled tools must be provided by the caller. Python development tasks require 3.12 or newer, and `UV_PYTHON` falls back to `python3` when Python is disabled. Select other mise-managed versions in that file's `[tools]` table and check them with `mise ls --current`. Release builds and recorded benchmark comparisons use a clean checkout without personal overrides or disabled tools.
+
+`mise run` selects the project tools and environment without shell activation. For direct Cargo or Python commands, use `mise exec -- cargo …` / `mise exec -- python3 …`, or activate your shell following mise's shell setup instructions. Separate task arguments from mise with `--`; Rust tests use a second `--` between package names and nextest options, for example `mise run test -- core -- --offline`.
+
+Platform package managers still provide native dependencies: Linux build libraries, FUSE, KVM and cgroup permissions, or macOS Xcode Command Line Tools, LLVM/GNU tools and macFUSE. See Build environment below and the executor guides. Machine-specific overrides belong in ignored `mise.local.toml`; keep personal paths and credentials out of shared configuration. Update tool versions in `mise.toml`, use CI's mise 2026.10.18 to run `mise lock --platform linux-x64,macos-arm64` and commit `mise.lock`; after changing Python dependencies, run `mise exec -- uv lock` and commit `uv.lock`.
 
 ## Repository layout and ownership
 
@@ -11,14 +29,14 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
 | `crates/pvisor-cli/` | Three application binaries, CLI commands, terminal frontends and replay/TUI companion dispatch |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API, detached native VM supervisors and optional daemon-owned pool |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox API, native guest protocol adapters and cross-platform cache/pool components |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
 | `crates/pvisor-journal/` | Shared fact Journal storage and readers |
 | `crates/pvisor-gateway/` | Agent protocol forwarding/conversion, capture and projections |
 | `crates/pvisor-overlay-core/` | FUSE-independent OverlayFS operations and file access controls |
 | `crates/pvisor-overlayfs/` | FUSE adaptation and mounts |
 | `crates/pvisor-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net path |
-| `crates/pvisor-guest/` | Linux PID 1 supervisor and shared VM launch contract |
+| `crates/pvisor-guest/` | Linux PID 1, shared launch contracts and native process/file control engine |
 | `crates/pvisor-shim/` | containerd Runtime v2 shim; optional VM execution |
 | `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation protocol bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
@@ -53,62 +71,22 @@ core, guest ──> no other workspace crates
 
 ### pVisor source modules
 
-```text
-crates/pvisor-cli/src/
-├── lib.rs                 # Frontend modules, not runtime re-exports
-├── bin/                   # Three: pvisor, pvisor-tui, pvisor-replay
-├── cli/                   # Arguments, commands and shared terminal utilities
-│   ├── cache.rs           # Cache argument parsing and rendering
-│   └── features.rs        # Runtime feature listing frontend
-├── companions.rs          # Same-installation companion lookup/dispatch
+| Implementation entry | Ownership |
+| --- | --- |
+| `pvisor-cli/src/cli/mod.rs` | Build parsing/dispatch for the selected command; root help describes command groups |
+| `pvisor-cli/src/cli/host*.rs`, `run/` | Frontend/owner startup, terminal, signals and Job command adaptation |
+| `pvisor/src/runtime/job_service/` | Durable Job lifecycle, workspace, forks, capture, views and policy |
+| `pvisor/src/runtime/attempt_service.rs` | In-process live Attempt status/pause/resume/termination shared by Jobs and daemon |
+| `pvisor/src/session*`, `runtime/attempt.rs` | Per-Attempt driver preparation, execution and finalization |
+| `pvisor/src/runtime/completion.rs` | Commit and validate completion binding Bundle bytes to terminal results |
+| `pvisor/src/docker.rs`, `image/` | Per-container VMs, image catalog and shared compressed image pool; ordinary OCI execution remains separate |
+| `pvisor-daemon/src/daemon/`, `runtime.rs` | APIs, admission, records, supervisors and cgroup/VM ownership |
+| `pvisor-daemon/src/native/`, `prepared_image.rs` | OpenSandbox/E2B guest protocol adaptation and template publication |
+| `pvisor-replay/src/adapter/`, `bridge/` | Trajectory planning, agent selection and native continuation bridges |
 
-└── tui/                   # TUI PTY runtime, renderer, review panels and keymap
+The CLI owns arguments/display; the runtime owns execution and durable Jobs. VM, filesystem and network implementations stay in their owning crates. Core defines shared policies and wire DTOs. Jobs and daemon reuse in-process control while retaining their own authentication, admission, storage and confirmed cleanup.
 
-crates/pvisor/src/
-├── lib.rs                 # Runtime exports and explicit frontend/embedding APIs
-├── session/               # Attempt lifecycle and completion
-├── session.rs             # Session owner
-├── config.rs              # Runtime and executor configuration
-├── trace.rs               # Shared fact Journal re-exports
-├── diagnostics.rs         # Shared host diagnostics; frontend chooses destination
-├── executor/
-│   ├── mod.rs             # RunExecutor and execution output contract
-│   ├── process.rs         # Host process executor
-│   ├── container.rs       # Container executor
-│   ├── sandbox.rs         # Host OS isolation and internal sandbox entry
-│   ├── artifact.rs        # Guest-compatible executable resolution
-│   ├── delegated.rs       # Delegated spec/result handoff
-│   └── vm/                # VM executor adapter and Run resource/control integration
-├── image/
-│   ├── oci.rs             # Registry, prepared records, blobs and unpacking
-│   └── cache/             # Cache protocol/server/client and lazy FUSE
-├── runtime/
-│   ├── run.rs             # PVisor API and run lifecycle
-│   ├── job_service.rs     # Durable RuntimeJobService
-│   ├── job_execution.rs   # Job execution mechanisms
-│   ├── host_transport.rs  # Typed Host transport
-│   ├── instance_control.rs # Local instance control exchange
-│   ├── agentctl.rs        # Per-run cooperative control server
-│   ├── agentctl_client.rs # Synchronous AgentCtl client
-│   ├── audit.rs           # Approval socket transport/cache
-│   ├── event.rs           # Run event publication
-│   ├── bundle.rs          # Persistent review summary
-│   ├── checkpoint.rs      # Logical checkpoints and restoration
-│   ├── registry.rs        # Run identity, liveness lock and local control endpoints
-│   ├── attempt.rs         # Per-attempt driver resources/cleanup
-│   ├── supervisor.rs      # Capability checks and driver coordination
-│   ├── operation.rs       # Operation and observation construction
-│   ├── implant.rs         # Runtime environment injection
-│   ├── overlay.rs         # Stage/review/apply/drop/recovery
-│   └── zcode.rs           # Process compatibility policies
-└── util.rs                # Small shared file/time utilities
-```
-
-CLI arguments/display, frontend/owner bootstrap and terminal handoff belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend. `pvisor-daemon/src/memory_pool.rs` owns pool startup/reuse and the detached `memory-pool` component; `serve --sandbox --memory-pool` enables it. Node protocols in `pvisor/src/node.rs` and `node/` are runtime facilities with no daemon acquire/release adapter. `pvisor cache` owns preparation, publication and reads; `pvisor-daemon serve --cache` owns serving.
-
-Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
-
-In replay, `adapter/` owns native trajectory planning and launch selection; `bridge/` owns Claude/Codex/OpenCode protocol bridges and Claude resume transport validation. Shared execution and journal remain at the crate root.
+See [Core architecture](../design/architecture.md#api-boundaries) for public interfaces and migration status. Only VM, OverlayFS and Journal currently use a sole `api` entry. Other crates retain their actual exports; this logical table does not imply unified Rust visibility or stability.
 
 ### Core implementation boundaries
 
@@ -116,47 +94,47 @@ Core defines Operation, Event and shared policies; pvisor implements admission, 
 
 ## Core reduction budget
 
-CI checks the default runtime and application dependency boundaries before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects the CLI, Gateway, replay, Clap, TUI and terminal dependencies in the normal `pvisor` closure. The default `pvisor-cli` application includes the replay engine and integrated TUI, while Gateway remains optional. It records toolchain, runtime/application dependency counts, runtime-closure source lines, public Core declarations and application binary bytes. The dependency count, closure source lines and Core declarations ratchet against a committed baseline (`scripts/ci/core-budget.json`): any metric above the baseline fails CI, so no absolute caps are hand-maintained in the CI config. A change that intentionally grows the budget regenerates the baseline with `just update-core-budget` in the same commit, keeping the exact delta reviewable; regenerating after a reduction tightens the baseline to reality. The script owns budget/measurement definitions; CI reports contain measured results. Compare on the same platform/toolchain.
+CI checks the default runtime and application dependency boundaries before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects the CLI, Gateway, replay, Clap, TUI and terminal dependencies in the normal `pvisor` closure. The default `pvisor-cli` application includes the replay engine and integrated TUI, while Gateway remains optional. It records toolchain, runtime/application dependency counts, runtime-closure source lines, public Core declarations and application binary bytes. The dependency count, closure source lines and Core declarations ratchet against a committed baseline (`scripts/ci/core-budget.json`): any metric above the baseline fails CI, so no absolute caps are hand-maintained in the CI config. A change that intentionally grows the budget regenerates the baseline with `mise run update-core-budget` in the same commit, keeping the exact delta reviewable; regenerating after a reduction tightens the baseline to reality. The script owns budget/measurement definitions; CI reports contain measured results. Compare on the same platform/toolchain.
 
 ## Contributor commands
 
 | Command | Purpose |
 | --- | --- |
-| `just build` / `just build release` | Build debug/release CLI and sign Hypervisor entitlement on macOS |
-| `just install-cli` | Install signed release CLI to `CARGO_INSTALL_ROOT` or `~/.cargo` |
-| `just wheel` / `just wheel debug` | Build a fresh wheel; place it in `dist/` after installation validation |
-| `just fw build` / `just fw test` | Build firmware or run bundle/ABI regressions |
-| `just doctor` / `just doctor test` | Read-only tool diagnostics; no installation |
-| `just check` | Compilation checks for the product and its dependencies |
-| `just fmt` / `just ci "fmt-rust --check" "fmt-py --check"` | Format Rust/Python or check formatting |
-| `just lint` | Clippy, Python and workflow lint |
-| `just test` | Workspace Rust tests via nextest, followed by Python tests |
-| `just test core pvisor cli` | Selected Rust packages: shared contracts, runtime and application |
-| `just test cli` / `just test pvisor-cli` | Executable/frontend tests; `just test pvisor` selects runtime tests |
-| `just test pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
-| `just test-py -k packaging` | Filter Python unittest checks in both test directories |
-| `just test-py discover -s benchmark/pvisor` | Benchmark tool unittest checks; also included in default Python tests |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
-| `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
-| `just test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
-| `just smoke` | Build debug CLI and check main commands |
-| `just examples` | Build release CLI and run all examples; append names for a subset |
-| `just cases --case S-DOC-001,S-DOC-002` | Selected documentation cases |
-| `just benchmark` / `just benchmark smoke nightly` | Process and Run Bundle benchmarks |
-| `just docs-build` | Build bilingual documentation and check links |
-| `just docs-serve` / `just docs-serve en` | Native Zensical preview with live reload; Chinese on port 3000, English on port 3001 |
-| `just ci` | Check format/lint/tests and build without rewriting source |
-| `just clean` | Remove build artifacts, preserving development environment/local Run records |
+| `mise run build` / `mise run build -- release` | Build debug/release CLI and sign Hypervisor entitlement on macOS |
+| `mise run install-cli` | Install signed release CLI to `CARGO_INSTALL_ROOT` or `~/.cargo` |
+| `mise run wheel` / `mise run wheel -- debug` | Build a fresh wheel; place it in `dist/` after installation validation |
+| `mise run fw -- build` / `mise run fw -- test` | Build firmware or run bundle/ABI regressions |
+| `mise run doctor` / `mise run doctor -- test` | Tool/platform diagnostics; mise installs missing tools first |
+| `mise run check` | Compilation checks for the product and its dependencies |
+| `mise run fmt` / `mise run ci -- "fmt-rust --check" "fmt-py --check"` | Format Rust/Python or check formatting |
+| `mise run lint` | Clippy, Python and workflow lint |
+| `mise run test` | Workspace Rust tests via nextest, followed by Python tests |
+| `mise run test -- core pvisor cli` | Selected Rust packages: shared contracts, runtime and application |
+| `mise run test -- cli` / `mise run test -- pvisor-cli` | Executable/frontend tests; `mise run test -- pvisor` selects runtime tests |
+| `mise run test -- pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
+| `mise run test-py -- -k packaging` | Filter Python unittest checks in both test directories |
+| `mise run test-py -- discover -s benchmark/support` | Benchmark tool unittest checks; also included in default Python tests |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
+| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
+| `mise run test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
+| `mise run smoke` | Build debug CLI and check main commands |
+| `mise run examples` | Build release CLI and run all examples; append names for a subset |
+| `mise run cases -- --case S-DOC-001,S-DOC-002` | Selected documentation cases |
+| `mise run benchmark` / `mise run benchmark -- nightly` | Process and Run Bundle benchmarks |
+| `mise run docs-build` | Build bilingual documentation and check links |
+| `mise run docs-serve` / `mise run docs-serve -- en` | Native Zensical preview with live reload; Chinese on port 3000, English on port 3001 |
+| `mise run ci` | Check format/lint/tests and build without rewriting source |
+| `mise run clean` | Remove build artifacts, preserving development environment/local Run records |
 
-`just test`/`just test-rust` accept Cargo package names and aliases `pvisor`, `cli` (`pvisor-cli`), `core`, `control`/`agentctl` (Core compatibility aliases), `capture` (Gateway) and `shim` (`pvisor-shim`). With package arguments, `just test` runs only those Rust tests. CI shards use `just test-rust` without additionally running Python tests.
+`mise run test`/`mise run test-rust` accept Cargo package names and aliases `pvisor`, `cli` (`pvisor-cli`), `core`, `control`/`agentctl` (Core compatibility aliases), `capture` (Gateway) and `shim` (`pvisor-shim`). With package arguments, `mise run test` runs only those Rust tests. CI shards use `mise run test-rust` without additionally running Python tests.
 
 Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
-Default unittest discovery includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Default unittest discovery includes `tests/` and `benchmark/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
-VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
+VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
 
-For a specific Rust integration test/filter, pass nextest arguments after `--`, for example `just test-rust pvisor-gateway -- --test llm_fixtures`. nextest excludes doctests; use `cargo test --doc -p <package>` when needed.
+For a specific Rust integration test/filter, pass nextest arguments after `--`, for example `mise run test-rust -- pvisor-gateway -- --test llm_fixtures`. nextest excludes doctests; use `cargo test --doc -p <package>` when needed.
 
 ## CI responsibilities
 
@@ -170,7 +148,7 @@ For a specific Rust integration test/filter, pass nextest arguments after `--`, 
 
 Keep required status `CI`: any failed, canceled or skipped dependency fails it. Linux Rust tests shard into core/Gateway/pVisor; macOS runs the same package set once. The separate Linux isolation job requires user namespaces/FUSE and cannot skip isolation checks. Filesystem examples/documentation cases share its release build/isolation environment. Network/Gateway examples run separately.
 
-The shared setup action installs only Python, uv and just by default. Rust, nextest and guest Rust targets are opt-in. Linux static CLI/shim builds enable Zig/cargo-zigbuild via `static-musl`; Rust checks/unit tests do not need them. A reusable workflow owns the two-platform wheel matrix. PR documentation builds do not cancel Pages deployments.
+The shared setup action installs the same mise tools and Python development dependencies as local development. Its `native-firmware` input prepares macOS native firmware tools, and `static-musl` installs Linux system build libraries; tool versions come from `mise.toml`. A reusable workflow owns the two-platform wheel matrix, including mise with the same configuration inside manylinux. PR documentation builds do not cancel Pages deployments.
 
 ## VM guest startup
 
@@ -178,7 +156,7 @@ The shared setup action installs only Python, uv and just by default. Rust, next
 
 CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Attempt; normal VM shutdown without a reported code fails with 125.
 
-See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon) for measurements and scope.
+See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon) for measurements and scope.
 
 ## Packaging and names
 
@@ -186,7 +164,7 @@ The Python package, installed CLI and runtime Rust crate use `pvisor`; the appli
 
 ## Build environment
 
-Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and platform linker. Install nextest `0.9.137` or use the CI setup action. Rust's bundled linker builds the guest supervisor as a static Linux musl ELF; macOS VM builds do not require Zig. On Apple Silicon run `rustup target add aarch64-unknown-linux-musl` before the first build. CI installs only the current architecture's guest target; workspace configuration does not download unrelated cross-compilation targets.
+Use the Rust toolchain pinned in `mise.toml`, the default LLVM backend and platform linker. `mise run setup` installs the current architecture's guest target. Rust's bundled linker builds the guest supervisor as a static Linux musl ELF; macOS VM builds do not require Zig.
 
 | Artifact | Linux | Apple Silicon macOS |
 | --- | --- | --- |
@@ -195,7 +173,7 @@ Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and pl
 | `pvisor-vm` | Single Rust runtime crate | Single Rust runtime crate |
 | Guest kernel | Embedded at build time | Runtime-loaded `libkrunfw.5.dylib` |
 
-`CARGO_TARGET_DIR` selects native build output shared by build/install/smoke/examples/cases. Wheel verification uses a fresh staging directory so old `dist/` packages cannot be mistaken for new artifacts. Linux CLI links musl statically and embeds the VM kernel. Building requires Zig, cargo-zigbuild and `rustup target add x86_64-unknown-linux-musl`. Linux wheels retain manylinux_2_28 for glibc Python installers.
+`CARGO_TARGET_DIR` selects native build output shared by build/install/smoke/examples/cases. Wheel verification uses a fresh staging directory so old `dist/` packages cannot be mistaken for new artifacts. Linux CLI links musl statically and embeds the VM kernel. The mise installation and `setup` provide Zig, cargo-zigbuild and the Linux musl target. Linux wheels retain manylinux_2_28 for glibc Python installers.
 
 Documentation tasks use an isolated uv environment with the same pinned Zensical as CI; no separate docs virtual environment is required.
 
@@ -210,4 +188,4 @@ The private runtime modules use a libkrun 1.19.3 base with selected upstream bac
 
 CLI, shim, examples and the init benchmark use this interface. Low-level register/device tests and hardware probes belong inside `pvisor-vm`. Static kernel extraction/packing lives in `crates/pvisor-vm/build_kernel.rs`; its existing build environment variables remain compatible. Firmware data ABI and OS FFI remain private. Historical trace/receipt identifiers and benchmark evidence retain their original names.
 
-Run `just test pvisor-vm`; macOS signs its test executables with the existing Hypervisor entitlement. Real VM tests require host HVF/KVM access; Linux VM-creation tests require `/dev/kvm`.
+Run `mise run test -- pvisor-vm`; macOS signs its test executables with the existing Hypervisor entitlement. Real VM tests require host HVF/KVM access; Linux VM-creation tests require `/dev/kvm`.

@@ -30,6 +30,9 @@ pub struct ServerSnapshot {
     pub(crate) options: u64,
     pub(crate) next_inode: u64,
     pub(crate) fs: FsSnapshot,
+    /// Continues the same PID-1 capability with saved guest RAM. Never logged.
+    #[serde(default)]
+    pub(super) guest_exit: super::guest_exit::GuestExit,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

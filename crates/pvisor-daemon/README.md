@@ -34,6 +34,9 @@ daemon. SIGINT/SIGTERM stops API admission, allows up to ten seconds for HTTP
 requests to drain, then terminates/reaps the owned cache worker. Cache requests
 in flight may fail; clients must reconcile uncertain preparation results. The
 worker is an internal implementation component, not a public service command.
+Its environment is an explicit allowlist: process/storage paths, locale, cache
+token, registry configuration, proxy settings and TLS trust configuration.
+Sandbox lifecycle keys and unrelated environment secrets are not inherited.
 An owner pipe stops it even if the daemon crashes. A stale Unix socket can remain;
 the existing lock and socket checks allow safe restart without deleting cache data.
 Detached native VM supervisors and the optional shared pool retain their existing
@@ -120,6 +123,10 @@ checks the actual sandbox/generation binding before publication; credentials
 remain in the host supervisor and never enter guest workload environment. API
 restart retains the same supervisor, VM, process inventory and output journals.
 Supervisor loss is not recoverable process replay or a checkpoint.
+Native RPC connections wait for temporary Unix accept-queue saturation within
+the existing five-second connection deadline. Only an unconnected EAGAIN is
+retried; requests are sent once after connection and commands are never replayed.
+HTTP/process admission and socket backlog limits remain unchanged.
 
 The native core supports foreground/background commands, separate stdout/stderr,
 stdin/EOF, nonzero exits, env/cwd/user overrides, process listing/reconnect,
@@ -127,11 +134,18 @@ TERM/KILL, E2B PTYs and resizing. OpenSandbox background logs use byte cursors.
 Completion closes the stream after the final exit event without a fixed sleep.
 Files are streamed through guest-local operations: read/write, stat, immediate
 listing, mkdir, move, remove and chmod. Metrics sample actual guest CPU ticks and
-memory. Files use root identity; non-root file requests, ownership changes,
+memory. File stat/list include both SDK-required RFC3339 timestamps. Following
+OpenSandbox's Linux profile, `created_at` reports guest inode change time (ctime),
+not filesystem birth time; `modified_at` reports guest mtime. Files use root identity; non-root file requests, ownership changes,
 xattrs, gzip uploads, recursive listing, watchers, notebook/session kernels and
 OpenSandbox WebSocket PTYs are explicitly unsupported. The E2B adapter accepts
 JSON/Connect (the pinned Python SDK's format), not binary protobuf. Unsupported
 operations return 501; supported operations still return guest filesystem errors.
+OpenSandbox downloads support a single HTTP byte range, including open-ended
+and suffix forms, with 206/Content-Range or 416 for invalid/unsatisfiable ranges.
+Bytes are selected from bounded guest frames; skipping a large prefix still
+reads it through the guest transport. Line-based `offset`/`limit` reads are
+explicitly unsupported (501), rather than silently returning the whole file.
 
 Bounds per sandbox: 64 HTTP response streams, 16 active managed execs, 64 retained jobs, 4 MiB output or
 16,384 output events per job, 64 MiB per upload, 128 upload files and 1,024 entries
@@ -156,7 +170,7 @@ temporary unpacked build storage, which is outside the create path.
 Per-VM projection scratch lives under the owned run directory, so confirmed
 cgroup cleanup also reclaims it after a supervisor crash. Pool objects remain shared.
 
-Build the runtime-performance daemon with `just build performance daemon` (the
+Build the runtime-performance daemon with `mise run build -- performance daemon` (the
 binary is staged as `target/performance/pvisor-daemon`). Build the trusted
 **1.1.0** execd once from the pinned upstream commit:
 
@@ -213,7 +227,7 @@ template/pool and arbitrary-port APIs remain unsupported. This is a local
 replacement for the tested core profile, not every OpenSandbox deployment.
 
 The creation design removes registry/unpack work and reduces polling delay.
-The [paired native/Docker experiment](../../benchmark/opensandbox/REPORT.md)
+The [paired native/Docker experiment](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/REPORT.md)
 found faster first creation after API restart and slower steady creation. These
 results use the `performance` build and prepared images, not registry cold pulls.
 VM isolation and Docker container isolation are different contracts; their full
@@ -248,7 +262,9 @@ explicit. An OpenSandbox image is not an E2B template.
 
 E2B lifecycle requests use `X-API-Key` and numeric `{code, message, error_code}`
 errors. They use the same configured secret as OpenSandbox's lifecycle API.
-`serve` resolves `--api-key`, then `OPEN_SANDBOX_API_KEY`, then `E2B_API_KEY`.
+`serve` resolves `OPEN_SANDBOX_API_KEY`, then `E2B_API_KEY`. The former
+`--api-key` option is rejected: migrate service launchers to environment credentials
+before upgrading. Credentials are never parsed from argv.
 Use environment credentials rather than command-line secrets. E2B data requests
 require exactly one `E2b-Sandbox-Id`, `E2b-Sandbox-Port: 49983` and
 sandbox-scoped `X-Access-Token`; that token grants no lifecycle or other-sandbox
@@ -352,6 +368,14 @@ cgroup absence proof. Cargo links `pvisor` and
 before argument parsing or Tokio, then dispatches the hidden
 `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. `serve` constructs
 `NativeRuntime` with the required `--images-dir` and `--cgroup-root` flags.
+
+After each supervisor exec and before creating Tokio, the native-supervisor
+branch calls `VmExecutor::prepare_process` to reserve Linux descriptor-table
+capacity before image/VM workers share it. This optional preparation closes its
+temporary descriptors, preserves existing descriptors and limits, and leaves
+launch/error handling unchanged if it fails. Preparing only the API parent would
+not survive supervisor exec. Cache, pool and VM-runner reentry keep their own
+startup paths.
 
 The only runtime backend is **native VM execution**, with no host, OCI command or
 registry-pull fallback. It requires Linux x86_64, usable `/dev/kvm`, trusted
@@ -478,6 +502,14 @@ No security audit or hostile multi-user assurance is claimed.
   response streams hold no admission and have no total timeout. Idle upstream connection pooling is disabled to avoid
   reusing connections across recycled loopback ports. Host-side external runtime
   manipulation is outside this coordination boundary.
+- OpenSandbox and E2B proxies share a node-local limit of 128 admitted requests
+  and response streams, including upload, header wait and the entire response
+  body. Excess requests return 429/PROXY_CAPACITY_EXCEEDED before endpoint work.
+  EOF, forwarding failure or response-body drop releases the slot. Streaming
+  does not retain the lifecycle gate, so deletion and other control requests
+  remain usable at proxy capacity. This is an HTTP stream count, not a hard
+  node RSS/FD/disk limit or a per-tenant fairness guarantee; the pool and host
+  service processes still require separately provisioned resources.
 - TTL cleanup is best effort, not a hard execution deadline: native commands,
   uploads/header waits and same-sandbox controls can delay it. New proxy requests
   are rejected after expiration. Stream/output quotas remain upstream responsibilities.
@@ -539,6 +571,15 @@ its empty map. Preserve the original header, native marker and records together;
 do not erase reservations or fabricate ownership to bypass the guard.
 
 The list API reports the last durable observation; GET reconciles native state.
+Startup reconciles Pending creations too. A preparation without a durable started
+marker is fenced against late launch, then reclaimed only after the native owner
+lock and cgroup absence proof. Runtime-confirmed Missing Pending creations are
+deleted through the normal confirmed-delete path to release their reservation.
+The Stopping intention is committed first, so interruption during reconciliation
+retains capacity and the next startup resumes deletion.
+Live Running/Paused creations are adopted as observations; unavailable control or
+uncertain cleanup retains its record and capacity. Completed/failed previously
+launched sandboxes keep their existing explicit-deletion contract.
 The maintenance loop retries pending/expired deletion. Continuous native process
 monitoring and event-driven reconciliation are not implemented.
 
@@ -568,6 +609,11 @@ passing it in argv. Use TLS in a trusted reverse proxy before exposing the servi
 outside loopback. Supply `--public-endpoint` for externally routed or wildcard
 listeners. A loopback `--listen 127.0.0.1:0` development binding publishes its
 actual allocated authority automatically; the listening address is logged.
+Non-loopback listeners (including specific IPv4/IPv6 addresses) are rejected by
+default. `--allow-insecure-listen` explicitly opts into plaintext remote binding;
+it does not install TLS or authenticate a reverse proxy. Prefer TLS termination
+with the daemon backend on loopback. IPv4-mapped loopback addresses retain local
+behavior. The sandbox option does not change portable cache endpoint rules.
 
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
@@ -793,7 +839,7 @@ compatibility.
 Run targeted checks with:
 
 ```sh
-just test pvisor-daemon
+mise run test -- pvisor-daemon
 ```
 
 Pool tests launch the actual component, check sharing/budgets and local recovery

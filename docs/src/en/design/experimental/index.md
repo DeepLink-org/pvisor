@@ -41,7 +41,7 @@ Record each platform separately. Promotion includes source/artifact identity, co
 3. Keep features disabled by default. Unvalidated options do not enter official CLI examples or claims of delivered capability.
 4. Reuse Runtime, control owners, CPU/device quiescence, storage and evidence models; preserve existing terminal-state ownership.
 5. Follow `crates/pvisor-vm/README.md` for public VM APIs. State backend scope and distinguish KVM/HVF and mapping profiles.
-6. Read directory READMEs before implementation. Follow `benchmark/README.md` and register or explicitly reuse the measurement protocol; store raw data in `.data/`. Manual-operation results do not establish automatic-policy benefit.
+6. Read directory READMEs before implementation. Follow `benchmark/REGISTRY.md` and register or explicitly reuse the measurement protocol; store raw data in `.data/`. Manual-operation results do not establish automatic-policy benefit.
 7. Follow `tools/semspec/DESIGN.md`; keep PASS separate from human approval. AI does not edit real approval ledgers/snapshots or weaken claims/checks/xfail.
 8. Keep credentials, user trajectories, VM images and build artifacts outside this directory.
 

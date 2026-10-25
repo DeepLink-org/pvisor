@@ -1145,6 +1145,26 @@ impl PVisor {
                 ));
             }
         }
+        if spec.runtime.profile == pvisor_core::RunProfile::Safe {
+            if spec
+                .metadata
+                .get("pvisor.filesystem.mode")
+                .and_then(serde_json::Value::as_str)
+                == Some("host")
+            {
+                return Err(PVisorError::InvalidSpec(
+                    "safe profile requires filesystem confinement".into(),
+                ));
+            }
+            spec.metadata.insert(
+                crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+                true.into(),
+            );
+            spec.metadata.insert(
+                crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(),
+                true.into(),
+            );
+        }
         crate::runtime::apply_process_policies(&mut spec, &descriptor)
             .map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
@@ -2192,19 +2212,22 @@ mod tests {
     #[async_trait]
     impl EventSink for RejectCompletionFact {
         async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
-            if event.name() == "completed" {
-                anyhow::bail!("completion audit unavailable");
-            }
-            if event.name() == "run.completed" {
+            if matches!(event.name(), "completed" | "run.completed") {
+                // Both completion notifications must already have a readable,
+                // receipt-validated Bundle, even when the fact sink rejects.
                 let bundle = crate::RunBundle::read(&self.0)?;
+                anyhow::ensure!(bundle.run.state == RunState::Completed);
                 anyhow::ensure!(
-                    bundle
+                    !bundle
                         .run
                         .warnings
                         .iter()
                         .any(|warning| warning.contains("execution completion audit gap")),
-                    "audit gap was not persisted before terminal publication"
+                    "post-commit audit failure rewrote the immutable Bundle"
                 );
+            }
+            if event.name() == "completed" {
+                anyhow::bail!("completion audit unavailable");
             }
             Ok(JournalStore::append(
                 &crate::trace::Journal::memory(),
@@ -2214,7 +2237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_audit_gap_is_durable_before_terminal_publication() {
+    async fn completion_receipt_precedes_both_notifications_and_fact_failure_preserves_bundle() {
         let storage = tempfile::tempdir().unwrap();
         let runtime = PVisor::builder()
             .storage(storage.path())
@@ -2233,7 +2256,104 @@ mod tests {
         );
         let bundle = crate::RunBundle::read(storage.path()).unwrap();
         assert_eq!(bundle.run.state, result.state);
-        assert_eq!(bundle.run.warnings, result.warnings);
+        assert!(
+            !bundle
+                .run
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("execution completion audit gap"))
+        );
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(storage.path().join("completion.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["result"]["state"], "completed");
+        assert_eq!(
+            receipt["result"]["warnings"],
+            serde_json::json!(bundle.run.warnings)
+        );
+    }
+
+    struct FailCommittedTerminal {
+        stage: std::path::PathBuf,
+        kind: crate::EventAppendErrorKind,
+        attempts: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl EventSink for FailCommittedTerminal {
+        async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+            if matches!(event.name(), "completed" | "run.completed" | "run.failed") {
+                assert_eq!(
+                    crate::RunBundle::read(&self.stage)?.run.state,
+                    RunState::Completed
+                );
+                self.attempts.lock().unwrap().push(event.name().to_owned());
+                if event.name() == "run.completed" {
+                    anyhow::bail!("simulated terminal publication failure");
+                }
+            }
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
+        }
+        fn classify_append_error(&self, _: &anyhow::Error) -> crate::EventAppendErrorKind {
+            self.kind
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_completion_survives_rejected_or_unknown_terminal_append() {
+        for kind in [
+            crate::EventAppendErrorKind::Rejected,
+            crate::EventAppendErrorKind::Unknown,
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let sink = Arc::new(FailCommittedTerminal {
+                stage: storage.path().to_path_buf(),
+                kind,
+                attempts: Mutex::new(Vec::new()),
+            });
+            let runtime = PVisor::builder()
+                .storage(storage.path())
+                .event_sink(sink.clone())
+                .build();
+            let result = runtime
+                .run(RunSpec::process(
+                    "committed-terminal",
+                    "agent",
+                    "/usr/bin/true",
+                ))
+                .await
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+            assert_eq!(result.state, RunState::Completed);
+            assert!(result.failure.is_none());
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("terminal event audit gap"))
+            );
+            assert_eq!(
+                sink.attempts.lock().unwrap().as_slice(),
+                ["completed", "run.completed"]
+            );
+            assert_eq!(
+                crate::RunRecord::read(storage.path()).unwrap().state,
+                crate::RunRecordState::Completed
+            );
+            let bundle = crate::RunBundle::read(storage.path()).unwrap();
+            assert_eq!(bundle.run.state, RunState::Completed);
+            assert!(
+                !bundle
+                    .run
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("terminal event audit gap"))
+            );
+        }
     }
 
     struct RejectCreatedSink;
@@ -2617,7 +2737,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn bundle_failure_is_published_as_the_only_terminal_result() {
+    async fn bundle_failure_retains_unknown_and_suppresses_completion_notifications() {
         let temporary = tempfile::tempdir().unwrap();
         let storage = temporary.path().join("storage");
         let sink = Arc::new(MemoryEventSink::default());
@@ -2655,7 +2775,18 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(terminal_kinds, vec!["run.failed"]);
+        assert!(terminal_kinds.is_empty());
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| event.name() == "completed")
+        );
+        assert!(!storage.join("completion.json").exists());
+        let record = crate::RunRecord::read(&storage).unwrap();
+        assert_eq!(record.state, crate::RunRecordState::Unknown);
+        assert!(record.require_stopped().is_err());
+        assert!(storage.is_dir());
     }
 
     #[tokio::test]
@@ -2812,6 +2943,23 @@ mod tests {
             PVisorError::UnsupportedPolicy { dimensions, .. }
                 if dimensions == "network, subprocess"
         ));
+    }
+
+    #[tokio::test]
+    async fn typed_safe_profile_rejects_an_unconfined_embedded_executor_before_start() {
+        let marker = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("safe-embedded", "agent", "/bin/sh");
+        spec.runtime.profile = pvisor_core::RunProfile::Safe;
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec![
+            "-c".into(),
+            format!("touch {}/started", marker.path().display()),
+        ];
+        assert!(matches!(
+            PVisor::new().run(spec).await,
+            Err(PVisorError::UnsupportedPolicy { .. })
+        ));
+        assert!(!marker.path().join("started").exists());
     }
 
     #[test]

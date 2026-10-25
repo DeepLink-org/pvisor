@@ -17,7 +17,7 @@ pVisor 拥有单次执行的边界与观察；单节点 daemon 拥有本机 sand
 | 层 | 当前职责 | 待集成／验证 |
 | --- | --- | --- |
 | 原生 pVisor 执行 | Job 生命周期、执行器控制、暂存、可选 Gateway 与记录 | 编排适配器和代表性工作负载验收 |
-| Sandbox daemon | NativeRuntime VM 准入、持久 supervisor 归属、生命周期与真实服务代理 | Bootstrap 提供／验证与 SDK profile；没有 stage/checkpoint API 或密度证据 |
+| Sandbox daemon | VM 准入、持久 supervisor、镜像准备与已测试的 OpenSandbox/E2B 核心流程 | 完整协议和生产密度验收；stage/checkpoint API 未接入 |
 | 原生 node 资源 | 本机不可变所有权、pin 与有界 warming | Daemon 接入、完整瞬时记账和工作负载测量 |
 | 外部编排 | 主机选择、队列、依赖、重试与租户 | 显式执行／证据交接及业务副作用核对 |
 | 证据／检查点仓库 | 原生完整性、发布与保留合同 | 集中收集、授权、复制与跨主机兼容性 |

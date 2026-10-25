@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | `pvisor spawn` CLI | 开发者、脚本、CI、通过子进程集成的 evaluator | 原生 Job/Attempt；命令管理运行、审查和状态操作 | 按所选 host、OCI 或 VM 执行器准备环境；用机器可读输出关联任务 |
 | Rust `pvisor` Runtime | 需要直接控制执行与清理的 Rust 应用 | `PVisor`、`RunHandle` 与 Job service；应用持有运行时并完成等待与清理 | 固定 crate 版本，配置 executor/drivers，并遵守生命周期与持久化合同 |
-| `pvisor-daemon serve --sandbox` | 使用 HTTP 生命周期 API 的平台服务 | daemon sandbox ID；本机准入、TTL、supervisor 与持久状态 | Linux x86_64、KVM、委派 cgroup v2、可信 prepared image 与 guest 服务桥接 |
+| `pvisor-daemon serve --sandbox` | 使用 HTTP 生命周期 API 的平台服务 | daemon sandbox ID；本机准入、TTL、supervisor 与持久状态 | Linux x86_64、KVM、委派 cgroup v2、可信 prepared image 与受支持的 guest 执行引擎 |
 | `containerd-shim-pvisor-v2` | containerd / CRI 调用链 | containerd task / exec 身份及相应任务生命周期 | Linux 与 containerd 配置；VM 路径另需 `vm` 构建特性及 KVM |
 
 本表的 CLI 列指 `pvisor spawn` 原生 Job 流程。独立容器使用 `pvisor run` 等容器命令，具有不同的身份与接口范围，见[CLI 参考](../../reference/cli.md)。
@@ -26,11 +26,11 @@ CLI 是调用方式，executor 是运行环境；选择 CLI 不等于只能运�
 | 工作区 checkpoint/fork | 按支持条件使用 | 按 Job service 合同集成 | 未暴露 | 未实现 checkpoint |
 | 完整执行 checkpoint/resume/fork | 受支持 VM profile | 原生执行状态服务；同样受 profile 限制 | 未暴露；pause/resume 只控制 live vCPU | 未实现 checkpoint 与 pause/resume |
 | 模型通信捕获 | 显式配置 Gateway | 嵌入应用配置 Gateway driver | 未暴露该 API | 未暴露该 API |
-| 运行结果与证据 | Job 记录、Bundle 与 JSON 输出 | 按所用 Session/Job service 合同收集 | 生命周期状态与 upstream 数据面；无 Run Bundle 导出 | task 事件、退出状态与 I/O；无原生 Bundle 接口 |
+| 运行结果与证据 | Job 记录、Bundle 与 JSON 输出 | 按所用 Session/Job service 合同收集 | 生命周期状态、命令与文件接口；无 Run Bundle 导出 | task 事件、退出状态与 I/O；无原生 Bundle 接口 |
 
 原生 execution checkpoint 当前限定于支持的无网络、私有 RAM VM profile，恢复要求相同宿主启动、二进制与固件；共享池等配置有独立限制。完整条件及能力查询见[CLI 参考](../../reference/cli.md#full-vm-execution-checkpoints)。
 
-daemon 实现部分 OpenSandbox 1.1.0 profile；项目尚未提供 bootstrap/镜像配方，未完成 SDK 端到端兼容性验证，也没有完整 daemon 密度证据。已有底层 VM/内存池测试不替代这些验证。接口与交付要求以[daemon 指南](../daemon/index.md#profile)为准。
+daemon 实现部分 OpenSandbox 1.1.0 和 E2B Python SDK 2.59.0 profile。`prepare-image` 默认使用共享原生 guest 引擎；显式提供 execd/envd 时保留 upstream 后端。官方 SDK 的核心生命周期、命令和文件流程已在 Linux x86_64/KVM 与委派 cgroup v2 环境验证；完整 SDK 兼容性和 daemon 密度仍缺少完整证据。已有底层 VM/内存池测试不替代这些验证。接口与交付要求以[daemon 指南](../daemon/index.md#profile)为准。
 
 ## 原生 Job 与嵌入式应用 {#native}
 

@@ -414,6 +414,8 @@ impl VsockMuxer {
         if let Some(polling) = update.polling {
             self.update_polling(polling.0, polling.1, polling.2);
         }
+        // Delete the old fd from epoll before close permits its number to be reused.
+        drop(update.retired_fd);
 
         match update.remove_proxy {
             ProxyRemoval::Keep => {}

@@ -1,16 +1,20 @@
 # pVisor 与 OpenSandbox：启动、磁盘与内存实测
 
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
+
 ## Motivation {#motivation}
 
 pVisor 的原生 guest 后端缩短了本地沙箱等待，压缩镜像池降低了镜像库存，较小的服务固定开销有利于少量实例的独立部署。显式物理内存池还可以降低跨实例相同工作集的占用。每实例独立 VM 仍有内核与运行时成本，不能将服务总量的优势解释为每个 VM 都比容器省内存。
 
 稳态 SDK 创建从 149.7 ms 降至 100.7 ms，创建到首条正确命令完成从 358.8 ms 降至 120.9 ms；四镜像库存从 363.16 MiB 降至 121.61 MiB。内存实验的服务加单实例计费为默认 pVisor 92.83 MiB、独立 OpenSandbox/Docker 278.29 MiB；四实例各持相同 64 MiB 数据时，显式物理池为 422.93 MiB，OpenSandbox/Docker 为 742.94 MiB。
 
+另一个低内存[十请求突发对照](#burst-10)中，pVisor 整批创建约 286 ms、全部首命令完成约 307 ms，分别缩短 37% 和 54%；包含额外校验的完整流程内存峰值则高约 17%。该批次独立统计，不与上述单请求和四实例结果合并。
+
 ## 实验设计 {#interpretation}
 
 测量 SDK 创建及首条正确命令完成的等待、镜像库存的分配块、完整产品组的 cgroup 内存计费，分别作为启动、磁盘和内存成本。这些指标反映本地服务的等待时间和资源预算。数值越低，短任务等待越短、所需资源越少。
 
-以下是三个独立批次，全部在 Linux x86_64/KVM 宿主进行；不合并样本，不计算综合分数。启动与内存使用同一冻结 pVisor performance/musl 制品及同源 Ubuntu 24.04，目标为官方 OpenSandbox server/SDK/execd 1.1.0。内存宿主为 Ryzen 7 9700X、内核 7.2.11-200.fc44.x86_64。双方每沙箱请求 1 CPU/512 MiB；pVisor 的限额覆盖 supervisor/VMM，Docker 的覆盖容器，不能解释为相同隔离或相同 guest 可用 RAM。
+单请求启动、镜像库存和四实例内存是三个独立批次，全部在 Linux x86_64/KVM 宿主进行；不合并样本，不计算综合分数。单请求启动与四实例内存使用同一冻结 pVisor performance/musl 制品及同源 Ubuntu 24.04，目标为官方 OpenSandbox server/SDK/execd 1.1.0。内存宿主为 Ryzen 7 9700X、内核 7.2.11-200.fc44.x86_64。双方每沙箱请求 1 CPU/512 MiB；pVisor 的限额覆盖 supervisor/VMM，Docker 的覆盖容器，不能解释为相同隔离或相同 guest 可用 RAM。另一个十请求突发批次使用不同制品与 128 MiB 限额，设计和结果在其小节单列。
 
 启动对照使用既有 rootful Docker/runc 服务，镜像和 Docker 已准备，文件缓存保留，不计镜像拉取或 API 进程启动。API 重启后的首个请求和稳态请求各 20 个固定种子随机配对；每次创建新实例。80 个正式实例及两个稳态准备请求均校验命令输出、私有文件和 HTTP 404 删除确认，不剔除有效慢样本。区间为 10,000 次配对 bootstrap。此处 pVisor 使用默认未开启内存池的配置。
 
@@ -42,6 +46,31 @@ pVisor 的原生 guest 后端缩短了本地沙箱等待，压缩镜像池降低
 创建后的命令路径也是等待减少的来源。按每次样本的“首条命令完成 − 创建完成”单独计算，稳态追加等待的中位数为 pVisor 19.7 ms、Docker 208.9 ms，降低 90.6% [90.1%, 91.0%]。该值来自配对样本中的实际区间，不能以两项 P50 相减代替。首次与稳态的 pVisor 创建 P50 接近，约为 101 ms；这只说明已有镜像和缓存下的两种 API 请求场景。
 
 在频繁创建、执行短命令的本地 Agent 流程中，原生 guest 路径缩短了可观察等待。首次请求是 API 重启后的首个请求，不能称为冷磁盘或首次下载。首条命令的优势包含命令协议和流结束行为，不能外推为编译、推理等长任务的同倍加速，也不覆盖其他 OpenSandbox 后端。
+
+### 低内存十请求突发 {#burst-10}
+
+2026-10-24 的独立对照中，pVisor 将十请求整批创建等待缩短约 37%，全部首命令完成缩短约 54%，400 个正式请求全部成功。完整流程内存峰值更高，不能据此宣称整体更省内存。
+
+宿主为 Linux x86_64/KVM，内核 `7.2.11-300.fc45.x86_64`。pVisor 使用已接入 daemon FD 预扩容的冻结 performance 制品、默认 native guest 引擎，未开启物理内存池；官方 OpenSandbox server 1.1.0 配独立 rootless Docker 29.7.2、cgroup v2/overlayfs、私有 bridge 与 pasta/pesto，未请求网络策略或 egress sidecar。双方均用未修改的官方 Python SDK 1.1.0 和服务代理，模板来自同 digest Ubuntu，每实例请求 1 CPU/128 MiB，入口为 `/bin/sleep infinity`。关键文件 `/bin/sh`、`/usr/bin/sleep`、`/etc/os-release` 的内容摘要一致；模板整体字节与 VM/容器隔离契约不等价，VM 子限额包含 supervisor/VMM，容器子限额只覆盖容器。
+
+每条件独立产品组限 4 CPU、memory.high=1.5 GiB、memory.max=2 GiB、swap=0，包含 SDK、观察者、API 及全部 VM 或 rootless Docker 进程树，服务和客户端绑定 CPU 0–3；实际子 cgroup 归属与限额逐一检查。一次只运行一个产品组，使用专属 Docker socket 和数据目录。镜像、服务与 SDK transport 预先准备，保留宿主页缓存，因此时钟不含服务启动、镜像导入或拉取。双方分别完成 1/2/10 请求预检，再做 3 对预热、20 对固定种子随机交替的正式批次；每条件新启服务进程、创建十个新实例。
+
+同一异步 barrier 放行十个 SDK create，分别计至最后一个 create 返回和最后一条首命令完成；实际发起跨度中位数为 pVisor 2.89 ms、官方 3.53 ms。首命令检查私有文件不存在，再写入并读回实例独有 token，要求零退出且输出精确相等。两个主时钟结束后，才额外校验文件读取、关键文件摘要和资源配置；所有实例保持到共同完成点后删除。下表为每臂 20 个正式突发批次的中位数；差值为 pVisor − 官方，95% CI 按 20 对批次配对 bootstrap 10,000 次，不将 400 个请求当作独立样本。
+
+| 指标 | 单位 | OpenSandbox＋rootless Docker | pVisor native VM | 差值，95% CI | 变化 |
+| --- | --- | --- | --- | --- | --- |
+| 十个全部创建完成 | ms | 453.70 | 286.00 | -167.70 [-176.29, -164.62] | -36.96% |
+| 十个全部首命令完成，自同一放行点计时 | ms | 668.05 | 306.92 | -361.12 [-365.85, -355.15] | -54.06% |
+| 突发窗口内存采样峰值，补充诊断 | MiB | 672.96 | 649.22 | -23.74 [-27.06, -19.89] | -3.53% |
+| 完整流程内核内存峰值，含额外校验 | MiB | 693.85 | 810.22 | +116.37 [+114.18, +118.70] | +16.77% |
+
+官方 19/20 批（95%）创建在 440.49–466.66 ms，另 1/20 批（5%）为 889.34 ms；该慢批全部首命令完成为 1098.75 ms，其余为 650.74–682.29 ms。慢批没有 OOM 或内存越界，原因未归因，样本完整保留。pVisor 创建范围为 272.24–294.82 ms，全部首命令完成为 298.15–320.74 ms。没有剔除、重试或混入预检；20 对批次不足以建立 P99 或稳定的第二分布模式。差异属于完整产品路径，不能归为 FD 预扩容的单独收益。
+
+突发窗口峰值来自放行到全部首命令完成之间、目标间隔 20 ms 的 `memory.current` 采样，可能漏过短峰值。完整流程采用内核 `memory.peak`，包含服务准备及主时钟之后的额外摘要校验；pVisor 在此口径高约 16.8%，不能用窗口内约 24 MiB 的小差异推断容量优势。共享镜像与固件缓存可能计费在组外，组内峰值也不等于整机新增独占物理内存。
+
+包括预热在内，完整组最高峰值为 812.68 MiB，宿主可用内存最低 16.60 GiB；high/max/oom/oom_kill 和 swap 均为零，未触发宿主低于 4 GiB 或组用量超过 1.75 GiB 的停止阈值。400 个正式、60 个预热和 26 个预检实例均通过正确性和删除确认（HTTP 404、空 inventory、实例 cgroup 消失）；含镜像准备的 53 个产品组全部回收。这支持所测轻量 shell 负载的突发等待比较，不建立持续吞吐、最大并发、真实 Agent 工作集或完整协议兼容结论。
+
+本地证据为 `benchmark/startup/.data/opensandbox-pvisor-burst-ab-20261024/`，不随站点发布；`summary.json` SHA-256 为 `54dd0f400c89f504f56aef7ea910ccf325dd4db272a497992b6c37381c114ccb`，daemon 为 `3a6cc2d6932c7411128f9ce64b54673ce4650e6bef8ee2a4750eeb69dae6b944`。官方源码固定在 `b1a29cf93a823a95913f7943010febb3f29de05c`，按原始 `server/uv.lock` 安装；源码、输入、harness、逐批时钟、内存轨迹、慢批日志及清理记录均保留在该目录。目录归档与历史路径说明见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#opensandbox-burst-evidence)。
 
 ### 镜像池磁盘占用 {#disk}
 
@@ -128,7 +157,7 @@ Docker 列已经包含正常的层共享。四个独立 pVisor store 合计 169.
 
 启动、磁盘、内存的本地证据分别为 `benchmark/.data/opensandbox-native-docker-20261024T020535Z/`、`benchmark/.data/image-storage-6mdz6ljh/`、`benchmark/.data/opensandbox-memory-formal-20261024/`。这些目录不随站点发布。对应 summary SHA-256 依次为 `8fc9fd74d6c4450dd9be07af58fbdc80156dbc6cacf4691c97daa416951b5e12`、`ed741f8c85bf14284e69c4f4a374baaea6a09d61461ce8ba78a0863e39be919b`、`13d437b59e56bc4534d48b24999ab44c1dd5ef562ea005a4f0a66664a9ebe067`。
 
-启动和内存使用的 daemon SHA-256 为 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`；磁盘实验使用独立冻结 CLI，SHA-256 为 `14ab9917e2d9d9c8fad513b490d43646bce1978e6f25f98ac1f641c34b55b73e`。源码、构建收据、输入 digest、资源配置、所有样本和日志留在各批次。复现见 [OpenSandbox 实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/opensandbox/README.md)及[镜像库存手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/image_storage/README.md)。
+启动和内存使用的 daemon SHA-256 为 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`；磁盘实验使用独立冻结 CLI，SHA-256 为 `14ab9917e2d9d9c8fad513b490d43646bce1978e6f25f98ac1f641c34b55b73e`。源码、构建收据、输入 digest、资源配置、所有样本和日志留在各批次。复现见 [OpenSandbox 实验手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/README.md)及[镜像库存手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/image_storage/README.md)。
 
 新增五张图由 `benchmark/opensandbox/plot_comparison.py` 从上述原始批次生成，没有增加采样或修改原始结果。逐图数据、所有输入与 SVG 的 SHA-256、绘图代码和 Matplotlib 版本保存在本地 `benchmark/.data/opensandbox-figures-20261024/`，与原内存柱状图的来源收据分开。
 

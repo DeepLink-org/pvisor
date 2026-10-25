@@ -46,15 +46,15 @@ enum Command {
         sandbox: bool,
         #[arg(long, default_value = "127.0.0.1:8080", requires = "sandbox")]
         listen: SocketAddr,
+        /// Explicitly allow plaintext non-loopback serving; prefer a TLS proxy on loopback.
+        #[arg(long, requires = "sandbox")]
+        allow_insecure_listen: bool,
         /// Externally reachable host:port, without scheme/path. Required behind a proxy.
         #[arg(long, requires = "sandbox")]
         public_endpoint: Option<String>,
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
         #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
-        /// Sandbox API key; defaults to OPEN_SANDBOX_API_KEY or E2B_API_KEY.
-        #[arg(long, requires = "sandbox")]
-        api_key: Option<String>,
         /// Trusted prepared-image manifests, shared pools or immutable root trees.
         #[arg(long, requires = "sandbox")]
         images_dir: Option<PathBuf>,
@@ -122,6 +122,10 @@ fn main() -> anyhow::Result<()> {
     // Each sandbox already has a native runner; avoid a host-sized Tokio worker
     // pool per supervisor on high-core-count machines.
     let mut runtime = if matches!(args.command, Command::NativeSupervisor { .. }) {
+        // Exec resets descriptor-table capacity. Prepare in this fresh owner,
+        // before Tokio or image workers share the table. This is optional;
+        // resource limits must retain their existing startup/error behavior.
+        let _ = pvisor::VmExecutor::prepare_process();
         tokio::runtime::Builder::new_current_thread()
     } else {
         tokio::runtime::Builder::new_multi_thread()
@@ -146,9 +150,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
             cache_image_store,
             sandbox,
             listen,
+            allow_insecure_listen,
             public_endpoint,
             state,
-            api_key,
             images_dir,
             cgroup_root,
             max_sandboxes,
@@ -198,6 +202,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             };
             // Prepare sandbox resources before starting optional components.
             let sandbox_service = if sandbox {
+                validate_listen(listen, allow_insecure_listen)?;
                 anyhow::ensure!(
                     cfg!(all(target_os = "linux", target_arch = "x86_64")),
                     "sandbox service requires Linux x86-64, KVM and delegated cgroup v2"
@@ -228,12 +233,11 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 let listener = tokio::net::TcpListener::bind(listen).await?;
                 let config = Config {
                     state_dir: state,
-                    api_key: api_key
-                        .or_else(|| std::env::var("OPEN_SANDBOX_API_KEY").ok())
+                    api_key: std::env::var("OPEN_SANDBOX_API_KEY").ok()
                         .or_else(|| std::env::var("E2B_API_KEY").ok())
                         .ok_or_else(|| {
                             anyhow::anyhow!(
-                                "sandbox requires --api-key, OPEN_SANDBOX_API_KEY or E2B_API_KEY"
+                                "sandbox requires OPEN_SANDBOX_API_KEY or E2B_API_KEY in the environment"
                             )
                         })?,
                     public_endpoint: public_endpoint.unwrap_or(listener.local_addr()?.to_string()),
@@ -331,6 +335,20 @@ async fn run(command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_listen(listen: SocketAddr, allow_insecure: bool) -> anyhow::Result<()> {
+    let loopback = match listen.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback(),
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map_or_else(|| ip.is_loopback(), |ip| ip.is_loopback()),
+    };
+    anyhow::ensure!(
+        loopback || allow_insecure,
+        "non-loopback plaintext listening requires --allow-insecure-listen; prefer a trusted TLS proxy with a loopback backend"
+    );
+    Ok(())
+}
+
 async fn wait_pool(socket: Option<PathBuf>) -> anyhow::Result<()> {
     let Some(socket) = socket else {
         return std::future::pending().await;
@@ -379,6 +397,57 @@ mod tests {
     use pvisor_daemon::memory_pool::PoolMode;
 
     #[test]
+    fn non_loopback_plaintext_requires_explicit_opt_in() {
+        for address in ["127.0.0.1:8080", "[::1]:8080", "[::ffff:127.0.0.1]:8080"] {
+            assert!(validate_listen(address.parse().unwrap(), false).is_ok());
+        }
+        for address in [
+            "0.0.0.0:8080",
+            "[::]:8080",
+            "192.0.2.1:8080",
+            "[2001:db8::1]:8080",
+            "[::ffff:192.0.2.1]:8080",
+        ] {
+            assert!(validate_listen(address.parse().unwrap(), false).is_err());
+            assert!(validate_listen(address.parse().unwrap(), true).is_ok());
+        }
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--cache",
+                "--allow-insecure-listen"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn lifecycle_credentials_are_not_accepted_in_argv() {
+        let error = Args::try_parse_from([
+            "pvisor-daemon",
+            "serve",
+            "--sandbox",
+            "--images-dir",
+            "/images",
+            "--cgroup-root",
+            "/groups",
+            "--api-key",
+            "canary-lifecycle-secret",
+        ])
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.contains("--api-key"));
+        assert!(!error.contains("canary-lifecycle-secret"));
+        let help = Args::try_parse_from(["pvisor-daemon", "serve", "--help"])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(!help.contains("--api-key"));
+    }
+
+    #[test]
     fn composite_service_selection_and_component_options() {
         assert!(matches!(
             Args::try_parse_from(["pvisor-daemon", "serve", "--cache"])
@@ -408,8 +477,6 @@ mod tests {
                 "serve",
                 "--cache",
                 "--sandbox",
-                "--api-key",
-                "fixture-key",
                 "--images-dir",
                 "/images",
                 "--cgroup-root",
@@ -423,7 +490,6 @@ mod tests {
     fn sandbox_options_cannot_implicitly_select_or_configure_a_disabled_component() {
         for options in [
             vec!["--images-dir", "/images", "--cgroup-root", "/groups"],
-            vec!["--api-key", "fixture-key"],
             vec!["--listen", "127.0.0.1:8081"],
             vec!["--public-endpoint", "example.test:8080"],
             vec!["--state", "/state"],
@@ -472,8 +538,6 @@ mod tests {
             "pvisor-daemon",
             "serve",
             "--sandbox",
-            "--api-key",
-            "fixture-key",
             "--images-dir",
             "/images",
             "--cgroup-root",

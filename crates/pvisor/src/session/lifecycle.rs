@@ -105,6 +105,7 @@ impl Session {
         resolved: ResolvedRun,
         attempt_id: AttemptId,
     ) -> Result<RunHandle, PVisorError> {
+        let mut startup = crate::startup_profile::Span::start("session.start");
         let ResolvedRun {
             preparation,
             mut spec,
@@ -132,11 +133,7 @@ impl Session {
         };
         crate::util::startup_mark_run("session.agentctl_ready", spec.run_id.as_str());
         let agentctl = agentctl_server.control();
-        let safe_profile_requested = spec
-            .metadata
-            .get("pvisor.safe")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let safe_profile_requested = spec.runtime.profile == pvisor_core::RunProfile::Safe;
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.env.extend(agentctl_server.environment());
         spec.metadata.insert(
@@ -268,6 +265,7 @@ impl Session {
                 .await
         });
 
+        startup.success(None);
         Ok(RunHandle {
             run_id,
             attempt_id,
@@ -435,6 +433,7 @@ impl Session {
         operation: &pvisor_core::operation::Operation,
         safe_profile_requested: bool,
     ) {
+        let durable = teardown.is_some();
         result.finished_at_unix_ms = unix_now_ms();
         persist_result(
             &mut teardown,
@@ -499,6 +498,49 @@ impl Session {
                 .warnings
                 .push(format!("network observation audit gap: {error:#}"));
         }
+        if result.warnings.len() != warnings_before_observation {
+            persist_result(
+                &mut teardown,
+                result,
+                &self.agentctl,
+                safe_profile_requested,
+            )
+            .await;
+        }
+        if durable {
+            let Some(mut owned) = teardown.take() else {
+                // A failed persistence task lost finalization ownership.
+                return;
+            };
+            let saved = result.clone();
+            match tokio::task::spawn_blocking(move || {
+                let committed = owned.complete(&saved);
+                (owned, committed)
+            })
+            .await
+            {
+                Ok((owned, Ok(()))) => teardown = Some(owned),
+                Ok((_owned, Err(error))) => {
+                    // Publication may have succeeded before a failed fsync. Never
+                    // rewrite the Bundle/result or announce an unconfirmed commit.
+                    let message = format!("commit Attempt completion: {error:#}");
+                    if result
+                        .failure
+                        .as_ref()
+                        .is_some_and(|failure| failure.kind == RunFailureKind::Infrastructure)
+                    {
+                        result.warnings.push(message);
+                    } else {
+                        fail_finalization(result, message);
+                    }
+                    return;
+                }
+                Err(error) => {
+                    fail_finalization(result, format!("completion commit task failed: {error}"));
+                    return;
+                }
+            }
+        }
         if let Err(error) = self
             .events()
             .publish_fact(pvisor_core::event::Fact::Completed {
@@ -508,18 +550,10 @@ impl Session {
             })
             .await
         {
+            tracing::warn!(run_id = %result.run_id, %error, "execution completion audit gap");
             result
                 .warnings
                 .push(format!("execution completion audit gap: {error:#}"));
-        }
-        if result.warnings.len() != warnings_before_observation {
-            persist_result(
-                &mut teardown,
-                result,
-                &self.agentctl,
-                safe_profile_requested,
-            )
-            .await;
         }
         let kind = match result.state {
             RunState::Completed => "run.completed",
@@ -533,6 +567,15 @@ impl Session {
             .await
         {
             let append_error_kind = self.events().classify_append_error(&error);
+            if durable {
+                tracing::warn!(run_id = %result.run_id, ?append_error_kind, %error,
+                    "terminal event audit gap; completion receipt remains authoritative");
+                result.warnings.push(format!(
+                    "terminal event audit gap ({append_error_kind:?}); completion receipt remains authoritative: {error:#}"
+                ));
+                // No replacement terminal and no changes to committed Bundle bytes.
+                return;
+            }
             fail_finalization(result, format!("terminal event sink failed: {error:#}"));
             if append_error_kind == crate::EventAppendErrorKind::Unknown {
                 result.warnings.push(
@@ -569,6 +612,7 @@ impl Session {
                 .await;
             }
         }
+        drop(teardown);
     }
 
     fn publish_finished(&self, result: &RunResult) {

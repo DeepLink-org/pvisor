@@ -158,7 +158,7 @@ mod tests {
     };
     use vm_memory::{Bytes, GuestAddress};
 
-    /// Benchmark: B-MEMORY-DIAG (benchmark/README.md#b-memory-diag), role diagnostic.
+    /// Benchmark: B-MEMORY-DIAG (benchmark/REGISTRY.md#b-memory-diag), role diagnostic.
     /// Motivation: distinguish baseline sharing, advice registration and reclaim.
     /// Conclusion sought: address-scoped counters and full recovery correctness.
     /// Design: three fresh 64 MiB trials, disabled KSM, complete byte verification.

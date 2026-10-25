@@ -1,6 +1,24 @@
 # 工程说明
 
-从仓库根目录运行命令。`just` 按十二组展示公开配方。`just ci` 执行默认本地检查序列；`just ci check "test pvisor-core"` 顺序执行指定命令，失败即停止。内部配方仍可调用，但不在默认帮助中展示。
+
+从仓库根目录运行命令。`mise tasks ls` 展示公开任务；`mise run ci` 执行默认本地检查序列，`mise run ci -- check "test pvisor-core"` 顺序执行指定任务，失败即停止。内部任务仍可调用，但不在默认帮助中展示。
+
+安装 [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 或更新版本后，准备开发环境：
+
+```bash
+mise trust
+mise install --locked
+mise run setup
+mise run doctor
+```
+
+`mise.toml` 固定 Rust（含 rustfmt、Clippy）、Python 3.12、uv、Ruff、actionlint、jq、Zig、nextest 和 cargo-zigbuild 的版本。`setup` 安装当前架构的 Linux musl guest target，并通过 `uv.lock` 同步 `.venv` 的开发依赖；不安装 pVisor 本身，也不触发固件构建。Python 产品仍支持 3.10+，开发工具使用 3.12。
+
+CI 和 wheel 构建使用 mise 2026.10.18、已提交的工具版本和锁文件。复用 `PATH` 中已有的兼容本地工具时，在被忽略的 `mise.local.toml` 的 `[settings]` 表中设置 `disable_tools = ["python", "uv", "jq"]`；这些工具由调用者自行提供。Python 开发任务要求 3.12 或更新版本，禁用 Python 管理后 `UV_PYTHON` 回退到 `python3`。其他 mise 托管版本可在该文件的 `[tools]` 表中选择，通过 `mise ls --current` 检查。正式发布和记录 benchmark 对比时，使用没有个人覆盖或禁用工具的干净 checkout。
+
+`mise run` 自动使用项目工具和环境，不需要先激活 shell。直接运行 Cargo 或 Python 时，使用 `mise exec -- cargo …` / `mise exec -- python3 …`，或按 mise 的 shell 配置说明激活当前 shell。带任务参数时，先用一个 `--` 分隔 mise 与任务；Rust 测试中的第二个 `--` 分隔包名与 nextest 参数，例如 `mise run test -- core -- --offline`。
+
+系统依赖仍由平台包管理器提供：Linux 的编译库、FUSE、KVM 和 cgroup 权限，以及 macOS 的 Xcode Command Line Tools、LLVM/GNU 工具和 macFUSE。参见下方构建环境与执行器指南。机器私有覆盖写在被忽略的 `mise.local.toml`；不在共享配置中提交个人路径或凭据。更新工具版本修改 `mise.toml`，使用 CI 的 mise 2026.10.18 运行 `mise lock --platform linux-x64,macos-arm64` 并提交 `mise.lock`；更新 Python 依赖后运行 `mise exec -- uv lock` 并提交 `uv.lock`。
 
 ## 仓库结构与代码归属
 
@@ -12,14 +30,14 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
 | `crates/pvisor-cli/` | 三个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API、独立原生 VM supervisor 和可选 daemon 自有池 |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox API、原生 guest 协议适配，以及跨平台缓存/池组件 |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
 | `crates/pvisor-journal/` | 共享事实 Journal 存储与读取 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
 | `crates/pvisor-overlayfs/` | FUSE 适配及挂载 |
 | `crates/pvisor-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
-| `crates/pvisor-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
+| `crates/pvisor-guest/` | Linux PID 1、启动契约与原生进程/文件控制引擎 |
 | `crates/pvisor-shim/` | containerd Runtime v2 shim，可选 VM 执行 |
 | `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
@@ -56,73 +74,22 @@ core, guest ──> 不依赖其他 workspace crate
 
 ### pVisor 源码模块
 
-```text
-crates/pvisor-cli/src/
-├── lib.rs                 # 前端模块，不重导出运行时
-├── bin/                   # 三个：pvisor、pvisor-tui、pvisor-replay
-├── cli/                   # 参数、命令和共享终端工具
-│   ├── cache.rs           # 缓存参数解析与展示
-│   └── features.rs        # 运行时功能列表前端
-├── companions.rs          # 同一安装中的伴随程序查找／分派
+| 实现入口 | 所有权 |
+| --- | --- |
+| `pvisor-cli/src/cli/mod.rs` | 按选中命令构造参数解析与分派；root help 描述命令组 |
+| `pvisor-cli/src/cli/host*.rs`、`run/` | 前端/owner 启动、终端、信号与 Job 命令适配 |
+| `pvisor/src/runtime/job_service/` | 持久 Job 生命周期、workspace、fork、capture、视图与策略 |
+| `pvisor/src/runtime/attempt_service.rs` | 同一进程内 live Attempt 的 status/pause/resume/termination，供 Job 与 daemon 复用 |
+| `pvisor/src/session*`、`runtime/attempt.rs` | 一次 Attempt 的驱动准备、执行与收尾 |
+| `pvisor/src/runtime/completion.rs` | Bundle 字节与终态结果绑定的完成提交及读取验证 |
+| `pvisor/src/docker.rs`、`image/` | 逐容器 VM、镜像目录与共享压缩镜像池；普通 OCI 执行器仍是独立路径 |
+| `pvisor-daemon/src/daemon/`、`runtime.rs` | API、准入、记录、supervisor 与 cgroup/VM 归属 |
+| `pvisor-daemon/src/native/`、`prepared_image.rs` | OpenSandbox/E2B guest 协议适配与模板发布 |
+| `pvisor-replay/src/adapter/`、`bridge/` | 轨迹规划、Agent 选择与原生续跑协议桥 |
 
-└── tui/                   # TUI PTY 运行时、渲染、审查面板和按键映射
+CLI 拥有参数和展示；runtime 拥有执行与持久 Job；VM、文件系统和网络实现分别留在所属 crate。共享策略与 wire DTO 由 Core 定义，普通 Job 与 daemon 复用进程内控制，但保留各自鉴权、准入、存储与确认清理。
 
-crates/pvisor/src/
-├── lib.rs                 # 运行时导出与显式前端／嵌入 API
-├── session/               # Attempt 生命周期与收尾
-├── session.rs             # Session 所有者
-├── config.rs              # 运行时与执行器配置
-├── trace.rs               # 共享事实 Journal 重导出
-├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
-├── executor/
-│   ├── mod.rs             # RunExecutor 和执行输出契约
-│   ├── process.rs         # 宿主进程执行器
-│   ├── container.rs       # 容器执行器
-│   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
-│   ├── artifact.rs        # 适配 guest 的可执行文件解析
-│   ├── delegated.rs       # 委派执行的 spec/result 交接
-│   └── vm/                # VM 执行器适配与 Run 资源／控制接入
-├── image/
-│   ├── oci.rs             # Registry、准备记录、blob 和解包
-│   └── cache/             # 缓存协议、服务端、客户端及懒加载 FUSE
-├── runtime/
-│   ├── run.rs             # PVisor API 和运行生命周期
-│   ├── job_service.rs     # 持久化 RuntimeJobService
-│   ├── job_execution.rs   # Job 执行机制
-│   ├── host_transport.rs  # 类型化 Host 传输
-│   ├── instance_control.rs # 本地实例控制交互
-│   ├── agentctl.rs        # 每次运行的协作控制服务
-│   ├── agentctl_client.rs # 同步 AgentCtl 客户端
-│   ├── audit.rs           # 审批 socket 传输与缓存
-│   ├── event.rs           # 运行事件发布
-│   ├── bundle.rs          # 持久化审查摘要
-│   ├── checkpoint.rs      # 逻辑检查点与恢复
-│   ├── registry.rs        # Run 身份、存活锁和本地控制端点
-│   ├── attempt.rs         # 每次尝试的驱动资源与清理
-│   ├── supervisor.rs      # 能力检查与驱动协调
-│   ├── operation.rs       # 操作与观察构造
-│   ├── implant.rs         # 运行环境注入
-│   ├── overlay.rs         # 暂存、审查、应用/丢弃和恢复
-│   └── zcode.rs           # 进程兼容策略
-└── util.rs                # 少量共享文件与时间工具
-```
-
-CLI 参数与展示、前端/owner 启动和终端交接归 `pvisor-cli`；
-具体执行机制归 `pvisor` 的 `executor/`，Run 资源所有权和持久化 Job 服务归 `runtime/`。
-VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
-和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
-缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
-Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --sandbox --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议是运行时设施，没有 daemon acquire/release 适配器。`pvisor cache` 负责准备、发布和读取；`pvisor-daemon serve --cache` 负责服务。
-
-既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
-保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、
-`DelegatedRunOutput`、`rootless_runtime_available`、Overlay 选择／检查及 Run 查找／控制工具、
-Linux Run 租约、`audit`、`checkpoint`、`job_execution` 和启动标记／私有 JSON 工具。
-运行时实现模块仍保持私有；这些导出不构成 API 稳定性承诺。
-
-replay 中，`adapter/` 负责原生轨迹规划和 Agent 启动选择；`bridge/` 负责
-Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
-共享执行和 journal 仍在 crate 根目录。
+公开接口与迁移状态以[核心架构](../design/architecture.md#api-boundaries)为准。当前仅 VM、OverlayFS 与 Journal 采用唯一 `api` 入口；其他 crate 继续使用实际导出，不能按这张逻辑表假定 Rust 可见性或稳定性已统一。
 
 ### 核心实现边界
 
@@ -139,7 +106,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 脚本记录工具链、运行时／应用依赖数、运行时闭包源码行数、Core 公开声明数和应用二进制字节数。
 依赖数、闭包源码行数与 Core 公开声明数对着已提交的基线（`scripts/ci/core-budget.json`）
 做棘轮比较：任一指标超过基线即失败，CI 配置里不再手写绝对上限，杜绝数字与注释漂移。
-有意扩大预算的改动在同一次提交里运行 `just update-core-budget` 重新生成基线，评审直接看到
+有意扩大预算的改动在同一次提交里运行 `mise run update-core-budget` 重新生成基线，评审直接看到
 精确差量；代码缩减后同样建议重新生成，让基线随现实收紧。预算及统计口径由脚本维护；
 实测结果保存在 CI 报告中，比较时使用相同平台和工具链。
 
@@ -147,50 +114,50 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 
 | 命令 | 作用 |
 |---|---|
-| `just build` / `just build release` | 构建 debug/release CLI，并在 macOS 上签署 Hypervisor entitlement |
-| `just install-cli` | 将已签名的 release CLI 安装到 `CARGO_INSTALL_ROOT` 或 `~/.cargo` |
-| `just wheel` / `just wheel debug` | 构建全新 wheel，通过安装验证后再放入 `dist/` |
-| `just fw build` / `just fw test` | 构建固件或运行 bundle/ABI 回归 |
-| `just doctor` / `just doctor test` | 只读工具诊断，不安装工具 |
-| `just check` | 检查产品及其依赖能否通过编译检查 |
-| `just fmt` / `just ci "fmt-rust --check" "fmt-py --check"` | 格式化 Rust/Python 源码，或仅检查格式 |
-| `just lint` | 运行 Clippy、Python 和 workflow lint 检查 |
-| `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
-| `just test core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
-| `just test cli` / `just test pvisor-cli` | 可执行文件／前端测试；`just test pvisor` 选择运行时测试 |
-| `just test pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
-| `just test-py -k packaging` | 在两个测试目录中筛选 unittest 检查 |
-| `just test-py discover -s benchmark/pvisor` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
-| `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
-| `just test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
-| `just smoke` | 构建 debug CLI 并检查主要命令入口 |
-| `just examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
-| `just cases --case S-DOC-001,S-DOC-002` | 运行选定的文档场景 |
-| `just benchmark` / `just benchmark smoke nightly` | 运行进程与 Run Bundle 基准 |
-| `just docs-build` | 构建双语文档并检查链接 |
-| `just docs-serve` / `just docs-serve en` | Zensical 原生预览与自动刷新；中文端口 3000，英文端口 3001 |
-| `just ci` | 检查格式、lint、测试并构建，不改写源码 |
-| `just clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
+| `mise run build` / `mise run build -- release` | 构建 debug/release CLI，并在 macOS 上签署 Hypervisor entitlement |
+| `mise run install-cli` | 将已签名的 release CLI 安装到 `CARGO_INSTALL_ROOT` 或 `~/.cargo` |
+| `mise run wheel` / `mise run wheel -- debug` | 构建全新 wheel，通过安装验证后再放入 `dist/` |
+| `mise run fw -- build` / `mise run fw -- test` | 构建固件或运行 bundle/ABI 回归 |
+| `mise run doctor` / `mise run doctor -- test` | 工具与系统能力诊断；mise 会先安装缺失工具 |
+| `mise run check` | 检查产品及其依赖能否通过编译检查 |
+| `mise run fmt` / `mise run ci -- "fmt-rust --check" "fmt-py --check"` | 格式化 Rust/Python 源码，或仅检查格式 |
+| `mise run lint` | 运行 Clippy、Python 和 workflow lint 检查 |
+| `mise run test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
+| `mise run test -- core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
+| `mise run test -- cli` / `mise run test -- pvisor-cli` | 可执行文件／前端测试；`mise run test -- pvisor` 选择运行时测试 |
+| `mise run test -- pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
+| `mise run test-py -- -k packaging` | 在仓库及活动 benchmark 测试中筛选 unittest 检查 |
+| `mise run test-py -- discover -s benchmark/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
+| `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
+| `mise run test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
+| `mise run smoke` | 构建 debug CLI 并检查主要命令入口 |
+| `mise run examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
+| `mise run cases -- --case S-DOC-001,S-DOC-002` | 运行选定的文档场景 |
+| `mise run benchmark` / `mise run benchmark -- nightly` | 运行进程与 Run Bundle 基准 |
+| `mise run docs-build` | 构建双语文档并检查链接 |
+| `mise run docs-serve` / `mise run docs-serve -- en` | Zensical 原生预览与自动刷新；中文端口 3000，英文端口 3001 |
+| `mise run ci` | 检查格式、lint、测试并构建，不改写源码 |
+| `mise run clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
 
-`just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`cli`（`pvisor-cli`）、`core`、
+`mise run test` 和 `mise run test-rust` 支持 Cargo 包名，以及 `pvisor`、`cli`（`pvisor-cli`）、`core`、
 `control`／`agentctl`（Core 的兼容别名）、`capture`（Gateway）、`shim`（`pvisor-shim`）这些简称。
-带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
+带参数的 `mise run test` 只运行指定 Rust 包的测试。CI 分片使用 `mise run test-rust`，
 不会额外触发 Python 测试。
 
 仅使用运行时的 Rust 测试留在 `crates/pvisor/tests/`。
-19 个可执行文件／前端集成测试文件（包括混合运行时与命令测试）现归 `crates/pvisor-cli/tests/`；
+可执行文件／前端集成测试（包括混合运行时与命令测试）归 `crates/pvisor-cli/tests/`；
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
-默认 unittest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
+默认 unittest 收集 `tests/` 和 `benchmark/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
 VM 文件系统检查在 Linux guest 内运行，需要 root、Python 和 tar；
-在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py`，
+在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. mise run test-py -- tests/test_vm_filesystem.py`，
 分别检查 guest 根文件系统与挂载工作区。未配置目录时跳过，显式启用后检查失败会报错。
 
 需要指定 Rust 集成测试或过滤条件时，在 `--` 后传给 nextest，例如：
-`just test-rust pvisor-gateway -- --test llm_fixtures`。
+`mise run test-rust -- pvisor-gateway -- --test llm_fixtures`。
 nextest 不运行 doctest；需要时使用 `cargo test --doc -p <package>`。
 
 ## CI 分工
@@ -208,9 +175,7 @@ core、Gateway、pVisor 分片，macOS 对同一组包只跑一遍。独立 Linu
 必须具备 user namespace 和 FUSE，不允许跳过隔离检查。文件系统示例与文档用例共用该任务的
 release 构建和隔离环境。网络/Gateway 示例在单独任务运行。
 
-共享 action 默认只安装 Python、uv 和 just；Rust、nextest 和 guest Rust target 按需启用。Linux 静态 CLI/shim 构建通过
-`static-musl` 启用 Zig 和 cargo-zigbuild；Rust 检查和单元测试不需要这两个工具。
-双平台 wheel 矩阵集中在一个可复用工作流中。PR 文档构建不会取消 Pages 部署。
+共享 action 用 mise 安装与本地相同的工具和 Python 开发依赖。`native-firmware` 输入启用 macOS 原生固件工具准备，`static-musl` 启用 Linux 系统编译库；工具版本统一来自 `mise.toml`。双平台 wheel 矩阵集中在一个可复用工作流中，manylinux 容器也安装 mise 并读取同一配置。PR 文档构建不会取消 Pages 部署。
 
 ## VM guest 启动
 
@@ -227,7 +192,7 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 再 sync/reboot。非零退出码使 Attempt 失败；VM 正常关机但未上报退出码时按 125 失败。
 
 启动性能实测及测量范围见
-[Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
+[Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。
 
 ## 打包与命名
 
@@ -236,10 +201,7 @@ Python 包、安装后的 CLI 和运行时 Rust crate 使用 `pvisor`；应用 c
 
 ## 构建环境
 
-仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。
-请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不需要 Zig。
-Apple Silicon 上首次构建前执行 `rustup target add aarch64-unknown-linux-musl`。
-CI 仅安装当前架构的 guest target，工作区工具链不为无关 crate 下载交叉编译 target。
+仓库使用 `mise.toml` 固定的 Rust 工具链、默认 LLVM backend 和平台 linker。`mise run setup` 安装当前架构的 guest target；guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF。macOS VM 构建不需要 Zig。
 
 | 产物 | Linux | Apple Silicon macOS |
 |---|---|---|
@@ -250,8 +212,7 @@ CI 仅安装当前架构的 guest target，工作区工具链不为无关 crate 
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。
 wheel 使用全新的暂存目录进行验证，避免误把 `dist/` 中的旧包当作本次产物。
-Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zigbuild 和
-`rustup target add x86_64-unknown-linux-musl`。Linux wheel 保留 manylinux_2_28
+Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建所需的 Zig、cargo-zigbuild 和 Linux musl target 由 mise 安装及 `setup` 准备。Linux wheel 保留 manylinux_2_28
 标签以支持 glibc Python 安装器。
 
 文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，无需单独维护文档虚拟环境。
@@ -267,4 +228,4 @@ Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zi
 
 CLI、shim、示例和 init 基准使用这套接口。寄存器/设备测试及硬件探针归属 `pvisor-vm` 内部。静态内核提取与打包由以下文件负责： `crates/pvisor-vm/build_kernel.rs`；既有构建环境变量兼容。固件数据 ABI 和操作系统 FFI 保持私有。历史 trace/receipt 标识和基准证据保留原名。
 
-运行 `just test pvisor-vm`；macOS 使用既有 Hypervisor entitlement 签署其测试程序。真实 VM 测试需要宿主 HVF/KVM 权限；Linux 创建 VM 的测试需要 `/dev/kvm`。
+运行 `mise run test -- pvisor-vm`；macOS 使用既有 Hypervisor entitlement 签署其测试程序。真实 VM 测试需要宿主 HVF/KVM 权限；Linux 创建 VM 的测试需要 `/dev/kvm`。

@@ -92,6 +92,17 @@ pub(crate) const OPAQUE_XATTRS: [&str; 3] = [
     "user.fuseoverlayfs.opaque",
 ];
 
+pub(crate) fn path_has_prefix(path: &Path, prefix: &Path) -> bool {
+    path.starts_with(prefix)
+        || (cfg!(target_os = "macos")
+            && path.components().count() >= prefix.components().count()
+            && path.components().zip(prefix.components()).all(|(a, b)| {
+                a.as_os_str()
+                    .as_bytes()
+                    .eq_ignore_ascii_case(b.as_os_str().as_bytes())
+            }))
+}
+
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
@@ -1631,16 +1642,10 @@ impl OverlayCore {
 
     fn is_excluded(&self, rel: &Path) -> bool {
         self.access.denied(rel)
-            || self.excluded.iter().any(|prefix| {
-                rel.starts_with(prefix)
-                    || (cfg!(target_os = "macos")
-                        && rel.components().count() >= prefix.components().count()
-                        && rel.components().zip(prefix.components()).all(|(a, b)| {
-                            a.as_os_str()
-                                .as_bytes()
-                                .eq_ignore_ascii_case(b.as_os_str().as_bytes())
-                        }))
-            })
+            || self
+                .excluded
+                .iter()
+                .any(|prefix| path_has_prefix(rel, prefix))
     }
 
     fn require_visible(&self, rel: &Path) -> io::Result<()> {
@@ -1779,7 +1784,7 @@ impl OverlayCore {
     /// Validate physical descendants, including names hidden by access rules, before
     /// moving/removing a directory. Never follow symlinks into another tree.
     fn require_tree_access(&self, old: &Path, new: &Path) -> io::Result<()> {
-        if !self.access.has_denials() {
+        if !self.access.has_denials() && self.excluded.is_empty() {
             return Ok(());
         }
         self.require_visible(old)?;
@@ -2455,7 +2460,7 @@ impl OverlayCore {
         if !nofollow {
             fs::set_permissions(destination, fs::Permissions::from_mode(mode & 0o7777))?;
         }
-        if let Err(err) = sys::copy_xattrs(source, destination)
+        if let Err(err) = self.copy_user_xattrs(source, destination)
             && !ignorable_metadata_error(&err)
         {
             return Err(err);
@@ -2472,6 +2477,20 @@ impl OverlayCore {
             && !ignorable_metadata_error(&err)
         {
             return Err(err);
+        }
+        Ok(())
+    }
+
+    fn copy_user_xattrs(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        for name in sys::list_xattrs(source)? {
+            if OPAQUE_XATTRS
+                .iter()
+                .any(|control| name == control.as_bytes())
+            {
+                continue;
+            }
+            let name = OsStr::from_bytes(&name);
+            sys::set_xattr(destination, name, &sys::get_xattr(source, name)?, 0)?;
         }
         Ok(())
     }

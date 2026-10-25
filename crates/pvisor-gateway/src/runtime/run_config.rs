@@ -31,9 +31,8 @@ pub fn snapshot_run_proxy_config(
     snapshot_proxy_config(storage, session_id, &cfg)
 }
 
-/// Write an already-resolved proxy configuration into the session snapshot.
-/// pVisor uses this after merging its TOML and CLI configuration, so Gateway
-/// runtime setup never needs to know where configuration originated.
+/// Write a diagnostic snapshot of the resolved configuration without inline keys.
+/// The running Gateway uses its immutable in-memory configuration, never this file.
 pub fn snapshot_proxy_config(
     storage: &Path,
     session_id: &str,
@@ -44,7 +43,11 @@ pub fn snapshot_proxy_config(
     let sessions_dir = capture_dir.join("sessions");
     ensure_private_dir(&sessions_dir)?;
     ensure_private_dir(&session_dir(storage, session_id))?;
-    let toml = cfg.to_toml_string()?;
+    let mut snapshot = cfg.clone();
+    for route in &mut snapshot.models {
+        route.api_key = None;
+    }
+    let toml = snapshot.to_toml_string()?;
     write_private_file(&dest, toml.as_bytes())
         .with_context(|| format!("write proxy config snapshot {}", dest.display()))?;
     Ok(dest)
@@ -141,7 +144,13 @@ api_key = "sk-inline-secret"
                 .models[0]
                 .api_key
                 .as_deref(),
-            Some("sk-inline-secret")
+            None
         );
+        assert!(
+            !std::fs::read_to_string(&dest)
+                .unwrap()
+                .contains("sk-inline-secret")
+        );
+        assert_eq!(cfg.models[0].api_key.as_deref(), Some("sk-inline-secret"));
     }
 }

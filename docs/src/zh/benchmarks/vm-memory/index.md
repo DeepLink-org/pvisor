@@ -81,6 +81,6 @@ KSM 另有 **0.41 CPU 秒**全局 ksmd 开销，位于组配额外，不能完�
 
 ### 来源与配置 {#run}
 
-当前曲线的完整来源和复现协议见 [memory 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)。原始失败、未完成重复测量和写入后证据均保留，不补入成功预检。
+当前曲线的完整来源和复现协议见 [memory 实验记录](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history)。原始失败、未完成重复测量和写入后证据均保留，不补入成功预检。
 
 启用物理池见 [daemon 指南](../../guides/daemon/index.md#memory-pool)；VM 压缩、去重和卸载配置见 [CLI 控制选项](../../reference/cli.md#vm-instance-control)。

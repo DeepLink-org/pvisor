@@ -29,7 +29,8 @@ mod restored;
 mod workspace;
 pub use effects::{ApplyRequest, DropRequest, MutationOutcome, MutationResponse};
 pub use views::{
-    FilesystemSummary, ReviewContext, ReviewRequest, ReviewResponse, StatusRequest, StatusResponse,
+    FilesystemSummary, ReviewContext, ReviewRequest, ReviewResponse, ReviewUnavailable,
+    StatusRequest, StatusResponse,
 };
 pub use workspace::{
     WorkspaceCreateRequest, WorkspaceCreateResponse, WorkspaceDeleteRequest, WorkspaceGcRequest,

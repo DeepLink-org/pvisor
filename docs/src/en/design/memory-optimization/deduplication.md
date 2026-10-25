@@ -31,6 +31,8 @@ Explicit `serve --sandbox --memory-pool` enables raw-page sharing in the daemon-
 
 References pin slots until mappings are removed; disconnects retain them until pidfd confirms peer exit. The pool owns live shared pages, so its loss fails dependent VMs. It does not supply durable snapshots or process-restart recovery. See [Shared working sets](../daemon/shared-working-set.md) for budgets and failure scope.
 
+Apple Silicon's independent physical-sharing entry is `pvisor-daemon serve --memory-pool --memory-pool-mode physical-pages`, with the socket passed to VMs. It shares 16 KiB host pages using read-only descriptors, immutable slot references and CPU/device barriers for COW mappings. A kqueue process-exit watch protects live references after disconnect. It neither compresses nor supports snapshot/offload or RAM reconstruction after pool loss. Equal guest content can occupy different 16 KiB boundaries, so not all of it is mergeable. See [memory architecture](index.md#direction) for deployment and acceptance links. The region-scanning parameters below describe Linux.
+
 ### Adaptive region scanning {#adaptive-scan}
 
 The physical pager uses region scheduling inspired by [UKSM's hierarchical

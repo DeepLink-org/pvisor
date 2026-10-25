@@ -596,6 +596,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     _shutdown_efd: Option<EventFd>,
     _sender: Sender<WorkerMessage>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+    let mut startup = crate::startup_profile::Span::new("vmm.payload", "runner");
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
@@ -622,6 +623,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     }
     let payload = choose_payload(vm_resources)?;
 
+    startup = startup.next("vmm.guest_memory");
     let (guest_memory, arch_memory_info, mut _shm_manager, payload_config) =
         create_guest_memory_for_arch::<A>(
             vm_resources
@@ -632,6 +634,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             &payload,
         )?;
 
+    startup = startup.next("vmm.hypervisor_cpus_legacy_devices");
     let vcpu_config = vm_resources.vcpu_config();
 
     // Clone the command-line so that a failed boot doesn't pollute the original.
@@ -1109,6 +1112,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         pio_device_manager,
     };
 
+    startup = startup.next("vmm.devices");
     // Set raw mode for FDs that are connected to legacy serial devices.
     for serial_tty in serial_ttys {
         setup_terminal_raw_mode(&mut vmm, Some(serial_tty), false);
@@ -1175,6 +1179,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         attach_input_devices(&mut vmm, &vm_resources.input_backends, intc.clone())?;
     }
 
+    startup = startup.next("vmm.filesystems");
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     attach_fs_devices(
         &mut vmm,
@@ -1191,6 +1196,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         #[cfg(target_os = "macos")]
         _sender,
     )?;
+    startup = startup.next("vmm.remaining_devices");
     #[cfg(feature = "blk")]
     attach_block_devices(&mut vmm, &vm_resources.block, intc.clone())?;
 
@@ -1221,6 +1227,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         vmm.kernel_cmdline.insert_str(s)?;
     };
 
+    startup = startup.next("vmm.boot_system");
     // Write the kernel command line to guest memory. This is x86_64 specific, since on
     // aarch64 the command line will be specified through the FDT.
     #[cfg(all(target_arch = "x86_64", not(feature = "tee")))]
@@ -1311,6 +1318,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         println!("Starting TEE/microVM.");
     }
 
+    startup = startup.next("vmm.boot_prefault");
     #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
     if !restoring
         && !vm_resources.nested_enabled
@@ -1326,6 +1334,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         }
     }
 
+    startup = startup.next("vmm.start_vcpus");
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
 
@@ -1336,6 +1345,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         .add_subscriber(vmm.clone())
         .map_err(StartMicrovmError::RegisterEvent)?;
 
+    startup.complete(None);
     Ok(vmm)
 }
 

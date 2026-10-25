@@ -1,5 +1,7 @@
 # Benchmark 测量协议与证据
 
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
+
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 
 所有基准遵守同一套协议：
@@ -16,7 +18,7 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 
 不同平台分别计算分布，不合并样本。只有负载、计时起止、缓存状态和参数一致时才做跨平台对比；未测项目标为未测，不支持的功能写明平台限制。Linux 的 offload 数据与 macOS 的共享冷页回收数据分别解释。
 
-当前数据：[启动延迟](../benchmarks/startup.md)、[内存去重](../benchmarks/vm-memory/index.md)、[Linux 去重与共享库曲线](vm-memory-performance-analysis.md#linux-pool-curves)。旧 macOS 冷页和 Linux 快照记录保留在 [memory 实验归档](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)。
+当前数据：[启动延迟](../benchmarks/startup.md)、[内存去重](../benchmarks/vm-memory/index.md)、[Linux 去重与共享库曲线](vm-memory-performance-analysis.md#linux-pool-curves)。旧 macOS 冷页和 Linux 快照记录保留在 [memory 实验归档](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history)。
 
 ## 环境清单
 
@@ -41,15 +43,15 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 ## 从现有测量入口开始
 
 ```bash
-just benchmark smoke --output benchmark.new/process/.data/candidate
-just benchmark nightly --output benchmark.new/process/.data/nightly-new
-just benchmark-compare benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
-just benchmark startup/timing --output benchmark.new/startup/.data/measurement
+mise run benchmark -- smoke --output benchmark/process/.data/candidate
+mise run benchmark -- nightly --output benchmark/process/.data/nightly-new
+mise run benchmark-compare -- benchmark/process/.data/candidate/in.bench.json benchmark/process/.data/main/in.bench.json
+mise run benchmark -- startup/timing --output benchmark/startup/.data/measurement
 ```
 
 进程回归门禁使用 semspec bench 与 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
 
-启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
+启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
 
 ## 解释与归档
 
@@ -102,7 +104,7 @@ wall 是一项命令从启动到退出的总成本，worker 是内部工具运�
 
 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv`列出每个报告及摘要；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv`便于重算分布；本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`保留完整 JSON、脚本快照、Bundle、错误日志和 SIGKILL ledger。payload 与 rootfs 可按脚本重建，未在 docs 复制数 GB 环境。已有 macOS 与 Linux VM 批次完整保留；新产品工作负载只在 Linux 测，不合并跨平台样本。
 
-本轮 `just lint` 通过；`just test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
+本轮 `mise run lint` 通过；`mise run test` 为 Rust 1,075 项通过 / 8 项跳过、Python 84 项通过 / 16 项跳过。新增 benchmark 测试单独运行 19 项通过；STAGE 语义规格 14/14 PASS，人工审阅状态仍为 UNREVIEWED，不等同于人类批准。大规模 syscall trace 与非崩溃 apply ledger 保留在本机 target 原始目录，公开归档保留报告、Bundle、诊断和崩溃 ledger。
 
 用 `python3 benchmark/pvisor/summarize_product_v1.py <batch>/report.json --output-csv /tmp/summary.csv` 重算；公开本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/summary.csv`按批次分组。
 
@@ -263,6 +265,6 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_reference_b
   --assets target/reference-env-new --output /tmp/reference-report-new
 ```
 
-归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/main/benchmark/pvisor)。
+归档 schema 为 `pvisor-reference-environment/v1`，不冒充旧 smoke schema。含逐样本、命令、固定脚本、guest/tool 版本、失败、最小化实际工具回传及 Run Bundle 隔离/资源证明；不复制数 GB rootfs 或继承宿主环境的凭据。固定 rootfs、工具、内核与 pVisor 摘要在报告中。自动部署脚本与复现入口见[benchmark 目录](https://github.com/DeepLink-org/pvisor/tree/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor)。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`

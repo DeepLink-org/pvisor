@@ -22,7 +22,7 @@ Each executor provides the protection below per capability dimension. Every stat
 
 The table describes requested controls for native Jobs, not the daemon API. VM-only NativeRuntime embeds pVisor in detached supervisors with independent immutable guest rootfs and private writes; delegated cgroup v2 caps the supervisor/VM tree. Stage/apply and checkpoint/fork APIs are not implemented, and node sharing is not automatically acquired. OpenSandbox network-policy options are rejected; native OverlayNet outbound networking is not a deny-all claim.
 
-Trust the host account, daemon/firmware and prepared image. Private state and same-UID IPC do not defend against hostile host-UID/root code. Other local users may reach loopback publications: use genuine service authentication and host controls. No hostile multi-user or security-audit assurance is claimed. See the [daemon guide](../guides/daemon/index.md#prerequisites) for the unsupplied/unvalidated bootstrap and real-service checks.
+Trust the host account, daemon/firmware and prepared image. Private state and same-UID IPC do not defend against hostile host-UID/root code. Both the default native adapter and managed upstream templates require sandbox-scoped data authentication. Loopback mappings also verify private service tokens; a local address is not authentication. No hostile multi-user or security-audit assurance is claimed. See the [daemon guide](../guides/daemon/index.md#prerequisites) for template selection and tested SDK scope.
 
 ## Reading the table
 

@@ -13,6 +13,44 @@ use tokio::{
     net::UnixStream,
 };
 
+/// Keep host control available after transient accept/resource failures.
+/// The caller retains cancellation/terminal selection around this future.
+pub(crate) async fn accept_control(
+    listener: &tokio::net::UnixListener,
+) -> std::io::Result<(UnixStream, tokio::net::unix::SocketAddr)> {
+    retry_control_accept(|| listener.accept()).await
+}
+
+async fn retry_control_accept<T, F, Fut>(mut accept: F) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
+    let mut delay = std::time::Duration::from_millis(50);
+    loop {
+        match accept().await {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::WouldBlock
+                ) || matches!(
+                    error.raw_os_error(),
+                    Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+                ) =>
+            {
+                tracing::warn!(%error, "transient host control accept failure; retrying");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// All host-authority sockets share this service-compatible exclusion root.
 /// Never chmod or follow a preexisting entry: an invalid root fails startup.
 pub fn host_authority_root() -> anyhow::Result<std::path::PathBuf> {
@@ -598,6 +636,41 @@ pub fn validate_host_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn transient_control_accept_errors_retry_and_fatal_errors_stop() {
+        let mut results = std::collections::VecDeque::from([
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+            Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted)),
+            Ok(42),
+        ]);
+        assert_eq!(
+            retry_control_accept(|| std::future::ready(results.pop_front().unwrap()))
+                .await
+                .unwrap(),
+            42
+        );
+        let mut calls = 0;
+        let error = retry_control_accept::<(), _, _>(|| {
+            calls += 1;
+            std::future::ready(Err(std::io::Error::from_raw_os_error(libc::EBADF)))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        assert_eq!(calls, 1);
+        // Cancellation must not wait for resource pressure to clear.
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                retry_control_accept::<(), _, _>(|| std::future::ready(Err(
+                    std::io::Error::from_raw_os_error(libc::ENFILE)
+                )))
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn cancelled_accepted_exchange_reports_uncertainty_without_replay() {

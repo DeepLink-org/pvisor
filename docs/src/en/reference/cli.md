@@ -137,9 +137,10 @@ Feature enables apply to `spawn` and feature queries. Other lifecycle commands r
 
 ## Daemon and cache commands {#service}
 
-Top-level `pvisor` commands operate native Jobs. Invoke `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership; use `pvisor cache` independently for OCI caching.
+`pvisor spawn` and subsequent Job commands provide native execution and review; container commands such as `pvisor run` manage independent VMs. Invoke `pvisor-daemon` directly to prepare templates and serve partial OpenSandbox/E2B profiles, or enable cache/pool components independently. `pvisor cache` is the cache client.
 
 ```bash
+pvisor-daemon prepare-image --help
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
 pvisor cache --help

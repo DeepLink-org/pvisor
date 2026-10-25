@@ -21,6 +21,8 @@ use crate::sink::CaptureEventObserver;
 
 #[derive(Clone)]
 pub(crate) struct GatewayState {
+    pub(crate) root_session: Option<String>,
+    pub(crate) client_token: Option<String>,
     pub stop: tokio::sync::watch::Receiver<()>,
     pub(crate) gateway_enabled: bool,
     pub(crate) config: Arc<ProxyConfig>,
@@ -38,6 +40,8 @@ pub(crate) struct GatewayState {
 }
 
 pub(crate) struct GatewayRuntimeControl {
+    pub(crate) run_id: Option<String>,
+    pub(crate) client_token: Option<String>,
     pub(crate) controller: Arc<dyn ControlController>,
     pub(crate) interception_metrics: InterceptionMetrics,
     pub(crate) bandwidth_registry: BandwidthRegistry,
@@ -109,6 +113,8 @@ pub async fn serve_with_listeners_and_shutdown(
         storage,
         sink,
         GatewayRuntimeControl {
+            run_id: None,
+            client_token: None,
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
@@ -145,6 +151,8 @@ pub async fn serve_with_runtime_control(
         storage,
         sink,
         GatewayRuntimeControl {
+            run_id: None,
+            client_token: None,
             controller: control_controller,
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
@@ -262,7 +270,7 @@ async fn serve_with_bound_listeners(
         // cross-origin Location here would bypass the policy gate.
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(600));
+        .read_timeout(std::time::Duration::from_secs(600));
     if let Some(proxy) = [
         "HTTPS_PROXY",
         "https_proxy",
@@ -278,6 +286,10 @@ async fn serve_with_bound_listeners(
         client_builder = client_builder.proxy(reqwest::Proxy::all(proxy)?);
     }
     let state = GatewayState {
+        root_session: runtime_control
+            .run_id
+            .or_else(|| crate::runtime::run_env::read_run_session(storage.as_path())),
+        client_token: runtime_control.client_token,
         stop: stop_rx.clone(),
         config: Arc::new(config.clone()),
         storage,

@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放、TUI 和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
+顶层按对象组织：容器命令管理独立 VM，Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放、TUI 和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
 
 | 职责 | 入口 |
 |---|---|
@@ -81,7 +81,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 | 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
 | Job 不可变检查点 | `checkpoint` |
 | 轨迹回放与交互前端 | `replay`、`tui` |
-| 本机 sandbox 生命周期 | 直接 `pvisor-daemon serve` 与 OpenSandbox profile HTTP API |
+| 本机 sandbox 生命周期 | `pvisor-daemon prepare-image` / `serve --sandbox` 与 OpenSandbox/E2B 部分协议 API |
 | 不可变镜像缓存 | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | 可选 daemon 自有共享页 | `pvisor-daemon serve --sandbox --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 

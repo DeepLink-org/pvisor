@@ -77,8 +77,9 @@ struct TargetApplyLock {
 
 impl TargetApplyLock {
     fn acquire(target: &Path) -> Result<Self, OverlayError> {
+        // All entry points must share this inode namespace, regardless of TMPDIR.
         let directory =
-            std::env::temp_dir().join(format!("pvisor-apply-locks-{}", unsafe { libc::geteuid() }));
+            Path::new("/tmp").join(format!("pvisor-apply-locks-{}", unsafe { libc::geteuid() }));
         Self::acquire_in(target, &directory)
     }
 
@@ -609,10 +610,33 @@ pub fn plan_overlay_apply(
         .filter(|change| selected_paths.contains(&change.relative_path()))
         .cloned()
         .collect::<Vec<_>>();
+    validate_excluded_changes(record, &selected)?;
     Ok(ApplyPlan {
         selected,
         selected_paths,
     })
+}
+
+fn validate_excluded_changes(
+    record: &OverlayRecord,
+    changes: &[ChangeEntry],
+) -> Result<(), OverlayError> {
+    for excluded in &record.excluded_paths {
+        crate::OverlayCore::validate_rel(excluded)?;
+        for change in changes {
+            let path = change.relative_path();
+            if crate::core::path_has_prefix(&path, excluded)
+                || (replaces_directory(change) && crate::core::path_has_prefix(excluded, &path))
+            {
+                return Err(OverlayError::Apply(format!(
+                    "change at {} would affect excluded path {}",
+                    path.display(),
+                    excluded.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn upper_hard_link_groups(inventory: &[UpperEntry]) -> Vec<Vec<PathBuf>> {
@@ -843,12 +867,45 @@ fn replacement_paths(changes: &[ChangeEntry]) -> Result<Vec<PathBuf>, OverlayErr
     Ok(roots)
 }
 
+// Publish only a fully initialized directory. Incomplete private siblings never
+// become the durable apply_id's backup and are never adopted by recovery.
+fn publish_backup_dir(
+    path: &Path,
+    initialize: impl FnOnce(&Path) -> Result<(), OverlayError>,
+) -> Result<(), OverlayError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| OverlayError::Apply("backup has no parent".into()))?;
+    let temporary = parent.join(format!(".pvisor-apply-init-{}", uuid::Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&temporary)?;
+    let result = (|| {
+        initialize(&temporary)?;
+        match crate::sys::publish_no_replace(&temporary, path) {
+            Ok(()) => File::open(parent)?.sync_all()?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&temporary);
+    result
+}
+
 fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
-    let created = match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => true,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
-        Err(error) => return Err(error.into()),
-    };
+    if !path.try_exists()? {
+        publish_backup_dir(path, |temporary| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(temporary.join(".pvisor-owner"))?;
+            io::Write::write_all(&mut file, path.file_name().unwrap().as_bytes())?;
+            file.sync_all()?;
+            File::open(temporary)?.sync_all()?;
+            Ok(())
+        })?;
+    }
     let directory = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -860,38 +917,25 @@ fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
         ));
     }
     // Permissions alone do not make an existing host directory ours. Only a
-    // newly created backup may mint this durable ownership receipt.
+    // privately initialized backup may mint this durable ownership receipt.
     let receipt = path.join(".pvisor-owner");
     let expected = path.file_name().unwrap().as_bytes();
-    if created {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&receipt)?;
-        io::Write::write_all(&mut file, expected)?;
-        file.sync_all()?;
-        directory.sync_all()?;
-        File::open(path.parent().unwrap())?.sync_all()?;
-    } else {
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&receipt)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() != expected.len() as u64 {
-            return Err(OverlayError::Apply(
-                "unowned apply backup directory; retained for inspection".into(),
-            ));
-        }
-        let mut contents = Vec::new();
-        io::Read::read_to_end(&mut file, &mut contents)?;
-        if contents != expected {
-            return Err(OverlayError::Apply(
-                "apply backup ownership receipt mismatch; retained for inspection".into(),
-            ));
-        }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&receipt)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != expected.len() as u64 {
+        return Err(OverlayError::Apply(
+            "unowned apply backup directory; retained for inspection".into(),
+        ));
+    }
+    let mut contents = Vec::new();
+    io::Read::read_to_end(&mut file, &mut contents)?;
+    if contents != expected {
+        return Err(OverlayError::Apply(
+            "apply backup ownership receipt mismatch; retained for inspection".into(),
+        ));
     }
     Ok(directory)
 }
@@ -1098,6 +1142,8 @@ fn apply_prepared_target(
     recovering: bool,
     apply_id: &str,
 ) -> Result<(), OverlayError> {
+    // Recovery must enforce exclusions too, including intents written by older versions.
+    validate_excluded_changes(record, changes)?;
     if recovering {
         restore_interrupted_replacements(record, apply_id, preimages, changes)?;
     }
@@ -3066,6 +3112,96 @@ mod tests {
         assert!(TargetApplyLock::acquire_in(&target, &locks).is_ok());
         fs::set_permissions(&locks, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(TargetApplyLock::acquire_in(&target, &locks).is_err());
+    }
+
+    #[test]
+    fn target_lock_is_shared_across_tmpdirs() {
+        const TARGET: &str = "PVISOR_APPLY_LOCK_TEST_TARGET";
+        if let Some(target) = std::env::var_os(TARGET) {
+            let target = PathBuf::from(target);
+            fs::write(target.join("waiting"), b"").unwrap();
+            let _lock = TargetApplyLock::acquire(&target).unwrap();
+            fs::write(target.join("acquired"), b"").unwrap();
+            return;
+        }
+        let root = tempdir().unwrap();
+        let target = root.path().join("target");
+        let alternate = root.path().join("tmp");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&alternate).unwrap();
+        let lock = TargetApplyLock::acquire(&target).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "apply::tests::target_lock_is_shared_across_tmpdirs",
+            ])
+            .env(TARGET, &target)
+            .env("TMPDIR", &alternate)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !target.join("waiting").exists() {
+            assert!(child.try_wait().unwrap().is_none());
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not reach lock acquisition");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!target.join("acquired").exists());
+        assert!(child.try_wait().unwrap().is_none());
+        drop(lock);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not acquire released lock");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(target.join("acquired").exists());
+    }
+
+    #[test]
+    fn backup_initialization_failure_never_publishes_partial_ownership() {
+        let root = tempdir().unwrap();
+        let backup = root.path().join("backup");
+        for bytes in [
+            None,
+            Some(b"partial".as_slice()),
+            Some(b"backup".as_slice()),
+        ] {
+            let error = publish_backup_dir(&backup, |temporary| {
+                if let Some(bytes) = bytes {
+                    fs::write(temporary.join(".pvisor-owner"), bytes)?;
+                }
+                Err(io::Error::other("injected initialization/sync failure").into())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("injected"));
+            assert!(!backup.exists());
+        }
+        // A crash can leave a private temporary sibling; recovery does not adopt it.
+        let abandoned = root.path().join(".pvisor-apply-init-abandoned");
+        fs::create_dir(&abandoned).unwrap();
+        fs::write(abandoned.join(".pvisor-owner"), b"partial").unwrap();
+        open_backup_dir(&backup).unwrap();
+        assert_eq!(fs::read(backup.join(".pvisor-owner")).unwrap(), b"backup");
+        assert_eq!(
+            fs::read(abandoned.join(".pvisor-owner")).unwrap(),
+            b"partial"
+        );
+        open_backup_dir(&backup).unwrap();
+        let occupied = root.path().join("occupied");
+        fs::DirBuilder::new().mode(0o700).create(&occupied).unwrap();
+        assert!(open_backup_dir(&occupied).is_err());
+        assert!(!occupied.join(".pvisor-owner").exists());
     }
 
     #[test]

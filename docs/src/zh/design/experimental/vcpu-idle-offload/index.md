@@ -1,5 +1,7 @@
 # vCPU 空闲观测与自动内存卸载（EXP-001）
 
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
+
 | 项目 | 当前状态 |
 |---|---|
 | 阶段 | **观测原型阶段（M0）；尚未通过全部退出门槛** |
@@ -168,7 +170,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 
 #### M4：收益实验与是否继续
 
-- [ ] 按`benchmark/README.md`先登记自动策略的问题、角色、runner与统计协议。
+- [ ] 按`benchmark/REGISTRY.md`先登记自动策略的问题、角色、runner与统计协议。
 - [ ] 同任务/硬件/预算/制品，自动策略on/off随机配对，多轮；手动策略可独立对照。
 - [ ] waiting/compute/短阻塞/streaming/timer-heavy/恢复风暴分开。
 - [ ] memory-time integral、cgroup/PSS/cache、全组peak、CPU/IO、恢复及完整任务延迟、失败和有效吞吐。
@@ -206,9 +208,9 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 
 #### 验证记录模板
 
-每次推进填写：日期、平台、stage/profile、源码SHA+dirty manifest、binary/firmware/rootfs身份、命令、结果、失败/跳过、未覆盖项、证据路径、结论。实际记录见 [第一版实现与验证](#validation) 和 [KVM 工程实验报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_report.md)。
+每次推进填写：日期、平台、stage/profile、源码SHA+dirty manifest、binary/firmware/rootfs身份、命令、结果、失败/跳过、未覆盖项、证据路径、结论。实际记录见 [第一版实现与验证](#validation) 和 [KVM 工程实验报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_report.md)。
 
-默认使用目标包的`just test PACKAGE`；真实VM/特殊runner按已有契约运行。语义审批与PASS分开，不由AI操作真实ledger。实验实现成功后再同步用户文档和正式支持矩阵。
+默认使用目标包的`mise run test -- PACKAGE`；真实VM/特殊runner按已有契约运行。语义审批与PASS分开，不由AI操作真实ledger。实验实现成功后再同步用户文档和正式支持矩阵。
 
 ### 2.8 第一版实现与验证 {#validation}
 
@@ -240,7 +242,7 @@ handle.set_vcpu_observation(false)?;
 
 #### 实验与结果
 
-注册 **B-VCPU-IDLE-ENG**，工程 A/B，不进入用户 benchmark 正文。完整[协议](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_plan.md)、[报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_report.md)及[复现入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#vcpu-observation-m0)。
+注册 **B-VCPU-IDLE-ENG**，工程 A/B，不进入用户 benchmark 正文。完整[协议](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_plan.md)、[报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_report.md)及[复现入口](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#vcpu-observation-m0)。
 
 矩阵：sleep、busy、2 ms 短 timer 分别使用 1/2 vCPU；另设 2 vCPU 仅 CPU 0 busy。每格 fresh 256 MiB VM、3 秒 workload、10 ms 采样，observer off/on seeded 随机配对，每 case 5 pairs，共 70 VMs。guest multiprocessing 独立进程与亲和性验证防止 GIL 串行化，逐 worker 校验 SHA-256、工作区间、退出与输出。
 
@@ -260,7 +262,7 @@ handle.set_vcpu_observation(false)?;
 
 #### 验证与制品边界
 
-- 最终 `just test pvisor-vm`：345 passed、8 skipped；含真实 KVM busy-loop/OUT/HLT 特殊测试、SMP/session/并发采样/退出/容量/统计一致性回归。
+- 最终 `mise run test -- pvisor-vm`：345 passed、8 skipped；含真实 KVM busy-loop/OUT/HLT 特殊测试、SMP/session/并发采样/退出/容量/统计一致性回归。
 - Python runner：16 个单测通过，包含 Python 默认 forkserver 下的显式 fork 回归、超时、来源、拓扑和输出拒绝。
 - example debug 构建、修改文件格式检查通过；Linux VM 库 Clippy 通过。tests Clippy 被依赖的现有 pvisor 告警阻断，未改无关代码。
 - macOS/HVF 编译与真实运行未验收；无 lost-wakeup、完整 timer/deadline 或自动恢复测试。

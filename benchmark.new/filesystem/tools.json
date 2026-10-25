@@ -1,4 +1,0 @@
-{
-  "native-metadata": "$ python3 @REPO@/benchmark.new/filesystem/metadata_timing.py @BATCH@",
-  "native-read": "$ python3 @REPO@/benchmark.new/filesystem/read_timing.py @BATCH@"
-}

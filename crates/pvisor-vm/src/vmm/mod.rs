@@ -809,15 +809,17 @@ impl Subscriber for Vmm {
         if source == self.exit_evt.as_raw_fd() && event_set == EventSet::IN {
             let _ = self.exit_evt.read();
             // Query each vcpu for the exit_code.
-            // The exit code set up by the guest takes preference over the one reported
-            // by either a vcpu or the i8042 controller. An unexplained successful
-            // VM shutdown is a bootstrap failure, never a successful workload.
-            let vcpu_exit_code = self.vcpus_handles.iter().find_map(|handle| {
-                match handle.response_receiver().try_recv() {
-                    Ok(VcpuResponse::Exited(exit_code)) => Some(exit_code),
+            // An abnormal vCPU exit overrides guest status, including an
+            // already authenticated success. Inspect all available vCPU exits.
+            let vcpu_exit_code = self
+                .vcpus_handles
+                .iter()
+                .flat_map(|handle| handle.response_receiver().try_iter())
+                .filter_map(|response| match response {
+                    VcpuResponse::Exited(exit_code) => Some(exit_code),
                     _ => None,
-                }
-            });
+                })
+                .max();
             let vmm_exit_code = self.exit_code.load(Ordering::SeqCst);
             if vmm_exit_code == i32::MAX {
                 error!("VM shutdown without workload status: vcpu_exit={vcpu_exit_code:?}");
@@ -838,14 +840,14 @@ impl Subscriber for Vmm {
     }
 }
 
-// Guest status wins; a shutdown without workload status must never report success.
+// Only a normal VMM shutdown can use an authenticated guest workload status.
 fn shutdown_exit_code(guest: i32, vcpu: u8) -> i32 {
-    if guest != i32::MAX {
-        guest
-    } else if vcpu == FC_EXIT_CODE_OK {
-        125
-    } else {
+    if vcpu != FC_EXIT_CODE_OK {
         vcpu as i32
+    } else if (0..=255).contains(&guest) {
+        guest
+    } else {
+        125
     }
 }
 
@@ -853,7 +855,12 @@ fn shutdown_exit_code(guest: i32, vcpu: u8) -> i32 {
 mod guest_exit_tests {
     #[test]
     fn shutdown_requires_workload_status_to_report_success() {
-        assert_eq!(super::shutdown_exit_code(0, 1), 0);
+        assert_eq!(super::shutdown_exit_code(0, 1), 1);
+        assert_eq!(super::shutdown_exit_code(7, 1), 1);
+        assert_eq!(super::shutdown_exit_code(0, 0), 0);
+        assert_eq!(super::shutdown_exit_code(255, 0), 255);
+        assert_eq!(super::shutdown_exit_code(256, 0), 125);
+        assert_eq!(super::shutdown_exit_code(-1, 0), 125);
         assert_eq!(super::shutdown_exit_code(7, 0), 7);
         assert_eq!(super::shutdown_exit_code(i32::MAX, 0), 125);
         assert_eq!(super::shutdown_exit_code(i32::MAX, 1), 1);

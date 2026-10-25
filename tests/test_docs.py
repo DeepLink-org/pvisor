@@ -59,7 +59,14 @@ class LiveTableTests(unittest.TestCase):
         self.assertIn("missing.json", warnings.output[0])
         self.assertEqual(
             run.call_args.args[0],
-            ["/semspec", "render", "/workspace/docs/src/zh/page.md", "--stdin", "--best-effort"],
+            [
+                "/semspec",
+                "filter",
+                "--source",
+                "/workspace/docs/src/zh/page.md",
+                "--stdin",
+                "--best-effort",
+            ],
         )
 
     def test_renderer_failures_leave_page_text_in_live_mode_but_fail_strict_mode(self):
@@ -304,7 +311,7 @@ class DocsTests(unittest.TestCase):
                 assert not set(path for entry in performance for path in entry.values()) & set(
                     path for entry in scenarios for path in entry.values()
                 )
-                check_public_assets = runpy.run_path(str(ROOT / "benchmark.new/public_assets.py"))[
+                check_public_assets = runpy.run_path(str(ROOT / "benchmark/public_assets.py"))[
                     "check_public_assets"
                 ]
                 check_public_assets(ROOT)

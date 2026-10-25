@@ -9,7 +9,8 @@
 | 接口 | 当前规则 |
 | --- | --- |
 | CLI / Run TOML | 以当前版本 `--help` 与配置类型为准；未知字段拒绝；版本间变动应核对变更日志 |
-| Run Bundle | schema 4 严格读取；未知版本、旧观察契约拒绝；没有自动迁移承诺 |
+| Run 记录 / 完成协议 | 新 Run schema 2 要求完成协议 1；owner 退出后缺少已提交回执的记录为 Unknown；schema 1 保留旧读取规则 |
+| Run Bundle | 新 schema 5 要求匹配 Run/Attempt 的完成回执和 Bundle 摘要；schema 4 按旧规则读取；未知版本拒绝；没有自动迁移承诺 |
 | Event / Journal | 正式 Event 与 Journal 版本 5；旧 JSONL 不兼容读取 |
 | Operation | schema 1；未知版本拒绝 |
 | replay | `sandbox-playback.result/v3`；适配器使用指南中的固定版本 |

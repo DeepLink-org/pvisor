@@ -55,9 +55,9 @@ VM 启动失败，不回退或修改全局策略。
 
 ## 验证与约束 {#direction}
 
-`just test pvisor-daemon` 包含真实池子进程、跨会话共享、终止服务后本地恢复、
+`mise run test -- pvisor-daemon` 包含真实池子进程、跨会话共享、终止服务后本地恢复、
 遗留 socket 保留及 pidfd 确认客户端退出后的引用回收。
-`just test pvisor` 覆盖 codec、不可变描述符校验、内容比较、预算及传输所有权。
+`mise run test -- pvisor` 覆盖 codec、不可变描述符校验、内容比较、预算及传输所有权。
 这些测试不执行 guest 回收或 KVM/设备 refault。
 
 依赖破坏性回收前，须验证 sealed store 下的 guest 读写和设备 I/O。
@@ -83,7 +83,7 @@ vCPU VM 和一个 32 MiB 池，不验证 OpenSandbox API/bootstrap 或测量物�
 报告：
 
 ```bash
-just test pvisor-vm -- -E 'test(cold_ram_linux::)' --run-ignored all --test-threads=2
+mise run test -- pvisor-vm -- -E 'test(cold_ram_linux::)' --run-ignored all --test-threads=2
 ```
 
 保留冷 pager 与快照、文件/FUSE backing、整 VM [offload](offload.md)

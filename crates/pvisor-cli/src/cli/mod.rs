@@ -175,7 +175,7 @@ fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> 
     if let Some(first) = args.get(offset).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
         && !companions::is_root_command(first)
-        && !["ctrl", "service"].contains(&first)
+        && !["ctrl", "service", "help"].contains(&first)
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
         args.insert(offset, "spawn".into());
@@ -196,6 +196,8 @@ fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> 
 }
 
 pub fn main() -> anyhow::Result<()> {
+    let startup_entry = (std::env::var("PVISOR_STARTUP_PROFILE").as_deref() == Ok("1"))
+        .then(std::time::Instant::now);
     if pvisor::docker::internal_if_requested()? {
         return Ok(());
     }
@@ -223,8 +225,7 @@ pub fn main() -> anyhow::Result<()> {
                 && args.get(2).is_some_and(|arg| arg == "ctrl")),
         "`pvisor ctrl` has been retired; use status JOB, suspend JOB --vm-pause/--vm-offload, or resume JOB"
     );
-    let mut core_command = Cli::command();
-    core_command.build();
+    let core_command = Cli::command();
     let offset = command_offset(&args);
     anyhow::ensure!(
         !args.get(offset).is_some_and(|arg| arg == "service")
@@ -327,6 +328,16 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     // Informational invocations return without emitting execution diagnostics.
+    if let Some(entry) = startup_entry {
+        let duration = entry.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let record = serde_json::json!({
+            "schema": 1, "pid": std::process::id(), "role": "frontend",
+            "clock": "host_monotonic_process_relative", "epoch": "cli-entry",
+            "stage": "cli.entry_to_parsed", "start_ns": 0, "end_ns": duration,
+            "duration_ns": duration, "outcome": "ok",
+        });
+        pvisor::diagnostics::diagnostic(format_args!("pvisor-startup-profile {record}"));
+    }
     pvisor::startup_mark("process.entry");
     pvisor::startup_mark("cli.parsed");
     if let Command::Spawn(run) = &mut parsed.command {
@@ -406,10 +417,46 @@ fn finish(code: i32) {
 mod feature_parser_tests {
     use super::*;
     fn parse(args: &[&str]) -> Cli {
-        let mut command = Cli::command();
-        command.build();
+        let command = Cli::command();
         let args = normalize_default_spawn(args.iter().map(OsString::from).collect(), &command);
         Cli::from_arg_matches(&command.try_get_matches_from(args).unwrap()).unwrap()
+    }
+    #[test]
+    fn unbuilt_parser_preserves_informational_and_job_commands() {
+        for (args, expected) in [
+            (
+                vec!["pvisor", "--help"],
+                clap::error::ErrorKind::DisplayHelp,
+            ),
+            (
+                vec!["pvisor", "help", "status"],
+                clap::error::ErrorKind::DisplayHelp,
+            ),
+            (
+                vec!["pvisor", "help", "review"],
+                clap::error::ErrorKind::DisplayHelp,
+            ),
+            (
+                vec!["pvisor", "--version"],
+                clap::error::ErrorKind::DisplayVersion,
+            ),
+        ] {
+            let command = Cli::command();
+            let args =
+                normalize_default_spawn(args.into_iter().map(OsString::from).collect(), &command);
+            assert_eq!(
+                command.try_get_matches_from(args).unwrap_err().kind(),
+                expected
+            );
+        }
+        assert!(matches!(
+            parse(&["pvisor", "status", "last", "--json"]).command,
+            Command::Status(_)
+        ));
+        assert!(matches!(
+            parse(&["pvisor", "review", "last", "--json"]).command,
+            Command::Review(_)
+        ));
     }
     #[test]
     fn container_commands_precede_default_spawn_and_keep_workload_flags_literal() {
@@ -496,8 +543,7 @@ mod feature_parser_tests {
     }
     #[test]
     fn old_feature_name_is_rejected_without_an_alias() {
-        let mut command = Cli::command();
-        command.build();
+        let command = Cli::command();
         for args in [
             vec!["pvisor", "--feature", "vm-vcpu-observe", "feature"],
             vec!["pvisor", "spawn", "--feature=vm-vcpu-observe", "--", "true"],
@@ -564,8 +610,7 @@ mod feature_parser_tests {
         ] {
             assert!(matches!(parse(&args).command, Command::Feature(_)));
         }
-        let mut command = Cli::command();
-        command.build();
+        let command = Cli::command();
         for args in [
             vec![
                 "pvisor",

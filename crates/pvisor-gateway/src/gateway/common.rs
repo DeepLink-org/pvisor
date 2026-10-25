@@ -1,25 +1,15 @@
 //! Shared helpers for LLM gateway capture handlers.
 
-use std::sync::Arc;
-
 use axum::http::HeaderMap;
 use bytes::Bytes;
 use pvisor_core::ModelAccessPolicy;
 use serde_json::Value;
 
-use super::state::GatewayState;
 use crate::Call;
 use crate::config::ProxyConfig;
 use crate::engine::CallContext;
 use crate::engine::headers_to_vec;
-use crate::runtime::run_config::load_session_proxy_config;
-use crate::session::storage::{CaptureRoute, route_config_key};
-
-pub(crate) fn effective_config(state: &GatewayState, route: &CaptureRoute) -> Arc<ProxyConfig> {
-    load_session_proxy_config(state.storage.as_path(), route_config_key(route))
-        .map(Arc::new)
-        .unwrap_or_else(|| Arc::clone(&state.config))
-}
+use crate::session::storage::CaptureRoute;
 
 pub(crate) fn model_access_policy(config: &ProxyConfig) -> ModelAccessPolicy {
     let allowed_models = config

@@ -12,8 +12,8 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vm_memory::ByteValued;
 
@@ -114,6 +114,8 @@ pub struct Server<F: FileSystem + Sync> {
     fs: F,
     guest_cache: bool,
     options: AtomicU64,
+    guest_exit_enabled: bool,
+    guest_exit: Mutex<super::guest_exit::GuestExit>,
 }
 
 /// Accepted READDIRPLUS entries acquire references before they are serialized.
@@ -143,10 +145,13 @@ impl<F: FileSystem + Sync> Server<F> {
             fs,
             guest_cache,
             options: AtomicU64::new(FsOptions::empty().bits()),
+            guest_exit_enabled: false,
+            guest_exit: Mutex::new(Default::default()),
         }
     }
 
     pub(super) fn configure_profile_scope(&mut self, scope: &str) {
+        self.guest_exit_enabled = scope == "/dev/root";
         if self.profile.report().is_some() {
             self.profile_scope = Some(
                 if scope == "/dev/root" {
@@ -179,6 +184,13 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     pub fn capture_state(&self, next_inode: u64) -> io::Result<super::snapshot::ServerSnapshot> {
+        let guest_exit = self.guest_exit.lock().unwrap().clone();
+        if matches!(guest_exit, super::guest_exit::GuestExit::Submitted) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guest exit already committed",
+            ));
+        }
         self.profile.emit_checkpoint();
         let options = self.options.load(Ordering::Relaxed);
         if options & (FsOptions::PVISOR_LOCAL_FLUSH | FsOptions::PVISOR_DATA_OBJECT).bits() != 0 {
@@ -195,9 +207,18 @@ impl<F: FileSystem + Sync> Server<F> {
             options,
             next_inode,
             fs,
+            guest_exit,
         })
     }
     pub fn restore_state(&self, state: &super::snapshot::ServerSnapshot) -> io::Result<()> {
+        if matches!(state.guest_exit, super::guest_exit::GuestExit::Submitted)
+            || (!self.guest_exit_enabled
+                && !matches!(state.guest_exit, super::guest_exit::GuestExit::Unclaimed))
+        {
+            return Err(super::snapshot::invalid(
+                "guest exit authority does not match root device",
+            ));
+        }
         if FsOptions::from_bits(state.options).is_none() {
             return Err(super::snapshot::invalid("invalid FUSE options"));
         }
@@ -213,6 +234,7 @@ impl<F: FileSystem + Sync> Server<F> {
             FsOptions::from_bits_truncate(state.options).contains(FsOptions::WRITEBACK_CACHE),
         )?;
         self.fs.restore_state(&state.fs)?;
+        *self.guest_exit.lock().unwrap() = state.guest_exit.clone();
         self.options.store(state.options, Ordering::Relaxed);
         Ok(())
     }
@@ -1666,6 +1688,50 @@ impl<F: FileSystem + Sync> Server<F> {
             out_size,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
 
+        use pvisor_guest::exit_status::{CLAIM_IOCTL, REPORT_BYTES, REPORT_IOCTL, TOKEN_BYTES};
+        if matches!(cmd, CLAIM_IOCTL | REPORT_IOCTL | 0x7602) {
+            let outcome = (|| -> io::Result<Vec<u8>> {
+                if !self.guest_exit_enabled || in_header.nodeid != ROOT_ID || cmd == 0x7602 {
+                    return Err(io::Error::from_raw_os_error(libc::ENOTTY));
+                }
+                // FUSE_IOCTL_DIR is valid on the root directory; compat,
+                // unrestricted/retry and unknown flags are never accepted.
+                if flags & !16 != 0
+                    || (cmd == CLAIM_IOCTL && (in_size != 0 || out_size != TOKEN_BYTES as u32))
+                    || (cmd == REPORT_IOCTL && (in_size != REPORT_BYTES as u32 || out_size != 0))
+                {
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                let mut bytes = [0; REPORT_BYTES];
+                r.read_exact(&mut bytes[..in_size as usize])?;
+                // Negotiated idmapped FUSE omits credentials after guest VFS
+                // authorization. PID is still kernel-provided and must be 1.
+                let uid = if in_header.uid == u32::MAX
+                    && self.options.load(Ordering::Relaxed) & FsOptions::ALLOW_IDMAP.bits() != 0
+                {
+                    0
+                } else {
+                    in_header.uid
+                };
+                self.guest_exit.lock().unwrap().request(
+                    in_header.pid,
+                    uid,
+                    cmd,
+                    &bytes[..in_size as usize],
+                    exit_code,
+                )
+            })();
+            return match outcome {
+                Ok(bytes) => reply_ok(Some(IoctlOut::default()), Some(&bytes), in_header.unique, w),
+                Err(error) => {
+                    if in_header.pid == 1 {
+                        warn!("supervisor exit handshake rejected: cmd={cmd:#x} uid={} node={} root={} flags={flags:#x} in={in_size} out={out_size}: {error}", in_header.uid, in_header.nodeid, self.guest_exit_enabled);
+                    }
+                    reply_error(error, in_header.unique, w)
+                }
+            };
+        }
+
         // Linux _IOW('v', 0xf1, u64). This private diagnostic command is
         // synchronous: all counters are copied and emitted before its reply.
         // Disabled profiling retains the filesystem's ordinary ENOTTY path.
@@ -2152,7 +2218,7 @@ mod guest_cache_tests {
     use super::super::null_fs::NullFs;
     use super::*;
     use crate::devices::virtio::descriptor_utils::{
-        DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
+        create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
     };
     use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
@@ -2659,6 +2725,26 @@ mod guest_cache_tests {
         body: &[u8],
         declared_body_len: usize,
     ) -> Result<(OutHeader, Vec<u8>)> {
+        try_request_as(
+            server,
+            opcode,
+            body,
+            declared_body_len,
+            (0, 0),
+            ROOT_ID,
+            &Arc::new(AtomicI32::new(0)),
+        )
+    }
+
+    fn try_request_as<F: FileSystem + Sync>(
+        server: &Server<F>,
+        opcode: Opcode,
+        body: &[u8],
+        declared_body_len: usize,
+        caller: (u32, u32),
+        nodeid: u64,
+        status: &Arc<AtomicI32>,
+    ) -> Result<(OutHeader, Vec<u8>)> {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let chain = create_descriptor_chain(
             &mem,
@@ -2679,8 +2765,10 @@ mod guest_cache_tests {
                 InHeader {
                     len: (size_of::<InHeader>() + declared_body_len) as u32,
                     opcode: opcode as u32,
-                    nodeid: ROOT_ID,
+                    nodeid,
                     unique: 1,
+                    pid: caller.0,
+                    uid: caller.1,
                     ..Default::default()
                 },
                 reader,
@@ -2688,7 +2776,7 @@ mod guest_cache_tests {
             writer,
             false,
             &None,
-            &Arc::new(AtomicI32::new(0)),
+            status,
             #[cfg(target_os = "macos")]
             &None,
         )?;
@@ -2702,6 +2790,125 @@ mod guest_cache_tests {
         )
         .unwrap();
         Ok((header, bytes))
+    }
+
+    #[test]
+    fn guest_exit_wire_binds_root_pid1_framing_and_snapshot() {
+        use pvisor_guest::exit_status::{CLAIM_IOCTL, REPORT_IOCTL};
+        let mut root = Server::new(NullFs, false);
+        root.configure_profile_scope("/dev/root");
+        let status = Arc::new(AtomicI32::new(i32::MAX));
+        let send = |server: &Server<NullFs>, pid, node, input: IoctlIn, payload: &[u8]| {
+            let mut body = input.as_slice().to_vec();
+            body.extend_from_slice(payload);
+            try_request_as(
+                server,
+                Opcode::Ioctl,
+                &body,
+                body.len(),
+                (pid, 0),
+                node,
+                &status,
+            )
+            .unwrap()
+        };
+        let claim = || IoctlIn {
+            cmd: CLAIM_IOCTL,
+            out_size: 16,
+            flags: 16,
+            ..Default::default()
+        };
+        assert_eq!(send(&root, 2, ROOT_ID, claim(), &[]).0.error, -libc::EPERM);
+        assert_eq!(send(&root, 1, 2, claim(), &[]).0.error, -libc::ENOTTY);
+        let mut share = Server::new(NullFs, false);
+        share.configure_profile_scope("tools");
+        assert_eq!(
+            send(&share, 1, ROOT_ID, claim(), &[]).0.error,
+            -libc::ENOTTY
+        );
+        let mut malformed = claim();
+        malformed.out_size = 15;
+        assert_eq!(
+            send(&root, 1, ROOT_ID, malformed, &[]).0.error,
+            -libc::EINVAL
+        );
+        assert_eq!(
+            send(
+                &root,
+                1,
+                ROOT_ID,
+                IoctlIn {
+                    cmd: 0x7602,
+                    arg: 0,
+                    ..Default::default()
+                },
+                &[]
+            )
+            .0
+            .error,
+            -libc::ENOTTY
+        );
+        let (header, bytes) = send(&root, 1, ROOT_ID, claim(), &[]);
+        assert_eq!(header.error, 0);
+        assert_eq!(bytes.len(), size_of::<IoctlOut>() + 16);
+        let token: [u8; 16] = bytes[size_of::<IoctlOut>()..].try_into().unwrap();
+        let snapshot = root.capture_state(2).unwrap();
+        assert!(share.restore_state(&snapshot).is_err());
+        let mut restored = Server::new(NullFs, false);
+        restored.configure_profile_scope("/dev/root");
+        restored.restore_state(&snapshot).unwrap();
+        let report = pvisor_guest::exit_status::report(&token, 23).unwrap();
+        let input = || IoctlIn {
+            cmd: REPORT_IOCTL,
+            in_size: 20,
+            flags: 16,
+            ..Default::default()
+        };
+        assert_eq!(
+            send(&restored, 2, ROOT_ID, input(), &report).0.error,
+            -libc::EPERM
+        );
+        assert_eq!(status.load(Ordering::SeqCst), i32::MAX);
+        assert_ne!(
+            send(&restored, 1, ROOT_ID, input(), &report[..19]).0.error,
+            0
+        );
+        assert_eq!(send(&restored, 1, ROOT_ID, input(), &report).0.error, 0);
+        assert_eq!(status.load(Ordering::SeqCst), 23);
+        assert_ne!(send(&restored, 1, ROOT_ID, input(), &report).0.error, 0);
+        assert!(restored.capture_state(2).is_err());
+    }
+
+    #[test]
+    fn guest_exit_omitted_uid_requires_negotiated_idmap_and_still_checks_pid() {
+        let mut root = Server::new(NullFs, false);
+        root.configure_profile_scope("/dev/root");
+        let status = Arc::new(AtomicI32::new(i32::MAX));
+        let body = IoctlIn {
+            cmd: pvisor_guest::exit_status::CLAIM_IOCTL,
+            out_size: 16,
+            flags: 16,
+            ..Default::default()
+        }
+        .as_slice()
+        .to_vec();
+        let send = |pid| {
+            try_request_as(
+                &root,
+                Opcode::Ioctl,
+                &body,
+                body.len(),
+                (pid, u32::MAX),
+                ROOT_ID,
+                &status,
+            )
+            .unwrap()
+        };
+        assert_eq!(send(1).0.error, -libc::EPERM);
+        root.options
+            .store(FsOptions::ALLOW_IDMAP.bits(), Ordering::Relaxed);
+        assert_eq!(send(2).0.error, -libc::EPERM);
+        assert_eq!(send(1).0.error, 0);
     }
 
     struct SyncfsFs {

@@ -1,3 +1,0 @@
-{
-  "pool-curves": "$ python3 @REPO@/benchmark.new/memory/pool_compare.py --inputs @INPUTS@ --docker-inputs @DOCKER_INPUTS@ --output @OUTPUT@ --samples 5"
-}

@@ -8,7 +8,7 @@
 
 将 `OPEN_SANDBOX_API_KEY` 设置为至少 32 字节的受保护随机秘密，不放入 argv。
 
-`serve` 使用已实现且必需的 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`。Cargo 链接 `pvisor` 与 `pvisor-core`；同步 `main` 在参数解析或 Tokio 之前调用 `pvisor::run_krun_internal_if_requested()`，随后派发隐藏的 `native-supervisor --sandbox-dir ABSOLUTE_PATH` 命令。下方部署示例使用当前 CLI，但不提供或验证 guest bootstrap、SDK 兼容或密度。
+`serve --sandbox` 使用 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`。它在独立 supervisor 中启动运行时；内部 VM 派发在 Tokio 之前完成。先按[操作指南](../../guides/daemon/index.md#install)准备镜像和 API key，再启动服务：
 
 ```sh
 pvisor-daemon protocol
@@ -30,13 +30,13 @@ pvisor-daemon serve --sandbox \
 
 ## 预制镜像合同 {#image-contract}
 
-镜像 manifest 的字段与环境语义见[运维指南的前提条件](../../guides/daemon/index.md#prerequisites)。
+`prepare-image` 将 registry 镜像准备到共享压缩池，固定 revision 后原子发布本机模板 manifest。Create 只打开该 revision 的 lazy projection，保留其 owner 到 VM 清理完成；完整解压和 registry pull 不在创建路径上。模板 key、准备命令与 SDK 示例见[操作指南](../../guides/daemon/index.md#install)。
 
-长期运行的 guest bootstrap 必须监督工作负载、真实 OpenSandbox 1.1.0 execd 与 egress，自行初始化／鉴权服务、转发信号并回收子进程。它必须在 guest **CID 3** 的 **44772/18080** 端口提供字节透明的 AF_VSOCK listener，桥接真实服务。Supervisor 的 loopback TCP 发布经私有 Unix socket 与原生 vsock 转发连接 guest。普通 rootfs 或只运行 sleep 的进程不够。
+新模板默认 `native_guest: true`：`pvisor-guest` 的 PID 1、进程组和 reaper 管理工作负载；主机 `native/opensandbox.rs` 或 `native/e2b.rs` 适配 HTTP/SSE、JSON/Connect，经 host-CID-only vsock 1025 调用 guest 进程和文件引擎。创建就绪检查绑定 sandbox/generation，主 entrypoint 退出会结束沙箱；没有宿主执行降级。
 
-Create、对 Running VM 的 Inspect 与 resume 就绪检查经 bridge 要求真实 HTTP 200 的 execd `/ping`、JSON `initialized: true` 的 `/ready` 和 egress `/healthz`，响应体有界。端点解析认证 live Running 状态并检查删除屏障，不为每次数据请求重复完整 health/cgroup 检查。daemon 不注入／初始化 execd，也不合成 command/SSE/file 响应。Python SDK 初始化即使没有网络策略也会解析两个端点。
+显式 `--execd` 或 `--envd` 保留上游兼容后端。准备器验证静态 Linux ELF 并注入受管理 bootstrap，由私有握手初始化真实服务并验证绑定、鉴权与就绪。旧独立 rootfs manifest 不自动转换：其 bootstrap 必须继续提供对应 guest 服务和 vsock bridge。文件格式与旧后端要求见[crate 合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#runtime-boundary-native-vm-and-prepared-images)。
 
-Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的 `cap-drop=ALL` 限制不适用于此原生 VM 后端；upstream 镜像名称不是原生 bootstrap/vsock 适配器。不提供假就绪，也没有 SDK 兼容或密度证据。
+模板与宿主侧代码都属于可信输入；ELF/摘要检查不证明第三方程序来源安全。准备发布失败时保留旧 manifest；若 rename 或目录同步结果不确定，先检查已发布状态再重试。
 
 ## 部分协议 Profile {#api}
 
@@ -51,7 +51,7 @@ Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的
 | `POST /v1/sandboxes/{id}/pause`、`/resume` | 确认同一 Attempt 的 live vCPU pause/resume；202 空体 |
 | `POST /v1/sandboxes/{id}/renew-expiration` | 未来 RFC3339 截止时间，延长已有 TTL |
 | `GET /v1/sandboxes/{id}/endpoints/{port}` | 通过 daemon authority 发布实际 execd/egress |
-| 数据面 | 流式转发预制服务，不重新实现其 API |
+| 数据面 | 默认 guest 引擎与主机协议适配；显式上游模板使用代理 |
 
 生命周期请求使用 `OPEN-SANDBOX-API-KEY`。响应含 `X-Request-ID`，错误为 `{code, message}`。Server-proxy 端点使用生命周期 key；默认端点提供 sandbox 范围的 `X-PVISOR-SANDBOX-TOKEN` headers，SDK 必须保留它们。Token 不能控制生命周期或访问另一个 sandbox。控制秘密向上游转发前被移除，但不替代调用方提供的 execd 访问凭据。
 
@@ -71,8 +71,12 @@ Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的
 | 待删除／TTL 清理 | 恢复运行时访问；维护重试，但 TTL 不是硬截止 |
 | 存储提交不确定／registry 损坏 | 保留目录，修复存储后重启，不以删除归属状态继续运行 |
 | Daemon 关闭 | 独立原生 supervisor/VM 跨 daemon 重启保留；使用相同 owner/状态重启，或安排独立宿主清理 |
-| 就绪／端点失败 | 检查真实服务与 guest bootstrap/vsock bridge，而非仅看 VM Running |
+| 就绪／端点失败 | 按模板后端检查 guest 绑定、主进程与认证；显式上游模板另查服务初始化和 bridge |
 
 ## 证据范围 {#validation}
 
-源码测试覆盖 fake-runtime 准入／生命周期／重启／TTL、HTTP 鉴权/schema/过滤/端点及纯运行时解析/argv，不建立原生隔离、SDK 端到端兼容或密度收益。构建、测试、原生 sandbox 和 benchmark 都还没有验证当前 daemon。旧分布式 Cluster gate 和测量不验证该 daemon。
+常规 Rust 测试覆盖准入、生命周期、重启、TTL、鉴权、schema、状态迁移、原生 IPC/cgroup 身份与清理。真实 VM 的官方 SDK 检查覆盖 OpenSandbox 1.1.0 和 E2B Python 2.59.0 的创建、并发沙箱、命令、文件、pause/resume、鉴权和删除；独立重启检查验证相同 VM、文件与活动进程跨 API 重启保留。
+
+验收入口为 `crates/pvisor-daemon/tests/opensandbox_sdk.py`、`e2b_sdk.py` 与 `native_sdk_restart.py`，运行前需要隔离的 daemon、已准备模板和真实 KVM/cgroup 环境；命令见[crate 测试说明](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#validation)。普通 `mise run test -- pvisor-daemon` 不会自动执行这些 SDK 驱动。
+
+这些结果限定于列出的核心 profile。完整 SDK 一致性、生产密度、网络策略与敌对多用户安全仍需各自验证；旧 Cluster 测量不能替代当前 daemon 的证据。

@@ -10,12 +10,12 @@
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-PolicyVisor runs Agent CLIs and scripts within a policy boundary, stages their file changes, and records the execution. Review the result like a pull request and apply only the paths you want. The same workflow works across agents, with platform-specific controls provided by each executor.
+PolicyVisor is a single-machine execution substrate for agents. Native Jobs run CLIs and scripts within a policy boundary, stage their file changes, and record execution for review and selective apply. Docker-style commands manage independent Linux VMs; the separate daemon exposes tested OpenSandbox/E2B SDK profiles for local VM sandboxes. These interfaces share runtime mechanisms while retaining their own lifecycle and delivery contracts.
 
 Running more agents takes both compute resources and human attention.
 PolicyVisor uses resource sharing and idle-memory reclamation to improve machine
 capacity, and staged file changes, execution records, and review mechanisms to
-reduce supervision overhead. These **bounded, recoverable, and checkable**
+reduce supervision overhead. These **bounded, reversible, and checkable**
 executions provide a basis for batch review and automated checks.
 
 ![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
@@ -68,17 +68,17 @@ Jobs are created with `pvisor spawn`; default execution also uses `spawn`. See t
 limitations](crates/pvisor-cli/README.md#docker-command-profile-experimental)
 before using this profile; it does not implement the Docker Engine API.
 
-## Bounded, recoverable, checkable
+## Bounded, reversible, checkable
 
 | Property | Meaning | Mechanism today |
 |---|---|---|
 | Bounded | the blast radius is known up front | executor boundary, capability admission |
-| Recoverable | staged changes can be selectively merged, discarded, or forked before apply | staging, `apply`/`drop`, `fork` |
+| Reversible | staged changes can be selectively merged, discarded, or forked before apply | staging, `apply`/`drop`, `fork` |
 | Checkable | execution leaves checkable evidence | Run Bundle, evidence model, optional capture |
 
 ## Where we are today
 
-pVisor focuses on bounded, recoverable, checkable execution and high sandbox
+pVisor focuses on bounded, reversible, checkable execution and high sandbox
 density on a single machine. Native Jobs retain the run-review-apply workflow;
 the separate [`pvisor-daemon`](crates/pvisor-daemon/README.md) provides partial
 OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles through a VM-only
@@ -137,15 +137,15 @@ The remaining crates are `pvisor-core`, `pvisor-journal`, `pvisor-gateway`,
 `pvisor-vm`, `pvisor-daemon`, `pvisor-guest`, `pvisor-shim`, `pvisor-overlay-core`,
 `pvisor-overlayfs` and `pvisor-overlaynet`. See the
 [engineering guide](docs/src/en/community/development.md) for source ownership,
-dependencies and targeted tests (`just test pvisor` for the runtime,
-`just test cli` for application frontends).
+dependencies and targeted tests (`mise run test -- pvisor` for the runtime,
+`mise run test -- cli` for application frontends).
 
 Release builds optimize the virtio-fs adapter (`pvisor-vm`) and shared filesystem
 mechanics (`pvisor-overlay-core`) for execution speed. Other crates retain the
 distribution profile's size optimization; the `performance` profile optimizes
 the complete application for speed.
 
-`just build release` builds all supported workspace executables into
+`mise run build -- release` builds all supported workspace executables into
 `target/release` (or `CARGO_TARGET_DIR/release`). Linux x86_64 builds `pvisor`,
 `pvisor-tui`, `pvisor-replay`, `pvisor-daemon`,
 `containerd-shim-pvisor-v2` with VM support, and `pvisor-guest`.
@@ -155,29 +155,48 @@ serving, shim and the standalone guest executable require Linux. VM builds share
 resolution. Standalone tools outside the workspace, such as semspec, retain their
 own build/test entries.
 
-`just build PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
+`mise run build -- PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
 wheel set), `daemon`, `shim`, and `shim-vm`. Profiles are `debug` (default),
 `release`, and `performance`. The host-only `shim` selection skips VM firmware.
-Use `just test shim` for targeted tests,
-or on Linux `just test shim -- --features vm` for VM-enabled tests. See the
+Use `mise run test -- shim` for targeted tests,
+or on Linux `mise run test -- shim -- --features vm` for VM-enabled tests. See the
 [shim guide](crates/pvisor-shim/README.md#developing) for prerequisites and
 containerd acceptance checks.
 
 Rust test options follow `--`, for example
-`just test pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
+`mise run test -- pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
 On macOS, VM test signing uses the same features, Cargo profile and build-target
 selection as the test run. Default and Gateway-enabled runtime/CLI tests both
 run in CI. All repository semspec recipes share `target/semspec` (beneath
 `CARGO_TARGET_DIR` when set), including documentation rendering, lint and tests.
 The Python format/lint entries also cover packaging and CI scripts plus `setup.py`.
 
+## Development environment
+
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 or newer, then run
+`mise trust`, `mise install --locked`, and `mise run setup`. The checked-in `mise.toml`
+and `mise.lock` provide reproducible default tools; CI and wheel builds use mise
+2026.10.18. Compatible local tools can be selected in the gitignored
+`mise.local.toml`; see [local tool overrides](CONTRIBUTING.md#local-tool-overrides).
+`uv.lock` fixes Python development dependencies in
+`.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
+The timed peer TCP recovery test reserves all nextest execution slots while it
+runs; other tests keep their normal parallelism. See [.config/nextest.toml](.config/nextest.toml).
+See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
+
+Complex task implementations live in `scripts/tasks/`; `mise.toml` declares their
+names and the shared environment. CI installs tool subsets for Python, semspec,
+documentation and release checks. Guest targets are prepared only by full setup.
+The optional Podman Go contracts retain their pinned `setup-go` environment;
+native libraries and virtualization prerequisites use the host package manager.
+
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and
 bundle tests are maintained in [`fw/`](fw/README.md). CLI, daemon and single-wheel
 builds use this source-built firmware by default, with verified kernel downloads
-and input-keyed build caching. Use `just fw build` to build it independently and
-`just fw test` to run its bundle/ABI regression tests. See the directory README
+and input-keyed build caching. Use `mise run fw -- build` to build it independently and
+`mise run fw -- test` to run its bundle/ABI regression tests. See the directory README
 for toolchain requirements, cache settings and corresponding-source export.
 Published wheels remain ready to install without a kernel build toolchain.
 

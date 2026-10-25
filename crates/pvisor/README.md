@@ -56,6 +56,63 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+New Attempts use Run record schema 2, Bundle schema 5 and completion protocol 1.
+Older readers reject these schemas instead of bypassing the completion check.
+Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
+Session durably prepares the Bundle and terminal Run projection, then atomically
+publishes `completion.json` binding the typed result to the Bundle's BLAKE3 digest.
+Only after that receipt commits does it publish the Completed fact and terminal
+run event. An unconfirmed receipt suppresses both notifications and retains the
+stage for reconciliation; a possibly committed receipt is never rewritten as a
+failure after a lost acknowledgement. Identical receipt commits are idempotent;
+a different result cannot replace one. Without retained storage, event publication
+retains its existing failure semantics.
+
+Event delivery is separate from committed execution: rejected/unknown terminal
+appends never replace a committed result or publish a contradictory terminal.
+Post-commit audit gaps appear in the returned result's warnings, without rewriting
+the immutable Bundle/receipt. They are not appended to that historical Bundle;
+automatic event backfill after a crash is not implemented.
+Readers reject missing/changed Bundles and
+foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
+with its stage retained and workspace mutation refused. `status` reconciles stale
+Run/Job projections under their metadata and Attempt leases; it never takes a live
+Attempt's lease or infers success from owner death. Review and mutation readers
+also validate completion after acquiring their own Attempt lease; that lease is
+not evidence of another live execution. Review returns a typed `ReviewUnavailable`
+for uncommitted completion; corruption and unsupported schemas remain errors.
+Legacy records without the
+protocol marker retain their original read rules. This is local crash consistency,
+not authentication against another process with unrestricted access as the host UID.
+Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
+Completion and Bundle reads reject symlinks/nonregular files and are capped at
+64 MiB each. Very large captured results or file inventories can exceed this bound
+and fail finalization while retaining the stage.
+Readers reserve the bounded size reported by the opened file to avoid repeated
+small reads and buffer growth. That size is only an allocation hint; a bounded
+read and final length check still reject growth beyond the limit.
+Each load, including after locking, opens current files and verifies the receipt's
+protocol, record identity and Bundle digest. A process retains at most one pair of
+receipt/Bundle BLAKE3 hashes to reuse successful, deterministic Bundle semantic
+validation for identical bytes. Changed bytes require full validation; file metadata,
+record projections, leases and authorization are never cached. This memo is neither
+persisted nor shared between processes.
+
+Local sandbox evidence comes from individual control installation receipts on a
+parent-retained inode. The launcher unlinks its pathname and closes the descriptor
+before workload execution. A ready marker or admission mechanism list cannot
+substitute for these receipts.
+
+`RunSpec.runtime.profile` is the shared `RunProfile::{Default, Safe}` request.
+Safe requires sandbox admission before workload start; its selective host network
+proxy may still be cooperative. `PolicyMode::Enforce` independently requires
+non-bypassable controls. Bundle `safe_profile_requested` comes from this typed
+request. `RunConfig.run.profile = "safe"` selects the CLI preset.
+
+Apply requests require explicit `all = true` or a nonempty path/include/exclude
+selection. Empty selection is rejected before target/stage mutation. The low-level
+OverlayCore selection contract remains unchanged for its existing callers.
+
 Admission carries the final network configuration into every Attempt driver;
 preparation does not re-resolve policy from mutable Run metadata or configuration.
 Guest workspace overlays require `RunExecutor::supports_guest_workspace_overlay`
@@ -71,6 +128,11 @@ requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
 The OCI executor injects the `pvisor` executable and delegates the Job through
 `spawn --executor host --spec ... --result-file ...` inside the container.
+Its RunSpec is mounted read-only, and its writable output directory excludes the
+OCI bundle/state. Result reads reject symlinks, nonregular files, foreign Run
+identities and payloads over 16 MiB. Boundary-writable JSON supplies transcript
+bytes only: the host-observed OCI runtime exit determines completion, and delegated
+AgentCtl directives, metrics, artifacts and enforcement claims are not imported.
 
 ## Explicit runtime experiments
 
@@ -937,7 +999,7 @@ RPC/prefetch path and pooling. These are private
 rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
-See `benchmark/pvisor/lazy_image_v2.py` for same-artifact NumPy A/B; historical
+See the [archived same-artifact NumPy A/B](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_image_v2.py); historical
 Docker measurements are a different cohort. Contract tests cover real portable
 pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
 fallback and concurrent service progress. Linux KVM performance measurements do
@@ -1158,14 +1220,14 @@ Upper/merged state must never be labeled immutable.
 ## Develop
 
 ```bash
-just build release          # release build + macOS Hypervisor signing
-just build    # debug build + macOS signing
-just test pvisor            # runtime tests
-just test pvisor-cli        # application/executable tests
-just examples
+mise run build -- release          # release build + macOS Hypervisor signing
+mise run build    # debug build + macOS signing
+mise run test -- pvisor            # runtime tests
+mise run test -- pvisor-cli        # application/executable tests
+mise run examples
 ```
 
-On macOS, source builds that use HVF must be signed. `just build release` does this;
+On macOS, source builds that use HVF must be signed. `mise run build -- release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedded
 `pvisor-guest` supervisor is built as a static Linux musl ELF
 with Rust's bundled linker. On Apple Silicon, install its stdlib once with
@@ -1177,7 +1239,7 @@ HVF on macOS. Its implementation derives from libkrun components, but no separat
 vendored libkrun `rlib`, `libkrun.so` or `libkrun.dylib` is required. The separate guest
 kernel is embedded in Linux static musl builds; macOS loads `libkrunfw.5.dylib`
 at runtime. Linux source builds require Zig, `cargo-zigbuild`, and
-`rustup target add x86_64-unknown-linux-musl`. Use `just build` so target
+`rustup target add x86_64-unknown-linux-musl`. Use `mise run build` so target
 selection and kernel preparation match release builds.
 
 ## Links
@@ -1402,3 +1464,43 @@ also enables `GuestConfig.control` and a session-owned workload process group.
 This selects the shared host-only guest process/file engine used by the native
 daemon. Other published ports and ordinary Jobs do not enable it. Guest control
 requests stay inside the VM; no host process or filesystem fallback is provided.
+
+## 启动阶段诊断
+
+`PVISOR_STARTUP_PROFILE=1` 启用独立 `pvisor-startup-profile` JSON 行，默认关闭。
+私有共享 profiler 覆盖 Session 准备、网络启动、checkpoint 兼容性/内核与可执行文件哈希，
+以及 runner 的 lazy lower 重建、baseline lease 和沙箱安装。日志使用现有 frontend 诊断路由，
+不进入 workload stdout。成功明确登记；错误、取消或提前退出保留 `outcome=unknown`。
+关闭时不读取阶段时钟、不生成记录；写入失败不替换原操作结果。
+完成协议读取另记录 `completion.load`、`completion.read_file` 和
+`completion.validate_bundle`，包括有界读取字节数与 Bundle 摘要/类型/语义验证。
+这些 span 嵌套，不能相加；诊断写入及追踪会扰动耗时，不能代替关闭诊断的基准。
+`PVISOR_STARTUP_TIMING=0` 单独关闭原有 checkpoint/持久化日志，不关闭 profile。
+
+普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
+这些标记说明宿主已创建进程，不证明应用或 VM guest 就绪。不同进程、不同 profiler 的相对
+时钟不共用 epoch，重叠 span 不能相加。采集和离线汇总见
+[启动诊断](../../benchmark/startup/README.md#启动瓶颈诊断b-startup-diag)。
+
+### Early runner descriptor capacity
+
+Embedded native VM owners may call `VmExecutor::prepare_process()` before starting
+Tokio or other worker threads. On Linux it transiently duplicates `/dev/null`
+above all reserved runner child descriptors, then releases both handles. This
+prepares capacity in the current process without changing resource limits or
+existing descriptors. It is repeatable and optional; failure leaves ordinary
+launch checks in force. Other platforms use a no-op. It does not prepare a child
+after exec, so call in the actual owner. Later descriptor pressure can still
+require table growth. High runner source FDs and their `dup2` collision protection
+remain unchanged.
+
+### Parallel checkpoint compatibility checks
+
+The owner retains full executable/firmware SHA-256 validation on the launch path,
+and overlaps the independent executable and firmware hashes with one scoped worker,
+and joins it on success or failure before returning a complete compatibility record.
+If worker creation is unavailable, it falls back to serial hashing. No worker or
+unvalidated compatibility record escapes the call. The digest fields, selected
+firmware path, boot identity and restore checks stay unchanged. This is
+not a metadata-only cache or deferred validation. Existing snapshot compatibility
+records and file-selection/error contracts remain unchanged.

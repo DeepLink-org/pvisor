@@ -8,7 +8,7 @@ Choose the CLI for native Jobs and file review, the Runtime when a Rust applicat
 | --- | --- | --- | --- |
 | `pvisor spawn` CLI | Developers, scripts, CI, and evaluators integrating through subprocesses | Native Job/Attempt; commands manage execution, review, and state operations | Prepare the selected host, OCI, or VM executor; associate tasks through machine-readable output |
 | Rust `pvisor` Runtime | Rust applications requiring direct execution and cleanup control | `PVisor`, `RunHandle`, and Job service; the application owns the runtime and completes waiting and cleanup | Pin crate versions, configure executors/drivers, and follow lifecycle and persistence contracts |
-| `pvisor-daemon serve --sandbox` | Platform services using an HTTP lifecycle API | Daemon sandbox ID; local admission, TTL, supervisors, and persistent state | Linux x86_64, KVM, delegated cgroup v2, trusted prepared images, and guest service bridges |
+| `pvisor-daemon serve --sandbox` | Platform services using an HTTP lifecycle API | Daemon sandbox ID; local admission, TTL, supervisors, and persistent state | Linux x86_64, KVM, delegated cgroup v2, trusted prepared images, and a supported guest execution engine |
 | `containerd-shim-pvisor-v2` | containerd / CRI call chains | containerd task / exec identity and the corresponding task lifecycle | Linux and containerd configuration; VM execution also needs the `vm` build feature and KVM |
 
 The CLI column describes native Jobs created with `pvisor spawn`. Standalone containers use `pvisor run` and the other container commands, with distinct identities and interface scopes; see the [CLI reference](../../reference/cli.md).
@@ -26,11 +26,11 @@ Conditional support requires checking the executor, profile, and configuration. 
 | Workspace checkpoint/fork | Subject to support conditions | Integrate through the Job service contract | Not exposed | Checkpoint not implemented |
 | Full execution checkpoint/resume/fork | Supported VM profiles | Native execution-state services; the same profile limits apply | Not exposed; pause/resume controls live vCPUs only | Checkpoint and pause/resume not implemented |
 | Model communication capture | Explicit Gateway configuration | Embedding application configures the Gateway driver | API not exposed | API not exposed |
-| Outcomes and evidence | Job records, Bundles, and JSON output | Collect through the selected Session/Job service contract | Lifecycle state and upstream data plane; no Run Bundle export | Task events, exit status, and I/O; no native Bundle interface |
+| Outcomes and evidence | Job records, Bundles, and JSON output | Collect through the selected Session/Job service contract | Lifecycle state, command and file interfaces; no Run Bundle export | Task events, exit status, and I/O; no native Bundle interface |
 
 Native execution checkpoints currently require supported VM profiles with no networking and private RAM. Restoration requires the same host boot, binary, and firmware; shared pools and other configurations have separate restrictions. See the [CLI reference](../../reference/cli.md#full-vm-execution-checkpoints) for complete conditions and capability queries.
 
-The daemon implements a partial OpenSandbox 1.1.0 profile. The project has not supplied a bootstrap/image recipe, completed end-to-end SDK conformance validation, or established full daemon density evidence. Underlying VM/memory-pool tests do not replace those validations. The [daemon guide](../daemon/index.md#profile) owns interface and delivery requirements.
+The daemon implements partial OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles. `prepare-image` defaults to the shared native guest engine; explicit execd/envd inputs retain the upstream backends. Official SDK core lifecycle, command and file flows have been validated on Linux x86_64/KVM with delegated cgroup v2. Full SDK conformance and daemon density remain unestablished. Underlying VM/memory-pool tests do not replace those validations. The [daemon guide](../daemon/index.md#profile) owns interface and delivery requirements.
 
 ## Native Jobs and embedded applications {#native}
 

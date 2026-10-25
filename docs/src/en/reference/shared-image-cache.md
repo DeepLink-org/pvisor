@@ -253,7 +253,7 @@ There are no vCPU pause/resume messages. VM requests are handled inside the isol
 
 ## Backend validation
 
-`just test pvisor` includes server compatibility, independent filesystem/S3 CLI processes, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
+`mise run test -- pvisor` includes server compatibility, independent filesystem/S3 CLI processes, read-only access, corruption refusal, and configuration precedence. The local S3 fixture independently verifies SigV4, including temporary session tokens, without real accounts, public requests, or an external daemon.
 
 On Linux x86_64 with KVM and the static musl guest target, run the real VM acceptance check:
 

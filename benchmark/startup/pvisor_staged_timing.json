@@ -1,0 +1,3 @@
+{
+  "pVisor staged": "$ python3 @REPO@/benchmark/startup/pvisor_staged_timing.py @BATCH@"
+}
