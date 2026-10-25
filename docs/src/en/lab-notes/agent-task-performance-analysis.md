@@ -1,6 +1,6 @@
 # Agent tool tasks: technical evidence
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+> Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.
 
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 

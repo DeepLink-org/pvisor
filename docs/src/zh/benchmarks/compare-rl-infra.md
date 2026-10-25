@@ -61,4 +61,4 @@ Lazy 冷客户端 Ready 排除镜像服务首次准备；镜像已缓存时，Do
 
 [比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。

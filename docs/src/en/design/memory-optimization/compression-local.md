@@ -105,8 +105,9 @@ Selection is experimental eviction/refault probing, not a read-access heat
 detector: unchanged bytes can still be read frequently. Rechecks protect content,
 not workload latency. Historical encoded-object pooling and broader client-owned
 sealed backing are described in [pooled compression](compression-pool.md); they do not replace
-the current physical-pool contract. macOS has no equivalent delivered daemon
-physical-sharing path.
+the physical-pool contract. Apple Silicon separately offers 16 KiB sharing through
+`physical-pages`, private file mappings and a live owner. Its default HVF compressed
+pool remains a different backend; see [platform and failure scope](index.md#direction).
 
 ## Evidence boundary {#evidence}
 

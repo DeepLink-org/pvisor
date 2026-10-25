@@ -18,13 +18,13 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-overlaynet` | 网络解析、代理转发和 VM 网络接入；落实 core 定义的策略 |
 | `pvisor-guest` | VM 内 PID 1 与命令启动契约 |
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
-| `pvisor-daemon` | 独立的单节点 sandbox 准入、持久归属、原生 VM supervisor 生命周期与端点代理 |
+| `pvisor-daemon` | 单节点 sandbox API、持久归属、原生 VM supervisor 与 guest 协议适配 |
 | `pvisor-cli` | CLI、TUI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
 | `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；宿主进程路径的任务生命周期、exec 与 FIFO/PTY IO |
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
-[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。主机选择和工作流属于外部编排。
+[Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `AttemptService` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
 

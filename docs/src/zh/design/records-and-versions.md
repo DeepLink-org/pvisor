@@ -27,6 +27,7 @@ Event 的 ID 与 Journal position、Host `request_id`、Job 生命周期请求 I
 | Journal Header / Record | `pvisor.trace/5` | Header 与 Event 校验相互配合；完整旧格式拒绝，不当作坏尾部截掉 | `pvisor-journal/src/journal.rs` |
 | Run Bundle | `schema_version = 5` | 要求匹配 Run/Attempt 的完成回执与 Bundle 摘要；旧版本 4 保留原读取规则；未知版本拒绝 | `pvisor/src/runtime/bundle.rs` |
 | RunRecord（`run.json`） | `schema_version = 2` | 完成协议 1 绑定终态结果与 Bundle；owner 退出且无回执时为 Unknown；schema 1 保留旧规则；终态清除 live control | `pvisor/src/runtime/registry.rs` |
+| Attempt 完成回执（`completion.json`） | `version = 1` | 绑定 `RunResult` 与 Bundle BLAKE3；缺失或不一致不能推断成功 | `pvisor/src/runtime/completion.rs` |
 | execution Job（`execution-job.json`） | `version = 2` | 精确版本与 Job/root/stage 绑定检查；旧记录不自动转换 | `pvisor/src/runtime/job_execution.rs` |
 
 Event version 5 与 Journal format 5 在当前实现中共用 Event 的版本常量；其他版本没有这种关系。一个领域 Observation 的载荷版本变化，也不能仅靠外层 Event version 5 判断业务兼容性。JSON 可被解析，只说明语法可读；还要经过具体记录的校验。
@@ -69,4 +70,3 @@ Job 的检查点入口与兼容 profile 见[Job 检查点设计](job-checkpoint-
 3. 对存储对象同时核对摘要、依赖引用、stage/Attempt 归属和恢复 profile；对 live 协议核对权限、端点支持的目标字段、实例协议名与 socket 身份。同一二进制校验只适用于前端启动自己的 owner。
 4. 在升级前处理旧 listener/supervisor 的活动请求和实例；文件格式兼容不等于运行中进程可接管。
 5. 发生超时、断连或发布失败时，先判断原请求在哪个提交点，按[失败语义与重试](failure-semantics.md)核对，再决定是否重试。
-

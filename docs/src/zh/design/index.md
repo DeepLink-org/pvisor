@@ -14,7 +14,7 @@ pVisor 将这些问题落实到执行、文件、网络和状态存储的具体�
 
 层次与 crate 的对应关系由[核心架构](architecture.md)的所有权表维护，本页不再重复；下面只用一次任务把各层串起来。
 
-独立 daemon 在每个 sandbox 的 supervisor 中嵌入 runtime。API 进程重启后可以重新核对存活 supervisor 的归属；VM 的生命周期不会因此自动结束。daemon 暴露 sandbox 生命周期与服务代理，原生 Job 提供文件审查和受支持的检查点流程；两者的接口范围见[核心架构](architecture.md)和[daemon 设计](daemon/index.md)。跨节点选机、队列和业务重试属于外部编排。
+独立 daemon 在每个 sandbox 的 supervisor 中嵌入 runtime。API 进程重启后可以重新核对存活 supervisor 的归属；VM 的生命周期不会因此自动结束。daemon 暴露 sandbox 生命周期与 guest 进程/文件协议适配，原生 Job 提供文件审查和受支持的检查点流程；两者的接口范围见[核心架构](architecture.md)和[daemon 设计](daemon/index.md)。跨节点选机、队列和业务重试属于外部编排。
 
 内存、文件系统和网络分别围绕地址映射、导出文件树和虚拟网卡组织。快照将这些局部状态收敛到一致性切面，执行记录保存可核对的操作事实；单节点 Daemon 再管理多个 VM 的准入、归属和共享资源。各子系统因此既有自己的状态所有者，也有与 VM 和 Session 共同遵守的生命周期。
 

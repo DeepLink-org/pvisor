@@ -1,6 +1,6 @@
 # Single-node daemon architecture
 
-Manage local sandboxes through `pvisor-daemon`: one process accepts resource-bounded creation requests, persists ownership and intentions, controls the native runtime, expires sandboxes and routes access to their prepared services. External orchestration chooses hosts and coordinates business work; it is not a pVisor product control plane.
+`pvisor-daemon` provides OpenSandbox/E2B lifecycle and data interfaces for VMs on one machine. The API process persists admission and intentions; independent supervisors own live VMs, guest control and protocol adapters, preserving sandboxes across API restarts. External orchestration owns host selection and business workflows.
 
 ## Responsibilities {#architecture}
 
@@ -10,14 +10,14 @@ Manage local sandboxes through `pvisor-daemon`: one process accepts resource-bou
 | --- | --- | --- |
 | Caller | Workload, prepared image, input versions, retries and business effects | Assuming a timeout proves no execution occurred |
 | Daemon | Local admission, ownership, intentions, runtime reconciliation, TTL, authenticated endpoints | Cross-host scheduling or training transactions |
-| Native supervisor | Embedded pVisor/VM, RunHandle, acknowledged vCPU controls, cgroup identity, vsock bridges | Stage/apply/checkpoint API or automatic node sharing |
-| Prepared image | Supervise argv, initialize and authenticate execd/egress | Replacing lifecycle API authorization |
+| Native supervisor | Embedded pVisor/VM, RunHandle, vCPU controls, cgroup identity and guest protocol adaptation | Stage/apply/checkpoint API or automatic node sharing |
+| Prepared image | Pin userspace/backend; explicit upstream templates supply execd/envd | Replacing lifecycle API authorization |
 | Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
 | Native node runtime | Separate immutable backing protocols | Automatic daemon acquisition/sharing |
 | Daemon pool component | Optional detached pool enabled by `serve --sandbox --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
 | `pvisor cache` / `pvisor-daemon serve --cache` | OCI preparation/publication/reads and cache serving | Sandbox lifecycle |
 
-The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
+The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. Execution starts through `RuntimeJobService`; in-process `AttemptService` handles live status/pause/resume/termination, while supervisors separately verify ownership, readiness and confirmed deletion. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
 
 Responsibility convergence means assigning every node-local resource a clear owner, not merging every service into the daemon process: sandbox lifecycle, native immutable backing and unlosable live RAM have different authorities and failure boundaries. Shipping in one package, a unified entry point or fewer ports cannot substitute for the missing runtime adapters, and establishes neither faster startup, lower memory nor higher density. Define acquisition, cancellation, termination and pin-release contracts before wiring a new path, and evaluate through fixed-budget measurement; convergence does not establish live-VM takeover, shared cold-pool arbitration, automatic node acquisition or density advantages.
 
@@ -25,7 +25,7 @@ Responsibility convergence means assigning every node-local resource a clear own
 
 Before creating native VMs, bound the total resources of accepted sandboxes on the node. The daemon admits by the sum of hard limits; it does not queue, choose hosts, or infer available capacity from low RSS samples.
 
-Creation must provide a local prepared-image key in `image.uri`, a non-empty argv, and a `resourceLimits` containing only `cpu` and `memory`. CPU accepts integer/decimal cores or millicores; memory accepts bytes and supported decimal/binary suffixes. Amounts must be positive, exactly representable and overflow-checked. An optional platform must match the local Linux architecture. Unsupported snapshot/template, resource requests, network policy, credential proxy, secure access, volumes, image auth, lifecycle hooks and non-empty extensions fail before native creation. Environment and metadata maps are bounded and validated.
+OpenSandbox creation must provide a local prepared-image key in `image.uri`, a non-empty argv, and a `resourceLimits` containing only `cpu` and `memory`. CPU accepts integer/decimal cores or millicores; memory accepts bytes and supported decimal/binary suffixes. Amounts must be positive, exactly representable and overflow-checked. An optional platform must match the local Linux architecture. Unsupported snapshot/template, resource requests, network policy, credential proxy, secure access, volumes, image auth, lifecycle hooks and non-empty extensions fail before native creation. Environment and metadata maps are bounded and validated.
 
 ```json
 {
@@ -59,7 +59,7 @@ The startup callback checks started/delete/tombstone markers under the owner loc
 
 ## Lifecycle controls {#control}
 
-Confirm node-local native state before reporting control completion or releasing resources. The daemon serializes operations per sandbox; operations on different sandboxes proceed independently.
+Confirm node-local native state before reporting control completion or releasing resources. The daemon serializes operations per sandbox; operations on different sandboxes proceed independently. The table lists OpenSandbox responses; E2B creation returns 201 and pause/connect follows its pinned profile.
 
 | Operation | Durable/native order | Response |
 | --- | --- | --- |
@@ -82,11 +82,13 @@ Maintenance scans once per second with at most eight concurrent cleanup tasks. C
 
 TTL is best-effort cleanup, not a hard execution deadline. Slow native commands, upload/header waits and same-sandbox controls delay deletion. New proxy requests are rejected after expiration; established response streams have no total timeout. Maintenance stops while the daemon is down; stronger deadlines need independent host supervision.
 
+E2B positive timeouts and OpenSandbox RFC3339 renewal are separate contracts: E2B can shorten a deadline, TTL continues while paused, and connect cannot revive expired VMs. See the [SDK guide](../../guides/daemon/index.md#e2b).
+
 ## Service access and concurrency {#endpoints}
 
-Only execd 44772 and egress 18080 are published. Endpoint discovery and every data request's endpoint resolution authenticate the live supervisor, require the current RunHandle to be Running, check deletion fences and resolve the current publication, without trusting persisted observation caches. Discovery returns a daemon-routed authority and does not expose supervisor loopback addresses. Resolution does not repeat service health probes or full cgroup reconciliation per data request. Create, Inspect and resume retain full configuration/readiness checks; upstream connection failures are handled by the API adapter and are not readiness evidence. Proxy connection establishment shares the lifecycle lock with control/deletion, so daemon-managed deletion or port reuse cannot race a connection.
+OpenSandbox publishes logical endpoints 44772/18080; E2B publishes 49983. All use daemon routing and sandbox-scoped authentication without exposing private guest control. Each data request authenticates the live supervisor, checks Running and deletion fences, then connects. Create, Inspect and resume retain full configuration/readiness checks. Connection establishment shares the per-sandbox lifecycle lock.
 
-The proxy streams real upstream command/file/health/metrics traffic, including multipart and SSE. Upload plus response-header wait is capped at 120 seconds; established responses have no total timeout. WebSocket, CONNECT and arbitrary application ports are unsupported. Traffic/output quotas belong to the upstream services.
+Default templates adapt HTTP/SSE or JSON/Connect on the host and execute process/file operations in the guest. Output, processes and uploads are bounded. Cancelling an OpenSandbox foreground stream terminates its process; E2B and explicit background commands remain connectable within retention limits. Explicit upstream templates retain service proxying. See the [image contract](operations.md#image-contract) for backend differences.
 
 ## Concurrency and failure boundaries {#documents}
 
@@ -104,8 +106,8 @@ Ordinary Jobs keep their independent [checkpoint/fork semantics](../execution-mo
 
 ## Compatibility and evidence {#invariants}
 
-The partial API profile is pinned to **OpenSandbox 1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`. It is not full API or unmodified SDK end-to-end conformance. The prepared execd/egress image contract has no validated end-to-end recipe yet; see [operations](operations.md#image-contract).
+Partial profiles are pinned to OpenSandbox 1.1.0 and E2B Python SDK 2.59.0. The default guest engine, explicit upstream templates, SDK core flows and API-restart checks have distinct acceptance entry points; see [evidence scope](operations.md#validation). Validated core flows do not establish full service conformance.
 
 Native VM execution is wired in the runtime. Stage/apply, checkpoint/fork and offload APIs, Gateway inference-wait coordination and automatic node-resource acquisition are not implemented. Historical Cluster results do not validate daemon SDK conformance, performance or density; no node-wide physical-memory gain is established.
 
-Implementation ownership: `crates/pvisor-daemon/src/daemon/{models,store,mod,api}.rs`, `crates/pvisor-daemon/src/runtime.rs` and `crates/pvisor-daemon/src/main.rs`. Validation and resource arithmetic live in `daemon/models.rs`; serialized reservation insertion and lifecycle orchestration in `daemon/mod.rs`; native KVM/cgroup preflight and controls in `runtime.rs`; streaming forwarding in `daemon/api.rs`. The retired Cluster implementation is not this architecture.
+Implementation ownership: `daemon/models.rs` defines schemas/resource validation; `daemon/store.rs` persists per-sandbox records; `daemon/mod.rs` orchestrates admission/lifecycle; `daemon/api.rs` and `daemon/e2b.rs` provide the HTTP profiles. `runtime.rs` owns native supervisors, IPC/cgroups and VM ownership; `native.rs`/`native/` adapt guest process/file protocols; `prepared_image.rs` publishes templates; `cache_component.rs` and `memory_pool.rs` supervise independent components.

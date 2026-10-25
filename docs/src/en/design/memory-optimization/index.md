@@ -33,14 +33,14 @@ Pin a reliable backing or recovery source before unmapping or reclaiming origina
 | --- | --- | --- |
 | Snapshot baseline + private COW | Unmodified pages restored from the same verified backing | Writes become private; backing identity and compatible profiles are required |
 | Linux KSM advice | Duplicate content in eligible private RAM, including private file COW candidates | Asynchronous scanning and COW; host administrators control the scanner |
-| Daemon physical page pool | Equal resident 4 KiB pages in different VM sessions | Bounded scans and references, separate pool failure domain; no compression of unique pages |
+| Daemon physical page pool | Equal resident pages across VM sessions: Linux 4 KiB, Apple Silicon 16 KiB | Bounded scans and references, separate pool failure domain; no compression of unique pages |
 | Daemon sealed compressed pool | Equal or unique compressible cold 64 KiB blocks | Shared immutable encoded handles, local recovery; userfaultfd required; scoped two-VM correctness probe passed |
 | Local live compression | Unique compressible cold content within an instance | userfaultfd permissions, encoding CPU and refault costs |
 | Whole-VM offload | Idle state with a retained recovery source | Write/restore costs, storage and peak headroom |
 
 See [Memory deduplication](deduplication.md), [Per-instance compression](compression-local.md), [RAM offload](offload.md) and the [byte-layout appendix](../offload/disk-layout-and-schema.md). [Pooled-server compression](compression-pool.md) shares sealed encoded objects in an explicit Linux mode; the default daemon physical pool shares raw pages. They remain separate mechanisms.
 
-The default route is instance-local ownership: local compression avoids service coordination but cannot share encoded results across instances. Pooling adds optional deduplication, shared storage and host-level budgets at the cost of IPC, contention and a wider failure radius; introduce it only when cross-instance sharing of encoded objects is needed. Both need scratch memory, restoration headroom, a CPU budget and acceptable tail latency.
+Instance-local compression keeps a narrower ownership and failure scope when cross-instance sharing is unnecessary. Pools add shared content and host budgets along with IPC, scanning and service failure scope. Explicitly select a supported profile and account for scratch memory, restoration headroom, CPU and tail latency.
 
 ## Ownership and publication order {#ownership}
 
@@ -73,7 +73,11 @@ Losing the physical/legacy pool fails dependent VMs. Linux sealed-compressed cli
 
 ## Implementation and combinations {#direction}
 
-The Linux daemon enables raw-page sharing explicitly with `serve --sandbox --memory-pool`; it does not require userfaultfd. Per-instance live compression and `--memory-pool-mode compressed` use userfaultfd. The sealed pool has component-level service-loss tests and a passing two-VM probe covering eviction/refault and file I/O after service termination; the equivalent sealed pooling is not delivered on macOS, and production-density and latency acceptance remain open. Snapshot capture/restore, file backing, whole-VM offload, KSM advice and cold-page paths have explicit incompatibility checks. Callers select supported profiles; combinations do not switch automatically at runtime.
+Linux sandbox serving explicitly enables physical-page sharing with `--memory-pool`, off by default; it needs no userfaultfd. Linux instance-local live compression and the pool's `compressed` mode require kernel-fault userfaultfd. Sealed clients can recover already-delivered content after service loss.
+
+Apple Silicon can run the daemon pool independently and connect through `pvisor run --memory-pool SOCKET` or the Job `--vm-memory-pool` option, without enabling the Linux sandbox API. Default `compressed` uses the HVF cold-block pool. Explicit `physical-pages` shares 16 KiB host pages with COW through a private unlinked file, rather than Linux memfd. The temporary filesystem must support mapping and hole punching; account for file-cache and disk use separately. Neither macOS pool mode has Linux sealed-local recovery after service loss: both require a live owner.
+
+Physical sharing has native Apple Silicon acceptance entry points; see the [shared-memory acceptance record](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/tests/MACOS_SHARED_MEMORY.md). It does not establish production density, scan CPU cost or tail latency. Snapshot, file backing, offload, KSM and cold-page modes have explicit combination restrictions; configurations do not hot-switch automatically.
 
 [VM memory benchmarks](../../benchmarks/vm-memory/index.md) retain sharing and offload evidence by configuration, samples and accounting scope. Ready-stage savings do not guarantee lower lifecycle peaks, and writes reduce sharing. [Proofs of concept](proof-of-concept.md) retain historical mechanisms and failures; [Environment snapshots](../environment-snapshot.md) define complete-state contracts.
 

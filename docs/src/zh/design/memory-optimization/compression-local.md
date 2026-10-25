@@ -91,7 +91,8 @@ memfd 槽位经引用固定后，由 VM 以 `MAP_PRIVATE` 映射；它不注册 
 选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：
 字节不变仍可能被频繁读取。重新核对保护内容，不保证工作负载延迟。
 历史编码池与 Linux 客户端持有 sealed backing 的实现见[池化压缩](compression-pool.md)，
-不能用它们替代当前物理池的合同；macOS 尚未交付等价的 daemon 物理共享路径。
+不能用它们替代物理池的合同。Apple Silicon 另有 `physical-pages` 的 16 KiB 物理共享，
+使用私有文件映射与 live owner；默认 HVF 压缩池仍是不同后端，见[平台与故障边界](index.md#direction)。
 
 ## 证据边界 {#evidence}
 

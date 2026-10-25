@@ -1,15 +1,8 @@
 # Run the single-node daemon
 
+Use OpenSandbox 1.1.0 or E2B Python SDK 2.59.0 to drive local Linux VM sandboxes. The daemon owns resource admission, persistent ownership, lifecycle and expiration cleanup. Each sandbox has an independent supervisor that clients can reconnect to after an API restart.
 
-Cache is an optional component of the same daemon: add `--cache` to sandbox serving, or run `pvisor-daemon serve --cache` alone. `--cache-listen` and `--cache-image-store` configure its separate endpoint and store. Cache startup failure or unexpected exit fails the daemon; daemon shutdown/crash stops its cache worker. HTTP shutdown drains for at most ten seconds; in-flight cache requests may fail. Native VM supervisors and the shared pool retain their existing restart lifecycle.
-Install `pvisor-daemon` to manage image sandboxes on one Linux host through an API partially compatible with OpenSandbox 1.1.0. The daemon owns node-local admission, lifecycle, persistent state and expiration cleanup.
-
-Cross-node scheduling, global DAGs and distributed leases belong to Kubernetes, Ray or your application. The daemon contains no Controller or Worker.
-
-Use `pvisor-daemon` for node-local native VM sandbox lifecycles; use `pvisor spawn` for the public Job and file-review workflow.
-
-!!! warning
-    The project **has not supplied a guest bootstrap or image recipe and has not performed end-to-end validation**; SDK-conformance validation and density measurements are also unavailable. Every step below requires you to prepare images and vsock bridging yourself.
+Use native Jobs through `pvisor spawn` when you need workspace review and merging. The daemon provides a tested core SDK subset without Job stage/apply or checkpoint/fork APIs. Callers own cross-node placement, workflows and business retries.
 
 ## Prerequisites {#prerequisites}
 
@@ -17,9 +10,9 @@ You need Linux x86_64, a usable `/dev/kvm`, trusted absolute paths, and a writab
 
 Preflight checks perform real controller writes and KVM API calls. There is no host, OCI-command or registry-pull fallback.
 
-An image is a trusted local `images_dir/<key>.json` manifest, not a registry reference. Fields include an absolute-path standalone Linux `rootfs` (neither the host `/` nor overlapping daemon state), an absolute-path guest bootstrap `entrypoint` argv, optional `cmd`, optional `env`, and an optional absolute-path firmware `library_dir`. The requested workload argv (or `cmd` when empty) is appended to `entrypoint`; request env overrides manifest env, does not inherit the host environment, and receives no shell interpolation.
+Create requests use a local template key in `images_dir/<key>.json`; creation performs no registry pull or complete image extraction. First use `prepare-image` to prepare a trusted image and pin its revision; prefer digests in deployments. The base must contain the shells, tools and languages required by workloads.
 
-The long-running guest bootstrap must supervise the workload, a real OpenSandbox 1.1.0 execd and egress; initialize/authenticate the services itself; forward signals and reap children. It must provide byte-transparent AF_VSOCK listeners on ports **44772/18080** of guest **CID 3**, bridging the real services. The supervisor's loopback TCP publications reach the guest over a private Unix socket and native vsock forwarding. A plain rootfs or a sleep-only process is not enough. Create, Inspect on a Running VM and resume readiness checks require, through the bridge, a real HTTP 200 from execd `/ping`, JSON `initialized: true` from `/ready`, and egress `/healthz`, with bounded response bodies. The daemon neither injects/initializes execd nor synthesizes command/SSE/file responses.
+New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Legacy standalone-rootfs manifests retain their bootstrap contract; see the [image contract](../../design/daemon/operations.md#image-contract).
 
 ## Install and start {#install}
 
@@ -31,7 +24,12 @@ pvisor-daemon --help
 pvisor-daemon protocol
 ```
 
-For the latest `main` build, use the [nightly wheel installer](../../start/installation.md). `protocol` prints the pinned OpenSandbox version and commit. Pin the source revision, SDK 1.1.0 and image contents together. The local source-install path (`cargo install --locked --path crates/pvisor-daemon`) is not verified.
+Use the [nightly wheel installer](../../start/installation.md) for recent builds, or `mise run build -- performance daemon` from source. Pin the daemon revision, SDK version and image contents together. Prepare separate protocol templates:
+
+```bash
+pvisor-daemon prepare-image --name ubuntu --image ubuntu:24.04 --images-dir /srv/pvi
+pvisor-daemon prepare-image --name e2b-base --image ubuntu:24.04 --e2b --images-dir /srv/pvi
+```
 
 `serve` constructs the `NativeRuntime` from the implemented and required `--images-dir` and `--cgroup-root`:
 
@@ -65,7 +63,7 @@ Expect a JSON sandbox list, empty on a fresh state. This query validates API acc
 
 ## OpenSandbox interface scope {#profile}
 
-The compatibility baseline is pinned to OpenSandbox **1.1.0**, tag `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`. Support is limited to the partial API below; full OpenSandbox and unmodified-SDK end-to-end compatibility are unvalidated.
+Compatibility is pinned to OpenSandbox **1.1.0** (`release-1.1.0`). The unmodified official Python SDK has validated core flows below. Full API conformance, notebook/session kernels and all SDK features are outside the supported scope; see the [protocol and tests](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#protocol-baseline).
 
 | Capability | Current behavior |
 | --- | --- |
@@ -73,11 +71,61 @@ The compatibility baseline is pinned to OpenSandbox **1.1.0**, tag `release-1.1.
 | Pause / resume | Confirmed live vCPU pause/resume on the same Attempt, not a checkpoint |
 | Renew | A future RFC3339 time that extends an existing TTL |
 | Endpoints | Only daemon-routed execd 44772 and egress 18080 |
-| Commands, files, health, metrics | Streamed to the real upstream services in the prepared image |
+| Commands, files, health, metrics | Native guest engine by default; service proxy for explicit upstream templates |
 | Snapshots, templates/pools, metadata modification, hooks | Unsupported |
 | Network policies, credential proxy, secure access, volumes, image auth | Unsupported create options are rejected |
 | Arbitrary app ports, signed endpoints, WebSocket, CONNECT | Unsupported |
 | Stage/apply, checkpoint/fork, offload | Not wired into this daemon backend |
+
+Install `opensandbox==1.1.0` and run from a process with the same API key:
+
+```python
+import asyncio
+import os
+from opensandbox.config import ConnectionConfig
+from opensandbox.sandbox import Sandbox
+
+async def main():
+    config = ConnectionConfig(
+        domain="127.0.0.1:8080", protocol="http",
+        api_key=os.environ["OPEN_SANDBOX_API_KEY"], use_server_proxy=True,
+    )
+    sandbox = await Sandbox.create("ubuntu", connection_config=config,
+                                   resource={"cpu": "1", "memory": "512Mi"})
+    try:
+        result = await sandbox.commands.run("printf 'hello from pVisor'")
+        print(result.logs.stdout[0].text)
+    finally:
+        await sandbox.kill()
+        await sandbox.close()
+
+asyncio.run(main())
+```
+
+## E2B interface {#e2b}
+
+Use the pinned official SDK for the `e2b-base` template, with a data endpoint URL that includes `/e2b`:
+
+```bash
+pip install 'e2b==2.59.0'
+export E2B_API_KEY="$OPEN_SANDBOX_API_KEY"
+export E2B_API_URL='http://127.0.0.1:8080'
+export E2B_SANDBOX_URL='http://127.0.0.1:8080/e2b'
+```
+
+```python
+from e2b import Sandbox
+
+sandbox = Sandbox.create("e2b-base", timeout=300)
+try:
+    print(sandbox.commands.run("printf 'hello from pVisor'").stdout)
+    sandbox.files.write("/tmp/hello.txt", "private VM file")
+    print(sandbox.files.read("/tmp/hello.txt"))
+finally:
+    sandbox.kill()
+```
+
+E2B supports sync/async lifecycle, commands, stdin, background processes, files and PTYs. The native adapter accepts JSON/Connect, without binary protobuf, cloud template builds, notebook kernels, arbitrary app ports or automatic pause/resume. Pause retains the live VM and its reservation while TTL continues; it creates no durable snapshot. See the [partial protocol contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#local-e2b-sdk-interface).
 
 ## Query, delete and expiration {#operations}
 
@@ -104,17 +152,21 @@ Resolve execd through `GET /v1/sandboxes/{id}/endpoints/44772` and egress throug
 - The default mode provides a random, sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in the endpoint `headers`. Clients must preserve these headers; the token authorizes neither lifecycle operations nor other sandboxes.
 - Control credentials are removed before forwarding to the guest. A caller-provided guest execd access token is not replaced by the lifecycle key.
 
-Signed endpoint expiration, arbitrary app ports, WebSocket and CONNECT are unsupported. Requests/responses stream, including multipart and SSE. Upload plus waiting for upstream headers is capped at 120 seconds; established response streams have no total timeout. Output/traffic quotas remain the upstream services' responsibility.
+OpenSandbox signed endpoint expiration, arbitrary app ports, WebSocket and CONNECT are unsupported. The default native backend bounds response streams, process counts, retained output and upload size per sandbox, with explicit failures on overflow. Explicit upstream backends retain their service quotas. See the [native engine contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#native-guest-execution-default-for-new-templates) for limits.
 
 Loopback is the default listener. Before external access, configure TLS at a trusted reverse proxy and set `--public-endpoint HOST:PORT` to the externally routed authority, without scheme or path.
 
-## Enabling the daemon memory pool {#memory-pool}
+## Optional cache and memory pool {#memory-pool}
+
+Add `--cache` for a separate cache endpoint, configured with `--cache-listen` and `--cache-image-store`, or run `pvisor-daemon serve --cache` alone. The daemon supervises its worker; unexpected worker exit fails the daemon, and daemon shutdown/crash stops the worker. Failed in-flight requests require reconciliation.
 
 Add `--memory-pool` to the `serve` command to connect new sandboxes to the daemon-held physical shared-page pool; it is off by default. The runtime scans resident 4 KiB pages, preferring cross-instance duplicate content, and the daemon retains one physical page. VM reads stay shared; writes get private pages through kernel COW. This Linux path needs no userfaultfd and does not compress unique pages. Actual occupancy depends on duplication, scanning and writes; see the [memory benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle).
 
 The pool component is independent of the API process and retains pages across API restarts. After a disconnect, mapping references are released only once a pidfd confirms the VM process exited. Losing the pool process fails dependent VMs and does not replace the live pool automatically. Default limits are 512 MiB of page data, 32,768 objects, 32 connections and 32,768 references per connection. The 4 KiB object cap bounds the default pool to 128 MiB of distinct pages and each VM to 128 MiB of references. Indexes, mappings, threads and the allocator add overhead; the pool sits outside per-sandbox cgroups and admission quotas, so reserve host headroom. When upgrading an old compressed pool, drain old VMs first and use a new state directory.
 
 For the experimental compressed mode, add `--memory-pool --memory-pool-mode compressed` instead. Identical decoded 64 KiB blocks share sealed fill/zstd objects, and unique compressible content can also enter the pool. VM startup requires kernel-fault userfaultfd permission. After pool loss, already-held handles remain usable while new publication stops. The mode binds to persistent configuration; switching requires draining old instances and a new state directory. Process-level sharing and service-exit tests pass, and a two-VM probe verified guest UFFD eviction/refault and file I/O after pool termination. See the [sealed compressed-pool contract](../../design/memory-optimization/compression-pool.md). These VM/pool tests do not equal full OpenSandbox SDK end-to-end validation.
+
+Cache and pool components can also run independently without the sandbox API. Both support Linux and Apple Silicon macOS. macOS defaults to compression, or explicitly selects `--memory-pool-mode physical-pages` in fresh state. See [memory optimization](../../design/memory-optimization/index.md) for connection commands, budgets and pool-loss behavior.
 
 ## Restart and state ownership {#restart}
 
@@ -155,7 +207,7 @@ The retired Cluster task/client SDK, Controller/Worker registration, placement, 
 | A v2 header lacks the native `owner.json`, even with an empty map | Restore the original ownership state; do not delete `records/`, reservations or forge markers |
 | State directory busy | Another daemon holds the exclusive lock; do not delete locks or state to bypass |
 | Image unavailable | Prepare the image locally first; automatic pull and image auth are unsupported |
-| SDK create never becomes ready | Real execd initialization with `/ping`/`/ready`, egress `/healthz` and the 44772/18080 vsock bridge on guest CID 3; a plain rootfs is insufficient |
+| SDK create never becomes ready | Check template backend, guest binding and entrypoint state; explicit upstream templates also require execd/envd initialization and bridges |
 | External endpoint unreachable | TLS proxy routing, domain/protocol, `--public-endpoint` and the endpoint-provided headers |
 | Admission still full after failure/pause | Failed/uncertain/paused retain hard reservations; query and confirm deletion |
 | Expired sandbox still exists | Cleanup is best effort; check daemon uptime, the lifecycle lock and native cleanup errors |

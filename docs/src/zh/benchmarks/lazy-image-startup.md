@@ -189,4 +189,4 @@ Stage 原始证据保留在 `benchmark/startup/.data/overlaybd-lab-20261017/stag
 [ref-turbooci-performance]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md#performance
 [ref-dadi]: https://www.usenix.org/conference/atc20/presentation/li-huiba
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。

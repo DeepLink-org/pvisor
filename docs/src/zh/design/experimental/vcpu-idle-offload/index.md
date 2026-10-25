@@ -1,6 +1,6 @@
 # vCPU 空闲观测与自动内存卸载（EXP-001）
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
 
 | 项目 | 当前状态 |
 |---|---|

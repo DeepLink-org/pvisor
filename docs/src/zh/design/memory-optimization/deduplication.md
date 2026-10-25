@@ -31,6 +31,8 @@
 
 Reference pin 保护槽位到撤销映射之后，断联时等待 pidfd 确认 peer 退出再回收。Pool 是活跃共享页的 owner，丢失会使依赖 VM 失败；它不提供 durable snapshot 或进程重启恢复。预算和故障范围见[共享工作集](../daemon/shared-working-set.md)。
 
+Apple Silicon 的独立物理共享入口是 `pvisor-daemon serve --memory-pool --memory-pool-mode physical-pages`，再将其 socket 传给 VM。它共享 16 KiB 宿主页，以只读 descriptor、不可变槽位引用和 CPU/设备屏障保护 COW 映射；使用 kqueue 观察进程退出，不能在连接断开时立即回收 live 引用。它不压缩、不支持 snapshot/offload，也不在池丢失后重建 RAM。相同 guest 内容可能落在不同的 16 KiB 边界，不能假定全部可合并。部署和验收链接见[内存架构](index.md#direction)。下面的区域扫描参数描述 Linux 实现。
+
 ### 区域自适应扫描 {#adaptive-scan}
 
 物理页 pager 借鉴 [UKSM 的区域分层设计](https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf)，

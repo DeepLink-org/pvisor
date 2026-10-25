@@ -76,4 +76,4 @@ Compressed parked snapshots versus container pause have not completed validation
 
 Complete CSV/JSON retains attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. It remains with raw records in local cohorts or the documentation data archive; failed batches remain in capacity denominators.
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+> Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.

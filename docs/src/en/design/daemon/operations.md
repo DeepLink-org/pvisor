@@ -8,7 +8,7 @@ Platform prerequisites (Linux x86_64, `/dev/kvm`, a delegated cgroup v2 hierarch
 
 Set `OPEN_SANDBOX_API_KEY` to a protected random secret of at least 32 bytes, not argv.
 
-`serve` constructs `NativeRuntime` using the implemented, required `--images-dir` and `--cgroup-root` flags. Cargo links `pvisor` and `pvisor-core`; synchronous `main` calls `pvisor::run_krun_internal_if_requested()` before argument parsing or Tokio, then dispatches the hidden `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. The deployment example below uses the current CLI, but does not supply or validate the guest bootstrap, SDK conformance or density.
+`serve --sandbox` constructs `NativeRuntime` from `--images-dir` and `--cgroup-root`. It starts the runtime in independent supervisors, with internal VM dispatch before Tokio. Prepare images and the API key using the [user guide](../../guides/daemon/index.md#install), then start serving:
 
 ```sh
 pvisor-daemon protocol
@@ -30,13 +30,13 @@ An occupied v1 registry or a v2 header without the native `owner.json` marker is
 
 ## Prepared image contract {#image-contract}
 
-Image manifest fields and environment semantics are documented in the [operations guide's prerequisites](../../guides/daemon/index.md#prerequisites).
+`prepare-image` prepares a registry image in the shared compressed pool, pins its revision and atomically publishes a local template manifest. Create opens that revision's lazy projection and retains its owner until VM cleanup completes. Registry pulls and complete extraction are outside creation. See the [user guide](../../guides/daemon/index.md#install) for keys, preparation commands and SDK examples.
 
-The long-lived guest bootstrap must supervise workload, real OpenSandbox 1.1.0 execd and egress, initialize/authenticate services, forward signals and reap children. It must expose byte-transparent AF_VSOCK listeners on guest **CID 3**, ports **44772/18080**, bridging to real services. Supervisor loopback TCP publications connect through private Unix sockets and native vsock forwarding. A stock rootfs or sleeping process is insufficient.
+New templates default to `native_guest: true`. The `pvisor-guest` PID 1, process groups and reaper own workloads. Host `native/opensandbox.rs` or `native/e2b.rs` adapts HTTP/SSE or JSON/Connect and invokes the guest process/file engine over host-CID-only vsock 1025. Readiness binds sandbox/generation; the main entrypoint's exit ends the sandbox. There is no host-execution fallback.
 
-Create, Inspect of a Running VM and resume readiness checks require genuine HTTP 200 execd `/ping`, `/ready` with JSON `initialized: true`, and egress `/healthz` through the bridges, with bounded bodies. Endpoint lookup authenticates live Running state and deletion fences without repeating full health/cgroup checks per data request. The daemon does not inject/initialize execd or synthesize command/SSE/file responses. Python SDK initialization resolves both endpoints even without network policy.
+Explicit `--execd` or `--envd` retains the upstream compatibility backend. Preparation validates static Linux ELF binaries and injects a managed bootstrap; a private handshake initializes genuine services and checks binding, authentication and readiness. Legacy standalone-rootfs manifests are not converted: their bootstrap must keep supplying the corresponding guest services and vsock bridges. See the [crate contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#runtime-boundary-native-vm-and-prepared-images) for formats and legacy requirements.
 
-The bootstrap and image recipe are **not supplied or end-to-end validated**. The old container `cap-drop=ALL` restriction does not describe this native VM backend; an upstream image name is not a native bootstrap/vsock adapter. No fake readiness, SDK-conformance or density evidence is provided.
+Templates and host code are trusted inputs. ELF/digest checks do not authenticate third-party provenance. Failed preparation preserves the previous manifest. If rename or directory-sync results are uncertain, inspect published state before retrying.
 
 ## Partial protocol profile {#api}
 
@@ -51,7 +51,7 @@ Baseline: OpenSandbox **1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f79
 | `POST /v1/sandboxes/{id}/pause`, `/resume` | Confirm live vCPU pause/resume on the same Attempt; 202 empty |
 | `POST /v1/sandboxes/{id}/renew-expiration` | Future RFC3339 deadline extending any existing TTL |
 | `GET /v1/sandboxes/{id}/endpoints/{port}` | Actual execd/egress publication through daemon authority |
-| Data plane | Stream prepared services; do not reimplement their APIs |
+| Data plane | Guest engine and host protocol adapters by default; proxy for explicit upstream templates |
 
 Lifecycle requests use `OPEN-SANDBOX-API-KEY`. Responses carry `X-Request-ID`; errors use `{code, message}`. Server-proxy endpoints use the lifecycle key; default endpoints provide sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` headers that SDKs must preserve. Tokens cannot control lifecycle or access another sandbox. Control secrets are stripped upstream, but caller-supplied execd access credentials are not replaced.
 
@@ -71,8 +71,12 @@ Native OverlayNet supplies VM outbound networking; OpenSandbox network-policy re
 | Pending delete/TTL cleanup | Restore runtime access; maintenance retries, but TTL is not a hard deadline |
 | Storage commit uncertain/corrupt registry | Preserve directory, repair storage and restart; never erase ownership state to proceed |
 | Daemon shutdown | Detached native supervisors/VMs survive daemon-only restart; restart with the same owner/state, or arrange independent host cleanup |
-| Readiness/endpoint failure | Verify real services and guest bootstrap/vsock bridges, not just a Running VM |
+| Readiness/endpoint failure | Check guest binding, entrypoint and authentication for the selected backend; explicit upstream templates also require service initialization and bridges |
 
 ## Evidence scope {#validation}
 
-Source tests cover fake-runtime admission/lifecycle/restart/TTL, HTTP auth/schemas/filtering/endpoints and pure runtime parsing/argv. They do not establish native isolation, SDK end-to-end compatibility or density gains. No build, test, native sandbox or benchmark validates the current daemon. Prior distributed Cluster gates and measurements do not validate this daemon.
+Conventional Rust tests cover admission, lifecycle, restart, TTL, authentication, schemas, state transitions, native IPC/cgroup identity and cleanup. Official SDK checks against real VMs cover OpenSandbox 1.1.0 and E2B Python 2.59.0 creation, concurrent sandboxes, commands, files, pause/resume, authentication and deletion. A separate restart check verifies the same VM, files and live processes across API restart.
+
+Acceptance entry points are `crates/pvisor-daemon/tests/opensandbox_sdk.py`, `e2b_sdk.py` and `native_sdk_restart.py`. They require an isolated daemon, prepared templates and real KVM/cgroup prerequisites; see the [crate test instructions](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#validation). Ordinary `mise run test -- pvisor-daemon` does not automatically run these SDK drivers.
+
+Results apply to the listed core profiles. Full SDK conformance, production density, network policies and hostile multi-user security require separate validation. Historical Cluster measurements cannot substitute for current daemon evidence.

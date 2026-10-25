@@ -1,6 +1,6 @@
 # pVisor versus OpenSandbox: startup, disk and memory measurements
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+> Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.
 
 ## Motivation {#motivation}
 

@@ -1,10 +1,9 @@
 # Engineering guide
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
 
 Run commands from the repository root. `mise tasks ls` lists public tasks; `mise run ci` runs the local check sequence, and `mise run ci -- check "test pvisor-core"` runs selected tasks in order and stops on failure. Internal tasks stay callable but are hidden from the default help.
 
-Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 or newer, then prepare the development environment:
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 or newer, then prepare the development environment:
 
 ```bash
 mise trust
@@ -15,9 +14,11 @@ mise run doctor
 
 `mise.toml` pins Rust (including rustfmt and Clippy), Python 3.12, uv, Ruff, actionlint, jq, Zig, nextest and cargo-zigbuild. `setup` installs the current architecture's Linux musl guest target and syncs development dependencies into `.venv` from `uv.lock`; it neither installs pVisor itself nor builds firmware. The Python product still supports 3.10+; development tools use 3.12.
 
+CI and wheel builds use mise 2026.10.18 with the committed tool versions and lockfiles. For compatible local tools already on `PATH`, set `disable_tools = ["python", "uv", "jq"]` in the `[settings]` table of the ignored `mise.local.toml`; disabled tools must be provided by the caller. Python development tasks require 3.12 or newer, and `UV_PYTHON` falls back to `python3` when Python is disabled. Select other mise-managed versions in that file's `[tools]` table and check them with `mise ls --current`. Release builds and recorded benchmark comparisons use a clean checkout without personal overrides or disabled tools.
+
 `mise run` selects the project tools and environment without shell activation. For direct Cargo or Python commands, use `mise exec -- cargo …` / `mise exec -- python3 …`, or activate your shell following mise's shell setup instructions. Separate task arguments from mise with `--`; Rust tests use a second `--` between package names and nextest options, for example `mise run test -- core -- --offline`.
 
-Platform package managers still provide native dependencies: Linux build libraries, FUSE, KVM and cgroup permissions, or macOS Xcode Command Line Tools, LLVM/GNU tools and macFUSE. See Build environment below and the executor guides. Machine-specific overrides belong in ignored `mise.local.toml`; keep personal paths and credentials out of shared configuration. Update tool versions in `mise.toml`, run `mise lock --platform linux-x64,macos-arm64` and commit `mise.lock`; after changing Python dependencies, run `mise exec -- uv lock` and commit `uv.lock`.
+Platform package managers still provide native dependencies: Linux build libraries, FUSE, KVM and cgroup permissions, or macOS Xcode Command Line Tools, LLVM/GNU tools and macFUSE. See Build environment below and the executor guides. Machine-specific overrides belong in ignored `mise.local.toml`; keep personal paths and credentials out of shared configuration. Update tool versions in `mise.toml`, use CI's mise 2026.10.18 to run `mise lock --platform linux-x64,macos-arm64` and commit `mise.lock`; after changing Python dependencies, run `mise exec -- uv lock` and commit `uv.lock`.
 
 ## Repository layout and ownership
 
@@ -28,14 +29,14 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
 | `crates/pvisor-cli/` | Three application binaries, CLI commands, terminal frontends and replay/TUI companion dispatch |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API, detached native VM supervisors and optional daemon-owned pool |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox API, native guest protocol adapters and cross-platform cache/pool components |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
 | `crates/pvisor-journal/` | Shared fact Journal storage and readers |
 | `crates/pvisor-gateway/` | Agent protocol forwarding/conversion, capture and projections |
 | `crates/pvisor-overlay-core/` | FUSE-independent OverlayFS operations and file access controls |
 | `crates/pvisor-overlayfs/` | FUSE adaptation and mounts |
 | `crates/pvisor-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net path |
-| `crates/pvisor-guest/` | Linux PID 1 supervisor and shared VM launch contract |
+| `crates/pvisor-guest/` | Linux PID 1, shared launch contracts and native process/file control engine |
 | `crates/pvisor-shim/` | containerd Runtime v2 shim; optional VM execution |
 | `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation protocol bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
@@ -70,62 +71,22 @@ core, guest ──> no other workspace crates
 
 ### pVisor source modules
 
-```text
-crates/pvisor-cli/src/
-├── lib.rs                 # Frontend modules, not runtime re-exports
-├── bin/                   # Three: pvisor, pvisor-tui, pvisor-replay
-├── cli/                   # Arguments, commands and shared terminal utilities
-│   ├── cache.rs           # Cache argument parsing and rendering
-│   └── features.rs        # Runtime feature listing frontend
-├── companions.rs          # Same-installation companion lookup/dispatch
+| Implementation entry | Ownership |
+| --- | --- |
+| `pvisor-cli/src/cli/mod.rs` | Build parsing/dispatch for the selected command; root help describes command groups |
+| `pvisor-cli/src/cli/host*.rs`, `run/` | Frontend/owner startup, terminal, signals and Job command adaptation |
+| `pvisor/src/runtime/job_service/` | Durable Job lifecycle, workspace, forks, capture, views and policy |
+| `pvisor/src/runtime/attempt_service.rs` | In-process live Attempt status/pause/resume/termination shared by Jobs and daemon |
+| `pvisor/src/session*`, `runtime/attempt.rs` | Per-Attempt driver preparation, execution and finalization |
+| `pvisor/src/runtime/completion.rs` | Commit and validate completion binding Bundle bytes to terminal results |
+| `pvisor/src/docker.rs`, `image/` | Per-container VMs, image catalog and shared compressed image pool; ordinary OCI execution remains separate |
+| `pvisor-daemon/src/daemon/`, `runtime.rs` | APIs, admission, records, supervisors and cgroup/VM ownership |
+| `pvisor-daemon/src/native/`, `prepared_image.rs` | OpenSandbox/E2B guest protocol adaptation and template publication |
+| `pvisor-replay/src/adapter/`, `bridge/` | Trajectory planning, agent selection and native continuation bridges |
 
-└── tui/                   # TUI PTY runtime, renderer, review panels and keymap
+The CLI owns arguments/display; the runtime owns execution and durable Jobs. VM, filesystem and network implementations stay in their owning crates. Core defines shared policies and wire DTOs. Jobs and daemon reuse in-process control while retaining their own authentication, admission, storage and confirmed cleanup.
 
-crates/pvisor/src/
-├── lib.rs                 # Runtime exports and explicit frontend/embedding APIs
-├── session/               # Attempt lifecycle and completion
-├── session.rs             # Session owner
-├── config.rs              # Runtime and executor configuration
-├── trace.rs               # Shared fact Journal re-exports
-├── diagnostics.rs         # Shared host diagnostics; frontend chooses destination
-├── executor/
-│   ├── mod.rs             # RunExecutor and execution output contract
-│   ├── process.rs         # Host process executor
-│   ├── container.rs       # Container executor
-│   ├── sandbox.rs         # Host OS isolation and internal sandbox entry
-│   ├── artifact.rs        # Guest-compatible executable resolution
-│   ├── delegated.rs       # Delegated spec/result handoff
-│   └── vm/                # VM executor adapter and Run resource/control integration
-├── image/
-│   ├── oci.rs             # Registry, prepared records, blobs and unpacking
-│   └── cache/             # Cache protocol/server/client and lazy FUSE
-├── runtime/
-│   ├── run.rs             # PVisor API and run lifecycle
-│   ├── job_service.rs     # Durable RuntimeJobService
-│   ├── job_execution.rs   # Job execution mechanisms
-│   ├── host_transport.rs  # Typed Host transport
-│   ├── instance_control.rs # Local instance control exchange
-│   ├── agentctl.rs        # Per-run cooperative control server
-│   ├── agentctl_client.rs # Synchronous AgentCtl client
-│   ├── audit.rs           # Approval socket transport/cache
-│   ├── event.rs           # Run event publication
-│   ├── bundle.rs          # Persistent review summary
-│   ├── checkpoint.rs      # Logical checkpoints and restoration
-│   ├── registry.rs        # Run identity, liveness lock and local control endpoints
-│   ├── attempt.rs         # Per-attempt driver resources/cleanup
-│   ├── supervisor.rs      # Capability checks and driver coordination
-│   ├── operation.rs       # Operation and observation construction
-│   ├── implant.rs         # Runtime environment injection
-│   ├── overlay.rs         # Stage/review/apply/drop/recovery
-│   └── zcode.rs           # Process compatibility policies
-└── util.rs                # Small shared file/time utilities
-```
-
-CLI arguments/display, frontend/owner bootstrap and terminal handoff belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend. `pvisor-daemon/src/memory_pool.rs` owns pool startup/reuse and the detached `memory-pool` component; `serve --sandbox --memory-pool` enables it. Node protocols in `pvisor/src/node.rs` and `node/` are runtime facilities with no daemon acquire/release adapter. `pvisor cache` owns preparation, publication and reads; `pvisor-daemon serve --cache` owns serving.
-
-Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
-
-In replay, `adapter/` owns native trajectory planning and launch selection; `bridge/` owns Claude/Codex/OpenCode protocol bridges and Claude resume transport validation. Shared execution and journal remain at the crate root.
+See [Core architecture](../design/architecture.md#api-boundaries) for public interfaces and migration status. Only VM, OverlayFS and Journal currently use a sole `api` entry. Other crates retain their actual exports; this logical table does not imply unified Rust visibility or stability.
 
 ### Core implementation boundaries
 

@@ -189,4 +189,4 @@ Complete CSV/JSON and raw evidence stay in `benchmark/pvisor/.data/lazy-shell-cu
 [ref-turbooci-performance]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md#performance
 [ref-dadi]: https://www.usenix.org/conference/atc20/presentation/li-huiba
 
-> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+> Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.

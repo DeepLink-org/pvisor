@@ -9,8 +9,12 @@ Do not use execution density or supervision-cost goals as the homepage subtitle.
 Describe the two supporting paths: resource sharing and idle-memory reclamation
 for machine capacity; staged file changes, execution records and review for
 supervision efficiency. Quantified gains require workload-specific evidence.
-The product covers Agent CLIs, scripts, and
-automation commands; describe Agent-specific integrations as such.
+The product covers Agent CLIs, scripts, and automation commands. Distinguish
+three current interfaces: native Jobs with stage/review/apply, Docker-style
+per-container VMs, and local daemon OpenSandbox/E2B SDK profiles. The shared
+runtime does not make their controls, records, defaults or lifecycle APIs
+interchangeable. Describe Agent-specific integrations as such; keep supervision
+levels independent of concurrency and deployment scale.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
 prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
@@ -532,7 +536,7 @@ or evidence of completed research:
 
 ### Verified reference and example coverage
 
-- `reference/config`: all 113 fields in the configured serde structures, including
+- `reference/config`: the fields in the configured serde structures, including
   nested mount, route, resource, and policy entries, now have names, types,
   defaults, and usage. `scripts/check-reference.py` compares names and types
   against source during `mise run docs-build`; Rust documentation tests compare raw

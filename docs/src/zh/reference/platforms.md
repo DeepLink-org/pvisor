@@ -15,11 +15,15 @@
 | macOS Apple Silicon | 暂存需要 macFUSE 5.4.0+ 的 FSKit；文件/网络使用 Seatbelt | 原生 OCI Linux 容器路径不支持 | HVF、Hypervisor 签名与 Linux arm64 rootfs/image；不需要 macFUSE |
 | Windows / macOS Intel | 当前发布说明不承诺支持 | 不承诺 | 不承诺 |
 
+此表的 `container` 指原生 Job 的 OCI 执行器（`--executor container`）。[Docker 风格容器命令](cli.md#container-commands)中的 `pvisor run` 使用独立 Linux VM，在 Linux x86_64/KVM 与 Apple Silicon/HVF 上有实现入口；它不采用此列的 OCI runtime，也不实现 Docker Engine API。
+
 发布 wheel 当前面向 Linux x86_64 与 macOS arm64；有源码分支不等于有该架构的发布 wheel 或成熟度保证。先运行 `pvisor --version` 和小任务，再核对 Bundle，安装步骤见[安装指南](../start/installation.md)。
 
 ## 单机 daemon {#daemon}
 
-独立 daemon 原生运行时要求 Linux x86_64/KVM 和委派 cgroup v2，不支持 macOS HVF 或 Linux arm64。VM-only supervisor 嵌入 pVisor，使用可信独立 rootfs manifest 和 guest CID 3 vsock bridge 连接真实 execd/egress。可执行入口接入已实现；bootstrap／镜像未提供或端到端验证，也没有 SDK／密度证据。见 [daemon 安装](../guides/daemon/index.md)与[运行时边界](../guides/daemon/index.md)；wheel／原生执行器支持不证明 daemon 就绪。
+Sandbox API 要求 Linux x86_64/KVM 和委派 cgroup v2；macOS HVF 与 Linux arm64 不在该 API 的支持范围。`prepare-image` 发布共享压缩镜像池中的模板，新模板默认用 Rust guest 引擎；OpenSandbox/E2B 官方 SDK 的核心流程已有真实 VM 验证，完整协议与生产密度不作保证。部署步骤见[daemon 指南](../guides/daemon/index.md)。
+
+同一个可执行文件的缓存和内存池组件支持 Linux 与 Apple Silicon macOS，不需要开启 sandbox API。macOS 可用压缩池或显式 `physical-pages` 物理共享；它们的前提和故障边界见[内存优化](../design/memory-optimization/index.md)。
 
 ## 能力证据怎么验证
 

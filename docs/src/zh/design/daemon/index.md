@@ -1,6 +1,6 @@
 # 单节点 Daemon 架构
 
-通过 `pvisor-daemon` 管理本机 sandbox：一个进程接受有资源边界的创建请求，持久化归属与意图，控制原生运行时，清理过期 sandbox，并转发对预制服务的访问。外部编排选择主机并协调业务工作，不是 pVisor 产品控制面。
+`pvisor-daemon` 为单机 VM 提供 OpenSandbox/E2B 生命周期与数据接口。API 进程持久化准入和意图，独立 supervisor 拥有运行中的 VM、guest 控制和协议适配，可跨 API 重启保留沙箱。外部编排负责主机选择与业务工作流。
 
 ## 职责划分 {#architecture}
 
@@ -10,14 +10,14 @@
 | --- | --- | --- |
 | 调用方 | 工作负载、预制镜像、输入版本、重试与业务副作用 | 从超时推断执行没有发生 |
 | Daemon | 本机准入、归属、意图、运行时对账、TTL、鉴权端点 | 跨主机调度或训练事务 |
-| 原生 supervisor | 嵌入 pVisor/VM、RunHandle、已确认 vCPU 控制、cgroup 身份、vsock bridge | Stage/apply/checkpoint API 或自动 node 共享 |
-| 预制镜像 | 监督 argv，初始化并鉴权 execd/egress | 替代生命周期 API 授权 |
+| 原生 supervisor | 嵌入 pVisor/VM、RunHandle、vCPU 控制、cgroup 身份与 guest 协议适配 | Stage/apply/checkpoint API 或自动 node 共享 |
+| 预制镜像 | 固定用户空间与后端选择；显式上游模板提供 execd/envd | 替代生命周期 API 授权 |
 | 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
 | 原生 node 运行时 | 独立不可变 backing 协议 | 自动 daemon 获取／共享 |
 | Daemon 池组件 | `serve --sandbox --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
 | `pvisor cache` / `pvisor-daemon serve --cache` | OCI 准备／发布／读取与缓存服务 | Sandbox 生命周期 |
 
-Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
+Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `RuntimeJobService` 启动；live status/pause/resume/termination 复用进程内 `AttemptService`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
 
 职责收敛的原则是为每种本机资源明确所有者，而不是把所有服务合并进 daemon 进程：sandbox 生命周期、原生不可变 backing 和不可丢失的活动 RAM 有不同权威与故障边界。同包发布、统一启动入口或更少端口不能补齐缺失的 runtime 适配器，也不建立更快启动、更低内存或更高密度。接入新路径前先定义获取、取消、终止与 pin 释放合同，并通过固定预算测量评估；职责收敛不建立 live-VM 接管、共享 cold-pool 仲裁、自动 node 获取或密度优势。
 
@@ -25,7 +25,7 @@ Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌
 
 创建原生 VM 前，限制单机已接受 sandbox 的资源总量。Daemon 按硬限制之和准入，不排队、不选择主机，也不从低 RSS 样本推断可用容量。
 
-创建必须在 `image.uri` 提供本机 prepared-image key、非空 argv，以及只含 `cpu` 和 `memory` 的 `resourceLimits`。CPU 接受整数／小数核或 millicore；内存接受字节及支持的十进制／二进制后缀。资源量必须为正、可精确表示，并检查溢出。可选 platform 必须与本机 Linux 架构一致。不支持的 snapshot/template、resource requests、network policy、credential proxy、secure access、volumes、镜像认证、lifecycle hooks 和非空 extensions 在原生创建前失败。环境与 metadata map 有界且经过校验。
+OpenSandbox 创建必须在 `image.uri` 提供本机 prepared-image key、非空 argv，以及只含 `cpu` 和 `memory` 的 `resourceLimits`。CPU 接受整数／小数核或 millicore；内存接受字节及支持的十进制／二进制后缀。资源量必须为正、可精确表示，并检查溢出。可选 platform 必须与本机 Linux 架构一致。不支持的 snapshot/template、resource requests、network policy、credential proxy、secure access、volumes、镜像认证、lifecycle hooks 和非空 extensions 在原生创建前失败。环境与 metadata map 有界且经过校验。
 
 ```json
 {
@@ -59,7 +59,7 @@ Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌
 
 ## 生命周期控制 {#control}
 
-报告控制完成或释放资源前，确认本机原生状态。Daemon 按 sandbox 串行执行操作，不同 sandbox 的操作可以独立推进。
+报告控制完成或释放资源前，确认本机原生状态。Daemon 按 sandbox 串行执行操作，不同 sandbox 的操作可以独立推进。 下表列出 OpenSandbox 响应；E2B 创建返回 201，pause/connect 采用其固定 profile。
 
 | 操作 | 持久／原生顺序 | 响应 |
 | --- | --- | --- |
@@ -82,11 +82,13 @@ Pause/resume 在已认证的原生确认回复中返回 live 状态；daemon 消
 
 TTL 是尽力清理，不是硬执行截止时间。慢原生命令、上传／等待响应头及同 sandbox 控制会延迟删除。过期后拒绝新代理请求；已建立响应流没有总超时。Daemon 停机期间维护停止，更强截止要求需独立宿主监督。
 
+E2B 的正数 timeout 与 OpenSandbox 的 RFC3339 续期是两套合同：E2B 可缩短截止时间，pause 时 TTL 继续计时，connect 不能复活过期 VM。具体请求见[SDK 指南](../../guides/daemon/index.md#e2b)。
+
 ## 服务访问与并发 {#endpoints}
 
-只发布 execd 44772 和 egress 18080 端口。端点发现与每次数据请求的端点解析都会认证 live supervisor，要求当前 RunHandle 为 Running，检查删除屏障并解析当前发布，不信任持久 observation 缓存。发现返回 daemon 路由的 authority，不公开 supervisor loopback 地址。解析不会为每次数据请求重复服务健康探测或完整 cgroup 额度对账。Create、Inspect 和 resume 保留完整配置／就绪检查；上游连接失败由 API adapter 处理，不作为就绪证据。代理建立连接与控制／删除共用生命周期锁，避免连接期间由 daemon 管理的删除／端口复用。
+OpenSandbox 发布 44772/18080 两个逻辑端点，E2B 发布 49983。它们均经过 daemon 路由与沙箱范围鉴权，不直接暴露私有 guest 控制。每次数据请求先认证 live supervisor、确认 Running 与删除屏障，再建立连接；create、Inspect 和 resume 仍执行完整配置/就绪校验。连接建立与生命周期操作共用逐沙箱锁。
 
-代理流式转发真实上游 command/file/health/metrics 流量，包括 multipart 和 SSE。上传加等待响应头限制为 120 秒，已建立响应没有总超时。不支持 WebSocket、CONNECT 和任意应用端口。流量／输出配额属于上游服务。
+默认模板由主机适配 HTTP/SSE 或 JSON/Connect，并在 guest 中执行命令和文件操作。输出、进程与上传均有界；OpenSandbox 前台流取消终止对应进程，E2B 与显式后台命令按留存限额继续可连接。显式上游模板保留服务代理路径。完整差异见[镜像合同](operations.md#image-contract)。
 
 ## 并发与故障边界 {#documents}
 
@@ -104,8 +106,8 @@ TTL 是尽力清理，不是硬执行截止时间。慢原生命令、上传／�
 
 ## 兼容性与证据 {#invariants}
 
-部分 API profile 固定为 **OpenSandbox 1.1.0**、`release-1.1.0`、commit `b1a29cf93a823a95913f7943010febb3f29de05c`。这不代表完整 API 或未修改 SDK 的端到端兼容。预制 execd/egress 镜像合同尚无已验证的端到端配方，见[运维](operations.md#image-contract)。
+部分协议固定为 OpenSandbox 1.1.0 与 E2B Python SDK 2.59.0。默认 guest 引擎、显式上游模板、SDK 核心流程和 API 重启检查具有不同验收入口，见[证据范围](operations.md#validation)。已验证的核心流程不等于完整服务兼容。
 
 运行时已接入原生 VM 执行。Stage/apply、checkpoint/fork 和 offload API、Gateway 推理等待协调与自动 node 资源获取未实现。旧 Cluster 结果不验证 daemon SDK 兼容、性能或密度，也没有全节点物理内存收益证据。
 
-实现归属：`crates/pvisor-daemon/src/daemon/{models,store,mod,api}.rs`、`crates/pvisor-daemon/src/runtime.rs` 和 `crates/pvisor-daemon/src/main.rs`。校验与资源算术属于 `daemon/models.rs`，串行预留插入与生命周期编排属于 `daemon/mod.rs`，原生 KVM/cgroup 前置检查与控制属于 `runtime.rs`，流式转发属于 `daemon/api.rs`。已退役 Cluster 实现不属于该架构。
+实现归属：`daemon/models.rs` 定义 schema 与资源校验，`daemon/store.rs` 持久化逐沙箱记录，`daemon/mod.rs` 编排准入和生命周期，`daemon/api.rs` 与 `daemon/e2b.rs` 提供两套 HTTP profile。`runtime.rs` 拥有原生 supervisor、IPC/cgroup 与 VM 归属；`native.rs`/`native/` 适配 guest 进程和文件协议；`prepared_image.rs` 发布模板；`cache_component.rs` 与 `memory_pool.rs` 监督独立组件。

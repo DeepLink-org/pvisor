@@ -1,6 +1,6 @@
 # 路线图
 
-下表列出 L1（本机逐个 Job）的持续工作与验收标准。监督方式与执行规模的关系见[监督等级与执行规模](#trust-ladder)。
+当前重点是单机执行的可靠性、共享资源成本与接口一致性。原生 Job、逐容器 VM 和 daemon SDK 已有独立入口；下面的工作补齐各自合同与验证，不以并发实例数定义监督级别。
 
 | 工作 | 验收标准 |
 | --- | --- |
@@ -31,16 +31,16 @@
 
 ## 单机 daemon {#daemon}
 
-[Daemon](../guides/daemon/index.md) 的部分 OpenSandbox 1.1.0 profile 已有 VM-only `NativeRuntime`，在独立 supervisor 中嵌入 pVisor；daemon 可执行入口与必需原生参数已接入。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache 共享资源。可选池由 daemon 拥有，通过 `serve --sandbox --memory-pool` 显式启用。Bootstrap／镜像未提供或端到端验证，没有 SDK 兼容或密度证据。Controller/Worker 与 Cluster 任务 SDK 已退役。
+[Daemon](../guides/daemon/index.md) 已提供镜像准备、默认原生 guest 引擎，以及 OpenSandbox 1.1.0/E2B Python SDK 2.59.0 核心流程的真实 VM 验证。后续重点是扩大协议回归、生命周期故障恢复和固定预算测量。Stage/apply、checkpoint/fork API 和自动 node 资源获取仍未接入；完整 SDK 一致性、生产密度与敌对多租户保证仍需独立验收。
 
 ## L2 与 L3 里程碑
 
 !!! note "建设中"
     L2/L3 的进入条件与缺口清单尚未定稿，排期未确定。以下列出当前要求与验收标准。级别定义见[监督等级与执行规模](#trust-ladder)，容量依据见[并发密度](../benchmarks/density.md)。
 
-### L2：本机多个 Job／一条流水线
+### L2：策略与证据门禁
 
-进入条件（待定稿）：本机并发上限与资源模型有数据，作为容量规划依据，见[并发密度](../benchmarks/density.md)。
+进入条件（待定稿）：在已有本机并行流程上明确免审规则、证据要求与失败回退；并发上限与资源模型作为容量规划依据，见[并发密度](../benchmarks/density.md)。
 
 验收标准：
 

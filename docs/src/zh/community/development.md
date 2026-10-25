@@ -1,10 +1,9 @@
 # 工程说明
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
 
 从仓库根目录运行命令。`mise tasks ls` 展示公开任务；`mise run ci` 执行默认本地检查序列，`mise run ci -- check "test pvisor-core"` 顺序执行指定任务，失败即停止。内部任务仍可调用，但不在默认帮助中展示。
 
-安装 [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 或更新版本后，准备开发环境：
+安装 [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 或更新版本后，准备开发环境：
 
 ```bash
 mise trust
@@ -15,9 +14,11 @@ mise run doctor
 
 `mise.toml` 固定 Rust（含 rustfmt、Clippy）、Python 3.12、uv、Ruff、actionlint、jq、Zig、nextest 和 cargo-zigbuild 的版本。`setup` 安装当前架构的 Linux musl guest target，并通过 `uv.lock` 同步 `.venv` 的开发依赖；不安装 pVisor 本身，也不触发固件构建。Python 产品仍支持 3.10+，开发工具使用 3.12。
 
+CI 和 wheel 构建使用 mise 2026.10.18、已提交的工具版本和锁文件。复用 `PATH` 中已有的兼容本地工具时，在被忽略的 `mise.local.toml` 的 `[settings]` 表中设置 `disable_tools = ["python", "uv", "jq"]`；这些工具由调用者自行提供。Python 开发任务要求 3.12 或更新版本，禁用 Python 管理后 `UV_PYTHON` 回退到 `python3`。其他 mise 托管版本可在该文件的 `[tools]` 表中选择，通过 `mise ls --current` 检查。正式发布和记录 benchmark 对比时，使用没有个人覆盖或禁用工具的干净 checkout。
+
 `mise run` 自动使用项目工具和环境，不需要先激活 shell。直接运行 Cargo 或 Python 时，使用 `mise exec -- cargo …` / `mise exec -- python3 …`，或按 mise 的 shell 配置说明激活当前 shell。带任务参数时，先用一个 `--` 分隔 mise 与任务；Rust 测试中的第二个 `--` 分隔包名与 nextest 参数，例如 `mise run test -- core -- --offline`。
 
-系统依赖仍由平台包管理器提供：Linux 的编译库、FUSE、KVM 和 cgroup 权限，以及 macOS 的 Xcode Command Line Tools、LLVM/GNU 工具和 macFUSE。参见下方构建环境与执行器指南。机器私有覆盖写在被忽略的 `mise.local.toml`；不在共享配置中提交个人路径或凭据。更新工具版本修改 `mise.toml`，运行 `mise lock --platform linux-x64,macos-arm64` 并提交 `mise.lock`；更新 Python 依赖后运行 `mise exec -- uv lock` 并提交 `uv.lock`。
+系统依赖仍由平台包管理器提供：Linux 的编译库、FUSE、KVM 和 cgroup 权限，以及 macOS 的 Xcode Command Line Tools、LLVM/GNU 工具和 macFUSE。参见下方构建环境与执行器指南。机器私有覆盖写在被忽略的 `mise.local.toml`；不在共享配置中提交个人路径或凭据。更新工具版本修改 `mise.toml`，使用 CI 的 mise 2026.10.18 运行 `mise lock --platform linux-x64,macos-arm64` 并提交 `mise.lock`；更新 Python 依赖后运行 `mise exec -- uv lock` 并提交 `uv.lock`。
 
 ## 仓库结构与代码归属
 
@@ -29,14 +30,14 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
 | `crates/pvisor-cli/` | 三个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API、独立原生 VM supervisor 和可选 daemon 自有池 |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox API、原生 guest 协议适配，以及跨平台缓存/池组件 |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
 | `crates/pvisor-journal/` | 共享事实 Journal 存储与读取 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
 | `crates/pvisor-overlayfs/` | FUSE 适配及挂载 |
 | `crates/pvisor-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
-| `crates/pvisor-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
+| `crates/pvisor-guest/` | Linux PID 1、启动契约与原生进程/文件控制引擎 |
 | `crates/pvisor-shim/` | containerd Runtime v2 shim，可选 VM 执行 |
 | `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
@@ -73,73 +74,22 @@ core, guest ──> 不依赖其他 workspace crate
 
 ### pVisor 源码模块
 
-```text
-crates/pvisor-cli/src/
-├── lib.rs                 # 前端模块，不重导出运行时
-├── bin/                   # 三个：pvisor、pvisor-tui、pvisor-replay
-├── cli/                   # 参数、命令和共享终端工具
-│   ├── cache.rs           # 缓存参数解析与展示
-│   └── features.rs        # 运行时功能列表前端
-├── companions.rs          # 同一安装中的伴随程序查找／分派
+| 实现入口 | 所有权 |
+| --- | --- |
+| `pvisor-cli/src/cli/mod.rs` | 按选中命令构造参数解析与分派；root help 描述命令组 |
+| `pvisor-cli/src/cli/host*.rs`、`run/` | 前端/owner 启动、终端、信号与 Job 命令适配 |
+| `pvisor/src/runtime/job_service/` | 持久 Job 生命周期、workspace、fork、capture、视图与策略 |
+| `pvisor/src/runtime/attempt_service.rs` | 同一进程内 live Attempt 的 status/pause/resume/termination，供 Job 与 daemon 复用 |
+| `pvisor/src/session*`、`runtime/attempt.rs` | 一次 Attempt 的驱动准备、执行与收尾 |
+| `pvisor/src/runtime/completion.rs` | Bundle 字节与终态结果绑定的完成提交及读取验证 |
+| `pvisor/src/docker.rs`、`image/` | 逐容器 VM、镜像目录与共享压缩镜像池；普通 OCI 执行器仍是独立路径 |
+| `pvisor-daemon/src/daemon/`、`runtime.rs` | API、准入、记录、supervisor 与 cgroup/VM 归属 |
+| `pvisor-daemon/src/native/`、`prepared_image.rs` | OpenSandbox/E2B guest 协议适配与模板发布 |
+| `pvisor-replay/src/adapter/`、`bridge/` | 轨迹规划、Agent 选择与原生续跑协议桥 |
 
-└── tui/                   # TUI PTY 运行时、渲染、审查面板和按键映射
+CLI 拥有参数和展示；runtime 拥有执行与持久 Job；VM、文件系统和网络实现分别留在所属 crate。共享策略与 wire DTO 由 Core 定义，普通 Job 与 daemon 复用进程内控制，但保留各自鉴权、准入、存储与确认清理。
 
-crates/pvisor/src/
-├── lib.rs                 # 运行时导出与显式前端／嵌入 API
-├── session/               # Attempt 生命周期与收尾
-├── session.rs             # Session 所有者
-├── config.rs              # 运行时与执行器配置
-├── trace.rs               # 共享事实 Journal 重导出
-├── diagnostics.rs         # 共享宿主日志，前端选择输出位置
-├── executor/
-│   ├── mod.rs             # RunExecutor 和执行输出契约
-│   ├── process.rs         # 宿主进程执行器
-│   ├── container.rs       # 容器执行器
-│   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
-│   ├── artifact.rs        # 适配 guest 的可执行文件解析
-│   ├── delegated.rs       # 委派执行的 spec/result 交接
-│   └── vm/                # VM 执行器适配与 Run 资源／控制接入
-├── image/
-│   ├── oci.rs             # Registry、准备记录、blob 和解包
-│   └── cache/             # 缓存协议、服务端、客户端及懒加载 FUSE
-├── runtime/
-│   ├── run.rs             # PVisor API 和运行生命周期
-│   ├── job_service.rs     # 持久化 RuntimeJobService
-│   ├── job_execution.rs   # Job 执行机制
-│   ├── host_transport.rs  # 类型化 Host 传输
-│   ├── instance_control.rs # 本地实例控制交互
-│   ├── agentctl.rs        # 每次运行的协作控制服务
-│   ├── agentctl_client.rs # 同步 AgentCtl 客户端
-│   ├── audit.rs           # 审批 socket 传输与缓存
-│   ├── event.rs           # 运行事件发布
-│   ├── bundle.rs          # 持久化审查摘要
-│   ├── checkpoint.rs      # 逻辑检查点与恢复
-│   ├── registry.rs        # Run 身份、存活锁和本地控制端点
-│   ├── attempt.rs         # 每次尝试的驱动资源与清理
-│   ├── supervisor.rs      # 能力检查与驱动协调
-│   ├── operation.rs       # 操作与观察构造
-│   ├── implant.rs         # 运行环境注入
-│   ├── overlay.rs         # 暂存、审查、应用/丢弃和恢复
-│   └── zcode.rs           # 进程兼容策略
-└── util.rs                # 少量共享文件与时间工具
-```
-
-CLI 参数与展示、前端/owner 启动和终端交接归 `pvisor-cli`；
-具体执行机制归 `pvisor` 的 `executor/`，Run 资源所有权和持久化 Job 服务归 `runtime/`。
-VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
-和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
-缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
-Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --sandbox --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议是运行时设施，没有 daemon acquire/release 适配器。`pvisor cache` 负责准备、发布和读取；`pvisor-daemon serve --cache` 负责服务。
-
-既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
-保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、
-`DelegatedRunOutput`、`rootless_runtime_available`、Overlay 选择／检查及 Run 查找／控制工具、
-Linux Run 租约、`audit`、`checkpoint`、`job_execution` 和启动标记／私有 JSON 工具。
-运行时实现模块仍保持私有；这些导出不构成 API 稳定性承诺。
-
-replay 中，`adapter/` 负责原生轨迹规划和 Agent 启动选择；`bridge/` 负责
-Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
-共享执行和 journal 仍在 crate 根目录。
+公开接口与迁移状态以[核心架构](../design/architecture.md#api-boundaries)为准。当前仅 VM、OverlayFS 与 Journal 采用唯一 `api` 入口；其他 crate 继续使用实际导出，不能按这张逻辑表假定 Rust 可见性或稳定性已统一。
 
 ### 核心实现边界
 
@@ -196,7 +146,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 不会额外触发 Python 测试。
 
 仅使用运行时的 Rust 测试留在 `crates/pvisor/tests/`。
-19 个可执行文件／前端集成测试文件（包括混合运行时与命令测试）现归 `crates/pvisor-cli/tests/`；
+可执行文件／前端集成测试（包括混合运行时与命令测试）归 `crates/pvisor-cli/tests/`；
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 

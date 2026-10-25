@@ -1,6 +1,6 @@
 # 文件系统性能：技术分析与实验记录
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
 
 > 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/`、`benchmark/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
 

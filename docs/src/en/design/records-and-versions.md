@@ -27,6 +27,7 @@ The matrix follows current source declarations and reader branches. Format chang
 | Journal Header / Record | `pvisor.trace/5` | Header and Event validation work together; complete old formats are rejected rather than truncated as incomplete tails | `pvisor-journal/src/journal.rs` |
 | Run Bundle | `schema_version = 5` | Requires matching Run/Attempt completion receipt and Bundle digest; legacy 4 retains its original rules; unknown versions reject | `pvisor/src/runtime/bundle.rs` |
 | RunRecord (`run.json`) | `schema_version = 2` | Completion protocol 1 binds the terminal result and Bundle; a dead owner without a receipt yields Unknown; schema 1 retains legacy rules; live control is cleared at termination | `pvisor/src/runtime/registry.rs` |
+| Attempt completion receipt (`completion.json`) | `version = 1` | Binds `RunResult` and Bundle BLAKE3; missing or inconsistent data cannot establish success | `pvisor/src/runtime/completion.rs` |
 | Execution Job (`execution-job.json`) | `version = 2` | Exact version and Job/root/stage binding checks; no automatic old-record conversion | `pvisor/src/runtime/job_execution.rs` |
 
 Event version 5 and Journal format 5 currently share the Event version constant. Other versions have no such relationship. An Observation payload change also cannot be judged compatible solely from outer Event version 5. Successful JSON parsing establishes syntax; each record still needs its own validation.
@@ -69,4 +70,3 @@ Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cl
 3. For stored objects, check digests, dependency references, stage/Attempt ownership and restore profile. For live protocols, check authority, endpoint-supported target fields, instance-protocol name and socket identity. Same-binary verification applies only when the frontend launches its own owner.
 4. Handle active requests and instances belonging to old listeners/supervisors before upgrades. File compatibility does not establish live-process takeover.
 5. After timeout, disconnect or publication failure, locate the original request's commit boundary and reconcile it using [Failure semantics and retries](failure-semantics.md) before retrying.
-

@@ -1,5 +1,7 @@
-# One toolchain for local development, CI and wheel builds.
-min_version = "2026.10.18"
+# Reproducible default tools for development, CI and wheel builds.
+# Keep the tested compatibility floor separate from CI's pinned mise release.
+# Compatible personal tool selections belong in mise.local.toml; see CONTRIBUTING.md.
+min_version = "2026.8.5"
 
 [tools]
 python = "3.12.12"

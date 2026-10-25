@@ -1,6 +1,6 @@
 # Roadmap
 
-The table below lists ongoing L1 work (individual local Jobs) and its acceptance criteria. See [supervision levels and execution scale](#trust-ladder) for how review practices relate to task volume.
+The current focus is single-machine execution reliability, shared-resource cost and interface consistency. Native Jobs, per-container VMs and daemon SDK profiles have separate entry points; the work below completes their contracts and validation without defining supervision levels by instance count.
 
 | Work | Acceptance criteria |
 | --- | --- |
@@ -31,16 +31,16 @@ Acceptance criteria:
 
 ## Single-node daemon {#daemon}
 
-The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pVisor in detached supervisors for the partial OpenSandbox 1.1.0 profile. The daemon executable and required native flags are integrated. Stage/apply and checkpoint/fork APIs are not implemented; node/cache sharing is not automatically acquired. The optional pool is owned by the daemon and explicitly enabled with `serve --sandbox --memory-pool`. Bootstrap/images are not supplied or end-to-end validated; there is no SDK-conformance or density evidence. Controller/Worker and the Cluster task SDK are retired.
+The [daemon](../guides/daemon/index.md) provides image preparation, a default native guest engine and real-VM validation of the OpenSandbox 1.1.0/E2B Python SDK 2.59.0 core flows. Next work expands protocol regressions, lifecycle failure recovery and fixed-budget measurements. Stage/apply, checkpoint/fork APIs and automatic node-resource acquisition remain unwired; full SDK conformance, production density and hostile multi-tenant assurance require separate acceptance.
 
 ## L2 and L3 milestones
 
 !!! note "Under construction"
     The entry criteria and gap list for L2/L3 are not final, and no schedule is set. The requirements and acceptance criteria below describe the current work. For the level definitions see the [supervision levels and execution scale](#trust-ladder); for the capacity rationale see [concurrency density](../benchmarks/density.md).
 
-### L2: multiple local Jobs / one pipeline
+### L2: policy and evidence gates
 
-Entry criteria (TBD): a measured per-machine concurrency limit and resource model, used as the capacity planning basis; see [concurrency density](../benchmarks/density.md).
+Entry criteria (TBD): define exemption rules, evidence requirements and failure fallback over existing local concurrency; use measured concurrency limits and resource models for capacity planning; see [concurrency density](../benchmarks/density.md).
 
 Acceptance criteria:
 

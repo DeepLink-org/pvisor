@@ -62,7 +62,7 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Job execution, review and checkpoints, and Tools for cache, replay, TUI and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
+Top-level commands follow their objects: container commands manage independent VMs, while Job/workspace operations remain flat. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Job execution, review and checkpoints, and Tools for cache, replay, TUI and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
 
 | Responsibility | Entry |
 |---|---|
@@ -70,7 +70,7 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 | Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
 | Immutable Job checkpoints | `checkpoint` |
 | Trajectory replay and interactive frontend | `replay`, `tui` |
-| Local sandbox lifecycle | Direct `pvisor-daemon serve` and OpenSandbox-profile HTTP API |
+| Local sandbox lifecycle | `pvisor-daemon prepare-image` / `serve --sandbox` and partial OpenSandbox/E2B APIs |
 | Immutable image cache | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | Optional daemon-owned shared pages | `pvisor-daemon serve --sandbox --memory-pool`; detached `memory-pool --directory DIR` component |
 

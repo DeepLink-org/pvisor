@@ -10,12 +10,12 @@
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-PolicyVisor runs Agent CLIs and scripts within a policy boundary, stages their file changes, and records the execution. Review the result like a pull request and apply only the paths you want. The same workflow works across agents, with platform-specific controls provided by each executor.
+PolicyVisor is a single-machine execution substrate for agents. Native Jobs run CLIs and scripts within a policy boundary, stage their file changes, and record execution for review and selective apply. Docker-style commands manage independent Linux VMs; the separate daemon exposes tested OpenSandbox/E2B SDK profiles for local VM sandboxes. These interfaces share runtime mechanisms while retaining their own lifecycle and delivery contracts.
 
 Running more agents takes both compute resources and human attention.
 PolicyVisor uses resource sharing and idle-memory reclamation to improve machine
 capacity, and staged file changes, execution records, and review mechanisms to
-reduce supervision overhead. These **bounded, recoverable, and checkable**
+reduce supervision overhead. These **bounded, reversible, and checkable**
 executions provide a basis for batch review and automated checks.
 
 ![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
@@ -68,17 +68,17 @@ Jobs are created with `pvisor spawn`; default execution also uses `spawn`. See t
 limitations](crates/pvisor-cli/README.md#docker-command-profile-experimental)
 before using this profile; it does not implement the Docker Engine API.
 
-## Bounded, recoverable, checkable
+## Bounded, reversible, checkable
 
 | Property | Meaning | Mechanism today |
 |---|---|---|
 | Bounded | the blast radius is known up front | executor boundary, capability admission |
-| Recoverable | staged changes can be selectively merged, discarded, or forked before apply | staging, `apply`/`drop`, `fork` |
+| Reversible | staged changes can be selectively merged, discarded, or forked before apply | staging, `apply`/`drop`, `fork` |
 | Checkable | execution leaves checkable evidence | Run Bundle, evidence model, optional capture |
 
 ## Where we are today
 
-pVisor focuses on bounded, recoverable, checkable execution and high sandbox
+pVisor focuses on bounded, reversible, checkable execution and high sandbox
 density on a single machine. Native Jobs retain the run-review-apply workflow;
 the separate [`pvisor-daemon`](crates/pvisor-daemon/README.md) provides partial
 OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles through a VM-only
@@ -173,9 +173,12 @@ The Python format/lint entries also cover packaging and CI scripts plus `setup.p
 
 ## Development environment
 
-Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.18 or newer, then run
+Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 or newer, then run
 `mise trust`, `mise install --locked`, and `mise run setup`. The checked-in `mise.toml`
-manages development tools; `uv.lock` fixes Python development dependencies in
+and `mise.lock` provide reproducible default tools; CI and wheel builds use mise
+2026.10.18. Compatible local tools can be selected in the gitignored
+`mise.local.toml`; see [local tool overrides](CONTRIBUTING.md#local-tool-overrides).
+`uv.lock` fixes Python development dependencies in
 `.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
 The timed peer TCP recovery test reserves all nextest execution slots while it
 runs; other tests keep their normal parallelism. See [.config/nextest.toml](.config/nextest.toml).

@@ -15,11 +15,15 @@ Prepare the environment using these prerequisites, then validate the features yo
 | Apple Silicon macOS | macFUSE 5.4.0+ FSKit for staging; Seatbelt for files and network | Native OCI Linux-container path unsupported | HVF, Hypervisor signing and a Linux arm64 rootfs/image; no macFUSE needed |
 | Windows / Intel macOS | No current release support promise | No promise | No promise |
 
+The `container` column describes the native Job OCI executor (`--executor container`). In the [Docker-style container commands](cli.md#container-commands), `pvisor run` uses independent Linux VMs, with implementation paths on Linux x86_64/KVM and Apple Silicon/HVF. It does not use the OCI runtime in this column or implement the Docker Engine API.
+
 Current wheels target Linux x86_64 and macOS arm64. Source branches do not establish released artifacts or maturity. Check `pvisor --version`, run a small task, and inspect its Bundle. See [installation](../start/installation.md).
 
 ## Single-node daemon {#daemon}
 
-The standalone daemon native runtime requires Linux x86_64/KVM and delegated cgroup v2; it does not support macOS HVF or Linux arm64. VM-only supervisors embed pVisor with trusted independent rootfs manifests and guest CID 3 vsock bridges to genuine execd/egress. Executable integration is implemented; bootstrap/images are neither supplied nor end-to-end validated, and SDK/density evidence is absent. See [daemon installation](../guides/daemon/index.md) and [runtime boundaries](../guides/daemon/index.md); wheel/native executor support does not prove daemon readiness.
+The sandbox API requires Linux x86_64/KVM and delegated cgroup v2; macOS HVF and Linux arm64 are outside this API's supported scope. `prepare-image` publishes templates in the shared compressed image pool, with the Rust guest engine as the default for new templates. Official OpenSandbox/E2B SDK core flows have real-VM validation; full protocol conformance and production density are not guaranteed. See the [daemon guide](../guides/daemon/index.md) for deployment.
+
+The same executable's cache and memory-pool components support Linux and Apple Silicon macOS without enabling the sandbox API. macOS offers compression or explicit `physical-pages` sharing; see [memory optimization](../design/memory-optimization/index.md) for prerequisites and failure boundaries.
 
 ## Verify capability evidence
 

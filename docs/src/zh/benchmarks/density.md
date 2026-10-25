@@ -76,4 +76,4 @@ stage 在空闲 128 路通过五轮，但相同环境加入私有数据和 Git �
 
 完整 CSV/JSON 保留每个条件的尝试数、完整批次数、失败原因、未知数、OOM、观察范围和来源摘要，与原始记录一起保存在对应本地批次或文档数据归档；没有将失败批次移出容量统计。
 
-> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+> 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
