@@ -1,0 +1,2 @@
+# Optional AgentENV backend; keep SDK separate from default benchmark dependencies.
+e2b==2.50.0

@@ -80,6 +80,13 @@ python3 benchmark/pvisor/prepare_reference_budget.py \
 128/640 MiB ×1/4 worker四个锚点，不证明容量拐点。默认VM与显式guest写回均为普通
 CLI路径，host写回关闭、DAX由产品关闭，目录rootfs不声明Immutable generation。
 
+## AgentENV 共同操作对照
+
+[接入与复现](AGENTENV.md)将原版 AgentENV 接入同一19用例入口，显式选择
+`--backends vm-writeback,agentenv`；默认九后端不变。共同操作 `work_ns` 为主指标，
+`final_sync_ns` 单列，创建、上传、退出/Bundle、导出与宿主校验另记。
+保持原 N3 新环境、3个相关轮次、512 MiB 和90秒 workload 超时；不修改 AgentENV。
+
 ## 后续主协议：机制、资源边界与完整任务
 
 [WORKLOADS.md](WORKLOADS.md) 定义新的 B-FS-ENG 三层评估：12个机制锚点、
