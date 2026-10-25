@@ -37,22 +37,8 @@ mod brand_string;
 /// * `kvm_cpuid` - KVM related structure holding the relevant CPUID info.
 /// * `vm_spec` - The specifications of the VM.
 ///
-/// # Example
-/// ```
-/// use krun_cpuid::{filter_cpuid, VmSpec};
-/// use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES};
-/// use kvm_ioctls::Kvm;
-///
-/// let kvm = Kvm::new().unwrap();
-/// let mut kvm_cpuid: CpuId = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
-///
-/// let vm_spec = VmSpec::new(0, 1, true, false).unwrap();
-///
-/// filter_cpuid(&mut kvm_cpuid, &vm_spec).unwrap();
-///
-/// // Get expected `kvm_cpuid` entries.
-/// let entries = kvm_cpuid.as_mut_slice();
-/// ```
+/// The VM builder supplies the KVM-supported entries and the validated VM
+/// specification. This helper is private to the runtime.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn filter_cpuid(kvm_cpuid: &mut CpuId, vm_spec: &VmSpec) -> Result<(), Error> {
     let maybe_cpuid_transformer: Option<&dyn CpuidTransformer> = match vm_spec.cpu_vendor_id() {

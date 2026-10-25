@@ -474,9 +474,7 @@ pub(crate) fn run(args: Vec<OsString>, audit_enabled: bool) -> Result<i32> {
                         !state.agent_input_active() || snapshot.audit.is_some(),
                         &mut input_modes,
                     )?;
-                    // The Agent screen and the pVisor frame are always drawn
-                    // together, so Agent cursor/clear sequences cannot touch
-                    // the Review pane or the host shell prompt.
+                    // Redraw the frame with the Agent screen to confine terminal control sequences.
                     dirty = true;
                 }
                 Err(error) if error.raw_os_error() == Some(libc::EIO) => {}

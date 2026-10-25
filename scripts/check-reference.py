@@ -5,6 +5,7 @@ This is a field-coverage guard, not a Rust parser or a JSON Schema generator.
 Defaults and CLI precedence still require behavioral review. Fail on unfamiliar
 field syntax rather than silently omit it.
 """
+
 import re
 from pathlib import Path
 
@@ -40,9 +41,13 @@ GROUPS = [
 BUNDLE_GROUPS = [
     ("crates/pvisor/src/runtime/bundle.rs", name, prefix)
     for name, prefix in [
-        ("RunBundle", ""), ("BundleRun", "run."), ("SafetySummary", "safety."),
-        ("FilesystemSummary", "filesystem."), ("NetworkSummary", "network."),
-        ("ResourceSummary", "resources."), ("BundleArtifact", "artifacts[]."),
+        ("RunBundle", ""),
+        ("BundleRun", "run."),
+        ("SafetySummary", "safety."),
+        ("FilesystemSummary", "filesystem."),
+        ("NetworkSummary", "network."),
+        ("ResourceSummary", "resources."),
+        ("BundleArtifact", "artifacts[]."),
     ]
 ] + [
     ("crates/pvisor/src/runtime/registry.rs", "EnvironmentProjection", "environment."),
@@ -89,9 +94,9 @@ def check_surface(root, page_name, marker, groups):
         path = root / f"docs/src/{locale}/reference/{page_name}.md"
         page = path.read_text()
         try:
-            table = page.split(f"<!-- {marker}:start -->", 1)[1].split(
-                f"<!-- {marker}:end -->", 1
-            )[0]
+            table = page.split(f"<!-- {marker}:start -->", 1)[1].split(f"<!-- {marker}:end -->", 1)[
+                0
+            ]
         except IndexError:
             raise SystemExit(f"{path}: missing complete field reference") from None
         rows = re.findall(r"^\| `([^`]+)` \| `([^`]+)` \|", table, re.M)
@@ -101,10 +106,13 @@ def check_surface(root, page_name, marker, groups):
         if documented != expected:
             missing = sorted(expected.keys() - documented.keys())
             extra = sorted(documented.keys() - expected.keys())
-            changed = sorted(k for k in expected.keys() & documented.keys()
-                             if expected[k] != documented[k])
-            raise SystemExit(f"{path}: {page_name} reference drift: missing={missing}, "
-                             f"extra={extra}, changed types={changed}")
+            changed = sorted(
+                k for k in expected.keys() & documented.keys() if expected[k] != documented[k]
+            )
+            raise SystemExit(
+                f"{path}: {page_name} reference drift: missing={missing}, "
+                f"extra={extra}, changed types={changed}"
+            )
     return len(expected)
 
 

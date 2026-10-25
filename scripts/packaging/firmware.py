@@ -220,7 +220,6 @@ def build_tools(target: str) -> tuple[list[str], dict[str, str], dict[str, str]]
             ).strip()
         except (OSError, subprocess.CalledProcessError) as error:
             raise RuntimeError(f"Cannot identify firmware tool {tool}; see fw/README.md") from error
-    # Native CLI builds need the same dependency as isolated PEP 517 builds.
     if importlib.util.find_spec("elftools") is None:
         if not shutil.which("uv"):
             raise RuntimeError("Firmware builds need pyelftools==0.33 or uv; see fw/README.md")

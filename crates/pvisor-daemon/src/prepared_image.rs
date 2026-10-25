@@ -190,7 +190,6 @@ impl PrepareImage {
             native_e2b: !native_guest && e2b.is_some(),
             native_guest,
         };
-        // Atomic publication leaves the previous manifest intact on failure.
         let mut file = tempfile::NamedTempFile::new_in(&images)?;
         serde_json::to_writer_pretty(file.as_file_mut(), &manifest)?;
         file.as_file_mut().write_all(b"\n")?;

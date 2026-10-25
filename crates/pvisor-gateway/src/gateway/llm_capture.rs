@@ -162,8 +162,6 @@ pub(super) async fn llm_capture(
             .session_clients
             .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
 
-    // Understand the untouched client request once. Routing, rendering, and live capture below
-    // share this typed value; Journal retains captured facts for projection recovery.
     let mut parsed_request = understand_request(protocol, &body_bytes).ok();
     let stream_request = parsed_request
         .as_ref()
@@ -202,8 +200,6 @@ pub(super) async fn llm_capture(
     let upstream_protocol = bridge.upstream_protocol(protocol);
     let provider = effective_provider(route, upstream_protocol);
 
-    // Wrap once in Arc so the request, response (or stream draft), and final events
-    // all share a single allocation; clones become refcount bumps.
     let mut ctx = call_context(
         &capture_route,
         &agent_id,
@@ -529,8 +525,6 @@ pub(super) async fn llm_capture(
         } else {
             crate::model_wait::plain_stream(stream)
         };
-        // streaming_llm_response takes an owned CallContext so unwrap the Arc when
-        // we know we're the only owner (we are — request emit was the only earlier clone).
         let owned_ctx = Arc::try_unwrap(call_ctx).unwrap_or_else(|arc| (*arc).clone());
         pending.armed = false; // Streaming producer now owns the terminal obligation.
         return streaming_llm_response(status, resp_headers, stream, state, owned_ctx, bridge)

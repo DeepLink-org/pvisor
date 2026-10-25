@@ -249,8 +249,6 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stdout reader panicked"))?
             .replay_context(ReplayErrorKind::Executor, "drain supervised stdout")?,
         None => {
-            // Redirected stdout: summarize the redirect file itself so the
-            // caller keeps its usual byte accounting.
             let mut file = File::open(stdout_redirect.as_ref().expect("redirect path"))
                 .replay_context(ReplayErrorKind::Executor, "open redirected stdout tail")?;
             let total = file
@@ -732,10 +730,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let log_path = temporary.path().join("redirect-idle.log");
         let events_path = temporary.path().join("events.jsonl");
-        // stderr stays silent; only the redirect file grows. Without polling
-        // the redirect, a 700ms idle watchdog would kill this mid-loop; the
-        // 500ms slack over the 200ms write cadence absorbs scheduler jitter
-        // on loaded CI runners while still proving the refresh works.
+        // Only redirected stdout grows; the idle timeout includes scheduler slack.
         let script = "for i in 1 2 3 4 5 6; do echo event-$i; sleep 0.2; done";
         let mut spec = shell_spec(script, &log_path);
         spec.stdout_redirect = Some(events_path.clone());

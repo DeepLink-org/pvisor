@@ -5,18 +5,8 @@
 
 /// Structure representing a range of bits in a number.
 ///
-/// # Example
-///
-/// ```
-/// #[macro_use]
-/// use krun_cpuid::bit_helper::*;
-///
-/// let range = BitRange {
-///     msb_index: 7,
-///     lsb_index: 3,
-/// };
-/// ```
-/// The BitRange specified above will represent the following part of the number 72:
+/// For example, `BitRange { msb_index: 7, lsb_index: 3 }` selects bits 3–7.
+/// This range will represent the following part of the number 72:
 /// +-------------------------------------+---+---+---+---+---+---+---+---+---+---+
 /// | Base 2 Representation of the number | 0 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 |
 /// +-------------------------------------+---+---+---+---+---+---+---+---+---+---+
@@ -39,22 +29,7 @@ pub struct BitRange {
 pub trait BitRangeExt<T> {
     /// Returns a value of type `T` that has all the bits in the specified bit range set to 1.
     ///
-    /// # Example
-    ///
-    /// ```
-    /// #[macro_use]
-    /// use krun_cpuid::bit_helper::*;
-    ///
-    /// let range = BitRange {
-    ///     msb_index: 7,
-    ///     lsb_index: 3,
-    /// };
-    /// println!("binary value: {:b}", range.get_mask());
-    /// ```
-    /// The code above will print:
-    /// ```bash
-    /// binary value: 11111000
-    /// ```
+    /// For bits 3–7, the mask is `0b11111000`.
     fn get_mask(&self) -> T;
 
     /// Checks if the current BitRange is valid for type `T`.
@@ -99,46 +74,13 @@ pub trait BitHelper {
 
     /// Reads the value stored within the specified range of bits
     ///
-    /// # Example
-    ///
-    /// ```
-    /// #[macro_use]
-    /// use krun_cpuid::bit_helper::*;
-    ///
-    /// let val: u32 = 0b000010001000;
-    /// let range = BitRange {
-    ///     msb_index: 7,
-    ///     lsb_index: 3,
-    /// };
-    /// println!("binary value: {:b}", val.read_bits_in_range(&range));
-    /// ```
-    /// The code above will print:
-    /// ```bash
-    /// binary value: 10001
-    /// ```
+    /// Reading bits 3–7 of `0b000010001000` returns `0b10001`.
     #[must_use]
     fn read_bits_in_range(&self, bit_range: &BitRange) -> Self;
 
     /// Stores a value within the specified range of bits
     ///
-    /// # Example
-    ///
-    /// ```
-    /// #[macro_use]
-    /// use krun_cpuid::bit_helper::*;
-    ///
-    /// let mut val: u32 = 0;
-    /// let range = BitRange {
-    ///     msb_index: 7,
-    ///     lsb_index: 3,
-    /// };
-    /// val.write_bits_in_range(&range, 0b10001 as u32);
-    /// println!("binary value: {:b}", val);
-    /// ```
-    /// The code above will print:
-    /// ```bash
-    /// binary value: 10001000
-    /// ```
+    /// Writing `0b10001` to bits 3–7 of zero produces `0b10001000`.
     fn write_bits_in_range(&mut self, bit_range: &BitRange, val: Self) -> &mut Self;
 }
 

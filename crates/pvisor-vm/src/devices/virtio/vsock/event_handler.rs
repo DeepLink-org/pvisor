@@ -138,18 +138,12 @@ impl Subscriber for Vsock {
         let rxq = self.queue_events[RXQ_INDEX].as_raw_fd();
         let txq = self.queue_events[TXQ_INDEX].as_raw_fd();
         let evq = self.queue_events[EVQ_INDEX].as_raw_fd();
-        //let backend = self.backend.as_raw_fd();
         if self.is_activated() {
             let mut raise_irq = false;
             match source {
                 _ if source == rxq => raise_irq = self.handle_rxq_event(event),
                 _ if source == txq => raise_irq = self.handle_txq_event(event),
                 _ if source == evq => raise_irq = self.handle_evq_event(event),
-                /*
-                _ if source == backend => {
-                    raise_irq = self.notify_backend(event);
-                }
-                */
                 _ if source == activate_evt => {
                     self.handle_activate_event(event_manager);
                 }

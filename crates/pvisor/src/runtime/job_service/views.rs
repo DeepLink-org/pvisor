@@ -217,8 +217,7 @@ impl RuntimeJobService {
                 record.run_id
             )
         })?;
-        // The Bundle's execution evidence is historical. Read the selected file
-        // view again so a preceding apply/drop cannot leave review showing old files.
+        // Refresh files after apply/drop while retaining the Bundle's execution evidence.
         if let Some(overlay) = &record.overlay {
             let status = crate::runtime::overlay_status(overlay)?;
             let filesystem = bundle

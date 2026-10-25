@@ -238,7 +238,6 @@ class ApplicationBoundaryTests(unittest.TestCase):
             assert baseline["workspace_source_lines"] == 2
             assert baseline["core_public_declarations"] == 1
             assert "update-core-budget" in baseline["note"]
-            # At or below the recorded baseline the ratchet passes...
             resources.enter_context(
                 mock.patch(
                     "sys.argv",
@@ -246,7 +245,6 @@ class ApplicationBoundaryTests(unittest.TestCase):
                 )
             )
             budget.main()
-            # ...and any growth fails with the regeneration command.
             (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
                 "pub struct Core;\npub enum Extra;\n"
             )

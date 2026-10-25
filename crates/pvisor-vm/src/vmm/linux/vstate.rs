@@ -2133,12 +2133,10 @@ mod tests {
             // Close the original channel so that the Vcpu thread errors and goes to exit state.
             let (event_sender, _event_receiver) = unbounded();
             self.event_sender = event_sender;
-            // Wait for the Vcpu thread to finish execution
             self.vcpu_thread.take().unwrap().join().unwrap();
         }
     }
 
-    // Auxiliary function being used throughout the tests.
     fn setup_vcpu(mem_size: usize) -> (Vm, Vcpu, GuestMemoryMmap) {
         let kvm = KvmContext::new().unwrap();
         let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), mem_size)]).unwrap();
@@ -2476,7 +2474,6 @@ mod tests {
             assert!(Vcpu::run_on_thread_local(|_| ()).is_err());
         }
 
-        // Initialize vcpu TLS.
         vcpu.init_thread_local_data().unwrap();
 
         // Validate TLS vcpu is the local vcpu by changing the `id` then validating against
@@ -2486,7 +2483,6 @@ mod tests {
             assert!(Vcpu::run_on_thread_local(|v| assert_eq!(v.id, 12)).is_ok());
         }
 
-        // Reset vcpu TLS.
         assert!(vcpu.reset_thread_local_data().is_ok());
 
         // Running on the TLS vcpu after TLS reset should fail.
@@ -2494,16 +2490,13 @@ mod tests {
             assert!(Vcpu::run_on_thread_local(|_| ()).is_err());
         }
 
-        // Second reset should return error.
         assert!(vcpu.reset_thread_local_data().is_err());
     }
 
     #[test]
     fn test_invalid_tls() {
         let (_, mut vcpu, _) = setup_vcpu(0x1000);
-        // Initialize vcpu TLS.
         vcpu.init_thread_local_data().unwrap();
-        // Trying to initialize non-empty TLS should error.
         vcpu.init_thread_local_data().unwrap_err();
     }
 

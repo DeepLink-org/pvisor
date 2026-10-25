@@ -121,7 +121,7 @@ impl VmNetworkConfig {
 }
 
 /// Attempt-scoped smoltcp backend. The returned peer stream is passed to
-/// `krun_add_net_unixstream`; this side owns the policy and host sockets.
+/// `pvisor_vm::api::VmConfiguration::network`; this side owns the policy and host sockets.
 pub struct VmNetwork {
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<anyhow::Result<()>>>,
@@ -973,8 +973,7 @@ fn service_dhcp(
             client_identifier: request.client_identifier,
             server_identifier: Some(router),
             parameter_request_list: None,
-            // libkrun's DHCP init writes resolv.conf when this option is set.
-            // pVisor injects the resolver file from its guest root instead.
+            // DNS is configured by the injected guest resolver file.
             dns_servers: None,
             max_size: request.max_size,
             lease_duration: Some(86_400),

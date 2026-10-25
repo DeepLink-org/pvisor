@@ -454,7 +454,7 @@ description = "支持 --check 等 formatter 参数"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-ruff format pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py "$@"
+ruff format pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts setup.py "$@"
 '''
 
 [tasks.fmt-rust]
@@ -532,7 +532,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for lint-py" >&2; exit 2; fi
-ruff check pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts/packaging scripts/ci setup.py
+ruff check pvisor tests examples benchmark tools/semspec docs/semspec_tables.py scripts setup.py
 '''
 
 [tasks.lint-rust]
@@ -621,7 +621,7 @@ run = '''
 set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for smoke" >&2; exit 2; fi
 mise run build --
-for command in run status inspect apply drop tui replay; do
+for command in spawn run status inspect apply drop tui replay; do
   "$CARGO_TARGET_DIR/debug/pvisor" "$command" --help >/dev/null
 done
 "$CARGO_TARGET_DIR/debug/pvisor" status --help | grep -Fq -- '--review'

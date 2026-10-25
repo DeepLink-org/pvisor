@@ -31,9 +31,7 @@ def extract(source: Path, destination: Path) -> None:
         raise RuntimeError("krunfw_get_kernel returned an empty kernel bundle")
 
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "kernel.bin").write_bytes(
-        ctypes.string_at(pointer, size.value)
-    )
+    (destination / "kernel.bin").write_bytes(ctypes.string_at(pointer, size.value))
     (destination / "kernel.json").write_text(
         json.dumps(
             {

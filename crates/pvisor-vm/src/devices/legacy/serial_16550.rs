@@ -201,7 +201,6 @@ impl Serial {
         self.interrupt_identification = DEFAULT_INTERRUPT_IDENTIFICATION;
     }
 
-    // Handles a write request from the driver.
     fn handle_write(&mut self, offset: u8, value: u8) -> io::Result<()> {
         match offset {
             DLAB_LOW if self.is_dlab_set() => {
@@ -233,7 +232,6 @@ impl Serial {
         Ok(())
     }
 
-    // Handles a read request from the driver.
     fn handle_read(&mut self, offset: u8) -> u8 {
         match offset {
             DLAB_LOW if self.is_dlab_set() => self.baud_divisor as u8,
@@ -389,9 +387,7 @@ mod tests {
         let serial_out = SharedBuffer::new();
 
         let mut serial = Serial::new_out(intr_evt, Box::new(serial_out));
-        // A serial without in does not have any events in the list.
         assert!(serial.interest_list().is_empty());
-        // Even though there is no in, process should not panic. Call it to validate this.
         let epoll_event = EpollEvent::new(EventSet::IN, 0);
         serial.process(&epoll_event, &mut event_manager);
     }
@@ -408,7 +404,6 @@ mod tests {
             Box::new(serial_in_out.clone()),
             Box::new(serial_in_out),
         );
-        // Check that the interest list contains the EPOLL_IN event.
         assert_eq!(serial.interest_list().len(), 1);
 
         // Process an invalid event type does not panic.
@@ -446,13 +441,10 @@ mod tests {
 
         let mut serial = Serial::new_out(intr_evt.try_clone().unwrap(), Box::new(serial_out));
 
-        // Write 1 to the interrupt event fd, so that read doesn't block in case the event fd
-        // counter doesn't change (for 0 it blocks).
         assert!(intr_evt.write(1).is_ok());
         serial.write(0, u64::from(IER), &[IER_RECV_BIT]);
         serial.raw_input(&RAW_INPUT_BUF).unwrap();
 
-        // Verify the serial raised an interrupt.
         assert_eq!(intr_evt.read().unwrap(), 2);
 
         // Check if reading in a 2-length array doesn't have side effects.
@@ -464,13 +456,11 @@ mod tests {
         serial.read(0, u64::from(LSR), &mut data[..]);
         assert_ne!(data[0] & LSR_DATA_BIT, 0);
 
-        // Verify reading the previously inputted buffer.
         RAW_INPUT_BUF.iter().for_each(|&c| {
             serial.read(0, u64::from(DATA), &mut data[..]);
             assert_eq!(data[0], c);
         });
 
-        // Check if reading from the largest u8 offset returns 0.
         serial.read(0, 0xff, &mut data[..]);
         assert_eq!(data[0], 0);
     }
@@ -486,12 +476,9 @@ mod tests {
             Box::new(serial_in_out.clone()),
         );
 
-        // Write 1 to the interrupt event fd, so that read doesn't block in case the event fd
-        // counter doesn't change (for 0 it blocks).
         assert!(intr_evt.write(1).is_ok());
         serial.write(0, u64::from(IER), &[IER_RECV_BIT]);
 
-        // Prepare the input buffer.
         {
             let mut guard = serial_in_out.internal.lock().unwrap();
             guard.read_buf.write_all(&RAW_INPUT_BUF).unwrap();
@@ -502,11 +489,8 @@ mod tests {
         let serial_wrap = Arc::new(Mutex::new(serial));
         evmgr.add_subscriber(serial_wrap.clone()).unwrap();
 
-        // Run the event handler which should drive serial input.
-        // There should be one event reported (which should have also handled serial input).
         assert_eq!(evmgr.run_with_timeout(50).unwrap(), 1);
 
-        // Verify the serial raised an interrupt.
         assert_eq!(intr_evt.read().unwrap(), 2);
 
         let mut serial = serial_wrap.lock().unwrap();
@@ -514,7 +498,6 @@ mod tests {
         serial.read(0, u64::from(LSR), &mut data[..]);
         assert_ne!(data[0] & LSR_DATA_BIT, 0);
 
-        // Verify reading the previously inputted buffer.
         RAW_INPUT_BUF.iter().for_each(|&c| {
             serial.read(0, u64::from(DATA), &mut data[..]);
             assert_eq!(data[0], c);
@@ -526,8 +509,6 @@ mod tests {
         let intr_evt = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap();
         let mut serial = Serial::new_sink(intr_evt.try_clone().unwrap());
 
-        // write 1 to the interrupt event fd, so that read doesn't block in case the event fd
-        // counter doesn't change (for 0 it blocks)
         assert!(intr_evt.write(1).is_ok());
         serial.write(0, u64::from(IER), &[IER_THR_BIT]);
         serial.write(0, u64::from(DATA), b"a");

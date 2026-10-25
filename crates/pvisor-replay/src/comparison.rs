@@ -132,9 +132,7 @@ fn normalize(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-// Port of difflib.SequenceMatcher's ratio for strings with isjunk=None. Keeping
-// this local avoids a runtime Python dependency while preserving the metric
-// emitted by the original SandboxReplay implementation.
+// difflib.SequenceMatcher string ratio with isjunk=None.
 fn sequence_matcher_ratio(left: &str, right: &str) -> f64 {
     let a: Vec<char> = left.chars().collect();
     let b: Vec<char> = right.chars().collect();

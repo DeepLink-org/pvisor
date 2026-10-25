@@ -406,7 +406,6 @@ mod tests {
     #[test]
     fn grouped_poor_regions_keep_sliding_coverage_and_reduce_region_queries() {
         let mut scanner = Scanner::new(std::iter::once(0..1024), 4096, 19);
-        // The first walk retains the original small, frequent exploration.
         for _ in 0..32 {
             scanner.begin_round();
             let mut probes = 0;

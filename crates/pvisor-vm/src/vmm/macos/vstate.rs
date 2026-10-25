@@ -915,22 +915,17 @@ mod tests {
         // Reset should fail before TLS is initialized.
         assert!(vcpu.reset_thread_local_data().is_err());
 
-        // Initialize vcpu TLS.
         vcpu.init_thread_local_data().unwrap();
 
-        // Reset vcpu TLS.
         assert!(vcpu.reset_thread_local_data().is_ok());
 
-        // Second reset should return error.
         assert!(vcpu.reset_thread_local_data().is_err());
     }
 
     #[test]
     fn test_invalid_tls() {
         let (mut vcpu, _) = setup_vcpu(0x1000);
-        // Initialize vcpu TLS.
         vcpu.init_thread_local_data().unwrap();
-        // Trying to initialize non-empty TLS should error.
         vcpu.init_thread_local_data().unwrap_err();
     }
 

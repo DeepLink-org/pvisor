@@ -265,7 +265,6 @@ impl Display for StartMicrovmError {
                 write!(f, "Cannot read firmware contents from file: {err}")
             }
             GuestMemoryMmap(ref err) => {
-                // Remove imbricated quotes from error message.
                 let mut err_msg = format!("{err:?}");
                 err_msg = err_msg.replace('\"', "");
                 write!(f, "Invalid Memory Configuration: {err_msg}")
@@ -637,7 +636,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     startup = startup.next("vmm.hypervisor_cpus_legacy_devices");
     let vcpu_config = vm_resources.vcpu_config();
 
-    // Clone the command-line so that a failed boot doesn't pollute the original.
     #[allow(unused_mut)]
     let mut kernel_cmdline = Cmdline::new(A::CMDLINE_MAX_SIZE);
     if let Some(cmdline) = payload_config.kernel_cmdline {
@@ -805,7 +803,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
 
     let mut serial_devices = Vec::new();
 
-    // Create the legacy serial device if we're booting from a firmware
     if (cfg!(feature = "efi") || vm_resources.firmware_config.is_some())
         && !vm_resources.disable_implicit_console
     {
@@ -813,14 +810,10 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             event_manager,
             None,
             None,
-            // Uncomment this to get EFI output when debugging EDK2.
-            //Some(Box::new(io::stdout())),
         )?);
     };
 
-    // We can't call to `setup_terminal_raw_mode` until `Vmm` is created,
-    // so let's keep track of FDs connected to legacy serial devices here
-    // and set raw mode on them later.
+    // Raw terminal mode is installed after Vmm construction.
     let mut serial_ttys = Vec::new();
 
     for s in &vm_resources.serial_consoles {
@@ -864,7 +857,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     .map_err(Error::CreateLegacyDevice)
     .map_err(StartMicrovmError::Internal)?;
 
-    // Instantiate the MMIO device manager.
     // 'mmio_base' address has to be an address which is protected by the kernel
     // and is architectural specific.
     #[allow(unused_mut)]
@@ -947,10 +939,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         .map_err(StartMicrovmError::Internal)?;
 
         intc = {
-            // The SoC in some popular boards (namely, the RPi family) doesn't support an
-            // architected vGIC, which is required for requesting KVM the instantiation of a
-            // GICv3. To relieve the users from having to configure the gic version manually,
-            // try first to instantiate a GICv3, and fall back to a GICv2 if it fails.
+            // Fall back to GICv2 on hosts without GICv3 support.
             let vcpu_count = vm_resources.vm_config().vcpu_count.unwrap() as u64;
             let gic = match KvmGicV3::new(vm.fd(), vcpu_count) {
                 Ok(gicv3) => IrqChipDevice::new(Box::new(gicv3)),
@@ -974,8 +963,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     {
         intc = {
-            // If the system supports the in-kernel GIC, use it. Otherwise, fall back to the
-            // userspace implementation.
             let gic = if vm_resources.snapshot_profile {
                 IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone())))
             } else {
@@ -1041,7 +1028,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         )?;
     }
 
-    // We use this atomic to record the exit code set by the guest supervisor in the VM.
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
     let device_memory_gate = crate::devices::virtio::memory_gate::register(&guest_memory);
@@ -1113,7 +1099,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     };
 
     startup = startup.next("vmm.devices");
-    // Set raw mode for FDs that are connected to legacy serial devices.
     for serial_tty in serial_ttys {
         setup_terminal_raw_mode(&mut vmm, Some(serial_tty), false);
     }
@@ -1338,8 +1323,6 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     vmm.start_vcpus(vcpus)
         .map_err(StartMicrovmError::Internal)?;
 
-    // Clippy thinks we don't need Arc<Mutex<...
-    // but we don't want to change the event_manager interface
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
@@ -1888,8 +1871,6 @@ pub fn create_guest_memory_for_arch<A: crate::backend::Architecture>(
     let (guest_mem, entry_addr, initrd_config, cmdline) =
         load_payload(vm_resources, guest_mem, &arch_mem_info, payload)?;
 
-    // Only write firmware if data exists AND this isn't an ExternalKernel payload
-    // (ExternalKernel does direct kernel boot and doesn't use EFI firmware)
     if !matches!(payload, Payload::ExternalKernel(_)) {
         if let Some(firmware_data) = firmware_data.as_ref() {
             guest_mem
@@ -2368,8 +2349,6 @@ fn autoconfigure_console_ports(
 
     if let Some(console_output_path) = console_output_path {
         let file = File::create(console_output_path).map_err(OpenConsoleFile)?;
-        // Manually emulate our Legacy behavior: In the case of output_path we have always used the
-        // stdin to determine the console size
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(STDIN_FILENO) };
         let term_fd = if isatty(stdin_fd).is_ok_and(|v| v) {
             port_io::term_fd(stdin_fd.as_raw_fd()).unwrap()

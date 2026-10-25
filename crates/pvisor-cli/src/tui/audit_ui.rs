@@ -322,9 +322,7 @@ impl Permissions {
         })
     }
 
-    // Ask paths are relative to the overlay target, not necessarily the cwd.
-    // Persist original absolute paths so a user rule cannot approve a same-named
-    // file in an unrelated workspace merely because its relative path matches.
+    // Resolve ask paths against the overlay target to scope persisted rules to this workspace.
     fn persistent_request(&self, request: &AuditRequest) -> Result<AuditRequest> {
         let mut request = request.clone();
         if request.kind == AuditKind::File {

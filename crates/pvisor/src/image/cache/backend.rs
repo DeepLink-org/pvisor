@@ -181,7 +181,6 @@ impl RemoteFs {
             objects: HashMap::new(),
             directories: HashMap::new(),
             directory_order: VecDeque::new(),
-            // Reconstructed runner backends read the same host engineering env.
             prefetch_enabled,
             prefetch_probes: HashMap::new(),
             prefetch_pages: 0,
