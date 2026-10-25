@@ -1217,6 +1217,7 @@ fn daemon_compressed_disconnected_handles_stay_budgeted_until_peer_exit() {
     assert_eq!(observer.stats().unwrap().objects, 0);
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn pooled_fixture(home: &std::path::Path, rootfs: &std::path::Path) -> pvisor::docker::Image {
     let context = tempfile::tempdir().unwrap();
     let dockerfile = context.path().join("Dockerfile");

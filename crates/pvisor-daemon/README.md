@@ -620,7 +620,10 @@ through `pvisor-daemon serve --cache --cache-listen ENDPOINT --cache-image-store
 Cache serving supports Linux and macOS and does not require KVM or cgroups.
 It preserves `PVISOR_CACHE_LOCATION` / `PVISOR_CACHE_SERVER`, `PVISOR_IMAGE_STORE`
 and `PVISOR_CACHE_TOKEN`; `--cache-listen` and `--cache-image-store` override their defaults.
-TCP requires a token. Filesystem/S3 clients need no cache daemon. Node runtime
+TCP requires a token. The image directory must be owned by the current user and
+private (0700); new roots are created with those permissions, while existing
+shared directories are rejected without changing their permissions.
+Filesystem/S3 clients need no cache daemon. Node runtime
 protocols belong to `pvisor`; the daemon has no automatic acquire/release
 adapter.
 
