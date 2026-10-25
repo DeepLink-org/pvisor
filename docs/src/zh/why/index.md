@@ -1,50 +1,37 @@
-# 为什么是 pVisor
+# pVisor 概览 {#overview}
 
-想让 Agent 跑完一个任务而不用盯着每条命令，就用 pVisor。它限制 Agent 能碰什么，把文件改动留到你决定合入时再落地，并记录实际执行了什么。出错的影响有边界，失败的尝试可以直接丢弃，结果可以事后再核对。
+<span id="policyvisor"></span>
 
-## 减少执行过程中的人工介入
+**PolicyVisor（pVisor）是一个 Agent 原生沙箱框架，提供文件级的访问与修改监管、沙箱执行生命周期管理，以及镜像与内存资源优化，共同支持安全、可控、高密度的 Agent 执行。**
 
-Agent 能跑多久，取决于你愿意盯多久。逐条批准命令，注意力就是上限；开全自动，就要接受它可能改坏文件、读到不该读的东西，或把请求发到不该发的主机。
+**Agent-Native：** pVisor 将文件级监管、沙箱生命周期管理和资源复用贯穿 Agent 执行过程。以文件为管理粒度，限定访问与修改范围，隔离候选改动并支持审查；通过 Host 侧 I/O 管理协调沙箱暂停、内存卸载与恢复，在模型等待期间主动回收空闲沙箱的驻留内存；通过镜像按需加载、内存共享与压缩，减少分支探索和回退中的重复资源占用。这些机制共同支持安全、可控、高密度的 Agent 执行。
 
-逐条批准的成本随步骤增长，审查的成本随结果增长。把审查后置，结果就能抽样、批量、交给机器比对；只要记录完整，就能在事后一次核对，而不必在执行当中拦截。
+<span id="_3"></span>
 
-## 把监督和执行量解耦
+## pVisor 在 Agent 系统中的位置 {#system-role}
 
-放手执行需要同时具备三个性质：
+pVisor 将面向 Agent 的管理能力接入沙箱执行体系，在 Host 侧监管文件与网络交互、协调沙箱生命周期，并优化镜像与内存资源。下图以 VM 执行器为例，展示 pVisor 在沙箱执行框架中的集成位置。
 
-| 性质 | 含义 | 对你的意义 |
-| --- | --- | --- |
-| 有界 | 出错的影响范围事先可知 | 不必逐条批准 |
-| 可逆 | 改动应用前可选择性合入、丢弃或分叉 | 失败成本低，敢放手 |
-| 可查 | 执行留下可核对的记录 | 审查能抽样，甚至交给机器 |
+![上层 Agent、包含 pVisor 管理模块和运行时的 Host 沙箱执行框架、下层 guest VM](../assets/diagrams/pvisor/agent-host-guest-zh.svg)
 
-三个性质各有对应的机制：运行时安装访问边界（[文件与网络策略](../guides/policies/files.md)），文件改动暂存到独立 upper、由你决定合入（[暂存与 apply](../concepts/staging.md)），每个 Job 写入身份、事件与结果记录（[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)）。
+沙箱运行时 / VMM 承担 VM 的运行与设备执行；pVisor 通过生命周期与资源管理接点协调运行时，通过 Host 侧的 [OverlayCore](../design/overlayfs.md)、[OverlayNet](../design/overlaynet.md) 管理 guest 的文件与网络 I/O。图中的模块关系表示需要相应运行时接点的集成，自动等待管理的支持范围见[实验记录](../design/experimental/vcpu-idle-offload/index.md)。Agent 或上层系统负责决策、结果接受、奖励计算及跨节点调度。
 
-规模化之后，环境准备、工具运行、模型等待和失败重做也会进入账单。[Agent 任务的生命周期成本](../design/research/agent-lifecycle-cost.md)按这些支出解释 pVisor 的执行路径与隔离选择，包括让宿主接管 I/O、guest 在等待期间卸载的那部分。
+<span id="_2"></span>
+<span id="_1"></span>
+<span id="task-flow"></span>
+<span id="when-to-use"></span>
 
-## 执行层的职责
+## 使用场景 {#workflows}
 
-pVisor 是**每次执行的语义层**：定义边界、落实控制、留下证据。
+**本地 Agent 工作流**
 
-执行器通过宿主 namespace/Seatbelt、容器或 VM 提供隔离。pVisor 负责执行策略、生命周期与记录；Kubernetes、Ray 等外部系统负责跨节点编排。
+当你希望限制 Agent 对工作区的影响，并在执行后审查和接受文件改动时，从[第一次运行](../start/first-run.md)开始，完成一次执行、审查与合入。
 
-## 今天，以及之后 {#trust-ladder}
+**Agent 执行基础设施**
 
-按人介入的时机和程度，自主执行分成四级：
+当你需要为推理、评测或后训练管理多个执行环境，并降低模型等待与分支探索中的资源占用时，从[基础设施总览](../guides/infrastructure/index.md)开始，选择接入方式与运行配置。
 
-| 级别 | 人怎么介入（信任轴） | 承载（规模轴） | 现状 |
-| --- | --- | --- | --- |
-| L0 | 执行前逐条批准命令 | 单个交互会话 | Agent 普遍自带，并开始有模型辅助审批 |
-| L1 | 执行后逐个审查改动 | 本机逐个 Job | **pVisor 今天** |
-| L2 | 策略与证据决定免审，人只抽查 | 本机多个 Job／一条流水线 | 下一步 |
-| L3 | 事后审计，人只处理例外 | 集群化：跨节点调度、集中证据 | pVisor 的规模目标 |
+<span id="trust-ladder"></span>
 
-pVisor 今天做的是 L1：运行时落实访问边界，暂存文件改动，结束后核对记录与结果。个别操作需要人判断时，用 `--ask` 审批通道。[单机 daemon](../guides/daemon/index.md) 管理本机沙箱生命周期，使用独立于原生 Job 审查流程的 API；跨节点调度归 Kubernetes、Ray 等系统，pVisor 在其中提供执行语义与可查记录。
-
-- **一个人一个 Agent**：全自动重构，合入前审查改动，今天可用。
-- **一个人多个 Agent**：并行运行、批量审查，下一步（[并行 Agent](../guides/parallel-agents.md)）。
-- **团队与平台**：在 CI 里用 L1 方式，今天可用（[在 CI 中运行](../guides/ci.md)）。
-- **Agentic RL 与评测**：可记录、可分叉、可回放的批量基座，方向（[RL rollout](../guides/rl-rollouts.md)、[研究方向](../design/research/index.md)）。
-
-!!! note "建设中"
-    「每单位 Agent 工作的人工监督成本」还没有实测数据，需求与验收标准见[监督成本](../benchmarks/supervision-cost.md)。L2/L3 的进入条件尚未定稿：进度见[路线图](../community/roadmap.md)，容量依据见[并发密度](../benchmarks/density.md)。
+!!! note "支持范围"
+    文件改动隔离需启用[暂存](../concepts/staging.md)，且不撤销外部 API、数据库等副作用。隔离与资源管理能力以[执行器](../security/executor-boundaries.md)、[接口](../guides/infrastructure/integration.md#capabilities)及实验状态为准；性能收益见对应[基准测试](../benchmarks/index.md)。

@@ -11,30 +11,15 @@ dev_addr = "127.0.0.1:3000"
 repo_name = "DeepLink-org/pvisor"
 repo_url = "https://github.com/DeepLink-org/pvisor"
 extra_css = ["assets/stylesheets/extra.css"]
+extra_javascript = ["assets/javascripts/alternate.js"]
 
 nav = [
   { "首页" = "index.md" },
-  { "快速开始" = [
-    { "快速上手" = [
+  { "本地工作流" = [
+    { "开始使用" = [
+      { "本地工作流总览" = "guides/index.md" },
       { "安装指南" = "start/installation.md" },
       { "第一次运行" = "start/first-run.md" },
-    ] },
-    { "了解 pVisor" = [
-      { "为什么是 pVisor" = "why/index.md" },
-      { "该不该用 pVisor？" = "why/comparisons.md" },
-    ] },
-  ] },
-  { "用户指南" = [
-    { "任务操作" = [
-      { "任务指南" = "guides/index.md" },
-      { "审查并应用改动" = "guides/review-apply.md" },
-      { "逻辑检查点与分叉" = "guides/fork-checkpoint.md" },
-      { "捕获 Agent 轨迹" = "guides/capture.md" },
-      { "回放历史轨迹" = "guides/replay.md" },
-      { "在 CI 中运行" = "guides/ci.md" },
-      { "并行 Agent" = "guides/parallel-agents.md" },
-      { "RL rollout" = "guides/rl-rollouts.md" },
-      { "排查一次 Run" = "guides/troubleshooting.md" },
     ] },
     { "接入你的 Agent" = [
       { "接入你的 Agent" = "guides/agents/index.md" },
@@ -42,19 +27,12 @@ nav = [
       { "Codex CLI" = "guides/agents/codex.md" },
       { "任意脚本与自动化命令" = "guides/agents/custom-scripts.md" },
     ] },
-    { "策略" = [
-      { "文件策略" = "guides/policies/files.md" },
-      { "使用 OverlayNet 控制网络访问" = "guides/policies/network.md" },
-      { "凭据与环境变量" = "guides/policies/credentials.md" },
-    ] },
-    { "执行器" = [
-      { "选择执行环境" = "guides/executors/index.md" },
-      { "host 执行器" = "guides/executors/host.md" },
-      { "原生 OCI 容器" = "guides/executors/container.md" },
-      { "pVisor VM" = "guides/executors/vm.md" },
-    ] },
-    { "Daemon 上手" = [
-      { "运行单机 daemon" = "guides/daemon/index.md" },
+    { "任务操作" = [
+      { "审查并应用改动" = "guides/review-apply.md" },
+      { "逻辑检查点与分叉" = "guides/fork-checkpoint.md" },
+      { "在 CI 中运行" = "guides/ci.md" },
+      { "并行 Agent" = "guides/parallel-agents.md" },
+      { "排查一次 Run" = "guides/troubleshooting.md" },
     ] },
     { "任务学习路线" = [
       { "按任务学习 pVisor" = "cases/index.md" },
@@ -64,6 +42,39 @@ nav = [
       { "4. 为不可信任务声明边界" = "cases/04-boundaries.md" },
       { "5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md" },
       { "6. 验证暂存、应用与丢弃契约" = "cases/06-stage-apply.md" },
+    ] },
+  ] },
+  { "执行基础设施" = [
+    { "定位与接入" = [
+      { "Agent 执行基础设施" = "guides/infrastructure/index.md" },
+      { "接入方式与能力矩阵" = "guides/infrastructure/integration.md" },
+    ] },
+    { "Daemon 上手" = [
+      { "运行单机 daemon" = "guides/daemon/index.md" },
+    ] },
+    { "轨迹与 RL rollout" = [
+      { "捕获 Agent 轨迹" = "guides/capture.md" },
+      { "回放历史轨迹" = "guides/replay.md" },
+      { "RL rollout" = "guides/rl-rollouts.md" },
+    ] },
+  ] },
+  { "基础与参考" = [
+    { "pVisor 概览" = "why/index.md" },
+    { "执行概念" = [
+      { "Job 与存储" = "concepts/jobs.md" },
+      { "暂存与 apply 语义" = "concepts/staging.md" },
+      { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
+    ] },
+    { "执行器" = [
+      { "选择执行环境" = "guides/executors/index.md" },
+      { "host 执行器" = "guides/executors/host.md" },
+      { "原生 OCI 容器" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "策略" = [
+      { "文件策略" = "guides/policies/files.md" },
+      { "使用 OverlayNet 控制网络访问" = "guides/policies/network.md" },
+      { "凭据与环境变量" = "guides/policies/credentials.md" },
     ] },
     { "命令与配置参考" = [
       { "命令与场景参考" = "reference/index.md" },
@@ -78,13 +89,6 @@ nav = [
       { "稳定性与兼容承诺" = "reference/stability.md" },
       { "pVisor Job 用户场景与回归示例" = "reference/cases.md" },
       { "共享镜像缓存与存储后端" = "reference/shared-image-cache.md" },
-    ] },
-  ] },
-  { "基础概念" = [
-    { "执行概念" = [
-      { "Job 与存储" = "concepts/jobs.md" },
-      { "暂存与 apply 语义" = "concepts/staging.md" },
-      { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
     ] },
     { "安全" = [
       { "安全概览" = "security/index.md" },
@@ -171,7 +175,7 @@ nav = [
     ] },
     { "研究方向" = [
       { "研究方向" = "design/research/index.md" },
-      { "Agent 任务的生命周期成本" = "design/research/agent-lifecycle-cost.md" }
+      { "Agent 任务的生命周期成本" = "design/research/agent-lifecycle-cost.md" },
     ] },
   ] },
   { "实验记录" = [

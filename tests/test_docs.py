@@ -341,9 +341,9 @@ class DocsTests(unittest.TestCase):
         expected_sections = {
             "zh": [
                 "首页",
-                "快速开始",
-                "用户指南",
-                "基础概念",
+                "本地工作流",
+                "执行基础设施",
+                "基础与参考",
                 "基准测试",
                 "设计与研究",
                 "实验记录",
@@ -351,9 +351,9 @@ class DocsTests(unittest.TestCase):
             ],
             "en": [
                 "Home",
-                "Quick start",
-                "User guide",
-                "Core concepts",
+                "Local workflows",
+                "Execution infrastructure",
+                "Foundations and reference",
                 "Benchmarks",
                 "Design and research",
                 "Lab notes",
