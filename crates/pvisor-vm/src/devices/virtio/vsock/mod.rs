@@ -74,8 +74,6 @@ mod defs {
     /// Size of the muxer RX packet queue.
     pub const MUXER_RXQ_SIZE: usize = 256;
 
-    // Kernel side doesn't play nice with us supporting so many bytes
-    //pub const CONN_TX_BUF_SIZE: usize = i32::MAX as usize;
     pub const CONN_TX_BUF_SIZE: usize = 8 * 1024 * 1024;
     pub const SOCK_STREAM: u16 = 1;
     pub const SOCK_DGRAM: u16 = 2;
@@ -144,7 +142,6 @@ mod defs {
         ///
         /// Stream / connection-oriented packet (the only currently valid type).
         pub const VSOCK_TYPE_STREAM: u16 = 1;
-        //pub const VSOCK_TYPE_SEQPACKET: u16 = 2;
         pub const VSOCK_TYPE_DGRAM: u16 = 3;
 
         pub const VSOCK_HOST_CID: u64 = 2;

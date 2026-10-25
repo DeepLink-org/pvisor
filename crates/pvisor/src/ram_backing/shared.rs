@@ -203,10 +203,6 @@ impl SharedPool {
     fn intern_identified(&mut self, bytes: &[u8], id: ImageId) -> io::Result<Arc<SharedObject>> {
         debug_assert_eq!(bytes.len(), PAGE);
         if let Some(object) = self.objects.get(&id) {
-            // This owner's mapping is read-only, size-sealed and mutex-owned.
-            // Clients only hold read-only descriptors, and a referenced slot
-            // cannot be written/recycled. Compare every byte in the pinned
-            // mapping rather than pread + hashing the same immutable page again.
             if self.page(object.offset) != bytes {
                 return Err(invalid("shared page content identity collision"));
             }

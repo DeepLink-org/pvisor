@@ -79,8 +79,6 @@ impl InProcessCapture {
         let join = std::thread::Builder::new()
             .name("pvisor-gateway".into())
             .spawn(move || {
-                // One asynchronous I/O loop per Attempt, rather than a pool of
-                // CPU-count-sized runtime threads for every live sandbox.
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

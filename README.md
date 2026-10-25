@@ -169,7 +169,8 @@ On macOS, VM test signing uses the same features, Cargo profile and build-target
 selection as the test run. Default and Gateway-enabled runtime/CLI tests both
 run in CI. All repository semspec recipes share `target/semspec` (beneath
 `CARGO_TARGET_DIR` when set), including documentation rendering, lint and tests.
-The Python format/lint entries also cover packaging and CI scripts plus `setup.py`.
+The Python format/lint entries cover all Python scripts under `scripts/`, including
+documentation and VM validation helpers, plus `setup.py`.
 
 ## Development environment
 

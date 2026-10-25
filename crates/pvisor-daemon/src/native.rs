@@ -172,10 +172,8 @@ impl Service {
         let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 match UnixStream::connect(&self.path).await {
-                    // Linux AF_UNIX returns EAGAIN when a nonblocking connect
-                    // fills the listener's accept queue. No connection/request
-                    // exists yet: wait within the original deadline, without
-                    // replaying any command or increasing admission limits.
+                    // AF_UNIX EAGAIN means the accept queue is full; no request was sent.
+                    // Retry connection within the existing deadline.
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }

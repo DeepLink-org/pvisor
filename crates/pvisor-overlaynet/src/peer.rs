@@ -242,9 +242,7 @@ pub(crate) struct PeerNetwork {
     // every healthy peer's send budget. At most one link per member address.
     outgoing: HashMap<Ipv4Addr, Outgoing>,
     membership: Membership,
-    // Packet forwarding only needs the generation from a fully validated
-    // publication. Keep this Copy identity instead of cloning DNS aliases and
-    // other discovery metadata on every send and receive.
+    // Packet forwarding caches only validated member generations.
     cache: MemberCache,
     received: crate::peer_batch::ReceiveBatch,
     pending: Box<[PendingPacket; crate::peer_batch::BATCH]>,

@@ -1023,14 +1023,8 @@ fn continue_native_cli(
     fs::create_dir_all(&logs)
         .replay_context(ReplayErrorKind::Executor, "create native CLI log directory")?;
     let log_path = logs.join(format!("{}.log", agent.label()));
-    // `PlaybackRequest::session_id` is the pVisor/model-router session.  It
-    // must not be used as a native Codex session identity: SweEval (and other
-    // callers) deliberately set it to a routing key such as
-    // `sweeval-<hash>`.  Codex resume resolves the rollout from the native
-    // session id stored in the source trajectory.  Mixing the two makes
-    // `codex exec resume` silently start a fresh conversation, which is much
-    // worse than failing the replay because the resulting patch can still
-    // pass a verifier while A(N+1) is no longer comparable with A'(N+1).
+    // Resume uses the native session ID from the source trajectory.
+    // PlaybackRequest::session_id identifies model routing, not the native conversation.
     let session_id = continuation_session_id(agent, plan, context)?;
     let mut command = agent_command(&launch.entrypoint, context);
     let mut codex_bridge = None;
@@ -1176,10 +1170,7 @@ fn continue_native_cli(
             .replay_context(ReplayErrorKind::Executor, "create Codex session directory")?;
             let staged = codex_staged_events(prefix, &session_id, &context.request.workspace);
             write_jsonl(&session_path, &staged)?;
-            // Recent Codex releases resolve the Responses endpoint from a
-            // model-provider profile.  Point the isolated profile at the
-            // local SandboxReplay bridge; the bridge removes the transport
-            // nonce before forwarding the request upstream.
+            // The isolated provider routes through the bridge that strips the transport nonce.
             let encoded = serde_json::to_string(bridge.base_url.as_str()).map_err(|error| {
                 ReplayError::configuration(format!("cannot encode Codex bridge URL: {error}"))
             })?;
@@ -1199,11 +1190,7 @@ fn continue_native_cli(
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox",
             ]);
-            // ``exec resume`` otherwise falls back to Codex's default model.
-            // The native SweEval launch pins the configured model explicitly;
-            // carry the same value into the continuation so local
-            // OpenAI-compatible endpoints do not receive an unsupported
-            // default model (for example ``gpt-5``).
+            // Pin the continuation model instead of using the CLI default.
             if let Some(model) = configured_model_from_environment() {
                 command.args(["--model", model.rsplit('/').next().unwrap_or(&model)]);
             }
@@ -1216,9 +1203,7 @@ fn continue_native_cli(
             if let Some(max_steps) = context.request.max_steps {
                 command.args(["-c", &format!("agent_max_steps={max_steps}")]);
             }
-            // Older Codex releases require a prompt argument for resume.  In
-            // the default mode this is an opaque nonce removed by the local
-            // Responses bridge before the request reaches the model.
+            // The bridge removes this transport prompt before model dispatch.
             command.arg(&transport_prompt);
             codex_transport_prompt = Some(transport_prompt);
             codex_prompt_mode = Some(bridge.prompt_mode());

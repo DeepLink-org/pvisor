@@ -91,8 +91,7 @@ macro_rules! bind {
     };
 }
 
-// Like Zellij's per-InputMode keymaps, the same byte can perform different
-// actions in different modes. Empty hints are aliases hidden from the bar.
+// Empty hints hide alias bindings from the status bar.
 const BINDINGS: &[Binding] = &[
     bind!(
         Agent,

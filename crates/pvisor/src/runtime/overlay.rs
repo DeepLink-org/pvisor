@@ -262,10 +262,6 @@ pub fn lower_stack_from_config(
     };
     let mut lowers: Vec<PathBuf> = cfg.lower_dirs.iter().map(|p| resolve(p)).collect();
     lowers.retain(|p| p != target);
-    // Snapshot only when the mount or its backing paths overlap the source.
-    // With an external stage (the normal --safe layout), the source is already
-    // a valid read-only lower. Copying it into Run storage can be both slow and
-    // larger than the available space there.
     let needs_snapshot = snapshot_required
         && (record.merged_dir == *target
             || !record.excluded_paths.is_empty()
@@ -375,9 +371,7 @@ pub(crate) fn mount_overlay_record_observed(
         lower_mutability.to_vec()
     };
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
-    // Match the mountless/VM initializer: the owned stage can publish one
-    // compact log, retaining first observations under the stage's policy.
-    // Reopened legacy journals and nonempty uppers keep their existing format.
+    // Reopened journals and nonempty uppers retain their existing format.
     config.compact_preimages = true;
     select_embedded_backend(&mut config)?;
     let session = OverlayFs::mount(config).map_err(embedded_mount_error)?;
@@ -643,10 +637,6 @@ fn is_mountpoint(path: &Path) -> bool {
     let Ok(parent_metadata) = fs::metadata(parent) else {
         return false;
     };
-    // `dev`/`ino` differ (or `ino` matches for hardlinks) across the parent
-    // boundary means this path is a distinct mount. On Linux there is an
-    // additional `/proc/self/mounts` probe that the early return cannot fold
-    // into, so the platforms are branched explicitly to stay clippy-clean.
     #[cfg(not(target_os = "linux"))]
     {
         metadata.dev() != parent_metadata.dev()

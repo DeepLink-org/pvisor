@@ -478,10 +478,7 @@ fn copy_tree<const SEALED: bool>(
     let before_span = profile.span("source_before");
     let before = if SEALED {
         let expected = expected.context("sealed copy requires verified inventory")?;
-        // The PublishedEnvironment borrow retains the lease for this owned
-        // immutable source. Reuse its checked inventory instead of repeating
-        // the complete metadata walk immediately before copying. Source-after
-        // and destination checks below still reject mismatches and clean up.
+        // PublishedEnvironment retains the immutable source lease and verified inventory.
         expected.clone()
     } else {
         inventory_projected(&source, excluded)?

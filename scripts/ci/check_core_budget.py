@@ -66,9 +66,7 @@ def check_boundaries(runtime_packages, app_packages):
 
 
 def source_lines(path):
-    # `errors="replace"` keeps stray non-UTF-8 metadata files (macOS
-    # AppleDouble `._*` copies) from aborting the count; line counts of real
-    # UTF-8 sources are unaffected.
+    # Tolerate non-UTF-8 metadata such as AppleDouble files.
     return len(path.read_text(errors="replace").splitlines())
 
 

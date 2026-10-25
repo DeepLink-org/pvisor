@@ -131,41 +131,12 @@ impl TsiDgramProxy {
             .set_fwd_cnt(self.tx_cnt.0);
     }
 
-    /*
-    fn peer_avail_credit(&self) -> usize {
-        (Wrapping(self.peer_buf_alloc) - (self.rx_cnt - self.peer_fwd_cnt)).0 as usize
-    }
-
-    fn send_credit_request(&self) {
-        // This response goes to the connection.
-        let rx = MuxerRx::CreditRequest {
-            local_port: self.local_port,
-            peer_port: self.peer_port,
-            fwd_cnt: self.tx_cnt.0,
-        };
-        push_packet(self.cid, rx, &self.rxq, &self.queue, &self.mem);
-    }
-    */
 
     fn recv_to_pkt(&self, pkt: &mut VsockPacket) -> RecvPkt {
         if let Some(buf) = pkt.buf_mut() {
             // UDP credit accounting is disabled for kernel compatibility.
-            //let peer_credit = self.peer_avail_credit();
-            //let max_len = std::cmp::min(buf.len(), peer_credit);
             let max_len = buf.len();
 
-            /*
-            debug!(
-                "recv_to_pkt: peer_avail_credit={}, buf.len={}, max_len={}",
-                self.peer_avail_credit(),
-                buf.len(),
-                max_len,
-            );
-
-            if max_len == 0 {
-                return RecvPkt::WaitForCredit;
-            }
-            */
 
             match recv(self.fd.as_raw_fd(), &mut buf[..max_len], MsgFlags::empty()) {
                 Ok(cnt) => {

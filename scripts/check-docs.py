@@ -52,7 +52,11 @@ def check_translations(docs=ROOT.parent, record=False, strict=False):
     """
     source = docs / "src"
     locales = {
-        locale: {p.relative_to(source / locale) for p in (source / locale).rglob("*.md") if ".data" not in p.parts}
+        locale: {
+            p.relative_to(source / locale)
+            for p in (source / locale).rglob("*.md")
+            if ".data" not in p.parts
+        }
         for locale in ("en", "zh")
     }
     issues, revisions = [], {}
@@ -61,15 +65,21 @@ def check_translations(docs=ROOT.parent, record=False, strict=False):
             issues.append(f"missing {locale} translation: {missing}")
     for path in sorted(locales["en"] & locales["zh"]):
         zh, en = ((source / locale / path).read_text() for locale in ("zh", "en"))
-        for pattern, label in ((r"^status: (\w+)$", "page status"),
-                               (r"^  exclude: (true|false)$", "search exclusion"),
-                               (r"\{#([^}]+)\}", "explicit anchors"),
-                               (r"\bS-(?:DOC|STAGE|USE)-\d+\b", "semantic case IDs")):
+        for pattern, label in (
+            (r"^status: (\w+)$", "page status"),
+            (r"^  exclude: (true|false)$", "search exclusion"),
+            (r"\{#([^}]+)\}", "explicit anchors"),
+            (r"\bS-(?:DOC|STAGE|USE)-\d+\b", "semantic case IDs"),
+        ):
             if set(re.findall(pattern, zh, re.M)) != set(re.findall(pattern, en, re.M)):
                 issues.append(f"{path}: translations disagree on {label}")
+
         def examples(text):
-            return [(m[3].strip(), m[4]) for m in FENCES.finditer(text)
-                    if m[3].strip() not in ("text", "markdown", "md")]
+            return [
+                (m[3].strip(), m[4])
+                for m in FENCES.finditer(text)
+                if m[3].strip() not in ("text", "markdown", "md")
+            ]
 
         if examples(zh) != examples(en):
             issues.append(f"{path}: translations disagree on executable examples")
@@ -89,10 +99,12 @@ def check_translations(docs=ROOT.parent, record=False, strict=False):
         raise SystemExit("\n".join(issues))
     if pending:
         if strict:
-            raise SystemExit("\n".join(
-                f"{path}: bilingual revision changed; review both languages and record translations"
-                for path in pending
-            ))
+            raise SystemExit(
+                "\n".join(
+                    f"{path}: bilingual revision changed; review both languages and record translations"
+                    for path in pending
+                )
+            )
         print(
             f"{len(pending)} bilingual pair(s) changed and await review; continuing. "
             "After reviewing both languages run: python3 scripts/check-docs.py --record-translations"
@@ -205,7 +217,9 @@ def check(strict=False):
 
     def has_redirect_maps(node):
         if isinstance(node, dict):
-            return "redirect_maps" in node or any(has_redirect_maps(value) for value in node.values())
+            return "redirect_maps" in node or any(
+                has_redirect_maps(value) for value in node.values()
+            )
         if isinstance(node, list):
             return any(has_redirect_maps(value) for value in node)
         return False
@@ -215,7 +229,8 @@ def check(strict=False):
         for locale in ("en", "zh")
     }
     if {path.name for path in ROOT.parent.glob("zensical*.toml")} != {
-        "zensical.en.toml", "zensical.zh.toml"
+        "zensical.en.toml",
+        "zensical.zh.toml",
     }:
         issues.append("only the two native locale configurations are allowed")
     navigation = {}
@@ -234,7 +249,11 @@ def check(strict=False):
             issues.append(f"{locale}: legacy redirect plugin is forbidden")
         published_sites[locale] = urlsplit(config["site_url"])
         url = published_sites[locale]
-        if url.scheme not in ("http", "https") or not url.netloc or not url.path.endswith(f"/{locale}/"):
+        if (
+            url.scheme not in ("http", "https")
+            or not url.netloc
+            or not url.path.endswith(f"/{locale}/")
+        ):
             issues.append(f"{locale}: site_url must be an absolute published locale URL")
     if navigation["en"] != navigation["zh"]:
         issues.append("locale navigation article paths do not match")
@@ -249,12 +268,17 @@ def check(strict=False):
             issues.append(f"{locale}: alternate links must use absolute published locale URLs")
     entry = ROOT / "index.html"
     entry_source = ROOT.parent / "index.html"
-    if not entry_source.is_file() or not entry.is_file() or entry.read_bytes() != entry_source.read_bytes():
+    if (
+        not entry_source.is_file()
+        or not entry.is_file()
+        or entry.read_bytes() != entry_source.read_bytes()
+    ):
         issues.append("root index.html must be copied from docs/index.html")
     if entry.resolve() in pages:
         entry_links = {
             urljoin(published.geturl(), href)
-            for tag, href, _ in pages[entry.resolve()].links if tag == "a"
+            for tag, href, _ in pages[entry.resolve()].links
+            if tag == "a"
         }
         for locale in ("en", "zh"):
             if published._replace(path=published.path + locale + "/").geturl() not in entry_links:
@@ -268,7 +292,9 @@ def check(strict=False):
             if ".data" in article.parts:
                 continue
             relative = article.relative_to(source).with_suffix("")
-            target = ROOT / (relative.parent if relative.name == "index" else relative) / "index.html"
+            target = (
+                ROOT / (relative.parent if relative.name == "index" else relative) / "index.html"
+            )
             article_paths.add(target.resolve())
             if target.resolve() not in pages:
                 issues.append(f"article not rendered: {article.relative_to(source)}")
@@ -296,13 +322,19 @@ def check(strict=False):
         for tag, href, classes in page.links:
             url = urlsplit(href)
             if "md-select__link" in classes and not (url.scheme and url.netloc):
-                issues.append(f"{rel}: language selector must use an absolute published URL: {href}")
+                issues.append(
+                    f"{rel}: language selector must use an absolute published URL: {href}"
+                )
             if url.scheme or url.netloc:
                 # Language links use the published origin so single-locale previews
                 # can switch languages. Still validate their generated counterparts.
                 if "md-select__link" not in classes:
                     continue
-                if url.scheme != published.scheme or url.netloc != published.netloc or not url.path.startswith(published.path):
+                if (
+                    url.scheme != published.scheme
+                    or url.netloc != published.netloc
+                    or not url.path.startswith(published.path)
+                ):
                     issues.append(f"{rel}: language selector leaves published site: {href}")
                     continue
             target = unquote(url.path)
@@ -331,8 +363,10 @@ def check(strict=False):
             if (
                 locale
                 and (
-                    "md-tabs__link" in classes or "md-nav__link" in classes
-                    or "md-logo" in classes or "md-path__link" in classes
+                    "md-tabs__link" in classes
+                    or "md-nav__link" in classes
+                    or "md-logo" in classes
+                    or "md-path__link" in classes
                 )
                 and dest.is_relative_to(ROOT)
             ):
@@ -364,6 +398,8 @@ if __name__ == "__main__":
     elif sys.argv[1:] == ["--require-recorded"]:
         check(strict=True)
     elif sys.argv[1:]:
-        raise SystemExit("usage: check-docs.py [--preflight-build | --record-translations | --require-recorded]")
+        raise SystemExit(
+            "usage: check-docs.py [--preflight-build | --record-translations | --require-recorded]"
+        )
     else:
         check()

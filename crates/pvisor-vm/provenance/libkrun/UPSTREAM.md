@@ -88,10 +88,11 @@ macOS 的 vtimer offset 与 HVF WFE deadline 修正没有拆开回移植。
 
 回移植阶段仅做静态检查；2026-10-02 用户随后明确授权编译与测试，已完成新一轮运行验收。
 
-- `just build debug`：macOS arm64 构建、签名验证通过。
+- 当时的 `just build debug`（现行入口为 `mise run build -- debug`）：macOS arm64 构建、签名验证通过。
 - 产品 Rust：935 通过、5 个宿主挂载相关失败、4 跳过；Python：56 通过、19 跳过。
 - libkrun / krun-devices 专项：57 通过，包含 ioctl、macOS xattr 与 shutdown fd 回归。
 - Linux x86_64 krun-devices、Linux AArch64 krun-vmm / krun-devices：musl 交叉编译检查通过，未运行 KVM。
 - 真实 HVF VM：基础 FS、退出码、smoltcp 网卡初始化通过；硬链接身份及缓存一致性失败。相关 Overlay inode 实现未被本次回移植修改，但未运行升级前 VM 对照。
 
-**验收未全绿，不能声明没有回归。** 完整命令、已修复的产品问题、FSKit 环境失败与硬链接复现见 [编译与运行验收报告](../../review_project/06-evidence/libkrun-validation.md)。未验证 Linux SVE / PIT 运行、vsock 压力与真实关机；缓冲复用未测性能。
+**验收未全绿，不能声明没有回归。** 原本地验收报告 `review_project/06-evidence/libkrun-validation.md`
+记录了当时的完整命令、已修复的产品问题、FSKit 环境失败与硬链接复现；该报告未随仓库分发。未验证 Linux SVE / PIT 运行、vsock 压力与真实关机；缓冲复用未测性能。

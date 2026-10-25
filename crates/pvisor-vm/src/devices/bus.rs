@@ -91,7 +91,6 @@ impl Bus {
     }
 
     fn first_before(&self, addr: u64) -> Option<(BusRange, &Mutex<dyn BusDevice>)> {
-        // for when we switch to rustc 1.17: self.devices.range(..addr).iter().rev().next()
         for (range, dev) in self.devices.iter().rev() {
             if range.0 <= addr {
                 return Some((*range, dev));
@@ -129,13 +128,8 @@ impl Bus {
             return Err(Error::Overlap);
         }
 
-        // The above check will miss an overlap in which the new device's base address is before the
-        // range of another device. To catch that case, we search for a device with a range before
-        // the new device's range's end. If there is no existing device in that range that starts
-        // after the new device, then there will be no overlap.
+        // Also reject existing devices whose base lies inside the new range.
         if let Some((BusRange(start, _), _)) = self.first_before(base + len - 1) {
-            // Such a device only conflicts with the new device if it also starts after the new
-            // device because of our initial `get_device` check above.
             if start >= base {
                 return Err(Error::Overlap);
             }
@@ -153,7 +147,6 @@ impl Bus {
     /// Returns true on success, otherwise `data` is untouched.
     pub fn read(&self, vcpuid: u64, addr: u64, data: &mut [u8]) -> bool {
         if let Some((offset, dev)) = self.get_device(addr) {
-            // OK to unwrap as lock() failing is a serious error condition and should panic.
             dev.lock()
                 .expect("Failed to acquire device lock")
                 .read(vcpuid, offset, data);
@@ -168,7 +161,6 @@ impl Bus {
     /// Returns true on success, otherwise `data` is untouched.
     pub fn write(&self, vcpuid: u64, addr: u64, data: &[u8]) -> bool {
         if let Some((offset, dev)) = self.get_device(addr) {
-            // OK to unwrap as lock() failing is a serious error condition and should panic.
             dev.lock()
                 .expect("Failed to acquire device lock")
                 .write(vcpuid, offset, data);
@@ -205,24 +197,17 @@ mod tests {
     fn bus_insert() {
         let mut bus = Bus::new();
         let dummy = Arc::new(Mutex::new(DummyDevice));
-        // Insert len should not be 0.
         assert!(bus.insert(dummy.clone(), 0x10, 0).is_err());
         assert!(bus.insert(dummy.clone(), 0x10, 0x10).is_ok());
 
         let result = bus.insert(dummy.clone(), 0x0f, 0x10);
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(result.is_err());
         assert_eq!(format!("{result:?}"), "Err(Overlap)");
 
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(bus.insert(dummy.clone(), 0x10, 0x10).is_err());
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(bus.insert(dummy.clone(), 0x10, 0x15).is_err());
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(bus.insert(dummy.clone(), 0x12, 0x15).is_err());
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(bus.insert(dummy.clone(), 0x12, 0x01).is_err());
-        // This overlaps the address space of the existing bus device at 0x10.
         assert!(bus.insert(dummy.clone(), 0x0, 0x20).is_err());
         assert!(bus.insert(dummy.clone(), 0x20, 0x05).is_ok());
         assert!(bus.insert(dummy.clone(), 0x25, 0x05).is_ok());

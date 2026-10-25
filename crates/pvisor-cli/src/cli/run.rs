@@ -134,8 +134,6 @@ pub(super) const RUN_COMMAND_ABOUT: &str =
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
-// Compile the macOS description in tests on every platform so Linux CI also
-// checks its safety disclosures instead of leaving them to the macOS shard.
 #[cfg(any(target_os = "macos", test))]
 const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
 
@@ -1317,10 +1315,7 @@ async fn execute_config(
                 let overlay = config
                     .overlayfs
                     .get_or_insert_with(OverlayFsSettings::default);
-                // Keep the host workspace path stable inside the guest. The
-                // workspace is a separate virtio-fs mount; using the rootfs as its
-                // base would make `cwd` point at a path that does not exist in an
-                // image guest and would bypass workspace staging.
+                // The workspace has its own staged mount, separate from the guest rootfs.
                 overlay.base = Some(workspace.clone());
                 overlay.target = Some(workspace.clone());
                 overlay.commit = OverlayFsCommit::Manual;
@@ -1337,29 +1332,21 @@ async fn execute_config(
             .as_ref()
             .and_then(|overlay| overlay.base.as_ref())
         {
-            // The OverlayFS base is the project association for host and
-            // container runs when supplied by a config file.
             config.run.workspace = Some(base.clone());
         }
         // On host/container runs the path is a real host mount point visible
         // to the Agent. VM runs keep `target` as the guest-visible path.
-        if let Some(overlay) = &mut config.overlayfs {
-            // The target is translated to a host merged mount below, after
-            // the workspace has been canonicalized. A missing path means the
-            // current workspace itself, preserving transparent cwd semantics.
-            if overlay.merged_dir.is_none() {
-                overlay.merged_dir = overlay.target.take();
-            }
+        if let Some(overlay) = &mut config.overlayfs
+            && overlay.merged_dir.is_none()
+        {
+            overlay.merged_dir = overlay.target.take();
         }
     }
     validate(&config, safe)?;
 
     let filesystem_isolated = config.filesystem == FilesystemMode::Sandbox;
 
-    // The rootless capability check launches `unshare`, but does not depend on
-    // workspace, storage, OverlayFS, or Gateway configuration. Run it while
-    // those independent inputs are resolved instead of blocking at executor
-    // construction.
+    // Probe rootless support while resolving independent launch inputs.
     #[cfg(target_os = "linux")]
     let rootless_probe = (config.run.executor == RunExecutorKind::Host).then(|| {
         tokio::task::spawn_blocking(move || {
@@ -1451,9 +1438,6 @@ async fn execute_config(
 
     #[cfg(feature = "gateway")]
     if config.gateway.debug {
-        // `pvisor spawn` is a foreground CLI: mirror opted-in gateway/network
-        // diagnostics to stderr as well as the Run log, so proxy failures can
-        // be diagnosed without locating storage after the child exits.
         pvisor_gateway::runtime::debug::enable_debug_stderr();
         pvisor_gateway::runtime::debug::enable_debug(&storage)?;
     }

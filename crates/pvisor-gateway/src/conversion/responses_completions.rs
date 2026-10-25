@@ -277,7 +277,6 @@ impl InputConverter {
     }
 
     fn pending_messages(&mut self) -> &mut Vec<Value> {
-        // Lazily allocate only when legacy path needs it.
         self.legacy_messages.get_or_insert_with(Vec::new)
     }
 

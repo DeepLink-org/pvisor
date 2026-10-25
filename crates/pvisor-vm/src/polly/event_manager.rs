@@ -338,8 +338,6 @@ mod tests {
             let source = event.data() as i32;
             let event_set = EventSet::from_bits(event.events()).unwrap();
 
-            // We only know how to treat EPOLLOUT and EPOLLIN.
-            // If we received anything else just stop processing the event.
             let all_but_in_out = EventSet::all() - EventSet::OUT - EventSet::IN;
             if event_set.intersects(all_but_in_out) {
                 return;
@@ -366,7 +364,6 @@ mod tests {
         let mut event_manager = EventManager::new().unwrap();
         let dummy_subscriber = Arc::new(Mutex::new(DummySubscriber::new()));
 
-        // Write to eventfds to make them readable (trigger IN events).
         dummy_subscriber
             .lock()
             .unwrap()
@@ -392,7 +389,6 @@ mod tests {
         assert!(dummy_subscriber.lock().unwrap().processed_ev1_in());
         assert!(!dummy_subscriber.lock().unwrap().processed_ev2_in());
 
-        // Check that both ev1 and ev2 are processed.
         dummy_subscriber.lock().unwrap().reset_state();
         event_manager.run().unwrap();
         assert!(dummy_subscriber.lock().unwrap().processed_ev1_in());
@@ -405,7 +401,6 @@ mod tests {
         let mut event_manager = EventManager::new().unwrap();
         let dummy_subscriber = Arc::new(Mutex::new(DummySubscriber::new()));
 
-        // Write to ev1 to make it readable.
         dummy_subscriber
             .lock()
             .unwrap()
@@ -435,7 +430,6 @@ mod tests {
         let mut event_manager = EventManager::new().unwrap();
         let dummy_subscriber = Arc::new(Mutex::new(DummySubscriber::new()));
 
-        // Write to ev1 to make it readable.
         dummy_subscriber
             .lock()
             .unwrap()
@@ -447,7 +441,6 @@ mod tests {
             .add_subscriber(dummy_subscriber.clone())
             .unwrap();
 
-        // Modify ev1 (exercises the modify code path).
         dummy_subscriber.lock().unwrap().modify_ev1();
         event_manager.run().unwrap();
         assert!(dummy_subscriber.lock().unwrap().processed_ev1_in());
@@ -470,7 +463,6 @@ mod tests {
         };
     }
 
-    // Test that registering the same event twice throws an error.
     #[test]
     fn test_register_errors() {
         let mut event_manager = EventManager::new().unwrap();
@@ -492,12 +484,10 @@ mod tests {
             .add_subscriber(dummy_subscriber.clone())
             .unwrap();
 
-        // At this point ev2 is not registered. Check that unregistering it throws an error.
         assert!(event_manager
             .unregister(dummy_subscriber.lock().unwrap().event_fd_2.as_raw_fd())
             .is_err());
 
-        // Try to unregister ev1 twice. Only the first call should be successful.
         assert!(event_manager
             .unregister(dummy_subscriber.lock().unwrap().event_fd_1.as_raw_fd())
             .is_ok());

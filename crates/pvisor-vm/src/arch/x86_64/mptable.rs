@@ -14,11 +14,6 @@ use libc::c_char;
 use crate::arch_gen::x86::mpspec;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
-// This is a workaround to the Rust enforcement specifying that any implementation of a foreign
-// trait (in this case `ByteValued`) where:
-// *    the type that is implementing the trait is foreign or
-// *    all of the parameters being passed to the trait (if there are any) are also foreign
-// is prohibited.
 #[derive(Copy, Clone, Default)]
 struct MpcBusWrapper(mpspec::mpc_bus);
 #[derive(Copy, Clone, Default)]
@@ -74,9 +69,7 @@ pub enum Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
-// With APIC/xAPIC, there are only 255 APIC IDs available. And IOAPIC occupies
-// one APIC ID, so only 254 CPUs at maximum may be supported. Actually it's
-// a large number for FC usecases.
+// APIC/xAPIC provides 255 IDs; IOAPIC reserves one, leaving at most 254 CPUs.
 pub const MAX_SUPPORTED_CPUS: u32 = 254;
 
 // Convenience macro for making arrays of diverse character types.
@@ -261,7 +254,6 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
         checksum = checksum.wrapping_add(compute_checksum(&mpc_lintsrc.0));
     }
 
-    // At this point we know the size of the mp_table.
     let table_end = base_mp;
 
     {

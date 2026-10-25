@@ -267,9 +267,7 @@ impl Execution {
     }
 }
 
-// The old pool is retained only as a test fixture for the existing descriptor,
-// memory-lease and wakeup regressions during this scheduling migration. The
-// production worker exclusively uses scheduler::serve below.
+// Test pool for descriptor, memory-lease and wakeup regressions.
 #[cfg(test)]
 fn parallel_candidate(header: &InHeader, body: &Reader) -> bool {
     match header.opcode {
@@ -292,7 +290,6 @@ struct Request {
     index: u16,
     header: InHeader,
     buffers: OwnedDescriptorChain,
-    // Legacy pool test diagnostics; queue-local execution reads no clock here.
     #[cfg(test)]
     profile_timestamp: Option<Instant>,
 }

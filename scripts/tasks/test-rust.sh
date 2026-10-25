@@ -6,8 +6,7 @@ while [[ $# -gt 0 && "$1" != -- ]]; do
   package="$1"
   shift
   case "$package" in
-    pvisor) package=pvisor ;;
-            cli) package=pvisor-cli ;;
+    cli) package=pvisor-cli ;;
     core|control|agentctl) package=pvisor-core ;;
     capture) package=pvisor-gateway ;;
     shim) package=pvisor-shim ;;

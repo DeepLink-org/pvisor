@@ -51,5 +51,5 @@ Conclusion: OverlayNet controls cooperative proxy traffic; it is not a network s
 ## Links
 
 - [pVisor examples](../README.md)
-- [Network control](../../../docs/src/zh/guides/network.md)
+- [Network control](../../../docs/src/zh/guides/policies/network.md)
 - [OverlayNet architecture](../../../docs/src/zh/design/overlaynet.md)

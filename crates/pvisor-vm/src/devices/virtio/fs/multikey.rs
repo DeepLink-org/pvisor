@@ -222,7 +222,6 @@ mod test {
             val
         );
 
-        // Both new_k1 and k2 should now be gone from the map.
         assert!(m.get(&new_k1).is_none());
         assert!(m.get_alt(&k2).is_none());
 
@@ -254,7 +253,6 @@ mod test {
             val2
         );
 
-        // Both k1 and new_k2 should now be gone from the map.
         assert!(m.get(&k1).is_none());
         assert!(m.get_alt(&new_k2).is_none());
 

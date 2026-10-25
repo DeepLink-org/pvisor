@@ -301,10 +301,7 @@ impl FilesystemBlocks {
             .filter(|entry| matches!(&entry.object, TreeObject::File { hardlink, .. } if *hardlink == entry.path))
             .map(|entry| (entry.path.as_slice(), entry))
             .collect::<BTreeMap<_, _>>();
-        // Keep the independent final inventory, but encode its freshly read
-        // content instead of reading each file once more before that walk.
-        // The walker brackets this callback with identity/version checks and
-        // audits all metadata, exclusions and hardlink topology as before.
+        // The inventory walker verifies file identity/version around the encoding callback.
         let observed = super::inventory_projected_with_hash::<true>(
             source,
             &mut |path| {

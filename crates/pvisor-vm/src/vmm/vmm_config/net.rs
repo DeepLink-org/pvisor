@@ -51,7 +51,6 @@ impl NetBuilder {
     /// Creates an empty list of Network Devices.
     pub fn new() -> Self {
         NetBuilder {
-            // List of built network devices.
             list: VecDeque::new(),
         }
     }
@@ -64,7 +63,6 @@ impl NetBuilder {
 
     /// Creates a Net device from a NetworkInterfaceConfig.
     pub fn create_net(cfg: NetworkInterfaceConfig) -> Result<Net> {
-        // Create and return the Net device
         Net::new(cfg.iface_id, cfg.backend, cfg.mac, cfg.features)
             .map_err(NetworkInterfaceError::CreateNetworkDevice)
     }

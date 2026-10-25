@@ -100,9 +100,7 @@ impl OpencodeBridgeHandle {
                 )
             })?;
         let upstream_origin = url_origin(&upstream_base)?;
-        // Mirror the original API path prefix (for example "/v1"): OpenCode
-        // appends "/responses" to this base URL and the bridge forwards the
-        // resulting path verbatim, so dropping the prefix would 404 upstream.
+        // Preserve the API prefix; OpenCode appends /responses to this base URL.
         let upstream_prefix = url_path_prefix(&upstream_base)?;
         let bridge_api_key = format!("pvisor-sandbox-replay-{}", uuid::Uuid::new_v4().simple());
         let listener = TcpListener::bind(("127.0.0.1", 0)).replay_context(
@@ -408,10 +406,7 @@ async fn forward_handler(
             response_headers.insert(name.clone(), header_value);
         }
     }
-    // Buffer the whole upstream body before replying, mirroring the Codex
-    // bridge. A pass-through stream can die mid-flight; OpenCode's Bun-based
-    // fetch then hangs on the half-open response without retrying, which
-    // stalls the continuation forever.
+    // Buffer before delivery: OpenCode can hang on an interrupted response stream.
     let body = match super::read_response_limited(response).await {
         Ok(bytes) => bytes,
         Err(error) => {
