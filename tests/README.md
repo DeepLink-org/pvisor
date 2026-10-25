@@ -17,6 +17,11 @@ lifecycle. Do not launch mise or embed Bash checks inside a Python test runner.
 Calling a product command or supervising an example process remains part of
 the integration tests.
 
+The opt-in [native daemon chaos driver](DAEMON_CHAOS.md) runs bounded seeded
+SDK file/command traffic, cancellation and API/lifecycle faults against real VMs.
+Its ordinary safety tests run without an SDK, KVM or a daemon. Application/CLI
+chaos remains in `podman/`; both are correctness experiments, not benchmarks.
+
 Use `tests.fixtures.workspace()` for an isolated canonical temporary path and an
 `ExitStack` for mocks and other cleanup. Each use owns its resources; cleanup runs
 before removing the directory, including when an assertion fails.

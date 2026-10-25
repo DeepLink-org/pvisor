@@ -103,7 +103,7 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                 &query(&request, "path").ok_or_else(|| invalid("path required"))?,
                 true,
             )?;
-            service.download(path).await?
+            service.download(path, None).await?
         }
         ("POST", "/files") => {
             if user

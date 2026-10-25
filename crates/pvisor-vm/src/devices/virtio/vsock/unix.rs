@@ -30,7 +30,7 @@ use vm_memory::GuestMemoryMmap;
 pub struct UnixProxy {
     id: u64,
     cid: u64,
-    fd: OwnedFd,
+    fd: Option<OwnedFd>,
     pub status: ProxyStatus,
     mem: GuestMemoryMmap,
     queue: Arc<Mutex<VirtQueue>>,
@@ -109,7 +109,7 @@ impl UnixProxy {
             local_port,
             peer_port: 0,
             control_port,
-            fd,
+            fd: Some(fd),
             status: ProxyStatus::Idle,
             mem,
             queue,
@@ -144,7 +144,7 @@ impl UnixProxy {
             local_port,
             peer_port,
             control_port: 0,
-            fd,
+            fd: Some(fd),
             status: ProxyStatus::ReverseInit,
             mem,
             queue,
@@ -160,11 +160,14 @@ impl UnixProxy {
     }
 
     fn switch_to_connected(&mut self) {
+        let Some(fd) = self.fd.as_ref() else {
+            return;
+        };
         self.status = ProxyStatus::Connected;
-        match fcntl(&self.fd, FcntlArg::F_GETFL) {
+        match fcntl(fd, FcntlArg::F_GETFL) {
             Ok(flags) => match OFlag::from_bits(flags) {
                 Some(flags) => {
-                    if let Err(e) = fcntl(&self.fd, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK)) {
+                    if let Err(e) = fcntl(fd, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK)) {
                         warn!("error switching to blocking: id={}, err={}", self.id, e);
                     }
                 }
@@ -224,7 +227,7 @@ impl UnixProxy {
             }
 
             match recv(
-                self.fd.as_raw_fd(),
+                self.as_raw_fd(),
                 &mut buf[..max_len],
                 MsgFlags::MSG_DONTWAIT,
             ) {
@@ -329,7 +332,7 @@ impl Proxy for UnixProxy {
 
         let addr = UnixAddr::new(&self.path).unwrap();
 
-        let result = match connect(self.fd.as_raw_fd(), &addr) {
+        let result = match connect(self.as_raw_fd(), &addr) {
             Ok(()) => {
                 debug!("connect: Connected");
                 self.switch_to_connected();
@@ -351,10 +354,10 @@ impl Proxy for UnixProxy {
         };
 
         if self.status == ProxyStatus::Connecting {
-            update.polling = Some((self.id, self.fd.as_raw_fd(), EventSet::IN | EventSet::OUT));
+            update.polling = Some((self.id, self.as_raw_fd(), EventSet::IN | EventSet::OUT));
         } else {
             if self.status == ProxyStatus::Connected {
-                update.polling = Some((self.id, self.fd.as_raw_fd(), EventSet::IN));
+                update.polling = Some((self.id, self.as_raw_fd(), EventSet::IN));
             }
             self.push_connect_rsp(result);
         }
@@ -401,7 +404,7 @@ impl Proxy for UnixProxy {
             #[cfg(target_os = "linux")]
             let flags = MsgFlags::MSG_NOSIGNAL;
 
-            match send(self.fd.as_raw_fd(), buf, flags) {
+            match send(self.as_raw_fd(), buf, flags) {
                 Ok(sent) => {
                     if sent != buf.len() {
                         error!("couldn't set everything: buf={}, sent={}", buf.len(), sent);
@@ -462,6 +465,9 @@ impl Proxy for UnixProxy {
     }
 
     fn update_peer_credit(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
+        if self.fd.is_none() {
+            return ProxyUpdate::default();
+        }
         debug!(
             "update_credit: buf_alloc={} rx_cnt={} fwd_cnt={}",
             pkt.buf_alloc(),
@@ -474,7 +480,7 @@ impl Proxy for UnixProxy {
         self.status = ProxyStatus::Connected;
 
         ProxyUpdate {
-            polling: Some((self.id, self.fd.as_raw_fd(), EventSet::IN)),
+            polling: Some((self.id, self.as_raw_fd(), EventSet::IN)),
             ..Default::default()
         }
     }
@@ -494,6 +500,9 @@ impl Proxy for UnixProxy {
     }
 
     fn process_op_response(&mut self, pkt: &VsockPacket) -> ProxyUpdate {
+        if self.fd.is_none() {
+            return ProxyUpdate::default();
+        }
         debug!(
             "process_op_response: id={} src_port={} dst_port={}",
             self.id,
@@ -507,7 +516,7 @@ impl Proxy for UnixProxy {
         self.switch_to_connected();
 
         ProxyUpdate {
-            polling: Some((self.id, self.fd.as_raw_fd(), EventSet::IN)),
+            polling: Some((self.id, self.as_raw_fd(), EventSet::IN)),
             ..Default::default()
         }
     }
@@ -517,6 +526,9 @@ impl Proxy for UnixProxy {
     }
 
     fn shutdown(&mut self, pkt: &VsockPacket) {
+        if self.fd.is_none() {
+            return;
+        }
         let recv_off = pkt.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_RCV != 0;
         let send_off = pkt.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0;
 
@@ -528,7 +540,7 @@ impl Proxy for UnixProxy {
             Shutdown::Write
         };
 
-        if let Err(e) = shutdown(self.fd.as_raw_fd(), how) {
+        if let Err(e) = shutdown(self.as_raw_fd(), how) {
             warn!("error sending shutdown to socket: {e}");
         }
     }
@@ -548,14 +560,20 @@ impl Proxy for UnixProxy {
             _ => ProxyRemoval::Deferred,
         };
 
-        ProxyUpdate {
+        self.status = ProxyStatus::Closed;
+        let mut update = ProxyUpdate {
             remove_proxy,
             ..Default::default()
-        }
+        };
+        update.retire_socket(self.id, &mut self.fd);
+        update
     }
 
     fn process_event(&mut self, evset: EventSet) -> ProxyUpdate {
         let mut update = ProxyUpdate::default();
+        if self.fd.is_none() {
+            return update;
+        }
 
         if evset.contains(EventSet::HANG_UP) {
             debug!("process_event: HANG_UP");
@@ -567,9 +585,10 @@ impl Proxy for UnixProxy {
             }
 
             self.status = ProxyStatus::Closed;
-            update.polling = Some((self.id, self.fd.as_raw_fd(), EventSet::empty()));
+            update.polling = Some((self.id, self.as_raw_fd(), EventSet::empty()));
             update.signal_queue = true;
             update.remove_proxy = ProxyRemoval::Deferred;
+            update.retire_socket(self.id, &mut self.fd);
 
             return update;
         }
@@ -598,11 +617,13 @@ impl Proxy for UnixProxy {
 
                     self.push_reset();
                     update.signal_queue = true;
-                    update.polling = Some((self.id(), self.fd.as_raw_fd(), EventSet::empty()));
+                    update.polling = Some((self.id(), self.as_raw_fd(), EventSet::empty()));
+                    update.remove_proxy = ProxyRemoval::Deferred;
+                    update.retire_socket(self.id, &mut self.fd);
                     return update;
                 } else if self.status == ProxyStatus::WaitingCreditUpdate {
                     debug!("process_event: WaitingCreditUpdate");
-                    update.polling = Some((self.id(), self.fd.as_raw_fd(), EventSet::empty()));
+                    update.polling = Some((self.id(), self.as_raw_fd(), EventSet::empty()));
                 }
             } else {
                 debug!("EventSet::IN while not connected: {:?}", self.status);
@@ -615,7 +636,7 @@ impl Proxy for UnixProxy {
                 self.switch_to_connected();
                 self.push_connect_rsp(0);
                 update.signal_queue = true;
-                update.polling = Some((self.id(), self.fd.as_raw_fd(), EventSet::IN));
+                update.polling = Some((self.id(), self.as_raw_fd(), EventSet::IN));
             } else {
                 error!("EventSet::OUT while not connecting");
             }
@@ -627,7 +648,7 @@ impl Proxy for UnixProxy {
 
 impl AsRawFd for UnixProxy {
     fn as_raw_fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
+        self.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 }
 
@@ -729,5 +750,38 @@ impl Proxy for UnixAcceptorProxy {
 impl AsRawFd for UnixAcceptorProxy {
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use vm_memory::GuestAddress;
+
+    #[test]
+    fn released_connection_keeps_tombstone_without_holding_host_socket() {
+        let (host, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .unwrap();
+        let guest = super::super::proxy::ProxyGuest {
+            cid: 3,
+            mem: GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap(),
+            queue: Arc::new(Mutex::new(VirtQueue::new(256))),
+            rxq: Arc::new(Mutex::new(MuxerRxQ::new())),
+        };
+        let mut proxy = UnixProxy::new_reverse(1, 1026, 1025, host.into(), guest);
+        proxy.status = ProxyStatus::Connected;
+        let update = proxy.release();
+        assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));
+        drop(update);
+        assert_eq!(
+            peer.read(&mut [0u8; 1]).unwrap(),
+            0,
+            "terminal proxy retains a live socket"
+        );
+        assert_eq!(proxy.status, ProxyStatus::Closed);
+        // Keep the proxy alive: protocol id retention must not retain its fd.
+        assert_eq!(proxy.as_raw_fd(), -1);
     }
 }

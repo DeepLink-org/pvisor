@@ -52,7 +52,8 @@ def audit(root):
         quota, period = map(int, limits["cpu.max"].split())
         assert quota == period
     command_count = 0
-    for path in (root / "commands").glob("*/command.json"):
+    mode_payloads = {}
+    for path in sorted((root / "commands").glob("*/command.json")):
         command_count += 1
         command = load(path)
         status = load(path.parent / "exit.json")
@@ -60,9 +61,17 @@ def audit(root):
         code, arguments = status["code"], command["arguments"]
         stderr = (path.parent / "stderr").read_bytes()
         stdout = (path.parent / "stdout").read_bytes()
+        if command["stdin_bytes"] and any("cat > /mode-check" in value for value in arguments):
+            mode_payloads[command["step"]] = command["stdin_sha256"]
         if code == 1:
-            assert (arguments[0] == "build" and b"RUN exited with status 7" in stderr) or (
-                arguments[0] == "rm" and b"no such container" in stderr.lower()
+            assert (
+                (arguments[0] == "build" and b"RUN exited with status 7" in stderr)
+                or (arguments[0] == "rm" and b"no such container" in stderr.lower())
+                or (
+                    arguments[:3] == ["exec", "-u", "65534"]
+                    and arguments[-2:] == ["cat", "/mode-check"]
+                    and b"Permission denied" in stderr
+                )
             )
         elif code == 125:
             assert arguments[0] == "run" and (
@@ -76,6 +85,22 @@ def audit(root):
         if command["stdin_bytes"] and any("cat;" in value for value in arguments):
             assert len(stdout) == command["stdin_bytes"]
             assert hashlib.sha256(stdout).hexdigest() == command["stdin_sha256"]
+        if (
+            arguments[0] == "exec"
+            and "-u" not in arguments
+            and arguments[-2:] == ["cat", "/mode-check"]
+        ):
+            assert hashlib.sha256(stdout).hexdigest() == mode_payloads[command["step"]]
+        if arguments[-4:] == ["stat", "-c", "%a", "/mode-priv"]:
+            assert code == 0 and stdout == b"777\n"
+        if arguments[-2:] == ["cat", "/mode-priv"]:
+            assert code == 0 and stdout == b"guest-write"
+        if arguments[-4:] == ["stat", "-c", "%a:%s", "/mode-truncate"]:
+            assert code == 0 and stdout == b"777:20\n"
+        if arguments[-2:] == ["cat", "/mode-truncate"]:
+            assert code == 0 and stdout == b"short" + b"\0" * 15
+        if arguments[-2:] == ["cat", "/tmp/guest-mode-dir/file"]:
+            assert code == 0 and stdout == b"guest-created"
     assert command_count == summary["commands"]
     samples = [json.loads(line) for line in (root / "resources.jsonl").read_text().splitlines()]
     peak = 0
@@ -106,6 +131,8 @@ def audit(root):
         "unexpected_faults": 0,
         "half_close_checks": len(half_closed),
         "harness_sha256": hashlib.sha256((root / "application_chaos.py").read_bytes()).hexdigest(),
+        "binary_sha256": manifest["binary_sha256"],
+        "http_binary_sha256": manifest["http_binary_sha256"],
         "summary_sha256": hashlib.sha256((root / "summary.json").read_bytes()).hexdigest(),
     }
     (root / "audit.json").write_text(json.dumps(result, indent=2) + "\n")

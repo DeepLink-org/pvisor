@@ -961,10 +961,12 @@ body 与 reply 建立一次借用 consumer，不重新读取 opcode。队列主�
 drain 时保持 guest kick 通知关闭，仅在空队列时 enable/recheck 后休眠；
 控制线程独立检查长操作和 backlog，因此仍可救援正在执行的 owner。
 
-OverlayFs 的普通 READ/WRITE/FLUSH/FSYNC 直接在 handle map 和
+OverlayFs 的普通 READ/不变更权限的 WRITE/FLUSH/FSYNC 直接在 handle map 和
 I/O admission 短锁内取得原生 Arc lease，不取得 namespace operation guard。
-原生文件锁协调该 handle 的读写与同步。namespace mutation、copy-up、
-writable OPEN 仍串行，但只关闭受影响 handle 的 admission
+原生文件锁协调该 handle 的读写与同步。需要清除虚拟 setuid/setgid 的 WRITE
+先取得 metadata operation guard，
+再沿固定的原生 inode 更新虚拟 mode；它不按旧路径寻找对象。
+namespace mutation、copy-up 和 writable OPEN 仍串行，但只关闭受影响 handle 的 admission
 并等待其在途 I/O：路径范围覆盖相关文件、目录子树和已知原生对象别名，
 RELEASE/RELEASEDIR 使用 namespace 读锁，允许无关元数据查询继续；RELEASE
 只等待被释放的 handle。FH GETATTR/LSEEK 的原生调用同样持有 admission
@@ -989,6 +991,15 @@ overlay inode；lower 文件句柄不能通过这条路径写入。截断前排�
 跨句柄 I/O 排空和 inode/handle 不匹配，以及无效、只读 upper 和 lower 句柄拒绝。
 rootless OCI 的 virtual metadata 模式下，新建目录记录 guest 创建者的
 UID/GID，并从虚拟父目录继承 setgid；不把宿主 UID 当成 guest 所有者返回。
+虚拟 OCI upper 的 CREATE/MKDIR 在 guest VFS 完成权限检查后，使用当前
+宿主身份创建私有 backing，不尝试切换成未映射的 guest UID/GID。回复和
+持久化的虚拟属性保留原 guest 创建者；普通宿主 share 保留原生凭据规则。
+虚拟 mode 与私有宿主 backing 的可访问权限分开保存。CREATE/OPEN/非空 WRITE
+收到 `kill_priv` 时清除虚拟 setuid/setgid，SETATTR 截断同样清除这些位；
+普通重开保留已有 mode。WRITE 沿
+保留的原生 inode 更新元数据，删除后继续写旧句柄不会改变同名替代文件。
+CREATE 命中已有 lower 文件时先 copy-up，普通/追加打开保留原内容，仅
+`O_TRUNC` 清空；`O_EXCL` 在创建 upper 之前返回 EEXIST，不修改 lower。
 SYMLINK、MKNOD 和 MKDIR 在同一 namespace 写锁内复用原生创建属性组装
 回复，仍合并 virtual metadata、分配 overlay inode 并取得 guest lookup 引用，
 不再为刚创建的 upper 对象重走 Core 与原生查找。重命名目标探测保留 Core
@@ -1482,6 +1493,22 @@ authorization to the VFS, which checks SETATTR before sending the request.
 Supplementary-group changes with explicit credentials are not supported by this path.
 Copy-up preserves the immutable lower, hardlinks observe the same identity,
 and CHOWN clears regular-file setuid/setgid bits.
+Linux image overlays keep guest CREATE/MKDIR/CHMOD modes in the existing virtual
+metadata, including `000` and guest umask/setgid inheritance. Their private host
+regular files remain owner-readable/writable and directories owner-traversable,
+so a guest-root cold read does not accidentally fail on the host's DAC checks.
+Guest VFS/access checks still use the requested virtual mode and reject other
+guest users. Plain host shares and non-virtual stages retain native permissions.
+
+### Unix/vsock connection retirement
+
+Terminated Unix/vsock proxies retain their existing five-second protocol-id
+tombstones, but release their host socket immediately after removing its polling
+registration. Descriptor-number reuse cannot delete another connection's poll
+entry. Late credits/responses cannot reactivate a retired socket. Half-close
+still retains the socket until terminal release, so pending responses can drain.
+High request churn therefore does not retain one open fd per completed request
+for the tombstone interval; process descriptor limits are unchanged.
 
 ### Framed virtio-net transport
 

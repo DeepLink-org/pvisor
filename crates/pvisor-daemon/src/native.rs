@@ -169,8 +169,21 @@ fn accepted(reply: Reply) -> Result<Reply, Error> {
 }
 impl Service {
     async fn connect(&self, request: &GuestRequest) -> Result<UnixStream> {
-        let mut stream =
-            tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(&self.path)).await??;
+        let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match UnixStream::connect(&self.path).await {
+                    // Linux AF_UNIX returns EAGAIN when a nonblocking connect
+                    // fills the listener's accept queue. No connection/request
+                    // exists yet: wait within the original deadline, without
+                    // replaying any command or increasing admission limits.
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    result => return result,
+                }
+            }
+        })
+        .await??;
         write(&mut stream, request).await?;
         Ok(stream)
     }
@@ -207,25 +220,87 @@ impl Service {
             _ => Err(invalid("invalid guest file reply")),
         }
     }
-    async fn download(&self, path: PathBuf) -> Result<Response, Error> {
+    async fn download(&self, path: PathBuf, range: Option<&str>) -> Result<Response, Error> {
+        let selection = if let Some(range) = range {
+            let info = self.file(FileRequest::Stat { path: path.clone() }).await?;
+            let size = info["size"]
+                .as_u64()
+                .ok_or_else(|| invalid("invalid guest file size"))?;
+            let Some((start, length)) = byte_range(range, size) else {
+                return Ok((
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    [(header::CONTENT_RANGE, format!("bytes */{size}"))],
+                    Body::empty(),
+                )
+                    .into_response());
+            };
+            Some((start, length, size))
+        } else {
+            None
+        };
         let mut stream = self
             .connect(&GuestRequest::File {
                 request: FileRequest::Read { path },
             })
             .await?;
         ensure_ready(accepted(read(&mut stream).await?)?)?;
-        let body = futures_util::stream::try_unfold(stream, |mut stream| async move {
-            match accepted(read(&mut stream).await?).map_err(|e| anyhow::anyhow!(e.1))? {
-                Reply::Output { bytes, .. } => Ok(Some((Bytes::from(bytes), stream))),
-                Reply::Exit { code: 0 } => Ok(None),
-                _ => bail!("invalid guest read stream"),
-            }
-        });
-        Ok((
-            [(header::CONTENT_TYPE, "application/octet-stream")],
+        let (skip, remaining) =
+            selection.map_or((0, None), |(start, length, _)| (start, Some(length)));
+        let body = futures_util::stream::try_unfold(
+            (stream, skip, remaining),
+            |(mut stream, mut skip, mut remaining)| async move {
+                loop {
+                    if remaining == Some(0) {
+                        return Ok(None);
+                    }
+                    match accepted(read(&mut stream).await?).map_err(|e| anyhow::anyhow!(e.1))? {
+                        Reply::Output { bytes, .. } => {
+                            let discarded = skip.min(bytes.len() as u64) as usize;
+                            skip -= discarded as u64;
+                            let length = remaining.map_or(bytes.len() - discarded, |left| {
+                                left.min((bytes.len() - discarded) as u64) as usize
+                            });
+                            if length == 0 {
+                                continue;
+                            }
+                            if let Some(left) = remaining.as_mut() {
+                                *left -= length as u64;
+                            }
+                            return Ok(Some((
+                                Bytes::from(bytes).slice(discarded..discarded + length),
+                                (stream, skip, remaining),
+                            )));
+                        }
+                        Reply::Exit { code: 0 } if remaining.is_none_or(|left| left == 0) => {
+                            return Ok(None);
+                        }
+                        Reply::Exit { code: 0 } => bail!("guest file ended before requested range"),
+                        _ => bail!("invalid guest read stream"),
+                    }
+                }
+            },
+        );
+        let mut response = (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (header::ACCEPT_RANGES, "bytes"),
+            ],
             Body::from_stream(body),
         )
-            .into_response())
+            .into_response();
+        if let Some((start, length, size)) = selection {
+            *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+            response
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, length.to_string().parse().unwrap());
+            response.headers_mut().insert(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{}/{size}", start + length - 1)
+                    .parse()
+                    .unwrap(),
+            );
+        }
+        Ok(response)
     }
     async fn upload_begin(&self, path: PathBuf, mode: u32) -> Result<UnixStream, Error> {
         let mut stream = self
@@ -537,9 +612,280 @@ pub(crate) async fn serve(listener: TcpListener, service: Service) -> Result<()>
     Ok(())
 }
 
+/// A single inclusive byte range, without integer wraparound.
+fn byte_range(value: &str, size: u64) -> Option<(u64, u64)> {
+    fn number(value: &str) -> Option<u64> {
+        let value = value.trim();
+        (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| value.parse().ok())
+            .flatten()
+    }
+    let (start, end) = value.strip_prefix("bytes=")?.trim().split_once('-')?;
+    if size == 0 {
+        return None;
+    }
+    if start.trim().is_empty() {
+        let length = number(end)?.min(size);
+        return (length > 0).then_some((size - length, length));
+    }
+    let start = number(start)?;
+    if start >= size {
+        return None;
+    }
+    let end = if end.trim().is_empty() {
+        size - 1
+    } else {
+        number(end)?.min(size - 1)
+    };
+    (end >= start).then(|| (start, end - start + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn guest_connect_waits_for_a_full_unix_accept_queue_before_sending_once() {
+        use std::os::fd::AsRawFd;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backlog.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        // Change only this owned listener's backlog, not a system-wide limit.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let mut fillers = Vec::new();
+        loop {
+            match UnixStream::connect(&path).await {
+                Ok(stream) => fillers.push(stream),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("unexpected backlog result: {other:?}"),
+            }
+            assert!(fillers.len() <= 4);
+        }
+        let service = Service::new(
+            path,
+            "secret".into(),
+            "owner".into(),
+            "generation".into(),
+            1,
+            BTreeMap::new(),
+            false,
+        );
+        let pending = tokio::spawn(async move { service.connect(&GuestRequest::Ping {}).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !pending.is_finished(),
+            "valid admitted request failed immediately on a full accept queue"
+        );
+        for _ in 0..fillers.len() {
+            let _accepted = listener.accept().await.unwrap();
+        }
+        let (mut accepted, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut connected = pending.await.unwrap().unwrap();
+        let length = accepted.read_u32().await.unwrap();
+        let mut bytes = vec![0; length as usize];
+        accepted.read_exact(&mut bytes).await.unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<GuestRequest>(&bytes).unwrap(),
+            GuestRequest::Ping {}
+        ));
+        write(&mut accepted, &Reply::Ready).await.unwrap();
+        assert!(matches!(read(&mut connected).await.unwrap(), Reply::Ready));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn guest_connect_backpressure_keeps_deadline_and_permanent_errors() {
+        use std::os::fd::AsRawFd;
+        let directory = tempfile::tempdir().unwrap();
+        let missing = Service::new(
+            directory.path().join("missing.sock"),
+            "secret".into(),
+            "owner".into(),
+            "generation".into(),
+            1,
+            BTreeMap::new(),
+            false,
+        );
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            missing.connect(&GuestRequest::Ping {}),
+        )
+        .await
+        .unwrap()
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let path = directory.path().join("full.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let mut fillers = Vec::new();
+        loop {
+            match UnixStream::connect(&path).await {
+                Ok(stream) => fillers.push(stream),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("unexpected backlog result: {other:?}"),
+            }
+            assert!(fillers.len() <= 4);
+        }
+        let full = Service::new(
+            path,
+            "secret".into(),
+            "owner".into(),
+            "generation".into(),
+            1,
+            BTreeMap::new(),
+            false,
+        );
+        let error = full.connect(&GuestRequest::Ping {}).await.err().unwrap();
+        assert!(error.is::<tokio::time::error::Elapsed>(), "{error:#}");
+        for _ in 0..fillers.len() {
+            let _accepted = listener.accept().await.unwrap();
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err(),
+            "timed-out request left a queued connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn downloads_honor_byte_ranges_across_guest_frames() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("guest.sock");
+        let unix = tokio::net::UnixListener::bind(&path).unwrap();
+        let bytes = Arc::new((0..=255).cycle().take(40003).collect::<Vec<u8>>());
+        let source = bytes.clone();
+        let peer = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = unix.accept().await.unwrap();
+                let bytes = source.clone();
+                tokio::spawn(async move {
+                    let size = stream.read_u32().await.unwrap();
+                    let mut request = vec![0; size as usize];
+                    stream.read_exact(&mut request).await.unwrap();
+                    match serde_json::from_slice::<GuestRequest>(&request).unwrap() {
+                        GuestRequest::File {
+                            request: FileRequest::Stat { .. },
+                        } => {
+                            write(
+                                &mut stream,
+                                &Reply::Value {
+                                    value: json!({"size":bytes.len()}),
+                                },
+                            )
+                            .await
+                            .unwrap();
+                        }
+                        GuestRequest::File {
+                            request: FileRequest::Read { .. },
+                        } => {
+                            write(&mut stream, &Reply::Ready).await.unwrap();
+                            for chunk in bytes.chunks(16384) {
+                                if write(
+                                    &mut stream,
+                                    &Reply::Output {
+                                        stream: 1,
+                                        bytes: chunk.to_vec(),
+                                    },
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    return; // A completed range closes its guest read stream.
+                                }
+                            }
+                            let _ = write(&mut stream, &Reply::Exit { code: 0 }).await;
+                        }
+                        _ => panic!("unexpected guest operation"),
+                    }
+                });
+            }
+        });
+        let service = Service::new(
+            path,
+            "secret".into(),
+            "owner".into(),
+            "generation".into(),
+            1,
+            BTreeMap::new(),
+            false,
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!(
+            "http://{}/files/download?path=/data",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(serve(listener, service));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for (range, start, end) in [
+            ("bytes=16380-32772", 16380, 32773),
+            ("bytes=-17", 39986, 40003),
+            ("bytes=39990-", 39990, 40003),
+            ("bytes=0-999999", 0, 40003),
+        ] {
+            let response = client
+                .get(&address)
+                .header("x-execd-access-token", "secret")
+                .header(header::RANGE, range)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(
+                response.headers()[header::CONTENT_LENGTH],
+                (end - start).to_string()
+            );
+            assert_eq!(
+                response.headers()[header::CONTENT_RANGE],
+                format!("bytes {start}-{}/40003", end - 1)
+            );
+            assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[start..end]);
+        }
+        for range in [
+            "bytes=40003-",
+            "bytes=-0",
+            "bytes=5-4",
+            "bytes=foo",
+            "bytes=0-1,3-4",
+        ] {
+            let response = client
+                .get(&address)
+                .header("x-execd-access-token", "secret")
+                .header(header::RANGE, range)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+            assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */40003");
+        }
+        let response = client
+            .get(format!("{address}&offset=2&limit=1"))
+            .header("x-execd-access-token", "secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let response = client
+            .get(address)
+            .header("x-execd-access-token", "secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), bytes.as_slice());
+        assert_eq!(byte_range("bytes=0-", 0), None);
+        assert_eq!(byte_range("bytes=0-18446744073709551616", 10), None);
+        server.abort();
+        peer.abort();
+    }
+
     #[tokio::test]
     async fn mapping_authenticates_before_rpc_and_rejects_foreign_guest_generation() {
         let directory = tempfile::tempdir().unwrap();

@@ -16,7 +16,7 @@ from datetime import timedelta
 import httpx
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import RunCommandOpts
-from opensandbox.models.filesystem import WriteEntry
+from opensandbox.models.filesystem import DirectoryListEntry, SetPermissionEntry, WriteEntry
 from opensandbox.sandbox import Sandbox
 
 
@@ -93,6 +93,21 @@ async def run(domain, image):
         )
         assert await a.files.read_file("/tmp/sdk.txt") == "pool-backed ✓"
         assert await a.files.read_bytes("/tmp/sdk.bin") == binary
+        assert (
+            await a.files.read_bytes("/tmp/sdk.bin", range_header="bytes=16381-65539")
+            == binary[16381:65540]
+        )
+        assert await a.files.read_bytes("/tmp/sdk.bin", range_header="bytes=-17") == binary[-17:]
+        info = (await a.files.get_file_info(["/tmp/sdk.bin"]))["/tmp/sdk.bin"]
+        assert info.size == len(binary) and info.mode == 600
+        assert info.created_at.tzinfo is not None and info.modified_at.tzinfo is not None
+        entries = await a.files.list_directory(DirectoryListEntry(path="/tmp"))
+        assert "/tmp/sdk.bin" in {entry.path for entry in entries}
+        await a.files.set_permissions([SetPermissionEntry(path="/tmp/sdk.bin", mode=640)])
+        assert (await a.files.get_file_info(["/tmp/sdk.bin"]))["/tmp/sdk.bin"].mode == 640
+        await a.files.set_permissions([SetPermissionEntry(path="/tmp/sdk.bin", mode=0)])
+        assert (await a.files.get_file_info(["/tmp/sdk.bin"]))["/tmp/sdk.bin"].mode == 0
+        await a.files.set_permissions([SetPermissionEntry(path="/tmp/sdk.bin", mode=600)])
         assert (await b.commands.run("test ! -e /tmp/sdk.txt")).exit_code == 0
         assert stdout(await b.commands.run("printf scoped")) == "scoped"
         assert (await a.get_metrics()).cpu_count == 1
@@ -133,6 +148,9 @@ async def run(domain, image):
                 "service-secret-filter",
                 "utf8-file",
                 "binary-file",
+                "byte-ranges",
+                "file-info-list-timestamps",
+                "chmod-zero-and-restore",
                 "private-writes",
                 "metrics",
                 "renew",

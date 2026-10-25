@@ -48,6 +48,19 @@ class ApplicationChaosTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 chaos.verify_state({**state, **change})
 
+    def test_vm_scope_routes_to_test_owned_parent_slice(self):
+        with workspace() as (directory, _):
+            runner = self.runner(directory)
+            runner.args.product_slice = "pvisor-soak-owned.slice"
+            child = mock.Mock(returncode=0, pid=123)
+            child.communicate.return_value = (b"ok", b"")
+            with mock.patch.object(chaos.subprocess, "Popen", return_value=child) as spawn:
+                self.assertEqual(runner.call("run", scoped="owned"), (b"ok", b""))
+            argv = spawn.call_args.args[0]
+            self.assertIn("--slice=pvisor-soak-owned.slice", argv)
+            self.assertIn("MemoryMax=512M", argv)
+            self.assertIn("MemorySwapMax=0", argv)
+
     def test_parallel_observes_every_failure(self):
         with workspace() as (directory, _):
             runner = self.runner(directory)
@@ -93,6 +106,7 @@ class ApplicationChaosTests(unittest.TestCase):
             runner = self.runner(directory)
             response = mock.Mock(status=200)
             response.read.return_value = b"truncated"
+            response.getheader.return_value = "9"
             client = mock.Mock()
             client.getresponse.return_value = response
             with mock.patch.object(chaos.http.client, "HTTPConnection", return_value=client):
@@ -101,6 +115,21 @@ class ApplicationChaosTests(unittest.TestCase):
             self.assertEqual(next(directory.glob("http-failure-*.bin")).read_bytes(), b"truncated")
             self.assertFalse(json.loads((directory / "http.jsonl").read_text())["verified"])
             client.close.assert_called_once()
+
+    def test_eof_inside_headers_is_not_a_successful_empty_body(self):
+        with workspace() as (directory, _):
+            runner = self.runner(directory)
+            response = mock.Mock(status=200)
+            response.getheader.return_value = None
+            response.getheaders.return_value = []
+            client = mock.Mock()
+            client.getresponse.return_value = response
+            with mock.patch.object(chaos.http.client, "HTTPConnection", return_value=client):
+                with self.assertRaisesRegex(chaos.http.client.HTTPException, "incomplete"):
+                    runner.http()
+            response.read.assert_not_called()
+            client.close.assert_called_once()
+            self.assertEqual(len(list(directory.glob("http-incomplete-*.json"))), 1)
 
     def test_kill_target_must_match_scope_store_and_role(self):
         with workspace() as (directory, _):

@@ -62,6 +62,33 @@ FC 使用 stock 内核/MMIO，受控停止不能算正常退出。任何失败�
 历史报告、CSV 和旧 results 已归档到 `.data/history/`，不参与当前采样、审计或发布。
 工程与诊断占位表仍由 registry 登记，尚未准备的负载拒绝执行。
 
+## OpenSandbox 十请求突发证据 {#opensandbox-burst-evidence}
+
+问题：相同完整产品预算下，pVisor 与官方 OpenSandbox 同时接收十个创建请求，
+整批创建、首命令完成、失败和内存表现如何？此对照属于
+[B-OPENSANDBOX-ENG](../REGISTRY.md#b-opensandbox-eng) 的低内存突发协议，
+独立于单请求启动和 pVisor 单臂突发诊断，不通过未准备的 `opensandbox.json`
+或 `opensandbox_burst.json` 重新测量或发布。
+
+2026-10-24 批次保存在本地 `.data/opensandbox-pvisor-burst-ab-20261024/`，
+包含完整预检、预热及正式批次，不随 checkout 或站点分发：
+
+- `REPORT.md`、`summary.json`、`validation.json`：工程报告、配对统计和正确性汇总。
+- `formal/receipt.json`、`formal/*/result.json`：全部逐请求纳秒时钟、内存采样和资源记录；
+  `formal/formal-06-docker/` 保留官方慢批次，没有筛除。
+- `setup/`、`preflight/`、`formal/`：服务日志、配置、输入准备、独立预检、删除及组回收记录。
+- `artifacts.json`、`upstream-receipt.json`：制品与上游来源；冻结源码、二进制、镜像、
+  锁文件及 `harness.py`、`support.py`、`analyze.py` 一并保存。
+
+中英文结论、实验边界及数据表见
+[OpenSandbox 工程分析](../../docs/src/zh/lab-notes/opensandbox-performance-analysis.md#burst-10)。
+`summary.json` SHA-256 为
+`54dd0f400c89f504f56aef7ea910ccf325dd4db272a497992b6c37381c114ccb`。
+2026-10-25 从 `benchmark.new/startup/.data/` 迁入当前目录时逐文件核对原字节，
+完整索引保存在旁边的 `.data/opensandbox-pvisor-burst-ab-20261024.relocation.json`。
+原始收据及冻结 harness 中的绝对路径保留历史值；离线复核时应将旧批次根映射到当前根，
+不能直接运行冻结采样器来冒充新的受支持测量入口，也不应改写原始证据中的路径。
+
 ## TurboOCI 按需镜像对照
 
 [TurboOCI 对照协议](TURBO_OCI.md)属于 B-LAZY-STARTUP，分别比较客户端准备、

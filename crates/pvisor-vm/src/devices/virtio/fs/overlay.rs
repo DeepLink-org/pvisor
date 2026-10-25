@@ -2078,6 +2078,46 @@ impl OverlayFs {
         drop(entries); // final directory references release outside the map lock
     }
 
+    fn private_create_context(&self, ctx: Context) -> Context {
+        #[cfg(target_os = "linux")]
+        if self.virtual_metadata {
+            // Guest VFS has authorized this request using the virtual owner and
+            // mode. Native uid/gid zero means "retain the invoking host user"
+            // in passthrough, not host root. Record the original guest identity
+            // separately instead of attempting an unmapped host setuid/setgid.
+            return Context {
+                uid: 0,
+                gid: 0,
+                ..ctx
+            };
+        }
+        ctx
+    }
+
+    // Caller excludes concurrent virtual metadata changes with write_operation.
+    // Use the retained native inode, never its potentially replaced old path.
+    #[cfg(target_os = "linux")]
+    fn clear_virtual_privileges(&self, ctx: Context, layer: Layer, inode: u64) -> io::Result<()> {
+        if !self.virtual_metadata || layer.0 != 0 {
+            return Ok(());
+        }
+        let fs = &self.layers[layer.0];
+        let name = c"user.containers.override_stat";
+        let bytes = match fs.getxattr(ctx, inode, name, 128) {
+            Ok(GetxattrReply::Value(bytes)) => bytes,
+            Err(error) if error.raw_os_error() == Some(libc::ENODATA) => return Ok(()),
+            Err(error) => return Err(error),
+            _ => return Err(io::Error::from_raw_os_error(libc::EIO)),
+        };
+        let mut identity = backend::UnixIdentity::parse(&bytes).map_err(linux_error)?;
+        if identity.mode & (libc::S_ISUID | libc::S_ISGID) == 0 {
+            return Ok(());
+        }
+        identity.mode &= !(libc::S_ISUID | libc::S_ISGID);
+        let value = format!("{}:{}:0{:o}", identity.uid, identity.gid, identity.mode);
+        fs.setxattr(ctx, inode, name, value.as_bytes(), 0)
+    }
+
     fn writable_inner(&self, ctx: Context, path: &Path) -> io::Result<u64> {
         let _io = self.fence_paths(&[path]);
         // OverlayCore reports host errno; passthrough already reports Linux
@@ -2262,6 +2302,13 @@ impl OverlayFs {
                 (layer, inner, immutable_regular)
             }
         };
+        #[cfg(target_os = "linux")]
+        if kill_priv {
+            if let Err(error) = self.clear_virtual_privileges(ctx, layer, inner) {
+                self.layers[layer.0].forget(ctx, inner, 1);
+                return Err(error);
+            }
+        }
         let opened = self.layers[layer.0].open(ctx, inner, kill_priv, flags);
         let (handle, mut options) = match opened {
             Ok((Some(handle), options)) => (handle, options),
@@ -3116,6 +3163,8 @@ impl FileSystem for OverlayFs {
             let _io = self.fence_native_inode(h.layer, h.inode);
             let fs = &self.layers[h.layer.0];
             let (mut attr, timeout) = fs.setattr(ctx, h.inode, attr, Some(h.handle), valid)?;
+            #[cfg(target_os = "linux")]
+            self.clear_virtual_privileges(ctx, h.layer, h.inode)?;
             let path = self.roots[0].join(OsStr::from_bytes(&h.relative_path));
             #[allow(clippy::unnecessary_cast)] // native dev_t differs by platform
             let same_object = std::fs::symlink_metadata(&path).is_ok_and(|metadata| {
@@ -3238,20 +3287,41 @@ impl FileSystem for OverlayFs {
                 native_valid.remove(SetattrValid::UID | SetattrValid::GID);
             }
         }
+        #[cfg(target_os = "linux")]
+        let mut native_attr = attr;
+        #[cfg(target_os = "macos")]
+        let native_attr = attr;
+        #[cfg(target_os = "linux")]
+        if let Some(previous) = previous {
+            if valid.contains(SetattrValid::MODE) {
+                let owner_access = match previous.st_mode & libc::S_IFMT {
+                    libc::S_IFREG => Some(0o600),
+                    libc::S_IFDIR => Some(0o700),
+                    _ => None,
+                };
+                if let Some(owner_access) = owner_access {
+                    // The guest VFS enforces the virtual mode. The unprivileged
+                    // host backend must still be able to access its private inode.
+                    native_attr.st_mode = (native_attr.st_mode & !0o7777) | owner_access;
+                }
+            }
+        }
         let inner = self.writable_inner(ctx, &path)?;
-        let result = self.layers[0].setattr(ctx, inner, attr, None, native_valid);
+        let result = self.layers[0].setattr(ctx, inner, native_attr, None, native_valid);
         self.layers[0].forget(ctx, inner, 1);
         let (mut attr, timeout) = result?;
         #[cfg(target_os = "linux")]
         if let Some(previous) = previous {
-            if valid.intersects(SetattrValid::UID | SetattrValid::GID)
+            if valid.intersects(SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID)
                 || pvisor_overlay_core::sys::get_xattr(
                 &self.core.upper_path(&path),
                 OsStr::new("user.containers.override_stat"),
             )
             .is_ok()
             {
-                if !valid.contains(SetattrValid::MODE) {
+                if valid.contains(SetattrValid::MODE) {
+                    attr.st_mode = (attr.st_mode & libc::S_IFMT) | (requested.st_mode & 0o7777);
+                } else {
                     attr.st_mode = previous.st_mode;
                 }
                 attr.st_uid = if valid.contains(SetattrValid::UID) {
@@ -3264,9 +3334,9 @@ impl FileSystem for OverlayFs {
                 } else {
                     previous.st_gid
                 };
-                // Native chown normally clears these privilege bits. The
-                // virtual ownership path must retain that guest behavior.
-                if valid.intersects(SetattrValid::UID | SetattrValid::GID)
+                // Native chown/truncate clears these privilege bits. Keep the
+                // same behavior when the guest mode is stored separately.
+                if valid.intersects(SetattrValid::UID | SetattrValid::GID | SetattrValid::SIZE)
                     && attr.st_mode & libc::S_IFMT == libc::S_IFREG
                 {
                     attr.st_mode &= !(libc::S_ISUID | libc::S_ISGID);
@@ -3364,8 +3434,23 @@ impl FileSystem for OverlayFs {
             None
         };
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
+        #[cfg(target_os = "linux")]
+        let (native_mode, native_umask) = if virtual_parent.is_some() {
+            (0o700, 0)
+        } else {
+            (mode, umask)
+        };
+        #[cfg(target_os = "macos")]
+        let (native_mode, native_umask) = (mode, umask);
         let created = self.layers[0]
-            .mkdir(ctx, upper_parent, &upper_name, mode, umask, extensions)
+            .mkdir(
+                self.private_create_context(ctx),
+                upper_parent,
+                &upper_name,
+                native_mode,
+                native_umask,
+                extensions,
+            )
             .inspect_err(|error| log::error!("overlay native mkdir failed: {error}"));
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
@@ -3382,8 +3467,10 @@ impl FileSystem for OverlayFs {
             } else {
                 ctx.gid
             };
-            let mode = created.attr.st_mode | if inherit_group { libc::S_ISGID } else { 0 };
-            let identity = format!("{}:{}:0{:o}", ctx.uid, gid, mode);
+            let guest_mode = (created.attr.st_mode & libc::S_IFMT)
+                | (mode & !umask & 0o7777)
+                | if inherit_group { libc::S_ISGID } else { 0 };
+            let identity = format!("{}:{}:0{:o}", ctx.uid, gid, guest_mode);
             pvisor_overlay_core::sys::set_xattr(
                 &self.core.upper_path(&path),
                 OsStr::new("user.containers.override_stat"),
@@ -3563,20 +3650,94 @@ impl FileSystem for OverlayFs {
         let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
+        let exists = self
+            .core
+            .resolve_checked(&path)
+            .map_err(linux_error)?
+            .is_some();
+        if exists && flags & bindings::LINUX_O_EXCL as u32 != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EEXIST));
+        }
         let inode = self.allocate_inode(path.clone());
+        #[cfg(target_os = "linux")]
+        let virtual_parent = if self.virtual_metadata {
+            Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let previous = if virtual_parent.is_some() && exists {
+            Some(self.entry(ctx, &path, inode)?.attr)
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let (native_mode, native_umask) = if virtual_parent.is_some() {
+            ((mode & libc::S_IFMT) | 0o600, 0)
+        } else {
+            (mode, umask)
+        };
+        #[cfg(target_os = "macos")]
+        let (native_mode, native_umask) = (mode, umask);
+        if exists {
+            // CREATE can race an earlier LOOKUP. Opening a visible lower file
+            // must preserve its bytes, and must not manufacture an empty shadow.
+            self.core.copy_up(&path).map_err(linux_error)?;
+            self.preserve_other_aliases(&path)?;
+        }
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        let (mut entry, handle, options) = self.layers[0].create(
-            ctx,
+        let created = self.layers[0].create(
+            self.private_create_context(ctx),
             upper_parent,
             &upper_name,
-            mode,
+            native_mode,
             kill_priv,
             flags,
-            umask,
+            native_umask,
             extensions,
-        )?;
+        );
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
+        }
+        let (mut entry, handle, options) = created?;
+        #[cfg(target_os = "linux")]
+        if let Some(parent_attr) = virtual_parent {
+            let (uid, gid, mut guest_mode) = if let Some(previous) = previous {
+                (previous.st_uid, previous.st_gid, previous.st_mode)
+            } else {
+                let gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+                    parent_attr.st_gid
+                } else {
+                    ctx.gid
+                };
+                (
+                    ctx.uid,
+                    gid,
+                    (entry.attr.st_mode & libc::S_IFMT) | (mode & !(umask & 0o777) & 0o7777),
+                )
+            };
+            if kill_priv {
+                guest_mode &= !(libc::S_ISUID | libc::S_ISGID);
+            }
+            let identity = format!("{uid}:{gid}:0{guest_mode:o}");
+            let metadata = (|| {
+                pvisor_overlay_core::sys::set_xattr(
+                    &self.core.upper_path(&path),
+                    OsStr::new("user.containers.override_stat"),
+                    identity.as_bytes(),
+                    0,
+                )
+                .map_err(linux_error)?;
+                self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)
+            })();
+            if let Err(error) = metadata {
+                if let Some(handle) = handle {
+                    let _ =
+                        self.layers[0].release(ctx, entry.inode, flags, handle, false, false, None);
+                }
+                self.layers[0].forget(ctx, entry.inode, 1);
+                return Err(error);
+            }
         }
         let inner_inode = entry.inode;
         self.bind_upper(&path, inode, &entry.attr);
@@ -3636,7 +3797,17 @@ impl FileSystem for OverlayFs {
         flags: u32,
     ) -> io::Result<usize> {
         let _span = self.profile.span("write");
+        #[cfg(target_os = "linux")]
+        let _privilege_operation = if self.virtual_metadata && kill_priv && size != 0 {
+            Some(self.write_operation()?)
+        } else {
+            None
+        };
         let lease = self.file_io_lease(handle)?;
+        #[cfg(target_os = "linux")]
+        if kill_priv && size != 0 {
+            self.clear_virtual_privileges(ctx, lease.handle.layer, lease.handle.inode)?;
+        }
         if let Some(buffer) = self.buffered_writes() {
             if lease.handle.layer.0 == 0
                 && buffered_request_flags(flags)
@@ -4442,6 +4613,507 @@ mod tests {
         #[test]
         fn mkdir_virtual_setgid() {
             mkdir_virtual(true);
+        }
+
+        #[test]
+        fn virtual_chmod_zero_keeps_backend_access_and_guest_denial() {
+            let (temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"file",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            std::fs::write(temp.path().join("upper/file"), b"private payload").unwrap();
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            let mut requested = entry.attr;
+            requested.st_mode = libc::S_IFREG;
+            let (changed, _) = fs
+                .setattr(ctx, entry.inode, requested, None, SetattrValid::MODE)
+                .unwrap();
+            assert_eq!(changed.st_mode & 0o7777, 0);
+            assert_eq!(
+                fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                0
+            );
+            let outsider = Context {
+                uid: 1234,
+                gid: 2345,
+                ..ctx
+            };
+            assert_eq!(
+                fs.access(outsider, entry.inode, libc::R_OK as u32)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
+            fs.access(ctx, entry.inode, (libc::R_OK | libc::W_OK) as u32)
+                .unwrap();
+            let (handle, _) = fs
+                .open(ctx, entry.inode, false, libc::O_RDWR as u32)
+                .unwrap();
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/file")).unwrap(),
+                b"private payload"
+            );
+        }
+
+        #[test]
+        fn virtual_truncate_clears_privilege_bits_with_and_without_file_handle() {
+            for use_handle in [false, true] {
+                let (_temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+                let flags = libc::O_RDWR as u32;
+                let (entry, handle, _) = fs
+                    .create(
+                        ctx,
+                        fuse::ROOT_ID,
+                        c"file",
+                        libc::S_IFREG | 0o6755,
+                        false,
+                        flags,
+                        0,
+                        Extensions::default(),
+                    )
+                    .unwrap();
+                let mut requested = entry.attr;
+                requested.st_size = 123;
+                let changed = fs
+                    .setattr(
+                        ctx,
+                        entry.inode,
+                        requested,
+                        if use_handle { handle } else { None },
+                        SetattrValid::SIZE,
+                    )
+                    .unwrap()
+                    .0;
+                assert_eq!(changed.st_size, 123);
+                assert_eq!(changed.st_mode & 0o7777, 0o755);
+                assert_eq!(
+                    fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                    0o755
+                );
+                fs.release(ctx, entry.inode, flags, handle.unwrap(), false, false, None)
+                    .unwrap();
+            }
+        }
+
+        #[test]
+        fn virtual_nonroot_create_uses_private_host_owner_and_preserves_guest_identity() {
+            let (temp, fs, root) = fixture(Some(b"0:456:42777"));
+            let creator = Context {
+                uid: 1234,
+                gid: 2345,
+                ..root
+            };
+            let directory = fs
+                .mkdir(
+                    creator,
+                    fuse::ROOT_ID,
+                    c"owned",
+                    0o777,
+                    0o022,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                (
+                    directory.attr.st_uid,
+                    directory.attr.st_gid,
+                    directory.attr.st_mode & 0o7777
+                ),
+                (1234, 456, 0o2755)
+            );
+            let flags = libc::O_RDWR as u32;
+            let (entry, handle, _) = fs
+                .create(
+                    creator,
+                    directory.inode,
+                    c"file",
+                    libc::S_IFREG | 0o666,
+                    false,
+                    flags,
+                    0o027,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                (
+                    entry.attr.st_uid,
+                    entry.attr.st_gid,
+                    entry.attr.st_mode & 0o7777
+                ),
+                (1234, 456, 0o640)
+            );
+            let outsider = Context {
+                uid: 9876,
+                gid: 8765,
+                ..root
+            };
+            assert_eq!(
+                fs.access(outsider, entry.inode, libc::R_OK as u32)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
+            fs.access(creator, entry.inode, (libc::R_OK | libc::W_OK) as u32)
+                .unwrap();
+            fs.release(
+                creator,
+                entry.inode,
+                flags,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            let native = std::fs::metadata(temp.path().join("upper/owned/file")).unwrap();
+            assert_eq!(native.uid(), unsafe { libc::getuid() });
+            assert_eq!(native.mode() & 0o7777, 0o600);
+            // Plain host shares keep their existing native credential rules.
+            if unsafe { libc::geteuid() } != 0 {
+                let (_temp, plain, _) = fixture(None);
+                assert_eq!(
+                    plain
+                        .mkdir(
+                            creator,
+                            fuse::ROOT_ID,
+                            c"denied",
+                            0o755,
+                            0,
+                            Extensions::default()
+                        )
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(libc::EPERM)
+                );
+            }
+        }
+
+        #[test]
+        fn create_existing_lower_preserves_bytes_and_honors_exclusive_open() {
+            for extra in [
+                0,
+                bindings::LINUX_O_APPEND,
+                bindings::LINUX_O_TRUNC,
+                bindings::LINUX_O_EXCL,
+            ] {
+                let (temp, fs, ctx) = fixture(None);
+                std::fs::write(temp.path().join("lower/existing"), b"unchanged lower bytes")
+                    .unwrap();
+                let flags = (libc::O_RDWR | extra) as u32;
+                let created = fs.create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"existing",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    flags,
+                    0,
+                    Extensions::default(),
+                );
+                if extra == bindings::LINUX_O_EXCL {
+                    assert_eq!(created.err().unwrap().raw_os_error(), Some(libc::EEXIST));
+                    assert!(!temp.path().join("upper/existing").exists());
+                } else {
+                    let (entry, handle, _) = created.unwrap();
+                    let expected = if extra == bindings::LINUX_O_TRUNC {
+                        b"".as_slice()
+                    } else {
+                        b"unchanged lower bytes".as_slice()
+                    };
+                    assert_eq!(
+                        correctness_read(&fs, ctx, entry.inode, handle.unwrap()),
+                        expected
+                    );
+                    fs.release(ctx, entry.inode, flags, handle.unwrap(), false, false, None)
+                        .unwrap();
+                }
+                assert_eq!(
+                    std::fs::read(temp.path().join("lower/existing")).unwrap(),
+                    b"unchanged lower bytes"
+                );
+            }
+        }
+
+        #[test]
+        fn virtual_open_and_write_kill_privileges_on_the_owned_inode() {
+            let (temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            let flags = libc::O_RDWR as u32;
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"privileged",
+                    libc::S_IFREG | 0o6755,
+                    false,
+                    flags,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let handle = handle.unwrap();
+            fs.write(
+                ctx,
+                entry.inode,
+                handle,
+                WriteReader(io::Cursor::new(vec![])),
+                0,
+                0,
+                None,
+                false,
+                true,
+                flags,
+            )
+            .unwrap();
+            assert_eq!(
+                fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                0o6755,
+                "zero-length WRITE must leave the mode alone"
+            );
+            fs.write(
+                ctx,
+                entry.inode,
+                handle,
+                WriteReader(io::Cursor::new(b"X".to_vec())),
+                1,
+                0,
+                None,
+                false,
+                true,
+                flags,
+            )
+            .unwrap();
+            assert_eq!(
+                fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                0o755
+            );
+            let mut mode = entry.attr;
+            mode.st_mode = libc::S_IFREG | 0o6755;
+            fs.setattr(ctx, entry.inode, mode, None, SetattrValid::MODE)
+                .unwrap();
+            let (opened, _) = fs
+                .open(ctx, entry.inode, true, flags | libc::O_TRUNC as u32)
+                .unwrap();
+            assert_eq!(
+                fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                0o755
+            );
+            fs.release(ctx, entry.inode, flags, opened.unwrap(), false, false, None)
+                .unwrap();
+            fs.setattr(ctx, entry.inode, mode, None, SetattrValid::MODE)
+                .unwrap();
+            fs.unlink(ctx, fuse::ROOT_ID, c"privileged").unwrap();
+            let (replacement, other, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"privileged",
+                    libc::S_IFREG | 0o6755,
+                    false,
+                    flags,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            fs.write(
+                ctx,
+                entry.inode,
+                handle,
+                WriteReader(io::Cursor::new(b"Y".to_vec())),
+                1,
+                0,
+                None,
+                false,
+                true,
+                flags,
+            )
+            .unwrap();
+            assert_eq!(
+                fs.getattr(ctx, replacement.inode, None).unwrap().0.st_mode & 0o7777,
+                0o6755,
+                "orphaned WRITE changed the replacement's mode"
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/privileged")).unwrap(),
+                b""
+            );
+            fs.release(
+                ctx,
+                replacement.inode,
+                flags,
+                other.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            fs.release(ctx, entry.inode, flags, handle, false, false, None)
+                .unwrap();
+        }
+
+        #[test]
+        fn virtual_create_existing_preserves_mode_and_obeys_kill_privilege_request() {
+            let (_temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            let flags = libc::O_RDWR as u32;
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"privileged",
+                    libc::S_IFREG | 0o6755,
+                    false,
+                    flags,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            fs.release(ctx, entry.inode, flags, handle.unwrap(), false, false, None)
+                .unwrap();
+            let (same, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"privileged",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    flags,
+                    0o777,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                same.attr.st_mode & 0o7777,
+                0o6755,
+                "O_CREAT must not reset an existing file's mode"
+            );
+            fs.release(ctx, same.inode, flags, handle.unwrap(), false, false, None)
+                .unwrap();
+            let (changed, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"privileged",
+                    libc::S_IFREG | 0o600,
+                    true,
+                    flags | libc::O_TRUNC as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                changed.attr.st_mode & 0o7777,
+                0o755,
+                "kill_priv must clear virtual setuid/setgid bits"
+            );
+            fs.release(
+                ctx,
+                changed.inode,
+                flags,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                fs.getattr(ctx, changed.inode, None).unwrap().0.st_mode & 0o7777,
+                0o755
+            );
+        }
+
+        #[test]
+        fn virtual_create_and_mkdir_zero_preserve_guest_modes_and_host_traversal() {
+            let (temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            let directory = fs
+                .mkdir(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"locked",
+                    0,
+                    0o777,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(directory.attr.st_mode & 0o7777, 0);
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    directory.inode,
+                    c"file",
+                    libc::S_IFREG,
+                    false,
+                    libc::O_RDWR as u32,
+                    0o777,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(entry.attr.st_mode & 0o7777, 0);
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            let (handle, _) = fs
+                .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
+                .unwrap();
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDONLY as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/locked/file")).unwrap(),
+                b""
+            );
+            let outsider = Context {
+                uid: 1234,
+                gid: 2345,
+                ..ctx
+            };
+            assert_eq!(
+                fs.access(outsider, directory.inode, libc::X_OK as u32)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
         }
 
         #[test]

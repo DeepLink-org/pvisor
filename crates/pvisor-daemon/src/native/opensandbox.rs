@@ -197,7 +197,13 @@ fn command(body: Value) -> Result<(ExecLaunch, bool, u64), Error> {
 pub(super) fn file_info(value: &Value) -> Value {
     let mode = value["mode"].as_u64().unwrap_or(0);
     let decimal = format!("{mode:o}").parse::<u64>().unwrap_or(0);
-    json!({"path":value["path"],"type":if value["type"] == "dir" {"directory"} else {"file"},"size":value["size"],"mode":decimal,"owner":value["owner"],"group":value["group"],"modified_at":chrono::DateTime::from_timestamp(value["modified"].as_i64().unwrap_or(0),0).unwrap_or_default().to_rfc3339()})
+    let timestamp = |field: &str| {
+        chrono::DateTime::from_timestamp(value[field].as_i64().unwrap_or(0), 0)
+            .unwrap_or_default()
+            .to_rfc3339()
+    };
+    // OpenSandbox's Linux profile calls inode change time "created_at".
+    json!({"path":value["path"],"type":if value["type"] == "dir" {"directory"} else {"file"},"size":value["size"],"mode":decimal,"owner":value["owner"],"group":value["group"],"modified_at":timestamp("modified"),"created_at":timestamp("changed")})
 }
 fn permission(value: &Value, default: u32) -> Result<u32, Error> {
     for key in ["owner", "group"] {
@@ -208,13 +214,18 @@ fn permission(value: &Value, default: u32) -> Result<u32, Error> {
             return Err(unsupported("native file ownership changes are unsupported"));
         }
     }
-    value["mode"]
+    let Some(value) = value.get("mode") else {
+        return Ok(default);
+    };
+    let value = value
         .as_u64()
-        .filter(|m| *m != 0)
-        .map(|m| {
-            u32::from_str_radix(&m.to_string(), 8).map_err(|_| invalid("invalid octal permission"))
-        })
-        .unwrap_or(Ok(default))
+        .ok_or_else(|| invalid("invalid octal permission"))?;
+    let mode = u32::from_str_radix(&value.to_string(), 8)
+        .map_err(|_| invalid("invalid octal permission"))?;
+    if mode > 0o7777 {
+        return Err(invalid("permission exceeds Unix mode bits"));
+    }
+    Ok(mode)
 }
 pub(super) async fn multipart(
     service: &Service,
@@ -480,7 +491,20 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
         }
         ("GET", "/files/download") => {
             let path = query(&request, "path").ok_or_else(|| invalid("path required"))?;
-            service.download(guest_path(&path, false)?).await
+            if ["offset", "limit"]
+                .iter()
+                .any(|key| query(&request, key).is_some_and(|v| !v.is_empty()))
+            {
+                return Err(unsupported(
+                    "native line-based reads are unsupported; use byte ranges",
+                ));
+            }
+            let range = request
+                .headers()
+                .get(header::RANGE)
+                .map(|value| value.to_str().map_err(|_| invalid("invalid Range header")))
+                .transpose()?;
+            service.download(guest_path(&path, false)?, range).await
         }
         ("GET", "/files/info") => {
             let mut result = serde_json::Map::new();
@@ -595,6 +619,31 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
 mod tests {
     use super::*;
     #[test]
+    fn file_info_contains_required_sdk_timestamps_and_guest_permissions() {
+        let info = file_info(&json!({
+            "path":"/tmp/file ✓", "type":"file", "size":8193, "mode":0o640,
+            "owner":"root", "group":"root", "modified":100, "changed":110,
+        }));
+        assert_eq!(info["path"], "/tmp/file ✓");
+        assert_eq!(info["size"], 8193);
+        assert_eq!(info["mode"], 640);
+        assert_eq!(info["type"], "file");
+        for (field, expected) in [("modified_at", 100), ("created_at", 110)] {
+            let text = info[field]
+                .as_str()
+                .expect("SDK requires an RFC3339 timestamp");
+            assert_eq!(
+                chrono::DateTime::parse_from_rfc3339(text)
+                    .unwrap()
+                    .timestamp(),
+                expected
+            );
+        }
+        let directory = file_info(&json!({"type":"dir","mode":0o755,"modified":0,"changed":0}));
+        assert_eq!(directory["type"], "directory");
+    }
+
+    #[test]
     fn split_utf8_and_literal_argv_survive_protocol_translation() {
         let mut text = Utf8::default();
         let bytes = "雪✓".as_bytes();
@@ -610,6 +659,16 @@ mod tests {
         assert!(command(json!({"command":"x","unknown":true})).is_err());
         assert!(command(json!({"command":"x","cwd":"relative"})).is_err());
         assert_eq!(permission(&json!({"mode":644}), 0).unwrap(), 0o644);
+        assert_eq!(permission(&json!({"mode":0}), 0o644).unwrap(), 0);
+        assert_eq!(permission(&json!({}), 0o640).unwrap(), 0o640);
+        for value in [
+            json!({"mode":-1}),
+            json!({"mode":"644"}),
+            json!({"mode":888}),
+            json!({"mode":10000}),
+        ] {
+            assert!(permission(&value, 0o644).is_err(), "{value}");
+        }
         assert!(permission(&json!({"owner":"someone"}), 0o644).is_err());
     }
 }

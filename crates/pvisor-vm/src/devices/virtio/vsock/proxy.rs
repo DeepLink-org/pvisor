@@ -60,6 +60,18 @@ pub struct ProxyUpdate {
     pub new_proxy: Option<(u32, OwnedFd, AddressFamily, NewProxyType)>,
     pub push_accept: Option<(u64, u64)>,
     pub push_credit_req: Option<MuxerRx>,
+    // Keep a terminal socket alive until its old polling registration is removed.
+    // The proxy id may outlive this fd as a protocol tombstone.
+    pub retired_fd: Option<OwnedFd>,
+}
+
+impl ProxyUpdate {
+    pub(super) fn retire_socket(&mut self, id: u64, socket: &mut Option<OwnedFd>) {
+        if let Some(fd) = socket.take() {
+            self.polling = Some((id, fd.as_raw_fd(), EventSet::empty()));
+            self.retired_fd = Some(fd);
+        }
+    }
 }
 
 impl fmt::Display for ProxyError {

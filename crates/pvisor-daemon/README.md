@@ -123,6 +123,10 @@ checks the actual sandbox/generation binding before publication; credentials
 remain in the host supervisor and never enter guest workload environment. API
 restart retains the same supervisor, VM, process inventory and output journals.
 Supervisor loss is not recoverable process replay or a checkpoint.
+Native RPC connections wait for temporary Unix accept-queue saturation within
+the existing five-second connection deadline. Only an unconnected EAGAIN is
+retried; requests are sent once after connection and commands are never replayed.
+HTTP/process admission and socket backlog limits remain unchanged.
 
 The native core supports foreground/background commands, separate stdout/stderr,
 stdin/EOF, nonzero exits, env/cwd/user overrides, process listing/reconnect,
@@ -130,11 +134,18 @@ TERM/KILL, E2B PTYs and resizing. OpenSandbox background logs use byte cursors.
 Completion closes the stream after the final exit event without a fixed sleep.
 Files are streamed through guest-local operations: read/write, stat, immediate
 listing, mkdir, move, remove and chmod. Metrics sample actual guest CPU ticks and
-memory. Files use root identity; non-root file requests, ownership changes,
+memory. File stat/list include both SDK-required RFC3339 timestamps. Following
+OpenSandbox's Linux profile, `created_at` reports guest inode change time (ctime),
+not filesystem birth time; `modified_at` reports guest mtime. Files use root identity; non-root file requests, ownership changes,
 xattrs, gzip uploads, recursive listing, watchers, notebook/session kernels and
 OpenSandbox WebSocket PTYs are explicitly unsupported. The E2B adapter accepts
 JSON/Connect (the pinned Python SDK's format), not binary protobuf. Unsupported
 operations return 501; supported operations still return guest filesystem errors.
+OpenSandbox downloads support a single HTTP byte range, including open-ended
+and suffix forms, with 206/Content-Range or 416 for invalid/unsatisfiable ranges.
+Bytes are selected from bounded guest frames; skipping a large prefix still
+reads it through the guest transport. Line-based `offset`/`limit` reads are
+explicitly unsupported (501), rather than silently returning the whole file.
 
 Bounds per sandbox: 64 HTTP response streams, 16 active managed execs, 64 retained jobs, 4 MiB output or
 16,384 output events per job, 64 MiB per upload, 128 upload files and 1,024 entries

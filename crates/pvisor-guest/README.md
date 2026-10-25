@@ -135,6 +135,8 @@ File streams use bounded data frames and explicit EOF, preserve binary bytes and
 run as guest root. Read/write reject special files; write may leave partial
 content after a disconnect/error. Listing is limited to 1,024 immediate entries.
 Metadata, permissions and symlink targets come from the guest filesystem.
+File metadata carries guest mtime and inode change time (ctime); host protocol
+adapters choose their wire field names, without substituting host timestamps.
 `Info` reports launch binding and actual `/proc` memory/CPU counters, never API
 credentials. Native failures include Linux errno for host protocol error mapping.
 The guest does not implement HTTP, SSE or E2B Connect; those adapters live in the

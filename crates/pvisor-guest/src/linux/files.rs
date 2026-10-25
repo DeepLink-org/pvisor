@@ -54,7 +54,7 @@ fn stat(path: &Path) -> io::Result<Value> {
             "type": if metadata.is_dir() { "dir" } else { "file" },
             "size": metadata.len(), "mode": metadata.mode() & 0o7777,
             "owner": account("/etc/passwd", metadata.uid()), "group": account("/etc/group", metadata.gid()),
-            "modified": metadata.mtime(), "isSymlink": link.is_symlink(),
+            "modified": metadata.mtime(), "changed": metadata.ctime(), "isSymlink": link.is_symlink(),
             "symlinkTarget": if link.is_symlink() { Some(fs::read_link(path)?.to_string_lossy().into_owned()) } else { None }
         }),
     )
@@ -270,6 +270,10 @@ mod tests {
         ));
         worker.join().unwrap();
         assert_eq!(fs::read(&file).unwrap(), bytes);
+        let metadata = fs::metadata(&file).unwrap();
+        let info = stat(&file).unwrap();
+        assert_eq!(info["modified"], metadata.mtime());
+        assert_eq!(info["changed"], metadata.ctime());
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert_eq!(stat(&link).unwrap()["isSymlink"], true);

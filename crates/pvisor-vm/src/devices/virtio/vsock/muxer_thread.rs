@@ -108,6 +108,7 @@ impl MuxerThread {
         if let Some(polling) = update.polling {
             self.update_polling(polling.0, polling.1, polling.2);
         }
+        drop(update.retired_fd);
 
         if let Some(credit_rx) = update.push_credit_req {
             debug!("send_credit_request");
