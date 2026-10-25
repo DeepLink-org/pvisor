@@ -20,7 +20,7 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
 | `pvisor-daemon` | 单节点 sandbox API、持久归属、原生 VM supervisor 与 guest 协议适配 |
 | `pvisor-cli` | CLI、TUI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
-| `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；宿主进程路径的任务生命周期、exec 与 FIFO/PTY IO |
+| `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；OCI container 与可选 VM 两种执行层的生命周期、exec 与 FIFO/PTY IO |
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 

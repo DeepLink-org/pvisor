@@ -10,7 +10,7 @@
 
 前置检查会实际写入 controller 并调用 KVM API。没有 host、OCI 命令或 registry-pull 降级。
 
-创建请求使用本机 `images_dir/<key>.json` 中的模板 key，创建期间不从 registry 拉取或整体解压镜像。先用 `prepare-image` 准备可信镜像并固定 revision；实际部署优先使用 digest。基础镜像需包含工作负载需要的 shell、工具和语言。
+创建请求使用本机 `images_dir/<key>.json` 中的模板 key，创建期间不从 registry 拉取或整体解压镜像。先用 `prepare-image` 准备可信镜像并固定 revision；实际部署优先使用 digest。基础镜像应包含 `/bin/sh`、`/bin/sleep` 和工作负载所需工具；E2B shell 命令还需要 `/bin/bash`。
 
 新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；旧独立 rootfs manifest 保留其 bootstrap 合同，见[镜像合同](../../design/daemon/operations.md#image-contract)。
 
@@ -154,11 +154,11 @@ E2B 支持同步/异步生命周期、命令、stdin、后台进程、文件和 
 
 OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CONNECT。默认原生后端按沙箱限制响应流、进程数、输出留存和上传大小，超限明确失败；显式上游后端保留其服务配额。边界值见[原生引擎合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#native-guest-execution-default-for-new-templates)。
 
-默认只监听 loopback。对外访问前，在可信反向代理上配置 TLS，并用 `--public-endpoint HOST:PORT` 指定外部路由可达的 authority，不带 scheme 或路径。
+默认拒绝非 loopback 监听；推荐在可信反向代理终止 TLS，daemon 后端保留 loopback，并用 `--public-endpoint HOST:PORT` 指定外部 authority。显式 `--allow-insecure-listen` 允许远程明文监听，但不安装 TLS。通配地址必须提供 public endpoint；loopback `127.0.0.1:0` 会公布实际分配端口。
 
 ## 可选缓存与内存池 {#memory-pool}
 
-添加 `--cache` 启用独立缓存服务，用 `--cache-listen` 与 `--cache-image-store` 配置其端点和存储。也可单独运行 `pvisor-daemon serve --cache`。缓存 worker 由 daemon 监督，异常退出使 daemon 失败；daemon 关闭/崩溃会停止 worker，进行中的请求可能失败，不能据此判定准备操作未发生。
+添加 `--cache` 启用独立缓存服务，用 `--cache-listen` 与 `--cache-image-store` 配置其端点和存储。也可单独运行 `pvisor-daemon serve --cache`。缓存 worker 由 daemon 监督，异常退出使 daemon 失败；daemon 关闭/崩溃会停止 worker，进行中的请求可能失败，不能据此判定准备操作未发生。HTTP 关闭最多等待十秒。
 
 在 `serve` 命令中添加 `--memory-pool`，即可让新沙箱接入 daemon 持有的物理共享页池；默认关闭。运行时扫描已驻留的 4 KiB 页面，优先收纳跨实例重复内容，daemon 保存一份物理页。VM 读取时保持共享，写入时由内核 COW 生成私有页。这个 Linux 路径不需要 userfaultfd，也不压缩独有页。实际占用与重复程度、扫描和写入有关，见[内存 benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle)。
 
@@ -213,4 +213,4 @@ daemon sandbox ID 不是 Job ID，不要传给 `pvisor checkpoint`、`fork`、`a
 | 过期沙箱仍存在 | 清理是 best effort；检查 daemon 在线时间、生命周期锁与原生清理错误 |
 | 策略/template/volume 被拒绝 | 不支持的选项被拒绝，不会静默安装或模拟 |
 
-API 错误包含 `{code, message}`，响应包含 `X-Request-ID`。保留 HTTP status、request ID 和脱敏诊断；API 成功不是命令退出状态。见[退出码与错误](../../reference/exit-codes.md#daemon)。
+OpenSandbox API 错误包含 `{code, message}`，响应包含 `X-Request-ID`。保留 HTTP status、request ID 和脱敏诊断；API 成功不是命令退出状态。见[退出码与错误](../../reference/exit-codes.md#daemon)。

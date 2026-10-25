@@ -10,7 +10,7 @@ You need Linux x86_64, a usable `/dev/kvm`, trusted absolute paths, and a writab
 
 Preflight checks perform real controller writes and KVM API calls. There is no host, OCI-command or registry-pull fallback.
 
-Create requests use a local template key in `images_dir/<key>.json`; creation performs no registry pull or complete image extraction. First use `prepare-image` to prepare a trusted image and pin its revision; prefer digests in deployments. The base must contain the shells, tools and languages required by workloads.
+Create requests use a local template key in `images_dir/<key>.json`; creation performs no registry pull or complete image extraction. First use `prepare-image` to prepare a trusted image and pin its revision; prefer digests in deployments. The base must contain `/bin/sh`, `/bin/sleep` and the workload tools; E2B shell commands also require `/bin/bash`.
 
 New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Legacy standalone-rootfs manifests retain their bootstrap contract; see the [image contract](../../design/daemon/operations.md#image-contract).
 
@@ -154,11 +154,11 @@ Resolve execd through `GET /v1/sandboxes/{id}/endpoints/44772` and egress throug
 
 OpenSandbox signed endpoint expiration, arbitrary app ports, WebSocket and CONNECT are unsupported. The default native backend bounds response streams, process counts, retained output and upload size per sandbox, with explicit failures on overflow. Explicit upstream backends retain their service quotas. See the [native engine contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md#native-guest-execution-default-for-new-templates) for limits.
 
-Loopback is the default listener. Before external access, configure TLS at a trusted reverse proxy and set `--public-endpoint HOST:PORT` to the externally routed authority, without scheme or path.
+Non-loopback listeners are rejected by default. Prefer TLS termination at a trusted reverse proxy with the daemon backend on loopback, and set `--public-endpoint HOST:PORT` to the external authority. Explicit `--allow-insecure-listen` permits remote plaintext binding without installing TLS. Wildcard listeners require a public endpoint; loopback `127.0.0.1:0` publishes its actual allocated port.
 
 ## Optional cache and memory pool {#memory-pool}
 
-Add `--cache` for a separate cache endpoint, configured with `--cache-listen` and `--cache-image-store`, or run `pvisor-daemon serve --cache` alone. The daemon supervises its worker; unexpected worker exit fails the daemon, and daemon shutdown/crash stops the worker. Failed in-flight requests require reconciliation.
+Add `--cache` for a separate cache endpoint, configured with `--cache-listen` and `--cache-image-store`, or run `pvisor-daemon serve --cache` alone. The daemon supervises its worker; unexpected worker exit fails the daemon, and daemon shutdown/crash stops the worker. Failed in-flight requests require reconciliation. HTTP shutdown waits at most ten seconds.
 
 Add `--memory-pool` to the `serve` command to connect new sandboxes to the daemon-held physical shared-page pool; it is off by default. The runtime scans resident 4 KiB pages, preferring cross-instance duplicate content, and the daemon retains one physical page. VM reads stay shared; writes get private pages through kernel COW. This Linux path needs no userfaultfd and does not compress unique pages. Actual occupancy depends on duplication, scanning and writes; see the [memory benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle).
 
@@ -213,4 +213,4 @@ The retired Cluster task/client SDK, Controller/Worker registration, placement, 
 | Expired sandbox still exists | Cleanup is best effort; check daemon uptime, the lifecycle lock and native cleanup errors |
 | Policy/template/volume rejected | Unsupported options are rejected, never silently installed or emulated |
 
-API errors carry `{code, message}` and responses carry `X-Request-ID`. Retain the HTTP status, request ID and redacted diagnostics; API success is not the command exit status. See [exit codes and errors](../../reference/exit-codes.md#daemon).
+OpenSandbox API errors carry `{code, message}` and responses carry `X-Request-ID`. Retain the HTTP status, request ID and redacted diagnostics; API success is not the command exit status. See [exit codes and errors](../../reference/exit-codes.md#daemon).

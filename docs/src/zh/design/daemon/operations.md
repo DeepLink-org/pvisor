@@ -22,7 +22,7 @@ pvisor-daemon serve --sandbox \
   --memory-bytes 8589934592
 ```
 
-重启保持状态与运行时配置兼容。非 loopback 暴露前在可信反向代理终止 TLS。`--public-endpoint` 设置外部路由可达的 host:port authority；通配或临时端口监听必须提供它。自动端点发布未实现。
+重启保持状态与运行时配置兼容。非 loopback 暴露前在可信反向代理终止 TLS。`--public-endpoint` 设置外部路由可达的 host:port authority；通配监听必须提供它。Loopback 临时端口会公布实际分配地址；非 loopback 监听默认拒绝，只有显式 `--allow-insecure-listen` 才允许远程明文绑定。
 
 运行时与状态路径的绝对路径、长度与持久性约束见[运维指南的安装与启动](../../guides/daemon/index.md#install)。
 
@@ -40,7 +40,7 @@ pvisor-daemon serve --sandbox \
 
 ## 部分协议 Profile {#api}
 
-基线：OpenSandbox **1.1.0**、`release-1.1.0`、commit `b1a29cf93a823a95913f7943010febb3f29de05c`；升级需显式审查 schema、SDK 与测试。
+OpenSandbox 基线：**1.1.0**、`release-1.1.0`、commit `b1a29cf93a823a95913f7943010febb3f29de05c`；升级需显式审查 schema、SDK 与测试。
 
 | 接口 | 当前行为 |
 | --- | --- |
@@ -56,6 +56,8 @@ pvisor-daemon serve --sandbox \
 生命周期请求使用 `OPEN-SANDBOX-API-KEY`。响应含 `X-Request-ID`，错误为 `{code, message}`。Server-proxy 端点使用生命周期 key；默认端点提供 sandbox 范围的 `X-PVISOR-SANDBOX-TOKEN` headers，SDK 必须保留它们。Token 不能控制生命周期或访问另一个 sandbox。控制秘密向上游转发前被移除，但不替代调用方提供的 execd 访问凭据。
 
 不支持 snapshot、template/pool、metadata 修改、hook、network policy、credential proxy、secure access、volumes、image auth、任意端口、signed endpoint、WebSocket 和 CONNECT。运行时已接入原生 VM 执行；stage/apply、checkpoint/fork 与 offload API 未实现。
+
+同一服务还支持 E2B Python SDK **2.59.0** 的本机部分 profile，使用独立的 `/sandboxes`、`/v2/sandboxes` 与 `/e2b/*` 路由。协议与认证配置见[E2B 接入](../../guides/daemon/index.md#e2b)。本机 `prepare-image` 模板准备和 SDK 模板构建 API 是不同接口。
 
 ## 信任边界 {#security}
 

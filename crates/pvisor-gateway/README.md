@@ -130,7 +130,7 @@ The controlled [`model_wait_http`](tests/model_wait_http.rs) tests cover HTTP
 ordering and cancellation, not VM density, resource reclamation or daemon
 integration. This interface alone does not provide RAM reclamation or networked
 VM hibernation. See [Gateway design](../../docs/src/en/design/gateway.md)
-and [daemon boundaries](../../docs/src/en/guides/daemon/boundaries.md).
+and [daemon boundaries](../../docs/src/en/design/daemon/index.md#integration).
 
 A Chat Completions `[DONE]` marker alone is not proof that every
 candidate finished: a missing `finish_reason` still fails terminal validation.

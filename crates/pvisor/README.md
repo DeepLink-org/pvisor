@@ -145,7 +145,7 @@ features.
 pvisor feature                       # name / stage / default / enabled / description
 pvisor feature list --json           # same list as a JSON array
 pvisor --feature workload-aware-memory-offloading feature --json
-pvisor --feature workload-aware-memory-offloading run --executor vm -- /bin/sleep 10
+pvisor --feature workload-aware-memory-offloading spawn --executor vm -- /bin/sleep 10
 pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 pvisor --feature workload-aware-memory-offloading --executor vm -- /bin/sleep 10
 ```
@@ -155,7 +155,7 @@ unknown names. Arguments after `--` belong to the guest and are never feature
 options. Feature queries run locally without starting a Job or contacting its
 owner. Their `enabled` column means registry defaults plus this invocation's
 CLI enables, not a live VM status or a scan of personal/project config files.
-Global enables are supported by `run` and feature queries, not other Job actions
+Global enables are supported by `spawn` and feature queries, not other Job actions
 or extensions; extension arguments and help requests are forwarded to
 companions. Companion help also supports leading feature options, without
 forwarding those options as runtime enables; use `pvisor help COMMAND` or
@@ -717,8 +717,10 @@ The daemon's VM-only `NativeRuntime` embeds this crate in detached supervisor
 subprocesses. Its CLI uses explicit flags.
 The daemon API has no stage/apply or checkpoint/fork implementation. The daemon
 is a separate executable linking `pvisor` and `pvisor-core`; synchronous internal
-VM dispatch runs before Tokio. Packaging does not supply or validate the
-prepared-image bootstrap, SDK conformance or density.
+VM dispatch runs before Tokio. The daemon supplies `prepare-image`, defaults new
+templates to the shared Rust guest engine and has native validation of pinned
+OpenSandbox/E2B core flows; see its README for exact coverage. Full SDK conformance
+and production density remain unvalidated.
 
 ## Independent container VM lifecycle
 
@@ -1246,7 +1248,7 @@ selection and kernel preparation match release builds.
 
 - [Operation and Event](../../docs/src/zh/design/operations-events.md): operation requests, actual rewrites,
   VM/Overlay placement, execution facts and boundary observations.
-- [The PolicyVisor model](../../docs/src/zh/start/what-is-pvisor.md)
+- [The PolicyVisor model](../../docs/src/zh/why/index.md)
 - [Get started](../../docs/src/en/start/first-run.md)
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 - [Gateway architecture](../../docs/src/zh/design/gateway.md)
@@ -1275,7 +1277,7 @@ one-second offload minimum. The threshold must be >2 ms and <=24 hours.
 Short timer budgets keep pause-only mode without consuming offload cooldown.
 Admitted backing writeback is non-interruptible and can overrun a deadline.
 [Guest maintenance contracts and source tests](../../fw/README.md#experimental-pvisor-idle-handoff)
-and [VMM handoff/atomic resume](../pvisor-vm/README.md#single-vcpu-guest-idle-handoff-and-optional-offload-experimental)
+and [VMM handoff/atomic resume](../pvisor-vm/README.md#guest-idle-handoff-and-conditional-offload-experimental)
 describe the safety boundaries.
 
 Build `vm_idle_handoff` with `--features gateway` for single-round regressions

@@ -1,6 +1,6 @@
 # Release PolicyVisor
 
-GitHub Actions builds stable releases from version tags and publishes to PyPI using Trusted Publishing. Distribution remains Python wheels without PyO3 extensions or Maturin.
+The current stable-release workflow builds native components from version tags in GitHub Actions, packages them as Python wheels and uploads them to PyPI using Trusted Publishing. See [installation](../start/installation.md) for user commands. Wheels contain no PyO3 extensions and do not use Maturin.
 
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
@@ -9,7 +9,7 @@ Each platform wheel is tagged `py3-none-<platform>` and contains:
 - Independently built `pvisor-daemon` in Linux x86_64 and macOS ARM64 wheels;
 - `libkrunfw.5.dylib` only on Apple Silicon macOS; Linux embeds the kernel at build time.
 
-The current release set contains Linux x86_64 and Apple Silicon macOS wheels. Source distributions are not published artifacts.
+The current release set contains Linux x86_64 and Apple Silicon macOS wheels and their corresponding firmware sources. Python source distributions (sdists) are not part of the release set.
 
 ## One-time setup
 
@@ -95,3 +95,32 @@ require their own acceptance evidence. See [daemon setup](../guides/daemon/index
 ## Nightly builds
 
 **Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish validated wheels and corresponding firmware sources to GitHub Release before uploading the wheels to PyPI. Install the daemon from either platform’s nightly wheel or build it locally. Cache serving supports both; sandbox serving retains the Linux prerequisites above. Standalone daemon archives are not published.
+
+## Distribution evolution {#distribution-plan}
+
+!!! note "Proposal — not implemented"
+    Prioritize native binary installation, the CLI and structured output, then extend package-manager channels and SDKs according to integration needs. The channel extensions, shared release manifest and installer below are not part of the current workflow.
+
+### Channel roles
+
+| Channel | Users | Current status and direction |
+| --- | --- | --- |
+| PyPI | CLI users in Python environments | Wheel workflow exists; add installation and upgrade acceptance for isolated tool environments |
+| GitHub Release | CI, servers and offline installation | Wheels and firmware sources exist; propose binary archives and a versioned installer requiring neither Python nor Rust |
+| Homebrew | macOS developers | Propose an initial project-owned tap reusing versioned native artifacts |
+| npm | CLI users in Node toolchains | Add a native-program installation entry point when needed; deliver it separately from a TypeScript SDK |
+| crates.io / Cargo | Rust embedding and source-build users | Evaluate later, after addressing internal path dependencies, build resources and public API publication boundaries |
+
+### Shared native artifacts
+
+After each platform's native build, wheels, binary archives and package-manager entry points reuse the same component set. A proposed release manifest records the version, commit, platform, component hashes and firmware sources; each archive has its own SHA-256. Publication uploads accepted artifacts without recompiling. Upgrade the matching CLI, companions, daemon and firmware as one installation unit to avoid incompatible partial updates.
+
+Each new channel needs final-layout validation, including companion and firmware discovery through Homebrew symlinks and Python tool environments. The installer should support version selection, user-level directories, verification, upgrades, rollback and removal while retaining Jobs and user caches. Package-manager installations use that manager for upgrades. Installing the daemon executable remains separate from registering and starting a system service.
+
+Keep the initial matrix at Linux x86_64 and macOS arm64. Add native acceptance before expanding platform support. Channel acceptance should cover first useful execution, the existing staged-review workflow, upgrades and removal as well as version output. VM capabilities retain real-hardware acceptance. Stable releases remain immutable, with a separate nightly entry point.
+
+### CLI, protocols and SDKs
+
+Running an existing Agent CLI needs no language SDK: pVisor starts the command directly, regardless of the Agent's implementation language. Platform integrations can initially use documented commands, exit codes and [JSON output](../reference/json-output.md), pinning versions according to the [compatibility boundaries](../reference/stability.md). Complete schemas and stable cross-version protocols still need work.
+
+First settle structured contracts for startup, cancellation, status, events and file review, then choose a TypeScript or Python SDK based on actual integration users. An npm entry point can distribute only the Rust native CLI; it requires no TypeScript rewrite and does not imply an SDK exists. An SDK is not a prerequisite for the current CLI release.

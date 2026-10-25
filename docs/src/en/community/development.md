@@ -54,11 +54,11 @@ cli ──> pvisor, core, journal, replay, overlaynet, overlay-core, vm
 pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
 cli --features gateway ──> gateway, pvisor/gateway
 pvisor --features gateway ──> gateway
-vm ──> overlay-core
-daemon ──> pvisor, core
+vm ──> overlay-core, guest
+daemon ──> pvisor, core, guest
 replay ──> core, journal
 shim ──> guest, overlay-core
-shim --features vm ──> vm
+shim --features vm ──> vm, overlaynet, core
 gateway ──> core, journal, overlaynet
 overlaynet ──> core
 overlayfs ──> core, overlay-core
@@ -100,7 +100,7 @@ CI checks the default runtime and application dependency boundaries before the c
 
 | Command | Purpose |
 | --- | --- |
-| `mise run build` / `mise run build -- release` | Build debug/release CLI and sign Hypervisor entitlement on macOS |
+| `mise run build` / `mise run build -- release` | Build all workspace executables supported on this platform; sign Hypervisor entitlement on macOS |
 | `mise run install-cli` | Install signed release CLI to `CARGO_INSTALL_ROOT` or `~/.cargo` |
 | `mise run wheel` / `mise run wheel -- debug` | Build a fresh wheel; place it in `dist/` after installation validation |
 | `mise run fw -- build` / `mise run fw -- test` | Build firmware or run bundle/ABI regressions |
@@ -128,7 +128,7 @@ CI checks the default runtime and application dependency boundaries before the c
 
 `mise run test`/`mise run test-rust` accept Cargo package names and aliases `pvisor`, `cli` (`pvisor-cli`), `core`, `control`/`agentctl` (Core compatibility aliases), `capture` (Gateway) and `shim` (`pvisor-shim`). With package arguments, `mise run test` runs only those Rust tests. CI shards use `mise run test-rust` without additionally running Python tests.
 
-Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
+Runtime-only Rust tests remain in `crates/pvisor/tests/`. Executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
 Default unittest discovery includes `tests/` and `benchmark/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
@@ -178,7 +178,6 @@ Use the Rust toolchain pinned in `mise.toml`, the default LLVM backend and platf
 Documentation tasks use an isolated uv environment with the same pinned Zensical as CI; no separate docs virtual environment is required.
 
 See [Release process](releasing.md) and [Reproducible examples](examples.md) for releases/runtime requirements.
-
 
 The private runtime modules use a libkrun 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.
 

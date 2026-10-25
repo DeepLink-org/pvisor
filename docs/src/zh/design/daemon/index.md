@@ -12,6 +12,7 @@
 | Daemon | 本机准入、归属、意图、运行时对账、TTL、鉴权端点 | 跨主机调度或训练事务 |
 | 原生 supervisor | 嵌入 pVisor/VM、RunHandle、vCPU 控制、cgroup 身份与 guest 协议适配 | Stage/apply/checkpoint API 或自动 node 共享 |
 | 预制镜像 | 固定用户空间与后端选择；显式上游模板提供 execd/envd | 替代生命周期 API 授权 |
+| `pvisor-guest` | 统一 PID 1、进程启动／回收、文件与控制协议 | 宿主 HTTP 鉴权或 SDK 协议适配 |
 | 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
 | 原生 node 运行时 | 独立不可变 backing 协议 | 自动 daemon 获取／共享 |
 | Daemon 池组件 | `serve --sandbox --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |

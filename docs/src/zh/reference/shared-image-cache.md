@@ -160,7 +160,7 @@ pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - Linux：`$XDG_CACHE_HOME/pvisor/cache.sock`，通常为
   `~/.cache/pvisor/cache.sock`
 
-服务端接受 `--image-store DIR` 或 `PVISOR_IMAGE_STORE` 指定已有的 OCI 存储。它不会自动启动。
+服务端接受 `--cache-image-store DIR` 或 `PVISOR_IMAGE_STORE` 指定已有的 OCI 存储。它不会自动启动。
 
 ## VM 自动懒加载
 

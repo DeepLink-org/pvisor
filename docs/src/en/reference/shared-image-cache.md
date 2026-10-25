@@ -159,7 +159,7 @@ pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - macOS: `~/Library/Caches/pvisor/cache.sock`
 - Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, usually `~/.cache/pvisor/cache.sock`
 
-Use `--image-store DIR` or `PVISOR_IMAGE_STORE` for existing OCI storage. The server does not start automatically.
+Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` for the server’s existing OCI storage. The server does not start automatically.
 
 ## Automatic VM lazy loading
 
