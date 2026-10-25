@@ -209,13 +209,29 @@ disabled so index articles remain explicit child entries. Keep `navigation.secti
 disabled and use native expandable groups with matching peer typography; child
 articles are distinguished by indentation.
 Quick start owns Installation, Local workflow: run and review, Execution
-infrastructure: run your first task, and Choose an executor, in that order.
-Installation covers shared prerequisites. The local path demonstrates staging,
-review, and selective apply. The infrastructure path uses a Linux/KVM server and
-the checked-in `examples/pvisor/07-vm-task` caller that submits a VM task and
-collects its result and identity. The quick start runs that example directly; do
-not duplicate its Python source or require readers to create scripts. Installation
-owns Host prerequisites; the example image supplies guest dependencies.
+infrastructure: tool execution integration example, and Choose an executor, in that order.
+Installation installs the CLI on the execution machine, groups Host and Linux/KVM
+prerequisites by scenario, and then links to the two quick starts. Keep alternative
+installation and maintenance options after those entry points. Choose an executor
+is optional guidance for changing environments, not a prerequisite to both examples.
+The local path demonstrates staging,
+review, and selective apply. The infrastructure path uses the checked-in
+`examples/pvisor/07-vm-task` caller script and CLI adapter on Linux/KVM to run
+two fixed `qutebrowser-667` SWE tool calls in one VM and return feedback together.
+Do not describe the caller as an integrated framework or the adapter as an
+implemented Worker service. Explain how users run the example, read results and
+reuse its calling structure. State the fixed-batch and synchronous-return boundaries
+directly rather than presenting a development-status or future-work section.
+Keep detailed script responsibilities, fields, cleanup rules and engineering
+validation scope in the example README. Keep machine
+names and internal validation progress out of the user-facing quick start;
+distinguish verified offline execution from unverified registry downloads in
+the example README. Keep the original commands and candidate
+patch traceable; distinguish the fixed excerpt from full SWE evaluation or a
+live Agent loop. Run the checked-in example directly rather than duplicating
+its Python source or requiring readers to create scripts. Installation owns Host
+prerequisites; the image supplies guest dependencies. Retain the two scenario
+entry points without introducing a separate single-node onboarding route.
 Keep the verified live pause/offload/resume walkthrough at `concepts/lifecycle.md`;
 retain old quick-start anchors as links to the moved example. Keep onboarding
 separate from checkpoint restoration and performance claims, and record the

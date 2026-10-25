@@ -1,6 +1,6 @@
 # Choose an executor
 
-Choose an executor by the kernel and userspace your command needs. Stage workspace changes with `--safe` or an explicit `--stage PATH` and review them afterward; for the default write and cleanup rules see [Staging and storage](../../reference/cli.md#暂存与存储).
+The two quick-start examples use Host and VM respectively. When you need a different execution environment, choose by the kernel and userspace your command requires.
 
 | Executor | Environment | Prerequisites | Guide |
 | --- | --- | --- | --- |
@@ -17,7 +17,7 @@ The command must be installed in the chosen environment; for a container or VM, 
 - **A fixed Linux userspace**: container or VM with an OCI image.
 - **An independent kernel**: VM.
 
-Select the executor with `--executor`. `--safe` requires the chosen executor to enforce file and network isolation and refuses to start if it cannot. The current container executor does not satisfy complete capability enforcement and cannot use `--safe`. Use an explicit `--stage PATH` for reviewable container workspace changes, and `--container-network none` for offline execution. Container host networking with selective proxies remains cooperative; see [container execution](container.md) for the conditions.
+Select an executor with `--executor`. `--safe` requires file and network isolation and refuses to start if it cannot enforce them. The container executor does not support `--safe`; see the [container executor guide](container.md) for staging and network configuration.
 
 <a id="options-shared-by-every-executor"></a>
 

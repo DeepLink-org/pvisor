@@ -2,7 +2,7 @@
 
 pVisor 可以作为 Agent 推理、评测和 RL 后训练的执行层：接收工具或任务请求，在选定环境中执行，并把结果与状态交还给调用方。先在单机验证一个完整任务，再根据负载选择并发、状态复用和资源管理方式。
 
-从[执行基础设施快速开始](../../start/infrastructure.md)在 Linux/KVM 服务器上通过调用方脚本提交任务，收集执行记录与结果。
+从[执行基础设施快速开始](../../start/infrastructure.md)运行 SWE 工具执行片段，了解如何通过 CLI 适配函数提交任务并收集反馈。
 
 ## Agent-native sandbox 解决什么问题 {#agent-native}
 

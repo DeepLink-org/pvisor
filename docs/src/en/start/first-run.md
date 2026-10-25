@@ -2,9 +2,11 @@
 
 # Local workflow: run and review {#local-workflow}
 
-Run a demo script that changes files, then review and selectively apply the result. No agent account or API key is needed. Complete [installation](installation.md) first, including the FUSE/macFUSE setup required for staged host execution.
+Run a demo script with local tools and a workspace, then review and selectively apply its file changes. No VM image or model API is needed. Complete the [local workflow setup](installation.md#local-prerequisites) first.
 
-## 1. Prepare a project
+<a id="1-prepare-a-project"></a>
+
+## 1. Prepare the project and script {#prepare-demo}
 
 ```bash
 mkdir -p pvisor-demo/project/src
@@ -20,7 +22,7 @@ Use a new demo directory. The Git identity applies only to this baseline commit 
 
 <a id="2-write-the-fake-agent"></a>
 
-## 2. Write the demo script {#demo-script}
+<a id="demo-script"></a>
 
 The script modifies `src/app.py`, deletes `src/legacy.txt`, and creates `scratch.txt`, which you will leave out of the accepted changes:
 
@@ -37,7 +39,7 @@ chmod +x ../agent.sh
 
 <a id="3-run-unattended-within-the-boundary"></a>
 
-## 3. Run and stage changes {#run-and-stage}
+## 2. Run and stage changes {#run-and-stage}
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
@@ -63,7 +65,7 @@ scratch.txt: absent
 
 <a id="4-review-changes-and-blocked-accesses"></a>
 
-## 4. Review candidate changes {#review-changes}
+## 3. Review candidate changes {#review-changes}
 
 Select this Job by its stage path:
 
@@ -73,9 +75,9 @@ pvisor status --review ../stage-001
 
 **Expected result:** the record includes a modification to `src/app.py`, deletion of `src/legacy.txt`, and addition of `scratch.txt`. Check the exit code, installed controls, and warnings before deciding which changes to accept; finishing execution does not apply changes.
 
-To test access restrictions further, configure [file policies](../guides/policies/files.md) and [network control](../guides/policies/network.md). An ordinary host's selective proxy only records requests routed through it; a missing destination does not prove it was never accessed. This demo uses an enforced deny-all boundary.
+<a id="5-apply-only-what-you-want"></a>
 
-## 5. Apply only what you want
+## 4. Apply only what you want {#apply-changes}
 
 ```bash
 pvisor apply ../stage-001 --path src
@@ -98,6 +100,4 @@ git diff -- src
 
 ## Next steps {#next-steps}
 
-For a real agent, first confirm it is installed in the selected environment. Configure its model service and credentials using [Agent integration](../guides/agents/index.md), then replace the demo command with the agent CLI. With a custom `--stage`, pass that path or the printed Job ID to later commands; `last` only searches default storage.
-
-For a Linux image or independent kernel, [choose an executor](../guides/executors/index.md). To retry from existing file state or explore in parallel, use [checkpoints and forks](../guides/fork-checkpoint.md) and the [parallel workspace workflow](../guides/parallel-agents.md#batch).
+Replace the demo command with your own Agent CLI, using [Agent integration](../guides/agents/index.md) to prepare tools, model services and credentials. For a Linux image or an independent kernel, consult [Choose an executor](../guides/executors/index.md).

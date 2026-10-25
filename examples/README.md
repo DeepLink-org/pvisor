@@ -29,8 +29,8 @@ OverlayFS 示例还需要 macFUSE 或 FUSE3。
 - [Reproducible examples](../docs/src/zh/community/examples.md)
 - [pVisor get started](../docs/src/en/start/first-run.md)
 
-## VM 任务快速开始
+## 工具执行接入示例
 
-[07-vm-task](pvisor/07-vm-task) 提供 Host 调用方、VM 任务和输入文件，可直接运行，
-自动准备任务镜像并收集执行记录与结果。需要安装 pVisor、Linux/KVM 及节点权限；
-不需要源码编译。独立运行，不加入 `mise run examples` 场景集合。
+[07-vm-task](pvisor/07-vm-task) 以调用脚本和 CLI 适配函数执行 `qutebrowser-667` SWE 工具片段，
+自动准备任务镜像、应用候选补丁，并收集两次原始工具调用的反馈与执行记录。需要安装 pVisor、Linux/KVM 及节点权限；
+真实框架集成待补充。不需要源码编译。独立运行，不加入 `mise run examples` 场景集合。

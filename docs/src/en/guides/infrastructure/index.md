@@ -2,7 +2,7 @@
 
 pVisor can serve as the execution layer for agent inference, evaluation, and RL post-training: receive tool or task requests, execute in the selected environment, and return results and state to the caller. Validate one complete task on one machine before choosing concurrency, state reuse, and resource management for your workload.
 
-Use the [execution infrastructure quick start](../../start/infrastructure.md) to submit a task from a caller script and collect execution records and results on a Linux/KVM server.
+Use the [execution infrastructure quick start](../../start/infrastructure.md) to run a SWE tool-call excerpt and learn how to submit tasks and collect feedback through a CLI adapter.
 
 ## What an agent-native sandbox addresses {#agent-native}
 

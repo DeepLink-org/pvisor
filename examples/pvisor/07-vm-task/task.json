@@ -1,0 +1,27 @@
+{
+  "task_id": "qutebrowser-667",
+  "image": "docker.io/jefzda/sweap-images@sha256:49b79743cfab914e6eb9bea0ea2c04aed5e317c953cdbe7b5460bec89eadfaac",
+  "base_commit": "a67832ba311fdb0e9d57190d1671241a369b5b0a",
+  "workdir": "/app",
+  "source_trajectory_sha256": "77a60b3a22511c1f387a6f92c4753d3c1f70bbb0aca444037729b060554a53ff",
+  "candidate_patch_sha256": "c821d2fdba22a900f1a27af14c341c2c1ec0760e0d67fce845b2eae912c129ab",
+  "steps": [
+    {
+      "step": 42,
+      "tool_call_id": "call_1ed33066e49440f4b12f1676",
+      "command": "cd /app && python3 -m pytest tests/unit/browser/webengine/test_webview.py::test_suffixes_workaround_extras_returned -v"
+    },
+    {
+      "step": 43,
+      "tool_call_id": "call_62421401529f471381d6c413",
+      "command": "python3 -m py_compile /app/qutebrowser/browser/webengine/webview.py && echo \"Syntax OK\""
+    }
+  ],
+  "environment": {
+    "PATH": "/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "LANG": "C.UTF-8",
+    "PYTHONPATH": "/app/lib:/app",
+    "PYTEST_ADDOPTS": "--tb=short -v --continue-on-collection-errors --reruns=3",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  }
+}

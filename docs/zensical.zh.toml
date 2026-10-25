@@ -18,7 +18,7 @@ nav = [
   { "快速开始" = [
     { "安装指南" = "start/installation.md" },
     { "本地工作流：运行与审查" = "start/first-run.md" },
-    { "执行基础设施：运行第一个任务" = "start/infrastructure.md" },
+    { "执行基础设施：工具执行接入示例" = "start/infrastructure.md" },
     { "选择执行环境" = "guides/executors/index.md" },
   ] },
   { "了解 pVisor" = [

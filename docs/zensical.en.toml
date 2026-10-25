@@ -18,7 +18,7 @@ nav = [
   { "Quick start" = [
     { "Installation" = "start/installation.md" },
     { "Local workflow: run and review" = "start/first-run.md" },
-    { "Execution infrastructure: run your first task" = "start/infrastructure.md" },
+    { "Execution infrastructure: tool execution integration example" = "start/infrastructure.md" },
     { "Choose an executor" = "guides/executors/index.md" },
   ] },
   { "Understanding pVisor" = [

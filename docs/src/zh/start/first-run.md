@@ -2,9 +2,11 @@
 
 # 本地工作流：运行与审查 {#local-workflow}
 
-用一个演示脚本修改文件，再审查并选择性合入，体验完整的本地工作流。无需 Agent 账号或 API Key；请先完成[安装](installation.md)，包括宿主机暂存所需的 FUSE/macFUSE。
+使用本机工具和工作区运行演示脚本，再审查并选择性合入文件改动，无需 VM 镜像或模型 API。请先完成[本地工作流环境准备](installation.md#local-prerequisites)。
 
-## 1. 准备演示项目
+<a id="1"></a>
+
+## 1. 准备演示项目与脚本 {#prepare-demo}
 
 ```bash
 mkdir -p pvisor-demo/project/src
@@ -20,7 +22,7 @@ git -c user.name='pVisor Demo' -c user.email='demo@example.invalid' -c commit.gp
 
 <a id="2-agent"></a>
 
-## 2. 编写演示脚本 {#demo-script}
+<a id="demo-script"></a>
 
 脚本会修改 `src/app.py`、删除 `src/legacy.txt`，并创建不准备合入的 `scratch.txt`：
 
@@ -37,7 +39,7 @@ chmod +x ../agent.sh
 
 <a id="3"></a>
 
-## 3. 运行并暂存改动 {#run-and-stage}
+## 2. 运行并暂存改动 {#run-and-stage}
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
@@ -63,7 +65,7 @@ scratch.txt: absent
 
 <a id="4"></a>
 
-## 4. 审查候选改动 {#review-changes}
+## 3. 审查候选改动 {#review-changes}
 
 用暂存路径定位这次 Job：
 
@@ -73,9 +75,9 @@ pvisor status --review ../stage-001
 
 **预期结果：**记录中包含 `src/app.py` 的修改、`src/legacy.txt` 的删除和 `scratch.txt` 的新增。核对退出码、实际生效的控制与警告，再决定接受哪些改动；运行结束不代表改动已合入。
 
-需要进一步验证访问限制时，按[文件策略](../guides/policies/files.md)和[网络控制](../guides/policies/network.md)配置。普通 host 选择性代理只记录经过代理的请求，记录中没有某个目标不等于它从未被访问；此演示使用 deny-all 强制边界。
+<a id="5"></a>
 
-## 5. 只合入你要的部分
+## 4. 只合入你要的部分 {#apply-changes}
 
 ```bash
 pvisor apply ../stage-001 --path src
@@ -98,6 +100,4 @@ git diff -- src
 
 ## 下一步 {#next-steps}
 
-接入真实 Agent 时，先确认它已安装在所选环境中，再按 [Agent 接入](../guides/agents/index.md)配置模型服务与凭据，将演示命令替换为 Agent CLI。使用自定义 `--stage` 时，后续操作继续传入该路径或输出的 Job ID；`last` 只查询默认存储。
-
-需要 Linux 镜像或独立内核时，先[选择执行环境](../guides/executors/index.md)；需要从已有文件状态重试或并行探索时，使用[检查点与分叉](../guides/fork-checkpoint.md)及[并行工作区流程](../guides/parallel-agents.md#batch)。
+将演示命令替换为自己的 Agent CLI，按 [Agent 接入](../guides/agents/index.md)准备所需工具、模型服务与凭据。需要 Linux 镜像或独立内核时，查阅[选择执行环境](../guides/executors/index.md)。

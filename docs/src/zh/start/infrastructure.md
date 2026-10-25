@@ -1,21 +1,21 @@
 <a id="vm"></a>
 
-# 执行基础设施：运行第一个任务 {#first-task}
+# 执行基础设施：工具执行接入示例 {#first-task}
 
-在 Linux 执行节点运行仓库自带的 VM 任务示例，了解如何从调用方提交任务、收集结果。评测器、训练框架或调度程序可以沿用这一流程，无需先部署 Daemon。
+在 Agent 推理、评测或训练流程中，调用方需要把工具命令交给执行环境，再根据返回结果继续决策。这个示例展示如何通过 pVisor CLI，在 VM 中执行工具并收集反馈。
+
+示例选取 `qutebrowser-667` SWE 轨迹中的候选补丁和两条工具命令：运行针对性测试，再检查修改后模块的语法。两条命令共享同一个 VM 和工作区，执行结束后统一返回结果，无需配置模型 API。
 
 ## 1. 准备环境 {#prerequisites}
 
-先完成[安装指南](installation.md#vm-and-oci)中的 Linux/KVM 节点配置，并激活安装 pVisor 的 Python 环境。以下命令均在该执行节点上运行。
-
-示例由仓库直接提供，无需手工创建脚本。已有当前仓库时进入仓库根目录；尚未获取时：
+完成[执行基础设施环境准备](installation.md#vm-and-oci)，在该节点的仓库根目录运行示例；尚未获取仓库时：
 
 ```bash
 git clone https://github.com/DeepLink-org/pvisor.git
 cd pvisor
 ```
 
-示例指定了包含任务依赖的 Python 镜像，pVisor 首次运行时自动拉取并缓存，不需要安装 Docker 或手工准备 rootfs。首次拉取需要节点能访问镜像仓库；离线准备方式见 [VM 执行器](../guides/executors/vm.md#rootfs)。
+仓库包含调用脚本和任务材料，任务依赖由镜像提供。
 
 ## 2. 运行示例 {#start-task}
 
@@ -23,26 +23,40 @@ cd pvisor
 bash examples/pvisor/07-vm-task/run.sh
 ```
 
-示例读取输入 `20` 和 `22`，在 VM 中计算并写出结果。目录中的文件各司其职：
+成功时，终端显示：
 
-| 文件 | 职责 |
-| --- | --- |
-| `run.py` | Host 侧调用方：提交任务、检查执行状态、收集结果并清理 stage |
-| `input.json` | 任务输入 |
-| `task.py` | VM 内执行的任务程序 |
+```text
+Step 42: exit_code=0, timed_out=False
+...
+7 passed
+Step 43: exit_code=0, timed_out=False
+Syntax OK
+```
 
-任务使用 1 vCPU、256 MiB guest RAM，关闭 guest 网络，不调用模型 API。
+终端还会打印本次任务的记录目录，其中包含：
 
-## 3. 查看结果 {#collect-results}
+- `sample.json`：每条工具命令的输出、退出码、超时状态及关联的执行 ID。
+- `bundle.json`：pVisor 执行记录。
 
-成功后，终端输出 `result.answer: 42`，以及本次运行的 `Records` 目录。该目录位于示例的 `.work/` 下，包含：
+本例展示如何执行一段 SWE 工具调用并收集反馈，运行内容为针对性测试和语法检查。
 
-- `sample.json`：调用方任务 ID、Job／Attempt ID 和任务结果。
-- `bundle.json`：执行状态、退出码与执行记录。
+<a id="framework-integration"></a>
 
-成功收集结果后释放 stage；执行失败时保留现场，方便检查。
+## 3. 在你的调用流程中使用 {#collect-results}
 
-接入自己的任务时，替换 `input.json` 和 `task.py`，再让调用方读取 `sample.json` 进行评分或后续调度。需要其他工具时修改示例的镜像配置；执行参数和结果收集逻辑集中在 `run.py` 中。
+在集群中，框架分发任务，Worker 调用 pVisor 执行工具，再将反馈交回框架。这个示例提供可放入 Worker 的调用逻辑与执行适配器。
+
+`run.py` 准备任务并处理结果，`executor.py` 通过 CLI 执行任务。两者通过以下调用连接：
+
+```python
+feedback = execute(task, EXAMPLE / "candidate.patch")
+```
+
+你可以沿用这个结构，替换任务镜像、候选补丁和工具命令，再将返回的反馈交给 Agent、评测器或训练数据收集流程。
+
+示例中的 `execute` 是一个同步执行固定命令批次的适配函数，不包含远程调度或根据反馈生成下一次调用的 Agent 循环。
+
+任务格式、错误处理和清理规则见[示例 README](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor/07-vm-task)。
 
 <a id="pause-resume"></a>
 <a id="offload-resume"></a>
