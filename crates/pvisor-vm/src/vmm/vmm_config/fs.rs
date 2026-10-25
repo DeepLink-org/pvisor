@@ -14,6 +14,7 @@ pub struct FsDeviceConfig {
     pub semantics: PermissionSemantics,
     pub shm_size: Option<usize>,
     pub read_only: bool,
+    pub managed: bool,
     #[cfg(not(feature = "aws-nitro"))]
     pub overlay: Option<OverlayConfig>,
     #[cfg(not(feature = "aws-nitro"))]

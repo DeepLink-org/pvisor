@@ -275,32 +275,48 @@ pub struct Output {
     stderr: File,
     result: PathBuf,
     directory: PathBuf,
+    auto_remove: bool,
 }
 impl Output {
     /// Drain output until this exact generation has completed, then return its
     /// exit code. Polling never interprets a previous generation as completion.
+    /// Automatic removal must finish before returning, so its name can be reused.
+    /// A committed result survives owner exit; incomplete removal fails after
+    /// thirty seconds while retaining the record for inspection.
     pub fn follow(
         mut self,
         generation: &str,
         stdout: &mut impl Write,
         stderr: &mut impl Write,
     ) -> anyhow::Result<i32> {
+        let mut completed = None;
         loop {
             io::copy(&mut self.stdout, stdout)?;
             io::copy(&mut self.stderr, stderr)?;
             stdout.flush()?;
             stderr.flush()?;
+            // Owners commit completion before releasing their leases. Observe
+            // liveness first, then the receipt, so a concurrent orderly exit
+            // cannot be reported as the fallback status 137.
+            let active = lease_active(&self.directory.join("owner.lock"))?
+                || lease_active(&self.directory.join("vm.lock"))?;
             if let Ok(file) = File::open(&self.result) {
                 let result: Completion = serde_json::from_reader(file)?;
                 if result.generation == generation {
-                    io::copy(&mut self.stdout, stdout)?;
-                    io::copy(&mut self.stderr, stderr)?;
-                    return Ok(result.code);
+                    completed.get_or_insert((result.code, Instant::now()));
                 }
             }
-            if !lease_active(&self.directory.join("owner.lock"))?
-                && !lease_active(&self.directory.join("vm.lock"))?
-            {
+            if let Some((code, observed)) = completed {
+                if !self.auto_remove || !self.directory.try_exists()? {
+                    io::copy(&mut self.stdout, stdout)?;
+                    io::copy(&mut self.stderr, stderr)?;
+                    return Ok(code);
+                }
+                ensure!(
+                    observed.elapsed() < Duration::from_secs(30),
+                    "container completed but automatic removal did not finish; inspect the retained record"
+                );
+            } else if !active {
                 io::copy(&mut self.stdout, stdout)?;
                 io::copy(&mut self.stderr, stderr)?;
                 return Ok(137);
@@ -465,7 +481,15 @@ impl Store {
         for entry in fs::read_dir(self.root.join("instances"))? {
             let path = entry?.path().join("instance.json");
             if path.is_file() {
-                let mut instance: Instance = serde_json::from_reader(File::open(path)?)?;
+                // Unlocked startup observers may scan while another owner
+                // auto-removes its own record. Only disappearance is benign;
+                // malformed records and other I/O failures remain errors.
+                let file = match File::open(path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                let mut instance: Instance = serde_json::from_reader(file)?;
                 ensure!(
                     instance.schema == 1
                         && instance.id.len() == 64
@@ -948,6 +972,12 @@ impl Store {
                     !self.active(&instance)?,
                     "container is already running or starting"
                 );
+                // Claim admission while the catalog excludes another start or
+                // removal. Observation briefly locks this same file; wait for
+                // those probes rather than making the detached owner race them.
+                // Transfer this open description through stdin across self-exec.
+                let owner_lease = lease_file(&self.directory(&instance.id).join("owner.lock"))?;
+                owner_lease.lock_exclusive()?;
                 instance.generation = uuid();
                 instance.started_ms = crate::unix_now_ms();
                 instance.state = "starting".into();
@@ -959,7 +989,7 @@ impl Store {
                     .arg(&self.root)
                     .arg(&instance.id)
                     .arg(&instance.generation)
-                    .stdin(Stdio::null())
+                    .stdin(Stdio::from(owner_lease))
                     .stdout(Stdio::null())
                     .stderr(Stdio::from(self.diagnostic(&instance)?));
                 unsafe {
@@ -983,8 +1013,12 @@ impl Store {
             .directory(&instance.id)
             .join(format!("ready-{}", instance.generation));
         loop {
+            // Completion is committed before exited state or automatic removal.
+            // Capture state first so a fast completion between the observations
+            // cannot be mistaken for a launch failure or a missing container.
+            let current = self.resolve(&instance.id);
             if ready.is_file() {
-                return Ok(self.resolve(&instance.id).unwrap_or(instance));
+                return Ok(current.unwrap_or(instance));
             }
             if let Ok(result) = File::open(
                 self.root
@@ -996,12 +1030,13 @@ impl Store {
                     if let Some(error) = result.error {
                         bail!("container failed to start: {error}");
                     }
-                    instance.state = "exited".into();
-                    instance.exit_code = Some(result.code);
-                    return Ok(self.resolve(&instance.id).unwrap_or(instance));
+                    let mut completed = current.unwrap_or(instance);
+                    completed.state = "exited".into();
+                    completed.exit_code = Some(result.code);
+                    return Ok(completed);
                 }
             }
-            let current = self.resolve(&instance.id)?;
+            let current = current?;
             if current.state == "exited" {
                 bail!(
                     "container failed to start: {}",
@@ -1025,6 +1060,9 @@ impl Store {
     }
     /// Gracefully stop the selected generation, escalating through its owner.
     /// No signal is sent to a persisted host PID.
+    /// `Duration::MAX` disables escalation and waits indefinitely for owner exit.
+    /// Finite grace periods that cannot fit the monotonic clock are rejected
+    /// before signal delivery. Other failures can follow accepted stop effects.
     pub fn stop(
         &self,
         selector: &str,
@@ -1038,6 +1076,15 @@ impl Store {
         if !self.active(&instance)? {
             return Ok(());
         }
+        let deadline = if timeout == Duration::MAX {
+            None
+        } else {
+            Some(
+                Instant::now()
+                    .checked_add(timeout)
+                    .context("stop timeout exceeds monotonic clock range")?,
+            )
+        };
         let request = Request::Stop {
             signal: requested_signal
                 .map(signal)
@@ -1045,9 +1092,8 @@ impl Store {
                 .unwrap_or(instance.image.stop_signal),
         };
         let _ = self.request(&instance, &request);
-        let deadline = Instant::now() + timeout;
         while self.active(&instance)? {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -1082,22 +1128,27 @@ impl Store {
             !self.active(&instance)? && instance.state != "starting",
             "cannot remove a running container"
         );
-        fs::remove_dir_all(self.directory(&instance.id))?;
+        self.remove_instance_files(&instance, volumes)
+    }
+    // Caller holds the catalog lock and has fenced the workload. A completing
+    // owner retains its own lease; public removal independently refuses owners.
+    fn remove_instance_files(&self, instance: &Instance, volumes: bool) -> anyhow::Result<()> {
         if volumes {
             for mount in &instance.config.mounts {
                 if let Some(name) = mount
                     .volume
                     .as_deref()
                     .and_then(|n| n.strip_prefix("anonymous:"))
-                    && !self
-                        .all()?
-                        .iter()
-                        .any(|other| other.config.mounts.iter().any(|m| m.source == mount.source))
+                    && !self.all()?.iter().any(|other| {
+                        other.id != instance.id
+                            && other.config.mounts.iter().any(|m| m.source == mount.source)
+                    })
                 {
                     fs::remove_dir_all(self.root.join("volumes").join(name))?;
                 }
             }
         }
+        fs::remove_dir_all(self.directory(&instance.id))?;
         Ok(())
     }
     /// Open one current-generation guest control connection.
@@ -1133,6 +1184,7 @@ impl Store {
             stdout: open("stdout.log")?,
             stderr: open("stderr.log")?,
             directory: self.directory(&instance.id),
+            auto_remove: instance.config.auto_remove,
             result: self
                 .root
                 .join("results")
@@ -1200,15 +1252,20 @@ fn acquire_lease(path: &Path) -> anyhow::Result<File> {
     Ok(file)
 }
 fn lease_active(path: &Path) -> anyhow::Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let file = match lease_file(path) {
+    // Observation must never recreate a lock unlinked during owner teardown.
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
         Ok(file) => file,
-        Err(_error) if !path.exists() => return Ok(false),
-        Err(error) => return Err(error),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
     };
-    match file.try_lock_exclusive() {
+    // Observers coexist. Only an owner's exclusive lease makes this fail;
+    // another liveness observation must not impersonate a running owner.
+    match FileExt::try_lock_shared(&file) {
         Ok(()) => Ok(false),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
         Err(error) => Err(error.into()),
@@ -1351,22 +1408,124 @@ impl Drop for ChildGuard {
     }
 }
 
+fn bind_published_port(port: &Port) -> anyhow::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind((port.address, port.host)).map_err(|error| {
+        let reason = if error.kind() == io::ErrorKind::AddrInUse {
+            "address already in use"
+        } else {
+            "bind failed"
+        };
+        anyhow::Error::new(error).context(format!(
+            "publish TCP {}:{} -> {}: {reason}",
+            port.address, port.host, port.guest
+        ))
+    })
+}
+
+#[derive(Default)]
+struct PublishedListeners {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    workers: Vec<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+impl PublishedListeners {
+    fn start(
+        listeners: Vec<(std::net::TcpListener, u16)>,
+        endpoint: &Path,
+    ) -> anyhow::Result<Self> {
+        let mut publications = Self::default();
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for (listener, port) in listeners {
+            listener.set_nonblocking(true)?;
+            let endpoint = endpoint.to_owned();
+            let connections = connections.clone();
+            let stop = publications.stop.clone();
+            publications
+                .workers
+                .push(std::thread::Builder::new().spawn(move || {
+                    use std::os::fd::AsRawFd;
+                    use std::sync::atomic::Ordering;
+                    while !stop.load(Ordering::Acquire) {
+                        let (client, _) = match listener.accept() {
+                            Ok(client) => client,
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                let mut event = libc::pollfd {
+                                    fd: listener.as_raw_fd(),
+                                    events: libc::POLLIN,
+                                    revents: 0,
+                                };
+                                if unsafe { libc::poll(&mut event, 1, 20) } < 0 {
+                                    let error = io::Error::last_os_error();
+                                    if error.kind() != io::ErrorKind::Interrupted {
+                                        return Err(error);
+                                    }
+                                }
+                                continue;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(error) => return Err(error),
+                        };
+                        // Accepted-socket inheritance differs across Unix platforms.
+                        if client.set_nonblocking(false).is_err() {
+                            continue;
+                        }
+                        if connections.fetch_add(1, Ordering::AcqRel) >= 32 {
+                            connections.fetch_sub(1, Ordering::AcqRel);
+                            continue;
+                        }
+                        let endpoint = endpoint.clone();
+                        let connections = connections.clone();
+                        std::thread::spawn(move || {
+                            let _ = forward(client, &endpoint, port);
+                            connections.fetch_sub(1, Ordering::AcqRel);
+                        });
+                    }
+                    Ok(())
+                })?);
+        }
+        Ok(publications)
+    }
+    fn check(&mut self) -> anyhow::Result<()> {
+        if let Some(index) = self.workers.iter().position(|worker| worker.is_finished()) {
+            self.workers
+                .swap_remove(index)
+                .join()
+                .map_err(|_| anyhow::anyhow!("published TCP listener panicked"))?
+                .context("published TCP listener failed")?;
+            bail!("published TCP listener exited unexpectedly");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PublishedListeners {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
+    use std::os::fd::FromRawFd;
     let directory = store.directory(&instance.id);
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(directory.join("owner.lock"))?;
-    lock.try_lock_exclusive()
-        .context("container already has an owner")?;
+    // Private self-exec consumes fd 0, which the admitting parent has already
+    // locked. Closing its copy never releases our inherited open description.
+    let lock = unsafe { File::from_raw_fd(libc::STDIN_FILENO) };
+    validate_owner_lease(&lock, &directory.join("owner.lock"))?;
+    {
+        let _guard = store.lock()?;
+        let current = store.resolve(&instance.id)?;
+        ensure!(
+            current.generation == instance.generation && current.state == "starting",
+            "stale owner admission"
+        );
+    }
     let result = (|| -> anyhow::Result<i32> {
         let mut listeners = Vec::new();
         for port in &mut instance.config.ports {
-            let listener = std::net::TcpListener::bind((port.address, port.host))?;
+            let listener = bind_published_port(port)?;
             port.host = listener.local_addr()?.port();
             listeners.push((listener, port.guest));
         }
@@ -1395,27 +1554,11 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             .spawn()?;
         let mut child = ChildGuard(child);
         let endpoint = socket(&instance)?;
-        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        for (listener, port) in listeners {
-            let endpoint = endpoint.clone();
-            let connections = connections.clone();
-            std::thread::spawn(move || {
-                for client in listener.incoming().flatten() {
-                    use std::sync::atomic::Ordering;
-                    if connections.fetch_add(1, Ordering::AcqRel) >= 32 {
-                        connections.fetch_sub(1, Ordering::AcqRel);
-                        continue;
-                    }
-                    let endpoint = endpoint.clone();
-                    let connections = connections.clone();
-                    std::thread::spawn(move || {
-                        let _ = forward(client, &endpoint, port);
-                        connections.fetch_sub(1, Ordering::AcqRel);
-                    });
-                }
-            });
-        }
+        // Close and join listeners before committing completion/releasing the
+        // owner lease. Stop must not acknowledge while a listener is still live.
+        let mut publications = PublishedListeners::start(listeners, &endpoint)?;
         loop {
+            publications.check()?;
             if let Some(status) = child.try_wait()? {
                 ensure!(
                     directory
@@ -1475,14 +1618,31 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
     instance.exit_code = Some(code);
     store.save(&instance)?;
     let _ = fs::remove_file(socket(&instance)?);
-    let auto_remove = instance.config.auto_remove;
+    if instance.config.auto_remove {
+        // Do not release/re-probe our own lease: another client's liveness
+        // probe can briefly acquire it and make ordinary remove report busy.
+        store.remove_instance_files(&instance, true)?;
+    }
     drop(_guard);
     drop(lock);
-    if auto_remove {
-        store.remove(&instance.id, true)?;
-    }
     // Detached owners have no frontend to reap them; the OS adopts them.
     std::process::exit(0)
+}
+
+fn validate_owner_lease(file: &File, path: &Path) -> anyhow::Result<()> {
+    let received = file.metadata()?;
+    let expected = fs::symlink_metadata(path)?;
+    ensure!(
+        received.is_file()
+            && expected.is_file()
+            && received.dev() == expected.dev()
+            && received.ino() == expected.ino(),
+        "owner admission descriptor does not match its lease"
+    );
+    // This is the inherited description's existing lock, not a competing open.
+    file.try_lock_exclusive()
+        .context("invalid owner admission lease")?;
+    Ok(())
 }
 
 fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyhow::Result<()> {
@@ -1688,7 +1848,9 @@ fn run_vm<Backing>(
     };
     for (index, mount) in instance.config.mounts.iter().enumerate() {
         let tag = format!("pvisor-volume-{index}");
-        if mount.read_only {
+        if mount.volume.is_some() && cfg!(target_os = "linux") {
+            vm.managed_filesystem(&tag, &mount.source, mount.read_only)?;
+        } else if mount.read_only {
             vm.read_only_filesystem(&tag, &mount.source)?;
         } else {
             vm.filesystem(&tag, &mount.source, 0)?;
@@ -1790,6 +1952,104 @@ pub use pvisor_guest::control::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_shared_liveness_observers_do_not_impersonate_owners() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("owner.lock");
+        let observer = lease_file(&path).unwrap();
+        FileExt::try_lock_shared(&observer).unwrap();
+        assert!(!lease_active(&path).unwrap(), "an observer is not an owner");
+        let second = lease_file(&path).unwrap();
+        FileExt::try_lock_shared(&second).unwrap();
+        assert!(!lease_active(&path).unwrap());
+        drop(observer);
+        drop(second);
+        let owner = acquire_lease(&path).unwrap();
+        assert!(lease_active(&path).unwrap());
+        drop(owner);
+        assert!(!lease_active(&path).unwrap());
+    }
+
+    #[test]
+    fn docker_owner_admission_transfers_a_continuously_held_lease() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("owner.lock");
+        let lease = acquire_lease(&path).unwrap();
+        validate_owner_lease(&lease, &path).unwrap();
+        let other = File::create(temporary.path().join("other")).unwrap();
+        assert!(validate_owner_lease(&other, &path).is_err());
+        let mut command = Command::new("sh");
+        command
+            .current_dir(temporary.path())
+            .args([
+                "-c",
+                "printf ready > ready; while ! test -e release; do sleep 0.01; done",
+            ])
+            .stdin(Stdio::from(lease));
+        let mut child = ChildGuard(command.spawn().unwrap());
+        drop(command);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !temporary.path().join("ready").is_file() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for _ in 0..100 {
+            assert!(lease_active(&path).unwrap());
+        }
+        fs::write(temporary.path().join("release"), b"release").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(!lease_active(&path).unwrap());
+    }
+
+    #[test]
+    fn docker_publication_teardown_closes_listener_before_returning() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let publications =
+            PublishedListeners::start(vec![(listener, 8080)], &directory.path().join("guest.sock"))
+                .unwrap();
+        assert!(std::net::TcpListener::bind(address).is_err());
+        drop(publications);
+        let rebound = std::net::TcpListener::bind(address).unwrap();
+        assert_eq!(rebound.local_addr().unwrap(), address);
+    }
+    #[test]
+    fn docker_publication_worker_failure_retains_its_io_cause() {
+        let worker = std::thread::spawn(|| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        let mut publications = PublishedListeners::default();
+        publications.workers.push(worker);
+        let error = publications.check().unwrap_err();
+        assert!(error.to_string().contains("published TCP listener failed"));
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn docker_published_port_conflict_identifies_endpoint_and_retains_io_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let port = Port {
+            address: "127.0.0.1".parse().unwrap(),
+            host: address.port(),
+            guest: 8080,
+        };
+        let error = bind_published_port(&port).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("publish TCP {address} -> 8080: address already in use")
+        );
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::AddrInUse
+        );
+    }
 
     #[test]
     fn docker_published_tcp_reset_cancels_the_guest_tunnel() {
@@ -2290,6 +2550,67 @@ mod tests {
         );
     }
     #[test]
+    fn docker_start_returns_committed_fast_exit_without_starting_another_owner() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.state = "starting".into();
+        instance.generation = "completed-fast-generation".into();
+        instance.started_ms = crate::unix_now_ms();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 17,
+                error: None,
+            },
+        )
+        .unwrap();
+        let completed = store.start(&instance.id).unwrap();
+        assert_eq!(completed.generation, instance.generation);
+        assert_eq!(completed.state, "exited");
+        assert_eq!(completed.exit_code, Some(17));
+        assert!(!store.directory(&instance.id).join("owner.lock").exists());
+    }
+    #[test]
+    fn docker_resolve_survives_concurrent_removal_of_other_records() {
+        let (_temporary, store, _) = fixture();
+        let kept = store.create(request()).unwrap();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                for _ in 0..256 {
+                    let mut config = request();
+                    config.name = Some("churn".into());
+                    let transient = store.create(config).unwrap();
+                    store.remove(&transient.id, false).unwrap();
+                }
+            });
+            let readers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        for _ in 0..1000 {
+                            assert_eq!(store.resolve(&kept.id).unwrap().id, kept.id);
+                        }
+                    })
+                })
+                .collect();
+            writer.join().unwrap();
+            for reader in readers {
+                reader.join().unwrap();
+            }
+        });
+        let invalid = store.directory(&"f".repeat(64));
+        fs::create_dir(&invalid).unwrap();
+        fs::write(invalid.join("instance.json"), b"not json").unwrap();
+        assert!(
+            store.resolve(&kept.id).is_err(),
+            "corrupt records must still fail"
+        );
+    }
+    #[test]
     fn docker_volume_reopen_preserves_guest_modes_and_rejects_symlinks() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let (_temporary, store, _) = fixture();
@@ -2371,6 +2692,132 @@ mod tests {
                 .unwrap(),
             7
         );
+    }
+    #[test]
+    fn docker_auto_remove_follow_waits_for_removal_and_keeps_committed_exit() {
+        let (_temporary, store, _) = fixture();
+        let mut config = request();
+        config.auto_remove = true;
+        let instance = store.create(config).unwrap();
+        let output = store.output(&instance).unwrap();
+        fs::write(store.directory(&instance.id).join("stdout.log"), b"out\0").unwrap();
+        fs::write(store.directory(&instance.id).join("stderr.log"), b"err\0").unwrap();
+        crate::util::write_private_json(
+            &output.result,
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 7,
+                error: None,
+            },
+        )
+        .unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let generation = instance.generation.clone();
+        let reader = std::thread::spawn(move || {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let code = output.follow(&generation, &mut stdout, &mut stderr);
+            send.send((code, stdout, stderr)).unwrap();
+        });
+        let early = receive.recv_timeout(Duration::from_millis(100));
+        let returned_early = early.is_ok();
+        // Always release/join the reader before asserting, even on regression.
+        store.remove(&instance.id, false).unwrap();
+        let result = match early {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                receive.recv_timeout(Duration::from_secs(2)).unwrap()
+            }
+            Err(error) => panic!("output reader disconnected: {error}"),
+        };
+        reader.join().unwrap();
+        assert!(
+            !returned_early,
+            "foreground returned before automatic removal"
+        );
+        assert_eq!(result.0.unwrap(), 7);
+        assert_eq!(result.1, b"out\0");
+        assert_eq!(result.2, b"err\0");
+    }
+    #[test]
+    fn docker_completing_owner_removes_files_while_retaining_its_lease() {
+        let (_temporary, store, _) = fixture();
+        let named = store.volume("named-keep").unwrap();
+        fs::write(named.join("value"), b"retained").unwrap();
+        let anonymous = store.volume("anonymous-drop").unwrap();
+        let mut config = request();
+        config.auto_remove = true;
+        config.mounts = vec![
+            Mount {
+                source: named.clone(),
+                target: "/named".into(),
+                read_only: false,
+                volume: Some("named-keep".into()),
+            },
+            Mount {
+                source: anonymous.clone(),
+                target: "/anonymous".into(),
+                read_only: false,
+                volume: Some("anonymous:anonymous-drop".into()),
+            },
+        ];
+        let instance = store.create(config).unwrap();
+        let owner = acquire_lease(&store.directory(&instance.id).join("owner.lock")).unwrap();
+        assert!(store.remove(&instance.id, true).is_err());
+        {
+            let _catalog = store.lock().unwrap();
+            store.remove_instance_files(&instance, true).unwrap();
+        }
+        assert!(!store.directory(&instance.id).exists());
+        assert!(!anonymous.exists());
+        assert_eq!(fs::read(named.join("value")).unwrap(), b"retained");
+        drop(owner);
+    }
+    #[test]
+    fn docker_removal_keeps_anonymous_volume_until_its_last_container() {
+        let (_temporary, store, _) = fixture();
+        let volume = store.volume("anonymous-shared").unwrap();
+        fs::write(volume.join("value"), b"shared").unwrap();
+        let mut config = request();
+        config.mounts = vec![Mount {
+            source: volume.clone(),
+            target: "/data".into(),
+            read_only: false,
+            volume: Some("anonymous:anonymous-shared".into()),
+        }];
+        let first = store.create(config.clone()).unwrap();
+        config.name = Some("other".into());
+        let second = store.create(config).unwrap();
+        store.remove(&first.id, true).unwrap();
+        assert_eq!(fs::read(volume.join("value")).unwrap(), b"shared");
+        store.remove(&second.id, true).unwrap();
+        assert!(!volume.exists());
+    }
+
+    #[test]
+    fn docker_lease_observation_does_not_recreate_unlinked_locks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lease");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let recreated = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    lease_active(&path).unwrap();
+                }
+            });
+            for _ in 0..2000 {
+                drop(File::create(&path).unwrap());
+                fs::remove_file(&path).unwrap();
+                if path.exists() {
+                    recreated.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            reader.join().unwrap();
+        });
+        assert!(!recreated.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!path.exists());
     }
     #[test]
     fn docker_storage_and_mounts_reject_authority_aliases() {

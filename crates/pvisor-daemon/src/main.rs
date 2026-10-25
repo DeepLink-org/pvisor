@@ -1,5 +1,6 @@
 mod cache_component;
 mod prepared_image;
+mod user_service;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
 use pvisor_daemon::{
@@ -20,6 +21,31 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start or reuse a detached same-user daemon; configuration is fixed until stopped.
+    Start {
+        #[command(flatten)]
+        options: user_service::StartOptions,
+    },
+    /// Query the same-user daemon without starting it (JSON output).
+    Status {
+        #[command(flatten)]
+        location: user_service::Location,
+    },
+    /// Stop the manager, preserving the pool and live VMs (JSON output).
+    Stop {
+        #[command(flatten)]
+        location: user_service::Location,
+    },
+    #[command(hide = true)]
+    UserService {
+        #[command(flatten)]
+        options: user_service::StartOptions,
+    },
+    #[command(hide = true)]
+    ResolveMemoryPool {
+        #[command(flatten)]
+        location: user_service::Location,
+    },
     /// Prepare a pooled native template or an explicitly supplied upstream service.
     PrepareImage(prepared_image::PrepareImage),
     #[command(hide = true)]
@@ -98,6 +124,26 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    match &args.command {
+        Command::Start { options } => {
+            return user_service::print(&user_service::start(options)?);
+        }
+        Command::Status { location } => {
+            return user_service::print(&user_service::status(location)?);
+        }
+        Command::Stop { location } => {
+            return user_service::print(&user_service::stop(location)?);
+        }
+        Command::ResolveMemoryPool { location } => {
+            let status = user_service::start(&user_service::StartOptions {
+                location: location.clone(),
+                memory_pool: true,
+                memory_pool_mode: None,
+            })?;
+            return user_service::print(&status.memory_pool.unwrap().socket);
+        }
+        _ => {}
+    }
     if let Command::PrepareImage(options) = args.command {
         return options.run();
     }
@@ -119,13 +165,17 @@ fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    // Each sandbox already has a native runner; avoid a host-sized Tokio worker
-    // pool per supervisor on high-core-count machines.
-    let mut runtime = if matches!(args.command, Command::NativeSupervisor { .. }) {
+    if matches!(args.command, Command::NativeSupervisor { .. }) {
         // Exec resets descriptor-table capacity. Prepare in this fresh owner,
         // before Tokio or image workers share the table. This is optional;
         // resource limits must retain their existing startup/error behavior.
         let _ = pvisor::VmExecutor::prepare_process();
+    }
+    // Supervisors and discovery managers do not need a host-sized worker pool.
+    let mut runtime = if matches!(
+        args.command,
+        Command::NativeSupervisor { .. } | Command::UserService { .. }
+    ) {
         tokio::runtime::Builder::new_current_thread()
     } else {
         tokio::runtime::Builder::new_multi_thread()
@@ -135,6 +185,11 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(command: Command) -> anyhow::Result<()> {
     match command {
+        Command::UserService { options } => user_service::serve(options).await?,
+        Command::Start { .. }
+        | Command::Status { .. }
+        | Command::Stop { .. }
+        | Command::ResolveMemoryPool { .. } => unreachable!(),
         Command::PrepareImage(_)
         | Command::Protocol
         | Command::MemoryPool { .. }

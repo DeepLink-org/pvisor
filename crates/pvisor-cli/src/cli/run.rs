@@ -369,9 +369,13 @@ struct VmOverrides {
     /// Opt in to host RAM dedup and cross-workload sharing risks; shared live RAM is skipped, private restored COW is eligible. Advice is not merged bytes.
     #[arg(long = "vm-ram-dedup", value_name = "BOOL", num_args = 0..=1, default_missing_value = "true", require_equals = true)]
     vm_ram_dedup: Option<bool>,
-    /// Experimental Linux x86_64 / Apple Silicon cold-page sharing; pool loss fails dependent VMs.
-    #[arg(long = "vm-memory-pool", value_name = "SOCKET")]
+    /// Experimental shared pool: auto finds/starts the same-user daemon; a socket requires an existing pool.
+    #[arg(long = "vm-memory-pool", value_name = "auto|SOCKET")]
     vm_memory_pool: Option<PathBuf>,
+    /// Use the same-user shared memory pool, starting its daemon if needed (--vm-memory-pool auto).
+    #[arg(short = 'M', conflicts_with = "vm_memory_pool")]
+    #[serde(default)]
+    vm_shared_memory_pool: bool,
     /// Same-host node resource service for shared immutable images and restored RAM.
     #[arg(long = "vm-node-socket", value_name = "SOCKET")]
     vm_node_socket: Option<PathBuf>,
@@ -1259,6 +1263,12 @@ async fn execute_config(
     normalize_filesystem_config(&mut config)?;
     validate_prepared_workspace_request(&config)?;
     if config.run.executor == RunExecutorKind::Vm {
+        config.vm.memory_pool = config
+            .vm
+            .memory_pool
+            .take()
+            .map(super::daemon::resolve_pool)
+            .transpose()?;
         config.vm.control_socket =
             super::host_service::vm_control_socket(config.vm.control_socket.as_deref())?;
     }
@@ -2350,6 +2360,7 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
         || args.vm.vm_cold_ram_compression == Some(true)
         || args.vm.vm_ram_dedup == Some(true)
         || args.vm.vm_memory_pool.is_some()
+        || args.vm.vm_shared_memory_pool
         || args.vm.vm_node_socket.is_some()
         || args.vm.vm_snapshot_filesystem_pool.is_some()
         || args.vm.vm_ram_backing.is_some()
@@ -2371,6 +2382,8 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
     }
     if let Some(value) = args.vm.vm_memory_pool {
         config.vm.memory_pool = Some(value);
+    } else if args.vm.vm_shared_memory_pool {
+        config.vm.memory_pool = Some(PathBuf::from("auto"));
     }
     if let Some(value) = args.vm.vm_control_socket {
         config.vm.control_socket = Some(value);
@@ -3820,6 +3833,28 @@ mod tests {
         let encoded = toml::to_string(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.vm.memory_pool, config.vm.memory_pool);
+    }
+
+    #[test]
+    fn shared_pool_shortcut_selects_vm_and_preserves_guest_arguments() {
+        let args = preset_args(&["-M", "--", "bash", "-M"]);
+        assert_eq!(args.command, ["bash", "-M"]);
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, args).unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.memory_pool.as_deref(), Some(Path::new("auto")));
+        assert!(
+            Cli::try_parse_from([
+                "pvisor",
+                "spawn",
+                "-M",
+                "--vm-memory-pool",
+                "auto",
+                "--",
+                "bash"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

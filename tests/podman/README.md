@@ -48,6 +48,13 @@ its test images and named volumes. `PVISOR_TEST_IMAGE` defaults to
 runs and record `pvisor --version` and host architecture. Bats uses Python 3 for
 bounded process execution; Go uses `context` deadlines.
 
+Set `PVISOR_TEST_FAILURES` to an evidence directory to retain failed Go test
+stores at their original temporary paths after the ordinary container cleanup
+callbacks. The runner saves JSON pointers with the test name, binary and image;
+it never moves a store with pinned paths. Passing stores retain normal cleanup.
+Evidence-writing errors remain test failures. Inspect/clean retained stores
+explicitly after diagnosis; they are excluded from successful suite counts.
+
 ## CI
 
 The required `rust-test` Linux `cli` shard in `.github/workflows/ci.yml` runs all
@@ -74,7 +81,7 @@ acceptance.
 
 ## Coverage and limits
 
-The active profile has 35 Bats cases and 83 Go cases. Each test first pulls its
+The active profile has 35 Bats cases and 86 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -87,7 +94,7 @@ image; none is skipped based on engine failure.
 | Go `build_test.go` | Basic build/removal, iidfile/full-ID execution, missing definition/file context errors, symlink workdir, copied empty directories/symlinks, ignore filtering, cross-directory COPY hardlinks, default COPY ownership, build arguments and WORKDIR/CMD/ENV/LABEL defaults |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
 | Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
-| Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, TCP port restart/release/conflict and multiple endpoints |
+| Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, concurrent rapid auto-removal with exact exits/streams, TCP port restart/release/conflict and multiple endpoints |
 | Go `process_test.go` | Large exec output, binary stdin, env unsets/literal argv, non-executable/directory/missing-workdir errors, live passwd lookup, inherited run identity, empty TERM, in-flight exec termination, workload exit 125 and signals, umask isolation, full/short image-ID execution, unknown filter, batch/forced rmi, named/numeric primary groups, symlinked workdir, default CMD/empty entrypoint and invalid names |
 
 The continuing source audit, outstanding supported scenarios and proposed
@@ -105,6 +112,105 @@ an HTTP application, continuous requests, shared read-only volume observations,
 owner/VMM death, concurrent starts, client resets and image replacement under
 per-instance host cgroup limits. It is opt-in and does not add to the Bats/Go
 contract counts or require a Docker daemon.
+
+`cli_chaos.py` focuses on CLI and same-user memory-pool daemon transitions. It
+keeps at most two 1-vCPU/256-MiB VMs, verifies byte-exact streams and guest exit
+codes, environment/argv isolation, read-only shared volumes, concurrent starts,
+manager crash/restart with unchanged pool ownership, abandoned exec clients,
+logs, batch failures, immediate `--rm` name reuse, validation, builds and named
+network attachment/removal. Calls alternate between two host working directories
+to exercise discovery independently of the current project. It uses an immutable Alpine digest, fresh private
+store and daemon state, frozen adjacent CLI/daemon binaries and retained receipts.
+No Docker daemon is required; this does not claim complete Docker compatibility.
+
+Optional `--inject-pool-loss` ends the window by killing only the verified owned
+physical pool through its pidfd. It requires dependent VMs and the manager to
+exit, checks failed restarts and `-M` implicit startup, and retains the stale pool
+socket rather than replacing RAM ownership. This is an explicit expected fault;
+other operation failures remain failures. Use only with disposable test VMs.
+
+The runner requires its entire process tree in a systemd user service with
+1536 MiB MemoryMax, zero swap, 150% CPU quota and TasksMax=384. It samples host
+memory/load/PSI and pauses new scenarios when available RAM or disk falls below
+5 GiB, load exceeds 12, or full memory PSI avg10 exceeds 1%. The requested load
+window includes pressure pauses; report them separately from completed rounds.
+It never disables these limits to turn an environment problem into a pass.
+Only exact owned container names and identity-pinned daemon processes are cleaned.
+Evidence remains after success and failure. For example, after freezing the
+product binaries and any GNU firmware beside them:
+
+```sh
+systemd-run --user --unit=pvisor-cli-chaos-UNIQUE \
+  -p MemoryMax=1536M -p MemorySwapMax=0 -p CPUQuota=150% -p TasksMax=384 \
+  -p Nice=10 -p IOSchedulingClass=idle --working-directory="$PWD" \
+  python3 tests/podman/cli_chaos.py --binary /absolute/frozen/pvisor \
+  --output /absolute/new/short/evidence --seconds 7200 --seed 10251526
+python3 tests/podman/audit_cli_chaos.py /absolute/new/short/evidence
+```
+
+Keep the evidence path short enough for its private daemon's Unix sockets. The
+audit starts no processes; it checks completion, recorded exit/timeout results,
+available input/output hashes, resource limits/events and cleanup. Known `cat`
+round trips are also checked against the recorded stdin checksum, including older
+receipts without explicit output expectations. Other missing expectations are
+not counted as independently rechecked hashes. Ordinary `tests/test_cli_chaos.py` tests guard the
+runner's failure receipts, timeout handling, byte oracle and audit corruption
+detection without launching VMs.
+
+On 2026-10-26, Linux x86_64/KVM campaign `cli-20261025-1526` completed
+7202.29 seconds on frozen baseline `a7e5d756d076`: 1267 rounds and 7783
+recorded commands, with no unexpected failures or cleanup errors. It included
+198 pressure pauses (approximately 49.5 minutes); these count toward the wall
+window. Campaign memory peaked at 217.8 MiB under the limits above. The audit
+independently rechecked 547 stdin round trips and 448 validation-error causes.
+Supplementary checks exposed rejected Docker `stop -t -1` and Job cleanup
+terminating an implicitly started shared daemon. Both were repaired, with
+graceful-stop, frontend process-ownership and blocked-startup cancellation
+regressions. Two real Jobs (exit 0 and 7) then preserved the same daemon identity.
+Final candidate `c02e470e9aa0` passed a separate 182.02-second, 140-round,
+933-command follow-up, including physical pool loss and refused replacement;
+this is not a two-hour run of the repaired candidate. Both windows passed the
+read-only audit and retained their original evidence under `.data/`.
+
+`soak.py` extends the Linux campaign with a six-hour load window after image
+preparation. It pulls nine native public images (Alpine, BusyBox, Ubuntu, Debian,
+Python, Node, GCC, Go and Rust), resolves immutable digests and runs four concurrent
+lanes: byte-checked image workloads, C/C++/Go/Rust compilation with executable
+result assertions, repeated 120-round application chaos with its independent audit,
+and the existing Go CLI contracts. It installs no guest packages and compiler
+tasks use no external source dependencies. Each parallel compiler's exit status
+is checked, and old executables are removed before compilation so stale output
+cannot substitute for a failed build. This is a correctness experiment.
+
+Build the CLI and static HTTP fixture as described in APPLICATION_CHAOS.md, then
+create a dedicated systemd user slice with aggregate limits before starting:
+
+```sh
+systemctl --user start pvisor-soak-owned.slice
+systemctl --user set-property --runtime pvisor-soak-owned.slice \
+  MemoryMax=6G MemorySwapMax=0 CPUQuota=600% TasksMax=2048
+systemd-run --user --scope --slice=pvisor-soak-owned.slice \
+  -p MemoryMax=4G -p MemorySwapMax=0 -p TasksMax=1536 \
+  /usr/bin/python3 tests/podman/soak.py --binary /absolute/frozen/pvisor \
+  --http-binary /absolute/app-http --output /absolute/new/evidence \
+  --seconds 21600 --product-slice pvisor-soak-owned.slice
+```
+
+Use a Linux Python exposing `os.pidfd_open` and `signal.pidfd_send_signal`;
+some bundled interpreters omit these APIs. The runners reject that environment
+before creating VMs, and child runners retain the selected interpreter.
+The application runner also requires CPUs 4–9 as documented above. Each lane
+stops on its first unexpected failure for investigation; other lanes continue.
+Failures are retained in `status.json` and `outcome.json` and make the runner exit
+unsuccessfully. A failed lane is never counted as sustained successful coverage.
+The evidence directory contains exact command arguments, raw streams, exit codes,
+timeouts, digest pins and isolated stores. It is retained on success too. Commands
+already admitted at the end of the load window finish under their own deadlines,
+so teardown can extend past six hours. Stop only the exact test-owned systemd
+units when aborting; never remove stores while they still own live containers.
+Workload names use UUIDs rather than wall-clock uniqueness. A reported existing
+name remains a failed round, but cleanup never removes an instance whose name
+was rejected before creation.
 
 Together these exercise all eleven registered container/build subcommands: `pull`, `images`, `rmi`,
 `run`, `build`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.

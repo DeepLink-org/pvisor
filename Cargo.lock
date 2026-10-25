@@ -2931,6 +2931,7 @@ dependencies = [
  "fs2",
  "fuser",
  "globset",
+ "httpdate",
  "libc",
  "lru",
  "object_store",

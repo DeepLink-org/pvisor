@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +38,26 @@ func newEngine(t *testing.T) *engine {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if destination := os.Getenv("PVISOR_TEST_FAILURES"); destination != "" && t.Failed() {
+			// Container cleanup callbacks still run first (LIFO). Retain the
+			// original path: moving it would invalidate pinned image locations.
+			t.Logf("retaining failed test store: %s", dir)
+			if err := os.MkdirAll(destination, 0700); err != nil {
+				t.Errorf("create failure evidence directory: %v", err)
+				return
+			}
+			data, err := json.Marshal(map[string]string{
+				"test": t.Name(), "directory": dir, "binary": e.binary, "image": e.image,
+			})
+			if err != nil {
+				t.Errorf("encode failure evidence: %v", err)
+				return
+			}
+			if err := os.WriteFile(filepath.Join(destination, filepath.Base(dir)+".json"), append(data, '\n'), 0600); err != nil {
+				t.Errorf("save failure evidence: %v", err)
+			}
+			return
+		}
 		// --rm supervisors may still finish writing after the foreground exits.
 		// Retry only our private directory; never touch the engine's shared store.
 		deadline := time.Now().Add(5 * time.Second)

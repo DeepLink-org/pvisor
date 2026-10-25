@@ -621,6 +621,8 @@ pub struct Config {
     /// The permission semantics to be emulated. See the documentation for `PermissionSemantics` for
     /// more details.
     pub semantics: PermissionSemantics,
+    /// Private managed-tree guest metadata; disabled for ordinary shares.
+    pub managed: bool,
 }
 
 impl Default for Config {
@@ -636,6 +638,7 @@ impl Default for Config {
             export_fsid: 0,
             export_table: None,
             semantics: PermissionSemantics::LinuxComplete,
+            managed: false,
         }
     }
 }
@@ -730,7 +733,10 @@ impl PassthroughFs {
         writer.write_from(&file, size as usize, offset)
     }
 
-    pub(in crate::devices::virtio::fs) fn flush_leased(&self, lease: &HandleLease) -> io::Result<()> {
+    pub(in crate::devices::virtio::fs) fn flush_leased(
+        &self,
+        lease: &HandleLease,
+    ) -> io::Result<()> {
         // Serialize descriptor effects against writes and sync; File's
         // shared-reference methods do not imply shared operation semantics.
         #[allow(clippy::readonly_write_lock)]
@@ -790,7 +796,10 @@ impl PassthroughFs {
                         None,
                         Some(mode),
                     ) {
-                        error!("Couldn't clear suid/sgid for inode {}: {error}", lease.0.inode);
+                        error!(
+                            "Couldn't clear suid/sgid for inode {}: {error}",
+                            lease.0.inode
+                        );
                     }
                 }
             }
@@ -1468,6 +1477,9 @@ fn forget_one(
 
 impl FileSystem for PassthroughFs {
     fn capture_state(&self) -> io::Result<FsSnapshot> {
+        if self.cfg.managed {
+            return Err(snapshot::unsupported("managed filesystem"));
+        }
         if !self.map_windows.lock().unwrap().is_empty()
             || self.cfg.export_table.is_some()
             || self.cfg.proc_sfd_rawfd.is_some()
@@ -1570,6 +1582,9 @@ impl FileSystem for PassthroughFs {
     }
 
     fn restore_state(&self, state: &FsSnapshot) -> io::Result<()> {
+        if self.cfg.managed {
+            return Err(snapshot::unsupported("managed filesystem"));
+        }
         let FsSnapshot::Passthrough(state) = state else {
             return Err(snapshot::invalid("filesystem type mismatch"));
         };
@@ -1675,8 +1690,9 @@ impl FileSystem for PassthroughFs {
                 || handles.contains_key(&saved.handle)
                 || saved.flags & !allowed != 0
                 || saved.flags & libc::O_ACCMODE == libc::O_ACCMODE
-                || (state.writeback && (saved.flags & libc::O_APPEND != 0
-                    || saved.flags & libc::O_ACCMODE == libc::O_WRONLY))
+                || (state.writeback
+                    && (saved.flags & libc::O_APPEND != 0
+                        || saved.flags & libc::O_ACCMODE == libc::O_WRONLY))
                 || saved.offset > i64::MAX as u64
             {
                 return Err(snapshot::invalid(&format!(

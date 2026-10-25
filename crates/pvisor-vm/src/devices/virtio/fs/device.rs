@@ -1,11 +1,11 @@
 #[cfg(target_os = "macos")]
 use crossbeam_channel::Sender;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
 #[cfg(target_os = "macos")]
 use crate::utils::worker_message::WorkerMessage;
 use virtio_bindings::{virtio_config::VIRTIO_F_VERSION_1, virtio_ring::VIRTIO_RING_F_EVENT_IDX};
@@ -15,14 +15,14 @@ use super::super::{
     ActivateError, ActivateResult, DeviceQueue, DeviceState, FsError, QueueConfig, VirtioDevice,
     VirtioShmRegion,
 };
-use super::ExportTable;
 use super::overlay::Config as OverlayConfig;
 use super::passthrough;
 use super::virtual_entry::VirtualDirEntry;
 use super::worker::FsWorker;
+use super::ExportTable;
 use super::{defs, defs::uapi};
-use crate::devices::virtio::InterruptTransport;
 use crate::devices::virtio::passthrough::PermissionSemantics;
+use crate::devices::virtio::InterruptTransport;
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -132,6 +132,11 @@ impl Fs {
 
     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
         self.shm_region = Some(shm_region);
+    }
+    pub(crate) fn set_managed(&mut self, managed: bool) {
+        if let Some(cfg) = self.passthrough_cfg.as_mut() {
+            cfg.managed = managed;
+        }
     }
 
     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
@@ -398,11 +403,10 @@ mod tests {
         let count = fs.config.num_request_queues;
         assert_eq!(count, 3);
         assert_eq!(fs.queue_config().len(), 4);
-        assert!(
-            fs.queue_config()
-                .iter()
-                .all(|queue| queue.size == defs::QUEUE_SIZE)
-        );
+        assert!(fs
+            .queue_config()
+            .iter()
+            .all(|queue| queue.size == defs::QUEUE_SIZE));
         assert!(fs.configure_request_queues(0).is_err());
         assert!(fs.configure_request_queues(9).is_err());
         assert_eq!(fs.queue_config().len(), 4);
