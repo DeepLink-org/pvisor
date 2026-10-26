@@ -200,23 +200,33 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 
 ## Information architecture
 
-Value before mechanism, mechanism before implementation. Keep Home as the first
-top-level tab, followed by seven sections: Local workflows → Execution infrastructure
-→ Foundations and reference → Benchmarks → Design and research → Lab notes → Contributing
-(首页 → 本地工作流 → 执行基础设施 → 基础与参考 → 基准测试 → 设计与研究 → 实验记录 → 参与开发).
-The homepage gives equal entry points to local review and agent execution
-infrastructure. Local workflows owns preparation, review and accepting file
-results; Execution infrastructure owns inference/evaluation/rollout integration
-and links to the current interface matrix. Foundations and reference shares
-the product introduction, concepts, executors, policies, reference and security.
-Keep existing articles at their current paths: `why/index.md` is the product
-introduction, `guides/index.md` is the local overview, and the infrastructure
-overview and interface matrix live under `guides/infrastructure/`. This first
-stage reorganizes entry points without migrating the topic articles or cases.
-The homepage remains accessible through its own tab and the site logo. Preserve
-the separation between tutorials, guides, references and explanations.
-Within each tab, keep the sidebar to two levels: topic group → article. Flatten
-subgroups into their parent group; do not add a third sidebar level.
+Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
+→ Basic concepts → Benchmarks → System design → Contributing
+(首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
+Quick start owns installation and the first reproducible Job. User guide owns
+local workflows, Agent integration, executors, policies, task operations, platform
+integration, daemon setup, trajectories and command/configuration reference.
+Basic concepts owns the product overview, Jobs, staging, evidence and security
+boundaries. Benchmarks owns measured results. System design owns architecture,
+subsystems, research, experimental designs and lab notes. Contributing owns the
+development and release workflow, regression cases and semantic specifications.
+
+Group infrastructure integration, daemon setup and shared image cache usage under
+User guide → Deployment and integration. Keep hardening with the policy guides.
+Contributing has four groups: Start contributing, Development and debugging,
+Testing and semantic specifications, and Release and maintenance. Put regression
+cases and the unreviewed STAGE specifications in the testing group; the learning
+path retains its five task tutorials. Vulnerability disclosure belongs under
+Release and maintenance, with reporting links retained in the security articles.
+
+Keep experimental feature designs under the System design → Experimental design
+(系统设计 → 实验设计) group and engineering experiment records under System design
+→ Lab notes (系统设计 → 实验记录). Neither is a separate top-level tab.
+Keep existing article paths, including `guides/infrastructure/`,
+`design/experimental/` and `lab-notes/`, so incoming links remain valid. The
+homepage remains accessible through its own tab and the site logo. Preserve the
+separation between tutorials, guides, references and explanations. Within each
+tab, keep the sidebar to two levels: topic group → article.
 
 The canonical Chinese documentation uses these sections:
 
@@ -232,7 +242,7 @@ The canonical Chinese documentation uses these sections:
 - `community/`: contributing, development, testing, release, roadmap and policies.
 
 Experimental feature documents live under `design/experimental/` in both locale
-trees and appear in the Design and research tab. Keep the feature registry,
+trees and appear under System design → Experimental design. Keep the feature registry,
 designs, implementation plans and validation records there. Each feature has
 one `index.md` combining its status, design, implementation plan and validation
 records; do not split a feature into separate articles. The experimental registry
@@ -254,11 +264,11 @@ Readers and entry points:
 
 | Reader | Entry | Main path |
 | --- | --- | --- |
-| Developer using an agent | home → local workflows | local overview → first run → connect your agent → review and apply |
-| Platform / DevOps | home → execution infrastructure | infrastructure overview → integration matrix → executor/daemon setup → capacity evidence |
-| Security reviewer | security | threat model → executor boundaries → capabilities and evidence → disclosure |
-| Researcher (MLSys, agentic RL) | home → execution infrastructure | interface selection → rollout/evaluation handoff → state reuse → evidence and research |
-| Contributor | community | contributing → development → testing → architecture |
+| Developer using an agent | Quick start → User guide | installation → first run → connect your agent → review and apply |
+| Platform / DevOps | User guide | infrastructure overview → integration matrix → executor/daemon setup → capacity evidence |
+| Security reviewer | Basic concepts → Security | threat model → executor boundaries → capabilities and evidence → disclosure |
+| Researcher (MLSys, agentic RL) | User guide → System design | interface selection → rollout/evaluation handoff → state reuse → evidence and research |
+| Contributor | Contributing | contributing → development → testing → architecture |
 
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
@@ -333,7 +343,7 @@ matter or navigation label. Removing `status: todo` does not complete a missing
 field reference, schema, experiment, or policy decision. Keep outstanding items
 explicit and attach the implementation or verification that completes each one.
 Preserve page paths and bilingual parity. Keep both locale navigation trees in
-the Home-plus-seven-section order defined above.
+the seven-tab order defined above.
 
 ### Writing style
 
