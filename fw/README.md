@@ -323,6 +323,13 @@ The generic x86-64 guest is IPv4-only (`CONFIG_IPV6` is disabled). IPv6 sockets,
 `::1` loopback and dual-stack listeners are unavailable; workloads must support
 IPv4. IPv4, virtio-net, vsock and TSI remain enabled.
 
+The netfilter family is enabled for Docker-in-VM workloads: NAT, nftables,
+legacy xtables (`iptables-legacy`), MASQUERADE, br_netfilter and the common
+match/target extensions. This lets `dockerd` inside a pVisor VM initialize its
+default bridge (MASQUERADE, port publishing) without `--iptables=false`;
+container outbound traffic still traverses the host-side overlaynet egress
+policy.
+
 For this variant, `make` builds only `vmlinux`, skipping the unused compressed
 `bzImage` and its boot decompressor. The `HAVE_KERNEL_*` capability flags and
 `KERNEL_GZIP` compression choice remain in the configuration as required by x86
