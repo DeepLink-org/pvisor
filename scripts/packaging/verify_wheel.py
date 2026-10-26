@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -229,6 +230,11 @@ fn main() {
         if result.returncode != expected:
             if busy_ok and "Error: Job operation already in progress:" in result.stderr:
                 return None
+            if "--stage" in args:
+                stage_path = Path(args[args.index("--stage") + 1])
+                bundle = stage_path / "run-bundle.json"
+                if bundle.is_file():
+                    shutil.copy2(bundle, log.parent / f"{stage_path.name}-run-bundle.json")
             raise RuntimeError(
                 f"acceptance {args[0]} returned {result.returncode}, expected {expected}; see {log}"
             )

@@ -1184,7 +1184,7 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_acceptance_rejects_reused_attempt_and_wrong_applied_bytes(self):
         # Exercise the acceptance oracle itself; these mocks are not VM evidence.
-        for fault in (None, "same-attempt", "wrong-apply", "strict-executed"):
+        for fault in (None, "same-attempt", "wrong-apply", "strict-executed", "vm-start"):
             with self.subTest(fault=fault), workspace() as (root, resources):
                 executable = root / "pvisor"
                 wheel = root / "pvisor.whl"
@@ -1227,6 +1227,13 @@ class ReleasePackagingTests(unittest.TestCase):
                         code = 1 if "--strict" in args else 0 if "vm" in args else 7
                         if "--strict" in args and fault == "strict-executed":
                             (directory / "workspace/forbidden").touch()
+                        if "vm" in args and fault == "vm-start":
+                            code = 1
+                            failed_stage = Path(args[args.index("--stage") + 1])
+                            failed_stage.mkdir()
+                            (failed_stage / "run-bundle.json").write_text(
+                                json.dumps({"run": {"output": {"stderr": "VM startup error"}}})
+                            )
                     elif args[1] == "status":
                         if state["attempt"] == 2 and state["busy"]:
                             state["busy"] = False
@@ -1274,6 +1281,9 @@ class ReleasePackagingTests(unittest.TestCase):
                     )
                     self.assertEqual(evidence["steps"][-1]["step"], "vm-restore-stage-review")
                 self.assertTrue(log.is_file())
+                if fault == "vm-start":
+                    retained = json.loads((log.parent / "apply-stage-run-bundle.json").read_text())
+                    self.assertEqual(retained["run"]["output"]["stderr"], "VM startup error")
 
     def test_setuptools_excludes_stale_retired_and_unrelated_wheel_scripts(self):
         with workspace() as (tmp_path, resources):
