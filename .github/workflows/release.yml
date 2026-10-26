@@ -45,130 +45,14 @@ jobs:
           version="$(mise run check-release-version -- "${args[@]}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  quality:
-    name: Required CI at release SHA
-    needs: validate
-    uses: ./.github/workflows/ci.yml
-
-  wheels:
-    needs: [validate, quality]
-    uses: ./.github/workflows/wheel.yml
-    with:
-      artifact_prefix: release-wheel
-
-  acceptance:
-    name: Installed wheel acceptance / ${{ matrix.platform }}
-    needs: wheels
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-latest
-          - platform: macos-arm64
-            runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-build-env
-        with:
-          tools: python rust
-          setup: none
-      - name: Prepare Linux native VM acceptance
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          sudo chown "$(id -u):$(id -g)" /dev/kvm
-          test -r /dev/kvm && test -w /dev/kvm
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-wheel-${{ matrix.platform }}
-          path: dist
-      - name: Exercise installed product and native VM recovery
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for wheel in dist/pvisor_sandbox-*.whl; do
-            mise run accept-wheel -- "$wheel" "$RUNNER_TEMP/pvisor-release-acceptance/result.json"
-          done
-      # Hosted Apple Silicon runners cannot run nested Hypervisor VMs.
-      - name: Verify installed macOS product
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/pvisor-release-acceptance"
-          mkdir -p "$evidence"
-          for wheel in dist/pvisor_sandbox-*.whl; do
-            python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke | tee "$evidence/install-smoke.log"
-          done
-      - name: Retain acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-acceptance-${{ matrix.platform }}
-          path: ${{ runner.temp }}/pvisor-release-acceptance/
-          if-no-files-found: warn
-          retention-days: 30
-
   verify:
-    name: Verify release artifact set
-    needs: [validate, wheels, acceptance]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-build-env
-        with:
-          tools: python
-          setup: none
-
-      - name: Download platform wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-wheel-*
-          merge-multiple: true
-          path: dist
-
-      - name: Check completeness and package metadata
-        run: |
-          mise run check-release-artifacts -- \
-            dist --version "${{ needs.validate.outputs.version }}"
-
-      - name: Download corresponding firmware sources
-        uses: actions/download-artifact@v4
-        with:
-          pattern: firmware-source-release-wheel-*
-          merge-multiple: true
-          path: dist
-
-      - name: Prepare all distribution channels (dry run included)
-        run: |
-          python3 scripts/ci/build_release_assets.py dist --stable \
-            --version "${{ needs.validate.outputs.version }}" --repository "$GITHUB_REPOSITORY"
-
-      - name: Retain native downloads and Homebrew formula
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-native
-          path: |
-            dist/pvisor-*.tar.gz
-            dist/pvisor.rb
-            dist/SHA256SUMS
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload verified release set
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-wheels
-          path: dist/pvisor_sandbox-*.whl
-          if-no-files-found: error
-          retention-days: 30
+    name: Build and verify release
+    needs: validate
+    uses: ./.github/workflows/distribution.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+      artifact_prefix: release
+      stable: true
 
   pypi-publish:
     name: Publish to PyPI

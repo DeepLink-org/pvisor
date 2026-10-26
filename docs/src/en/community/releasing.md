@@ -63,8 +63,10 @@ Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the
 
 Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and embeds the compressed guest kernel, just like Linux. The built firmware dylib is consumed during compilation only. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
 
-Stable releases first run the required CI workflow at the release commit, then
-build wheels. Each final wheel is installed in a fresh environment on a
+Stable and nightly releases call the same `distribution.yml` workflow: required
+CI at the selected commit, wheel builds, platform acceptance, complete-set
+validation and native archive/checksum generation. Publication downloads this
+verified set without rebuilding it. Each final wheel is installed in a fresh environment on a
 GitHub-hosted runner. Linux acceptance checks host exit status, refusal of strict host execution,
 real VM startup, suspend/cold restore with continuing in-memory progress, stable
 Job/new Attempt identity, staged writes and review. A separate fresh VM Job
@@ -73,7 +75,8 @@ apply path. It uses a
 small static guest compiled from repository-owned source; unavailable KVM access
 fails Linux acceptance. macOS verifies native payloads, code-signing entitlements,
 installation, versions and command dispatch. Its hosted runner does not execute
-the real VM acceptance. Artifacts named `release-acceptance-*` retain Linux's
+the real VM acceptance. Artifacts named `release-acceptance-*` or
+`nightly-acceptance-*` retain Linux's
 wheel and installed binary SHA-256 plus command results, and macOS's installation
 smoke output. Run full acceptance on either supported native host with
 `mise run accept-wheel -- WHEEL LOG_JSON`; macOS VM acceptance still requires
@@ -100,7 +103,22 @@ require their own acceptance evidence. See [daemon setup](../guides/daemon/index
 
 ## Nightly builds
 
-**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish the validated wheels, native archives, checksums, formula and corresponding firmware sources to GitHub Release before uploading only the wheels to PyPI. Nightly publishes native archives and checksums alongside its wheels and sources, without a Homebrew formula or tap update. Install the daemon from either platform’s nightly wheel or build it locally. Cache serving supports both; sandbox serving retains the Linux prerequisites above. Standalone daemon archives are not published.
+**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered
+manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels.
+Nightly validates the source versions and Cargo lockfile, then runs the same
+distribution workflow as stable releases, including full CI and Linux installed
+VM acceptance. A failed stage prevents updating the rolling nightly release.
+This exercises the release preparation path on main; it does not prove that a
+future tag, PyPI permissions or Homebrew publication will succeed.
+
+Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly`
+release. Stable tags publish the validated wheels, native archives, checksums,
+formula and corresponding firmware sources to GitHub Release before uploading
+only the wheels to PyPI. Nightly publishes the verified native archives, checksums,
+wheels and sources, without a Homebrew formula or tap update. Install the daemon
+from either platform's nightly wheel or build it locally. Cache serving supports
+both; sandbox serving retains the Linux prerequisites above. Standalone daemon
+archives are not published.
 
 ## Distribution evolution {#distribution-plan}
 

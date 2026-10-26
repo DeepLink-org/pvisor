@@ -85,13 +85,15 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 由 `rust-lld` 自动构建。macOS 需要 `aarch64-unknown-linux-musl` Rust stdlib，
 构建 guest 不需要 Zig。
 
-稳定发布先在发布提交上执行必需 CI，再构建 wheel。每个最终 wheel 在对应
+稳定版和 nightly 调用同一份 `distribution.yml`：在选定提交上执行必需 CI、
+构建 wheel、平台验收、完整发布集校验，以及原生归档和校验清单生成。
+发布任务下载这批已验证制品，不重新构建。每个最终 wheel 在对应
 GitHub 托管 runner 的全新环境中安装。Linux 验收覆盖 host 退出码、strict host 执行拒绝、真实
 VM 启动、暂停／冷恢复后内存进度继续、Job 身份保持且 Attempt 更换、文件暂存、
 review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必须拒绝当前不支持
 的 apply。小型静态 guest 由仓库源码编译，缺少 KVM 权限会导致 Linux 验收失败。
 macOS 校验原生载荷、签名 entitlement、安装、版本和命令转发；托管 runner
-不执行真实 VM 验收。`release-acceptance-*` 制品保存 Linux 的 wheel 与安装后
+不执行真实 VM 验收。`release-acceptance-*` 或 `nightly-acceptance-*` 制品保存 Linux 的 wheel 与安装后
 二进制 SHA-256 及命令结果，以及 macOS 的安装 smoke 输出。在任一受支持的
 原生宿主机上运行完整验收：`mise run accept-wheel -- WHEEL LOG_JSON`；
 macOS VM 验收仍需独立的硬件验证记录。
@@ -118,9 +120,13 @@ wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度
 
 **Nightly Build** 每天 UTC 03:00（北京时间 11:00）运行，也可以在 `main` 上手动
 触发；普通 push 运行 CI，不构建 nightly wheel。Nightly 与稳定发布共用
-Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
+同一份发布准备流水线。nightly 先校验源码版本和 Cargo lockfile，再执行完整 CI、
+双平台构建与验收，包括 Linux 安装后的真实 VM 验收。任一步失败均阻止更新滚动
+nightly。这会在 main 上提前验证发布准备链路，但不保证未来 tag、PyPI 权限或
+Homebrew 发布一定成功。
+
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
-稳定 tag 先把已校验 wheel、原生归档、校验清单、配方和对应固件源码上传到 GitHub Release，再仅将 wheel 上传到 PyPI。Nightly 同时发布原生归档和校验清单，但不生成 Homebrew 配方或更新 tap。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
+稳定 tag 先把已校验 wheel、原生归档、校验清单、配方和对应固件源码上传到 GitHub Release，再仅将 wheel 上传到 PyPI。Nightly 发布已验证的原生归档、校验清单、wheel 和源码，但不生成 Homebrew 配方或更新 tap。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
 
 ## 分发演进 {#distribution-plan}
 
