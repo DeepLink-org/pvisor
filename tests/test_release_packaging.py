@@ -1067,18 +1067,27 @@ class ReleasePackagingTests(unittest.TestCase):
                     "Verify daemon archive checksum",
                 ):
                     assert retired not in contents
-                assert "dist/pvisor_sandbox-*.whl" in contents
                 if workflow == "nightly.yml":
+                    assert "dist/pvisor_sandbox-*.whl" in contents
                     assert "dist/pvisor-*.tar.gz" in contents
                 else:
                     assert "publish-release -- github dist" in contents
-                assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
-                assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
+                assert "uses: ./.github/workflows/distribution.yml" in contents
                 if workflow == "nightly.yml":
-                    assert "needs: [meta, wheels]" in contents
+                    assert "needs: [meta, verify]" in contents
+                    assert "name: nightly-wheels" in contents
+                    assert "name: nightly-native" in contents
                 else:
                     assert "needs: [validate, verify]" in contents
                     assert "needs: [validate, verify, github-release]" in contents
+                    assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
+                    assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
+        shared = (ROOT / ".github/workflows/distribution.yml").read_text()
+        assert "uses: ./.github/workflows/ci.yml" in shared
+        assert "uses: ./.github/workflows/wheel.yml" in shared
+        assert "needs: [wheels, acceptance]" in shared
+        assert "build_release_assets.py dist" in shared
+        assert "path: dist/pvisor_sandbox-*.whl" in shared
 
     def test_wheel_verifier_rejects_unsupported_platforms(self):
         for platform in ["manylinux_2_28_aarch64", "win_amd64", "macosx_11_0_x86_64"]:
