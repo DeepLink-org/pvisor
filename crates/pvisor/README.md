@@ -786,6 +786,16 @@ stage/apply, capture or existing daemon APIs.
 preparation observations for frontend rendering; existing `pull`/`create` callers
 remain silent. Download counts use received compressed bytes, and layer readiness
 follows verification and extraction rather than merely reaching an expected size.
+Registry connections have a ten-second connect bound and a thirty-second
+blocking request/body-read idle bound; a progressing large layer is not limited
+to thirty seconds in total. Idempotent blob transfers retry once after a timeout,
+broken connection or interrupted HTTP body. Each attempt discards its temporary
+bytes and restarts hashing from zero. Digest/size mismatches, authentication/status
+errors and permanent local storage failures are not retried, except that 429/503
+GET responses allow one retry honoring a valid `Retry-After` up to ten seconds
+(one second when absent). HTTP dates are supported; malformed or longer delays
+return the status without retrying early or waiting unboundedly. Partial data never
+becomes a published blob; a retry resets that layer's received-byte observation.
 `pull_for_platform_with_progress` selects `linux/amd64` or `linux/arm64`
 (`linux/arm64/v8` is an alias), independently of the host. Image records retain
 their explicit canonical platform; records missing it are rejected. A reference holds one platform, replaced
@@ -887,17 +897,54 @@ its owner dies. Stop escalation goes through the current owner and generation;
 lookup and force-stop publication share the removal lock, with no lock held
 while waiting for termination. This prevents `--rm` teardown from racing a
 force-stop record into a deleted instance. No command signals a host PID saved
-in metadata. VM setup errors and workload
+in metadata. `Store::stop` treats `Duration::MAX` as an infinite graceful wait,
+matching CLI `stop --timeout -1`; it never writes a force-stop record in this
+mode. Finite unrepresentable monotonic deadlines fail before signal delivery.
+VM setup errors and workload
 exit codes remain visible in completion records and instance output.
 Concurrent starts join the same starting generation and wait for its bounded
 readiness or failure; they do not spawn a second owner or reject a healthy
-in-progress launch. Waiting never retains the catalog lock.
+in-progress launch. Waiting for generation readiness never retains the catalog lock.
+New launches acquire the owner lease during catalog admission and transfer that
+same open file description across self-exec. Detached owners validate the
+descriptor and generation before touching VM resources. Liveness observations
+cannot steal the acquisition window or make concurrent starts all fail with a
+spurious existing-owner error. Failure to spawn releases the admitted lease.
+Liveness probes use compatible shared locks; only an owner's exclusive lease
+makes them report active, so simultaneous observers cannot report one another
+as an owner or make a stopped-container removal spuriously busy.
+Startup observes instance state before checking the generation's completion
+receipt, so a rapid exit or automatic removal cannot turn a committed workload
+result into a launch failure between those observations.
+Unlocked catalog scans tolerate an unrelated record disappearing during
+automatic removal; malformed records and other read failures remain errors.
+Foreground output following likewise observes owner leases before completion,
+preserving a concurrently committed exit code instead of reporting owner loss.
+Foreground `--rm` waits for physical instance removal before returning the
+committed exit code, allowing immediate name reuse. A committed result remains
+latched after owner exit; removal that still has not finished after thirty
+seconds reports a cleanup error and retains the record for inspection.
+The completing owner removes its instance and anonymous volumes under the
+catalog lock while retaining its own lease. It does not unlock and compete with
+client liveness probes through the public stopped-container removal path.
+Liveness probes open existing lease files without creating them, so observation
+cannot recreate a lock while the owner is deleting its directory. Anonymous
+volume retention considers other containers, excluding the instance being removed.
 
 Published TCP relays cancel the guest tunnel on client reset or failed input
 writes, releasing the bounded connection slot without waiting for the guest
 application to time out. Orderly client write-half close still forwards EOF and
 allows the complete guest response. Completion cancels blocked companion pumps
 before joining them; cloned descriptors must not retain finished tunnels.
+Publication bind failures identify the host address/port and guest port while
+retaining the underlying I/O error. Address conflicts use the stable diagnostic
+`address already in use`, independently of platform/toolchain error wording.
+Published listener workers are cancelled and joined before completion and owner
+lease release, so a successful stop cannot leave the old listener bound while
+the owner finishes its remaining teardown.
+Readiness polling wakes immediately for new connections while retaining a
+bounded cancellation check. Listener failures terminate the generation with a
+diagnostic instead of silently leaving a live VM with an unavailable endpoint.
 
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
@@ -1438,6 +1485,16 @@ upper directory remains private (0700).
 Managed volume directories retain guest-selected modes across reopen, including
 image copy-up permissions. They must remain owned directories (never symlinks);
 the enclosing store and volumes catalog remain private 0700 directories.
+On Linux, named and anonymous volumes use the VM's managed-filesystem attachment:
+guest ownership and modes persist in private inode xattrs while physical backing
+stays accessible to the invoking host account. This supports ordinary image
+entrypoints which chown a volume before dropping privileges, without requiring
+host root. Guest root cannot forge the internal metadata through xattr operations.
+Ordinary bind mounts retain native host permissions. Managed symlink and special
+file ownership beyond guest root is explicitly unsupported; volume initialization
+propagates such errors. Host read-only attachments continue to reject mutations.
+An empty managed volume must first be initialized through a writable mount;
+its first use as read-only returns an explicit error before VM launch.
 
 ## Explicit same-host VM peer networks
 

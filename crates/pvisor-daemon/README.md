@@ -6,6 +6,63 @@ and shutdown, sandbox admission, persistent intentions, native lifecycle,
 expiration and API access. Distributed placement and scheduling belong to external
 orchestrators.
 
+## Same-user discovery and on-demand startup
+
+The installed `pvisor` dispatches `pvisor daemon` to the trusted
+`pvisor-daemon` executable beside it. Both forms expose the same commands:
+
+```sh
+pvisor daemon start --memory-pool
+pvisor daemon status
+pvisor run -M --rm alpine:3.20 echo hello
+pvisor spawn -M --rootfs image=alpine:3.20 -- /bin/echo hello
+pvisor daemon stop
+```
+
+`-M` takes no argument and abbreviates `--memory-pool auto` for containers or
+`--vm-memory-pool auto` for Jobs; the long forms and explicit sockets still work.
+`start` detaches the manager and returns JSON only after readiness. Concurrent
+starts converge under a bounded startup lock. `auto` first discovers the
+same-user daemon and requires its memory-pool capability; if the manager is
+absent, it starts one with that capability. Without a pool selector, workloads
+keep their existing independent execution. Explicit socket selectors never
+start a daemon or fall back to a private pool. Resolved sockets, rather than the
+`auto` keyword, are saved in Job/container records; container `start` requires
+that original pool to remain available.
+
+The default instance directory is canonical `/tmp/pvisor-daemon-<effective-UID>`,
+independent of the working directory. It must be owned by that user with mode
+0700; its control socket is 0600 and both peers authenticate the effective UID.
+`PVISOR_DAEMON_HOME` selects another absolute private instance directory for all
+commands, including `auto`. `start`, `status` and `stop` also accept `--state`
+with higher precedence. Its parent must already exist; keep paths short for
+Unix sockets and use canonical ancestors (on macOS, `/private/tmp`). Export the
+same `PVISOR_DAEMON_HOME` in client shells to discover an explicit custom instance.
+`status` is read-only and fails when unavailable; it never starts a process.
+Status/start JSON reports `protocol`, a fresh manager `instance_id`, and an
+optional `memory_pool` capability with canonical `socket` and fixed `config`.
+Authentication, protocol, malformed-response and readiness failures are errors,
+never an excuse to create a second instance. Manager logs are in `manager.log`.
+
+`start` without `--memory-pool` runs only discovery/control. Capabilities cannot
+be added to a running manager: requesting an absent capability fails with an
+instruction to stop/restart the manager. `--memory-pool-mode` requires
+`--memory-pool`; an explicit conflicting mode fails. Omitting the mode reuses
+the existing persisted pool configuration, including across manager restarts,
+and uses the platform default only for a new pool.
+
+`stop` acknowledges and waits for **manager** shutdown; it preserves live VMs,
+the detached pool and its state even when clients still depend on it. It does
+not terminate or drain the pool. There is no idle exit or forced pool-stop command.
+After manager death, its lock permits recovery of only its control socket;
+the existing pool is probed and reused. A stale or unavailable **pool** socket
+still fails closed and is never removed/replaced. Stopping/restarting a manager
+cannot repair lost RAM ownership. State in `/tmp` is not reboot recovery.
+
+This discovery profile currently provides the memory pool. The explicit
+`serve --cache` / `serve --sandbox` deployment commands below retain their
+separate endpoints and state; they do not register a user-discoverable instance.
+
 ## Composite service
 
 `pvisor-daemon serve` owns the selected service components. Cache is opt-in:
@@ -777,6 +834,14 @@ Cluster/controller measurements are not evidence for this node-local daemon's
 performance, admission behavior or resource density.
 
 ## Validation
+
+`tests/user_service.rs` exercises real manager processes and authenticated Unix
+IPC without KVM or guest firmware: concurrent start convergence, read-only status,
+cross-directory discovery, explicit state precedence, immutable capabilities/modes,
+protocol/identity rejection, response deadlines and unsafe-path refusal. Linux
+also boots a new pool through the implicit resolver, kills the manager through
+an identity-pinned pidfd, and verifies restart reuses the unchanged live pool.
+These are service lifecycle contracts, not native guest or macOS acceptance.
 
 Standalone pool tests cover same-user compressed object sharing, budgets,
 manager shutdown/reopen, unavailable owners and stale-socket refusal. On Apple

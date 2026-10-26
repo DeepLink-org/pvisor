@@ -1082,6 +1082,14 @@ class ApplicationChaos:
             raise RuntimeError(errors)
 
 
+def require_pidfds():
+    """Reject an incapable interpreter before provisioning any real VM."""
+    if not callable(getattr(os, "pidfd_open", None)) or not callable(
+        getattr(signal, "pidfd_send_signal", None)
+    ):
+        raise RuntimeError("chaos requires Python with pidfd support; use /usr/bin/python3")
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "_scope":
         scope_helper(sys.argv[2:])
@@ -1101,6 +1109,7 @@ def main():
         "--product-slice", help="Existing test-owned parent slice for all VM scopes"
     )
     args = parser.parse_args()
+    require_pidfds()
     if args.product_slice:
         assert re.fullmatch(r"[A-Za-z0-9_-]+\.slice", args.product_slice), "invalid product slice"
     assert sys.platform == "linux" and "@sha256:" in args.image

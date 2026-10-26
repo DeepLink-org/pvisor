@@ -1,3 +1,4 @@
+use super::managed;
 // Copyright 2019 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -548,6 +549,8 @@ pub struct Config {
     /// The permission semantics to be emulated. See the documentation for `PermissionSemantics` for
     /// more details.
     pub semantics: PermissionSemantics,
+    /// Private managed-tree guest metadata; never enabled for ordinary shares.
+    pub managed: bool,
 }
 
 impl Default for Config {
@@ -563,6 +566,7 @@ impl Default for Config {
             export_fsid: 0,
             export_table: None,
             semantics: PermissionSemantics::LinuxComplete,
+            managed: false,
         }
     }
 }
@@ -923,6 +927,9 @@ impl PassthroughFs {
         // shared-reference methods do not imply shared operation semantics.
         #[allow(clippy::readonly_write_lock)]
         let file = lease.0.file.write().unwrap();
+        if self.cfg.managed && kill_priv {
+            managed::kill_priv(&file)?;
+        }
         reader.read_to(&file, size as usize, offset)
     }
 
@@ -980,6 +987,9 @@ impl PassthroughFs {
         };
         #[allow(clippy::readonly_write_lock)]
         let file = lease.0.file.write().unwrap();
+        if self.cfg.managed && kill_priv {
+            managed::kill_priv(&file)?;
+        }
         if !buffered_write_file_eligible(&file, lease.0.exported.load(Ordering::Relaxed))? {
             return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
         }
@@ -1298,7 +1308,11 @@ impl PassthroughFs {
             } else {
                 None
             };
-            self.open_inode(inode, flags as i32)?
+            let file = self.open_inode(inode, flags as i32)?;
+            if self.cfg.managed && (kill_priv || flags & libc::O_TRUNC as u32 != 0) {
+                managed::kill_priv(&file)?;
+            }
+            file
         };
 
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
@@ -1357,6 +1371,42 @@ impl PassthroughFs {
         Err(ebadf())
     }
 
+    fn managed_created(
+        &self,
+        ctx: Context,
+        parent: Inode,
+        entry: &mut Entry,
+        mode: u32,
+    ) -> io::Result<()> {
+        if !self.cfg.managed {
+            return Ok(());
+        }
+        let parent_attr = self.do_getattr(parent)?.0;
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&entry.inode)
+            .cloned()
+            .ok_or_else(ebadf)?;
+        let _guard = managed::lock(&data.file)?;
+        let mut attr = stat(&data.file)?;
+        attr.st_uid = ctx.uid;
+        attr.st_gid = if parent_attr.st_mode & libc::S_ISGID != 0 {
+            parent_attr.st_gid
+        } else {
+            ctx.gid
+        };
+        attr.st_mode = (attr.st_mode & libc::S_IFMT) | (mode & 0o7777);
+        if attr.st_mode & libc::S_IFMT == libc::S_IFDIR && parent_attr.st_mode & libc::S_ISGID != 0
+        {
+            attr.st_mode |= libc::S_ISGID;
+        }
+        managed::store(&data.file, &attr)?;
+        entry.attr = attr;
+        Ok(())
+    }
+
     fn do_getattr(&self, inode: Inode) -> io::Result<(libc::stat64, Duration)> {
         let data = self
             .inodes
@@ -1366,7 +1416,12 @@ impl PassthroughFs {
             .cloned()
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let native = stat(&data.file)?;
+        let st = if self.cfg.managed {
+            managed::attributes(&data.file, native)?
+        } else {
+            native
+        };
 
         Ok((st, self.cfg.attr_timeout))
     }
@@ -1394,6 +1449,9 @@ impl PassthroughFs {
         uid: libc::uid_t,
         gid: libc::gid_t,
     ) -> io::Result<(Option<ScopedUid>, Option<ScopedGid>)> {
+        if self.cfg.managed {
+            return Ok((None, None));
+        }
         // Change the gid first, since once we change the uid we lose the capability to change the gid.
         let scoped_gid = if gid == 0 || self.my_gid == Some(gid) {
             // Always allow "root" accesses even if we don't have root powers.
@@ -1462,9 +1520,21 @@ fn forget_one(
 mod snapshot_state;
 impl FileSystem for PassthroughFs {
     fn capture_state(&self) -> io::Result<super::super::snapshot::FsSnapshot> {
+        if self.cfg.managed {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "managed shares cannot be captured",
+            ));
+        }
         snapshot_state::capture(self)
     }
     fn restore_state(&self, state: &super::super::snapshot::FsSnapshot) -> io::Result<()> {
+        if self.cfg.managed {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "managed shares cannot be restored",
+            ));
+        }
         snapshot_state::restore(self, state)
     }
 
@@ -1491,7 +1561,12 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd above.
         let f = unsafe { File::from_raw_fd(fd) };
 
-        let (st, mnt_id) = statx(&f)?;
+        let (native, mnt_id) = statx(&f)?;
+        let st = if self.cfg.managed {
+            managed::attributes(&f, native)?
+        } else {
+            native
+        };
 
         // Safe because this doesn't modify any memory and there is no need to check the return
         // value because this system call always succeeds. We need to clear the umask here because
@@ -1582,7 +1657,12 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd.
         let f = unsafe { File::from_raw_fd(fd) };
 
-        let (st, mnt_id) = statx(&f)?;
+        let (native, mnt_id) = statx(&f)?;
+        let st = if self.cfg.managed {
+            managed::attributes(&f, native)?
+        } else {
+            native
+        };
 
         let mut attr_flags: u32 = 0;
 
@@ -1688,9 +1768,24 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::mkdirat(data.file.as_raw_fd(), name.as_ptr(), mode & !umask) };
+        let res = unsafe {
+            libc::mkdirat(
+                data.file.as_raw_fd(),
+                name.as_ptr(),
+                if self.cfg.managed {
+                    0o700
+                } else {
+                    mode & !umask
+                },
+            )
+        };
         if res == 0 {
-            self.lookup(ctx, parent, name)
+            let mut entry = self.lookup(ctx, parent, name)?;
+            if let Err(error) = self.managed_created(ctx, parent, &mut entry, mode & !umask) {
+                self.forget(ctx, entry.inode, 1);
+                return Err(error);
+            }
+            Ok(entry)
         } else {
             Err(io::Error::last_os_error())
         }
@@ -1801,14 +1896,39 @@ impl FileSystem for PassthroughFs {
         // Safe because this doesn't modify any memory and we check the return value. We don't
         // really check `flags` because if the kernel can't handle poorly specified flags then we
         // have much bigger problems.
-        let fd = unsafe {
+        let mut created = true;
+        let mut fd = unsafe {
             libc::openat(
                 data.file.as_raw_fd(),
                 name.as_ptr(),
-                flags as i32 | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                mode & !(umask & 0o777),
+                flags as i32
+                    | libc::O_CREAT
+                    | libc::O_CLOEXEC
+                    | libc::O_NOFOLLOW
+                    | if self.cfg.managed { libc::O_EXCL } else { 0 },
+                if self.cfg.managed {
+                    0o600
+                } else {
+                    mode & !(umask & 0o777)
+                },
             )
         };
+        if fd < 0
+            && self.cfg.managed
+            && flags & libc::O_EXCL as u32 == 0
+            && io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST)
+        {
+            created = false;
+            fd = unsafe {
+                libc::openat(
+                    data.file.as_raw_fd(),
+                    name.as_ptr(),
+                    (flags as i32 & !(libc::O_CREAT | libc::O_EXCL))
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW,
+                )
+            };
+        }
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -1816,7 +1936,22 @@ impl FileSystem for PassthroughFs {
         // Safe because we just opened this fd.
         let file = unsafe { File::from_raw_fd(fd) };
 
-        let entry = self.lookup(ctx, parent, name)?;
+        let mut entry = self.lookup(ctx, parent, name)?;
+        let metadata_result = (|| {
+            if created {
+                self.managed_created(ctx, parent, &mut entry, mode & !(umask & 0o777))?;
+            }
+            if self.cfg.managed && (kill_priv || flags & libc::O_TRUNC as u32 != 0) {
+                managed::kill_priv(&file)?;
+                entry.attr = self.do_getattr(entry.inode)?.0;
+            }
+            Ok::<_, io::Error>(())
+        })();
+        if let Err(error) = metadata_result {
+            // No entry reached the guest, so it cannot send our matching FORGET.
+            self.forget(ctx, entry.inode, 1);
+            return Err(error);
+        }
 
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let data = HandleData {
@@ -1887,11 +2022,11 @@ impl FileSystem for PassthroughFs {
 
     fn setattr(
         &self,
-        _ctx: Context,
+        ctx: Context,
         inode: Inode,
         attr: libc::stat64,
         handle: Option<Handle>,
-        valid: SetattrValid,
+        mut valid: SetattrValid,
     ) -> io::Result<(libc::stat64, Duration)> {
         let inode_data = self
             .inodes
@@ -1901,22 +2036,83 @@ impl FileSystem for PassthroughFs {
             .cloned()
             .ok_or_else(ebadf)?;
 
+        if self.cfg.managed {
+            let native = stat(&inode_data.file)?;
+            if !matches!(native.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
+                && valid.intersects(SetattrValid::UID | SetattrValid::GID)
+            {
+                let authorized = ctx.uid == 0 || (ctx.uid == u32::MAX && ctx.gid == u32::MAX);
+                if !authorized
+                    || (valid.contains(SetattrValid::UID) && attr.st_uid != 0)
+                    || (valid.contains(SetattrValid::GID) && attr.st_gid != 0)
+                {
+                    return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+                }
+                // Managed guest root is already represented without host chown.
+                valid.remove(SetattrValid::UID | SetattrValid::GID);
+            }
+        }
+        let metadata = if self.cfg.managed
+            && valid.intersects(
+                SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID | SetattrValid::SIZE,
+            ) {
+            let native = stat(&inode_data.file)?;
+            if !matches!(native.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR) {
+                return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+            }
+            let guard = managed::lock(&inode_data.file)?;
+            let mut previous = managed::attributes(&inode_data.file, native)?;
+            let authorized = ctx.uid == 0 || (ctx.uid == u32::MAX && ctx.gid == u32::MAX);
+            if valid.intersects(SetattrValid::UID | SetattrValid::GID)
+                && !authorized
+                && (ctx.uid != previous.st_uid
+                    || (valid.contains(SetattrValid::UID) && attr.st_uid != previous.st_uid)
+                    || (valid.contains(SetattrValid::GID)
+                        && attr.st_gid != previous.st_gid
+                        && attr.st_gid != ctx.gid))
+            {
+                return Err(io::Error::from_raw_os_error(libc::EPERM));
+            }
+            if valid.contains(SetattrValid::MODE) {
+                if !authorized && ctx.uid != previous.st_uid {
+                    return Err(io::Error::from_raw_os_error(libc::EPERM));
+                }
+                previous.st_mode = (previous.st_mode & libc::S_IFMT) | (attr.st_mode & 0o7777);
+            }
+            if valid.contains(SetattrValid::UID) {
+                previous.st_uid = attr.st_uid;
+            }
+            if valid.contains(SetattrValid::GID) {
+                previous.st_gid = attr.st_gid;
+            }
+            if valid.intersects(SetattrValid::UID | SetattrValid::GID | SetattrValid::SIZE)
+                && previous.st_mode & libc::S_IFMT == libc::S_IFREG
+            {
+                previous.st_mode &= !0o6000;
+            }
+            valid.remove(SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID);
+            Some((guard, previous))
+        } else {
+            None
+        };
+        let pinned_handle = handle
+            .map(|handle| {
+                self.handles
+                    .read()
+                    .unwrap()
+                    .get(&handle)
+                    .filter(|hd| hd.inode == inode)
+                    .cloned()
+                    .ok_or_else(ebadf)
+            })
+            .transpose()?;
         enum Data {
             Handle(RawFd),
             ProcPath(CString),
         }
 
         // If we have a handle then use it otherwise get a new fd from the inode.
-        let data = if let Some(handle) = handle {
-            let hd = self
-                .handles
-                .read()
-                .unwrap()
-                .get(&handle)
-                .filter(|hd| hd.inode == inode)
-                .cloned()
-                .ok_or_else(ebadf)?;
-
+        let data = if let Some(hd) = &pinned_handle {
             let fd = hd.file.write().unwrap().as_raw_fd();
             Data::Handle(fd)
         } else {
@@ -2034,6 +2230,9 @@ impl FileSystem for PassthroughFs {
             }
         }
 
+        if let Some((_guard, attr)) = metadata {
+            managed::store(&inode_data.file, &attr)?;
+        }
         self.do_getattr(inode)
     }
 
@@ -2094,6 +2293,27 @@ impl FileSystem for PassthroughFs {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
 
+        if self.cfg.managed {
+            if mode & libc::S_IFMT == libc::S_IFREG {
+                let (entry, handle, _) = self.create(
+                    ctx,
+                    parent,
+                    name,
+                    mode,
+                    false,
+                    (libc::O_WRONLY | libc::O_EXCL) as u32,
+                    umask,
+                    extensions,
+                )?;
+                if let Some(handle) = handle {
+                    self.do_release(entry.inode, handle)?;
+                }
+                return Ok(entry);
+            }
+            if ctx.uid != 0 || ctx.gid != 0 {
+                return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+            }
+        }
         let (_uid, _gid) = self.set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
@@ -2175,6 +2395,9 @@ impl FileSystem for PassthroughFs {
             unimplemented!("SECURITY_CTX is not supported and should not be used by the guest");
         }
 
+        if self.cfg.managed && (ctx.uid != 0 || ctx.gid != 0) {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
         let (_uid, _gid) = self.set_creds(ctx.uid, ctx.gid)?;
         let data = self
             .inodes
@@ -2260,7 +2483,12 @@ impl FileSystem for PassthroughFs {
             .cloned()
             .ok_or_else(ebadf)?;
 
-        let st = stat(&data.file)?;
+        let native = stat(&data.file)?;
+        let st = if self.cfg.managed {
+            managed::attributes(&data.file, native)?
+        } else {
+            native
+        };
         let mode = mask as i32 & (libc::R_OK | libc::W_OK | libc::X_OK);
 
         if mode == libc::F_OK {
@@ -2315,6 +2543,9 @@ impl FileSystem for PassthroughFs {
         value: &[u8],
         flags: u32,
     ) -> io::Result<()> {
+        if self.cfg.managed && name == managed::KEY {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
@@ -2363,6 +2594,9 @@ impl FileSystem for PassthroughFs {
         name: &CStr,
         size: u32,
     ) -> io::Result<GetxattrReply> {
+        if self.cfg.managed && name == managed::KEY {
+            return Err(io::Error::from_raw_os_error(libc::ENODATA));
+        }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
@@ -2414,7 +2648,12 @@ impl FileSystem for PassthroughFs {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
 
-        let mut buf = vec![0; size as usize];
+        let capacity = if self.cfg.managed {
+            65536
+        } else {
+            size as usize
+        };
+        let mut buf = vec![0; capacity];
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to get a new fd. This doesn't work for symlinks, so we use the l* family of
@@ -2426,7 +2665,7 @@ impl FileSystem for PassthroughFs {
                     libc::flistxattr(
                         file.as_raw_fd(),
                         buf.as_mut_ptr() as *mut libc::c_char,
-                        size as libc::size_t,
+                        capacity as libc::size_t,
                     )
                 }
             }
@@ -2434,7 +2673,7 @@ impl FileSystem for PassthroughFs {
                 libc::llistxattr(
                     link.as_ptr(),
                     buf.as_mut_ptr() as *mut libc::c_char,
-                    size as libc::size_t,
+                    capacity as libc::size_t,
                 )
             },
         };
@@ -2442,6 +2681,22 @@ impl FileSystem for PassthroughFs {
             return Err(io::Error::last_os_error());
         }
 
+        if self.cfg.managed {
+            buf.truncate(res as usize);
+            let names: Vec<u8> = buf
+                .split_inclusive(|b| *b == 0)
+                .filter(|name| *name != managed::KEY.to_bytes_with_nul())
+                .flatten()
+                .copied()
+                .collect();
+            if size == 0 {
+                return Ok(ListxattrReply::Count(names.len() as u32));
+            }
+            if names.len() > size as usize {
+                return Err(io::Error::from_raw_os_error(libc::ERANGE));
+            }
+            return Ok(ListxattrReply::Names(names));
+        }
         if size == 0 {
             Ok(ListxattrReply::Count(res as u32))
         } else {
@@ -2451,6 +2706,9 @@ impl FileSystem for PassthroughFs {
     }
 
     fn removexattr(&self, _ctx: Context, inode: Inode, name: &CStr) -> io::Result<()> {
+        if self.cfg.managed && name == managed::KEY {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
         if !self.cfg.xattr {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
         }
@@ -2666,6 +2924,213 @@ impl PassthroughFs {
 mod tests {
     use super::super::super::filesystem::root_context;
     use super::*;
+
+    #[test]
+    fn managed_creation_failure_does_not_leak_unpublished_lookup_references() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                managed: true,
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let path = CString::new(root.path().as_os_str().as_encoded_bytes()).unwrap();
+        let malformed = b"corrupt";
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    path.as_ptr(),
+                    managed::KEY.as_ptr(),
+                    malformed.as_ptr().cast(),
+                    malformed.len(),
+                    0,
+                )
+            },
+            0
+        );
+        let ctx = root_context();
+        assert_eq!(
+            fs.mkdir(
+                ctx,
+                fuse::ROOT_ID,
+                c"directory",
+                0o755,
+                0,
+                Default::default()
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs.inodes.read().unwrap().values().count(), 1);
+        assert_eq!(
+            fs.create(
+                ctx,
+                fuse::ROOT_ID,
+                c"file",
+                0o644,
+                false,
+                libc::O_RDWR as u32,
+                0,
+                Default::default()
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs.inodes.read().unwrap().values().count(), 1);
+        assert!(fs.handles.read().unwrap().is_empty());
+        assert!(root.path().join("directory").is_dir());
+        assert!(root.path().join("file").is_file());
+    }
+
+    #[test]
+    fn managed_ownership_persists_and_private_xattrs_cannot_be_forged() {
+        let root = tempfile::tempdir().unwrap();
+        let make = || {
+            let fs = PassthroughFs::new(
+                Config {
+                    root_dir: root.path().to_string_lossy().into_owned(),
+                    managed: true,
+                    attr_timeout: Duration::ZERO,
+                    entry_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                Arc::new(InodeAllocator::new()),
+            )
+            .unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            fs
+        };
+        let fs = make();
+        let ctx = root_context();
+        let mut attr = fs.getattr(ctx, fuse::ROOT_ID, None).unwrap().0;
+        assert_eq!((attr.st_uid, attr.st_gid), (0, 0));
+        assert_eq!(
+            attr.st_mode & 0o7777,
+            std::fs::metadata(root.path()).unwrap().mode() & 0o7777
+        );
+        attr.st_uid = 999;
+        attr.st_gid = 999;
+        attr.st_mode = libc::S_IFDIR | 0o770;
+        let attr = fs
+            .setattr(
+                ctx,
+                fuse::ROOT_ID,
+                attr,
+                None,
+                SetattrValid::UID | SetattrValid::GID | SetattrValid::MODE,
+            )
+            .unwrap()
+            .0;
+        assert_eq!(
+            (attr.st_uid, attr.st_gid, attr.st_mode & 0o7777),
+            (999, 999, 0o770)
+        );
+        // Subsequent chmod sets setgid, inherited by new children.
+        let mut attr = attr;
+        attr.st_mode |= libc::S_ISGID;
+        fs.setattr(ctx, fuse::ROOT_ID, attr, None, SetattrValid::MODE)
+            .unwrap();
+        let mut user = ctx;
+        user.uid = 999;
+        user.gid = 123;
+        let (entry, handle, _) = fs
+            .create(
+                user,
+                fuse::ROOT_ID,
+                c"data",
+                0o640,
+                false,
+                libc::O_RDWR as u32,
+                0o022,
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                entry.attr.st_uid,
+                entry.attr.st_gid,
+                entry.attr.st_mode & 0o7777
+            ),
+            (999, 999, 0o640)
+        );
+        let handle = handle.unwrap();
+        fs.do_release(entry.inode, handle).unwrap();
+        let native = std::fs::metadata(root.path().join("data")).unwrap();
+        assert_eq!(native.uid(), unsafe { libc::geteuid() });
+        assert_eq!(native.mode() & 0o7777, 0o600);
+        let mut forged = entry.attr;
+        forged.st_uid = 123;
+        assert_eq!(
+            fs.setattr(user, entry.inode, forged, None, SetattrValid::UID)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EPERM)
+        );
+        assert_eq!(
+            fs.setxattr(ctx, entry.inode, managed::KEY, b"0:0:7777", 0)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EPERM)
+        );
+        assert_eq!(
+            fs.removexattr(ctx, entry.inode, managed::KEY)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EPERM)
+        );
+        assert!(fs.getxattr(ctx, entry.inode, managed::KEY, 0).is_err());
+        match fs.listxattr(ctx, entry.inode, 65536).unwrap() {
+            ListxattrReply::Names(names) => assert!(!names
+                .windows(managed::KEY.to_bytes().len())
+                .any(|w| w == managed::KEY.to_bytes())),
+            _ => panic!("expected names"),
+        }
+        assert!(fs.capture_state().is_err());
+        let second = make();
+        let reopened = second.lookup(ctx, fuse::ROOT_ID, c"data").unwrap();
+        assert_eq!(
+            (
+                reopened.attr.st_uid,
+                reopened.attr.st_gid,
+                reopened.attr.st_mode & 0o7777
+            ),
+            (999, 999, 0o640)
+        );
+        // O_CREAT on an existing inode must not reset ownership or mode.
+        let existing = second
+            .create(
+                ctx,
+                fuse::ROOT_ID,
+                c"data",
+                0o777,
+                false,
+                libc::O_RDWR as u32,
+                0,
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(existing.0.attr.st_uid, 999);
+        assert_eq!(existing.0.attr.st_mode & 0o7777, 0o640);
+        second
+            .do_release(existing.0.inode, existing.1.unwrap())
+            .unwrap();
+        std::os::unix::fs::symlink("data", root.path().join("link")).unwrap();
+        let link = fs.lookup(ctx, fuse::ROOT_ID, c"link").unwrap();
+        assert_eq!(
+            fs.setattr(ctx, link.inode, forged, None, SetattrValid::UID)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EOPNOTSUPP)
+        );
+    }
 
     fn buffered_write_fixture(flags: i32) -> (tempfile::TempDir, PassthroughFs, HandleLease) {
         use std::os::unix::fs::OpenOptionsExt;

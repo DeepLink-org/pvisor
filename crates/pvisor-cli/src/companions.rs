@@ -11,6 +11,10 @@ pub struct Companion {
 
 const ROOT_COMMANDS: &[Companion] = &[
     Companion {
+        name: "daemon",
+        description: "Manage same-user shared services",
+    },
+    Companion {
         name: "replay",
         description: "Replay an agent-native trajectory",
     },
@@ -123,7 +127,7 @@ mod tests {
         assert!(check_executable(&link).is_err());
         assert!(find("../escape").unwrap().is_none());
         assert!(find("status").unwrap().is_none());
-        for name in ["service", "daemon", "cache", "memory-pool"] {
+        for name in ["service", "cache", "memory-pool"] {
             assert!(find(name).unwrap().is_none(), "{name} is not a companion");
         }
     }

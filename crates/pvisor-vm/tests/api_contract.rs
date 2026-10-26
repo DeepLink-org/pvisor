@@ -6,6 +6,48 @@ use pvisor_vm::api::{
 use syn::visit::{self, Visit};
 
 #[test]
+fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
+    let root = tempfile::tempdir().unwrap();
+    let mut builder = VmBuilder::new(1, 128).unwrap();
+    if cfg!(all(
+        target_os = "linux",
+        not(any(feature = "tee", feature = "aws-nitro"))
+    )) {
+        assert!(builder
+            .managed_filesystem("data", std::path::Path::new("relative"), false)
+            .is_err());
+        assert!(builder.managed_filesystem("", root.path(), false).is_err());
+        builder
+            .managed_filesystem("data", root.path(), false)
+            .unwrap();
+        assert!(builder
+            .managed_filesystem("data", root.path(), true)
+            .is_err());
+        assert_eq!(
+            builder.snapshot_profile().unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        let mut reverse = VmBuilder::new(1, 128).unwrap();
+        reverse.snapshot_profile().unwrap();
+        assert_eq!(
+            reverse
+                .managed_filesystem("data", root.path(), false)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    } else {
+        assert_eq!(
+            builder
+                .managed_filesystem("data", root.path(), false)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
+}
+
+#[test]
 fn shared_kernel_baseline_is_explicit_atomic_and_excludes_snapshots() {
     let directory = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

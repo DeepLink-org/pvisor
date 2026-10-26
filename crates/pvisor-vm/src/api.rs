@@ -160,7 +160,7 @@ pub trait VmConfiguration: Sized {
     /// Copy and validate a trusted kernel payload and guest load/entry addresses.
     /// Successful replacement retains its own bytes; invalid geometry preserves the prior kernel.
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
-    -> io::Result<()>;
+        -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
     /// x86-64 VM with one or two vCPUs and matching patched firmware. Other targets,
     /// snapshots and unguarded devices are rejected. Optional RAM offload uses
@@ -214,6 +214,28 @@ pub trait VmConfiguration: Sized {
     /// return Unsupported. This does not enable immutable-data caching or add
     /// the DAX profile's snapshot restrictions.
     fn read_only_filesystem(&mut self, tag: &str, path: &Path) -> io::Result<()>;
+    /// Attach a caller-owned private directory with persistent guest identities.
+    /// The caller retains its root/mount identity, owns every backing inode and
+    /// excludes host authority and external writers for the attachment lifetime.
+    /// Multiple VMs may share the directory with caller-synchronized mutations;
+    /// reopened files observe changes with zero attribute/entry validity.
+    /// Guest UID/GID/mode are stored in private inode xattrs; native backing
+    /// remains owned and accessible by the host account. Guest VFS permissions
+    /// and host-enforced `read_only` still apply.
+    /// Unannotated inodes initially represent guest UID/GID zero with native
+    /// mode bits; initialize imported data's guest owners before non-root use.
+    /// Internal metadata xattrs cannot
+    /// be read or changed through guest xattr operations. Unmapped symlink and
+    /// special-file ownership changes return explicit unsupported errors.
+    /// Requires an absolute existing owned nonsymlink directory and a nonempty
+    /// unique tag. Unsupported backing xattrs fail on metadata access/mutation;
+    /// failed mutations can retain a newly created owned backing inode.
+    /// Metadata write failure can also retain changed native backing modes;
+    /// callers must inspect or discard failed private trees before reuse.
+    /// Invalid attachment input leaves existing configuration unchanged.
+    /// Supported on Linux; other platforms, snapshot/restore profiles, DAX
+    /// and TEE/Nitro return Unsupported.
+    fn managed_filesystem(&mut self, tag: &str, path: &Path, read_only: bool) -> io::Result<()>;
     /// Attach a guest-read-only, physically immutable directory with a DAX window.
     /// Calling this method explicitly enables DAX capability for this share.
     /// The caller must keep contents, metadata, namespace, ancestors and hardlink

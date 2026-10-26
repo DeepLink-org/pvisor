@@ -1,5 +1,7 @@
 # pVisor 与 OpenSandbox：启动、磁盘与内存实测
 
+[固定版本部署对照摘要](opensandbox-deployment-comparison.md) 汇总相同启动与内存批次，没有重新采样。
+
 > 历史批次按各自固定的源码、制品与计时口径解释；当前活动实验和准备状态见 [benchmark 注册表](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv)。
 
 ## Motivation {#motivation}

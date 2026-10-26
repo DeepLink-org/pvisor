@@ -18,6 +18,11 @@ spec.loader.exec_module(chaos)
 
 
 class ApplicationChaosTests(unittest.TestCase):
+    def test_missing_pidfd_support_fails_before_vm_setup(self):
+        with mock.patch.object(chaos.os, "pidfd_open", None, create=True):
+            with self.assertRaisesRegex(RuntimeError, "pidfd support"):
+                chaos.require_pidfds()
+
     def test_removed_scope_allows_only_missing_or_revoked_device(self):
         for number in (errno.ENOENT, errno.ENODEV):
             with mock.patch.object(chaos, "scope_state", side_effect=OSError(number, "removed")):

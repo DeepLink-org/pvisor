@@ -253,7 +253,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。已发布的 V2 HEAD 记录平台摘要和启动配置，不依赖持久 raw 准备记录。本地池标签可离线使用到显式刷新或替换；可写文件系统/S3 后端对可变 HEAD 复用五分钟，对不可变摘要 HEAD 则复用到 refresh。`--refresh`（协议 `refresh: true`）强制 registry 解析。导入失败保留旧 HEAD，并清理临时目录。registry 请求有 10 秒连接超时和 300 秒总超时；过期标签不会静默回退到陈旧数据。本地引用/平台锁串行化本地导入；远程 HEAD 通过条件更新发布。`read`、`stat`、`list` 要求已发布的不可变句柄，不隐式拉取镜像。
+`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。已发布的 V2 HEAD 记录平台摘要和启动配置，不依赖持久 raw 准备记录。本地池标签可离线使用到显式刷新或替换；可写文件系统/S3 后端对可变 HEAD 复用五分钟，对不可变摘要 HEAD 则复用到 refresh。`--refresh`（协议 `refresh: true`）强制 registry 解析。导入失败保留旧 HEAD，并清理临时目录。registry 连接超时为 10 秒，阻塞请求及 body 读取超时为 30 秒。瞬态 blob 传输失败用新临时文件重试一次；429/503 按不超过十秒的 Retry-After 重试一次；过期标签不会静默回退到陈旧数据。本地引用/平台锁串行化本地导入；远程 HEAD 通过条件更新发布。`read`、`stat`、`list` 要求已发布的不可变句柄，不隐式拉取镜像。
 
 目录页包含与 `stat` 相同的属性，避免为每个子项单独请求。页最多 256 个条目，并会缩小以适应 JSON
 帧上限（含长字节数组名和符号链接目标）。目录属性为必填字段，仅包含名字的响应会被拒绝。持久化的页在多次挂载间保留其属性。

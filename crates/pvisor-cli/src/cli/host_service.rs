@@ -41,6 +41,8 @@ static OWNER_RUN: OnceLock<pvisor::RunControlHandle> = OnceLock::new();
 static REQUEST_CANCEL: OnceLock<tokio_util::sync::CancellationToken> = OnceLock::new();
 static REQUEST_TARGET: OnceLock<Option<AgentCtlTarget>> = OnceLock::new();
 static OWNER_EVENTS: OnceLock<Arc<Mutex<UnixStream>>> = OnceLock::new();
+type PoolReply = Result<PathBuf, String>;
+static OWNER_POOL_REPLY: Mutex<Option<std::sync::mpsc::SyncSender<PoolReply>>> = Mutex::new(None);
 static OWNER_READY: AtomicBool = AtomicBool::new(false);
 static SOURCE_LOCK: Mutex<Option<pvisor::JobDirectoryLock>> = Mutex::new(None);
 static OWNER_SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -80,6 +82,38 @@ pub(super) fn notify_cleanup() {
 }
 pub(super) fn request_cancellation() -> Option<tokio_util::sync::CancellationToken> {
     REQUEST_CANCEL.get().cloned()
+}
+pub(super) fn resolve_memory_pool() -> anyhow::Result<PathBuf> {
+    if !OWNER_READY.load(Ordering::SeqCst) {
+        return super::daemon::resolve_auto_pool();
+    }
+    check_cancelled()?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    {
+        let mut reply = OWNER_POOL_REPLY.lock().unwrap_or_else(|e| e.into_inner());
+        ensure!(reply.is_none(), "memory-pool resolution already pending");
+        *reply = Some(tx);
+    }
+    let result = (|| {
+        let events = OWNER_EVENTS.get().context("missing owner event channel")?;
+        write_frame(
+            &mut events.lock().unwrap_or_else(|e| e.into_inner()),
+            &OwnerEvent::ResolveMemoryPool,
+        )?;
+        loop {
+            check_cancelled()?;
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(result) => return result.map_err(anyhow::Error::msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(error) => return Err(error).context("frontend memory-pool response lost"),
+            }
+        }
+    })();
+    OWNER_POOL_REPLY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    result
 }
 pub(super) fn check_cancelled() -> anyhow::Result<()> {
     ensure!(
@@ -323,11 +357,13 @@ type Response = AgentCtlHostResponse<Completion>;
 enum OwnerInstruction {
     Admit,
     Cancel { signal: i32 },
+    MemoryPool { result: PoolReply },
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 enum OwnerEvent {
     Ready { pid: i32 },
+    ResolveMemoryPool,
     Cancelled { signal: i32 },
     Complete { response: Response },
 }
@@ -468,6 +504,18 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
                     if [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal) =>
                 {
                     notify_cancel(signal)
+                }
+                Ok(OwnerInstruction::MemoryPool { result }) => {
+                    let reply = OWNER_POOL_REPLY
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(reply) = reply {
+                        let _ = reply.send(result);
+                    } else {
+                        notify_cancel(libc::SIGTERM);
+                        break;
+                    }
                 }
                 _ => {
                     notify_cancel(libc::SIGTERM);
@@ -647,11 +695,23 @@ fn launch(
         }
     });
     let mut cancelled = None;
+    let (pool_tx, pool_rx) = std::sync::mpsc::sync_channel(1);
+    let mut pool_pending = false;
     loop {
         let caught = signal.load(Ordering::SeqCst);
         if caught != 0 && cancelled.is_none() {
             cancelled = Some(caught);
             write_frame(&mut channel, &OwnerInstruction::Cancel { signal: caught })?;
+        }
+        if pool_pending {
+            match pool_rx.try_recv() {
+                Ok(result) => {
+                    pool_pending = false;
+                    write_frame(&mut channel, &OwnerInstruction::MemoryPool { result })?;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => return Err(error).context("memory-pool resolver response lost"),
+            }
         }
         match rx.recv_timeout(Duration::from_millis(10)) {
             Ok(Ok(OwnerEvent::Ready { pid })) => {
@@ -671,6 +731,29 @@ fn launch(
             }
             Ok(Ok(OwnerEvent::Cancelled { signal })) => {
                 cancelled = Some(signal);
+            }
+            Ok(Ok(OwnerEvent::ResolveMemoryPool)) => {
+                // The user-wide daemon is a frontend child, outside the owner's
+                // request tree. Keep normal descendant cleanup fully enforced.
+                ensure!(!pool_pending, "memory-pool resolution already pending");
+                if cancelled.is_some() {
+                    write_frame(
+                        &mut channel,
+                        &OwnerInstruction::MemoryPool {
+                            result: Err("Job cancelled before memory-pool resolution".to_owned()),
+                        },
+                    )?;
+                } else {
+                    pool_pending = true;
+                    let tx = pool_tx.clone();
+                    // Keep the event loop responsive to cancellation while the
+                    // companion serializes startup or waits for readiness.
+                    std::thread::spawn(move || {
+                        let result = super::daemon::resolve_auto_pool()
+                            .map_err(|error| format!("{error:#}"));
+                        let _ = tx.send(result);
+                    });
+                }
             }
             Ok(Ok(OwnerEvent::Complete { response })) => {
                 response.validate(&request_id)?;

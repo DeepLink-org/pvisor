@@ -90,9 +90,12 @@ pub(super) struct Run {
     cpus: u8,
     #[arg(short = 'm', long, default_value = "512m", value_parser = memory)]
     memory: u32,
-    /// Use an existing same-user daemon memory pool (experimental; macOS requires a live pool).
-    #[arg(long, value_name = "SOCKET")]
+    /// Experimental shared pool: auto finds/starts the same-user daemon; a socket requires an existing pool.
+    #[arg(long, value_name = "auto|SOCKET")]
     memory_pool: Option<PathBuf>,
+    /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
+    #[arg(short = 'M', conflicts_with = "memory_pool")]
+    shared_memory_pool: bool,
     /// Share boot-kernel RAM through a private directory (Apple Silicon; experimental).
     #[arg(long, value_name = "DIR")]
     shared_kernel_base: Option<PathBuf>,
@@ -114,8 +117,9 @@ pub(super) struct Select {
 }
 #[derive(Debug, Args)]
 pub(super) struct Stop {
-    #[arg(short = 't', long, default_value_t = 10)]
-    timeout: u64,
+    /// Seconds before force-stop; -1 waits indefinitely for graceful exit.
+    #[arg(short = 't', long, default_value_t = 10, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(-1..))]
+    timeout: i64,
     #[arg(short = 's', long)]
     signal: Option<String>,
     #[arg(required = true, num_args = 1..)]
@@ -429,7 +433,11 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .collect::<anyhow::Result<_>>()?,
                 cpus: args.cpus,
                 memory_mib: args.memory,
-                memory_pool: args.memory_pool,
+                memory_pool: args
+                    .memory_pool
+                    .or_else(|| args.shared_memory_pool.then(|| PathBuf::from("auto")))
+                    .map(super::daemon::resolve_pool)
+                    .transpose()?,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -485,7 +493,11 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             return batch(&args.containers, |selector| {
                 store.stop(
                     selector,
-                    Duration::from_secs(args.timeout),
+                    if args.timeout == -1 {
+                        Duration::MAX
+                    } else {
+                        Duration::from_secs(args.timeout as u64)
+                    },
                     args.signal.as_deref(),
                 )?;
                 println!("{selector}");
@@ -717,6 +729,38 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn stop_timeout_accepts_docker_infinite_wait_and_rejects_other_negative_values() {
+        for (value, expected) in [("-1", -1), ("0", 0), ("10", 10)] {
+            let parsed =
+                Cli::try_parse_from(["pvisor", "stop", "--timeout", value, "container"]).unwrap();
+            let DockerCommand::Stop(args) = parsed.command else {
+                panic!()
+            };
+            assert_eq!(args.timeout, expected);
+            assert_eq!(args.containers, ["container"]);
+        }
+        assert!(Cli::try_parse_from(["pvisor", "stop", "-t=-2", "container"]).is_err());
+        assert!(Cli::try_parse_from(["pvisor", "stop", "--timeout=-2", "container"]).is_err());
+    }
+    #[test]
+    fn shared_pool_shortcut_preserves_image_and_guest_arguments() {
+        let parsed =
+            Cli::try_parse_from(["pvisor", "run", "-M", "-m", "256m", "alpine", "echo", "-M"])
+                .unwrap();
+        let DockerCommand::Run(args) = parsed.command else {
+            panic!()
+        };
+        assert!(args.shared_memory_pool);
+        assert!(args.memory_pool.is_none());
+        assert_eq!(args.memory, 256);
+        assert_eq!(args.invocation, ["alpine", "echo", "-M"]);
+        assert!(
+            Cli::try_parse_from(["pvisor", "run", "-M", "--memory-pool", "auto", "alpine"])
+                .is_err()
+        );
     }
     #[test]
     fn docker_network_and_ip_options_replace_custom_peer_flags() {
