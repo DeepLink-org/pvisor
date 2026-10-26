@@ -65,9 +65,9 @@ jobs:
       matrix:
         include:
           - platform: linux-x86_64
-            runner: [self-hosted, linux, x64, pvisor-release]
+            runner: ubuntu-latest
           - platform: macos-arm64
-            runner: [self-hosted, macOS, ARM64, pvisor-release]
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -75,16 +75,35 @@ jobs:
         with:
           tools: python rust
           setup: none
+      - name: Prepare Linux native VM acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - uses: actions/download-artifact@v4
         with:
           name: release-wheel-${{ matrix.platform }}
           path: dist
       - name: Exercise installed product and native VM recovery
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           for wheel in dist/pvisor_sandbox-*.whl; do
             mise run accept-wheel -- "$wheel" "$RUNNER_TEMP/pvisor-release-acceptance/result.json"
+          done
+      # Hosted Apple Silicon runners cannot run nested Hypervisor VMs.
+      - name: Verify installed macOS product
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/pvisor-release-acceptance"
+          mkdir -p "$evidence"
+          for wheel in dist/pvisor_sandbox-*.whl; do
+            python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke | tee "$evidence/install-smoke.log"
           done
       - name: Retain acceptance evidence
         if: always()

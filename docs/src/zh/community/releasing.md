@@ -27,11 +27,10 @@ Python 源码分发包（sdist）不在发布集中。
    - Workflow: `release.yml`
    - Environment: `pypi`
 
-3. 注册带 `pvisor-release` 标签的可信原生 runner：Linux x86_64 需要 KVM
-   权限，Apple Silicon macOS 需要 Hypervisor.framework 权限。安装 mise 锁定的
-   Python/Rust 与对应的 Linux musl Rust target（`mise run setup`）。这些 runner
-   应专用于可信发布提交，并在各次运行间清理旧 Job 状态。缺少 runner 或虚拟化
-   权限会阻止发布。
+3. 发布验收使用 GitHub 托管的 `ubuntu-latest` 和 `macos-latest` runner。
+   Linux 准备固定工具链的 musl target 和 KVM 权限，执行真实 VM 验收；
+   macOS 托管的 Apple Silicon runner 不支持嵌套虚拟化，因此执行安装 smoke
+   检查。无需注册自托管 runner。
 
 4. 如需自动发布 Homebrew，先创建项目自有的 `DeepLink-org/homebrew-pvisor` tap 并初始化一次提交。
    设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/homebrew-pvisor`，以及仅对此 tap
@@ -56,9 +55,9 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
    的 tag。
-4. 可选地手动运行 **Publish Release**。它执行必需 CI 和原生验收、校验全部 wheel，
+4. 可选地手动运行 **Publish Release**。它在 GitHub 托管 runner 上执行必需 CI
+   和各平台验收、校验全部 wheel，
    并保留含归档、校验清单和配方的 `release-native` 制品，不对外发布。
-   这次 dry run 仍需要两个平台的原生验收 runner。
 5. 创建并推送匹配的稳定 tag：
 
    ```bash
@@ -87,12 +86,15 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 构建 guest 不需要 Zig。
 
 稳定发布先在发布提交上执行必需 CI，再构建 wheel。每个最终 wheel 在对应
-原生 runner 的全新环境中安装。验收覆盖 host 退出码、strict host 执行拒绝、真实
+GitHub 托管 runner 的全新环境中安装。Linux 验收覆盖 host 退出码、strict host 执行拒绝、真实
 VM 启动、暂停／冷恢复后内存进度继续、Job 身份保持且 Attempt 更换、文件暂存、
 review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必须拒绝当前不支持
-的 apply。小型静态 guest 由仓库源码编译，缺少硬件会导致验收失败。
-`release-acceptance-*` 制品保存 wheel 与安装后二进制的 SHA-256 及命令结果。
-本地运行同一验收：`mise run accept-wheel -- WHEEL LOG_JSON`。
+的 apply。小型静态 guest 由仓库源码编译，缺少 KVM 权限会导致 Linux 验收失败。
+macOS 校验原生载荷、签名 entitlement、安装、版本和命令转发；托管 runner
+不执行真实 VM 验收。`release-acceptance-*` 制品保存 Linux 的 wheel 与安装后
+二进制 SHA-256 及命令结果，以及 macOS 的安装 smoke 输出。在任一受支持的
+原生宿主机上运行完整验收：`mise run accept-wheel -- WHEEL LOG_JSON`；
+macOS VM 验收仍需独立的硬件验证记录。
 
 发布集检查要求每个平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及产物
 大小有界。两个平台的验收与完整发布集均通过后，才能向任一渠道发布。

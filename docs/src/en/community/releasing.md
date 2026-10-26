@@ -21,12 +21,10 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
     - Workflow: `release.yml`
     - Environment: `pypi`
 
-3. Register trusted native runners with the `pvisor-release` label: Linux x86_64
-   with KVM access, and Apple Silicon macOS with Hypervisor.framework access.
-   Install mise's pinned Python/Rust tools and the matching Linux musl Rust target
-   (`mise run setup`). Dedicate these runners to trusted release commits and
-   remove previous Job state between runs. Missing runners or virtualization
-   permissions block publication.
+3. Release acceptance uses GitHub-hosted `ubuntu-latest` and `macos-latest`
+   runners. Linux prepares the pinned musl target and KVM access for real VM
+   acceptance; macOS runs installation smoke checks because hosted Apple Silicon
+   runners do not support nested virtualization. No self-hosted runner is required.
 
 4. For automatic Homebrew publication, create the project-owned `DeepLink-org/homebrew-pvisor` tap with an initial commit. Set repository variable `HOMEBREW_TAP_REPOSITORY` to `DeepLink-org/homebrew-pvisor` and secret `HOMEBREW_TAP_TOKEN` to a token with Contents write access to that tap only. When the variable is absent, tap publication is skipped; formula generation and the macOS Homebrew installation test still run. The release workflow commits `Formula/pvisor.rb` only after installation, command discovery and `brew test` pass. No service is registered or started.
 
@@ -44,7 +42,7 @@ Before pushing the first release tag, verify that the `pvisor-sandbox` Trusted P
    ```
 
 3. Commit version changes and merge into `main`. The workflow rejects tags whose commit is not reachable from `main`.
-4. Optionally run **Publish Release** manually. It runs required CI and native acceptance, validates all wheels, and retains `release-native` with the archives, checksums and formula without publishing. This dry run still requires both native acceptance runners.
+4. Optionally run **Publish Release** manually. It runs required CI and platform acceptance on GitHub-hosted runners, validates all wheels, and retains `release-native` with the archives, checksums and formula without publishing.
 5. Create/push the matching stable tag:
 
    ```bash
@@ -66,16 +64,20 @@ Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the
 Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and embeds the compressed guest kernel, just like Linux. The built firmware dylib is consumed during compilation only. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
 
 Stable releases first run the required CI workflow at the release commit, then
-build wheels. Each final wheel is installed in a fresh environment on its native
-runner. Acceptance checks host exit status, refusal of strict host execution,
+build wheels. Each final wheel is installed in a fresh environment on a
+GitHub-hosted runner. Linux acceptance checks host exit status, refusal of strict host execution,
 real VM startup, suspend/cold restore with continuing in-memory progress, stable
 Job/new Attempt identity, staged writes and review. A separate fresh VM Job
 checks selective apply; the restored layered Job must refuse its unsupported
 apply path. It uses a
-small static guest compiled from repository-owned source; unavailable hardware
-fails acceptance. Logs retain wheel and installed binary SHA-256 plus command
-results as `release-acceptance-*` artifacts. Run the same acceptance locally with
-`mise run accept-wheel -- WHEEL LOG_JSON`.
+small static guest compiled from repository-owned source; unavailable KVM access
+fails Linux acceptance. macOS verifies native payloads, code-signing entitlements,
+installation, versions and command dispatch. Its hosted runner does not execute
+the real VM acceptance. Artifacts named `release-acceptance-*` retain Linux's
+wheel and installed binary SHA-256 plus command results, and macOS's installation
+smoke output. Run full acceptance on either supported native host with
+`mise run accept-wheel -- WHEEL LOG_JSON`; macOS VM acceptance still requires
+separate hardware evidence.
 
 Release-set validation requires exactly one supported wheel per platform,
 matching versions, valid metadata and bounded artifact sizes. Both platform
