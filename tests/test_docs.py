@@ -341,22 +341,20 @@ class DocsTests(unittest.TestCase):
         expected_sections = {
             "zh": [
                 "首页",
-                "本地工作流",
-                "执行基础设施",
-                "基础与参考",
+                "快速开始",
+                "用户指南",
+                "基本概念",
                 "基准测试",
-                "设计与研究",
-                "实验记录",
+                "系统设计",
                 "参与开发",
             ],
             "en": [
                 "Home",
-                "Local workflows",
-                "Execution infrastructure",
-                "Foundations and reference",
+                "Quick start",
+                "User guide",
+                "Basic concepts",
                 "Benchmarks",
-                "Design and research",
-                "Lab notes",
+                "System design",
                 "Contributing",
             ],
         }
@@ -385,6 +383,28 @@ class DocsTests(unittest.TestCase):
                 section[security_label] for section in concepts if security_label in section
             )
             assert "security/index.md" in pages(security)
+            quickstart = config["nav"][1][expected_sections[locale][1]]
+            assert pages(quickstart) == ["start/installation.md", "start/first-run.md"]
+            guide = config["nav"][2][expected_sections[locale][2]]
+            assert {
+                "guides/index.md",
+                "guides/infrastructure/index.md",
+                "guides/daemon/index.md",
+                "guides/executors/index.md",
+                "guides/policies/files.md",
+                "reference/cli.md",
+            } <= set(pages(guide))
+            design = config["nav"][5][expected_sections[locale][5]]
+            experiments_label = "实验设计" if locale == "zh" else "Experimental design"
+            experiments = next(
+                group[experiments_label] for group in design if experiments_label in group
+            )
+            assert "design/experimental/index.md" in pages(experiments)
+            assert all(path.startswith("design/experimental/") for path in pages(experiments))
+            lab_label = "实验记录" if locale == "zh" else "Lab notes"
+            lab = next(group[lab_label] for group in design if lab_label in group)
+            assert "lab-notes/index.md" in pages(lab)
+            assert all(path.startswith("lab-notes/") for path in pages(lab))
         assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
         for locale, config in configs.items():
             assert config["docs_dir"] == f"src/{locale}"
