@@ -1,5 +1,6 @@
 # 本地 OpenSandbox 接口要等多久、占多少内存？
 
+2026-10-24 固定版本的工程对照证据；本摘要不代表此 PR 的新测量。
 ## Motivation {#motivation}
 
 pVisor 原生 guest 后端适合频繁创建并执行短命令的本地 SDK 流程，较低的服务固定计费也有利于少量实例部署。每实例 VM 仍有内核与运行时成本；显式物理池可减少相同工作集的计费，但会增加扫描 CPU 和读回等待。
@@ -85,7 +86,7 @@ pVisor 原生 guest 后端适合频繁创建并执行短命令的本地 SDK 流�
 
 ### 镜像磁盘与复现 {#provenance}
 
-镜像库存属于独立存储实验，见[惰性镜像的磁盘数据](lazy-image-startup.md#storage)。它不含 API、运行写层及整个 OpenSandbox 服务目录，不能当作相同 SDK 配置的完整部署磁盘对比。
+镜像库存属于独立存储实验，见[惰性镜像的磁盘数据](../benchmarks/lazy-image-startup.md#storage)。它不含 API、运行写层及整个 OpenSandbox 服务目录，不能当作相同 SDK 配置的完整部署磁盘对比。
 
 上述启动和内存是 **2026-10-24 的固定版本历史证据**，本次为文档迁移，没有重新采样，也不代表当前 main 的性能复测。daemon SHA-256 为 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`；内存宿主为 Ryzen 7 9700X / 内核 7.2.11-200.fc44。
 
@@ -94,4 +95,4 @@ pVisor 原生 guest 后端适合频繁创建并执行短命令的本地 SDK 流�
 | SDK 首次/稳态 | 40 对、80 正式实例；零失败、零剔除 | `8fc9fd74d6c4450dd9be07af58fbdc80156dbc6cacf4691c97daa416951b5e12` |
 | 完整内存组 | 15 组、60 实例；零失败、零剔除 | `13d437b59e56bc4534d48b24999ab44c1dd5ef562ea005a4f0a66664a9ebe067` |
 
-原始记录、冻结源码、构建和输入收据留在本地 `benchmark/.data/opensandbox-native-docker-20261024T020535Z/` 与 `benchmark/.data/opensandbox-memory-formal-20261024/`。[证据与复测入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#opensandbox-comparison) · [突发与内存池诊断](../lab-notes/opensandbox-performance-analysis.md)。这些结果不证明完整协议兼容、安全等级等价、持续吞吐或生产密度。
+原始记录、冻结源码、构建和输入收据留在本地 `benchmark/.data/opensandbox-native-docker-20261024T020535Z/` 与 `benchmark/.data/opensandbox-memory-formal-20261024/`。[证据与复测入口](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#opensandbox-comparison) · [突发与内存池诊断](opensandbox-performance-analysis.md)。这些结果不证明完整协议兼容、安全等级等价、持续吞吐或生产密度。

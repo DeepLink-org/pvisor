@@ -278,7 +278,9 @@ class Soak:
                     ],
                     timeout=1300,
                 )
-                self.call("audit", [sys.executable, "tests/podman/audit_application_chaos.py", dest])
+                self.call(
+                    "audit", [sys.executable, "tests/podman/audit_application_chaos.py", dest]
+                )
                 self.record("app-120-rounds")
             except Exception as error:
                 self.record("application", error)

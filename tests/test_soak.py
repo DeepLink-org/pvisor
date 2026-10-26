@@ -19,9 +19,10 @@ class SoakSafetyTests(unittest.TestCase):
     def test_missing_pidfd_support_rejects_before_pulling_or_launching(self):
         with workspace() as (root, _):
             runner = self.runner(root)
-            with mock.patch.object(soak.os, "pidfd_open", None, create=True), mock.patch.object(
-                runner, "pv"
-            ) as pv:
+            with (
+                mock.patch.object(soak.os, "pidfd_open", None, create=True),
+                mock.patch.object(runner, "pv") as pv,
+            ):
                 with self.assertRaisesRegex(RuntimeError, "pidfd support"):
                     runner.main()
                 pv.assert_not_called()

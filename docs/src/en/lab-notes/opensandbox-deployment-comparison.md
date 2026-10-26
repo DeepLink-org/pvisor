@@ -1,5 +1,6 @@
 # How long does a local OpenSandbox interface wait, and how much memory does it charge?
 
+Fixed-version engineering evidence from 2026-10-24; this summary does not report a new measurement of this PR.
 ## Motivation {#motivation}
 
 pVisor's native guest backend suits local SDK flows that frequently create sandboxes and execute short commands; its smaller fixed service charge also benefits small deployments. Each VM still has kernel and runtime costs. An explicit physical pool reduces charges for identical working sets while increasing scanning CPU and readback waiting.
@@ -85,7 +86,7 @@ Choose a pool by content similarity, residency time and access frequency. Identi
 
 ### Image disk and reproduction {#provenance}
 
-Image inventory is a separate storage experiment; see the [lazy-image disk data](lazy-image-startup.md#storage). It excludes API state, runtime writable layers and the whole OpenSandbox service directory, so it is not a complete disk comparison of the same SDK configuration.
+Image inventory is a separate storage experiment; see the [lazy-image disk data](../benchmarks/lazy-image-startup.md#storage). It excludes API state, runtime writable layers and the whole OpenSandbox service directory, so it is not a complete disk comparison of the same SDK configuration.
 
 The startup and memory figures are **fixed-version historical evidence from 2026-10-24**. This is documentation migration without new sampling, not a performance retest of current main. Daemon SHA-256 is `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`; the memory host is a Ryzen 7 9700X with kernel 7.2.11-200.fc44.
 
@@ -94,4 +95,4 @@ The startup and memory figures are **fixed-version historical evidence from 2026
 | First/steady SDK requests | 40 pairs, 80 formal instances; zero failures/exclusions | `8fc9fd74d6c4450dd9be07af58fbdc80156dbc6cacf4691c97daa416951b5e12` |
 | Complete memory groups | 15 groups, 60 instances; zero failures/exclusions | `13d437b59e56bc4534d48b24999ab44c1dd5ef562ea005a4f0a66664a9ebe067` |
 
-Raw records, frozen source, build and input receipts remain locally in `benchmark/.data/opensandbox-native-docker-20261024T020535Z/` and `benchmark/.data/opensandbox-memory-formal-20261024/`. [Evidence and retest entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#opensandbox-comparison) · [Burst and memory-pool diagnostics](../lab-notes/opensandbox-performance-analysis.md). These results do not establish full protocol conformance, equivalent security, sustained throughput or production density.
+Raw records, frozen source, build and input receipts remain locally in `benchmark/.data/opensandbox-native-docker-20261024T020535Z/` and `benchmark/.data/opensandbox-memory-formal-20261024/`. [Evidence and retest entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/startup/README.md#opensandbox-comparison) · [Burst and memory-pool diagnostics](opensandbox-performance-analysis.md). These results do not establish full protocol conformance, equivalent security, sustained throughput or production density.
