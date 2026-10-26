@@ -696,7 +696,7 @@ if [[ "$selected" == 0 ]]; then
   uv run --locked --only-group dev python -m unittest discover -s tests "$@"
   uv run --locked --only-group dev python -m unittest discover -s benchmark/support "$@"
   uv run --locked --only-group dev python -m unittest discover -s tools/semspec "$@"
-  for suite in tests filesystem memory; do
+  for suite in tests filesystem memory swe_memory; do
     uv run --locked --only-group dev python -m unittest discover -s "benchmark/$suite" "$@"
   done
 else

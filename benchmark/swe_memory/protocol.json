@@ -1,0 +1,401 @@
+{
+  "stage": 1,
+  "policies": [
+    "baseline",
+    "offload"
+  ],
+  "selected_offload_after_ms": 50,
+  "total_ram_bytes": 34359738368,
+  "condition_ram_bytes": 34091302912,
+  "supervisor_ram_bytes": 268435456,
+  "total_cpu_percent": 6000,
+  "condition_cpu_percent": 5975,
+  "supervisor_cpu_percent": 25,
+  "vm_cpu_percent": 250,
+  "guest_vcpus": 2,
+  "swap_bytes": 0,
+  "arrival_spec": {
+    "id": "arrival-swe-memory",
+    "stage": 1,
+    "smoke": false,
+    "rate_per_min": 2.0562768820123134,
+    "arrival_duration_s": 1800,
+    "arrivals": [
+      {
+        "index": 0,
+        "at_s": 0.0,
+        "task": "vuls-666"
+      },
+      {
+        "index": 1,
+        "at_s": 40.6517028945182,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 2,
+        "at_s": 79.26810086222179,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 3,
+        "at_s": 98.57812020248366,
+        "task": "vuls-666"
+      },
+      {
+        "index": 4,
+        "at_s": 128.2083650001494,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 5,
+        "at_s": 161.402230062287,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 6,
+        "at_s": 203.88542816061283,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 7,
+        "at_s": 224.74666442815544,
+        "task": "vuls-666"
+      },
+      {
+        "index": 8,
+        "at_s": 258.10277803669834,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 9,
+        "at_s": 301.86401712346617,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 10,
+        "at_s": 329.71322807382853,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 11,
+        "at_s": 358.0117545093206,
+        "task": "vuls-666"
+      },
+      {
+        "index": 12,
+        "at_s": 383.7101693298382,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 13,
+        "at_s": 425.8948544034047,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 14,
+        "at_s": 456.52264421902856,
+        "task": "vuls-666"
+      },
+      {
+        "index": 15,
+        "at_s": 498.5906482376191,
+        "task": "vuls-666"
+      },
+      {
+        "index": 16,
+        "at_s": 519.4633263521727,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 17,
+        "at_s": 544.8205469975526,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 18,
+        "at_s": 579.1614311794781,
+        "task": "vuls-666"
+      },
+      {
+        "index": 19,
+        "at_s": 603.4959040494564,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 20,
+        "at_s": 624.1178588865903,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 21,
+        "at_s": 662.393171757608,
+        "task": "vuls-666"
+      },
+      {
+        "index": 22,
+        "at_s": 679.3834403711571,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 23,
+        "at_s": 722.1220261587184,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 24,
+        "at_s": 760.7944320889953,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 25,
+        "at_s": 778.1649958793998,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 26,
+        "at_s": 808.1165767733924,
+        "task": "vuls-666"
+      },
+      {
+        "index": 27,
+        "at_s": 834.4567488373568,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 28,
+        "at_s": 850.1115613702933,
+        "task": "vuls-666"
+      },
+      {
+        "index": 29,
+        "at_s": 883.7765755803167,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 30,
+        "at_s": 910.8804735577505,
+        "task": "vuls-666"
+      },
+      {
+        "index": 31,
+        "at_s": 926.9152785922533,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 32,
+        "at_s": 943.9011758115305,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 33,
+        "at_s": 972.199500866011,
+        "task": "vuls-666"
+      },
+      {
+        "index": 34,
+        "at_s": 1011.4704157612371,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 35,
+        "at_s": 1028.6760285192813,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 36,
+        "at_s": 1060.4903659625747,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 37,
+        "at_s": 1083.2290609535062,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 38,
+        "at_s": 1108.4338087171488,
+        "task": "vuls-666"
+      },
+      {
+        "index": 39,
+        "at_s": 1137.8368383692746,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 40,
+        "at_s": 1158.3258067641216,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 41,
+        "at_s": 1183.633105104935,
+        "task": "vuls-666"
+      },
+      {
+        "index": 42,
+        "at_s": 1212.961096463412,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 43,
+        "at_s": 1246.7864971791894,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 44,
+        "at_s": 1268.3149731854382,
+        "task": "vuls-666"
+      },
+      {
+        "index": 45,
+        "at_s": 1309.318784777622,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 46,
+        "at_s": 1340.1244540813232,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 47,
+        "at_s": 1374.9110586950965,
+        "task": "vuls-666"
+      },
+      {
+        "index": 48,
+        "at_s": 1416.7565319483483,
+        "task": "vuls-666"
+      },
+      {
+        "index": 49,
+        "at_s": 1443.9552354231682,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 50,
+        "at_s": 1459.057258955798,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 51,
+        "at_s": 1482.1765458015138,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 52,
+        "at_s": 1511.6905862677609,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 53,
+        "at_s": 1539.4762380771576,
+        "task": "vuls-666"
+      },
+      {
+        "index": 54,
+        "at_s": 1581.742512055811,
+        "task": "vuls-666"
+      },
+      {
+        "index": 55,
+        "at_s": 1622.5607298019904,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 56,
+        "at_s": 1647.890813080532,
+        "task": "qutebrowser-667"
+      },
+      {
+        "index": 57,
+        "at_s": 1687.0578292507982,
+        "task": "vuls-666"
+      },
+      {
+        "index": 58,
+        "at_s": 1703.8177157945804,
+        "task": "nodebb-291"
+      },
+      {
+        "index": 59,
+        "at_s": 1730.057845070476,
+        "task": "qutebrowser-667"
+      }
+    ],
+    "seed": 2026102303,
+    "job_timeout_s": 2400,
+    "drain_timeout_s": 2400,
+    "protective_worker_limit": 256,
+    "vm_cpus": "2-15,18-31,34-47,50-63",
+    "helper_cpus": "0,16,32,48",
+    "created_unix_ns": 1792978983061993908,
+    "calibration_mean_cpu_s": 306.37897333333314,
+    "calibration_sha256": "3d7c32103d590bf74c4d89946f19420ff20d5df5aa1a22d3a2a0fd3df0a9c363",
+    "latency_reference": {
+      "qutebrowser-667": {
+        "agent_s": 282.522862469,
+        "vm_lifecycle_s": 309.533575576,
+        "tool_s": 45.957147411000015,
+        "launcher_wall_s": 312.26566086523235
+      },
+      "vuls-666": {
+        "agent_s": 500.081451805,
+        "vm_lifecycle_s": 570.567772131,
+        "tool_s": 287.21444417400005,
+        "launcher_wall_s": 574.4393690023571
+      },
+      "nodebb-291": {
+        "agent_s": 390.269933754,
+        "vm_lifecycle_s": 438.335397444,
+        "tool_s": 60.42570418600002,
+        "launcher_wall_s": 440.3896544650197
+      }
+    },
+    "next_policy_order": [
+      "baseline",
+      "offload"
+    ],
+    "purpose": "Same60 arrivals,32GiB,FIFO drain-all; no rate increase"
+  },
+  "source_binary_sha": "08da082749523a93f7a75a8e329c7753a8254c16d74064c1f00365908fc1fc2f",
+  "slo": {
+    "strict_pass_fraction": 1,
+    "task_latency_ratio_p95_max": 1.5,
+    "launch_delay_p95_s_max": 60,
+    "model_delivery_p99_ms_max": 1000,
+    "steady_completed_arrival_ratio_min": 0.85,
+    "max_sample_gap_s": 10,
+    "queue_deadline_s": null
+  },
+  "limits": [
+    "Exploration only: passing one rate is not a sustainable capacity limit.",
+    "Warm independent image inodes charged inside active condition; identical copies verified before timing.",
+    "OS/shared executable-library cache is common outside overhead; this is a scoped RAM-budget test, not whole physical host RAM.",
+    "Same physical SSD and placement, no enforced IOPS cap.",
+    "A failed arm remains failed; stop the finite pair and retain evidence.",
+    "Queued tasks and live occupancy peaks cannot be called effective density.",
+    "Further rate increases require review; this controller runs only this matched pair."
+  ],
+  "pilot": false,
+  "protocol": "FIFO drain-all: no queue expiry. Same admission, execution, batch safety and offload policy.",
+  "admission_plan": {
+    "version": 1,
+    "condition_bytes": 34091302912,
+    "headroom_bytes": 8589934592,
+    "boot_bytes": {
+      "vuls-666": 1610612736,
+      "qutebrowser-667": 1610612736,
+      "nodebb-291": 2147483648
+    },
+    "startup_reservation_s": 30,
+    "max_snapshot_age_s": 3,
+    "memory_psi_avg10_max": 1,
+    "max_queue_s": null,
+    "clean_cache_credit_fraction": 0.5,
+    "semantics": "FIFO before VM creation only. No cap/gate on offload or resume. Empirical reserve, not a proof against simultaneous worst-case peaks. Pending requests have no queue-expiry rejection; execution and batch fault guards unchanged.",
+    "calibration": "Successful RAM32 stage1 both arms,28 samples/task. ceil256MiB(1.25*max VM service memory in first30s +0.75GiB helper allowance). 8GiB global headroom rounds up largest observed lifetime service peak7.634GiB.",
+    "limits": "Raw memory.current including ALL cache remains reported and hard capped. Only admission uses half of clean unmapped inactive file pages as potential reclaim credit. No explicit reclaim/drop_caches."
+  },
+  "evaluation": "Offline finite-batch completion, makespan, queue and end-to-end delay, memory integral. Existing online exploration gates remain diagnostic only.",
+  "benchmark_id": "B-SWE-MEMORY-ENG"
+}
