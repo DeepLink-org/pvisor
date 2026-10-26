@@ -1,0 +1,37 @@
+name: Diagnose installed Linux wheel
+on:
+  push:
+    branches: [fix/linux-wheel-acceptance]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python rust
+          setup: none
+      - name: Prepare original runner environment
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Download original failing wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 40317578432 --repo "$GITHUB_REPOSITORY" --name release-wheel-linux-x86_64 --dir dist
+      - name: Reproduce installed acceptance
+        run: |
+          for wheel in dist/pvisor_sandbox-*.whl; do
+            mise run accept-wheel -- "$wheel" "$RUNNER_TEMP/wheel-diagnosis/result.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wheel-diagnosis
+          path: ${{ runner.temp }}/wheel-diagnosis/
+          if-no-files-found: warn
