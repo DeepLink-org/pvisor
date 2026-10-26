@@ -18,6 +18,13 @@ jobs:
       - name: Prepare original runner environment
         run: |
           rustup target add x86_64-unknown-linux-musl
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --mount --net /bin/true
           sudo chown "$(id -u):$(id -g)" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       - name: Download original failing wheel
