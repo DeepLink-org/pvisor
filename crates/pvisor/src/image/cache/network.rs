@@ -26,19 +26,14 @@ use std::{
 };
 
 const INTERNAL_ENV: &str = "PVISOR_IMAGE_NETWORK_ACCESS";
-const BRIDGE_V2_ENV: &str = "PVISOR_LAZY_BRIDGE_V2";
 const METRICS_ENV: &str = "PVISOR_LAZY_BRIDGE_METRICS_DIR";
 const CONNECTION_LIMIT: usize = 32;
 const WORKERS: usize = 4;
 const QUEUE_LIMIT: usize = 16;
 const WAIT: Duration = Duration::from_secs(300);
 
-fn bridge_v2(value: Option<&std::ffi::OsStr>) -> bool {
-    value != Some(std::ffi::OsStr::new("0"))
-}
-
 // Private benchmark ABI: 16 native-endian u64 words, schema=1 followed by
-// accepted_connections, v1_frames, v2_frames, forwarded_stat/list/read/metadata,
+// accepted_connections, reserved_v1_frames (always zero), v2_frames, forwarded_stat/list/read/metadata,
 // queue_wait_ns, upstream_execution_ns, rejected_connections, queue_full,
 // active_connections, active_workers, queued_requests, reserved. Read after
 // reaping for stable totals; live snapshots are intentionally not transactional.
@@ -257,27 +252,6 @@ fn forward_measured(
         )
     })
 }
-#[cfg(test)]
-fn connection(socket: UnixStream, client: &CacheClient, handle: &str) -> anyhow::Result<()> {
-    legacy_connection(socket, client, handle, &None)
-}
-fn legacy_connection(
-    mut socket: UnixStream,
-    client: &CacheClient,
-    handle: &str,
-    metrics: &Telemetry,
-) -> anyhow::Result<()> {
-    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-    socket.set_write_timeout(Some(WAIT))?;
-    let envelope: Envelope = read_frame(&mut socket)?;
-    ensure!(envelope.version == 1, "unsupported image cache protocol");
-    count(metrics, 2, 1);
-    let (response, body) = forward_measured(client, handle, envelope.request, metrics);
-    write_frame(&mut socket, &response)?;
-    socket.write_all(&body)?;
-    Ok(())
-}
-
 type Reply = (Response, Vec<u8>);
 struct Job {
     request: Request,
@@ -379,12 +353,9 @@ fn persistent_connection(
 ) -> anyhow::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     socket.set_write_timeout(Some(WAIT))?;
-    let mut version = None;
     loop {
         let envelope: Envelope = read_frame(&mut socket)?;
-        if !matches!(envelope.version, 1 | 2)
-            || version.is_some_and(|version| version != envelope.version)
-        {
+        if envelope.version != 2 {
             write_frame(
                 &mut socket,
                 &Response::Error {
@@ -394,8 +365,7 @@ fn persistent_connection(
             )?;
             return Ok(());
         }
-        version = Some(envelope.version);
-        count(metrics, if envelope.version == 1 { 2 } else { 3 }, 1);
+        count(metrics, 3, 1);
         let (reply, receive) = mpsc::sync_channel(1);
         let job = Job {
             request: envelope.request,
@@ -416,9 +386,6 @@ fn persistent_connection(
         };
         write_frame(&mut socket, &response)?;
         socket.write_all(&body)?;
-        if envelope.version == 1 {
-            return Ok(());
-        }
     }
 }
 
@@ -447,64 +414,18 @@ pub(crate) fn run_internal_if_requested() -> anyhow::Result<bool> {
         .transpose()?;
     let listener = UnixListener::bind(&spec.socket)?;
     fs::set_permissions(&spec.socket, fs::Permissions::from_mode(0o600))?;
-    if bridge_v2(std::env::var_os(BRIDGE_V2_ENV).as_deref()) {
-        let handle = spec.handle;
-        let execution_metrics = metrics.clone();
-        let scheduler = Scheduler::start(
-            move |request| forward_measured(&client, &handle, request, &execution_metrics),
-            metrics,
-        );
-        println!("ready");
-        io::stdout().flush()?;
-        for socket in listener.incoming() {
-            let _ = scheduler.dispatch(socket?);
-        }
-        return Ok(true);
+    let handle = spec.handle;
+    let execution_metrics = metrics.clone();
+    let scheduler = Scheduler::start(
+        move |request| forward_measured(&client, &handle, request, &execution_metrics),
+        metrics,
+    );
+    println!("ready");
+    io::stdout().flush()?;
+    for socket in listener.incoming() {
+        let _ = scheduler.dispatch(socket?);
     }
-    // Same-binary V1 control retains the original four socket workers and
-    // sixteen queued sockets, including their framing/write waits.
-    let (send, receive) = mpsc::sync_channel::<(UnixStream, Option<Instant>)>(QUEUE_LIMIT);
-    let receive = Arc::new(Mutex::new(receive));
-    std::thread::scope(|scope| {
-        for _ in 0..WORKERS {
-            let receive = receive.clone();
-            let client = &client;
-            let handle = &spec.handle;
-            let metrics = &metrics;
-            scope.spawn(move || {
-                loop {
-                    let Ok((socket, queued)) = receive.lock().unwrap().recv() else {
-                        break;
-                    };
-                    count(metrics, 14, u64::MAX);
-                    count(metrics, 13, 1);
-                    if let Some(start) = queued {
-                        count(metrics, 8, elapsed(start));
-                    }
-                    if let Err(error) = legacy_connection(socket, client, handle, metrics) {
-                        tracing::debug!("host image access: {error:#}");
-                    }
-                    count(metrics, 13, u64::MAX);
-                    count(metrics, 12, u64::MAX);
-                }
-            });
-        }
-        println!("ready");
-        io::stdout().flush()?;
-        for socket in listener.incoming() {
-            let socket = socket?;
-            count(&metrics, 1, 1);
-            count(&metrics, 12, 1);
-            count(&metrics, 14, 1);
-            let queued = metrics.as_ref().map(|_| Instant::now());
-            if send.try_send((socket, queued)).is_err() {
-                count(&metrics, 12, u64::MAX);
-                count(&metrics, 14, u64::MAX);
-                count(&metrics, 10, 1);
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
+
     Ok(true)
 }
 
@@ -692,7 +613,7 @@ mod metadata_tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn pinned_metadata_crosses_the_v1_proxy_as_verified_bytes_only() {
+    fn pinned_metadata_crosses_the_v2_proxy_as_verified_bytes_only() {
         let (_temp, server, client, handle, pages) =
             crate::image::cache::backend::tests::portable_fixture(true);
         let client = super::super::client::tests::use_server_reuse(client, false);
@@ -721,12 +642,17 @@ mod metadata_tests {
         }
         assert_eq!(pages.load(Ordering::Relaxed), 0);
         let (mut guest, proxy) = UnixStream::pair().unwrap();
-        std::thread::scope(|scope| {
-            scope.spawn(|| connection(proxy, &client, &handle).unwrap());
+        let pinned = handle.clone();
+        let scheduler = Scheduler::start(
+            move |request| forward_measured(&client, &pinned, request, &None),
+            None,
+        );
+        let worker = scheduler.dispatch(proxy).unwrap();
+        {
             write_frame(
                 &mut guest,
                 &Envelope {
-                    version: 1,
+                    version: 2,
                     token: None,
                     request: Request::Metadata {
                         handle: handle.clone(),
@@ -745,12 +671,9 @@ mod metadata_tests {
             guest.read_exact(&mut bytes).unwrap();
             assert_eq!(crate::image::cache::hash(&bytes), sha256);
             assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
-            assert_eq!(
-                guest.read(&mut [0]).unwrap(),
-                0,
-                "v1 closes after one response"
-            );
-        });
+        }
+        drop(guest);
+        worker.join().unwrap();
         assert_eq!(pages.load(Ordering::Relaxed), 1);
         assert_eq!(server.reads.load(Ordering::Relaxed), 0);
     }
@@ -1123,7 +1046,9 @@ mod v2_tests {
         assert_eq!(scheduler.active.load(Ordering::Acquire), 0);
         let (mut guest, thread) = connect(&listener, &scheduler);
         send(&mut guest, 1, Request::Ping);
-        assert!(matches!(response(&mut guest).0, Response::Ready));
+        assert!(
+            matches!(response(&mut guest).0, Response::Error { code, .. } if code == "unsupported_version")
+        );
         assert_eq!(guest.read(&mut [0]).unwrap(), 0);
         thread.join().unwrap();
     }
@@ -1168,7 +1093,7 @@ mod v2_tests {
     }
 
     #[test]
-    fn subprocess_overrides_are_independent_and_killed_bridge_leaves_metrics() {
+    fn subprocess_always_uses_v2_and_killed_bridge_leaves_metrics() {
         struct ChildOwner(Child);
         impl Drop for ChildOwner {
             fn drop(&mut self) {
@@ -1202,7 +1127,7 @@ mod v2_tests {
                     Command::new(std::env::current_exe().unwrap())
                         .args(["--exact", &test, "--ignored", "--nocapture"])
                         .env(INTERNAL_ENV, descriptor.path())
-                        .env(BRIDGE_V2_ENV, bridge)
+                        .env("PVISOR_LAZY_BRIDGE_V2", bridge)
                         .env("PVISOR_LAZY_IMAGE_V2", upstream)
                         .env(METRICS_ENV, directory.path())
                         .env_remove("PVISOR_KRUN_RUNNER_SPEC")
@@ -1237,28 +1162,29 @@ mod v2_tests {
                         length: 16,
                     },
                 );
-                assert_eq!(response(&mut guest).1, [42; 16]);
-                assert_eq!(
-                    guest.read(&mut [0]).unwrap(),
-                    0,
-                    "V1 must close in either mode"
+                assert!(
+                    matches!(response(&mut guest).0, Response::Error { code, .. } if code == "unsupported_version")
                 );
+                assert_eq!(guest.read(&mut [0]).unwrap(), 0);
                 let mut guest = UnixStream::connect(&socket).unwrap();
                 guest
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
+                send(
+                    &mut guest,
+                    2,
+                    Request::Read {
+                        digest: handle.clone(),
+                        path: b"large".to_vec(),
+                        offset: 0,
+                        length: 16,
+                    },
+                );
+                assert_eq!(response(&mut guest).1, [42; 16]);
                 send(&mut guest, 2, Request::Ping);
-                if bridge == "0" {
-                    assert_eq!(
-                        guest.read(&mut [0]).unwrap(),
-                        0,
-                        "old bridge refuses V2 by closing"
-                    );
-                } else {
-                    assert!(matches!(response(&mut guest).0, Response::Ready));
-                    send(&mut guest, 2, Request::Ping);
-                    assert!(matches!(response(&mut guest).0, Response::Ready));
-                }
+                assert!(matches!(response(&mut guest).0, Response::Ready));
+                send(&mut guest, 2, Request::Ping);
+                assert!(matches!(response(&mut guest).0, Response::Ready));
                 // Deliberately kill with a live stream: no owner/worker Drop or
                 // snapshot hook can run. Shared mapped totals must still exist.
                 drop(child);
@@ -1279,8 +1205,8 @@ mod v2_tests {
                     .collect();
                 assert_eq!(words[0], 1);
                 assert_eq!(words[1], 2);
-                assert_eq!(words[2], 1);
-                assert_eq!(words[3], if bridge == "0" { 0 } else { 2 });
+                assert_eq!(words[2], 0);
+                assert_eq!(words[3], 3);
                 assert_eq!(words[6], 1);
                 assert!(words[9] > 0);
             }
@@ -1289,15 +1215,7 @@ mod v2_tests {
     }
 
     #[test]
-    fn legacy_override_is_independent_and_metrics_survive_without_drop_snapshot() {
-        for (value, enabled) in [
-            (None, true),
-            (Some("0"), false),
-            (Some("1"), true),
-            (Some(""), true),
-        ] {
-            assert_eq!(bridge_v2(value.map(std::ffi::OsStr::new)), enabled);
-        }
+    fn metrics_survive_without_drop_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let metrics = private_metrics(temp.path());
         metrics.add(1, 7);

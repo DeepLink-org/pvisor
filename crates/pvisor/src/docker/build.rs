@@ -493,24 +493,8 @@ fn scratch(work: &Path) -> anyhow::Result<Built> {
     })
 }
 fn base(store: &Store, reference: &str, pull: bool) -> anyhow::Result<Built> {
-    let images = store.images()?;
-    let candidates: Vec<_> = images
-        .into_iter()
-        .filter(|i| {
-            i.reference == normalize_reference(reference) || image_matches(&i.id, reference)
-        })
-        .collect();
-    ensure!(
-        candidates
-            .iter()
-            .map(|i| &i.id)
-            .collect::<BTreeSet<_>>()
-            .len()
-            <= 1,
-        "ambiguous base image"
-    );
-    let image = if !pull && !candidates.is_empty() {
-        candidates[0].clone()
+    let image = if !pull && let Some(image) = store.local_image(reference)? {
+        image
     } else {
         store.pull(reference)?
     };
@@ -986,12 +970,13 @@ fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Imag
     };
     // Keep pool HEAD and catalog publication under the same locks as pull.
     // Canonical ordering also handles overlapping tag sets and alias spellings.
-    let mut lock_tags = tags
-        .iter()
-        .map(|tag| crate::image::oci::cache_reference(tag).map(|(canonical, _)| canonical))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    lock_tags.sort_unstable();
-    lock_tags.dedup();
+    let mut lock_tags = BTreeSet::new();
+    let mut unique_tags = Vec::new();
+    for tag in tags {
+        if lock_tags.insert(image_reference_key(&tag)?) {
+            unique_tags.push(tag);
+        }
+    }
     let architecture = canonical_platform(&image.platform)?
         .strip_prefix("linux/")
         .unwrap();
@@ -1000,7 +985,7 @@ fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Imag
         .map(|tag| store.image_pull_lock(tag, architecture))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let mut published = Vec::new();
-    for tag in &tags {
+    for tag in &unique_tags {
         let mut entry = image.clone();
         entry.reference = tag.clone();
         published.push(store.pool_image(entry, &rootfs, &source, &config)?);
@@ -1008,8 +993,7 @@ fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Imag
     let _guard = store.lock()?;
     let mut catalog = store.catalog()?;
     for entry in &published {
-        catalog.retain(|i| i.reference != entry.reference);
-        catalog.push(entry.clone());
+        catalog.insert(image_reference_key(&entry.reference)?, entry.clone());
     }
     store.save_catalog(&catalog)?;
     Ok(published.remove(0))

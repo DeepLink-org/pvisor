@@ -809,8 +809,12 @@ success/failure. Docker pull still resolves manifest/config, then reuses a
 matching shared pool revision without downloading layers. Local pool tags remain
 available offline until an explicit pull/refresh or another publication replaces
 them. Build tags also publish V2 references usable by Jobs without a registry.
-Each tag commits independently;
-there is no multi-tag filesystem transaction. Container `images.json` remains
+Short and fully qualified Docker Hub aliases use the OCI parser's canonical
+registry/repository/tag identity for catalog lookup, replacement and removal.
+Equivalent build tags publish once; distinct tags remain independent. Catalogs
+with duplicate canonical identities fail rather than selecting an arbitrary
+revision. Existing containers retain their pinned image. Each distinct tag commits
+independently; there is no multi-tag filesystem transaction. Container `images.json` remains
 its frontend catalog; `rmi` removes catalog references, not shared pool objects.
 
 Published `Image` records require `CachedImage`, binding the pool location and
@@ -828,6 +832,12 @@ fields and obsolete storage formats are rejected. Use a fresh store and re-pull
 or rebuild images; no compatibility reader or automatic migration is provided.
 Stop and clean up old containers through the old version before switching stores.
 
+Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+`staging/.import-*` directory, removed on success and error after publication
+finishes. They retain no raw OCI layers, extracted roots or prepared records.
+Read-only preparation needs no local import directory. Registry TLS can add a
+PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
+
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
 fixed-seed XXH3-64 with SHA-256 integrity. Oversized directories split recursively
@@ -843,7 +853,8 @@ and standard seekable footers, without the old pool-only envelope/raw fallback.
 `pool-format.json` rejects retired physical encodings without modifying them.
 V1 handles/readers/publishers are removed: republish OCI images into an empty V2
 prefix. Old catalog/container records require recreation in the current format.
-Existing files are not automatically deleted. Storage versions are independent of transport protocols 1/2.
+Existing files are not automatically deleted. Storage versions are independent of
+the socket protocol, which now accepts only envelope version 2.
 The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
 and 2,000,000 content spans; object limits can be reached first. Publication still
 plans metadata in O(N) memory while staging encoded content on disk and bounding
@@ -996,27 +1007,25 @@ physical-lower stability declaration retain their contracts.
   their error kinds and permit reuse; framing, transport or integrity errors
   discard the stream. Ordinary cache clients do not replay failed actual requests;
     the private bridge's pinned read clients have the bounded exception below.
-- Protocol 1 remains one-request-per-connection. A V2 client falls back before
-  sending the actual request when an old service rejects the version or closes
-  the harmless handshake. Authentication failures, malformed replies and
-  handshake timeouts are not downgrade signals. Filesystem/S3 object transports
-  do not use the socket pool; metadata prefetch still applies.
+- Only protocol 2 is accepted. One harmless Ping negotiates each new stream;
+  refusal, EOF or invalid replies fail without reconnecting through an older
+  protocol. Filesystem/S3 object transports do not use the socket pool; metadata
+  prefetch still applies.
 - The service admits at most 64 connections, separates their framing/idle waits
   from 16 file workers and two preparation workers, and bounds each pending
   request queue to 16. Saturation returns a busy error or closes an unadmitted
   connection; callers must handle these failures. Idle connections and long
   preparations do not occupy file workers.
 
-The Linux private host-network bridge accepts envelope 1 (one exchange) and
-2 (sequential persistent exchanges). It admits at most 32 connection handlers,
+The Linux private host-network bridge accepts only envelope 2
+(sequential persistent exchanges). It admits at most 32 connection handlers,
 separates frame/idle/write waits from four execution workers, and bounds queued
 requests to 16. Queue saturation returns a framed busy error; unadmitted
 connections close. Each exchange is confined to the pinned immutable handle
-and metadata whitelist. Bridge V2 is enabled by default. On both bridge hops,
+and metadata whitelist. On both bridge hops,
 private clients retry an exact-handle Stat/List/Read or whitelisted Metadata at
 most once on EOF, broken/reset/aborted/disconnected transport or connect refusal.
-The failed lease is released, and retry uses a fresh stream (negotiated V2, or
-already-established V1 fallback). Pool wait, connect, handshake and body I/O
+The failed lease is released, and retry uses a fresh V2 stream. Pool wait, connect, handshake and body I/O
 share the original per-hop deadline. Timeout, busy/not-found/auth errors,
 malformed frames/digest declarations and verified-body digest mismatches are
 not retryable. Prepare/Open and ordinary clients retain no-replay semantics.
@@ -1028,26 +1037,24 @@ not cancel already queued/executing upstream work, whose outcome may be unknown.
 Only immutable read operations qualify; no mutation is replayed. Detached bridge
 threads live in the dedicated child process, never the pre-namespace VM runner.
 
-For private engineering A/B, `PVISOR_LAZY_BRIDGE_V2=0` retains the previous
-single-exchange bridge and socket-worker scheduling independently of upstream
-V2. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
+The single-exchange bridge and `PVISOR_LAZY_BRIDGE_V2` switch are removed. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
 private directory. Bridge-created shared counter files contain only aggregate
 counts/timings, not credentials or image paths; read after process teardown.
 Live snapshots are approximate, killed-process gauges may remain nonzero,
 and files are not reboot-durable. The benchmark caller owns file cleanup.
 
-V2 is enabled by default. For engineering comparison only, set
+For engineering comparison only, set
 `PVISOR_LAZY_IMAGE_V2=0` before constructing the client and VM runner to disable
-client index pages, metadata prefetch and connection reuse; other values retain
-V2. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
+client index pages, metadata prefetch and connection reuse; the wire protocol
+remains V2 in every mode. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
 RPC/prefetch path and pooling. These are private
 rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
 See the [archived same-artifact NumPy A/B](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_image_v2.py); historical
 Docker measurements are a different cohort. Contract tests cover real portable
-pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
-fallback and concurrent service progress. Linux KVM performance measurements do
+pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, rejected V1
+envelopes and concurrent service progress. Linux KVM performance measurements do
 not establish macOS/HVF, live S3 or WAN coverage.
 
 ## Physical lower stability (explicit experiment contract)

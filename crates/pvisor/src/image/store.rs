@@ -16,6 +16,41 @@ pub(crate) struct LocalStore {
     pub(crate) root: PathBuf,
 }
 
+/// Private import owner. OCI directory modes may prohibit removal, so restore
+/// owner access only during teardown, after every image reader has finished.
+pub(crate) struct ImportDirectory(tempfile::TempDir);
+impl ImportDirectory {
+    pub(crate) fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+impl Drop for ImportDirectory {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut pending = vec![self.0.path().to_owned()];
+        while let Some(path) = pending.pop() {
+            // Imports are private and no longer in use. Do not follow image
+            // symlinks or alter permissions on their external targets.
+            let result = (|| -> std::io::Result<()> {
+                if fs::symlink_metadata(&path)?.is_dir() {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+                    for entry in fs::read_dir(&path)? {
+                        let entry = entry?;
+                        if entry.file_type()?.is_dir() {
+                            pending.push(entry.path());
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                tracing::warn!(%error, "cannot restore OCI import directory access for cleanup");
+            }
+        }
+        // TempDir removes the tree after this Drop body returns.
+    }
+}
+
 impl LocalStore {
     pub(crate) fn discover(root: Option<PathBuf>) -> anyhow::Result<Self> {
         Self::open(resolve_root(
@@ -47,10 +82,12 @@ impl LocalStore {
     pub(crate) fn projections(&self) -> PathBuf {
         self.root.join("projections")
     }
-    pub(crate) fn staging(&self) -> anyhow::Result<tempfile::TempDir> {
-        Ok(tempfile::Builder::new()
-            .prefix(".import-")
-            .tempdir_in(self.root.join("staging"))?)
+    pub(crate) fn staging(&self) -> anyhow::Result<ImportDirectory> {
+        Ok(ImportDirectory(
+            tempfile::Builder::new()
+                .prefix(".import-")
+                .tempdir_in(self.root.join("staging"))?,
+        ))
     }
     pub(crate) fn retain_config(&self, digest: &str, bytes: &[u8]) -> anyhow::Result<()> {
         let hex = super::oci::digest_hex(digest)?;
@@ -169,6 +206,28 @@ mod tests {
         assert!(store.retain_config(&digest, b"changed").is_err());
         assert_eq!(fs::read(store.config(&digest).unwrap()).unwrap(), bytes);
     }
+    #[test]
+    fn import_cleanup_handles_read_only_directories_without_following_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let external = temp.path().join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("keep"), b"external").unwrap();
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o555)).unwrap();
+        let store = LocalStore::open(temp.path().join("images")).unwrap();
+        let staging = store.staging().unwrap();
+        let path = staging.path().to_owned();
+        fs::create_dir(path.join("readonly")).unwrap();
+        fs::write(path.join("readonly/file"), b"source").unwrap();
+        symlink(&external, path.join("readonly/link")).unwrap();
+        fs::set_permissions(path.join("readonly"), fs::Permissions::from_mode(0o555)).unwrap();
+        drop(staging);
+        assert!(!path.exists());
+        assert_eq!(fs::read(external.join("keep")).unwrap(), b"external");
+        assert_eq!(fs::metadata(&external).unwrap().mode() & 0o777, 0o555);
+        fs::set_permissions(external, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[test]
     fn path_precedence_preserves_explicit_and_docker_isolation() {
         let p = |s: &str| Some(PathBuf::from(s));

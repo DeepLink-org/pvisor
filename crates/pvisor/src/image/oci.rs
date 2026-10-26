@@ -186,12 +186,23 @@ impl ImageStore {
         fs::create_dir_all(root.join("rootfs-v3/sha256"))?;
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
-        let client = Client::builder()
+        let mut client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300))
-            .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("build OCI registry client")?;
+            .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")));
+        if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+            let pem = fs::read(path).context("read registry SSL_CERT_FILE")?;
+            let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+                .context("parse registry SSL_CERT_FILE")?;
+            anyhow::ensure!(
+                !certificates.is_empty(),
+                "registry SSL_CERT_FILE contains no certificates"
+            );
+            for certificate in certificates {
+                client = client.add_root_certificate(certificate);
+            }
+        }
+        let client = client.build().context("build OCI registry client")?;
         Ok(Self { root, client })
     }
 
@@ -831,6 +842,7 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
     archive.set_preserve_permissions(true);
     #[cfg(unix)]
     let mut deferred_directory_modes = BTreeMap::new();
+    let mut directory_mtimes = BTreeMap::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
@@ -905,6 +917,12 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
         #[cfg(unix)]
         if let Some(mode) = directory_mode {
             use std::os::unix::fs::PermissionsExt;
+            directory_mtimes.insert(
+                relative.clone(),
+                UNIX_EPOCH
+                    .checked_add(Duration::from_secs(entry.header().mtime()?))
+                    .context("OCI directory mtime overflow")?,
+            );
             deferred_directory_modes.insert(relative.clone(), mode);
             fs::set_permissions(
                 rootfs.join(&relative),
@@ -913,7 +931,7 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
         }
     }
     #[cfg(unix)]
-    restore_directory_modes(rootfs, deferred_directory_modes)?;
+    restore_directory_modes(rootfs, deferred_directory_modes, directory_mtimes)?;
     Ok(())
 }
 
@@ -958,15 +976,27 @@ fn make_ancestor_directories_writable(
 fn restore_directory_modes(
     rootfs: &Path,
     deferred_modes: BTreeMap<PathBuf, u32>,
+    directory_mtimes: BTreeMap<PathBuf, SystemTime>,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut directories = deferred_modes.into_iter().collect::<Vec<_>>();
     directories.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     for (relative, mode) in directories {
-        let directory = rootfs.join(relative);
+        let directory = rootfs.join(&relative);
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                // Entry::unpack_in skips root headers and defers no directory
+                // timestamps. Restore them after children so scoped reimports
+                // preserve OCI metadata instead of the extraction wall clock.
+                if let Some(mtime) = directory_mtimes.get(&relative) {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                        .open(&directory)?
+                        .set_times(fs::FileTimes::new().set_modified(*mtime))?;
+                }
                 fs::set_permissions(directory, fs::Permissions::from_mode(mode))?;
             }
             Ok(_) => {}
@@ -1402,6 +1432,53 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn scoped_imports_restore_root_and_directory_mtimes_after_children() {
+        use std::os::unix::fs::MetadataExt;
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        let mut archive = tar::Builder::new(layer.reopen().unwrap());
+        for name in [".", "sub"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_mode(0o555);
+            header.set_size(0);
+            header.set_mtime(12345);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, std::io::empty())
+                .unwrap();
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_mtime(42);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "sub/file", &b"x"[..])
+            .unwrap();
+        archive.finish().unwrap();
+        for _ in 0..2 {
+            let root = tempfile::tempdir().unwrap();
+            apply_layer(
+                layer.path(),
+                "application/vnd.oci.image.layer.v1.tar",
+                root.path(),
+            )
+            .unwrap();
+            for name in ["", "sub"] {
+                let metadata = fs::metadata(root.path().join(name)).unwrap();
+                assert_eq!((metadata.mtime(), metadata.mtime_nsec()), (12345, 0));
+                assert_eq!(metadata.mode() & 0o777, 0o555);
+            }
+            assert_eq!(fs::read(root.path().join("sub/file")).unwrap(), b"x");
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["", "sub"] {
+                fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

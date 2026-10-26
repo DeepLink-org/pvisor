@@ -469,13 +469,12 @@ impl PortableCache {
             !self.read_only,
             "image absent from read-only cache; use a publisher"
         );
-        let staging = local.as_ref().map(|store| store.staging()).transpose()?;
-        let store = crate::image::oci::ImageStore::new(
-            staging
-                .as_ref()
-                .map(|temp| temp.path().to_owned())
-                .or_else(|| self.local_store.clone()),
-        )?;
+        let import_store = match &local {
+            Some(store) => store.clone(),
+            None => crate::image::store::LocalStore::discover(self.local_store.clone())?,
+        };
+        let staging = import_store.staging()?;
+        let store = crate::image::oci::ImageStore::new(Some(staging.path().to_owned()))?;
         let prepared =
             store.prepare_with_refresh(image, architecture, refresh || observed.is_some())?;
         if let Some(local) = local {

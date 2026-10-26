@@ -23,6 +23,8 @@ Docker 兼容命令、未选择远程后端的 spawn 和 cache server 共用一�
 
 `staging` 中的下载／解包目录在普通成功或失败后删除，进程崩溃可能留下残余。`configs` 保存按摘要校验的原始 OCI 配置；`pool-v2` 是唯一的新本地镜像发布位置。Docker pull 仍查询 registry，但可复用相同 digest 的共享池内容。build 的各个标签也发布到 V2，每个标签独立提交，不提供跨标签事务。`rmi` 只移除容器前端 catalog 引用，不回收共享内容；活动和已停止任务保留固定 revision。
 
+Docker Hub 短名和完整名共用一个 canonical catalog 身份，pull/build 替换、create/FROM 查找和 rmi 都按这个身份处理。等价 build 标签只发布一次；不同标签和已有容器保留各自固定的 revision。包含重复 canonical 身份的 catalog 明确报错，需在新存储中重新构建。
+
 本地池标签持续可离线使用，直到显式 pull/refresh 或新的发布替换它。五分钟的标签自动刷新窗口适用于可写的文件系统/S3 后端，不适用于本地池。
 
 只接受当前 V2 镜像记录和池格式。目录式 rootfs 记录、缺少 platform/binding 的记录和旧缓存布局会被拒绝，不提供迁移或兼容读取器。先通过旧版本停止并清理旧容器，再在新存储中重新 pull/build 并重建容器；已有文件不自动删除。
@@ -52,7 +54,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
-`--location` 是新的共享缓存目录，`--image-store` 是发布时用来拉取/解包 OCI 镜像的本地暂存目录；两者不同。也可以复用现有 `PVISOR_IMAGE_STORE`。发布完成后读取不依赖暂存目录，CI 可把它设为任务临时目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
+`--location` 选择共享存储；`--image-store` 或 `PVISOR_IMAGE_STORE` 选择有作用域的 `staging/.import-*` 导入目录的本地父目录。下载层、解包 root 和临时准备记录在成功或失败后清理，进程崩溃可能留下残余。发布后读取不依赖导入目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
 
 ### S3：发布端有写权限，使用方只读
 
@@ -86,7 +88,7 @@ pvisor cache prepare alpine:latest
 
 ### 镜像拆分与上传工具
 
-`pvisor cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
+`pvisor cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。每次调用在 `--image-store` 或 `PVISOR_IMAGE_STORE` 下持有独立临时导入目录，直到发布结束；成功和失败后都清理 raw OCI 数据。宿主 registry TLS 可通过 `SSL_CERT_FILE` 加载额外 PEM CA bundle；文件不可读或无效时明确失败。
 
 ```sh
 PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
@@ -94,7 +96,7 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`--refresh` 重新查询 registry；不指定时可使用本地仍有效的已准备镜像记录。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
+`--architecture` 支持 `amd64`、`arm64`，默认取宿主架构。`publish` 每次都解析 registry，包括不指定 `--refresh` 时；临时准备记录不跨调用复用。可写 `prepare` 对可变标签复用共享 HEAD 五分钟，对不可变摘要则复用到显式 refresh。`publish` 总会执行拆分和上传，不根据远端 tag 记录跳过；已存在的不可变内容块通过条件创建复用，缺失的块会重新上传。只读模式和服务器后端不接受发布。命令成功时输出 JSON，包含 manifest 摘要、架构、COMMIT 摘要 `metadata_generation` 以及文件数/逻辑字节总量 `totals`；同时返回 image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>，list/stat/read 以这个句柄查询；digest 仅记录来源 manifest。
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -171,7 +173,7 @@ pvisor-daemon serve --cache
 
 # 终端 2：使用同一个默认 socket
 pvisor cache prepare alpine:latest
-# 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
+# Explicitly refresh a locally published tag from the registry:
 pvisor cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
 pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
@@ -231,12 +233,12 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 
 ## 线格式
 
-协议 1 每连接一次交换；协议 2 经无副作用 Ping 协商后允许顺序复用，客户端最多保留四条连接。存储格式 V2 与传输协议版本独立。帧为四字节大端长度和 UTF-8 JSON，JSON 上限 1 MiB；read 与 metadata 的成功响应之后携带声明长度的原始字节。传输体不压缩（metadata 对象自身可以压缩），必须校验长度与 SHA-256。
+服务端和 VM bridge 只接受协议 2。客户端在实际请求前发送一次无副作用 Ping；被拒绝或遇到 EOF 时明确失败，不自动降级。顺序复用最多保留四条客户端连接；关闭连接复用仍发送 V2。存储格式 V2 与传输协议独立。帧为四字节大端长度和 UTF-8 JSON，JSON 上限 1 MiB；read 与 metadata 的成功响应之后携带声明长度的原始字节。传输体不压缩（metadata 对象自身可以压缩），必须校验长度与 SHA-256。
 
 请求信封：
 
 ```json
-{"version":1,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
+{"version":2,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
 ```
 
 路径和目录名是 Unix 文件名字节的 JSON 数组，以保留非 UTF-8 文件名。路径相对于镜像根；空路径表示根目录。绝对路径、向上遍历和 NUL 会被拒绝。符号链接作为元数据返回，服务端路径解析绝不跟随它们。guest 文件系统遍历在 guest 树内解析符号链接。
@@ -251,12 +253,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。成功的已准备镜像记录持久化到
-`<image-store>/metadata/prepared-v1/`，包含平台摘要和启动配置。可变 tag 复用记录五分钟；不可变摘要记录在其解包 root 存在期间不过期。`pvisor cache prepare IMAGE
---refresh`（协议 `refresh: true`）强制 registry 解析。刷新失败会返回错误并保留之前的记录；registry 请求有
-10 秒连接超时和 300 秒总超时。过期的 tag 不会静默回退到陈旧数据。缺失/损坏的记录或缺失 root 会重新准备。按引用和架构的锁覆盖解析与准备，
-因此并发请求会复查并复用首个成功结果。准备可能填充一个未缓存镜像，并保留现有的按摘要解包锁。`read`、`stat` 和
-`list` 要求已发布的不可变 image_handle；它们绝不隐式拉取镜像。
+`prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。已发布的 V2 HEAD 记录平台摘要和启动配置，不依赖持久 raw 准备记录。本地池标签可离线使用到显式刷新或替换；可写文件系统/S3 后端对可变 HEAD 复用五分钟，对不可变摘要 HEAD 则复用到 refresh。`--refresh`（协议 `refresh: true`）强制 registry 解析。导入失败保留旧 HEAD，并清理临时目录。registry 请求有 10 秒连接超时和 300 秒总超时；过期标签不会静默回退到陈旧数据。本地引用/平台锁串行化本地导入；远程 HEAD 通过条件更新发布。`read`、`stat`、`list` 要求已发布的不可变句柄，不隐式拉取镜像。
 
 目录页包含与 `stat` 相同的属性，避免为每个子项单独请求。页最多 256 个条目，并会缩小以适应 JSON
 帧上限（含长字节数组名和符号链接目标）。目录属性为必填字段，仅包含名字的响应会被拒绝。持久化的页在多次挂载间保留其属性。

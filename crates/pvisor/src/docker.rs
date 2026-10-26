@@ -413,15 +413,43 @@ impl Store {
         file.lock_exclusive()?;
         Ok(file)
     }
-    fn catalog(&self) -> anyhow::Result<Vec<Image>> {
+    fn catalog(&self) -> anyhow::Result<BTreeMap<String, Image>> {
         let path = self.root.join("images.json");
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok(BTreeMap::new());
         }
-        Ok(serde_json::from_reader(File::open(path)?)?)
+        let records: Vec<Image> = serde_json::from_reader(File::open(path)?)?;
+        let mut images = BTreeMap::new();
+        for image in records {
+            let key = image_reference_key(&image.reference)?;
+            ensure!(
+                images.insert(key.clone(), image).is_none(),
+                "duplicate canonical image reference: {key}"
+            );
+        }
+        Ok(images)
     }
-    fn save_catalog(&self, images: &[Image]) -> anyhow::Result<()> {
-        crate::util::write_private_json(&self.root.join("images.json"), &images)
+    fn save_catalog(&self, images: &BTreeMap<String, Image>) -> anyhow::Result<()> {
+        crate::util::write_private_json(
+            &self.root.join("images.json"),
+            &images.values().collect::<Vec<_>>(),
+        )
+    }
+    fn local_image(&self, selector: &str) -> anyhow::Result<Option<Image>> {
+        let _guard = self.lock()?;
+        let images = self.catalog()?;
+        if let Some(image) = images.get(&image_reference_key(selector)?) {
+            return Ok(Some(image.clone()));
+        }
+        let mut candidates = images
+            .values()
+            .filter(|image| image_matches(&image.id, selector));
+        let selected = candidates.next();
+        ensure!(
+            candidates.all(|image| selected.is_some_and(|first| first.id == image.id)),
+            "ambiguous image ID: {selector}"
+        );
+        Ok(selected.cloned())
     }
     fn directory(&self, id: &str) -> PathBuf {
         self.root.join("instances").join(id)
@@ -470,7 +498,7 @@ impl Store {
     /// List catalog images without contacting a registry.
     pub fn images(&self) -> anyhow::Result<Vec<Image>> {
         let _guard = self.lock()?;
-        self.catalog()
+        Ok(self.catalog()?.into_values().collect())
     }
     /// Resolve a native OCI image and refresh its reference. Publication is atomic.
     pub fn pull(&self, reference: &str) -> anyhow::Result<Image> {
@@ -567,8 +595,7 @@ impl Store {
         };
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
-        images.retain(|i| i.reference != reference);
-        images.push(image.clone());
+        images.insert(image_reference_key(reference)?, image.clone());
         self.save_catalog(&images)?;
         Ok(image)
     }
@@ -578,20 +605,21 @@ impl Store {
     pub fn rmi(&self, selector: &str, force: bool) -> anyhow::Result<Vec<String>> {
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
+        let key = image_reference_key(selector)?;
+        let by_reference = images.contains_key(&key);
         let selected: Vec<_> = images
             .iter()
-            .filter(|i| {
-                i.reference == selector
-                    || i.reference == normalize_reference(selector)
-                    || image_matches(&i.id, selector)
+            .filter(|(identity, image)| {
+                if by_reference {
+                    *identity == &key
+                } else {
+                    image_matches(&image.id, selector)
+                }
             })
-            .cloned()
             .collect();
         ensure!(!selected.is_empty(), "No such image: {selector}");
-        let by_reference = images
-            .iter()
-            .any(|i| i.reference == selector || i.reference == normalize_reference(selector));
-        let ids: std::collections::BTreeSet<_> = selected.iter().map(|i| &i.id).collect();
+        let ids: std::collections::BTreeSet<_> =
+            selected.iter().map(|(_, image)| &image.id).collect();
         ensure!(
             by_reference || ids.len() == 1,
             "ambiguous image ID: {selector}"
@@ -605,8 +633,14 @@ impl Store {
             by_reference || force || selected.len() == 1,
             "image has multiple tags; remove a tag or use --force"
         );
-        let removed: Vec<_> = selected.iter().map(|i| i.reference.clone()).collect();
-        images.retain(|i| !removed.contains(&i.reference));
+        let removed: Vec<_> = selected
+            .iter()
+            .map(|(_, image)| image.reference.clone())
+            .collect();
+        let keys: Vec<_> = selected.into_iter().map(|(key, _)| key.clone()).collect();
+        for key in keys {
+            images.remove(&key);
+        }
         self.save_catalog(&images)?;
         Ok(removed)
     }
@@ -718,18 +752,8 @@ impl Store {
                 "--ip requires a user-defined network"
             );
         }
-        let images = self.images()?;
-        let candidates: Vec<_> = images
-            .iter()
-            .filter(|i| {
-                i.reference == normalize_reference(&config.image)
-                    || image_matches(&i.id, &config.image)
-            })
-            .collect();
-        let ids: std::collections::BTreeSet<_> = candidates.iter().map(|i| &i.id).collect();
-        ensure!(ids.len() <= 1, "ambiguous image ID: {}", config.image);
-        let image = if let Some(image) = candidates.first() {
-            (*image).clone()
+        let image = if let Some(image) = self.local_image(&config.image)? {
+            image
         } else {
             self.pull_with_progress(&config.image, progress)?
         };
@@ -1189,6 +1213,10 @@ fn lease_active(path: &Path) -> anyhow::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
         Err(error) => Err(error.into()),
     }
+}
+
+fn image_reference_key(reference: &str) -> anyhow::Result<String> {
+    crate::image::oci::cache_reference(reference).map(|(key, _)| key)
 }
 
 fn normalize_reference(reference: &str) -> String {
@@ -2139,7 +2167,12 @@ mod tests {
         assert!(store.instances(true).unwrap().is_empty());
 
         image.platform = foreign.into();
-        store.save_catalog(&[image.clone()]).unwrap();
+        store
+            .save_catalog(&BTreeMap::from([(
+                image_reference_key(&image.reference).unwrap(),
+                image.clone(),
+            )]))
+            .unwrap();
         assert!(
             store
                 .create(request())
@@ -2150,7 +2183,12 @@ mod tests {
         assert!(store.instances(true).unwrap().is_empty());
 
         image.platform = native_platform();
-        store.save_catalog(&[image]).unwrap();
+        store
+            .save_catalog(&BTreeMap::from([(
+                image_reference_key(&image.reference).unwrap(),
+                image,
+            )]))
+            .unwrap();
         let mut instance = store.create(request()).unwrap();
         instance.image.platform = foreign.into();
         store.save(&instance).unwrap();
@@ -2172,7 +2210,12 @@ mod tests {
             let (_temporary, store, mut image) = fixture();
             if let Some(value) = base {
                 image.env.insert("TERM".into(), value.into());
-                store.save_catalog(&[image]).unwrap();
+                store
+                    .save_catalog(&BTreeMap::from([(
+                        image_reference_key(&image.reference).unwrap(),
+                        image,
+                    )]))
+                    .unwrap();
             }
             let mut config = request();
             config.tty = tty.then_some([24, 80]);

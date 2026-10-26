@@ -219,6 +219,123 @@ mod tests {
     }
 
     #[test]
+    fn canonical_aliases_replace_one_tag_and_keep_containers_and_other_tags_pinned() {
+        let temporary = tempfile::tempdir().unwrap();
+        let context = temporary.path().join("context");
+        fs::create_dir(&context).unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nENV VERSION=first\nCMD [\"/first\"]\n",
+        )
+        .unwrap();
+        let mut opts = options(&context, "app:test");
+        opts.tags
+            .extend(["docker.io/library/app:test".into(), "app:other".into()]);
+        let first = build(&store, &opts).unwrap();
+        assert_eq!(store.images().unwrap().len(), 2);
+        let pinned = store
+            .create(create("index.docker.io/library/app:test"))
+            .unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nENV VERSION=second\nCMD [\"/second\"]\n",
+        )
+        .unwrap();
+        let second = build(
+            &store,
+            &options(&context, "registry-1.docker.io/library/app:test"),
+        )
+        .unwrap();
+        assert_ne!(first.id, second.id);
+        for alias in [
+            "app:test",
+            "library/app:test",
+            "docker.io/library/app:test",
+            "index.docker.io/library/app:test",
+            "registry-1.docker.io/library/app:test",
+        ] {
+            let current = store.create(create(alias)).unwrap();
+            assert_eq!(current.image.id, second.id, "{alias}");
+            assert_eq!(current.image.env["VERSION"], "second");
+            store.remove(&current.id, false).unwrap();
+        }
+        assert_eq!(
+            store.local_image("app:other").unwrap().unwrap().id,
+            first.id
+        );
+        assert_eq!(store.resolve(&pinned.id).unwrap().image.id, first.id);
+        store.rmi("docker.io/library/app:test", false).unwrap();
+        assert!(store.local_image("app:test").unwrap().is_none());
+        assert_eq!(store.images().unwrap().len(), 1);
+        assert_eq!(
+            store.resolve(&pinned.id).unwrap().image.env["VERSION"],
+            "first"
+        );
+    }
+
+    #[test]
+    fn conflicting_canonical_catalog_and_ambiguous_id_prefix_fail_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let context = temporary.path().join("context");
+        fs::create_dir(&context).unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nCMD [\"/first\"]\n",
+        )
+        .unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        let first = build(&store, &options(&context, "app:test")).unwrap();
+        let mut duplicate = first.clone();
+        duplicate.reference = "docker.io/library/app:test".into();
+        duplicate.id = format!("sha256:{}", "1".repeat(64));
+        fs::write(
+            store.root.join("images.json"),
+            serde_json::to_vec(&[first.clone(), duplicate.clone()]).unwrap(),
+        )
+        .unwrap();
+        for result in [
+            store.images().map(|_| ()),
+            store.local_image("app:test").map(|_| ()),
+            store.rmi("app:test", true).map(|_| ()),
+        ] {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate canonical")
+            );
+        }
+        duplicate.reference = "app:other".into();
+        duplicate.id = format!("sha256:{}", "a".repeat(64));
+        let mut first = first;
+        first.id = format!("sha256:aaaa{}", "b".repeat(60));
+        store
+            .save_catalog(&BTreeMap::from([
+                (image_reference_key(&first.reference).unwrap(), first),
+                (
+                    image_reference_key(&duplicate.reference).unwrap(),
+                    duplicate,
+                ),
+            ]))
+            .unwrap();
+        assert!(
+            store
+                .local_image("aaaa")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous image ID")
+        );
+        assert!(
+            store
+                .rmi("aaaa", true)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous image ID")
+        );
+    }
+
+    #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn pooled_images_accept_memory_sharing_and_check_projected_root_authority() {
         use std::os::unix::fs::PermissionsExt;

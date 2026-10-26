@@ -50,7 +50,7 @@ impl Drop for MetadataSocket {
     }
 }
 
-// A deliberately V1-only service exercises the adapter independently of pooling.
+// A V2 service with client reuse disabled exercises metadata independently of pooling.
 // Faults are rehashed at the transport layer to test revision/page authentication.
 fn metadata_socket(
     root: &std::path::Path,
@@ -85,18 +85,12 @@ fn metadata_socket(
             socket
                 .set_write_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
+            let ping: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(ping.version, 2);
+            assert!(matches!(ping.request, Request::Ping));
+            write_frame(&mut socket, &Response::Ready).unwrap();
             let envelope: Envelope = read_frame(&mut socket).unwrap();
-            if envelope.version != 1 {
-                write_frame(
-                    &mut socket,
-                    &Response::Error {
-                        code: "unsupported_version".into(),
-                        message: "V1 only".into(),
-                    },
-                )
-                .unwrap();
-                continue;
-            }
+            assert_eq!(envelope.version, 2);
             let fault = match &envelope.request {
                 Request::Metadata {
                     object_name,
@@ -476,7 +470,7 @@ fn metadata_reader_and_storage_validate_without_io_and_reject_unbound_operations
 }
 
 #[test]
-fn v1_socket_metadata_reader_reuses_binary_pages_and_never_reads_content() {
+fn socket_metadata_reader_without_reuse_never_reads_content() {
     let (tmp, cache, store, image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
         .unwrap()

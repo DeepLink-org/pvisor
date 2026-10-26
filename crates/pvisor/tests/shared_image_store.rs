@@ -77,6 +77,11 @@ fn exercise(root: &Path) {
         output: None,
     };
     let first = build(&store, &options).unwrap();
+    assert_eq!(
+        store.images().unwrap().len(),
+        2,
+        "canonical spellings share one catalog entry"
+    );
     assert_eq!(first.cache.location, image_root.join("pool-v2"));
     // Local build aliases remain usable offline after the remote tag TTL.
     let pool_platform = first.cache.handle.split(':').nth(2).unwrap();
@@ -112,9 +117,12 @@ fn exercise(root: &Path) {
         "FROM scratch\nCOPY payload /payload\nENV VERSION=second\nCMD [\"/payload\"]\n",
     )
     .unwrap();
-    let second = build(&store, &options).unwrap();
+    let mut replacement = options.clone();
+    replacement.tags = vec!["shared:test".into()];
+    let second = build(&store, &replacement).unwrap();
     let (updated, updated_owner) =
-        pvisor::cache::prepare_vm_image("shared:alias", Some(image_root.clone())).unwrap();
+        pvisor::cache::prepare_vm_image("docker.io/library/shared:test", Some(image_root.clone()))
+            .unwrap();
     assert_ne!(first.digest, second.digest);
     assert_eq!(updated.digest, second.digest);
     assert_eq!(updated.env["VERSION"], "second");
@@ -124,7 +132,18 @@ fn exercise(root: &Path) {
             .unwrap(),
         b"second generation"
     );
-    store.rmi("shared:test", true).unwrap();
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM index.docker.io/library/shared:test\n",
+    )
+    .unwrap();
+    replacement.tags = vec!["derived:test".into()];
+    let derived = build(&store, &replacement).unwrap();
+    assert_eq!(derived.env["VERSION"], "second");
+    assert_eq!(store.images().unwrap().len(), 3);
+    store
+        .rmi("registry-1.docker.io/library/shared:test", true)
+        .unwrap();
     store.rmi("shared:alias", true).unwrap();
     let retained = store.open_image(&first).unwrap();
     assert_eq!(

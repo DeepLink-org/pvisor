@@ -23,6 +23,8 @@ An explicit Job/cache image-store option takes precedence, followed by `PVISOR_I
 
 Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. All new local image publication uses `pool-v2`. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build tags also publish V2 references, committing each tag independently without a multi-tag transaction. `rmi` removes container frontend catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
 
+Short and fully qualified Docker Hub aliases share one canonical catalog identity, including pull/build replacement, create/FROM lookup and rmi. Equivalent build tags publish once. Distinct tags and existing containers retain their pinned revisions. Catalogs containing duplicate canonical identities fail explicitly; rebuild those catalogs in a fresh store.
+
 Local pool tags stay available offline until an explicit pull/refresh or another publication replaces them. The five-minute automatic tag refresh applies to writable filesystem/S3 backends, not the local pool.
 
 Only current V2 image records and pool formats are accepted. Directory-root records, missing platform/binding fields and old cache layouts are rejected; no migration or compatibility reader is provided. Stop and clean up old containers through the old version, then re-pull or rebuild into a fresh store and recreate containers. Existing files are not automatically deleted.
@@ -52,7 +54,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
---location selects the new shared cache format; --image-store is local OCI download/extraction staging. These are separate directories. Existing PVISOR_IMAGE_STORE can also be reused. Reads do not depend on staging after publication, so CI can use task-local staging. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
+`--location` selects shared storage; `--image-store` or `PVISOR_IMAGE_STORE` selects the local parent for scoped `staging/.import-*` imports. Downloaded layers, extracted roots and temporary prepared records are removed on success or error. Process crashes can leave residual directories. Reads do not depend on imports after publication. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
 
 ### S3: a writable publisher and read-only consumers
 
@@ -86,7 +88,7 @@ pvisor cache prepare alpine:latest
 
 ### Image splitting and upload tool
 
-`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
+`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Each invocation owns a temporary import below `--image-store` or `PVISOR_IMAGE_STORE` through the end of publication. It removes raw OCI data on success and failure. Host registry TLS accepts an additional PEM CA bundle through `SSL_CERT_FILE`; unreadable or invalid bundles fail explicitly.
 
 ```sh
 PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
@@ -94,7 +96,7 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `--refresh` rechecks the registry; without it, fresh local prepared-image records can be reused. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
+`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `publish` resolves the registry on every invocation, including without `--refresh`; temporary import records are not reused between calls. Writable `prepare` reuses shared HEAD for five minutes for mutable tags, until explicit refresh for immutable digests. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -171,7 +173,7 @@ pvisor-daemon serve --cache
 
 # 终端 2：使用同一个默认 socket
 pvisor cache prepare alpine:latest
-# 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
+# Explicitly refresh a locally published tag from the registry:
 pvisor cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
 pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
@@ -236,12 +238,12 @@ Totals count regular file paths and uncompressed logical sizes in the server's e
 
 ## Wire format
 
-Protocol 1 uses one exchange per connection. Protocol 2 negotiates through harmless Ping and allows sequential reuse, with up to four pooled client connections. Storage V2 is independent of transport versions. Frames use a four-byte big-endian length followed by UTF-8 JSON capped at 1 MiB. Successful read and metadata replies carry exactly the declared raw body length. Transport bodies are uncompressed (metadata objects themselves may be compressed), with mandatory length and SHA-256 validation.
+Only protocol 2 is accepted by the server and VM bridge. A client sends one harmless Ping before its actual request; rejection or EOF fails without downgrade. Sequential reuse allows up to four pooled client connections. Disabling reuse still sends V2. Storage V2 is independent of the wire protocol. Frames use a four-byte big-endian length followed by UTF-8 JSON capped at 1 MiB. Successful read and metadata replies carry exactly the declared raw body length. Transport bodies are uncompressed (metadata objects themselves may be compressed), with mandatory length and SHA-256 validation.
 
 Request envelope:
 
 ```json
-{"version":1,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
+{"version":2,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
 ```
 
 Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. Paths are relative to image root; an empty path means root. Absolute paths, upward traversal and NUL are rejected. Symlinks are metadata; server path resolution never follows them. Guest traversal resolves symlinks inside the guest tree.
@@ -256,7 +258,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` requests a Linux image for the client's architecture, independent of server architecture. Successful records persist at `<image-store>/metadata/prepared-v1/` with platform digest/launch configuration. Mutable tags reuse records for five minutes; immutable digests do not expire while the extracted root exists. `pvisor cache prepare IMAGE --refresh` (`refresh: true`) forces registry resolution. Failed refresh returns an error while retaining previous records. Registry requests have a 10-second connect and 300-second total timeout. Expired tags never silently fall back to stale data. Missing/corrupt records or missing roots are prepared again.
+`prepare` requests a Linux image for the client's architecture, independent of server architecture. The published V2 HEAD contains the platform digest and launch configuration; no persistent raw prepared-image record is required. Local pool tags remain available offline until explicit refresh or replacement. Writable filesystem/S3 backends reuse mutable HEAD for five minutes and immutable digest HEAD until refresh. `--refresh` (`refresh: true`) forces registry resolution. Failed imports preserve the previous HEAD and remove their temporary directories. Registry requests have a 10-second connect and 300-second total timeout; expired tags never silently fall back to stale data. Local reference/platform locks serialize local imports; remote HEAD publication uses conditional updates. `read`, `stat` and `list` require a published immutable handle and never pull implicitly.
 
 Reference/architecture locks cover resolution/preparation; concurrent callers recheck/reuse the first successful result. Preparation may populate uncached images and retains existing digest extraction locks. `read`/`stat`/`list` require published immutable image handles and never pull images implicitly.
 

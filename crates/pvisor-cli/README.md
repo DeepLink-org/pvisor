@@ -250,6 +250,15 @@ archives and extracted rootfs trees are temporary import/build inputs, except
 explicit `--output` exports. Original configurations remain under the image store's `configs`.
 Old directory-based records continue to work and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
+Short and fully qualified Docker Hub references address the same catalog tag.
+Replacing or removing it through any alias affects that one identity; existing
+containers and distinct tags retain their pinned revisions.
+Filesystem/S3 publishers use `--image-store` as the parent of scoped
+`staging/.import-*` directories, removed after success or error. No raw OCI
+directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
+Socket clients and the VM bridge require protocol V2; unsupported peers fail
+without automatic downgrade, even when connection reuse is disabled.
+
 V1 storage handles and pool encodings are retired. Re-pull to publish an image to
 the new pool, then recreate containers pinned to old handles; old data is never
 automatically deleted. Filesystem, S3 and pool use the same V2 physical format.

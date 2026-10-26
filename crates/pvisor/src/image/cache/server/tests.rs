@@ -23,35 +23,41 @@ fn fixture() -> (tempfile::TempDir, ImageStore, String) {
 #[test]
 fn prepare_queue_is_bounded_and_does_not_block_ping() {
     let (_tmp, store, _) = fixture();
-    let store = reader(&store.root).unwrap();
+    let store = Arc::new(reader(&store.root).unwrap());
     let (queue, pending) = mpsc::sync_channel(1);
-    let exchange = |request| {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        write_frame(
-            &mut client,
-            &Envelope {
-                version: 1,
-                token: None,
-                request,
-            },
-        )
-        .unwrap();
-        serve_connection(Stream::Unix(server), &store, None, Some(&queue)).unwrap();
-        client
-    };
+    let (reply, _result) = mpsc::sync_channel(1);
     let prepare = || Request::Prepare {
         image: "ubuntu:latest".into(),
         architecture: "arm64".into(),
         refresh: false,
     };
-    let _first = exchange(prepare());
-    let response: Response = read_frame(&mut exchange(prepare())).unwrap();
+    queue.try_send((reply, prepare())).unwrap();
+    let exchange = |request| {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let store = store.clone();
+        let queue = queue.clone();
+        let worker = std::thread::spawn(move || {
+            serve_connection(Stream::Unix(server), &store, None, Some(&queue)).unwrap();
+        });
+        write_frame(
+            &mut client,
+            &Envelope {
+                version: 2,
+                token: None,
+                request,
+            },
+        )
+        .unwrap();
+        let response: Response = read_frame(&mut client).unwrap();
+        drop(client);
+        worker.join().unwrap();
+        response
+    };
     assert!(
-        matches!(response, Response::Error { .. }),
+        matches!(exchange(prepare()), Response::Error { .. }),
         "full queue must reply rather than hang"
     );
-    let response: Response = read_frame(&mut exchange(Request::Ping)).unwrap();
-    assert!(matches!(response, Response::Ready));
+    assert!(matches!(exchange(Request::Ping), Response::Ready));
     assert!(matches!(
         pending.try_recv().unwrap().1,
         Request::Prepare { .. }
@@ -157,16 +163,9 @@ fn client_rejects_corrupt_content() {
         let listener = UnixListener::bind(&path).unwrap();
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            if reuse {
-                for _ in 0..2 {
-                    let ping: Envelope = read_frame(&mut socket).unwrap();
-                    assert_eq!(ping.version, 2);
-                    assert!(matches!(ping.request, Request::Ping));
-                    write_frame(&mut socket, &Response::Ready).unwrap();
-                }
-            }
+            crate::image::cache::client::tests::handshake(&mut socket);
             let read: Envelope = read_frame(&mut socket).unwrap();
-            assert_eq!(read.version, if reuse { 2 } else { 1 });
+            assert_eq!(read.version, 2);
             assert!(matches!(read.request, Request::Read { length: 3, .. }));
             write_frame(
                 &mut socket,
@@ -250,7 +249,7 @@ fn server_and_direct_readers_share_revisions_after_source_removal() {
                 length: 5,
             },
         ];
-        // V1 opens a connection for each actual request; V2 retains one through
+        // Disabled reuse opens a V2 connection per actual request; reuse retains one through
         // negative/positive Stat, the semantic comparisons, and the final error.
         let count = if reuse { 1 } else { requests.len() + 3 };
         let server = std::thread::spawn(move || {
@@ -443,9 +442,7 @@ fn v2_preparation_queue_returns_result_without_handing_off_persistent_stream() {
     .unwrap();
     let (reply, request) = pending.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(matches!(request, Request::Prepare { .. }));
-    let PrepareReply::Result(send) = reply else {
-        panic!("v2 must retain stream ownership")
-    };
+    let send = reply;
     send.send(Ok((Response::Ready, vec![]))).unwrap();
     assert!(matches!(
         read_frame::<Response>(&mut client).unwrap(),
@@ -498,7 +495,7 @@ fn persistent_idle_connection_closes_stream() {
 }
 
 #[test]
-fn tcp_authorization_refusal_is_not_hidden_by_legacy_fallback() {
+fn tcp_authorization_refusal_is_returned_without_reconnect() {
     let (_tmp, store, _) = fixture();
     let cache = reader(&store.root).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -517,23 +514,29 @@ fn tcp_authorization_refusal_is_not_hidden_by_legacy_fallback() {
 }
 
 #[test]
-fn v1_still_closes_after_one_request() {
+fn v1_is_rejected_before_execution() {
     let (_tmp, store, _) = fixture();
     let cache = reader(&store.root).unwrap();
     let (mut client, server) = UnixStream::pair().unwrap();
+    let (queue, pending) = mpsc::sync_channel(1);
     write_frame(
         &mut client,
         &Envelope {
             version: 1,
             token: None,
-            request: Request::Ping,
+            request: Request::Prepare {
+                image: "never-import:test".into(),
+                architecture: "amd64".into(),
+                refresh: true,
+            },
         },
     )
     .unwrap();
-    serve_connection(Stream::Unix(server), &cache, None, None).unwrap();
+    serve_connection(Stream::Unix(server), &cache, None, Some(&queue)).unwrap();
+    assert!(matches!(pending.try_recv(), Err(mpsc::TryRecvError::Empty)));
     assert!(matches!(
         read_frame::<Response>(&mut client).unwrap(),
-        Response::Ready
+        Response::Error { code, .. } if code == "unsupported_version"
     ));
     assert!(read_frame::<Response>(&mut client).is_err());
 }
@@ -768,12 +771,12 @@ fn full_queues_reply_busy_without_admitting_requests_and_preserve_ordering() {
     for _ in 0..REQUEST_QUEUE_LIMIT {
         let (reply, _receive) = mpsc::sync_channel(1);
         files
-            .try_send((PrepareReply::Result(reply), Request::Ping))
+            .try_send((reply, Request::Ping))
             .unwrap_or_else(|_| panic!("fill file queue"));
         let (reply, _receive) = mpsc::sync_channel(1);
         prepare
             .try_send((
-                PrepareReply::Result(reply),
+                reply,
                 Request::Prepare {
                     image: "filler".into(),
                     architecture: "amd64".into(),
@@ -825,9 +828,6 @@ fn full_queues_reply_busy_without_admitting_requests_and_preserve_ordering() {
     send_v2(&mut client, Request::Ping);
     let (reply, request) = pending_files.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(matches!(request, Request::Ping));
-    let PrepareReply::Result(reply) = reply else {
-        panic!()
-    };
     reply.send(Ok((Response::Ready, vec![]))).unwrap();
     assert!(matches!(
         read_frame::<Response>(&mut client).unwrap(),
@@ -838,7 +838,7 @@ fn full_queues_reply_busy_without_admitting_requests_and_preserve_ordering() {
 }
 
 #[test]
-fn legacy_preparation_handoff_keeps_admission_counted_until_reply() {
+fn preparation_keeps_connection_admission_until_peer_closes() {
     let (_tmp, cache, _) = published_fixture();
     let (files, _pending_files) = mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
     let (prepare, pending_prepare) = mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
@@ -853,7 +853,7 @@ fn legacy_preparation_handoff_keeps_admission_counted_until_reply() {
     write_frame(
         &mut client,
         &Envelope {
-            version: 1,
+            version: 2,
             token: None,
             request: Request::Prepare {
                 image: "fixture".into(),
@@ -867,18 +867,15 @@ fn legacy_preparation_handoff_keeps_admission_counted_until_reply() {
         .recv_timeout(Duration::from_secs(2))
         .unwrap();
     assert!(matches!(request, Request::Prepare { .. }));
-    connection.join().unwrap();
     assert_eq!(handlers.active.load(Ordering::Acquire), 1);
-    let PrepareReply::Connection(stream, permit) = reply else {
-        panic!()
-    };
-    reply_result(stream, Ok((Response::Ready, vec![]))).unwrap();
-    drop(permit);
+    reply.send(Ok((Response::Ready, vec![]))).unwrap();
     assert!(matches!(
         read_frame::<Response>(&mut client).unwrap(),
         Response::Ready
     ));
-    assert!(read_frame::<Response>(&mut client).is_err());
+    assert_eq!(handlers.active.load(Ordering::Acquire), 1);
+    drop(client);
+    connection.join().unwrap();
     assert_eq!(handlers.active.load(Ordering::Acquire), 0);
 }
 
@@ -909,7 +906,7 @@ fn request_execution_and_pending_queues_have_fixed_bounds() {
         for _ in 0..count {
             let (reply, _receive) = mpsc::sync_channel(1);
             queue
-                .send((PrepareReply::Result(reply), Request::Ping))
+                .send((reply, Request::Ping))
                 .unwrap_or_else(|_| panic!("worker queue closed"));
         }
         for _ in 0..count {
@@ -921,12 +918,12 @@ fn request_execution_and_pending_queues_have_fixed_bounds() {
         for _ in 0..REQUEST_QUEUE_LIMIT {
             let (reply, _receive) = mpsc::sync_channel(1);
             queue
-                .try_send((PrepareReply::Result(reply), Request::Ping))
+                .try_send((reply, Request::Ping))
                 .unwrap_or_else(|_| panic!("queue capacity smaller than limit"));
         }
         let (reply, _receive) = mpsc::sync_channel(1);
         assert!(matches!(
-            queue.try_send((PrepareReply::Result(reply), Request::Ping)),
+            queue.try_send((reply, Request::Ping)),
             Err(mpsc::TrySendError::Full(_))
         ));
         assert_eq!(active.load(Ordering::Acquire), count);
