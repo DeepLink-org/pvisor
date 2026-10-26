@@ -667,9 +667,8 @@ fn main() {
             "{bundle}"
         );
         assert_eq!(bundle["run"]["exit_code"], 0);
-        assert_eq!(
-            tmp.path().join("reader-staging").exists(),
-            false,
+        assert!(
+            !tmp.path().join("reader-staging").exists(),
             "reader must not extract a local OCI root"
         );
     }
