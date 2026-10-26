@@ -47,6 +47,22 @@ brew test DeepLink-org/pvisor/pvisor
 
 The tap uses `DeepLink-org/homebrew-pvisor`; maintainers must complete the [one-time setup](../community/releasing.md#one-time-setup) before this command is available. Supported platforms are Apple Silicon macOS and Linux x86_64. Homebrew does not install Python or build Rust, and does not start the daemon as a service.
 
+Job startup requires the executable and its ancestor directories to be owned by
+you or root and not writable by other users; root-owned sticky directories such
+as `/tmp` are allowed. Homebrew may create its Cellar with group write permission.
+If startup reports `unsafe owner executable ancestor`, inspect the named directory.
+For a single-owner Homebrew installation whose Cellar is group-writable, remove
+write permission for group and other users before testing:
+
+```bash
+chmod go-w "$(brew --cellar)"
+brew test DeepLink-org/pvisor/pvisor
+```
+
+This changes that directory's permissions, without recursing into installed
+packages. For a shared Homebrew installation that needs group write access,
+install the wheel or native archive under your own protected directory instead.
+
 For installation without a package manager, open [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) and download `pvisor-X.Y.Z-linux-x86_64.tar.gz` or `pvisor-X.Y.Z-macos-arm64.tar.gz`, together with `SHA256SUMS`. Verify the matching checksum (`sha256sum ARCHIVE` on Linux, `shasum -a 256 ARCHIVE` on macOS), extract the archive into a version-specific directory owned by you (for example under `~/.local/opt/pvisor`) and add its `bin` directory to `PATH`. Keep all files in `bin` together. Replace the complete directory when upgrading; remove it and its `PATH` entry to uninstall. Job state and user caches remain in place. The rolling `nightly` release provides the same native archive layout.
 
 ## 2. Check platform prerequisites

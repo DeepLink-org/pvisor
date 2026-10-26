@@ -88,6 +88,8 @@ class NativeReleaseTests(unittest.TestCase):
                     formula,
                 )
             self.assertIn('bin.install_symlink libexec/"pvisor"', formula)
+            self.assertIn('system bin/"pvisor-daemon", "protocol"', formula)
+            self.assertNotIn(" spawn ", formula, "Homebrew's Seatbelt cannot nest pVisor's")
 
     def test_missing_sources_prevents_release_generation(self):
         with workspace() as (root, _):

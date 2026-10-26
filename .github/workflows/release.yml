@@ -147,7 +147,12 @@ jobs:
           brew tap-new pvisor/release-test
           cp dist/pvisor.rb "$(brew --repository pvisor/release-test)/Formula/pvisor.rb"
           brew install pvisor/release-test/pvisor
+          # Owner bootstrap rejects replaceable executable ancestors.
+          chmod go-w "$(brew --cellar)"
           brew test pvisor/release-test/pvisor
+          pvisor_bin="$(brew --prefix pvisor/release-test/pvisor)/bin/pvisor"
+          hello="$("$pvisor_bin" spawn --executor host -- /bin/echo hello)"
+          test "$hello" = hello
           brew uninstall pvisor/release-test/pvisor
 
   homebrew-publish:

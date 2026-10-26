@@ -103,8 +103,11 @@ macOS VM 验收仍需独立的硬件验证记录。
 
 构建 runner 还通过 Homebrew 式软链接布局测试原生归档，包括 host 执行和 companion
 定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
-Homebrew 任务在 macOS 下载已发布的归档，运行 `brew install`、`brew test` 和
-`brew uninstall`，通过后更新 tap。Linux Homebrew 安装及升级／回退仍缺少原生验收。
+Homebrew 任务在 macOS 下载并安装已发布的归档，移除 runner 的 Cellar 组写和其他用户写权限，
+随后运行 `brew test`，在 Homebrew 沙箱内检查版本、协议和 companion 帮助。
+任务再从沙箱外执行真实 host Job，检查退出码和 `hello` 输出，卸载配方后才更新 tap。
+Homebrew 的 Seatbelt 沙箱不能嵌套 pVisor 的沙箱；目录权限要求见[安装指南](../start/installation.md)。
+Linux Homebrew 安装及升级／回退仍缺少原生验收。
 
 稳定版本不可变。重跑在发布前核对 GitHub/PyPI 现有文件的 SHA-256；相同内容
 保留，缺失文件可以补齐，同文件名内容不同则失败，必须发布新版本。GitHub 上传
