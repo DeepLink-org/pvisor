@@ -70,7 +70,7 @@ data/sha256/<aa>/<bb>/<plaintext-chunk-sha256>
 
 ## 文件系统接入与本地存储 {#filesystem-access}
 
-Docker 新 pull/build 默认写 `images/pool-v2`，daemon 服务存储为 `<image-store>/cache-v2`。本地池通过 `pool-format.json` 标识，但与文件系统／S3 使用同一压缩物理格式，不再套一层专用 PVPOOL 编码。普通池读取只保留有界解码内存，没有持久的完整解压镜像副本。非池直接读取器可把编码 frame 保存在 `<user-cache>/pvisor/cache-v2/objects/`；磁盘缓存没有总量淘汰配额。
+Docker pull/build、无 daemon 的 spawn 和 cache server 都写同一个 `<image-store>/pool-v2`；默认目录和覆盖规则见[本地镜像目录](../reference/shared-image-cache.md#local-image-store)。本地池通过 `pool-format.json` 标识，但与文件系统／S3 使用同一压缩物理格式，不再套一层专用 PVPOOL 编码。普通池读取只保留有界解码内存，没有持久的完整解压镜像副本。非池直接读取器可把编码 frame 保存在 `<user-cache>/pvisor/cache-v2/objects/`；磁盘缓存没有总量淘汰配额。
 
 VM direct lower 与 host FUSE 共用读取器。VM 使用私有元数据／稀疏文件投影；普通 guest READ 从后端读取，copy-up、完整导出与校验可能读取整个文件。guest mmap 继续走 virtio-fs 和 guest page cache，没有新增 DAX。远程 VM 适配器原有的已校验文件块缓存仍可能持久保存原始块，应与本地池区分。镜像首次准备仍须下载、应用 OCI 层；本格式不实现 registry layer 的远端按需解压。
 

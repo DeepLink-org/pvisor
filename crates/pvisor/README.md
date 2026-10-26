@@ -788,33 +788,55 @@ remain silent. Download counts use received compressed bytes, and layer readines
 follows verification and extraction rather than merely reaching an expected size.
 `pull_for_platform_with_progress` selects `linux/amd64` or `linux/arm64`
 (`linux/arm64/v8` is an alias), independently of the host. Image records retain
-their canonical platform; legacy records default to native because previous
-versions only pulled native images. A reference holds one platform, replaced
+their explicit canonical platform; records missing it are rejected. A reference holds one platform, replaced
 atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
-New Docker pulls and completed builds default to the local immutable cache pool
-under `PVISOR_DOCKER_HOME/images/pool-v2` (beneath the default user-local
-`pvisor/docker` directory when unset). They use the cache's V2 compressed directory radix
-index, authenticated fixed revision, conditional publication and direct VM
-backend. They do not retain a complete extracted rootfs or OCI layer archives.
-Original OCI configuration bytes are retained separately under `images/configs`
-so subsequent builds preserve configuration such as labels and SHELL. A repeated
-pull still resolves the registry manifest/config, but a matching catalogued pool
-revision skips layer download and extraction. Pulls of the same reference/platform
-serialize without holding the catalog lock across network I/O.
+Docker pull/build, daemonless Job image preparation and the cache service share
+one local V2 image store under the user data directory, `pvisor/docker/images`.
+`PVISOR_IMAGE_STORE` overrides this root for all three entry points. An explicit
+Job/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
+set, the common image root is that directory's `images`, preserving isolated
+stores; embedded `Store::open(root)` always keeps images under `root/images`
+and ignores environment defaults. See [local image storage](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
+for platform paths and layout.
 
-`Image.cache` binds the pool location and immutable handle; its legacy `rootfs`
-field is empty. Embedded consumers call `Store::open_image`, retain the returned
+The common root owns `pool-v2`, original OCI `configs`, temporary `staging`,
+reference/platform `locks` and lifetime-owned `projections`. Imports use one
+temporary OCI store and remove downloaded layers/extracted roots on normal
+success/failure. Docker pull still resolves manifest/config, then reuses a
+matching shared pool revision without downloading layers. Local pool tags remain
+available offline until an explicit pull/refresh or another publication replaces
+them. Build tags also publish V2 references usable by Jobs without a registry.
+Short and fully qualified Docker Hub aliases use the OCI parser's canonical
+registry/repository/tag identity for catalog lookup, replacement and removal.
+Equivalent build tags publish once; distinct tags remain independent. Catalogs
+with duplicate canonical identities fail rather than selecting an arbitrary
+revision. Existing containers retain their pinned image. Each distinct tag commits
+independently; there is no multi-tag filesystem transaction. Container `images.json` remains
+its frontend catalog; `rmi` removes catalog references, not shared pool objects.
+
+Published `Image` records require `CachedImage`, binding the pool location and
+immutable handle. There is no directory-root field or fallback. Private builds
+use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;
+their working-tree descriptors cannot deserialize as published images. Embedded
+consumers call `Store::open_image`, retain the returned
 `ImageRoot` through all OverlayCore/VM access, and use its `rootfs()` as the lower.
 That path is a temporary metadata/sparse-file projection: native host reads must
 not bypass the filesystem backend. Ordinary VM reads fetch only needed content
 blocks, with bounded decoded memory caches and no persistent raw block mirror.
 Copy-up may materialize a whole file in the projection before copying into upper;
-normal projection teardown removes it. Legacy records without `cache` continue
-to use their existing directories, including already created containers. No
-existing image directories are automatically deleted or migrated.
+normal projection teardown removes it. Old directory records, missing platform
+fields and obsolete storage formats are rejected. Use a fresh store and re-pull
+or rebuild images; no compatibility reader or automatic migration is provided.
+Stop and clean up old containers through the old version before switching stores.
+
+Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+`staging/.import-*` directory, removed on success and error after publication
+finishes. They retain no raw OCI layers, extracted roots or prepared records.
+Read-only preparation needs no local import directory. Registry TLS can add a
+PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
 
 Pool, filesystem and S3 stores use one V2 physical format. All filesystem
 metadata is inline in independently compressed directory radix frames, routed by
@@ -830,9 +852,9 @@ and standard seekable footers, without the old pool-only envelope/raw fallback.
 
 `pool-format.json` rejects retired physical encodings without modifying them.
 V1 handles/readers/publishers are removed: republish OCI images into an empty V2
-prefix. Re-pulling an old catalogued image rebuilds its pool entry; containers
-pinned to an old cache handle need recreation. No old cache directory is deleted
-automatically. Storage versions are independent of transport protocols 1/2.
+prefix. Old catalog/container records require recreation in the current format.
+Existing files are not automatically deleted. Storage versions are independent of
+the socket protocol, which now accepts only envelope version 2.
 The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
 and 2,000,000 content spans; object limits can be reached first. Publication still
 plans metadata in O(N) memory while staging encoded content on disk and bounding
@@ -985,27 +1007,25 @@ physical-lower stability declaration retain their contracts.
   their error kinds and permit reuse; framing, transport or integrity errors
   discard the stream. Ordinary cache clients do not replay failed actual requests;
     the private bridge's pinned read clients have the bounded exception below.
-- Protocol 1 remains one-request-per-connection. A V2 client falls back before
-  sending the actual request when an old service rejects the version or closes
-  the harmless handshake. Authentication failures, malformed replies and
-  handshake timeouts are not downgrade signals. Filesystem/S3 object transports
-  do not use the socket pool; metadata prefetch still applies.
+- Only protocol 2 is accepted. One harmless Ping negotiates each new stream;
+  refusal, EOF or invalid replies fail without reconnecting through an older
+  protocol. Filesystem/S3 object transports do not use the socket pool; metadata
+  prefetch still applies.
 - The service admits at most 64 connections, separates their framing/idle waits
   from 16 file workers and two preparation workers, and bounds each pending
   request queue to 16. Saturation returns a busy error or closes an unadmitted
   connection; callers must handle these failures. Idle connections and long
   preparations do not occupy file workers.
 
-The Linux private host-network bridge accepts envelope 1 (one exchange) and
-2 (sequential persistent exchanges). It admits at most 32 connection handlers,
+The Linux private host-network bridge accepts only envelope 2
+(sequential persistent exchanges). It admits at most 32 connection handlers,
 separates frame/idle/write waits from four execution workers, and bounds queued
 requests to 16. Queue saturation returns a framed busy error; unadmitted
 connections close. Each exchange is confined to the pinned immutable handle
-and metadata whitelist. Bridge V2 is enabled by default. On both bridge hops,
+and metadata whitelist. On both bridge hops,
 private clients retry an exact-handle Stat/List/Read or whitelisted Metadata at
 most once on EOF, broken/reset/aborted/disconnected transport or connect refusal.
-The failed lease is released, and retry uses a fresh stream (negotiated V2, or
-already-established V1 fallback). Pool wait, connect, handshake and body I/O
+The failed lease is released, and retry uses a fresh V2 stream. Pool wait, connect, handshake and body I/O
 share the original per-hop deadline. Timeout, busy/not-found/auth errors,
 malformed frames/digest declarations and verified-body digest mismatches are
 not retryable. Prepare/Open and ordinary clients retain no-replay semantics.
@@ -1017,26 +1037,24 @@ not cancel already queued/executing upstream work, whose outcome may be unknown.
 Only immutable read operations qualify; no mutation is replayed. Detached bridge
 threads live in the dedicated child process, never the pre-namespace VM runner.
 
-For private engineering A/B, `PVISOR_LAZY_BRIDGE_V2=0` retains the previous
-single-exchange bridge and socket-worker scheduling independently of upstream
-V2. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
+The single-exchange bridge and `PVISOR_LAZY_BRIDGE_V2` switch are removed. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
 private directory. Bridge-created shared counter files contain only aggregate
 counts/timings, not credentials or image paths; read after process teardown.
 Live snapshots are approximate, killed-process gauges may remain nonzero,
 and files are not reboot-durable. The benchmark caller owns file cleanup.
 
-V2 is enabled by default. For engineering comparison only, set
+For engineering comparison only, set
 `PVISOR_LAZY_IMAGE_V2=0` before constructing the client and VM runner to disable
-client index pages, metadata prefetch and connection reuse; other values retain
-V2. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
+client index pages, metadata prefetch and connection reuse; the wire protocol
+remains V2 in every mode. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
 RPC/prefetch path and pooling. These are private
 rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
 See the [archived same-artifact NumPy A/B](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_image_v2.py); historical
 Docker measurements are a different cohort. Contract tests cover real portable
-pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
-fallback and concurrent service progress. Linux KVM performance measurements do
+pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, rejected V1
+envelopes and concurrent service progress. Linux KVM performance measurements do
 not establish macOS/HVF, live S3 or WAN coverage.
 
 ## Physical lower stability (explicit experiment contract)

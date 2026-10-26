@@ -19,7 +19,9 @@ impl PortableCache {
         let (canonical, _) = crate::image::oci::cache_reference(image)?;
         // Observe before resolving the source, never after uploading it.
         let observed = self.observe(&canonical, platform)?;
-        let store = ImageStore::new(self.local_store.clone())?;
+        let local = crate::image::store::LocalStore::discover(self.local_store.clone())?;
+        let staging = local.staging()?;
+        let store = ImageStore::new(Some(staging.path().to_owned()))?;
         let prepared = store.prepare_with_refresh(image, architecture, refresh)?;
         Ok(self
             .publish_observed(&store, &prepared, architecture, &canonical, observed)?

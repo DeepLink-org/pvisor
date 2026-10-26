@@ -19,7 +19,10 @@ pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool
 pvisor-daemon serve --sandbox --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd --cache
 ```
 
-`--cache-image-store` overrides OCI staging. `--memory-pool` can run independently
+`--cache-image-store` selects the local V2 image directory shared with Docker
+and VM Jobs (default: user data `pvisor/docker/images`). Published Docker image
+records require a V2 binding and explicit platform; directory-backed image records
+are rejected and must be recreated in the current format. `--memory-pool` can run independently
 or alongside cache/sandbox serving. `--state` belongs to sandbox or memory-pool
 serving. Select sandbox serving explicitly
 with `--sandbox`; sandbox-specific options require that selection. With no component
@@ -394,27 +397,22 @@ physical-memory budget.
 The launch callback joins the identity-bound cgroup **before exec**, using a pre-opened `cgroup.procs` FD under the owner lock and checking started/deletion/tombstone markers. Supervisor startup verifies membership instead of moving an already-running Tokio process; supervisor/Tokio allocations and subsequent VM/helper children are charged inside the sandbox budget. Direct hidden-command invocation outside that cgroup fails closed.
 
 Images are trusted local `images_dir/<key>.json` manifests, not registry
-references. Legacy fields are `rootfs` (absolute independently provisioned Linux tree,
-never host `/` or overlapping daemon state), `entrypoint` (absolute guest
-bootstrap argv), optional `cmd`, optional `env`, and optional absolute
-`library_dir` for firmware. The bootstrap receives requested workload argv, or
-`cmd` if empty, appended to `entrypoint`; request env overrides manifest env,
-without inheriting host env or shell interpolation. The immutable rootfs is
-served through the native VM path with private writes.
+references. Every manifest requires `pooled_image`, the owning Docker API's
+pinned V2 image contract. `rootfs` names its private Docker store directory;
+standalone unpacked roots and missing pool bindings are rejected. Recreate old
+templates with `prepare-image`; no compatibility reader or migration is provided.
+The template also declares bootstrap `entrypoint`, optional `cmd`/`env`, and an
+optional absolute `library_dir` for firmware. Requested argv, or `cmd` when
+empty, is appended to the bootstrap; request env overrides template env without
+host environment inheritance or shell interpolation. Each VM owns its lazy
+projection and private writes.
 
-For independently provisioned legacy manifests, the bootstrap must supervise real OpenSandbox **1.1.0 execd**, egress and the
-workload, initialize/authenticate services, forward signals and reap children.
-It must provide byte-transparent guest AF_VSOCK listeners on **CID 3**, ports
-**44772/18080**, bridged to those real services. Supervisor loopback TCP
-publications connect through private Unix sockets and native vsock forwarding.
-A stock distribution rootfs or a sleeping process does not satisfy this contract.
-
-Create, Inspect of a Running VM and resume readiness checks verify real execd
-`/ping`, `/ready` (JSON `initialized: true`) and egress `/healthz` through the
-bridges, requiring HTTP
-200 and bounded bodies. Readiness is not manufactured. For legacy images the daemon does not inject
-`/execd`, call its initialization handshake or synthesize command/SSE/file behavior. The prepared image must complete
-any runtime initialization and configure its service authentication.
+Explicit upstream-service profiles supervise real OpenSandbox **1.1.0 execd**
+or real envd. Their managed bootstrap initializes/authenticates services,
+forwards signals, reaps children and exposes the appropriate guest vsock bridges.
+Create, Running inspection and resume check real service readiness through those
+bridges. Readiness is not manufactured; a sleeping process alone does not satisfy
+this contract.
 
 Endpoint lookup authenticates the live supervisor, requires the current RunHandle
 Running state, checks deletion fences and resolves a live publication. It does
@@ -424,10 +422,8 @@ caches are neither written nor used as liveness proof.
 
 `prepare-image` supplies the managed bootstrap described above. Its manifest adds
 `pooled_image` (the owning Docker API's pinned image contract) and
-`native_opensandbox: true`; `rootfs` then names its private Docker store, not an
-unpacked directory. The backend is lazy and is not advertised as immutable DAX
-storage. Existing directory-root manifests retain their original upstream-egress
-contract. Python SDK initialization resolves both endpoints even without a
+`native_opensandbox: true`; `rootfs` names its private Docker store. The backend is lazy and is not advertised as immutable DAX
+storage. Directory-root manifests are not supported. Python SDK initialization resolves both endpoints even without a
 network policy. There is no full SDK-conformance or density evidence.
 
 Native OverlayNet supplies outbound VM networking; requested OpenSandbox network
@@ -624,7 +620,10 @@ through `pvisor-daemon serve --cache --cache-listen ENDPOINT --cache-image-store
 Cache serving supports Linux and macOS and does not require KVM or cgroups.
 It preserves `PVISOR_CACHE_LOCATION` / `PVISOR_CACHE_SERVER`, `PVISOR_IMAGE_STORE`
 and `PVISOR_CACHE_TOKEN`; `--cache-listen` and `--cache-image-store` override their defaults.
-TCP requires a token. Filesystem/S3 clients need no cache daemon. Node runtime
+TCP requires a token. The image directory must be owned by the current user and
+private (0700); new roots are created with those permissions, while existing
+shared directories are rejected without changing their permissions.
+Filesystem/S3 clients need no cache daemon. Node runtime
 protocols belong to `pvisor`; the daemon has no automatic acquire/release
 adapter.
 

@@ -14,8 +14,8 @@ The task prints its own Run ID. For network credentials, use `--pass-env` as des
 | Variable | Current behavior |
 | --- | --- |
 | `PVISOR_RUN_HOME` | Default Run root; otherwise `~/.pvisor/runs`, or system temporary storage without HOME |
-| `PVISOR_IMAGE_STORE` | OCI cache override; explicit `--image-store` wins |
-| `PVISOR_CACHE_SERVER` | Shared cache endpoint; `off` disables; unset probes the per-user Unix socket |
+| `PVISOR_IMAGE_STORE` | Common local image directory; explicit Job/cache image-store options win; see [path precedence](shared-image-cache.md#local-image-store) |
+| `PVISOR_CACHE_SERVER` | Shared cache endpoint; `off` selects the local V2 pool; unset probes the per-user Unix socket, then uses the local pool if absent |
 | `PVISOR_CACHE_TOKEN` | Shared secret for TCP cache endpoints; do not pass it to agents with `--pass-env` |
 | `PVISOR_BIN` | Obsolete Python-launcher override; installed native scripts do not read it. Invoke the binary path directly or select it through `PATH` |
 | `XDG_CONFIG_HOME` | User-policy root, default `~/.config` |

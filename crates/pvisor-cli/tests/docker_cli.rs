@@ -1,9 +1,9 @@
 //! Docker-profile command routing and opt-in native VM acceptance.
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    time::Duration,
 };
 
 fn command(home: &Path) -> Command {
@@ -176,37 +176,33 @@ impl Native {
                 .unwrap()
                 .pull(reference.to_str().unwrap())
                 .unwrap();
-            assert!(
-                image.cache.is_some(),
-                "native image acceptance must use the local pool"
-            );
-            assert!(image.rootfs.as_os_str().is_empty());
+            assert!(image.cache.handle.starts_with("pvisor-v2:"));
             image
         } else {
             let rootfs = PathBuf::from(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect(
                 "set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep",
             ));
-            pvisor::docker::Image {
-                reference: "fixture:latest".into(),
-                id: format!("sha256:{}", "1".repeat(64)),
-                digest: format!("sha256:{}", "2".repeat(64)),
-                platform: if cfg!(target_arch = "aarch64") {
-                    "linux/arm64"
-                } else {
-                    "linux/amd64"
-                }
-                .into(),
-                rootfs: rootfs.canonicalize().unwrap(),
-                cache: None,
-                env: BTreeMap::new(),
-                entrypoint: Vec::new(),
-                cmd: Vec::new(),
-                cwd: "/".into(),
-                user: String::new(),
-                stop_signal: 15,
-                volumes: Vec::new(),
-                created_ms: 0,
-            }
+            let dockerfile = temporary.path().join("Dockerfile");
+            fs::write(&dockerfile, "FROM scratch\nCOPY . /\n").unwrap();
+            pvisor::docker::build::build(
+                &pvisor::docker::Store::open(home.clone()).unwrap(),
+                &pvisor::docker::build::BuildOptions {
+                    context: rootfs,
+                    file: dockerfile,
+                    tags: vec!["fixture:latest".into()],
+                    build_args: std::collections::BTreeMap::new(),
+                    target: None,
+                    platform: None,
+                    pull: false,
+                    cpus: 1,
+                    memory_mib: 32,
+                    network: false,
+                    timeout: Duration::from_secs(30),
+                    quiet: true,
+                    output: None,
+                },
+            )
+            .unwrap()
         };
         image.reference = "fixture:latest".into();
         // This is an isolated catalog fixture, never a real user's image store.
@@ -521,8 +517,8 @@ fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
             .unwrap(),
         b"hello"
     );
-    assert!(image.rootfs.as_os_str().is_empty());
-    assert!(image.cache.is_some());
+    assert!(image.cache.handle.starts_with("pvisor-v2:"));
+    assert!(serde_json::to_value(image).unwrap().get("rootfs").is_none());
     assert!(archive.is_file());
     fs::write(
         context.join("Dockerfile"),

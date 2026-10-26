@@ -12,7 +12,7 @@
 
 创建请求使用本机 `images_dir/<key>.json` 中的模板 key，创建期间不从 registry 拉取或整体解压镜像。先用 `prepare-image` 准备可信镜像并固定 revision；实际部署优先使用 digest。基础镜像应包含 `/bin/sh`、`/bin/sleep` 和工作负载所需工具；E2B shell 命令还需要 `/bin/bash`。
 
-新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；旧独立 rootfs manifest 保留其 bootstrap 合同，见[镜像合同](../../design/daemon/operations.md#image-contract)。
+新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；每个模板都必须带固定的 V2 池 binding；独立 rootfs manifest 会被拒绝，见[镜像合同](../../design/daemon/operations.md#image-contract)。
 
 ## 安装与启动 {#install}
 

@@ -1,6 +1,33 @@
 # Shared image cache and storage backends
 
-`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-daemon serve --cache` prepares OCI images and generates paged indexes and content objects under `<image-store>/cache-v2/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+`pvisor cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-daemon serve --cache` prepares OCI images and generates paged indexes and content objects under `<image-store>/pool-v2/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+
+## Local image directory {#local-image-store}
+
+Docker-compatible commands, spawn without a selected remote backend, and the cache server share one local image directory. Its default is `~/Library/Application Support/pvisor/docker/images/` on macOS and `$XDG_DATA_HOME/pvisor/docker/images/` on Linux, usually `~/.local/share/pvisor/docker/images/`. Revisions referenced by tasks belong in persistent user data storage.
+
+An explicit Job/cache image-store option takes precedence, followed by `PVISOR_IMAGE_STORE`. With only `PVISOR_DOCKER_HOME` set, all local entry points use its `images/`, preserving isolated storage. Embedded `Store::open(root)` always uses `root/images`, independently of environment defaults. Container state, Job records and writable layers keep their separate owners. The local image root and its control directories must be owned by the current user, private (0700) and not symlinks; incompatible existing directories fail without changing their permissions.
+
+```text
+<image-store>/
+├── configs/<config-digest>.json
+├── pool-v2/
+│   ├── format.json
+│   ├── pool-format.json
+│   ├── meta/<image-key>/...
+│   └── data/{packs,sha256}/...
+├── staging/.import-*/
+├── locks/
+└── projections/
+```
+
+Download/extraction directories under `staging` are removed on normal success or failure; process crashes can leave residual directories. `configs` retains digest-checked original OCI configuration. All new local image publication uses `pool-v2`. Docker pull still resolves the registry, but reuses matching shared-pool digests. Build tags also publish V2 references, committing each tag independently without a multi-tag transaction. `rmi` removes container frontend catalog references without reclaiming shared content; active and stopped tasks retain fixed revisions.
+
+Short and fully qualified Docker Hub aliases share one canonical catalog identity, including pull/build replacement, create/FROM lookup and rmi. Equivalent build tags publish once. Distinct tags and existing containers retain their pinned revisions. Catalogs containing duplicate canonical identities fail explicitly; rebuild those catalogs in a fresh store.
+
+Local pool tags stay available offline until an explicit pull/refresh or another publication replaces them. The five-minute automatic tag refresh applies to writable filesystem/S3 backends, not the local pool.
+
+Only current V2 image records and pool formats are accepted. Directory-root records, missing platform/binding fields and old cache layouts are rejected; no migration or compatibility reader is provided. Stop and clean up old containers through the old version, then re-pull or rebuild into a fresh store and recreate containers. Existing files are not automatically deleted.
 
 ## Choose a backend
 
@@ -10,7 +37,7 @@ Server, filesystem, and S3 caches share the same prepare/list/stat/read interfac
 
 | Backend | Configuration | Use case |
 |---|---|---|
-| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Reuse an extracted OCI store on one host or an existing central service |
+| `server` (default) | PVISOR_CACHE_SERVER=unix://... or loopback tcp://... | Serve the host's V2 image pool or an existing central service |
 | `filesystem` | PVISOR_CACHE_BACKEND=filesystem and PVISOR_CACHE_LOCATION=/absolute/directory | Multiple local processes or a shared disk/NFS cache |
 | `s3` | PVISOR_CACHE_BACKEND=s3 and PVISOR_CACHE_LOCATION=s3://BUCKET/PREFIX | Share images across machines through object storage without a cache service |
 
@@ -27,7 +54,7 @@ pvisor cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
---location selects the new shared cache format; --image-store is local OCI download/extraction staging. These are separate directories. Existing PVISOR_IMAGE_STORE can also be reused. Reads do not depend on staging after publication, so CI can use task-local staging. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
+`--location` selects shared storage; `--image-store` or `PVISOR_IMAGE_STORE` selects the local parent for scoped `staging/.import-*` imports. Downloaded layers, extracted roots and temporary prepared records are removed on success or error. Process crashes can leave residual directories. Reads do not depend on imports after publication. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
 
 ### S3: a writable publisher and read-only consumers
 
@@ -61,7 +88,7 @@ pvisor cache prepare alpine:latest
 
 ### Image splitting and upload tool
 
-`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
+`pvisor cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Each invocation owns a temporary import below `--image-store` or `PVISOR_IMAGE_STORE` through the end of publication. It removes raw OCI data on success and failure. Host registry TLS accepts an additional PEM CA bundle through `SSL_CERT_FILE`; unreadable or invalid bundles fail explicitly.
 
 ```sh
 PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
@@ -69,7 +96,7 @@ PVISOR_CACHE_READ_ONLY=false pvisor cache publish alpine:latest \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
 
-`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `--refresh` rechecks the registry; without it, fresh local prepared-image records can be reused. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
+`--architecture` accepts `amd64` and `arm64`, defaulting to the host architecture. `publish` resolves the registry on every invocation, including without `--refresh`; temporary import records are not reused between calls. Writable `prepare` reuses shared HEAD for five minutes for mutable tags, until explicit refresh for immutable digests. `publish` always performs splitting and upload, without skipping based on a remote tag record. Conditional creation reuses existing immutable content objects and uploads missing blocks again. Read-only mode and the server backend reject publication. On success, JSON output includes the manifest digest, architecture, COMMIT digest in `metadata_generation`, and file count/logical-byte totals in `totals`. Output also includes image_handle=pvisor-v2:<image-key>:<platform>:<revision-hex>, which list/stat/read uses for queries; digest records manifest provenance.
 
 ```text
 s3://your-bucket/pvisor-cache/
@@ -136,7 +163,7 @@ cache/
 └── progress.rs         # Image totals and loading/transfer progress
 ```
 
-`image/oci.rs` owns registry resolution, prepared records, blob validation and layer extraction. Local loading/cache servers share `ImageStore`. External callers keep the exported `cache` API; protocol/transport helpers stay internal.
+`image/store.rs` owns local path selection, temporary imports and shared pull locks. `image/oci.rs` owns registry resolution, prepared records, blob validation and layer extraction. Local VM preparation, Docker commands and cache servers share `LocalStore` and the V2 pool. External callers keep the exported `cache` API; protocol/transport helpers stay internal.
 
 ## Usage
 
@@ -146,7 +173,7 @@ pvisor-daemon serve --cache
 
 # 终端 2：使用同一个默认 socket
 pvisor cache prepare alpine:latest
-# 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
+# Explicitly refresh a locally published tag from the registry:
 pvisor cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
 pvisor cache list pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
@@ -159,23 +186,23 @@ pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - macOS: `~/Library/Caches/pvisor/cache.sock`
 - Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, usually `~/.cache/pvisor/cache.sock`
 
-Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` for the server’s existing OCI storage. The server does not start automatically.
+Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` to select the server’s local image directory, shared with Docker and daemonless VM Jobs. The server does not start automatically.
 
 ## Automatic VM lazy loading
 
-When no filesystem/S3 backend is selected and `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
+When no filesystem/S3 backend is selected and `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) prepare and read through the same local V2 pool. Authentication, protocol and timeout errors are reported rather than bypassed silently.
 
-An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit directory rootfs and native containers retain their behavior.
+An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces the local V2 pool. Explicit directory rootfs and native containers retain their behavior.
 
-VM clients attach an immutable read-only lower directly to the virtio-fs service, retaining their writable upper without an intermediate host FUSE mount. Host tools retain the FUSE adapter over the same backend. Metadata is fetched on demand and cached in memory for the backend lifetime. `metadata_generation` is the revision COMMIT digest. Verified attributes and directory pages can persist across runs; rebuilding OCI extraction does not change a published revision.
+VM clients attach an immutable read-only lower directly to the virtio-fs service, retaining their writable upper without an intermediate host FUSE mount. Host tools retain the FUSE adapter over the same backend. Metadata is fetched on demand and cached in memory for the backend lifetime. `metadata_generation` is the revision COMMIT digest. For socket/filesystem/S3 clients, verified attributes and directory pages can persist across runs; rebuilding OCI extraction does not change a published revision.
 
-Content uses 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
+Socket/filesystem/S3 clients cache content in 1 MiB blocks at `<user-cache>/pvisor/blocks/<endpoint-hash>/<read-handle-hash>/`, keyed by file/block. `<user-cache>` is `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` (usually `~/.cache`) on Linux. This is independent of `--image-store`/`PVISOR_IMAGE_STORE`. Small files use one unpadded block; large files fetch only accessed blocks.
 
 Each backend retains validated content in a per-file memory cache capped at 64 MiB/4096 blocks with FIFO eviction. Hot reads copy the requested slice without reopening/rehashing disk blocks. Memory misses revalidate disk content; disk corruption cannot alter already validated in-memory bytes. Validated new blocks publish atomically and use file locks for local process sharing; corrupt blocks are fetched again. VMs maintain a private metadata projection with sparse placeholders, but guest READ uses backend content instead of placeholder holes. Kernel readahead may fetch adjacent bytes; copy-up and file digests require complete originals, and complete checkpoints or self-contained exports populate the full tree. Ordinary lazy reads do not extract the complete image.
 
 Direct backends stay attached until VM completion, then release their private projections; host FUSE mounts remain until their users exit. Cached blocks remain. Cached content survives service failure, but missing blocks return I/O errors. Digest/endpoint stay fixed for a Run with no mid-run registry fallback. Cache endpoint/token are removed from implicitly inherited guest environment.
 
-Before responding to `prepare`, the server still fully prepares an uncached image. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
+Before responding to `prepare`, the server fully prepares an uncached image and generates indexes/content objects in a temporary import directory, removed after success or an ordinary error. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
 
 The public blocking Rust client is `pvisor::cache::CacheClient::from_env()`. Explicit `pvisor cache prepare/list/stat/read` commands do not use the VM's local fallback policy.
 
@@ -211,12 +238,12 @@ Totals count regular file paths and uncompressed logical sizes in the server's e
 
 ## Wire format
 
-Protocol 1 uses one exchange per connection. Protocol 2 negotiates through harmless Ping and allows sequential reuse, with up to four pooled client connections. Storage V2 is independent of transport versions. Frames use a four-byte big-endian length followed by UTF-8 JSON capped at 1 MiB. Successful read and metadata replies carry exactly the declared raw body length. Transport bodies are uncompressed (metadata objects themselves may be compressed), with mandatory length and SHA-256 validation.
+Only protocol 2 is accepted by the server and VM bridge. A client sends one harmless Ping before its actual request; rejection or EOF fails without downgrade. Sequential reuse allows up to four pooled client connections. Disabling reuse still sends V2. Storage V2 is independent of the wire protocol. Frames use a four-byte big-endian length followed by UTF-8 JSON capped at 1 MiB. Successful read and metadata replies carry exactly the declared raw body length. Transport bodies are uncompressed (metadata objects themselves may be compressed), with mandatory length and SHA-256 validation.
 
 Request envelope:
 
 ```json
-{"version":1,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
+{"version":2,"token":null,"request":{"op":"read","digest":"pvisor-v2:IMAGE_KEY:linux-amd64:REVISION","path":[101,116,99,47,111,115,45,114,101,108,101,97,115,101],"offset":0,"length":1048576}}
 ```
 
 Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. Paths are relative to image root; an empty path means root. Absolute paths, upward traversal and NUL are rejected. Symlinks are metadata; server path resolution never follows them. Guest traversal resolves symlinks inside the guest tree.
@@ -231,7 +258,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `open` | `handle`, `architecture` | `prepared` |
 | `metadata` | `handle`, `object_name`, `offset`, `length` | `data` + bytes |
 
-`prepare` requests a Linux image for the client's architecture, independent of server architecture. Successful records persist at `<image-store>/metadata/prepared-v1/` with platform digest/launch configuration. Mutable tags reuse records for five minutes; immutable digests do not expire while the extracted root exists. `pvisor cache prepare IMAGE --refresh` (`refresh: true`) forces registry resolution. Failed refresh returns an error while retaining previous records. Registry requests have a 10-second connect and 300-second total timeout. Expired tags never silently fall back to stale data. Missing/corrupt records or missing roots are prepared again.
+`prepare` requests a Linux image for the client's architecture, independent of server architecture. The published V2 HEAD contains the platform digest and launch configuration; no persistent raw prepared-image record is required. Local pool tags remain available offline until explicit refresh or replacement. Writable filesystem/S3 backends reuse mutable HEAD for five minutes and immutable digest HEAD until refresh. `--refresh` (`refresh: true`) forces registry resolution. Failed imports preserve the previous HEAD and remove their temporary directories. Registry requests have a 10-second connect and 300-second total timeout; expired tags never silently fall back to stale data. Local reference/platform locks serialize local imports; remote HEAD publication uses conditional updates. `read`, `stat` and `list` require a published immutable handle and never pull implicitly.
 
 Reference/architecture locks cover resolution/preparation; concurrent callers recheck/reuse the first successful result. Preparation may populate uncached images and retains existing digest extraction locks. `read`/`stat`/`list` require published immutable image handles and never pull images implicitly.
 

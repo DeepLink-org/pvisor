@@ -19,7 +19,6 @@ const POOL_IDLE: Duration = Duration::from_secs(4);
 struct PoolState {
     idle: Vec<(Stream, Instant)>,
     connections: usize,
-    legacy: bool,
 }
 
 struct ConnectionPool {
@@ -141,6 +140,14 @@ impl ClientBinding {
     }
 }
 impl CacheClient {
+    pub(in crate::image) fn local(store: &crate::image::store::LocalStore) -> anyhow::Result<Self> {
+        Self::configured(
+            format!("pool+file://{}", store.writable_pool()?.display()),
+            None,
+            Some(store.root.clone()),
+            false,
+        )
+    }
     pub(super) fn configured_pool(
         location: &std::path::Path,
         read_only: bool,
@@ -379,29 +386,16 @@ impl CacheClient {
                 };
                 // A failed handshake must also discard a checked-out stream.
                 lease.reusable = false;
-                let mut version = 2;
                 if lease.stream.is_none() {
                     let mut stream =
                         self.connect_budget(endpoint, budget()?, deadline.is_some())?;
-                    let legacy = !pool.enabled || pool.state.lock().unwrap().legacy;
-                    if legacy
-                        || !negotiate(
-                            &mut DeadlineIo {
-                                stream: &mut stream,
-                                deadline,
-                            },
-                            token,
-                        )?
-                    {
-                        version = 1;
-                        if !legacy {
-                            pool.state.lock().unwrap().legacy = true;
-                            // Never send the actual request on a rejected handshake stream.
-                            drop(stream);
-                            stream =
-                                self.connect_budget(endpoint, budget()?, deadline.is_some())?;
-                        }
-                    }
+                    negotiate(
+                        &mut DeadlineIo {
+                            stream: &mut stream,
+                            deadline,
+                        },
+                        token,
+                    )?;
                     lease.stream = Some(stream);
                 }
                 // Only a fully framed, verified exchange may return to the pool.
@@ -411,13 +405,13 @@ impl CacheClient {
                 write_frame(
                     &mut stream,
                     &RequestEnvelope {
-                        version,
+                        version: 2,
                         token,
                         request: &request,
                     },
                 )?;
                 let result = receive_response(&mut stream, expected)?;
-                lease.reusable = version == 2;
+                lease.reusable = pool.enabled;
                 Ok::<_, anyhow::Error>(result)
             })();
             match attempt {
@@ -661,9 +655,9 @@ fn connect_unix(path: &std::path::Path, timeout: Duration) -> std::io::Result<Un
     }
 }
 
-// Only the old service's precise version refusal (or EOF during Ping) permits
-// downgrade. Authentication, malformed frames and timeouts remain visible.
-fn negotiate(stream: &mut (impl Read + Write), token: &Option<String>) -> anyhow::Result<bool> {
+// Authenticate the V2 connection before sending an actual request. A refusal or
+// disconnect is an error; it never selects another protocol or replays effects.
+fn negotiate(stream: &mut (impl Read + Write), token: &Option<String>) -> anyhow::Result<()> {
     write_frame(
         stream,
         &Envelope {
@@ -672,57 +666,10 @@ fn negotiate(stream: &mut (impl Read + Write), token: &Option<String>) -> anyhow
             request: Request::Ping,
         },
     )?;
-    match read_frame::<Response>(stream) {
-        Ok(Response::Ready) => {
-            // Some old fixtures/services ignore the envelope version but still
-            // close after Ready. Confirm persistence with another harmless Ping
-            // before risking an effectful request on that stream.
-            let confirmation = (|| {
-                write_frame(
-                    stream,
-                    &Envelope {
-                        version: 2,
-                        token: token.clone(),
-                        request: Request::Ping,
-                    },
-                )?;
-                read_frame::<Response>(stream)
-            })();
-            match confirmation {
-                Ok(Response::Ready) => Ok(true),
-                Ok(Response::Error { code, message }) => bail!("cache {code}: {message}"),
-                Ok(_) => bail!("cache server returned an incompatible handshake"),
-                Err(error)
-                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::UnexpectedEof
-                                | std::io::ErrorKind::BrokenPipe
-                                | std::io::ErrorKind::ConnectionReset
-                        )
-                    }) =>
-                {
-                    Ok(false)
-                }
-                Err(error) => Err(error),
-            }
-        }
-        Ok(Response::Error { code, message })
-            if (code == "request_failed" || code == "unsupported_version")
-                && message == "unsupported cache protocol version" =>
-        {
-            Ok(false)
-        }
-        Ok(Response::Error { code, message }) => bail!("cache {code}: {message}"),
-        Ok(_) => bail!("cache server returned an incompatible handshake"),
-        Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
+    match read_frame::<Response>(stream)? {
+        Response::Ready => Ok(()),
+        Response::Error { code, message } => bail!("cache {code}: {message}"),
+        _ => bail!("cache server returned an incompatible handshake"),
     }
 }
 
@@ -1157,11 +1104,9 @@ pub(super) mod retry_tests {
                 socket
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
-                for _ in 0..2 {
-                    let envelope: Envelope = read_frame(&mut socket).unwrap();
-                    assert!(matches!(envelope.request, Request::Ping));
-                    write_frame(&mut socket, &Response::Ready).unwrap();
-                }
+                let envelope: Envelope = read_frame(&mut socket).unwrap();
+                assert!(matches!(envelope.request, Request::Ping));
+                write_frame(&mut socket, &Response::Ready).unwrap();
                 let envelope: Envelope = read_frame(&mut socket).unwrap();
                 let value = serde_json::to_value(envelope).unwrap();
                 if attempt == 0 {
@@ -1427,62 +1372,53 @@ pub(super) mod tests {
         assert_eq!(envelope.version, 2);
         assert!(matches!(envelope.request, Request::Ping));
         ready(socket);
-        let confirmation: Envelope = read_frame(socket).unwrap();
-        assert_eq!(confirmation.version, 2);
-        assert!(matches!(confirmation.request, Request::Ping));
-        ready(socket);
     }
 
     #[test]
-    fn legacy_version_refusal_and_handshake_eof_fall_back_only_before_actual_request() {
-        for legacy in 0..3 {
+    fn version_refusal_and_handshake_eof_never_reconnect_or_send_prepare() {
+        for refusal in [false, true] {
             let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join("legacy.sock");
+            let path = tmp.path().join("refusal.sock");
             let listener = UnixListener::bind(&path).unwrap();
             let worker = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 let envelope: Envelope = read_frame(&mut socket).unwrap();
                 assert_eq!(envelope.version, 2);
                 assert!(matches!(envelope.request, Request::Ping));
-                if legacy == 2 {
-                    ready(&mut socket);
-                } else if legacy == 0 {
+                if refusal {
                     write_frame(
                         &mut socket,
                         &Response::Error {
-                            code: "request_failed".into(),
+                            code: "unsupported_version".into(),
                             message: "unsupported cache protocol version".into(),
                         },
                     )
                     .unwrap();
                 }
                 drop(socket);
-                for _ in 0..2 {
-                    let (mut socket, _) = listener.accept().unwrap();
-                    let envelope: Envelope = read_frame(&mut socket).unwrap();
-                    assert_eq!(envelope.version, 1);
-                    assert!(matches!(envelope.request, Request::Prepare { .. }));
-                    ready(&mut socket);
-                }
+                listener.set_nonblocking(true).unwrap();
+                // The client finishes before we assert that no replacement was connected.
+                listener
             });
             let client = client_at(&path);
-            for _ in 0..2 {
-                client
-                    .request(Request::Prepare {
-                        image: "fixture".into(),
-                        architecture: "amd64".into(),
-                        refresh: false,
-                    })
-                    .unwrap();
+            let error = client
+                .request(Request::Prepare {
+                    image: "fixture".into(),
+                    architecture: "amd64".into(),
+                    refresh: false,
+                })
+                .unwrap_err();
+            if refusal {
+                assert!(error.to_string().contains("unsupported_version"));
             }
             let CacheTransport::Server { pool, .. } = &client.transport else {
                 panic!()
             };
-            let state = pool.state.lock().unwrap();
-            assert!(state.legacy);
-            assert_eq!(state.connections, 0);
-            drop(state);
-            worker.join().unwrap();
+            assert_eq!(pool.state.lock().unwrap().connections, 0);
+            let listener = worker.join().unwrap();
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
         }
     }
 
@@ -1520,7 +1456,6 @@ pub(super) mod tests {
                 panic!()
             };
             let state = pool.state.lock().unwrap();
-            assert!(!state.legacy);
             assert_eq!(state.connections, 0);
             drop(state);
             worker.join().unwrap();
@@ -1748,7 +1683,7 @@ pub(super) mod tests {
         let worker = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             let mut socket = Stream::Tcp(socket);
-            for _ in 0..3 {
+            for _ in 0..2 {
                 let envelope: Envelope = read_frame(&mut socket).unwrap();
                 assert_eq!(envelope.version, 2);
                 assert!(matches!(envelope.request, Request::Ping));
@@ -1775,15 +1710,16 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn disabled_reuse_sends_only_v1_requests() {
+    fn disabled_reuse_keeps_v2_and_opens_fresh_connections() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("disabled.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let worker = std::thread::spawn(move || {
             for _ in 0..2 {
                 let (mut socket, _) = listener.accept().unwrap();
+                handshake(&mut socket);
                 let envelope: Envelope = read_frame(&mut socket).unwrap();
-                assert_eq!(envelope.version, 1);
+                assert_eq!(envelope.version, 2);
                 ready(&mut socket);
             }
         });

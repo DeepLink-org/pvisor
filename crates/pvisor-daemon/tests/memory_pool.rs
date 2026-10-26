@@ -21,10 +21,7 @@ impl Drop for OwnedChild {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[ignore = "requires HVF, a signed PVISOR_MEMORY_POOL_TEST_PVISOR and PVISOR_DOCKER_TEST_ROOTFS"]
 fn macos_container_vms_publish_and_restore_through_daemon_pool() {
-    use std::{
-        collections::BTreeMap,
-        path::{Path, PathBuf},
-    };
+    use std::path::{Path, PathBuf};
     let binary = PathBuf::from(
         std::env::var_os("PVISOR_MEMORY_POOL_TEST_PVISOR").expect("set signed CLI path"),
     );
@@ -41,22 +38,7 @@ fn macos_container_vms_publish_and_restore_through_daemon_pool() {
     let bases = socket.parent().unwrap().join("shared-kernel");
     let home = state.path().join("containers");
     pvisor::docker::Store::open(home.clone()).unwrap();
-    let image = pvisor::docker::Image {
-        reference: "fixture:latest".into(),
-        id: format!("sha256:{}", "1".repeat(64)),
-        digest: format!("sha256:{}", "2".repeat(64)),
-        platform: "linux/arm64".into(),
-        rootfs: rootfs.canonicalize().unwrap(),
-        cache: None,
-        env: BTreeMap::new(),
-        entrypoint: vec![],
-        cmd: vec![],
-        cwd: "/".into(),
-        user: String::new(),
-        stop_signal: 15,
-        volumes: vec![],
-        created_ms: 0,
-    };
+    let image = pooled_fixture(&home, &rootfs);
     fs::write(
         home.join("images.json"),
         serde_json::to_vec(&[image]).unwrap(),
@@ -261,22 +243,7 @@ fn macos_four_512m_containers_share_resident_kernel_pages() {
             fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
         }
         let store = pvisor::docker::Store::open(home.clone()).unwrap();
-        let image = pvisor::docker::Image {
-            reference: "fixture:latest".into(),
-            id: format!("sha256:{}", "1".repeat(64)),
-            digest: format!("sha256:{}", "2".repeat(64)),
-            platform: "linux/arm64".into(),
-            rootfs: rootfs.clone(),
-            cache: None,
-            env: BTreeMap::new(),
-            entrypoint: vec![],
-            cmd: vec![],
-            cwd: "/".into(),
-            user: String::new(),
-            stop_signal: 15,
-            volumes: vec![],
-            created_ms: 0,
-        };
+        let image = pooled_fixture(&home, &rootfs);
         fs::write(
             home.join("images.json"),
             serde_json::to_vec(&[image]).unwrap(),
@@ -509,22 +476,7 @@ fn macos_four_512m_vms_dynamically_share_and_cow_application_pages() {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let store = pvisor::docker::Store::open(home.clone()).unwrap();
-    let image = pvisor::docker::Image {
-        reference: "fixture:latest".into(),
-        id: format!("sha256:{}", "1".repeat(64)),
-        digest: format!("sha256:{}", "2".repeat(64)),
-        platform: "linux/arm64".into(),
-        rootfs,
-        cache: None,
-        env: BTreeMap::new(),
-        entrypoint: vec![],
-        cmd: vec![],
-        cwd: "/".into(),
-        user: String::new(),
-        stop_signal: 15,
-        volumes: vec![],
-        created_ms: 0,
-    };
+    let image = pooled_fixture(&home, &rootfs);
     fs::write(
         home.join("images.json"),
         serde_json::to_vec(&[image]).unwrap(),
@@ -1263,4 +1215,30 @@ fn daemon_compressed_disconnected_handles_stay_budgeted_until_peer_exit() {
     observer.release(next).unwrap();
     observer.release(unique).unwrap();
     assert_eq!(observer.stats().unwrap().objects, 0);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn pooled_fixture(home: &std::path::Path, rootfs: &std::path::Path) -> pvisor::docker::Image {
+    let context = tempfile::tempdir().unwrap();
+    let dockerfile = context.path().join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch\nCOPY . /\n").unwrap();
+    pvisor::docker::build::build(
+        &pvisor::docker::Store::open(home.to_owned()).unwrap(),
+        &pvisor::docker::build::BuildOptions {
+            context: rootfs.to_owned(),
+            file: dockerfile,
+            tags: vec!["fixture:latest".into()],
+            build_args: std::collections::BTreeMap::new(),
+            target: None,
+            platform: None,
+            pull: false,
+            cpus: 1,
+            memory_mib: 32,
+            network: false,
+            timeout: Duration::from_secs(30),
+            quiet: true,
+            output: None,
+        },
+    )
+    .unwrap()
 }

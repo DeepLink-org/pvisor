@@ -239,14 +239,26 @@ that every flag of a registered Docker command is available.
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
 tests. It must be private to the current user and cannot be a bind-mount source
-or ancestor. New pulls and builds use `images/pool-v2`: the cache's
+or ancestor. Images share the [local image store](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
+with spawn and the cache server; `PVISOR_IMAGE_STORE` selects it. Without that
+override, an explicit Docker home keeps images in its own `images` directory.
+New pulls and builds use that image store's `pool-v2`: the cache's
 compressed directory radix index and shared seekable-Zstd content pool. Small
 files pack by directory; large files use independent 1 MiB chunks. VM reads go through the direct lazy
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
-explicit `--output` exports. Original configurations remain under `images/configs`.
+explicit `--output` exports. Original configurations remain under the image store's `configs`.
 Old directory-based records continue to work and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
+Short and fully qualified Docker Hub references address the same catalog tag.
+Replacing or removing it through any alias affects that one identity; existing
+containers and distinct tags retain their pinned revisions.
+Filesystem/S3 publishers use `--image-store` as the parent of scoped
+`staging/.import-*` directories, removed after success or error. No raw OCI
+directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
+Socket clients and the VM bridge require protocol V2; unsupported peers fail
+without automatic downgrade, even when connection reuse is disabled.
+
 V1 storage handles and pool encodings are retired. Re-pull to publish an image to
 the new pool, then recreate containers pinned to old handles; old data is never
 automatically deleted. Filesystem, S3 and pool use the same V2 physical format.

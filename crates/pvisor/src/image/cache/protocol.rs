@@ -8,8 +8,8 @@ use std::io::{Read, Write};
 pub(super) const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_READ: u32 = 1024 * 1024;
 
-/// All paths are Unix bytes, relative to image root. Envelope version 1 uses
-/// one request per connection; version 2 permits sequential framed exchanges.
+/// All paths are Unix bytes, relative to image root. Envelope version 2 permits
+/// sequential framed exchanges; other versions are rejected.
 /// A `Read` or `Metadata` response frame is followed by exactly `Data.length` raw bytes before
 /// the next request/response frame. There is no pipelining or protocol-level replay;
 /// private pinned-read clients may retry a transport disconnect once per hop.
@@ -38,7 +38,7 @@ pub enum Request {
         path: Vec<u8>,
     },
     /// Read immutable portable metadata, never file content or arbitrary keys.
-    /// Supported in both envelope versions when Prepared advertises metadata_pages.
+    /// Supported when Prepared advertises metadata_pages.
     /// Length must be 1..=MAX_READ; offset + length must not overflow. Offsets
     /// beyond the object are rejected, and reads crossing EOF are shortened.
     /// The Data frame is followed by its length of SHA-256 authenticated bytes.
@@ -60,16 +60,15 @@ pub enum Request {
     },
 }
 
-/// Version 1 closes after one exchange; version 2 retains the connection for
+/// Version 2 retains the connection for
 /// sequential exchanges until EOF, idle timeout, or a transport/framing failure.
-/// Clients negotiate with version-2 `Ping` exchanges on a fresh connection,
-/// confirming persistence before sending any actual request. Authorization is
+/// Clients negotiate with one version-2 `Ping` on a fresh connection
+/// before sending any actual request. Authorization is
 /// checked on every envelope, and the version cannot change within a connection.
-/// Responses keep the v1 wire shape.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Envelope {
-    /// Connection semantics: 1 (single exchange) or 2 (persistent exchanges).
+    /// Must be 2; unsupported values fail before request execution.
     pub(super) version: u32,
     pub(super) token: Option<String>,
     pub(super) request: Request,
@@ -83,8 +82,8 @@ pub enum Response {
         /// Immutable image/platform/revision handle used by every reader.
         image_handle: String,
         metadata_generation: String,
-        /// This immutable handle supports Metadata reads in either envelope version.
-        /// Missing capabilities from older services default to false.
+        /// This immutable handle supports Metadata reads.
+        /// An absent capability selects the bounded RPC metadata path.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         metadata_pages: bool,
         #[serde(default)]
@@ -157,7 +156,7 @@ mod tests {
     #[test]
     fn metadata_pages_capability_defaults_false_and_is_optional_on_the_wire() {
         let old = serde_json::json!({
-            "status": "prepared", "image_handle": "pvisor-v1:revision",
+            "status": "prepared", "image_handle": "pvisor-v2:revision",
             "metadata_generation": "sha256:revision", "digest": "sha256:manifest",
             "architecture": "amd64", "env": {}, "entrypoint": [], "cmd": []
         });
@@ -192,65 +191,61 @@ mod tests {
     }
 
     #[test]
-    fn metadata_frames_and_data_bodies_work_in_both_envelope_versions() {
-        for version in [1, 2] {
-            let mut wire = Vec::new();
-            write_frame(
-                &mut wire,
-                &Envelope {
-                    version,
-                    token: Some("secret".into()),
-                    request: Request::Metadata {
-                        handle: "pvisor-v1:revision".into(),
-                        object_name: "index.bin".into(),
-                        offset: 65536,
-                        length: 65536,
-                    },
-                },
-            )
-            .unwrap();
-            let envelope: Envelope = read_frame(&mut wire.as_slice()).unwrap();
-            assert_eq!(envelope.version, version);
-            assert!(matches!(
-                envelope.request,
-                Request::Metadata {
+    fn metadata_frames_and_data_bodies_preserve_v2_frame_boundaries() {
+        let mut wire = Vec::new();
+        write_frame(
+            &mut wire,
+            &Envelope {
+                version: 2,
+                token: Some("secret".into()),
+                request: Request::Metadata {
+                    handle: "pvisor-v2:revision".into(),
+                    object_name: "index.bin".into(),
                     offset: 65536,
                     length: 65536,
-                    ..
-                }
-            ));
-
-            let body = b"metadata";
-            wire.clear();
-            write_frame(
-                &mut wire,
-                &Response::Data {
-                    length: body.len() as u32,
-                    sha256: hash(body),
                 },
-            )
-            .unwrap();
-            wire.extend_from_slice(body);
-            write_frame(&mut wire, &Response::Ready).unwrap();
-            let mut stream = wire.as_slice();
-            let response: Response = read_frame(&mut stream).unwrap();
-            assert!(
-                matches!(response, Response::Data { length: 8, sha256 } if sha256 == hash(body))
-            );
-            let mut received = [0; 8];
-            stream.read_exact(&mut received).unwrap();
-            assert_eq!(&received, body);
-            assert!(matches!(
-                read_frame::<Response>(&mut stream).unwrap(),
-                Response::Ready
-            ));
-        }
+            },
+        )
+        .unwrap();
+        let envelope: Envelope = read_frame(&mut wire.as_slice()).unwrap();
+        assert_eq!(envelope.version, 2);
+        assert!(matches!(
+            envelope.request,
+            Request::Metadata {
+                offset: 65536,
+                length: 65536,
+                ..
+            }
+        ));
+
+        let body = b"metadata";
+        wire.clear();
+        write_frame(
+            &mut wire,
+            &Response::Data {
+                length: body.len() as u32,
+                sha256: hash(body),
+            },
+        )
+        .unwrap();
+        wire.extend_from_slice(body);
+        write_frame(&mut wire, &Response::Ready).unwrap();
+        let mut stream = wire.as_slice();
+        let response: Response = read_frame(&mut stream).unwrap();
+        assert!(matches!(response, Response::Data { length: 8, sha256 } if sha256 == hash(body)));
+        let mut received = [0; 8];
+        stream.read_exact(&mut received).unwrap();
+        assert_eq!(&received, body);
+        assert!(matches!(
+            read_frame::<Response>(&mut stream).unwrap(),
+            Response::Ready
+        ));
     }
 
     #[test]
     fn prepared_responses_require_an_immutable_handle_and_generation() {
         let complete = serde_json::json!({
-            "status": "prepared", "image_handle": "pvisor-v1:revision",
+            "status": "prepared", "image_handle": "pvisor-v2:revision",
             "metadata_generation": "sha256:revision", "digest": "sha256:manifest",
             "architecture": "amd64", "env": {}, "entrypoint": [], "cmd": []
         });

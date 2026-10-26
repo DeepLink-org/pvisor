@@ -125,11 +125,15 @@ fn tcp_cache_service_requires_authentication() {
     let root = tempfile::tempdir().unwrap();
     let output = daemon()
         .args(["--cache-listen", "tcp://127.0.0.1:0", "--cache-image-store"])
-        .arg(root.path())
+        .arg(root.path().join("images"))
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("TCP requires PVISOR_CACHE_TOKEN"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("TCP requires PVISOR_CACHE_TOKEN"),
+        "{stderr}"
+    );
 }
 
 #[test]

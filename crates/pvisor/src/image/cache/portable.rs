@@ -198,6 +198,36 @@ pub(super) struct PortableCache {
     flights: frames::Flights,
 }
 impl PortableCache {
+    pub(super) fn published(
+        &self,
+        image: &str,
+        architecture: &str,
+    ) -> anyhow::Result<Option<Response>> {
+        let (canonical, _) = crate::image::oci::cache_reference(image)?;
+        self.observe(&canonical, platform(architecture)?)?
+            .map(|object| {
+                self.prepared_head(decode_head(
+                    &object.bytes,
+                    &image_key(&canonical),
+                    platform(architecture)?,
+                )?)
+            })
+            .transpose()
+    }
+
+    fn prepared_head(&self, head: Head) -> anyhow::Result<Response> {
+        let handle = Handle {
+            image_key: head.image_key,
+            platform: head.platform,
+            revision: head.revision[7..].into(),
+        };
+        let loaded = self.load(&handle)?;
+        ensure!(
+            loaded.commit.manifest_digest == head.manifest_digest,
+            "HEAD manifest mismatch"
+        );
+        Ok(loaded.prepared())
+    }
     pub(super) fn publish_prepared(
         &self,
         store: &crate::image::oci::ImageStore,
@@ -404,6 +434,19 @@ impl PortableCache {
         refresh: bool,
     ) -> anyhow::Result<(Response, Vec<u8>)> {
         let platform = platform(architecture)?;
+        let local = if matches!(&self.storage, Storage::Pool(_)) && !self.read_only {
+            Some(crate::image::store::LocalStore::open(
+                self.local_store
+                    .clone()
+                    .context("writable local pool requires an image store")?,
+            )?)
+        } else {
+            None
+        };
+        let _lock = local
+            .as_ref()
+            .map(|store| store.pull_lock(image, architecture))
+            .transpose()?;
         ensure!(
             !refresh || !self.read_only,
             "read-only cache cannot refresh; refresh with a publisher"
@@ -412,27 +455,31 @@ impl PortableCache {
         let observed = self.observe(&canonical, platform)?;
         if !refresh && let Some(object) = &observed {
             let head = decode_head(&object.bytes, &image_key(&canonical), platform)?;
-            if self.read_only || pinned || now().saturating_sub(head.published_at) < 300 {
-                let handle = Handle {
-                    image_key: head.image_key,
-                    platform: head.platform,
-                    revision: head.revision[7..].into(),
-                };
-                let loaded = self.load(&handle)?;
-                ensure!(
-                    loaded.commit.manifest_digest == head.manifest_digest,
-                    "HEAD manifest mismatch"
-                );
-                return Ok((loaded.prepared(), Vec::new()));
+            // Locally built tags need no registry counterpart. Local ownership
+            // lasts until an explicit pull/refresh or another local publication.
+            if self.read_only
+                || local.is_some()
+                || pinned
+                || now().saturating_sub(head.published_at) < 300
+            {
+                return Ok((self.prepared_head(head)?, Vec::new()));
             }
         }
         ensure!(
             !self.read_only,
             "image absent from read-only cache; use a publisher"
         );
-        let store = crate::image::oci::ImageStore::new(self.local_store.clone())?;
+        let import_store = match &local {
+            Some(store) => store.clone(),
+            None => crate::image::store::LocalStore::discover(self.local_store.clone())?,
+        };
+        let staging = import_store.staging()?;
+        let store = crate::image::oci::ImageStore::new(Some(staging.path().to_owned()))?;
         let prepared =
             store.prepare_with_refresh(image, architecture, refresh || observed.is_some())?;
+        if let Some(local) = local {
+            local.retain_prepared_config(&store, &prepared)?;
+        }
         self.publish_observed(&store, &prepared, architecture, &canonical, observed)
     }
     fn observe(&self, canonical: &str, platform: &str) -> anyhow::Result<Option<StoredObject>> {
