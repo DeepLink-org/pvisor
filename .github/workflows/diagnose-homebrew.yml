@@ -13,6 +13,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download v0.3.0 --repo "$GITHUB_REPOSITORY" --pattern pvisor.rb --dir dist
+      - name: Keep formula tests inside Homebrew's sandbox boundary
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          formula = Path("dist/pvisor.rb")
+          old = '    assert_match "hello", shell_output("#{bin}/pvisor spawn --executor host -- /bin/echo hello")\n'
+          text = formula.read_text()
+          assert old in text
+          formula.write_text(text.replace(old, ""))
+          PY
       - name: Test original published bytes through Homebrew
         run: |
           brew tap-new pvisor/release-test
@@ -22,4 +32,7 @@ jobs:
           chmod go-w "$(brew --cellar)"
           stat -f '%Sp %Su %Sg %N' "$(brew --cellar)"
           brew test pvisor/release-test/pvisor
+          pvisor_bin="$(brew --prefix pvisor/release-test/pvisor)/bin/pvisor"
+          hello="$("$pvisor_bin" spawn --executor host -- /bin/echo hello)"
+          test "$hello" = hello
           brew uninstall pvisor/release-test/pvisor

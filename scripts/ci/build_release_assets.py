@@ -92,7 +92,7 @@ class Pvisor < Formula
     %w[pvisor pvisor-tui pvisor-replay pvisor-daemon].each do |name|
       assert_match version.to_s, shell_output("#{{bin}}/#{{name}} --version")
     end
-    assert_match "hello", shell_output("#{{bin}}/pvisor spawn --executor host -- /bin/echo hello")
+    # Homebrew's test sandbox cannot nest pVisor's Seatbelt; CI runs Jobs outside it.
     system bin/"pvisor", "tui", "--help"
     system bin/"pvisor", "replay", "--help"
     system bin/"pvisor-daemon", "protocol"
