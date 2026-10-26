@@ -2,6 +2,42 @@
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn owner_requires_non_writable_installation_ancestors() {
+    let temporary = tempfile::tempdir().unwrap();
+    let cellar = temporary.path().join("Cellar");
+    let installation = cellar.join("pvisor/0.3.0/libexec");
+    fs::create_dir_all(&installation).unwrap();
+    let kernel = installation.join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    let jobs = temporary.path().join("jobs");
+    let run = || {
+        Command::new(&kernel)
+            .args(["spawn", "--executor", "host", "--", "/bin/echo", "hello"])
+            .current_dir(temporary.path())
+            .env("PVISOR_RUN_HOME", &jobs)
+            .output()
+            .unwrap()
+    };
+    for mode in [0o775, 0o777] {
+        fs::set_permissions(&cellar, fs::Permissions::from_mode(mode)).unwrap();
+        let output = run();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unsafe owner executable ancestor")
+        );
+        assert!(!jobs.exists(), "untrusted installation admitted a Job");
+    }
+    fs::set_permissions(&cellar, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"hello\n");
+}
+
+#[test]
 fn linked_frontend_dispatches_companions_from_the_real_installation() {
     use std::os::unix::fs::symlink;
 

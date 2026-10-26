@@ -54,6 +54,19 @@ brew test DeepLink-org/pvisor/pvisor
 tap 使用 `DeepLink-org/homebrew-pvisor`；维护者需要先完成[一次性设置](../community/releasing.md#one-time-setup)，此命令才能使用。
 支持 Apple Silicon macOS 和 Linux x86_64。Homebrew 不安装 Python、不编译 Rust，也不把 daemon 启动为系统服务。
 
+Job 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；
+root 拥有、带 sticky bit 的目录（如 `/tmp`）除外。Homebrew 的 Cellar 可能带有
+组写权限。如果启动报 `unsafe owner executable ancestor`，先检查错误中指明的目录。
+对于当前用户独占、Cellar 允许组写入的 Homebrew 安装，可先去掉组和其他用户的写权限：
+
+```bash
+chmod go-w "$(brew --cellar)"
+brew test DeepLink-org/pvisor/pvisor
+```
+
+此命令只修改 Cellar 目录本身的权限，不递归修改已安装的软件包。
+需要保留组写权限的共享 Homebrew 安装，应改用 wheel 或原生归档，安装到自己拥有的受保护目录。
+
 不使用包管理器时，打开 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases)，下载
 `pvisor-X.Y.Z-linux-x86_64.tar.gz` 或 `pvisor-X.Y.Z-macos-arm64.tar.gz`，以及 `SHA256SUMS`。
 核对对应的校验值（Linux 用 `sha256sum 归档文件`，macOS 用 `shasum -a 256 归档文件`），

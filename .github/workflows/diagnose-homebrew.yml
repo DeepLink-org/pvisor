@@ -1,0 +1,25 @@
+name: Verify published Homebrew installation
+on:
+  push:
+    branches: [fix/homebrew-owner-permissions]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download published formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.3.0 --repo "$GITHUB_REPOSITORY" --pattern pvisor.rb --dir dist
+      - name: Test original published bytes through Homebrew
+        run: |
+          brew tap-new pvisor/release-test
+          cp dist/pvisor.rb "$(brew --repository pvisor/release-test)/Formula/pvisor.rb"
+          brew install pvisor/release-test/pvisor
+          stat -f '%Sp %Su %Sg %N' "$(brew --cellar)"
+          chmod go-w "$(brew --cellar)"
+          stat -f '%Sp %Su %Sg %N' "$(brew --cellar)"
+          brew test pvisor/release-test/pvisor
+          brew uninstall pvisor/release-test/pvisor
