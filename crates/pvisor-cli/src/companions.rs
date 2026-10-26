@@ -42,7 +42,9 @@ fn check_trust(metadata: &std::fs::Metadata) -> anyhow::Result<()> {
 }
 
 fn installation_directory() -> anyhow::Result<PathBuf> {
-    let directory = std::env::current_exe()?.parent().unwrap().to_path_buf();
+    // macOS can report the Homebrew entry symlink rather than the installed binary.
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let directory = executable.parent().unwrap().to_path_buf();
     check_trust(&std::fs::symlink_metadata(&directory)?)?;
     Ok(directory)
 }

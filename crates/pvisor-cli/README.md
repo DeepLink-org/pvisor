@@ -20,6 +20,12 @@ to serve them. `pvisor daemon start/status/stop` dispatch to the same-installati
 daemon companion. Replay and TUI are also root companions. Use `pvisor -- COMMAND`
 for explicit workload execution.
 
+Companion lookup resolves the running executable's real installation directory,
+so Homebrew-style entry symlinks work on macOS as well as Linux. Companions in
+that directory must remain executable regular files owned by the current user or
+root, with no group/world write permission; the installation directory has the
+same ownership and write-permission requirements. Lookup does not search `PATH`.
+
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
 durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 

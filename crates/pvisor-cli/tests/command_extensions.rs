@@ -2,6 +2,37 @@
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn linked_frontend_dispatches_companions_from_the_real_installation() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let installation = temporary.path().join("libexec");
+    let links = temporary.path().join("bin");
+    fs::create_dir(&installation).unwrap();
+    fs::create_dir(&links).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), installation.join("pvisor")).unwrap();
+    let kernel = links.join("pvisor");
+    symlink(installation.join("pvisor"), &kernel).unwrap();
+    for name in ["daemon", "replay", "tui"] {
+        let filename = format!("pvisor-{name}");
+        let companion = installation.join(&filename);
+        fs::write(&companion, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&companion, links.join(filename)).unwrap();
+        for args in [vec![name, "--help"], vec!["help", name]] {
+            let output = Command::new(&kernel).args(&args).output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(42),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"--help\n");
+        }
+    }
+}
+
+#[test]
 fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
     let temporary = tempfile::tempdir().unwrap();
     for (name, expected, absent) in [
