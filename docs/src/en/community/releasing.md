@@ -13,7 +13,7 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
 
 ## One-time setup {#one-time-setup}
 
-1. Create a GitHub environment named `pypi`. Do not require reviewers; restrict deployments to tags matching `v*`.
+1. Create a GitHub environment named `pypi`. Do not require reviewers; allow tags matching `v*` and the `main` branch, which runs channel recovery.
 2. Add a pending Trusted Publisher in PyPI settings:
     - PyPI project: `pvisor-sandbox`
     - GitHub owner: `DeepLink-org`
@@ -42,13 +42,50 @@ Before pushing the first release tag, verify that the `pvisor-sandbox` Trusted P
    ```
 
 3. Commit version changes and merge into `main`. The workflow rejects tags whose commit is not reachable from `main`.
-4. Optionally run **Publish Release** manually. It runs required CI and platform acceptance on GitHub-hosted runners, validates all wheels, and retains `release-native` with the archives, checksums and formula without publishing.
+4. Optionally run **Publish Release** manually with `channel=build` (the default), leaving the other inputs empty. It runs required CI and platform acceptance on GitHub-hosted runners, validates all wheels, and retains `release-native` with the archives, checksums and formula without publishing.
 5. Create/push the matching stable tag:
 
    ```bash
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
+
+## Recover a failed publication {#channel-recovery}
+
+Fix publication scripts on `main`, then start a new **Publish Release** run on
+`main`. GitHub's **Re-run jobs** uses the original commit and does not pick up
+the fix. Do not move a published tag or rebuild an existing version to retry
+Homebrew or PyPI: rebuilding can change wheel bytes under an immutable filename.
+
+Set `release_tag=vX.Y.Z`, set `source_run_id` to the original tag-triggered
+**Publish Release** run, and select the failed channel:
+
+| `channel` | Work performed |
+| --- | --- |
+| `github` | Restore accepted artifacts and fill missing GitHub Release attachments |
+| `pypi` | Restore artifacts, check/complete GitHub Release, then upload only missing identical-version wheels |
+| `homebrew` | Restore artifacts, check/complete GitHub Release, regenerate tap metadata with current scripts, test installation and update the configured tap |
+
+Recovery skips required CI, compilation and platform wheel acceptance. It requires
+the source run's **Verify release artifact set** job to have passed; that job
+depends on the full shared distribution pipeline. The source must be a completed
+tag run in this repository, and the tag must still identify that run's commit.
+The overall run may have failed in a downstream publisher. Build-only manual runs,
+nightly runs and PR runs are not recovery sources.
+
+Original `release-wheels` and `release-native` artifacts must still be available
+(retained for 30 days). Recovery checks wheel versions and metadata, both native
+archives, both firmware source archives, the original formula and every entry in
+`SHA256SUMS`. Missing, expired, mixed or changed files stop publication. GitHub and
+PyPI retries retain their existing hash checks and never replace public files.
+Every recovery verifies/completes GitHub Release before the selected downstream
+channel, so corresponding sources remain public before PyPI uploads.
+
+Homebrew recovery writes a separate formula from current `main` scripts using the
+original archive URLs and SHA-256 values. It publishes exactly the formula that
+passed installation and host execution tests; original release attachments,
+checksums and binary payloads remain unchanged. Fixes to binaries or failed
+build/acceptance gates require a newly validated version rather than this shortcut.
 
 ## Build and validation
 

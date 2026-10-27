@@ -18,8 +18,8 @@ Python 源码分发包（sdist）不在发布集中。
 
 ## 一次性设置 {#one-time-setup}
 
-1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；把部署限制到
-   匹配 `v*` 的 tag。
+1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；允许匹配 `v*`
+   的 tag，以及用于渠道恢复的 `main` 分支。
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
    - PyPI project: `pvisor-sandbox`
    - GitHub owner: `DeepLink-org`
@@ -55,7 +55,7 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
    的 tag。
-4. 可选地手动运行 **Publish Release**。它在 GitHub 托管 runner 上执行必需 CI
+4. 可选地手动运行 **Publish Release**，保留默认 `channel=build`，其余输入留空。它在 GitHub 托管 runner 上执行必需 CI
    和各平台验收、校验全部 wheel，
    并保留含归档、校验清单和配方的 `release-native` 制品，不对外发布。
 5. 创建并推送匹配的稳定 tag：
@@ -64,6 +64,38 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
+
+## 恢复失败的发布 {#channel-recovery}
+
+在 `main` 修复发布脚本后，从 `main` 新建一次 **Publish Release** 运行。
+GitHub 的 **Re-run jobs** 仍使用原提交，无法带上修复。不要为了重试 Homebrew
+或 PyPI 移动已发布的 tag，也不要重新构建同版本：新 wheel 的字节可能改变，
+与已发布的不可变文件冲突。
+
+填写 `release_tag=vX.Y.Z`，把原 tag 触发的 **Publish Release** 运行编号填入
+`source_run_id`，再选择失败的渠道：
+
+| `channel` | 执行内容 |
+| --- | --- |
+| `github` | 恢复已验收制品，补齐 GitHub Release 附件 |
+| `pypi` | 恢复制品，检查／补齐 GitHub Release，再仅上传同版本缺失的 wheel |
+| `homebrew` | 恢复制品，检查／补齐 GitHub Release，用当前脚本重新生成 tap 配方，测试安装并更新已配置的 tap |
+
+恢复流程跳过完整 CI、编译和各平台 wheel 验收。原运行的 **Verify release
+artifact set** 必须成功；该任务依赖完整的共享分发流水线。来源必须是本仓库
+已结束的 tag 运行，且 tag 仍指向该运行的提交。整个运行可以因下游发布失败而
+失败。手动 build-only、nightly 和 PR 运行不能作为恢复来源。
+
+原 `release-wheels` 和 `release-native` 制品必须仍可下载，保留期为 30 天。
+恢复时检查 wheel 版本与元数据、两个原生归档、两个固件源码归档、原配方，以及
+`SHA256SUMS` 的全部条目。文件缺失、过期、混用或内容改变都会阻止发布。
+GitHub 和 PyPI 重试仍核对现有文件哈希，不替换公开文件。每次恢复都先检查或
+补齐 GitHub Release，再执行选定的下游渠道，保证 PyPI 上传前对应源码已公开。
+
+Homebrew 恢复用 `main` 上的当前脚本生成单独的配方，保留原归档 URL 和
+SHA-256，并仅把实际通过安装与 host 执行测试的配方提交到 tap。原 Release
+附件、校验清单和二进制载荷均保持不变。二进制修复或构建／验收失败需要重新
+验证的新版本，不能通过此恢复入口跳过门禁。
 
 ## 构建与校验路径
 
