@@ -65,3 +65,5 @@ tmpfs 文件或 memfd 仍由内存支撑：更换 backing 类型并不等于磁�
 同进程原始/FUSE backing 路径，其平台要求与已知限制仍然适用。
 未来目标是以有界的卸载与冷恢复成本获得可预测的空闲实例密度；
 这不代表新增私有 COW 淘汰、持久 VM 恢复或迁移支持。
+
+SWE 模型等待回放的配置、测量限制和结果见[Agent 等待期间的内存卸载与恢复](../../lab-notes/agent-offload-performance-analysis.md)。

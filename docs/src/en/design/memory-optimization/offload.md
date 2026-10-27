@@ -66,3 +66,5 @@ Current support is the same-process raw/FUSE-backed path described in the
 [implementation appendix](../offload/index.md), with its platform requirements and known limits.
 A future goal is predictable idle-instance density with bounded offload and cold-resume costs;
 this does not claim new support for private COW eviction, durable VM recovery or migration.
+
+For SWE model-wait replay configuration, measurement limits and results, see [memory offload during Agent waits](../../lab-notes/agent-offload-performance-analysis.md).

@@ -16,3 +16,5 @@
 | [文件系统性能分析](filesystem-performance-analysis.md) | OverlayFS 各配置的负载测量与复测记录 |
 | [缓存与异步写入性能曲线](filesystem-io-performance-analysis.md) | 请求粒度、并发、同步与写合并的工程曲线 |
 | [Benchmark 方法与证据](benchmark-methodology-evidence.md) | 历史批次的测量口径与证据清单 |
+
+| [Agent 等待期间的内存卸载与恢复](agent-offload-performance-analysis.md) | SWE 固定轨迹回放、Host 等待管理与内存／时延取舍 |

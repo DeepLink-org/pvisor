@@ -180,6 +180,7 @@ nav = [
       { "VM startup performance analysis" = "lab-notes/vm-startup-performance-analysis.md" },
       { "End-to-end task performance analysis" = "lab-notes/agent-task-performance-analysis.md" },
       { "VM memory performance analysis" = "lab-notes/vm-memory-performance-analysis.md" },
+      { "Memory offload during Agent waits" = "lab-notes/agent-offload-performance-analysis.md" },
       { "OpenSandbox: startup, disk and memory" = "lab-notes/opensandbox-performance-analysis.md" },
       { "V2 versus native Docker: storage, startup and memory" = "lab-notes/image-format-performance-analysis.md" },
       { "Filesystem performance analysis" = "lab-notes/filesystem-performance-analysis.md" },

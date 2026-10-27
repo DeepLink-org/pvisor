@@ -180,6 +180,7 @@ nav = [
       { "VM 启动性能分析" = "lab-notes/vm-startup-performance-analysis.md" },
       { "端到端任务性能分析" = "lab-notes/agent-task-performance-analysis.md" },
       { "VM 内存性能分析" = "lab-notes/vm-memory-performance-analysis.md" },
+      { "Agent 等待期间的内存卸载与恢复" = "lab-notes/agent-offload-performance-analysis.md" },
       { "OpenSandbox 对比：启动、磁盘与内存" = "lab-notes/opensandbox-performance-analysis.md" },
       { "V2 与原生 Docker：存储、启动与内存" = "lab-notes/image-format-performance-analysis.md" },
       { "文件系统性能分析" = "lab-notes/filesystem-performance-analysis.md" },
