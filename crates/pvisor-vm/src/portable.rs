@@ -95,8 +95,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        Mutex, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex, Weak,
     };
 
     struct UnusedStore {
@@ -333,6 +333,17 @@ impl VmConfiguration for VmBuilder {
             Err(unsupported("read-only virtio-fs"))
         }
     }
+    fn managed_filesystem(&mut self, tag: &str, path: &Path, read_only: bool) -> io::Result<()> {
+        #[cfg(all(target_os = "linux", not(any(feature = "tee", feature = "aws-nitro"))))]
+        {
+            self.inner.managed_filesystem(tag, path, read_only)
+        }
+        #[cfg(not(all(target_os = "linux", not(any(feature = "tee", feature = "aws-nitro")))))]
+        {
+            let _ = (tag, path, read_only);
+            Err(unsupported("managed virtio-fs"))
+        }
+    }
     fn immutable_filesystem(
         &mut self,
         tag: &str,
@@ -385,7 +396,10 @@ impl VmConfiguration for VmBuilder {
                         .map(|p| path(p))
                         .collect::<io::Result<_>>()?,
                     lower_mutability: if overlay.lower_mutability.is_empty() {
-                        vec![pvisor_overlay_core::LayerMutability::Immutable; overlay.lower_dirs.len()]
+                        vec![
+                            pvisor_overlay_core::LayerMutability::Immutable;
+                            overlay.lower_dirs.len()
+                        ]
                     } else {
                         overlay.lower_mutability
                     },

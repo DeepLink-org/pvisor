@@ -21,17 +21,16 @@ Python 源码分发包（sdist）不在发布集中。
 1. 创建名为 `pypi` 的 GitHub environment。不要要求 reviewer；把部署限制到
    匹配 `v*` 的 tag。
 2. 在 PyPI 发布设置中添加 pending Trusted Publisher：
-   - PyPI project: `pvisor`
+   - PyPI project: `pvisor-sandbox`
    - GitHub owner: `DeepLink-org`
    - Repository: `pvisor`
    - Workflow: `release.yml`
    - Environment: `pypi`
 
-3. 注册带 `pvisor-release` 标签的可信原生 runner：Linux x86_64 需要 KVM
-   权限，Apple Silicon macOS 需要 Hypervisor.framework 权限。安装 mise 锁定的
-   Python/Rust 与对应的 Linux musl Rust target（`mise run setup`）。这些 runner
-   应专用于可信发布提交，并在各次运行间清理旧 Job 状态。缺少 runner 或虚拟化
-   权限会阻止发布。
+3. 发布验收使用 GitHub 托管的 `ubuntu-latest` 和 `macos-latest` runner。
+   Linux 准备固定工具链的 musl target 和 KVM 权限，执行真实 VM 验收；
+   macOS 托管的 Apple Silicon runner 不支持嵌套虚拟化，因此执行安装 smoke
+   检查。无需注册自托管 runner。
 
 4. 如需自动发布 Homebrew，先创建项目自有的 `DeepLink-org/homebrew-pvisor` tap 并初始化一次提交。
    设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/homebrew-pvisor`，以及仅对此 tap
@@ -42,7 +41,7 @@ Python 源码分发包（sdist）不在发布集中。
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
 
-首次推送发布 tag 前，确认 `pvisor` 的 Trusted Publisher 与当前仓库、工作流和 environment 匹配。
+首次推送发布 tag 前，确认 `pvisor-sandbox` 的 Trusted Publisher 与当前仓库、工作流和 environment 匹配。
 
 ## 准备一次发布
 
@@ -56,9 +55,9 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 3. 提交版本变更并合并到 `main`。工作流会拒绝其 commit 无法从 `main` 到达
    的 tag。
-4. 可选地手动运行 **Publish Release**。它执行必需 CI 和原生验收、校验全部 wheel，
+4. 可选地手动运行 **Publish Release**。它在 GitHub 托管 runner 上执行必需 CI
+   和各平台验收、校验全部 wheel，
    并保留含归档、校验清单和配方的 `release-native` 制品，不对外发布。
-   这次 dry run 仍需要两个平台的原生验收 runner。
 5. 创建并推送匹配的稳定 tag：
 
    ```bash
@@ -86,21 +85,29 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 由 `rust-lld` 自动构建。macOS 需要 `aarch64-unknown-linux-musl` Rust stdlib，
 构建 guest 不需要 Zig。
 
-稳定发布先在发布提交上执行必需 CI，再构建 wheel。每个最终 wheel 在对应
-原生 runner 的全新环境中安装。验收覆盖 host 退出码、strict host 执行拒绝、真实
+稳定版和 nightly 调用同一份 `distribution.yml`：在选定提交上执行必需 CI、
+构建 wheel、平台验收、完整发布集校验，以及原生归档和校验清单生成。
+发布任务下载这批已验证制品，不重新构建。每个最终 wheel 在对应
+GitHub 托管 runner 的全新环境中安装。Linux 验收覆盖 host 退出码、strict host 执行拒绝、真实
 VM 启动、暂停／冷恢复后内存进度继续、Job 身份保持且 Attempt 更换、文件暂存、
 review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必须拒绝当前不支持
-的 apply。小型静态 guest 由仓库源码编译，缺少硬件会导致验收失败。
-`release-acceptance-*` 制品保存 wheel 与安装后二进制的 SHA-256 及命令结果。
-本地运行同一验收：`mise run accept-wheel -- WHEEL LOG_JSON`。
+的 apply。小型静态 guest 由仓库源码编译，缺少 KVM 权限会导致 Linux 验收失败。
+macOS 校验原生载荷、签名 entitlement、安装、版本和命令转发；托管 runner
+不执行真实 VM 验收。`release-acceptance-*` 或 `nightly-acceptance-*` 制品保存 Linux 的 wheel 与安装后
+二进制 SHA-256 及命令结果，以及 macOS 的安装 smoke 输出。在任一受支持的
+原生宿主机上运行完整验收：`mise run accept-wheel -- WHEEL LOG_JSON`；
+macOS VM 验收仍需独立的硬件验证记录。
 
 发布集检查要求每个平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及产物
 大小有界。两个平台的验收与完整发布集均通过后，才能向任一渠道发布。
 
 构建 runner 还通过 Homebrew 式软链接布局测试原生归档，包括 host 执行和 companion
 定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
-Homebrew 任务在 macOS 下载已发布的归档，运行 `brew install`、`brew test` 和
-`brew uninstall`，通过后更新 tap。Linux Homebrew 安装及升级／回退仍缺少原生验收。
+Homebrew 任务在 macOS 下载并安装已发布的归档，移除 runner 的 Cellar 组写和其他用户写权限，
+随后运行 `brew test`，在 Homebrew 沙箱内检查版本、协议和 companion 帮助。
+任务再从沙箱外执行真实 host Job，检查退出码和 `hello` 输出，卸载配方后才更新 tap。
+Homebrew 的 Seatbelt 沙箱不能嵌套 pVisor 的沙箱；目录权限要求见[安装指南](../start/installation.md)。
+Linux Homebrew 安装及升级／回退仍缺少原生验收。
 
 稳定版本不可变。重跑在发布前核对 GitHub/PyPI 现有文件的 SHA-256；相同内容
 保留，缺失文件可以补齐，同文件名内容不同则失败，必须发布新版本。GitHub 上传
@@ -116,9 +123,13 @@ wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度
 
 **Nightly Build** 每天 UTC 03:00（北京时间 11:00）运行，也可以在 `main` 上手动
 触发；普通 push 运行 CI，不构建 nightly wheel。Nightly 与稳定发布共用
-Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
+同一份发布准备流水线。nightly 先校验源码版本和 Cargo lockfile，再执行完整 CI、
+双平台构建与验收，包括 Linux 安装后的真实 VM 验收。任一步失败均阻止更新滚动
+nightly。这会在 main 上提前验证发布准备链路，但不保证未来 tag、PyPI 权限或
+Homebrew 发布一定成功。
+
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
-稳定 tag 先把已校验 wheel、原生归档、校验清单、配方和对应固件源码上传到 GitHub Release，再仅将 wheel 上传到 PyPI。Nightly 同时发布原生归档和校验清单，但不生成 Homebrew 配方或更新 tap。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
+稳定 tag 先把已校验 wheel、原生归档、校验清单、配方和对应固件源码上传到 GitHub Release，再仅将 wheel 上传到 PyPI。Nightly 发布已验证的原生归档、校验清单、wheel 和源码，但不生成 Homebrew 配方或更新 tap。daemon 可从两个平台的 nightly wheel 安装或从源码构建。缓存服务支持两个平台；sandbox 服务仍需上述 Linux 运行条件。不发布 daemon 独立归档包。
 
 ## 分发演进 {#distribution-plan}
 

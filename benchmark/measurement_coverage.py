@@ -93,11 +93,62 @@ def lazy_stage_publication():
     return evidence
 
 
+def lazy_v2_publication():
+    """Accept the current compressed-storage/remote cohort only with all receipts."""
+    import hashlib
+
+    receipt = REPO / "docs/overrides/assets/benchmarks/lazy-image-v2.provenance.json"
+    if not receipt.exists():
+        return None
+    evidence = json.loads(receipt.read_text())
+    if (
+        evidence.get("benchmark_id") != "B-LAZY-STARTUP"
+        or evidence.get("role") != "user-facing"
+        or evidence.get("state") != "passed"
+        or evidence.get("scope") != "v2-native-docker-local-and-remote"
+        or evidence.get("counts")
+        != {
+            "storage_pairs": 15,
+            "startup_pairs": 30,
+            "memory_pairs": 5,
+            "remote_pairs": 90,
+            "remote_formal_trials": 360,
+            "remote_warmup_trials": 36,
+            "local_read_pairs": 60,
+            "local_read_trials": 120,
+            "local_read_warmup_trials": 12,
+        }
+        or set(evidence.get("cohorts", {})) != {"storage", "runtime", "remote", "local-reads"}
+        or set(evidence.get("outputs", {}))
+        != {
+            "docs/overrides/assets/benchmarks/lazy-v2-capacity.svg",
+            "docs/overrides/assets/benchmarks/lazy-v2-remote.svg",
+            "docs/overrides/assets/benchmarks/lazy-v2-runtime.svg",
+        }
+    ):
+        raise ValueError("invalid current lazy-image publication receipt")
+    cohorts = evidence["cohorts"].values()
+    if any(record.get("state") != "complete" or not record.get("batch") for record in cohorts):
+        raise ValueError("incomplete current lazy-image cohort")
+    for record in cohorts:
+        for key in ["manifest_sha256", "summary_sha256", "binary_sha256"]:
+            value = record.get(key, "")
+            if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise ValueError("missing current lazy-image cohort digest")
+    if len({record["binary_sha256"] for record in cohorts}) != 1:
+        raise ValueError("current lazy-image cohorts use different binaries")
+    for relative, checksum in evidence["outputs"].items():
+        if hashlib.sha256((REPO / relative).read_bytes()).hexdigest() != checksum:
+            raise ValueError("current lazy-image export changed: " + relative)
+    return evidence
+
+
 def coverage():
     inventory = json.loads((ROOT / "docs.json").read_text())
     entries = list(csv.DictReader((ROOT / "registry.csv").open()))
     filesystem_evidence = filesystem_publication()
-    lazy_stage_evidence = lazy_stage_publication()
+    lazy_v2_evidence = lazy_v2_publication()
+    lazy_stage_evidence = None if lazy_v2_evidence is not None else lazy_stage_publication()
     rows = []
     for page in inventory["pages"]:
         if page["locale"] != "zh" or not page["page"].startswith("benchmarks/"):
@@ -144,6 +195,8 @@ def coverage():
             current = ["B-FS-TOOLS accepted reference cohort " + filesystem_evidence["batch"]]
         if page["page"] == "benchmarks/lazy-image-startup.md" and lazy_stage_evidence is not None:
             current.append("startup/stage_lazy_compare.json " + lazy_stage_evidence["batch"])
+        if page["page"] == "benchmarks/lazy-image-startup.md" and lazy_v2_evidence is not None:
+            current.append("storage/lazy_benefits.py accepted current V2 cohorts")
         rows.append(
             dict(
                 page=page["page"],
@@ -198,6 +251,12 @@ def coverage():
                             else "Native metadata/read whole commands; seven-tool cross-backend task not rerun"
                         )
                     )
+            elif page == "lazy-image-startup.md" and lazy_v2_evidence is not None:
+                description = (
+                    "当前 V2 对原生 Docker：四镜像库存 N3；预准备启动 N30／内存 N5；shell、Python、标准库 mmap 冷热各 N30；WAN／并发未测"
+                    if locale == "zh"
+                    else "Current V2 vs native Docker: four-image storage N3; prepared startup N30/memory N5; shell, Python and library mmap cold/warm N30 each; WAN/concurrency unmeasured"
+                )
             elif page == "lazy-image-startup.md" and lazy_stage_evidence is not None:
                 description = (
                     "同一 host staged 执行器的四文件惰性加载；冷/热各 N30，含取数和挂载；VM 应用启动保留独立历史数据"

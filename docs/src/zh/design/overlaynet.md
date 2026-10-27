@@ -135,17 +135,15 @@ OverlayNet 接在 VM 设备后，由 Session 准备并在 Attempt 结束时收�
 ## 问题
 
 OverlayNet 的 host/container data plane 是显式 HTTP/HTTPS 代理。pVisor 注入
-代理环境变量，并对已知 Agent CLI 注入代理配置参数。覆盖因此是 opt-in：任何
-忽略代理环境变量的子进程——静态 Go 二进制、原始 socket、清洗环境的
-subprocess——都会直接访问网络。这就是 host `ProcessExecutor` 不能声称
-enforcement，并拒绝网络 Capability 的 `PolicyMode::Enforce` 的原因。
+代理环境变量，并为已知 Agent CLI 添加代理配置参数。子进程仍可忽略这些设置，
+例如静态 Go 二进制、使用原始 socket 或清洗环境的进程，都可能直接访问网络。
+因此 host `ProcessExecutor` 不声称网络 enforcement，并拒绝网络 Capability
+的 `PolicyMode::Enforce`。
 
-剩余 host-driver 设计的目标是**完整拦截且占用轻**：无论语言 runtime、链接
-方式还是 syscall 纪律，Agent 进程树发出的每个字节都必须经过 pVisor 拥有的
-choke point——且不需要 VM、root daemon 或持久提升权限。
-
-关键动作是把拦截点从*约定*（子进程可以忽略的环境变量）移到*子进程无法选择
-绕过的一层*。
+拟议的 host driver 要以较低开销拦截 Agent 进程树的全部网络流量。无论语言
+runtime、链接方式或 syscall 调用方式如何，每个字节都必须经过 pVisor 控制的
+出口，且不需要 VM、root daemon 或持久提升权限。拦截点必须位于子进程无法绕过
+的一层，不能只依赖环境变量约定。
 
 ## Design A（主路径）：无特权 network namespace + 进程内 userspace 网络栈
 
@@ -225,7 +223,7 @@ socket 面。除非未覆盖通道都被拒绝，它不被视为与 netns driver
 
 - 覆盖显式 broker 的 socket 族上的静态二进制和原始 syscall。`AF_UNIX` 有单独
   的路径策略；不是一律放行。
-- 无 namespace、无 tun、无 userspace 栈——但描述符来源、`SCM_RIGHTS`、UDP、
+- 不需要 namespace、tun 或 userspace 栈。描述符来源、`SCM_RIGHTS`、UDP、
   DNS 和 `io_uring` 必须全部关闭或中介，该 driver 才能被描述为不可绕过。
 - Seccomp 在 `connect` 时看到的是 IP 地址，不是应用最初解析的 hostname。域名
   allowlist 需要中介 DNS、显式代理流量或 SNI 关联；IP/CIDR 策略可以直接强制。

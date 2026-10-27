@@ -1,0 +1,3 @@
+{
+  "paired-storage": "$ python3 @REPO@/benchmark/storage/image_format.py --baseline @BASELINE@ --candidate @CANDIDATE@ --baseline-runner @BASELINE_RUNNER@ --output @OUTPUT@ --files @FILES@ --directories @DIRECTORIES@ --backend @BACKEND@ --payload @PAYLOAD@ --runs 30 --warmup 3 --cpu @CPU@"
+}

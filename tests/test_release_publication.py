@@ -18,7 +18,7 @@ SPEC.loader.exec_module(publication)
 class ReleasePublicationTests(unittest.TestCase):
     def test_mismatch_fails_before_any_channel_mutates(self):
         with workspace() as (root, _):
-            wheel = root / "pvisor-0.3.0-py3-none-platform.whl"
+            wheel = root / "pvisor_sandbox-0.3.0-py3-none-platform.whl"
             wheel.write_bytes(b"new build")
             remote = {"urls": [{"filename": wheel.name, "digests": {"sha256": "0" * 64}}]}
             with (
@@ -34,7 +34,7 @@ class ReleasePublicationTests(unittest.TestCase):
 
     def test_identical_github_files_are_retained_and_only_missing_are_uploaded(self):
         with workspace() as (root, _):
-            wheel = root / "pvisor-0.3.0-py3-none-platform.whl"
+            wheel = root / "pvisor_sandbox-0.3.0-py3-none-platform.whl"
             wheel.write_bytes(b"accepted")
             source = root / "pvisor-firmware-source-linux-x86_64.tar.gz"
             source.write_bytes(b"corresponding source")
@@ -74,6 +74,9 @@ class ReleasePublicationTests(unittest.TestCase):
             self.assertIn(str(root / "SHA256SUMS"), args)
             self.assertIn(str(root / "pvisor.rb"), args)
             self.assertNotIn("--clobber", args)
+            self.assertIn(
+                "python -m pip install pvisor-sandbox==0.3.0", args[args.index("--notes") + 1]
+            )
 
     def test_pypi_retry_prunes_only_verified_identical_files(self):
         with workspace() as (root, _):
@@ -89,8 +92,9 @@ class ReleasePublicationTests(unittest.TestCase):
                     }
                 ]
             }
-            with mock.patch.object(publication, "fetch_json", return_value=remote):
+            with mock.patch.object(publication, "fetch_json", return_value=remote) as fetch:
                 self.assertTrue(publication.prepare_pypi(root, "0.3.0"))
+            fetch.assert_called_once_with("https://pypi.org/pypi/pvisor-sandbox/0.3.0/json")
             self.assertFalse(existing.exists())
             self.assertEqual(pending.read_bytes(), b"pending")
 

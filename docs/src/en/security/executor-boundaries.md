@@ -1,6 +1,6 @@
 # Executor boundaries
 
-Each executor provides the protection below per capability dimension. Every statement describes the case where **the corresponding control was requested**; whether a given Run actually installed it is decided by that Run's Bundle.
+An executor's protection depends on the requested controls. The scopes below assume the corresponding control was requested; check each Run Bundle to confirm which controls were installed.
 
 [Network boundaries](../guides/policies/network.md#网络边界) owns network detail (which path can be bypassed, and the VM data plane's protocol coverage); [isolation design](../design/isolation.md) owns the mechanisms.
 

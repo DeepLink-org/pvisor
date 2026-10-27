@@ -73,6 +73,8 @@ Processing dependent on an earlier result must wait until that result is determi
 
 After preparing drivers, pvisor commits startup facts before calling the executor. Required-fact commit failure prevents dispatch and requires cleanup. Recording failure after execution is reported as a failure/warning; it cannot undo effects that already happened.
 
+An Attempt with retained storage commits its [completion receipt](execution-model.md#attempt-completion) before publishing `Completed` and lifecycle terminal events. If terminal-event writing then fails, the result remains valid while event coverage has an audit gap. Subscribers reconcile completion against durable results; a missing event does not establish that a command never ran.
+
 Journal uses one writer and commit receipts, with event deduplication and tail recovery. When commit status is unknown, reconcile effects already performed before deciding whether to retry an external operation. `RunHandle` subscriptions provide committed events for this Run, including Gateway observations in the shared Journal. Live consumers must handle disconnection and lag; read complete history from Journal.
 
 Disabling file recording still permits an in-memory event stream, but produces no file log for recovery after restart. Structured Event is the fact format; `Event::to_text` is only a human-readable projection.
@@ -83,7 +85,7 @@ Disabling file recording still permits an in-memory event stream, but produces n
 
 Snapshots reconstruct observed requests, rewrites, placement and outcomes. Reconstructing complete external behavior also requires initial files, actual environment, external inputs and execution mechanisms. Trace does not contain all of these. Event logs, filesystem checkpoints and agent trajectory replay have different recovery scopes.
 
-Run Bundle currently uses schema 4. Old Bundle and Event/Journal formats are rejected rather than silently mixed. Code constants maintain versions; see the [Records and version matrix](records-and-versions.md#execution-records) for compatibility boundaries and [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for enforcement rules. [Failure semantics](failure-semantics.md) explains reconciliation after commit failures, disconnects and retries.
+Each reader owns its format rules: Bundle completion bindings and legacy reads are separate from exact Event/Journal version checks. See [Records and version matrix](records-and-versions.md#execution-records) for compatibility boundaries, [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for enforcement rules, and [Failure semantics](failure-semantics.md) for reconciliation after commit failures, disconnects and retries.
 
 ## Code and validation
 

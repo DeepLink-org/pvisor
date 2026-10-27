@@ -1,6 +1,7 @@
 //! Job lifecycle commands and dispatch to first-party companions.
 mod cache;
 mod checkpoint;
+mod daemon;
 mod docker;
 mod features;
 #[cfg(unix)]
@@ -120,7 +121,10 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "fork",
             ],
         ),
-        ("Tools", &["cache", "replay", "tui", "feature", "help"]),
+        (
+            "Tools",
+            &["daemon", "cache", "replay", "tui", "feature", "help"],
+        ),
     ];
     let width = command
         .get_subcommands()

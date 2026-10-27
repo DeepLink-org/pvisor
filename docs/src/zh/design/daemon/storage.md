@@ -87,6 +87,6 @@ NativeRuntime 在迁移前拒绝缺少 `owner.json` 的非空 v1 状态；任何
 
 Registry 是增量提交的本机清单，不是完整执行历史或业务副作用账本。版本 2 根据 owner/header 与已校验的逐 sandbox 记录重建清单；已激活的记录树损坏或不完整时不回退到 v1。重启不回滚外部调用、不恢复丢失 RAM，也不提供跨主机故障切换。自动一致备份／原生状态恢复未实现；复制活动目录或删除状态不是恢复流程。
 
-原生不可变缓存／快照 store 保留各自的发布、完整性、pin 与 GC 合同，见[共享镜像存储](../shared-image-cache-storage.md)。Daemon 到 node 存储的桥接尚未实现。
+原生不可变缓存／快照 store 保留各自的发布、完整性、pin 与 GC 合同，见[共享镜像存储](../lazy-image-v2.md)。Daemon 到 node 存储的桥接尚未实现。
 
 实现：`daemon/store.rs` 拥有逐记录发布、预算记账与 v1 激活，`daemon/mod.rs` 拥有预留、删除顺序与恢复路径。

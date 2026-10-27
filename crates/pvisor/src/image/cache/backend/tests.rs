@@ -51,7 +51,12 @@ pub(crate) fn fixture() -> (tempfile::TempDir, Server, CacheClient, String) {
                 Err(e) => panic!("{e}"),
             };
             socket.set_nonblocking(false).unwrap();
+            let ping: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(ping.version, 2);
+            assert!(matches!(ping.request, CacheRequest::Ping));
+            write_frame(&mut socket, &Response::Ready).unwrap();
             let envelope: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(envelope.version, 2);
             if matches!(&envelope.request, CacheRequest::Stat { .. }) {
                 worker_stats.fetch_add(1, Ordering::Relaxed);
             }
@@ -115,7 +120,10 @@ pub(crate) fn fixture() -> (tempfile::TempDir, Server, CacheClient, String) {
             socket.write_all(&bytes).unwrap();
         }
     });
-    let client = CacheClient::new(format!("unix://{}", socket.display()), None).unwrap();
+    let client = crate::image::cache::client::tests::use_server_reuse(
+        CacheClient::new(format!("unix://{}", socket.display()), None).unwrap(),
+        false,
+    );
     (
         temp,
         Server {
@@ -423,7 +431,10 @@ fn reads_only_requested_blocks_and_reuses_verified_cache() {
             .downloaded_bytes,
         3 * MAX_READ as u64
     );
-    let warm_client = CacheClient::new(filesystem.client.address().to_owned(), None).unwrap();
+    let warm_client = crate::image::cache::client::tests::use_server_reuse(
+        CacheClient::new(filesystem.client.address().to_owned(), None).unwrap(),
+        false,
+    );
     let mut warm = RemoteFs::new(
         warm_client,
         filesystem.digest.clone(),
@@ -1074,7 +1085,12 @@ pub(crate) fn portable_fixture(
                 Stream::Tcp(socket) => socket.set_nonblocking(false).unwrap(),
             }
             socket.timeouts(Duration::from_secs(5)).unwrap();
+            let ping: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(ping.version, 2);
+            assert!(matches!(ping.request, CacheRequest::Ping));
+            write_frame(&mut socket, &Response::Ready).unwrap();
             let envelope: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(envelope.version, 2);
             assert_eq!(envelope.token, worker_token);
             let counter = match &envelope.request {
                 CacheRequest::Read { .. } => Some(&worker_reads),
@@ -1355,7 +1371,7 @@ fn index_pages_ignore_rechecksummed_positive_and_negative_receipts_after_reconst
 
 #[test]
 fn index_pages_old_receipts_cannot_mask_corrupt_remote_metadata() {
-    for name in ["COMMIT.json", "checksums.bin", "index.bin"] {
+    for name in ["COMMIT.json", "root.bin", "index.bin"] {
         let (temp, server, client, handle, pages) = portable_fixture(false);
         let binding = client.binding();
         let blocks = temp.path().join("blocks");
@@ -1378,9 +1394,14 @@ fn index_pages_old_receipts_cannot_mask_corrupt_remote_metadata() {
         let lists = server.lists.load(Ordering::Relaxed);
         drop(legacy);
         let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
-        let object = temp.path().join("shared").join(prefix).join(name);
+        let object = temp.path().join("shared").join(&prefix).join(name);
         let mut bytes = fs::read(&object).unwrap();
-        bytes[0] ^= 1;
+        let position = if name == "index.bin" {
+            metadata_root_offset(&temp.path().join("shared").join(prefix))
+        } else {
+            0
+        };
+        bytes[position] ^= 1;
         fs::write(object, bytes).unwrap();
         let client = crate::image::cache::client::tests::use_server_reuse(
             CacheClient::from_binding(binding).unwrap(),
@@ -1446,9 +1467,10 @@ fn index_page_rollout_requires_all_gates_and_only_exact_zero_disables() {
 fn index_page_corruption_and_transport_failure_never_fall_back_to_guest_rpcs() {
     let (temp, server, client, handle, pages) = portable_fixture(false);
     let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
-    let index = temp.path().join("shared").join(prefix).join("index.bin");
+    let root = temp.path().join("shared").join(prefix);
+    let index = root.join("index.bin");
     let mut bytes = fs::read(&index).unwrap();
-    bytes[0] ^= 1;
+    bytes[metadata_root_offset(&root)] ^= 1;
     fs::write(index, bytes).unwrap();
     assert!(
         RemoteFs::new_with_overrides(
@@ -1501,6 +1523,7 @@ fn index_page_authorization_failure_is_not_a_legacy_downgrade_signal() {
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
+        crate::image::cache::client::tests::handshake(&mut socket);
         let envelope: Envelope = read_frame(&mut socket).unwrap();
         assert!(matches!(envelope.request, CacheRequest::Metadata { .. }));
         write_frame(
@@ -1532,4 +1555,10 @@ fn index_page_authorization_failure_is_not_a_legacy_downgrade_signal() {
         std::io::ErrorKind::PermissionDenied
     );
     worker.join().unwrap();
+}
+
+fn metadata_root_offset(root: &std::path::Path) -> usize {
+    // root.bin begins with a bincode Record. Decode via the test-only format
+    // helper rather than relying on the retired fixed-page layout.
+    crate::image::cache::portable::root_offset_for_test(&fs::read(root.join("root.bin")).unwrap())
 }

@@ -79,7 +79,7 @@ def _resolved_fixture(tmp_path):
 def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str) -> None:
     (root / "pvisor").mkdir()
     (root / "pyproject.toml").write_text(
-        f'[project]\nname = "pvisor"\nversion = "{pyproject}"\n', encoding="utf-8"
+        f'[project]\nname = "pvisor-sandbox"\nversion = "{pyproject}"\n', encoding="utf-8"
     )
     (root / "Cargo.toml").write_text(
         f'[workspace.package]\nversion = "{cargo}"\n', encoding="utf-8"
@@ -87,10 +87,10 @@ def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str)
     (root / "pvisor" / "__init__.py").write_text(f'__version__ = "{package}"\n', encoding="utf-8")
 
 
-def _write_wheel(path: Path, version: str, name: str = "pvisor") -> None:
+def _write_wheel(path: Path, version: str, name: str = "pvisor-sandbox") -> None:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
-            f"pvisor-{version}.dist-info/METADATA",
+            f"pvisor_sandbox-{version}.dist-info/METADATA",
             f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
         )
 
@@ -157,11 +157,11 @@ class ReleasePackagingTests(unittest.TestCase):
             assert set(release_version.read_versions(tmp_path).values()) == {"1.2.3+g42.abcdef0"}
 
     def test_release_artifacts_reject_wrong_distribution(self):
-        for name in ["legacy-package", "unrelated"]:
+        for name in ["pvisor", "legacy-package", "unrelated"]:
             with self.subTest(name=name):
                 with workspace() as (tmp_path, resources):
                     for platform in ("manylinux_2_28_x86_64", "macosx_11_0_arm64"):
-                        wheel = tmp_path / f"pvisor-1.2.3-py3-none-{platform}.whl"
+                        wheel = tmp_path / f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl"
                         _write_wheel(wheel, "1.2.3", name=name)
                     with self.assertRaisesRegex(
                         release_artifacts.ArtifactValidationError, "METADATA Name"
@@ -175,8 +175,8 @@ class ReleasePackagingTests(unittest.TestCase):
             with self.subTest(version=version):
                 with workspace() as (tmp_path, resources):
                     names = [
-                        f"pvisor-{version}-py3-none-manylinux_2_28_x86_64.whl",
-                        f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
+                        f"pvisor_sandbox-{version}-py3-none-manylinux_2_28_x86_64.whl",
+                        f"pvisor_sandbox-{version}-py3-none-macosx_11_0_arm64.whl",
                     ]
                     for name in names:
                         _write_wheel(tmp_path / name, version)
@@ -188,7 +188,7 @@ class ReleasePackagingTests(unittest.TestCase):
         with workspace() as (tmp_path, resources):
             version = "1.2.3"
             _write_wheel(
-                tmp_path / f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
+                tmp_path / f"pvisor_sandbox-{version}-py3-none-macosx_11_0_arm64.whl",
                 version,
             )
             with self.assertRaisesRegex(
@@ -200,8 +200,8 @@ class ReleasePackagingTests(unittest.TestCase):
         with workspace() as (tmp_path, resources):
             filename_version = "1.2.3"
             names = [
-                f"pvisor-{filename_version}-py3-none-manylinux_2_28_x86_64.whl",
-                f"pvisor-{filename_version}-py3-none-macosx_11_0_arm64.whl",
+                f"pvisor_sandbox-{filename_version}-py3-none-manylinux_2_28_x86_64.whl",
+                f"pvisor_sandbox-{filename_version}-py3-none-macosx_11_0_arm64.whl",
             ]
             for name in names:
                 _write_wheel(tmp_path / name, "1.2.4")
@@ -215,8 +215,8 @@ class ReleasePackagingTests(unittest.TestCase):
         with workspace() as (tmp_path, resources):
             version = "1.2.3"
             names = [
-                f"pvisor-{version}-py3-none-manylinux_2_28_x86_64.whl",
-                f"pvisor-{version}-py3-none-macosx_11_0_arm64.whl",
+                f"pvisor_sandbox-{version}-py3-none-manylinux_2_28_x86_64.whl",
+                f"pvisor_sandbox-{version}-py3-none-macosx_11_0_arm64.whl",
             ]
             for name in names:
                 _write_wheel(tmp_path / name, version)
@@ -769,11 +769,11 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_linux_wheel_requires_no_firmware_shared_library(self):
         with workspace() as (tmp_path, resources):
-            wheel = tmp_path / "pvisor-1.2.3-py3-none-manylinux_2_28_x86_64.whl"
+            wheel = tmp_path / "pvisor_sandbox-1.2.3-py3-none-manylinux_2_28_x86_64.whl"
             _write_wheel(wheel, "1.2.3")
             with zipfile.ZipFile(wheel, "a") as archive:
                 for name in wheel_stage.EXPECTED_BINARIES:
-                    binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+                    binary = zipfile.ZipInfo(f"pvisor_sandbox-1.2.3.data/scripts/{name}")
                     binary.external_attr = 0o100755 << 16
                     archive.writestr(binary, b"static ELF")
             version, scripts, firmware = wheel_verify._wheel_contents(wheel)
@@ -783,7 +783,9 @@ class ReleasePackagingTests(unittest.TestCase):
                 and firmware is None
             )
             with zipfile.ZipFile(wheel, "a") as archive:
-                archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.so.5", b"shared library")
+                archive.writestr(
+                    "pvisor_sandbox-1.2.3.data/scripts/libkrunfw.so.5", b"shared library"
+                )
             with self.assertRaisesRegex(RuntimeError, "expected 0 libkrunfw"):
                 wheel_verify._wheel_contents(wheel)
 
@@ -1020,31 +1022,31 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_macos_wheel_includes_daemon_and_rejects_retired_cache(self):
         with workspace() as (tmp_path, resources):
-            wheel = tmp_path / "pvisor-1.2.3-py3-none-macosx_11_0_arm64.whl"
+            wheel = tmp_path / "pvisor_sandbox-1.2.3-py3-none-macosx_11_0_arm64.whl"
             _write_wheel(wheel, "1.2.3")
             with zipfile.ZipFile(wheel, "a") as archive:
                 for name in wheel_stage.EXPECTED_BINARIES:
-                    binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+                    binary = zipfile.ZipInfo(f"pvisor_sandbox-1.2.3.data/scripts/{name}")
                     binary.external_attr = 0o100755 << 16
                     archive.writestr(binary, b"Mach-O")
             _, scripts, firmware = wheel_verify._wheel_contents(wheel)
             assert set(scripts) == set(wheel_stage.EXPECTED_BINARIES)
             assert firmware is None
             with zipfile.ZipFile(wheel, "a") as archive:
-                archive.writestr("pvisor-1.2.3.data/scripts/pvisor-cache", b"unsupported")
+                archive.writestr("pvisor_sandbox-1.2.3.data/scripts/pvisor-cache", b"unsupported")
             with self.assertRaisesRegex(RuntimeError, "retired executable pvisor-cache"):
                 wheel_verify._wheel_contents(wheel)
 
     def test_macos_wheel_rejects_external_firmware_dependency(self):
         with workspace() as (root, _):
-            wheel = root / "pvisor-1.2.3-py3-none-macosx_11_0_arm64.whl"
+            wheel = root / "pvisor_sandbox-1.2.3-py3-none-macosx_11_0_arm64.whl"
             _write_wheel(wheel, "1.2.3")
             with zipfile.ZipFile(wheel, "a") as archive:
                 for name in wheel_stage.EXPECTED_BINARIES:
-                    binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+                    binary = zipfile.ZipInfo(f"pvisor_sandbox-1.2.3.data/scripts/{name}")
                     binary.external_attr = 0o100755 << 16
                     archive.writestr(binary, b"Mach-O")
-                archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
+                archive.writestr("pvisor_sandbox-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
             with self.assertRaisesRegex(RuntimeError, "expected 0 libkrunfw"):
                 wheel_verify._wheel_contents(wheel)
 
@@ -1065,24 +1067,35 @@ class ReleasePackagingTests(unittest.TestCase):
                     "Verify daemon archive checksum",
                 ):
                     assert retired not in contents
-                assert "dist/*.whl" in contents
                 if workflow == "nightly.yml":
+                    assert "dist/pvisor_sandbox-*.whl" in contents
                     assert "dist/pvisor-*.tar.gz" in contents
                 else:
                     assert "publish-release -- github dist" in contents
-                assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
-                assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
+                assert "uses: ./.github/workflows/distribution.yml" in contents
                 if workflow == "nightly.yml":
-                    assert "needs: [meta, wheels]" in contents
+                    assert "needs: [meta, verify]" in contents
+                    assert "name: nightly-wheels" in contents
+                    assert "name: nightly-native" in contents
                 else:
                     assert "needs: [validate, verify]" in contents
                     assert "needs: [validate, verify, github-release]" in contents
+                    assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
+                    assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
+        shared = (ROOT / ".github/workflows/distribution.yml").read_text()
+        assert "uses: ./.github/workflows/ci.yml" in shared
+        assert "uses: ./.github/workflows/wheel.yml" in shared
+        assert "needs: [wheels, acceptance]" in shared
+        assert "build_release_assets.py dist" in shared
+        assert "path: dist/pvisor_sandbox-*.whl" in shared
 
     def test_wheel_verifier_rejects_unsupported_platforms(self):
         for platform in ["manylinux_2_28_aarch64", "win_amd64", "macosx_11_0_x86_64"]:
             with self.subTest(platform=platform):
                 with self.assertRaisesRegex(RuntimeError, "unsupported wheel platform"):
-                    wheel_verify.expected_binaries(Path(f"pvisor-1.2.3-py3-none-{platform}.whl"))
+                    wheel_verify.expected_binaries(
+                        Path(f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl")
+                    )
 
     def test_native_binary_contract_excludes_retired_pool(self):
         for platform, target, expected in [
@@ -1097,7 +1110,7 @@ class ReleasePackagingTests(unittest.TestCase):
                 options = wheel_stage.BuildOptions(target=target)
                 assert wheel_stage.CLI_BINARIES == APPLICATION_BINARIES
                 assert wheel_stage.EXPECTED_BINARIES == expected
-                wheel = Path(f"pvisor-1.2.3-py3-none-{platform}.whl")
+                wheel = Path(f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl")
                 assert wheel_verify.expected_binaries(wheel) == expected
                 command = wheel_stage._cargo_command(options)
                 assert (
@@ -1110,16 +1123,16 @@ class ReleasePackagingTests(unittest.TestCase):
         for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
             with self.subTest(platform=platform):
                 with workspace() as (tmp_path, resources):
-                    wheel = tmp_path / f"pvisor-1.2.3-py3-none-{platform}.whl"
+                    wheel = tmp_path / f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl"
                     _write_wheel(wheel, "1.2.3")
                     with zipfile.ZipFile(wheel, "a") as archive:
                         for name in (*wheel_verify.expected_binaries(wheel), "pvisor-memory-pool"):
-                            binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+                            binary = zipfile.ZipInfo(f"pvisor_sandbox-1.2.3.data/scripts/{name}")
                             binary.external_attr = 0o100755 << 16
                             archive.writestr(binary, b"native binary")
                         if "macosx" in platform:
                             archive.writestr(
-                                "pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware"
+                                "pvisor_sandbox-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware"
                             )
                     with self.assertRaisesRegex(
                         RuntimeError, "retired executable pvisor-memory-pool"
@@ -1131,7 +1144,7 @@ class ReleasePackagingTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 with ExitStack() as resources:
                     commands = []
-                    wheel = Path(f"pvisor-1.2.3-py3-none-{platform}.whl")
+                    wheel = Path(f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl")
                     expected = wheel_verify.expected_binaries(wheel)
 
                     def create_environment(self, environment):
@@ -1171,7 +1184,7 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_acceptance_rejects_reused_attempt_and_wrong_applied_bytes(self):
         # Exercise the acceptance oracle itself; these mocks are not VM evidence.
-        for fault in (None, "same-attempt", "wrong-apply", "strict-executed"):
+        for fault in (None, "same-attempt", "wrong-apply", "strict-executed", "vm-start"):
             with self.subTest(fault=fault), workspace() as (root, resources):
                 executable = root / "pvisor"
                 wheel = root / "pvisor.whl"
@@ -1214,6 +1227,13 @@ class ReleasePackagingTests(unittest.TestCase):
                         code = 1 if "--strict" in args else 0 if "vm" in args else 7
                         if "--strict" in args and fault == "strict-executed":
                             (directory / "workspace/forbidden").touch()
+                        if "vm" in args and fault == "vm-start":
+                            code = 1
+                            failed_stage = Path(args[args.index("--stage") + 1])
+                            failed_stage.mkdir()
+                            (failed_stage / "run-bundle.json").write_text(
+                                json.dumps({"run": {"output": {"stderr": "VM startup error"}}})
+                            )
                     elif args[1] == "status":
                         if state["attempt"] == 2 and state["busy"]:
                             state["busy"] = False
@@ -1261,6 +1281,9 @@ class ReleasePackagingTests(unittest.TestCase):
                     )
                     self.assertEqual(evidence["steps"][-1]["step"], "vm-restore-stage-review")
                 self.assertTrue(log.is_file())
+                if fault == "vm-start":
+                    retained = json.loads((log.parent / "apply-stage-run-bundle.json").read_text())
+                    self.assertEqual(retained["run"]["output"]["stderr"], "VM startup error")
 
     def test_setuptools_excludes_stale_retired_and_unrelated_wheel_scripts(self):
         with workspace() as (tmp_path, resources):

@@ -22,20 +22,14 @@ Linux host selective egress still uses a cooperative proxy, so the `--safe` labe
 
 ## Small-file delivery for lazy images {#lazy-image-small-files}
 
-Planned: automatically pack small files during image build/publication to reduce remote requests and cold-read waits for S3-backed lazy images. No implementation or performance acceptance results are available yet. See [shared image cache V1](../design/shared-image-cache-storage.md) for the current format and limitations, and [Lazy Image V2](../design/lazy-image-v2.md) for the detailed proposal on directory packing, deterministic bucketing and two-level indexes.
+Implemented: V2 places all metadata in compressed directory radix indexes, packs small files by directory, and independently decompresses data frames. Server, filesystem, S3 and Docker local pools share this format. Storage V1 is retired and requires republication from OCI. See [Lazy Image V2](../design/lazy-image-v2.md) for contracts/limits. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately covers real inventories, native Docker cold/warm clients, first/repeated local mmap and whole-group memory. Disk and small-working-set benefits do not establish universal performance superiority.
 
-Design direction:
+Next acceptance work:
 
-- Preserve independent file paths, permissions, hardlinks, symlinks and xattrs. Group physical contents into immutable packs by access locality, such as package or directory, with indexes locating offsets and lengths.
-- Separate object size, read/compression block size and cache granularity. Support range reads and independently decompressible blocks without requiring full-pack download or decompression.
-- Combine local metadata caching, adjacent-read coalescing, bounded prefetch and concurrent-miss coalescing. Packing objects while retaining one request per file does not complete the optimization.
-- Preserve cross-image content sharing rather than repacking common dependencies for every image; keep on-demand chunk reads for large files. Evaluate reusable Nydus/EROFS capabilities before extending the custom format.
-
-Acceptance criteria:
-
-- Compare independent small-file objects, per-file range reads within packs, and packs with read coalescing/caching. Cover cold metadata, cold content, warm caches and concurrent tasks separately.
-- Use Python imports, Node.js dependency loading, directory/attribute scans and real builds/tests. Record first useful tool call, complete-task time and P95/P99, request counts, downloaded bytes, read amplification, cache occupancy, packing time and total cost. Include first-publication costs and evaluate low-reuse environments separately. Register experiments and follow benchmark publication rules without assuming a speedup percentage.
-- Verify file semantics, copy-up, change delivery, content integrity and remote-failure behavior. Before changing the format, define compatibility/migration for existing image handles and checkpoint dependencies, plus pack retention and safe reclamation boundaries.
+- Measure first useful tool call, complete-task time, P95/P99, S3 requests, downloaded bytes and decompression amplification for real Python imports, Node.js dependency loading and builds/tests.
+- Cover cold metadata, cold content and concurrent tasks separately, including first publication and service-side staging. Profile guest execution, metadata, verification and decompression in local scans before attributing whole-path differences to one component.
+- Evaluate adjacent-request coalescing and prefetch beyond existing bounded caches/miss coalescing, avoiding useless reads; validate mmap, copy-up, exports and remote faults.
+- Improve O(N) publication metadata planning and the 64 MiB single-index limit; design pack retention and safe GC without age-based deletion of shared content.
 
 ## Single-node daemon {#daemon}
 
@@ -57,7 +51,7 @@ Acceptance criteria:
 
 ### L3: clustered execution, centralized evidence
 
-Entry criteria (TBD): the boundary with schedulers is defined—pVisor provides execution semantics and evidence, while cross-node orchestration goes to Kubernetes and Ray; see [cluster execution](../design/research/index.md).
+Entry criteria (TBD): define scheduler responsibilities. pVisor provides execution semantics and evidence; Kubernetes and Ray handle cross-node orchestration; see [cluster execution](../design/research/index.md).
 
 Acceptance criteria:
 

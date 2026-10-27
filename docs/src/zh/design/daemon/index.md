@@ -20,7 +20,7 @@
 
 Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `RuntimeJobService` 启动；live status/pause/resume/termination 复用进程内 `AttemptService`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
 
-职责收敛的原则是为每种本机资源明确所有者，而不是把所有服务合并进 daemon 进程：sandbox 生命周期、原生不可变 backing 和不可丢失的活动 RAM 有不同权威与故障边界。同包发布、统一启动入口或更少端口不能补齐缺失的 runtime 适配器，也不建立更快启动、更低内存或更高密度。接入新路径前先定义获取、取消、终止与 pin 释放合同，并通过固定预算测量评估；职责收敛不建立 live-VM 接管、共享 cold-pool 仲裁、自动 node 获取或密度优势。
+Sandbox 生命周期、不可变 backing 和活动 RAM 分别由各自的所有者管理，具有不同的故障边界。接入新路径时，需要明确获取、取消、终止与 pin 释放的合同，并通过固定预算测量评估。统一打包、启动入口或端口本身不会补齐 runtime 适配器；接管 live VM、仲裁共享 cold-pool 和自动获取 node 资源都需要各自的适配器与验证，启动、内存与密度收益也需单独测量。
 
 ## 准入与容量记账 {#admission}
 

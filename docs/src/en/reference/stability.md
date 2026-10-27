@@ -2,7 +2,7 @@
 
 For a long-running pipeline, pin the pVisor version, record format, and agent version. Before upgrading, use representative tasks to verify execution, review, apply, and replay; keep the matching reader for old records.
 
-Current readers check explicit format versions. The following lists interface reading rules and the operations to verify during an upgrade.
+Current readers check format versions. Verify each interface against its reading rules when upgrading.
 
 ## Reading rules available today
 

@@ -66,7 +66,7 @@ VM staged workspaces continue serving virtio-fs directly; host staged execution
 continues through host FUSE. The backend preserves immutable handles, hard-link
 identity, metadata generations and content digests. Shared image caches do not
 share writable uppers or journals. Storage contracts are in
-[Shared image cache v1](shared-image-cache-storage.md#filesystem-access).
+[Shared image cache V2](lazy-image-v2.md#filesystem-access).
 
 The direct backend creates a private metadata projection to retain existing local
 inode/FD, path checks and snapshot contracts. It consists of ordinary directories
@@ -149,6 +149,8 @@ Paths illustrate the layout; configuration may override upper, work and merged. 
 Upper stores complete copied-up files: a one-byte edit can copy the entire file. There is no block delta or compression format. Merged is a projection, not another complete copy. Preimages contain fingerprints rather than original bytes; directory originals that must survive replacement remain in backups beside target.
 
 ## 3. Detailed data and mechanisms {#detailed-design}
+
+Regular files generally use whole-file copy-up; safe `O_TRUNC` cases can skip copying old bytes. Ordinary writes should not be treated as block deltas. Source entry points are `pvisor-overlay-core/src/core.rs::copy_up_for_open` and `apply.rs::apply_overlay_selected` for application.
 
 ### Merge, copy-up and POSIX nodes {#copy-up}
 

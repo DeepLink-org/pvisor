@@ -18,9 +18,9 @@ pVisor also injects runtime variables such as `PVISOR_RUN_ID` and `PVISOR_AGENTC
 
 ## HOME and local credential files
 
-- **`--safe`:** HOME (and an explicitly set `CODEX_HOME`) uses a separate private stage. On macOS the agent uses a temporary HOME and cannot read the original home directory directly; on Linux the launcher projects the host HOME through a private stage. HOME changes are discarded when the Run ends.
-- **`.ssh`, `.gnupg`, and private-key files within the view:** the `--safe` preset denies access; see [file policies](files.md).
-- **Linux note:** overlay deny rules do not hide secret files at original paths outside the workspace view; use `--filesystem sandbox` or a VM when you need a stronger guarantee.
+With `--safe`, HOME (and an explicitly set `CODEX_HOME`) uses a separate private stage. On macOS the agent uses a temporary HOME and cannot read the original home directory directly; on Linux the launcher projects the host HOME through a private stage. HOME changes are discarded when the Run ends.
+
+The `--safe` preset denies access to `.ssh`, `.gnupg` and private-key files within the view; see [file policies](files.md). On Linux, overlay deny rules do not hide secret files at original paths outside the workspace view. Use `--filesystem sandbox` or a VM when you need a stronger guarantee.
 
 ## Two ways to deliver an API key
 

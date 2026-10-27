@@ -9,7 +9,7 @@ use flate2::read::GzDecoder;
 use fs2::FileExt;
 use pvisor_journal::api::{DurableFiles, Persistence};
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT, AUTHORIZATION, WWW_AUTHENTICATE};
+use reqwest::header::{ACCEPT, AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -186,12 +186,25 @@ impl ImageStore {
         fs::create_dir_all(root.join("rootfs-v3/sha256"))?;
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
-        let client = Client::builder()
+        let mut client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(300))
-            .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("build OCI registry client")?;
+            // Blocking reqwest bounds response-body reads as well as requests;
+            // retries restart a failed blob with a fresh file and hasher.
+            .timeout(Duration::from_secs(30))
+            .user_agent(concat!("pvisor/", env!("CARGO_PKG_VERSION")));
+        if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+            let pem = fs::read(path).context("read registry SSL_CERT_FILE")?;
+            let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+                .context("parse registry SSL_CERT_FILE")?;
+            anyhow::ensure!(
+                !certificates.is_empty(),
+                "registry SSL_CERT_FILE contains no certificates"
+            );
+            for certificate in certificates {
+                client = client.add_root_certificate(certificate);
+            }
+        }
+        let client = client.build().context("build OCI registry client")?;
         Ok(Self { root, client })
     }
 
@@ -471,20 +484,24 @@ impl ImageStore {
             verify_file_digest(&descriptor.digest, &destination)?;
             return Ok(destination);
         }
-        progress(PullProgress::Downloading {
-            digest: descriptor.digest.clone(),
-            downloaded: 0,
-            total: descriptor.size,
-        });
-        let mut response = registry.get(
-            &format!(
-                "/v2/{}/blobs/{}",
-                registry.image.repository, descriptor.digest
-            ),
-            None,
-        )?;
-        let total = descriptor.size.or(response.content_length());
-        self.save_blob(&mut response, descriptor, total, progress)
+        retry_blob_transfer(|| {
+            progress(PullProgress::Downloading {
+                digest: descriptor.digest.clone(),
+                downloaded: 0,
+                total: descriptor.size,
+            });
+            let mut response = registry.get(
+                &format!(
+                    "/v2/{}/blobs/{}",
+                    registry.image.repository, descriptor.digest
+                ),
+                None,
+            )?;
+            let total = descriptor.size.or(response.content_length());
+            // Each attempt owns its temporary file and hasher. Failed partial
+            // bytes are discarded; only a complete verified blob is published.
+            self.save_blob(&mut response, descriptor, total, progress)
+        })
     }
 
     fn save_blob(
@@ -541,6 +558,76 @@ impl ImageStore {
     }
 }
 
+fn retry_blob_transfer<T>(mut transfer: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    match transfer() {
+        Err(error) if transient_transfer_error(&error) => {
+            std::thread::sleep(Duration::from_millis(100));
+            transfer().context("OCI blob transfer failed after one transient-error retry")
+        }
+        result => result,
+    }
+}
+
+fn transient_transfer_error(error: &anyhow::Error) -> bool {
+    fn transient_http(error: &reqwest::Error) -> bool {
+        error.is_timeout() || error.is_connect() || error.is_body()
+    }
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(transient_http)
+            || cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                // Response::read wraps the concrete reqwest error. io::Error's
+                // source skips its identity; inspect get_ref without text matching.
+                // A bare storage timeout/reset is not a network retry signal.
+                error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+                    .is_some_and(transient_http)
+            })
+    })
+}
+
+fn registry_retry_delay(response: &Response, now: SystemTime) -> Option<Duration> {
+    if !matches!(
+        response.status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS | reqwest::StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        return None;
+    }
+    let delay = match response.headers().get(RETRY_AFTER) {
+        None => Duration::from_secs(1),
+        Some(value) => {
+            let value = value.to_str().ok()?.trim();
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                Duration::from_secs(value.parse::<u64>().ok()?)
+            } else {
+                httpdate::parse_http_date(value)
+                    .ok()?
+                    .duration_since(now)
+                    .unwrap_or(Duration::ZERO)
+            }
+        }
+    };
+    // Never retry earlier than the server requests, or turn an untrusted header
+    // into an unbounded sleep. Long/malformed delays return the original status.
+    (delay <= Duration::from_secs(10)).then_some(delay)
+}
+
+fn retry_throttled_registry_get(
+    mut request: impl FnMut() -> anyhow::Result<Response>,
+    mut wait: impl FnMut(Duration),
+) -> anyhow::Result<Response> {
+    let response = request()?;
+    if let Some(delay) = registry_retry_delay(&response, SystemTime::now()) {
+        drop(response);
+        wait(delay);
+        request().context("OCI registry request failed after one rate-limit retry")
+    } else {
+        Ok(response)
+    }
+}
+
 struct RegistryClient<'a> {
     client: &'a Client,
     image: ImageReference,
@@ -570,8 +657,9 @@ impl<'a> RegistryClient<'a> {
 
     fn get(&mut self, path: &str, accept: Option<&str>) -> anyhow::Result<Response> {
         let url = format!("https://{}{}", self.image.registry, path);
+        let client = self.client;
         let send = |token: Option<&str>| {
-            let mut request = self.client.get(&url);
+            let mut request = client.get(&url);
             if let Some(accept) = accept {
                 request = request.header(ACCEPT, accept);
             }
@@ -580,17 +668,23 @@ impl<'a> RegistryClient<'a> {
             }
             request.send()
         };
-        let mut response = send(self.token.as_deref())?;
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            let challenge = response
-                .headers()
-                .get(WWW_AUTHENTICATE)
-                .and_then(|value| value.to_str().ok())
-                .context("OCI registry omitted the Bearer authentication challenge")?;
-            let token = self.fetch_token(challenge)?;
-            self.token = Some(token);
-            response = send(self.token.as_deref())?;
-        }
+        let response = retry_throttled_registry_get(
+            || {
+                let mut response = send(self.token.as_deref())?;
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    let challenge = response
+                        .headers()
+                        .get(WWW_AUTHENTICATE)
+                        .and_then(|value| value.to_str().ok())
+                        .context("OCI registry omitted the Bearer authentication challenge")?;
+                    let token = self.fetch_token(challenge)?;
+                    self.token = Some(token);
+                    response = send(self.token.as_deref())?;
+                }
+                Ok(response)
+            },
+            std::thread::sleep,
+        )?;
         response
             .error_for_status()
             .with_context(|| format!("request OCI registry URL {url}"))
@@ -610,7 +704,16 @@ impl<'a> RegistryClient<'a> {
             .cloned()
             .unwrap_or_else(|| format!("repository:{}:pull", self.image.repository));
         request = request.query(&[("scope", &scope)]);
-        let response: TokenResponse = request.send()?.error_for_status()?.json()?;
+        let response = retry_throttled_registry_get(
+            || {
+                Ok(request
+                    .try_clone()
+                    .context("clone registry token GET")?
+                    .send()?)
+            },
+            std::thread::sleep,
+        )?;
+        let response: TokenResponse = response.error_for_status()?.json()?;
         let token = if response.token.is_empty() {
             response.access_token
         } else {
@@ -691,12 +794,7 @@ pub(crate) fn cache_reference(image: &str) -> anyhow::Result<(String, bool)> {
 }
 
 fn default_store_dir() -> anyhow::Result<PathBuf> {
-    if let Some(value) = std::env::var_os("PVISOR_IMAGE_STORE") {
-        return Ok(PathBuf::from(value));
-    }
-    Ok(dirs::cache_dir()
-        .unwrap_or(std::env::current_dir()?.join(".pvisor/cache"))
-        .join("pvisor/images"))
+    Ok(crate::image::store::LocalStore::discover(None)?.root)
 }
 
 fn host_architecture() -> anyhow::Result<&'static str> {
@@ -836,6 +934,7 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
     archive.set_preserve_permissions(true);
     #[cfg(unix)]
     let mut deferred_directory_modes = BTreeMap::new();
+    let mut directory_mtimes = BTreeMap::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
@@ -910,6 +1009,12 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
         #[cfg(unix)]
         if let Some(mode) = directory_mode {
             use std::os::unix::fs::PermissionsExt;
+            directory_mtimes.insert(
+                relative.clone(),
+                UNIX_EPOCH
+                    .checked_add(Duration::from_secs(entry.header().mtime()?))
+                    .context("OCI directory mtime overflow")?,
+            );
             deferred_directory_modes.insert(relative.clone(), mode);
             fs::set_permissions(
                 rootfs.join(&relative),
@@ -918,7 +1023,7 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
         }
     }
     #[cfg(unix)]
-    restore_directory_modes(rootfs, deferred_directory_modes)?;
+    restore_directory_modes(rootfs, deferred_directory_modes, directory_mtimes)?;
     Ok(())
 }
 
@@ -963,15 +1068,27 @@ fn make_ancestor_directories_writable(
 fn restore_directory_modes(
     rootfs: &Path,
     deferred_modes: BTreeMap<PathBuf, u32>,
+    directory_mtimes: BTreeMap<PathBuf, SystemTime>,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut directories = deferred_modes.into_iter().collect::<Vec<_>>();
     directories.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     for (relative, mode) in directories {
-        let directory = rootfs.join(relative);
+        let directory = rootfs.join(&relative);
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                // Entry::unpack_in skips root headers and defers no directory
+                // timestamps. Restore them after children so scoped reimports
+                // preserve OCI metadata instead of the extraction wall clock.
+                if let Some(mtime) = directory_mtimes.get(&relative) {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                        .open(&directory)?
+                        .set_times(fs::FileTimes::new().set_modified(*mtime))?;
+                }
                 fs::set_permissions(directory, fs::Permissions::from_mode(mode))?;
             }
             Ok(_) => {}
@@ -1096,6 +1213,293 @@ fn clear_relative_directory(root: &Path, relative: &Path) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
+
+    fn registry_response(status: u16, retry_after: Option<&str>) -> Response {
+        let mut response = axum::http::Response::builder().status(status);
+        if let Some(value) = retry_after {
+            response = response.header(RETRY_AFTER, value);
+        }
+        response.body(Vec::<u8>::new()).unwrap().into()
+    }
+
+    #[test]
+    fn registry_retry_after_is_respected_and_bounded() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert_eq!(
+            registry_retry_delay(&registry_response(429, None), now),
+            Some(Duration::from_secs(1))
+        );
+        for (header, expected) in [
+            ("0", Some(0)),
+            ("10", Some(10)),
+            (" 2 ", Some(2)),
+            ("11", None),
+            ("-1", None),
+            ("+1", None),
+            ("18446744073709551616", None),
+            ("garbage", None),
+        ] {
+            assert_eq!(
+                registry_retry_delay(&registry_response(429, Some(header)), now),
+                expected.map(Duration::from_secs),
+                "{header}"
+            );
+        }
+        for seconds in [3, 11] {
+            let date = httpdate::fmt_http_date(now + Duration::from_secs(seconds));
+            assert_eq!(
+                registry_retry_delay(&registry_response(503, Some(&date)), now),
+                if seconds <= 10 {
+                    Some(Duration::from_secs(seconds))
+                } else {
+                    None
+                }
+            );
+        }
+        let past = httpdate::fmt_http_date(now - Duration::from_secs(1));
+        assert_eq!(
+            registry_retry_delay(&registry_response(429, Some(&past)), now),
+            Some(Duration::ZERO)
+        );
+        for status in [200, 401, 403, 404, 500] {
+            assert_eq!(
+                registry_retry_delay(&registry_response(status, Some("1")), now),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn registry_throttling_retries_once_without_hiding_persistent_errors() {
+        for status in [429, 503] {
+            let mut calls = 0;
+            let mut waits = Vec::new();
+            let response = retry_throttled_registry_get(
+                || {
+                    calls += 1;
+                    Ok(registry_response(
+                        if calls == 1 { status } else { 200 },
+                        Some("0"),
+                    ))
+                },
+                |delay| waits.push(delay),
+            )
+            .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            assert_eq!(calls, 2);
+            assert_eq!(waits, [Duration::ZERO]);
+        }
+        let mut calls = 0;
+        let response = retry_throttled_registry_get(
+            || {
+                calls += 1;
+                Ok(registry_response(429, Some("0")))
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!(response.error_for_status().is_err());
+        calls = 0;
+        let response = retry_throttled_registry_get(
+            || {
+                calls += 1;
+                Ok(registry_response(404, None))
+            },
+            |_| panic!("must not wait for a missing image"),
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert!(response.error_for_status().is_err());
+    }
+
+    #[test]
+    fn stalled_http_body_retries_once_with_fresh_bytes_and_hash() {
+        use std::io::BufRead;
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Instant;
+        let temp = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(temp.path().into())).unwrap();
+        let payload = vec![19_u8; 100_000];
+        let descriptor = Descriptor {
+            media_type: String::new(),
+            digest: format!(
+                "sha256:{}",
+                crate::util::encode_hex(&Sha256::digest(&payload))
+            ),
+            size: Some(payload.len() as u64),
+            platform: None,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = payload.clone();
+        let server = std::thread::spawn(move || {
+            let accept = || -> TcpStream {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => return socket,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "missing retry connection");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+            };
+            let consume_request = |socket: &mut TcpStream| {
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(socket);
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+            };
+            let mut first = accept();
+            consume_request(&mut first);
+            write!(
+                first,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            first.write_all(&body[..32]).unwrap();
+            let stalled = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(750));
+                drop(first);
+            });
+            let mut second = accept();
+            consume_request(&mut second);
+            write!(
+                second,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            second.write_all(&body).unwrap();
+            drop(second);
+            stalled.join().unwrap();
+        });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(250))
+            .build()
+            .unwrap();
+        let mut attempts = 0;
+        let path = retry_blob_transfer(|| {
+            attempts += 1;
+            let mut response = client.get(format!("http://{address}/blob")).send()?;
+            store.save_blob(&mut response, &descriptor, descriptor.size, &mut |_| {})
+        })
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(fs::read(path).unwrap(), payload);
+        assert_eq!(
+            fs::read_dir(temp.path().join("blobs/sha256"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn blob_integrity_and_permanent_storage_errors_are_never_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(temp.path().into())).unwrap();
+        let payload = b"verified";
+        let descriptor = Descriptor {
+            media_type: String::new(),
+            digest: format!(
+                "sha256:{}",
+                crate::util::encode_hex(&Sha256::digest(payload))
+            ),
+            size: Some(payload.len() as u64),
+            platform: None,
+        };
+        let mut attempts = 0;
+        assert!(
+            retry_blob_transfer(|| {
+                attempts += 1;
+                store.save_blob(
+                    &mut std::io::Cursor::new(b"wrong"),
+                    &descriptor,
+                    descriptor.size,
+                    &mut |_| {},
+                )
+            })
+            .is_err()
+        );
+        assert_eq!(attempts, 1);
+        let mut wrong_size = descriptor;
+        wrong_size.size = Some(payload.len() as u64 + 1);
+        attempts = 0;
+        assert!(
+            retry_blob_transfer(|| {
+                attempts += 1;
+                store.save_blob(
+                    &mut std::io::Cursor::new(payload),
+                    &wrong_size,
+                    wrong_size.size,
+                    &mut |_| {},
+                )
+            })
+            .is_err()
+        );
+        assert_eq!(attempts, 1);
+        assert_eq!(
+            fs::read_dir(temp.path().join("blobs/sha256"))
+                .unwrap()
+                .count(),
+            0
+        );
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::ConnectionReset,
+        ] {
+            attempts = 0;
+            let failure = retry_blob_transfer::<()>(|| {
+                attempts += 1;
+                Err(std::io::Error::from(kind).into())
+            });
+            assert!(failure.is_err());
+            assert_eq!(attempts, 1);
+        }
+    }
+
+    #[test]
+    fn persistent_transfer_failures_stop_after_one_retry() {
+        // Keep this port bound but not listening: connection refusal is local,
+        // deterministic and cannot reach an unrelated server or the Internet.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        let client = Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(250))
+            .build()
+            .unwrap();
+        let mut attempts = 0;
+        let failure = retry_blob_transfer::<()>(|| {
+            attempts += 1;
+            client.get(format!("http://{address}/blob")).send()?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 2);
+        assert!(
+            failure
+                .to_string()
+                .contains("after one transient-error retry")
+        );
+    }
 
     #[test]
     fn blob_progress_counts_received_bytes_and_cached_reads_transfer_nothing() {
@@ -1407,6 +1811,53 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn scoped_imports_restore_root_and_directory_mtimes_after_children() {
+        use std::os::unix::fs::MetadataExt;
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        let mut archive = tar::Builder::new(layer.reopen().unwrap());
+        for name in [".", "sub"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_mode(0o555);
+            header.set_size(0);
+            header.set_mtime(12345);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, std::io::empty())
+                .unwrap();
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_mtime(42);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "sub/file", &b"x"[..])
+            .unwrap();
+        archive.finish().unwrap();
+        for _ in 0..2 {
+            let root = tempfile::tempdir().unwrap();
+            apply_layer(
+                layer.path(),
+                "application/vnd.oci.image.layer.v1.tar",
+                root.path(),
+            )
+            .unwrap();
+            for name in ["", "sub"] {
+                let metadata = fs::metadata(root.path().join(name)).unwrap();
+                assert_eq!((metadata.mtime(), metadata.mtime_nsec()), (12345, 0));
+                assert_eq!(metadata.mode() & 0o777, 0o555);
+            }
+            assert_eq!(fs::read(root.path().join("sub/file")).unwrap(), b"x");
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["", "sub"] {
+                fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

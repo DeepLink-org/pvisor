@@ -6,7 +6,7 @@ use crate::{
     vmm::{
         resources::{TsiFlags, VmResources},
         vmm_config::{
-            kernel_cmdline::{DEFAULT_KERNEL_CMDLINE, KernelCmdlineConfig},
+            kernel_cmdline::{KernelCmdlineConfig, DEFAULT_KERNEL_CMDLINE},
             machine_config::VmConfig,
             vsock::VsockDeviceConfig,
         },
@@ -15,9 +15,9 @@ use crate::{
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use crate::{
     devices::virtio::fs::{
-        OverlayConfig,
         passthrough::PermissionSemantics,
         virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent},
+        OverlayConfig,
     },
     vmm::vmm_config::fs::FsDeviceConfig,
 };
@@ -570,20 +570,74 @@ impl<B: Backend> Builder<B> {
             semantics: PermissionSemantics::LinuxComplete,
             shm_size: (shm_size != 0).then_some(shm_size),
             read_only: false,
+            managed: false,
             overlay: None,
             virtual_entries: Vec::new(),
         })
     }
-    pub(crate) fn read_only_filesystem(&mut self, tag: &str, path: &std::path::Path) -> io::Result<()> {
+    pub(crate) fn read_only_filesystem(
+        &mut self,
+        tag: &str,
+        path: &std::path::Path,
+    ) -> io::Result<()> {
         if !path.is_absolute() || !path.is_dir() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "read-only share requires an absolute existing directory"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read-only share requires an absolute existing directory",
+            ));
         }
         self.attach_fs(FsDeviceConfig {
             fs_id: tag.into(),
-            shared_dir: Some(path.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filesystem path is not UTF-8"))?.into()),
+            shared_dir: Some(
+                path.to_str()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "filesystem path is not UTF-8")
+                    })?
+                    .into(),
+            ),
             semantics: PermissionSemantics::LinuxComplete,
             shm_size: None,
             read_only: true,
+            managed: false,
+            overlay: None,
+            virtual_entries: Vec::new(),
+        })
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn managed_filesystem(
+        &mut self,
+        tag: &str,
+        path: &std::path::Path,
+        read_only: bool,
+    ) -> io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !path.is_absolute() || !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed share requires an absolute owned nonsymlink directory",
+            ));
+        }
+        if self.resources.snapshot_profile || self.resources.machine_restore.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "managed shares cannot use snapshot/restore profiles",
+            ));
+        }
+        self.attach_fs(FsDeviceConfig {
+            fs_id: tag.into(),
+            shared_dir: Some(
+                path.to_str()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "filesystem path is not UTF-8")
+                    })?
+                    .into(),
+            ),
+            semantics: PermissionSemantics::LinuxComplete,
+            shm_size: None,
+            read_only,
+            managed: true,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -624,6 +678,7 @@ impl<B: Backend> Builder<B> {
             semantics: PermissionSemantics::LinuxComplete,
             shm_size: Some(window),
             read_only: true,
+            managed: false,
             overlay: None,
             virtual_entries: Vec::new(),
         })
@@ -652,6 +707,7 @@ impl<B: Backend> Builder<B> {
             semantics: overlay.semantics,
             shm_size: (shm_size != 0).then_some(shm_size),
             read_only: false,
+            managed: false,
             overlay: Some(overlay),
             virtual_entries: Vec::new(),
         })
@@ -724,6 +780,13 @@ impl<B: Backend> Builder<B> {
 ))]
 impl<B: crate::backend::SnapshotBackend> Builder<B> {
     pub fn snapshot_profile(&mut self) -> io::Result<()> {
+        #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+        if self.resources.fs.iter().any(|fs| fs.managed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "managed shares cannot use snapshot profiles",
+            ));
+        }
         if self.resources.shared_kernel_base.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -880,7 +943,11 @@ mod contract_tests {
             )
             .unwrap();
             assert_eq!(
-                vm.inner.resources.fs[0].overlay.as_ref().unwrap().lower_mutability,
+                vm.inner.resources.fs[0]
+                    .overlay
+                    .as_ref()
+                    .unwrap()
+                    .lower_mutability,
                 [expected]
             );
         }

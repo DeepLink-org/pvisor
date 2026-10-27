@@ -735,6 +735,27 @@ TEE/Nitro 返回 `Unsupported`。目录必须存在、绝对且可表达为 UTF-
 本地标志解释 guest 请求。外部 API 测试验证输入、重复 tag 和快照兼容；
 私有协议测试覆盖读写打开标志。
 
+## Linux 受管理目录
+
+`VmConfiguration::managed_filesystem(tag, path, read_only)` 用于调用方独占管理的
+私有目录树。根必须是当前宿主账号拥有的绝对路径目录，不能是符号链接；调用方
+必须排除外部写入、宿主敏感文件和跨权限域硬链接。多个 VM 共享时由调用方同步
+命名空间操作，属性和目录项有效期均为零，重新打开可观察其他 VM 的更新。
+
+普通文件和目录的 guest UID/GID/mode 持久保存在 inode 的
+`user.containers.override_stat` xattr 中。未标注 inode 初始显示 guest 0:0 和
+原生 mode；导入目录须先设置所需 guest 所有权，再交给非 root 任务使用。
+创建或变更受管理元数据后，宿主文件仍由启动账号拥有，物理权限为文件 0600、
+目录 0700；guest VFS 按虚拟属性检查权限。元数据更新通过 inode flock
+跨 VM 串行化。guest 的 xattr 操作不能读取、覆盖或删除该内部属性。损坏属性、
+不支持 xattr 的后端和写入失败均返回错误；失败的创建可能保留已创建的宿主 inode。
+普通 `filesystem` 的本机权限和 chown 行为不变。符号链接和特殊文件仅能表示
+guest root 所有权，非 root 创建或所有权变更返回明确的不支持错误。
+
+此接口仅支持 Linux，其他平台及 TEE/Nitro 返回 Unsupported。不能用于 DAX、
+snapshot/restore profile；正反调用顺序均拒绝组合，设备 capture/restore 也拒绝。
+`read_only` 由宿主只读适配器强制执行。无效参数或重复 tag 不改变已有配置。
+
 ## 不可变只读文件的 DAX
 
 `VmConfiguration::immutable_filesystem(tag, path, window_size)` 为独立的、

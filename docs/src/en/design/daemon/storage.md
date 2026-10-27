@@ -87,6 +87,6 @@ Deleting a sandbox does not undo remote effects or provide a retained evidence b
 
 The registry is an incrementally committed local inventory, not a complete execution history or business side-effect ledger. Version 2 rebuilds the inventory from the owner/header and validated per-sandbox records; a corrupt or incomplete activated record tree does not fall back to v1. Restart does not roll back external calls, restore lost RAM or provide cross-host failover. Automatic consistent backup/native-state restoration is unimplemented; copying a live directory or deleting state is not a recovery procedure.
 
-Native immutable cache/snapshot stores retain separate publication, integrity, pin and GC contracts; see [shared image storage](../shared-image-cache-storage.md). No daemon-to-node storage bridge is implemented.
+Native immutable cache/snapshot stores retain separate publication, integrity, pin and GC contracts; see [shared image storage](../lazy-image-v2.md). No daemon-to-node storage bridge is implemented.
 
 Implementation: `daemon/store.rs` owns per-record publication, budget accounting and v1 activation; `daemon/mod.rs` owns reservation, deletion ordering and the recovery path.

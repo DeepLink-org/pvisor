@@ -49,9 +49,12 @@ budgets. It accepts only unrestricted effective policy; it does not authorize a
 custom controller or prove that a driver installed controls. The peer transport
 and owning runtime remain responsible for packet and lifecycle enforcement.
 
-IP and CIDR authorization treats IPv4 and IPv4-mapped IPv6 as the same
-destination for both literal hosts and resolved addresses, including explicit
-denies and resolved-address safety. Native IPv6 addresses remain distinct.
+IP grants, explicit denials and resolved-address checks treat IPv4 and its
+IPv4-mapped IPv6 representation as the same destination, including exact and
+CIDR rules in either representation. Native IPv6 and IPv4-compatible IPv6 are
+not converted to IPv4. Matching leaves the original connection address intact;
+port and transport restrictions still apply.
+
 An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.

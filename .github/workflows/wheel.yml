@@ -55,7 +55,7 @@ jobs:
       - name: Verify native archive installation and companion symlinks
         shell: bash
         run: |
-          for wheel in dist/*.whl; do
+          for wheel in dist/pvisor_sandbox-*.whl; do
             version="$(python3 -c 'from pvisor import __version__; print(__version__)')"
             python3 scripts/ci/build_release_assets.py "$wheel" --version "$version" --smoke-wheel
           done
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-${{ matrix.platform }}
-          path: dist/*.whl
+          path: dist/pvisor_sandbox-*.whl
           if-no-files-found: error
           retention-days: 14
 

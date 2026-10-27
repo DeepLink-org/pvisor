@@ -25,7 +25,7 @@
   },
   "[lazy-image-startup](lazy-image-startup.md)": {
     "Data status": "Partially rerun",
-    "Measured scope": "Same host staged executor, four-file lazy loading; N30 cold/warm including fetch and mount; VM application startup retains separate historical data"
+    "Measured scope": "Current V2 vs native Docker: four-image storage N3; prepared startup N30/memory N5; shell, Python and library mmap cold/warm N30 each; WAN/concurrency unmeasured"
   },
   "[network](network.md)": {
     "Data status": "Historical data",

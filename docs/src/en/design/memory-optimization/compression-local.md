@@ -1,8 +1,8 @@
 # Per-instance compression
 
-Keep compressible cold content under one instance's control, without needing a
-pool to save or recover it. This favors a narrow ownership and failure boundary
-over cross-instance sharing.
+Per-instance compression keeps compressible cold content under one instance's
+control for storage and recovery, without a pool service. This favors a narrow
+ownership and failure boundary; it does not share content across instances.
 
 ## Target and current status {#status}
 
@@ -101,9 +101,9 @@ recovery after service loss. A separate two-VM correctness probe validates guest
 refault and file I/O after pool termination; see [pooled compression](compression-pool.md).
 See [daemon memory pool](../../guides/daemon/index.md#memory-pool) for deployment.
 
-Selection is experimental eviction/refault probing, not a read-access heat
-detector: unchanged bytes can still be read frequently. Rechecks protect content,
-not workload latency. Historical encoded-object pooling and broader client-owned
+Selection uses experimental eviction/refault probes to find candidates; it cannot
+directly detect read-access frequency. Unchanged bytes can still be read frequently.
+Rechecks protect content but do not guarantee workload latency. Historical encoded-object pooling and broader client-owned
 sealed backing are described in [pooled compression](compression-pool.md); they do not replace
 the physical-pool contract. Apple Silicon separately offers 16 KiB sharing through
 `physical-pages`, private file mappings and a live owner. Its default HVF compressed

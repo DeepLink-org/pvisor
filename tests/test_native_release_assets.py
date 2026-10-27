@@ -19,15 +19,18 @@ with mock.patch.object(sys, "path", [str(SCRIPTS), *sys.path]):
     spec.loader.exec_module(assets)
 
 
-def wheel(root, platform, *, missing=None):
+def wheel(root, platform, *, missing=None, version="0.3.0"):
     tag = "macosx_11_0_arm64" if platform == "macos-arm64" else "manylinux_2_28_x86_64"
-    path = root / f"pvisor-0.3.0-py3-none-{tag}.whl"
+    path = root / f"pvisor_sandbox-{version}-py3-none-{tag}.whl"
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("pvisor-0.3.0.dist-info/METADATA", "Name: pvisor\nVersion: 0.3.0\n")
+        archive.writestr(
+            f"pvisor_sandbox-{version}.dist-info/METADATA",
+            f"Name: pvisor-sandbox\nVersion: {version}\n",
+        )
         names = [*assets.BINARIES, "libkrunfw.SOURCE"]
         for name in names:
             if name != missing:
-                archive.writestr(f"pvisor-0.3.0.data/scripts/{name}", f"payload {name}")
+                archive.writestr(f"pvisor_sandbox-{version}.data/scripts/{name}", f"payload {name}")
         archive.writestr("../../unexpected", "must not be extracted")
     return path
 
@@ -85,6 +88,8 @@ class NativeReleaseTests(unittest.TestCase):
                     formula,
                 )
             self.assertIn('bin.install_symlink libexec/"pvisor"', formula)
+            self.assertIn('system bin/"pvisor-daemon", "protocol"', formula)
+            self.assertNotIn(" spawn ", formula, "Homebrew's Seatbelt cannot nest pVisor's")
 
     def test_missing_sources_prevents_release_generation(self):
         with workspace() as (root, _):
@@ -93,6 +98,27 @@ class NativeReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing corresponding firmware sources"):
                 assets.build_assets(root, "0.3.0", "owner/repo", stable=True)
             self.assertFalse((root / "SHA256SUMS").exists())
+
+    def test_nightly_set_has_matching_versions_and_sources_without_a_formula(self):
+        version = "0.3.0+g42.abcdef0"
+        with workspace() as (root, _):
+            for platform in ("linux-x86_64", "macos-arm64"):
+                wheel(root, platform, version=version)
+                (root / f"pvisor-firmware-source-{platform}.tar.gz").write_bytes(b"source")
+            assets.build_assets(root, version, "owner/repo", stable=False)
+            self.assertFalse((root / "pvisor.rb").exists())
+            manifest = (root / "SHA256SUMS").read_text().splitlines()
+            self.assertEqual(len(manifest), 6)
+            for platform in ("linux-x86_64", "macos-arm64"):
+                native = root / f"pvisor-{version}-{platform}.tar.gz"
+                self.assertTrue(native.is_file())
+                with tarfile.open(native) as archive:
+                    self.assertEqual(archive.extractfile("bin/pvisor").read(), b"payload pvisor")
+                for path in (native, root / f"pvisor-firmware-source-{platform}.tar.gz"):
+                    self.assertIn(f"{assets.digest(path)}  {path.name}", manifest)
+            for entry in manifest:
+                checksum, name = entry.split("  ")
+                self.assertEqual(checksum, assets.digest(root / name))
 
     def test_formula_rejects_nightly_and_injected_inputs(self):
         for version, repository in (

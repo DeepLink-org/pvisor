@@ -1,6 +1,8 @@
 # 研究方向
 
-OS 与 MLSys 研究关注固定资源下的正确任务完成量，以及人类处理这些结果的成本。pVisor 提供执行、状态与证据的机制；外部编排和训练器把它们组合成工作负载，再用对照实验判断收益。从环境准备、工具运行、模型等待与失败重做的成本出发的完整叙事见[Agent 任务的生命周期成本](agent-lifecycle-cost.md)。
+pVisor 的研究问题是：在保持任务正确性和审查能力的前提下，固定资源能多完成多少工作，人需要花多少时间处理这些结果？执行、状态保存与记录由 pVisor 提供；外部编排和训练器组织工作负载，再用对照实验检验收益。
+
+[Agent 任务的生命周期成本](agent-lifecycle-cost.md)从环境准备、工具运行、模型等待和失败重做出发，讨论 I/O 接管与等待期回收的设计目标。具体实验需要把这些目标分解为可验证的假设，并计入执行和监督的完整成本。
 
 ## 从机制到可证伪结论 {#research-loop}
 
@@ -64,4 +66,4 @@ pVisor 拥有单次执行的边界与观察；单节点 daemon 拥有本机 sand
 
 ## 公开材料与写作参考 {#references}
 
-当前没有登记的正式论文、外部报告或演讲；公开技术材料就是仓库中的设计文档与基准证据（如[回放保真度](../../benchmarks/replay-fidelity.md)），引用时带上报告日期、机器、执行器、任务和统计口径。设计文档的写作方式与开源项目表达参考维护在仓库的 [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md)，不在这里重复。
+当前没有登记以 pVisor 为研究对象的正式论文、外部报告或演讲；可引用的项目技术材料是仓库中的设计文档与基准证据（如[回放保真度](../../benchmarks/replay-fidelity.md)），引用时带上报告日期、机器、执行器、任务和统计口径。设计文档的写作方式与开源项目表达参考维护在仓库的 [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md)，不在这里重复。

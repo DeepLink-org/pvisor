@@ -12,14 +12,14 @@
 
 创建请求使用本机 `images_dir/<key>.json` 中的模板 key，创建期间不从 registry 拉取或整体解压镜像。先用 `prepare-image` 准备可信镜像并固定 revision；实际部署优先使用 digest。基础镜像应包含 `/bin/sh`、`/bin/sleep` 和工作负载所需工具；E2B shell 命令还需要 `/bin/bash`。
 
-新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；旧独立 rootfs manifest 保留其 bootstrap 合同，见[镜像合同](../../design/daemon/operations.md#image-contract)。
+新模板默认使用 `pvisor-guest` 的 Rust 进程/文件引擎。主机 supervisor 将 SDK 协议转换为仅主机可访问的 guest 控制请求，不需要自行编写 vsock bootstrap。显式 `--execd`/`--envd` 选择上游服务后端；每个模板都必须带固定的 V2 池 binding；独立 rootfs manifest 会被拒绝，见[镜像合同](../../design/daemon/operations.md#image-contract)。
 
 ## 安装与启动 {#install}
 
 Linux x86_64 和 macOS ARM64 wheel 都会随 `pvisor` 安装 `pvisor-daemon`。缓存服务支持两个平台；以下 sandbox 服务需要 Linux x86_64：
 
 ```bash
-pip install pvisor
+pip install pvisor-sandbox
 pvisor-daemon --help
 pvisor-daemon protocol
 ```
@@ -170,7 +170,7 @@ OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CON
 
 ## 重启与状态所有权 {#restart}
 
-一个 daemon 独占私有状态；原生创建／控制前持久化 owner 身份。私有 IPC 校验同 UID peer、owner、sandbox ID、generation 与秘密 token；持久身份绑定 boot ID 和 cgroup device/inode。ID 不复用、不重新启动。IPC 丢失表示不确定，不是 Missing 或清理证据。持久删除意图与 supervisor 独占锁阻止迟到启动；清理使用身份绑定的 `cgroup.kill`，不保存 PID 或按 PID kill，确认 cgroup 为空且 owner 锁释放后才释放容量。同一 boot 下没有持久 tombstone 证据的 cgroup 被替换或丢失不证明对象不存在。
+只重启 API 进程时，用原来的私有状态和 owner 身份重新连接仍存活的 supervisor；一个状态目录只能由一个 daemon 使用。sandbox ID 不会被复用或重新启动。连接丢失时先保留记录和容量，核对状态后再删除，不能据此认定 VM 已消失。身份校验和确认删除的顺序见[生命周期控制](../../design/daemon/index.md#control)，重启对账见[存储恢复](../../design/daemon/storage.md#reconcile)。
 
 待删除意图跨重启保留，不会被原生观察覆盖。删除状态未知时保留预留。原生沙箱丢失后仍以 Failed 显示，直到显式删除。不要删状态来修复错误，也不要让两个 daemon 共用它。注册表受配置容量和总计 16 MiB 逻辑版本 1 等价预算约束；它不是无限保留的分布式任务档案，也不是 Run Bundle/artifact store。
 
@@ -182,9 +182,9 @@ OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CON
 
 ## 隔离与信任边界 {#isolation}
 
-原生 supervisor 在独立、脱离 daemon 生命周期的子进程中嵌入 `pvisor::PVisor`，只配置 `VmExecutor` 并持有 RunHandle。Sandbox cgroup 限制整个 supervisor/VMM/helper 树：总 CPU 速率 **10–8000 millicores**、硬内存、零 swap、`pids.max=512` 与 group OOM。vCPU 数按 quota 向上取整（最多 8），guest RAM 向下取整到 MiB；硬内存上限还包含宿主侧开销。Paused、Failed 和不确定记录继续保守预留资源。
+为沙箱设置资源时，按整个 supervisor/VMM/helper 进程树计算预算。cgroup 限制为总 CPU 速率 **10–8000 millicores**、硬内存、零 swap、`pids.max=512` 与 group OOM。vCPU 数按 quota 向上取整（最多 8），guest RAM 向下取整到 MiB；硬内存上限还包含宿主侧开销。Paused、Failed 和不确定记录继续保留资源预留。
 
-启动 callback 在 owner 锁内检查 started／删除／tombstone marker，通过预先打开的 `cgroup.procs` FD 在 **exec 之前**加入身份绑定的 cgroup。直接在该 cgroup 外调用隐藏命令会失败关闭。
+启动前加入 cgroup 的顺序和 supervisor 的隔离方式见[实际控制与物理内存](../../design/daemon/index.md#reservations)。
 
 原生 OverlayNet 提供 VM 出口网络。OpenSandbox 网络策略请求不受支持，会被拒绝；拒绝请求不会将出口改为 deny-all。
 

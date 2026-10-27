@@ -35,44 +35,69 @@ fn import_rejects_unrepresentable_xattrs_without_publishing_a_revision() {
 }
 
 #[test]
-fn encoding_roundtrips_bounds_and_rejects_corruption_without_changing_raw_cache() {
+fn encoding_roundtrips_bounds_and_rejects_corruption_without_changing_old_cache() {
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("pool");
-    let pool = Storage::Pool(Arc::new(PoolStorage::open(root.clone(), true).unwrap()));
-    for bytes in [vec![42; super::super::MAX_READ as usize], (0..37).collect()] {
-        let digest = super::super::hash(&bytes);
-        let key = format!(
-            "data/sha256/{}/{}/{}",
-            &digest[7..9],
-            &digest[9..11],
-            &digest[7..]
-        );
-        pool.put(&key, bytes.clone(), true).unwrap();
-        pool.put(&key, bytes.clone(), true).unwrap();
-        assert_eq!(pool.get(&key).unwrap().unwrap(), bytes);
-        assert_eq!(pool.range(&key, 1..4).unwrap(), bytes[1..4]);
-        let encoded = fs::read(root.join(&key)).unwrap();
-        assert_eq!(encoded[8], if bytes.len() > 100 { 1 } else { 0 });
+    for (index, bytes) in [vec![42; super::super::MAX_READ as usize], (0..37).collect()]
+        .into_iter()
+        .enumerate()
+    {
+        let root = temporary.path().join(format!("pool-{index}"));
+        let source =
+            ImageStore::new(Some(temporary.path().join(format!("source-{index}")))).unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let rootfs = source.root.join("rootfs-v3/sha256").join(&digest[7..]);
+        fs::create_dir(&rootfs).unwrap();
+        fs::write(rootfs.join("file"), &bytes).unwrap();
+        let image = PreparedImage {
+            rootfs,
+            digest,
+            env: BTreeMap::new(),
+            entrypoint: vec![],
+            cmd: vec![],
+        };
+        let handle =
+            publish_local_image(&root, &source, &image, "example:encoding", "amd64").unwrap();
+        let read = || {
+            CacheClient::configured_pool(&root, true)
+                .unwrap()
+                .request(Request::Read {
+                    digest: handle.clone(),
+                    path: b"file".to_vec(),
+                    offset: 0,
+                    length: super::super::MAX_READ,
+                })
+        };
+        assert_eq!(read().unwrap().1, bytes);
+        fn find(root: &Path) -> PathBuf {
+            if let Some(entry) = fs::read_dir(root).unwrap().next() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    return find(&path);
+                }
+                return path;
+            }
+            panic!("missing content")
+        }
+        let path = find(&root.join("data"));
+        let encoded = fs::read(&path).unwrap();
+        assert_eq!(&encoded[encoded.len() - 4..], &0x8f92_eab1u32.to_le_bytes());
         if bytes.len() > 100 {
             assert!(encoded.len() < bytes.len() / 10);
         }
         let mut corrupt = encoded.clone();
-        corrupt[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
-        fs::write(root.join(&key), corrupt).unwrap();
-        assert!(pool.get(&key).is_err());
-        let mut corrupt = encoded.clone();
-        *corrupt.last_mut().unwrap() ^= 0xff;
-        fs::write(root.join(&key), corrupt).unwrap();
-        assert!(pool.get(&key).is_err());
-        fs::write(root.join(&key), encoded).unwrap();
+        corrupt[0] ^= 1;
+        fs::write(&path, corrupt).unwrap();
+        assert!(read().is_err());
+        fs::write(&path, &encoded).unwrap();
+        assert_eq!(read().unwrap().1, bytes);
     }
-    let raw = temporary.path().join("raw");
-    let storage = Storage::filesystem(raw.clone(), true).unwrap();
+    let old = temporary.path().join("old");
+    let storage = Storage::filesystem(old.clone(), true).unwrap();
     storage
         .put("format.json", b"existing V1".to_vec(), true)
         .unwrap();
-    assert!(PoolStorage::open(raw, true).is_err());
-    assert!(PoolStorage::open(root, false).is_ok());
+    assert!(PoolStorage::open(old, true).is_err());
+    assert_eq!(storage.get("format.json").unwrap().unwrap(), b"existing V1");
 }
 
 #[test]
@@ -123,12 +148,16 @@ fn images_share_content_survive_source_removal_and_copy_up_without_raw_mirror() 
         assert_eq!((progress.downloaded_bytes, progress.cached_bytes), (0, 0));
         let raw = CacheClient::new(format!("file://{}", location.display()), None).unwrap();
         assert!(
-            raw.request(Request::Open {
-                handle: handle.clone(),
-                architecture: "amd64".into()
-            })
-            .is_err(),
-            "raw V1 readers must reject the compressed pool namespace"
+            matches!(
+                raw.request(Request::Open {
+                    handle: handle.clone(),
+                    architecture: "amd64".into()
+                })
+                .unwrap()
+                .0,
+                Response::Prepared { .. }
+            ),
+            "V2 pool and filesystem share one physical encoding"
         );
         assert!(open_local_image(&location, &handle, "arm64", &digest, &scratch).is_err());
         assert!(

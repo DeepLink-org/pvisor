@@ -48,10 +48,11 @@ Public persisted fields are in [Run Bundle](../reference/run-bundle.md); event b
 
 Environment manifest versions describe different RAM/filesystem combinations. A maximum version of 5 does not mean every new snapshot writes 5. Stage profiles use v4 for raw RAM and v5 for compressed RAM; other profiles follow their field combinations. SDK readability of a storage format does not mean the current Job CLI can adopt arbitrary historical standalone snapshot stores.
 
-[Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) owns entries and compatible profiles. [Environment snapshots](environment-snapshot.md#storage-contract) owns machine and file references, [Offload format](offload/disk-layout-and-schema.md) owns RAM subformats, and [Shared image cache](shared-image-cache-storage.md) owns image metadata/content versions.
+[Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) owns entries and compatible profiles. [Environment snapshots](environment-snapshot.md#storage-contract) owns machine and file references, [Offload format](offload/disk-layout-and-schema.md) owns RAM subformats, and [Shared image cache](lazy-image-v2.md) owns image metadata/content versions.
 
 ## Control protocols and build identity {#control-protocols}
 
+| Image index/content pool | `format_version=2`, `pvisor-radix-v2`, `pvisor-v2:` | V1 explicitly rejected; republish OCI into a new prefix, HEAD CAS commits; transport versions are independent | `pvisor/src/image/cache/portable.rs`, `portable/`, `pool.rs` |
 | Protocol | Version and additional bindings | Authority and compatibility scope |
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Endpoint owners validate Job/Attempt/generation targets; Guest tokens grant no Host authority |

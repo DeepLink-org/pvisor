@@ -2,13 +2,13 @@
 
 ## Motivation {#motivation}
 
-Choose a mode by the total cost of producing the same result. Use stage for large workspaces with sparse changes, native workflows for small workspaces or tool-only execution, and a VM only from complete-task measurements. Match evidence to the decision: task comparisons for local execution, startup plus tool data for an independent guest kernel, and success rates with resource accounting for capacity.
+Evaluate stage for sparse changes in large workspaces; small workspaces or tool-only execution may suit native workflows. First choose executors that meet your isolation needs, then compare the total cost of producing the same result. If you need an independent guest kernel, budget for VM startup and tool execution separately. Capacity depends on task success and consistent resource accounting, not idle environment counts alone.
 
 Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink; native workflows are faster on small workspaces. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
 
 <!-- measurement-status:start -->
 
-Filesystem covers nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds; its [coverage note](filesystem.md) records executed, passed, failed and skipped environments. Historical N5/N30 and single-pass tasks remain separate, and other topics keep their own cohorts.
+Filesystem covers nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds; see its [coverage note](filesystem.md). [Lazy images](lazy-image-startup.md) use independent current-V2/native-Docker inventory, cold/warm startup, mmap and memory reruns. Historical cohorts do not fill gaps in new experiments.
 
 <!-- measurement-status:end -->
 
@@ -16,26 +16,27 @@ Filesystem covers nine configurations and 19 layered workloads, with three indep
 
 Measure the startup, tool execution, apply and resource occupancy that produce one accepted result as the cost of that result. That cost decides which execution mode fits a workload; lower cost for the same verified result means the workload runs more cheaply.
 
-The numbers come from separately registered experiments. Startup and repair use 60 samples per backend with three warmups; filesystem covers nine configurations and 19 workloads with three fresh environments per cell and three rounds each; review uses 30 samples and three warmups; network uses 30 independent batches with 256-request medians; capacity uses five rounds per concurrency under a shared two-core, 2 GiB, zero-swap budget. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving.
+The numbers come from separately registered experiments. Startup and repair use 60 samples per backend with three warmups; filesystem covers nine configurations and 19 workloads with three fresh environments per cell and three rounds each; review uses 30 samples and three warmups; network uses 30 independent batches with 256-request medians; capacity uses five rounds per concurrency under a shared two-core, 2 GiB, zero-swap budget. Image inventories use three fresh stores, clients/local reads 30 pairs, and whole-group memory five pairs. CPU, budgets and cache states belong to each topic; different topics do not form a matched-configuration ranking.
 
 Valid timings pass correctness checks; failures and skipped observations stay explicit, with no speed-based exclusions. Cohorts are not pooled. P95 is descriptive and omitted below 30 samples, public P99 is omitted, and separated clusters are reported with counts and per-cluster medians.
 
 ### Isolation and resources {#reference-resources}
 
-Docker uses rootless overlay2, Firecracker and QEMU use private ext4, and pVisor VM uses virtio-fs with different kernels: these are complete-configuration costs, not a pure VMM or security ranking. Engineering A/B work stays in lab notes, and complete data remains in local cohorts.
+Docker storage drivers are recorded by topic: historical tool environments differ from the current image experiment's rootless containerd overlayfs. Firecracker and QEMU use private ext4; pVisor VM uses virtio-fs and different kernels. These are complete-configuration costs, not a pure VMM or security ranking. Engineering A/B work stays in lab notes, with complete data retained locally.
 
 ## Data and analysis {#results}
 
-The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. The full startup retest after the reboot on 2026-10-11 is the current cohort (numbers in [Startup](startup.md)); historical randomized-pair cohorts do not carry over. The selected-source filesystem comparison on 2026-10-12 adds 240 valid samples and zero failures, with task-local caches and a common parent resource budget. Topic pages provide median differences and paired-bootstrap 95% intervals.
+Lazy images and layered filesystem tasks use independent retests from 2026-10-25, based on main `92a4ce4e`. Other topics retain the cohorts and scopes stated on their pages. Experiments are summarized separately without pooling samples; filesystem N=3 is exploratory and does not establish reliable tails.
 
-| Question | Measured level (timing is P50) |
+| Question | Measured level (sampling scope on each topic page) |
 |---|---|
 | [Startup](startup.md) | 2026-10-11 retest: VM 130.71 ms; Firecracker MMIO 287.13 ms; QEMU microvm 260.10 ms; QEMU 663.25 ms |
 | [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
-| [Layered filesystem tasks](filesystem.md#complete-task) | N=3, three publication rounds: VM 11.271 s; VM + writeback 5.928 s; Docker 2.053 s; Firecracker 4.305 s; QEMU q35/microvm 4.065/3.851 s |
+| [Layered filesystem tasks](filesystem.md#complete-task) | 2026-10-25, N=3, three publication rounds: pVisor VM 11.675 s; pVisor VM + writeback 6.171 s; Docker 1.637 s; Firecracker (stock kernel) 5.074 s; QEMU q35 3.170 s; QEMU microvm 3.433 s |
 | [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |
 | [Network](network.md) | Eight-thread small requests: native 0.69 ms; host proxy 10.09 ms; VM 2.10 ms |
 | [Active capacity](density.md) | 2 GiB: stage/Podman pass all five rounds at 32; VM at 16 |
+| [Image delivery](lazy-image-startup.md) | Four-image shared inventory saves 74%; cold shell responses 2.86 MiB versus native Docker 28.39 MiB; warm clients and complete library scans are slower |
 
 Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Daemon throughput, density and history costs are unmeasured.
 

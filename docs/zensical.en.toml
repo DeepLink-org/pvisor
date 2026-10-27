@@ -19,20 +19,8 @@ nav = [
     { "Installation" = "start/installation.md" },
     { "Local workflow: run and review" = "start/first-run.md" },
     { "Execution infrastructure: tool execution integration example" = "start/infrastructure.md" },
-    { "Choose an executor" = "guides/executors/index.md" },
   ] },
-  { "Understanding pVisor" = [
-    { "Introduction" = "why/index.md" },
-    { "Core concepts" = "concepts/jobs.md" },
-    { "Core capabilities" = [
-      { "File-level oversight and isolation" = "concepts/staging.md" },
-      { "Sandbox lifecycle management" = "concepts/lifecycle.md" },
-      { "Image and memory optimization" = "concepts/resource-optimization.md" },
-      { "State preservation and branch reuse" = "concepts/resource-reuse.md" },
-    ] },
-    { "Security and support scope" = "security/index.md" },
-  ] },
-  { "Local workflows" = [
+  { "User guide" = [
     { "Local workflow overview" = "guides/index.md" },
     { "Connect your agent" = [
       { "Connect your agent" = "guides/agents/index.md" },
@@ -40,10 +28,17 @@ nav = [
       { "Codex CLI" = "guides/agents/codex.md" },
       { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
     ] },
-    { "Access and credentials" = [
+    { "Executors" = [
+      { "Choose an executor" = "guides/executors/index.md" },
+      { "Host executor" = "guides/executors/host.md" },
+      { "Native OCI containers" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "Policies" = [
       { "File policies" = "guides/policies/files.md" },
       { "Control network access with OverlayNet" = "guides/policies/network.md" },
       { "Credentials and environment" = "guides/policies/credentials.md" },
+      { "Hardening" = "security/hardening.md" },
     ] },
     { "Tasks" = [
       { "Review and apply changes" = "guides/review-apply.md" },
@@ -59,52 +54,48 @@ nav = [
       { "3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md" },
       { "4. Set boundaries for untrusted work" = "cases/04-boundaries.md" },
       { "5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md" },
-      { "6. Check staging, apply and drop contracts" = "cases/06-stage-apply.md" },
     ] },
-  ] },
-  { "Execution infrastructure" = [
-    { "Overview and integration" = [
+    { "Deployment and integration" = [
       { "Agent execution infrastructure" = "guides/infrastructure/index.md" },
       { "Integration and capability matrix" = "guides/infrastructure/integration.md" },
-    ] },
-    { "VM lifecycle operations" = "guides/infrastructure/lifecycle.md" },
-    { "Daemon quickstart" = [
+      { "Manage VM lifecycle" = "guides/infrastructure/lifecycle.md" },
       { "Run the single-node daemon" = "guides/daemon/index.md" },
+      { "Shared image cache and storage backends" = "reference/shared-image-cache.md" },
     ] },
-    { "Trajectory capture and replay" = [
+    { "Trajectories and RL rollouts" = [
       { "Capture agent trajectories" = "guides/capture.md" },
       { "Replay recorded trajectories" = "guides/replay.md" },
-    ] },
-    { "RL rollouts" = "guides/rl-rollouts.md" },
-  ] },
-  { "Reference" = [
-    { "Executors" = [
-      { "Host executor" = "guides/executors/host.md" },
-      { "Native OCI containers" = "guides/executors/container.md" },
-      { "pVisor VM" = "guides/executors/vm.md" },
+      { "RL rollouts" = "guides/rl-rollouts.md" },
     ] },
     { "Command and configuration reference" = [
       { "Commands and scenarios" = "reference/index.md" },
       { "`pvisor` command reference" = "reference/cli.md" },
-      { "Job usage and storage" = "reference/jobs.md" },
       { "Configuration files" = "reference/config.md" },
       { "Policy fields" = "reference/policy.md" },
       { "Run Bundle format" = "reference/run-bundle.md" },
+      { "Job usage and storage" = "reference/jobs.md" },
       { "Machine-readable output" = "reference/json-output.md" },
       { "Environment variables" = "reference/env-vars.md" },
       { "Exit codes and errors" = "reference/exit-codes.md" },
       { "Platforms and executor support" = "reference/platforms.md" },
       { "Stability and compatibility" = "reference/stability.md" },
-      { "pVisor Job scenarios and regression examples" = "reference/cases.md" },
-      { "Shared image cache and storage backends" = "reference/shared-image-cache.md" },
     ] },
+  ] },
+  { "Basic concepts" = [
+    { "pVisor overview" = "why/index.md" },
+    { "Core concepts" = "concepts/jobs.md" },
+    { "Core capabilities" = [
+      { "File-level supervision and isolation" = "concepts/staging.md" },
+      { "Sandbox lifecycle management" = "concepts/lifecycle.md" },
+      { "Image and memory optimization" = "concepts/resource-optimization.md" },
+      { "State preservation and branch reuse" = "concepts/resource-reuse.md" },
+    ] },
+    { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
     { "Security" = [
-      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
+      { "Security overview" = "security/index.md" },
       { "Threat model" = "security/threat-model.md" },
       { "Executor boundaries" = "security/executor-boundaries.md" },
-      { "Hardening" = "security/hardening.md" },
       { "Known limitations" = "security/known-limitations.md" },
-      { "Vulnerability disclosure policy" = "security/disclosure.md" },
       { "Third-party audits" = "security/audits.md" },
     ] },
   ] },
@@ -126,9 +117,9 @@ nav = [
       { "Replay fidelity" = "benchmarks/replay-fidelity.md" },
     ] },
   ] },
-  { "Design and research" = [
+  { "System design" = [
     { "Architecture and execution" = [
-      { "How pVisor works" = "design/index.md" },
+      { "Architecture overview" = "design/index.md" },
       { "Core design principles" = "design/principles.md" },
       { "Core architecture" = "design/architecture.md" },
       { "Job, Operation, Attempt and Event" = "design/execution-model.md" },
@@ -148,8 +139,7 @@ nav = [
     ] },
     { "Filesystem subsystem" = [
       { "File architecture, requests and staging" = "design/overlayfs.md" },
-      { "Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md" },
-      { "Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md" },
+      { "Lazy Image V2: Compressed Directory Indexes and Content Pools" = "design/lazy-image-v2.md" },
     ] },
     { "Network subsystem" = [
       { "Network architecture, egress and protocols" = "design/overlaynet.md" },
@@ -175,11 +165,11 @@ nav = [
       { "Records and version matrix" = "design/records-and-versions.md" },
       { "Failure semantics and retries" = "design/failure-semantics.md" },
     ] },
-    { "Experimental features" = [
+    { "Experimental design" = [
       { "Stages and scope" = "design/experimental/index.md" },
       { "EXP-001 (observation prototype): vCPU idle observation and automatic RAM offload" = "design/experimental/vcpu-idle-offload/index.md" },
       { "EXP-002 (design stage): Guest kernel filesystem cache" = "design/experimental/guest-stage-cache/index.md" },
-      { "EXP-003 (design stage): Agent asynchronous I/O and completion queues" = "design/experimental/agent-io-completion/index.md" },
+      { "EXP-003 (restricted PoC): Agent asynchronous I/O and completion queues" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "Research directions" = [
       { "Research directions" = "design/research/index.md" },
@@ -191,22 +181,32 @@ nav = [
       { "End-to-end task performance analysis" = "lab-notes/agent-task-performance-analysis.md" },
       { "VM memory performance analysis" = "lab-notes/vm-memory-performance-analysis.md" },
       { "OpenSandbox: startup, disk and memory" = "lab-notes/opensandbox-performance-analysis.md" },
+      { "V2 versus native Docker: storage, startup and memory" = "lab-notes/image-format-performance-analysis.md" },
       { "Filesystem performance analysis" = "lab-notes/filesystem-performance-analysis.md" },
       { "Cache and asynchronous-write performance curves" = "lab-notes/filesystem-io-performance-analysis.md" },
       { "Benchmark methodology and evidence" = "lab-notes/benchmark-methodology-evidence.md" },
     ] },
   ] },
   { "Contributing" = [
-    { "Development guide" = [
+    { "Start contributing" = [
       { "Community" = "community/index.md" },
       { "Contributing" = "community/contributing.md" },
+    ] },
+    { "Development and debugging" = [
       { "Engineering guide" = "community/development.md" },
-      { "Testing and semspec" = "community/testing.md" },
       { "Reproduce the Run lifecycle" = "community/examples.md" },
+    ] },
+    { "Testing and semantic specifications" = [
+      { "Testing and semspec" = "community/testing.md" },
+      { "pVisor Job scenarios and regression examples" = "reference/cases.md" },
+      { "Staging, apply and drop specifications (unreviewed draft)" = "cases/06-stage-apply.md" },
+    ] },
+    { "Release and maintenance" = [
       { "Release PolicyVisor" = "community/releasing.md" },
       { "Roadmap" = "community/roadmap.md" },
       { "Changelog" = "community/changelog.md" },
       { "Governance" = "community/governance.md" },
+      { "Vulnerability disclosure policy" = "security/disclosure.md" },
     ] },
   ] },
 ]

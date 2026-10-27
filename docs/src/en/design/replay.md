@@ -1,8 +1,8 @@
 # Replay design
 
-Replay turns a history of agent tool calls into fresh results from the current workspace, then supplies those results to the agent for continuation. It supports reproducing failures, comparing behavior after a fix, and constructing training prefixes.
+The replay engine selects a boundary at a complete tool batch, uses an adapter to rerun historical tools and writes fresh results into the agent's native session. Protocol bridges verify that the first continuation request uses the reconstructed prefix; adapters also constrain tool semantics and Agent versions.
 
-Follow the [trajectory replay guide](../guides/replay.md) to use it. The design below explains boundary selection, tool re-execution, and native agent sessions so you can decide whether replay results are comparable.
+Use the [trajectory replay guide](../guides/replay.md) to prepare a sandbox and inputs for reproducing failures, comparing fixes or constructing training prefixes. Before comparing results, check the boundary, tool outputs and selected native-session version together.
 
 ## Current processing pipeline
 
@@ -75,4 +75,4 @@ mise run test -- pvisor-replay
 - `tests/replay_contract.rs`: mini-swe-agent, SWE-agent, OpenHands and Pi replay-only boundaries, prompt injection and step budgets;
 - `bridge/`: request/response mappings and boundary validation.
 
-See [Replay fidelity](../benchmarks/replay-fidelity.md) for native-prefix preparation results across six adapters. The experiment validates prefixes and zero-execution preparation; continuation quality requires real model tasks.
+See [Replay fidelity](../benchmarks/replay-fidelity.md) for native-prefix preparation results by adapter. The experiment validates prefixes and zero-execution preparation; continuation quality requires real model tasks.

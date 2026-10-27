@@ -8,7 +8,9 @@ pvisor status --review last
 pvisor apply last --path src
 ```
 
-`--safe` 按可执行文件名匹配 Agent，自动放行它的模型 API 目标（HTTPS 443 端口），其他目标默认拒绝。凭据需要显式 `--pass-env NAME` 或由 Gateway 持有；HOME 写入在运行结束后丢弃，不能依赖它保存登录状态。具体交付方式见[凭据与环境变量](../policies/credentials.md)。
+`--safe` 将工作区改动留在暂存区，审查后再 apply；预设拒绝访问视图内的 `.ssh`、`.gnupg` 与私钥文件。HOME 使用独立的私有 stage，运行结束后丢弃写入，不进入工作区 Run Bundle，不能依赖它保存登录状态。各平台的 HOME 与凭据处理见[凭据与环境变量](../policies/credentials.md)。
+
+网络预设按可执行文件名匹配 Agent，自动放行它的模型 API 目标（HTTPS 443 端口），其他目标默认拒绝。凭据需要显式 `--pass-env NAME` 或由 Gateway 持有。
 
 | Agent | 命令名 | `--safe` 默认放行 | 指南 |
 | --- | --- | --- | --- |

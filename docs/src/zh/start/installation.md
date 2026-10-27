@@ -11,7 +11,7 @@
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 pvisor --version
 ```
 
@@ -66,9 +66,9 @@ macOS 使用 macFUSE 的 FSKit 后端，无需加载内核扩展或降低启动�
 在安装 pVisor 的 Python 环境中运行：
 
 ```bash
-python -m pip install --upgrade pvisor
+python -m pip install --upgrade pvisor-sandbox
 # Uninstall when needed:
-python -m pip uninstall pvisor
+python -m pip uninstall pvisor-sandbox
 ```
 
 升级前检查发布说明和部署中的 `PVISOR_*` 设置。卸载不会清理 Job 状态与用户缓存。
@@ -80,6 +80,19 @@ python -m pip uninstall pvisor
 不使用 Python 安装时，可从 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) 下载对应平台的原生归档及 `SHA256SUMS`。校验后解压，将 `bin` 加入 `PATH`，并保持其中的文件在一起；升级时替换完整目录。
 
 Homebrew tap 的发布条件与配置见[发布指南](../community/releasing.md#one-time-setup)。
+
+Job 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；
+root 拥有、带 sticky bit 的目录（如 `/tmp`）除外。Homebrew 的 Cellar 可能带有
+组写权限。如果启动报 `unsafe owner executable ancestor`，先检查错误中指明的目录。
+对于当前用户独占、Cellar 允许组写入的 Homebrew 安装，可先去掉组和其他用户的写权限：
+
+```bash
+chmod go-w "$(brew --cellar)"
+brew test DeepLink-org/pvisor/pvisor
+```
+
+此命令只修改 Cellar 目录本身的权限，不递归修改已安装的软件包。
+需要保留组写权限的共享 Homebrew 安装，应改用 wheel 或原生归档，安装到自己拥有的受保护目录。
 
 <a id="3"></a>
 

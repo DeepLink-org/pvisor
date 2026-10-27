@@ -16,8 +16,15 @@ run directly in the caller. Embedded execution publishes the same discovery reco
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
 Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
-to serve them. Replay and TUI are root
-companions. Use `pvisor -- COMMAND` for explicit workload execution.
+to serve them. `pvisor daemon start/status/stop` dispatch to the same-installation
+daemon companion. Replay and TUI are also root companions. Use `pvisor -- COMMAND`
+for explicit workload execution.
+
+Companion lookup resolves the running executable's real installation directory,
+so Homebrew-style entry symlinks work on macOS as well as Linux. Companions in
+that directory must remain executable regular files owned by the current user or
+root, with no group/world write permission; the installation directory has the
+same ownership and write-permission requirements. Lookup does not search `PATH`.
 
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
 durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
@@ -27,7 +34,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
 `exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
-`resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `cache`, `feature`,
+`resume`, `fork`) and **Tools** (installed `daemon`/`replay`/`tui` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
@@ -131,10 +138,38 @@ pvisor rmi redis:7
 Opt in to the shared daemon memory pool on Apple Silicon macOS or Linux:
 
 ```bash
+# Optional: start explicitly; auto also starts it when absent.
+pvisor daemon start --memory-pool
+pvisor run -d -M --name redis redis:7
+pvisor spawn -M --rootfs image=alpine:3.20 -- /bin/echo hello
+pvisor daemon status
+pvisor daemon stop # Stops only the manager; retains the pool and live VMs.
+
+# Explicit instances/sockets remain supported:
 pvisor-daemon serve --memory-pool --state /tmp/pvisor-pool
 # In another terminal, using the socket printed by the daemon:
 pvisor run -d --memory-pool /tmp/pvisor-pool/memory-pool/pool.sock --name redis redis:7
 ```
+
+`-M` is shorthand for `run --memory-pool auto` or `spawn --vm-memory-pool auto`.
+It takes no argument, so `pvisor run -M alpine` keeps `alpine` as the image.
+It conflicts with an explicit pool option. The long forms remain supported.
+`auto` discovers a same-user daemon independent of the current directory, or
+starts a detached manager with a memory pool. It requires the installed
+`pvisor-daemon` beside `pvisor`; PATH cannot supply a replacement. Omission of the
+pool option starts no daemon. An explicit socket is never auto-started/replaced.
+The default private instance directory is canonical `/tmp/pvisor-daemon-UID`;
+export `PVISOR_DAEMON_HOME=/absolute/private/directory` in all client shells to
+select a custom instance (`pvisor daemon ... --state DIR` overrides it for that
+command). Start/status JSON advertises the protocol, manager identity and pool
+configuration. Capabilities are fixed at manager startup; absent capabilities,
+incompatible protocols/modes, failed readiness and lost pool owners are errors,
+with no silent fallback. Logs are in the instance's `manager.log`.
+`--vm-memory-pool auto` also works through frontend TOML `[vm] memory_pool = "auto"`;
+the runtime receives a resolved socket. Embedding callers still pass explicit paths.
+Job owners ask the launching frontend to resolve `auto` over their private
+bootstrap channel. Shared services therefore survive Job completion and
+request descendant cleanup; ordinary workload descendants remain owned and cleaned.
 
 The private same-user socket is canonicalized and saved with the container;
 `start` reuses it and fails if unavailable. Guest mounts/rootfs must not expose
@@ -190,9 +225,13 @@ rather than being silently ignored. This is not complete Docker CLI or
 Docker Engine API compatibility. There is no Compose, Docker socket,
 Docker credential-helper integration or cross-architecture emulation.
 
+`stop -t/--timeout` accepts nonnegative seconds (default 10); `-1` waits
+indefinitely after delivering the requested stop signal, without force-stop
+escalation. Values below `-1` are rejected before contacting a container.
+
 | Command | Implemented options |
 | --- | --- |
-| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip` |
+| `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `-M`, `--memory-pool`, `--shared-kernel-base`, `--network`/`--net bridge/none/NAME`, `--ip` |
 | `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
 | `pull` | `--platform`, one public OCI image reference |
 | `images` | Optional repository, `-q`, `--no-trunc` |
@@ -239,14 +278,29 @@ that every flag of a registered Docker command is available.
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
 tests. It must be private to the current user and cannot be a bind-mount source
-or ancestor. New pulls and builds use `images/pool-v1`: the existing cache's
-immutable file index and shared content pool, with independently Zstd-compressed
-chunks when beneficial and raw fallback. VM reads go through the direct lazy
+or ancestor. Images share the [local image store](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
+with spawn and the cache server; `PVISOR_IMAGE_STORE` selects it. Without that
+override, an explicit Docker home keeps images in its own `images` directory.
+New pulls and builds use that image store's `pool-v2`: the cache's
+compressed directory radix index and shared seekable-Zstd content pool. Small
+files pack by directory; large files use independent 1 MiB chunks. VM reads go through the direct lazy
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
-explicit `--output` exports. Original configurations remain under `images/configs`.
+explicit `--output` exports. Original configurations remain under the image store's `configs`.
 Old directory-based records continue to work and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
+Short and fully qualified Docker Hub references address the same catalog tag.
+Replacing or removing it through any alias affects that one identity; existing
+containers and distinct tags retain their pinned revisions.
+Filesystem/S3 publishers use `--image-store` as the parent of scoped
+`staging/.import-*` directories, removed after success or error. No raw OCI
+directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
+Socket clients and the VM bridge require protocol V2; unsupported peers fail
+without automatic downgrade, even when connection reuse is disabled.
+
+V1 storage handles and pool encodings are retired. Re-pull to publish an image to
+the new pool, then recreate containers pinned to old handles; old data is never
+automatically deleted. Filesystem, S3 and pool use the same V2 physical format.
 Arbitrary xattrs are rejected because the current pool format cannot preserve
 them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
 page caching, with no new DAX path or measured performance claim. See the

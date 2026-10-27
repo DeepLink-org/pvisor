@@ -48,10 +48,11 @@ Event version 5 与 Journal format 5 在当前实现中共用 Event 的版本常
 
 环境 manifest 的多个版本代表不同 RAM/文件系统组合，不能把“最高版本为 5”解释成“所有新快照都写 5”。stage profile 的 raw RAM 使用 v4，压缩 RAM 使用 v5；其他 profile 按各自字段组合判定。SDK 可以读取某种存储格式，也不表示当前 Job CLI 能直接采用任意历史独立 snapshot store。
 
-Job 的检查点入口与兼容 profile 见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。完整机器与文件引用见[环境快照](environment-snapshot.md#storage-contract)，RAM 子格式见[卸载文件格式](offload/disk-layout-and-schema.md)，镜像元数据与内容版本见[共享镜像缓存](shared-image-cache-storage.md)。
+Job 的检查点入口与兼容 profile 见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。完整机器与文件引用见[环境快照](environment-snapshot.md#storage-contract)，RAM 子格式见[卸载文件格式](offload/disk-layout-and-schema.md)，镜像元数据与内容版本见[共享镜像缓存](lazy-image-v2.md)。
 
 ## 控制协议与构建身份 {#control-protocols}
 
+| 镜像索引／内容池 | `format_version=2`、`pvisor-radix-v2`、`pvisor-v2:` | V1 明确拒绝；从 OCI 重新发布到新前缀，HEAD CAS 提交；传输协议独立 | `pvisor/src/image/cache/portable.rs`、`portable/`、`pool.rs` |
 | 协议 | 版本与额外绑定 | 权限与兼容范围 |
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Job/Attempt/generation 目标由端点 owner 检查；Guest token 不授予 Host 权限 |

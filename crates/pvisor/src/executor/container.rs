@@ -172,11 +172,33 @@ impl ContainerExecutor {
                 "OCI rootfs does not exist: {}",
                 configured_rootfs.display()
             );
+            anyhow::ensure!(
+                !fs::canonicalize(control_dir)?.starts_with(fs::canonicalize(&configured_rootfs)?),
+                "OCI rootfs must not contain delegated host control storage"
+            );
             // An independent rootfs copy avoids retaining a source mount/session owner.
             let private = bundle.join("rootfs");
             pvisor_overlay_core::apply::restore_overlay_upper(&configured_rootfs, &private)?;
             private
         };
+        let private_control = fs::canonicalize(control_dir)?;
+        let spec_source = fs::canonicalize(&files.spec_path)?;
+        let output_source = fs::canonicalize(files.result_path.parent().unwrap())?;
+        for mount in mounts.values() {
+            let source = fs::canonicalize(&mount.source)?;
+            if (source == spec_source
+                && mount.target == Path::new(GUEST_CONTROL_DIR).join(SPEC_FILENAME))
+                || (source == output_source
+                    && mount.target == Path::new(GUEST_CONTROL_DIR).join("output"))
+            {
+                continue;
+            }
+            anyhow::ensure!(
+                !private_control.starts_with(&source) && !source.starts_with(&private_control),
+                "OCI mount {} exposes delegated host control storage",
+                mount.source.display()
+            );
+        }
         pvisor_overlay_core::sys::prepare_rooted_path(&rootfs, Path::new("tmp"), true, false)?;
         for mount in mounts.values() {
             let relative = mount.target.strip_prefix("/")?;
@@ -473,7 +495,11 @@ impl RunExecutor for ContainerExecutor {
                 Ok(output) => {
                     // Only the host-observed runtime status determines completion.
                     // Boundary-writable results supply transcript bytes, never controls or evidence.
-                    let mut result = container_exit_output(*status, output.result.output);
+                    let mut result = container_exit_output(
+                        *status,
+                        output.result.output,
+                        spec.runtime.max_output_bytes,
+                    );
                     result.warnings.extend(warnings);
                     return result;
                 }
@@ -548,8 +574,24 @@ impl RunExecutor for ContainerExecutor {
 
 fn container_exit_output(
     status: std::process::ExitStatus,
-    output: ProcessOutput,
+    mut output: ProcessOutput,
+    max_output_bytes: usize,
 ) -> ExecutorOutput {
+    for (text, truncated) in [
+        (&mut output.stdout, &mut output.stdout_truncated),
+        (&mut output.stderr, &mut output.stderr_truncated),
+    ] {
+        if let Some(text) = text
+            && text.len() > max_output_bytes
+        {
+            let mut end = max_output_bytes;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            *truncated = true;
+        }
+    }
     let (state, exit_code, failure) = crate::executor::exit_outcome(status);
     ExecutorOutput {
         state,
@@ -770,6 +812,34 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
 mod tests {
 
     #[test]
+    fn control_storage_cannot_be_reexposed_through_a_user_mount() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("image");
+        fs::create_dir(&image).unwrap();
+        let binary = temp.path().join("pvisor");
+        executable(&binary);
+        let spec = RunSpec::process("private-control", "test", "true");
+        let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
+        let executor = ContainerExecutor::new(ContainerSettings {
+            rootfs: Some(image),
+            mounts: vec![ContainerMount {
+                source: files.spec_path.parent().unwrap().to_path_buf(),
+                target: "/exposed".into(),
+                read_only: false,
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let error = executor
+            .build_command(&spec, "attempt", &binary, &files)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("host control storage"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn runtime_exit_status_cannot_be_overridden_by_delegated_success() {
         use std::os::unix::process::ExitStatusExt;
         for code in [0, 1, 125] {
@@ -779,6 +849,7 @@ mod tests {
                     stdout: Some("workload transcript".into()),
                     ..Default::default()
                 },
+                1024,
             );
             assert_eq!(output.exit_code, Some(code));
             assert_eq!(
@@ -798,6 +869,23 @@ mod tests {
             );
             assert_eq!(output.output.stdout.as_deref(), Some("workload transcript"));
         }
+    }
+
+    #[test]
+    fn delegated_transcript_obeys_host_output_limit_at_utf8_boundaries() {
+        use std::os::unix::process::ExitStatusExt;
+        let result = container_exit_output(
+            std::process::ExitStatus::from_raw(0),
+            ProcessOutput {
+                stdout: Some("a界b".into()),
+                stderr: Some("abcdef".into()),
+                ..Default::default()
+            },
+            2,
+        );
+        assert_eq!(result.output.stdout.as_deref(), Some("a"));
+        assert_eq!(result.output.stderr.as_deref(), Some("ab"));
+        assert!(result.output.stdout_truncated && result.output.stderr_truncated);
     }
 
     #[tokio::test]

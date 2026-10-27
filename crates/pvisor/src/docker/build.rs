@@ -18,7 +18,8 @@ pub struct BuildOptions {
     pub context: PathBuf,
     /// Dockerfile path; relative paths are relative to the invoking directory.
     pub file: PathBuf,
-    /// Local tags to replace atomically only after a successful build.
+    /// Local tags published after build steps complete; each V2 HEAD commits
+    /// independently. The catalog changes only after all publications succeed.
     pub tags: Vec<String>,
     /// Explicit build arguments. Unspecified host environment is never forwarded.
     pub build_args: BTreeMap<String, String>,
@@ -79,6 +80,7 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
     ensure!(context.is_dir(), "build context is not a directory");
     for authority in [
         &store.root,
+        &store.images.root,
         &crate::host_transport::host_authority_root()?,
         &socket_directory()?,
     ] {
@@ -404,9 +406,63 @@ fn validate_tag(tag: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum BuildSource {
+    Temporary { root: PathBuf },
+    Pooled { cache: CachedImage },
+}
+impl BuildSource {
+    fn temporary_root(&self) -> anyhow::Result<&Path> {
+        match self {
+            Self::Temporary { root } => Ok(root),
+            Self::Pooled { .. } => bail!("build output is not a temporary working tree"),
+        }
+    }
+}
+
+type BuildImage = Image<BuildSource>;
+
+fn open_build_image(store: &Store, image: &BuildImage) -> anyhow::Result<ImageRoot> {
+    match &image.cache {
+        BuildSource::Pooled { cache } => store.open_cached(cache, &image.digest, &image.platform),
+        BuildSource::Temporary { root } => {
+            let root = root.canonicalize()?;
+            let work = store
+                .root
+                .parent()
+                .context("build store has no workspace")?;
+            ensure!(
+                root.starts_with(work) && root != work,
+                "build lower escapes its workspace"
+            );
+            ensure!(
+                fs::symlink_metadata(&root)?.is_dir(),
+                "build lower is not a directory"
+            );
+            Ok(ImageRoot { root, _owner: None })
+        }
+    }
+}
+
+pub(super) fn run_internal(store: &Store, id: &str, generation: &str) -> anyhow::Result<()> {
+    ensure!(
+        id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid build instance ID"
+    );
+    let instance: Instance<BuildSource> =
+        serde_json::from_reader(File::open(store.directory(id).join("instance.json"))?)?;
+    ensure!(
+        instance.schema == 1 && instance.id == id && instance.generation == generation,
+        "stale build instance"
+    );
+    let lower = open_build_image(store, &instance.image)?;
+    super::run_vm(store, instance, lower)
+}
+
 #[derive(Clone)]
 struct Built {
-    image: Image,
+    image: BuildImage,
     config: Value,
     layout: PathBuf,
     args: BTreeMap<String, String>,
@@ -421,8 +477,7 @@ fn scratch(work: &Path) -> anyhow::Result<Built> {
             id: String::new(),
             digest: String::new(),
             platform: native_platform(),
-            rootfs: root,
-            cache: None,
+            cache: BuildSource::Temporary { root },
             env: BTreeMap::new(),
             entrypoint: vec![],
             cmd: vec![],
@@ -438,44 +493,19 @@ fn scratch(work: &Path) -> anyhow::Result<Built> {
     })
 }
 fn base(store: &Store, reference: &str, pull: bool) -> anyhow::Result<Built> {
-    let images = store.images()?;
-    let candidates: Vec<_> = images
-        .into_iter()
-        .filter(|i| {
-            i.reference == normalize_reference(reference) || image_matches(&i.id, reference)
-        })
-        .collect();
-    ensure!(
-        candidates
-            .iter()
-            .map(|i| &i.id)
-            .collect::<BTreeSet<_>>()
-            .len()
-            <= 1,
-        "ambiguous base image"
-    );
-    let image = if !pull && !candidates.is_empty() {
-        candidates[0].clone()
+    let image = if !pull && let Some(image) = store.local_image(reference)? {
+        image
     } else {
         store.pull(reference)?
     };
     require_native_platform(&image.platform)?;
     let config_path = store.image_config_path(&image)?;
-    let document = match fs::read(config_path) {
-        Ok(bytes) => {
-            if image.cache.is_some() {
-                ensure!(
-                    digest(&bytes) == image.id,
-                    "pooled image config digest mismatch"
-                );
-            }
-            serde_json::from_slice::<Value>(&bytes)?
-        }
-        Err(e) if image.cache.is_none() && e.kind() == io::ErrorKind::NotFound => {
-            json!({"config":{"Env":image.env.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>(),"Cmd":image.cmd,"Entrypoint":image.entrypoint,"WorkingDir":image.cwd,"User":image.user}})
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let bytes = fs::read(config_path)?;
+    ensure!(
+        digest(&bytes) == image.id,
+        "pooled image config digest mismatch"
+    );
+    let document = serde_json::from_slice::<Value>(&bytes)?;
     let mut config = document["config"].clone();
     if !config.is_object() {
         config = json!({});
@@ -485,7 +515,7 @@ fn base(store: &Store, reference: &str, pull: bool) -> anyhow::Result<Built> {
         "base image ONBUILD triggers are not supported"
     );
     Ok(Built {
-        image,
+        image: image.map_cache(|cache| BuildSource::Pooled { cache }),
         config,
         layout: PathBuf::new(),
         args: BTreeMap::new(),
@@ -494,22 +524,21 @@ fn base(store: &Store, reference: &str, pull: bool) -> anyhow::Result<Built> {
 
 struct Stage {
     store: Store,
-    instance: Instance,
-    image: Image,
+    instance: Instance<BuildSource>,
+    image: BuildImage,
     config: Value,
     name: String,
     cmd_set: bool,
-    _image_root: ImageRoot,
+    lower: ImageRoot,
 }
 impl Stage {
     fn new(
         store: Store,
-        mut base: Built,
+        base: Built,
         name: String,
         options: &BuildOptions,
     ) -> anyhow::Result<Self> {
-        let image_root = store.open_image(&base.image)?;
-        base.image.rootfs = image_root.rootfs().to_owned();
+        let image_root = open_build_image(&store, &base.image)?;
         let id = format!("{}{}", uuid(), uuid());
         let directory = store.directory(&id);
         private_directory(&directory)?;
@@ -564,13 +593,13 @@ impl Stage {
             config: base.config,
             name,
             cmd_set: false,
-            _image_root: image_root,
+            lower: image_root,
         };
         stage.core()?;
         let upper = stage.store.directory(&stage.instance.id).join("upper");
         fs::set_permissions(&upper, fs::Permissions::from_mode(0o700))?;
         // Enable virtual COPY ownership in RUN even when no resolver layer is attached.
-        let root = &stage.image.rootfs;
+        let root = stage.lower.rootfs();
         let (uid, gid, mode) = filesystem::identity(root, &fs::symlink_metadata(root)?)?;
         pvisor_overlay_core::sys::set_xattr(
             &upper,
@@ -583,7 +612,7 @@ impl Stage {
     fn core(&self) -> anyhow::Result<OverlayCore> {
         let d = self.store.directory(&self.instance.id);
         Ok(OverlayCore::new(
-            vec![self.image.rootfs.clone()],
+            vec![self.lower.rootfs().to_owned()],
             d.join("upper"),
             Some(d.join("work")),
         )?)
@@ -621,7 +650,7 @@ impl Stage {
         self.store.save(&self.instance)?;
         let mut command = Command::new(std::env::current_exe()?);
         command
-            .arg("--pvisor-internal-docker-vm")
+            .arg("--pvisor-internal-docker-build-vm")
             .arg(&self.store.root)
             .arg(&self.instance.id)
             .arg(&self.instance.generation)
@@ -692,11 +721,11 @@ impl Stage {
         ensure!(paths.len() >= 2, "COPY requires sources and destination");
         let destination = paths.pop().unwrap();
         let root = if let Some(from) = from {
-            &stages
-                [stage_index(stages, &from).context("COPY --from must name a completed stage")?]
-            .1
-            .image
-            .rootfs
+            stages[stage_index(stages, &from).context("COPY --from must name a completed stage")?]
+                .1
+                .image
+                .cache
+                .temporary_root()?
         } else {
             context
         };
@@ -820,8 +849,7 @@ impl Stage {
         )?;
         self.image.id = config_desc["digest"].as_str().unwrap().into();
         self.image.digest = manifest_desc["digest"].as_str().unwrap().into();
-        self.image.rootfs = rootfs;
-        self.image.cache = None;
+        self.image.cache = BuildSource::Temporary { root: rootfs };
         self.image.created_ms = crate::unix_now_ms();
         Ok(Built {
             image: self.image.clone(),
@@ -920,16 +948,14 @@ fn export_layout(layout: &Path, output: &Path) -> anyhow::Result<()> {
 fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Image> {
     // Move the finished tree into the existing publisher's confined OCI source
     // layout. Only metadata and pooled contents survive this temporary owner.
-    let staging = tempfile::Builder::new()
-        .prefix(".import-")
-        .tempdir_in(store.root.join("images"))?;
+    let staging = store.images.staging()?;
     let source = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
-    let mut image = built.image.clone();
-    image.rootfs = staging
+    let image = built.image.clone();
+    let rootfs = staging
         .path()
         .join("rootfs-v3/sha256")
         .join(&image.digest[7..]);
-    fs::rename(&built.image.rootfs, &image.rootfs)?;
+    fs::rename(built.image.cache.temporary_root()?, &rootfs)?;
     let manifests = staging.path().join("metadata/manifests-v1");
     fs::create_dir_all(&manifests)?;
     fs::copy(
@@ -937,24 +963,40 @@ fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Imag
         manifests.join(format!("{}.json", &image.digest[7..])),
     )?;
     let config = fs::read(built.layout.join("blobs/sha256").join(&image.id[7..]))?;
-    image.reference = format!("pvisor.local/build@{}", image.digest);
-    store.pool_image(&mut image, &source, &config)?;
     let tags = if tags.is_empty() {
         vec![image.id.clone()]
     } else {
         tags.iter().map(|t| normalize_reference(t)).collect()
     };
-    let _guard = store.lock()?;
-    let mut catalog = store.catalog()?;
-    for tag in &tags {
-        catalog.retain(|i| &i.reference != tag);
+    // Keep pool HEAD and catalog publication under the same locks as pull.
+    // Canonical ordering also handles overlapping tag sets and alias spellings.
+    let mut lock_tags = BTreeSet::new();
+    let mut unique_tags = Vec::new();
+    for tag in tags {
+        if lock_tags.insert(image_reference_key(&tag)?) {
+            unique_tags.push(tag);
+        }
+    }
+    let architecture = canonical_platform(&image.platform)?
+        .strip_prefix("linux/")
+        .unwrap();
+    let _pulls = lock_tags
+        .iter()
+        .map(|tag| store.image_pull_lock(tag, architecture))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut published = Vec::new();
+    for tag in &unique_tags {
         let mut entry = image.clone();
         entry.reference = tag.clone();
-        catalog.push(entry);
+        published.push(store.pool_image(entry, &rootfs, &source, &config)?);
+    }
+    let _guard = store.lock()?;
+    let mut catalog = store.catalog()?;
+    for entry in &published {
+        catalog.insert(image_reference_key(&entry.reference)?, entry.clone());
     }
     store.save_catalog(&catalog)?;
-    image.reference = tags[0].clone();
-    Ok(image)
+    Ok(published.remove(0))
 }
 
 #[cfg(test)]

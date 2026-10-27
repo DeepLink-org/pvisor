@@ -24,6 +24,36 @@ fn event(journal: &Journal) -> Event {
 fn send<T: Send>(_: T) {}
 
 #[test]
+fn floating_payload_retries_keep_their_receipt_after_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    let journal = Journal::open(&path).unwrap();
+    let mut event = event(&journal);
+    event.data = Fact::Observation {
+        domain: "test".into(),
+        name: "float".into(),
+        version: 1,
+        payload: serde_json::json!({"values": [
+            -1.2385131597440577e-185_f64, f64::MIN_POSITIVE,
+            f64::MAX, f64::from_bits(1), -0.0_f64
+        ]}),
+    };
+    let receipt = journal.append(event.clone()).unwrap();
+    drop(journal);
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.records().unwrap()[0].event, event);
+    assert_eq!(journal.append(event.clone()).unwrap(), receipt);
+    assert_eq!(journal.records().unwrap().len(), 1);
+    if let Fact::Observation { payload, .. } = &mut event.data {
+        payload["values"][0] = serde_json::json!(1.0);
+    }
+    assert!(matches!(
+        journal.append(event),
+        Err(AppendError::Rejected(_))
+    ));
+}
+
+#[test]
 fn api_is_unconditional_declarations_and_only_public_root() {
     struct Guard;
     impl<'ast> Visit<'ast> for Guard {

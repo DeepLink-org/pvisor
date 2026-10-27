@@ -21,7 +21,15 @@ exit 37
     )
     .unwrap();
     std::fs::set_permissions(&core, std::fs::Permissions::from_mode(0o700)).unwrap();
-    for safe in [false, true] {
+    let links = root.path().join("bin");
+    std::fs::create_dir(&links).unwrap();
+    let linked_replay = links.join("pvisor-replay");
+    std::os::unix::fs::symlink(&replay, &linked_replay).unwrap();
+    std::os::unix::fs::symlink(&core, links.join("pvisor")).unwrap();
+    for (launcher, safe) in [&replay, &linked_replay]
+        .into_iter()
+        .flat_map(|launcher| [false, true].map(|safe| (launcher, safe)))
+    {
         let config = root.path().join("replay.toml");
         std::fs::write(
             &config,
@@ -39,7 +47,7 @@ safe = {safe}
             ),
         )
         .unwrap();
-        let status = Command::new(&replay)
+        let status = Command::new(launcher)
             .args(["--config"])
             .arg(config)
             .current_dir(root.path())

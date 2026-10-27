@@ -1,11 +1,26 @@
 {
   "analysis": {
-    "analyzer_sha256": "76313f2375a1d2e89cfc7de65c5f065a7eac3db20c0c58229d30e3eff1671392",
-    "protocol_sha256": "7525dfe39349c9f8bbcc71c2beff8a38b9f185d77d4785d16cf0119bf9d5abff",
-    "records_sha256": "ba934cfd00d9b80f856ac0d60d5f726e3c5363fb153ca1db810faa8791faf7de",
-    "summary_sha256": "6df5a7c7185c17acb73b15872c73a57449a0eca6f0e45fcdf022881a3f4aae25"
+    "analyzer_sha256": "1df2012eb320889547862b8fd45ed5eda3eecd74a7adecfd9166619ee426d103",
+    "protocol_sha256": "949b7fc51c2900f46464fd0414a5b241c18840eaa3de970a3f757bfcf5375ec9",
+    "records_sha256": "28d13ae421014a88f0cc0a702578e194926f3efe5ac49c6b96433f63319bef70",
+    "summary_sha256": "1bb035aa0bf96cf79e2e32bbb8735539ad3471b8c29e312240bc3fc256d1f9dc"
   },
-  "batch": "user-layered-references-v2-20261017",
+  "archive_outputs": {
+    "filesystem-layered-references-environments.csv": "61103fc2639c7537d29af16178d7bcd3a0e9cdcf2ae3d7b77c805c11ed54e526",
+    "filesystem-layered-references-failures.csv": "34a68a634e6108c64d6940760b3a2a774f6dbedee0f20014f92ca82009c19f05",
+    "filesystem-layered-references-levels.csv": "07ad518ca23da0fb6ded059d976ec05bd87bfc8816fa8a9de77d57c82881c9c2",
+    "filesystem-layered-references-ready.csv": "cbeffc598a13e111ecb18687422ca11cf9f996cf6a02a3f80b8a627197bfbf70",
+    "filesystem-layered-references-rows.csv": "adc5f95f650a2aea86923c2661460aae634658494abe5cc69202180327571fb4",
+    "mechanism-relative-time.pdf": "a47cacfd0d7edc270c67247aa3dc46d88e32361cc090aee07bd1a621d6fb3df1",
+    "mechanism-relative-time.svg": "bb8957c9353ef4e50eb01b1cdc90b5f01676e9893b984eb27a734ad52ed68670",
+    "resource-workers.pdf": "9dd733df191534a4886a1514f721d0c0f102a45d7979cfc26aa70196f03fe65f",
+    "resource-workers.svg": "7340f0fbfd7c81e458bf70eca154756278e24246811a920dac6c8cb2029f906f",
+    "workflow-rounds.pdf": "fe7bc06ac0ccfff10d69e37446379728d0be7d773e061eaf009fdee0d1f21422",
+    "workflow-rounds.svg": "117638f81b71af2f1fa693282cd6e0e6c150caedc5af9e43de3575e1c771e14a",
+    "write-request-size.pdf": "3d2ac4564abc6d575d6c1a909564c9cad38524e6c34e7a93efae7fd9c8f6fdb3",
+    "write-request-size.svg": "774908087d746a86c3f993d237ff7a535fd51a8665b993b8f7024abe1e89a791"
+  },
+  "batch": "user-rebase-20261025-c",
   "benchmark_id": "B-FS-TOOLS",
   "budget": {
     "cpu_placement": "inherited affinity; host user cgroup has no cpuset delegation",
@@ -711,14 +726,14 @@
     "valid": 501
   },
   "firmware": {
-    "actual_config_sha256": "2ebce6af5a4dedf209d89f4c3cf0f4c3ca7b979f00fd3f63d05346e6e7a41178",
-    "build_id": "581b3346b633d361339c27c12d808abab12bcd6d6c7e4e375f25cc32dde3328b",
-    "sha256": "e0fde88b23e59f86a37afce0a163061393db66d561f8664304d26cab27730be4",
-    "source_receipt_sha256": "a401475053c65ce5ef849ad6c8e071926e0aa726788f6dec727200d4b0a9ad6c"
+    "actual_config_sha256": "f2daac155f899f7649fc9e1c6453fd389d8f2bd04fbc2c1d731a376eb9151b6e",
+    "build_id": "c31683c8c9f293b168a66b72d14b7b40bc8040b2a8b51ffc5311a240fe16704e",
+    "sha256": "4291201e9d63335b35c37902b2d45b8f96bd7675bb53a56a597163f0623cf87e",
+    "source_receipt_sha256": "295e41a197b2fb06ca0f485173a67080224510beacd2720fdc0de679ab60e794"
   },
   "frozen_artifact_manifest": {
-    "files": 50,
-    "sha256": "4d217aef80c4517a990cebc0a899452acab74eb381ae9fbb09cd833265e7514f"
+    "files": 48,
+    "sha256": "ee9f3894cf9e1c732fa21b8934d17ad1398258fb9f02b13724e7316c072c3161"
   },
   "gates": {
     "interference": false,
@@ -732,43 +747,29 @@
         "options": "rw,relatime,compress=zstd:1,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/home"
       }
     ],
-    "platform": "Linux-7.2.10-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "platform": "Linux-7.2.11-300.fc45.x86_64-x86_64-with-glibc2.44",
     "uname": [
       "Linux",
       "fedora",
-      "7.2.10-200.fc44.x86_64",
-      "#1 SMP PREEMPT_DYNAMIC Sun Oct 11 18:11:51 UTC 2026",
+      "7.2.11-300.fc45.x86_64",
+      "#1 SMP PREEMPT_DYNAMIC Thu Oct 15 17:29:26 UTC 2026",
       "x86_64",
       ""
     ]
   },
-  "host_observation": {
-    "cpu_model": "AMD Ryzen 7 9700X 8-Core Processor",
-    "observed_unix": 1792244576.7685368,
-    "phase": "formal campaign launch; observer metadata only",
-    "uname": [
-      "Linux",
-      "fedora",
-      "7.2.10-200.fc44.x86_64",
-      "#1 SMP PREEMPT_DYNAMIC Sun Oct 11 18:11:51 UTC 2026",
-      "x86_64",
-      ""
-    ]
-  },
+  "host_observation": null,
   "inputs": {
-    "cli-build-receipt.json": "3f790a1d6b6532346043ceb8ac42ab82abdd3ee7f24ea35a7d903239dda781f3",
-    "firmware-source.json": "a401475053c65ce5ef849ad6c8e071926e0aa726788f6dec727200d4b0a9ad6c",
-    "fixture-manifest.json": "0027c0feb975c128164a4a669182ca82a1bed75079be6ab31e792f39b4749ed9",
-    "host-observation.json": "adb4aa229801d8da3e169d982f1f765528ab85219d53b0fab055fcd5aa902e5c",
-    "in.bench.json": "80e616d240c1ee5ff2fb2c72662548b754e8f4faa823f5237d473f1f32e6f47b",
-    "in.json": "b34d147eef66be8a761e635704f21e782684b7420f39b9759d917ee585e9b144",
+    "cli-build-receipt.json": "b7d2786b67433ae20f84fafbc0927b6456992f56865a0f7ba3dd19427bfc6e17",
+    "firmware-source.json": "295e41a197b2fb06ca0f485173a67080224510beacd2720fdc0de679ab60e794",
+    "fixture-manifest.json": "1fe45d386cc0ad5735b453e5d269fc25b830aa496d0ff2067277dd0408349b8e",
+    "in.bench.json": "e1746520bb8906cb24966984c4ef584a0cc4fd7012da2679b0c86034c408a2db",
+    "in.json": "a6a1bc200b7d76075ecdac6c61af663652a451d126b0087f7d719f87b71a9c60",
     "in.render.json": "4b65de0dae08293b2ec777f1a015c1a20fbd41ea01149c13b80d662078f163ae",
-    "protocol.json": "7525dfe39349c9f8bbcc71c2beff8a38b9f185d77d4785d16cf0119bf9d5abff",
-    "records.json": "ba934cfd00d9b80f856ac0d60d5f726e3c5363fb153ca1db810faa8791faf7de",
-    "reference-runtime-observation.json": "08a6342e9c91718d77fbf410390e9c8a625b0974e44e17d7f79dfcbb3b1b0b51",
+    "protocol.json": "949b7fc51c2900f46464fd0414a5b241c18840eaa3de970a3f757bfcf5375ec9",
+    "records.json": "28d13ae421014a88f0cc0a702578e194926f3efe5ac49c6b96433f63319bef70",
     "skipped.json": "c8fb0a7cd543a840ec237198bfbed206897d26acc0bedfcaabd12eee7dcb02b2",
     "status.json": "123b6742768cb27ab3cd95dc4e376ee525efc86baff7a7482f6a1817768e3421",
-    "toolroot-receipt.json": "6bc78357e9bbfbe1ad8055881d2e50dbc7b99e92cadaf092141b7ab7016f6806"
+    "toolroot-receipt.json": "a139d551cecd241eed1727ffcb314a95757c70fdb4bf23f3a52b8c5bf784326c"
   },
   "limitations": [
     "N3 exploration, no reliable tails or population-wide ranking",
@@ -829,7 +830,7 @@
       "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
       "environments_reporting_memtotal": 57,
       "observed_ready_memtotal_kib": [
-        454820
+        454788
       ],
       "valid_environments": 57
     },
@@ -838,8 +839,8 @@
       "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
       "environments_reporting_memtotal": 57,
       "observed_ready_memtotal_kib": [
-        454648,
-        454652
+        454616,
+        454620
       ],
       "valid_environments": 57
     },
@@ -848,8 +849,9 @@
       "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
       "environments_reporting_memtotal": 57,
       "observed_ready_memtotal_kib": [
-        454804,
-        454808
+        454776,
+        454780,
+        454784
       ],
       "valid_environments": 57
     },
@@ -873,22 +875,22 @@
     }
   },
   "outputs": {
-    "docs/overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg": "fb690b93ea91d4d1378c8c0ef70134c410408c6987558360022799854b9083a8",
-    "docs/overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg": "24100a4cefb3815f34792f7a0295e0b6a07f60d603a5bf4235e14facb8ebb6dd",
-    "docs/overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg": "8361dbf9c06f3cfd45c88f1bc788d74c3dd5836c61c3ce6ba49bd8bbf1c56026",
-    "docs/overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg": "ce00344cdccddcfb25533ade8b48553cf5cc916ce8f1fc8fb931530e8b829046",
     "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv": "34a68a634e6108c64d6940760b3a2a774f6dbedee0f20014f92ca82009c19f05",
-    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv": "26c88bece7a41ba95fb8bd5cb5a270dbc87d8ab965f1724d5ff1229975846c64",
-    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv": "0b35bfe87943133d3cf8c9ddc639016440baa3a6c5f2b0de3d09795f1a1dc1d1"
+    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv": "07ad518ca23da0fb6ded059d976ec05bd87bfc8816fa8a9de77d57c82881c9c2",
+    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv": "cbeffc598a13e111ecb18687422ca11cf9f996cf6a02a3f80b8a627197bfbf70",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg": "bb8957c9353ef4e50eb01b1cdc90b5f01676e9893b984eb27a734ad52ed68670",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg": "7340f0fbfd7c81e458bf70eca154756278e24246811a920dac6c8cb2029f906f",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg": "117638f81b71af2f1fa693282cd6e0e6c150caedc5af9e43de3575e1c771e14a",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg": "774908087d746a86c3f993d237ff7a535fd51a8665b993b8f7024abe1e89a791"
   },
   "payload": {
-    "sha256": "04696784264d95b50ecfd9d13e2c82aac8cf79e7be0a13b3b5518e5eebfc59bb",
+    "sha256": "f1b6cae222648b3f53e380070537e1d30e8c2b7f3fb89e04dc2643569208d09e",
     "source_sha256": {
       "harness/workloads_v2_guest.rs": "d3f8227b3d5089e91ac0706fd795701ef1b309a3b0bbc49e7bf3af8abeeeb034",
       "harness/workloads_v2_scenarios.rs": "a239e72a5e59ad0463ed94760995105439e4babef13072a4218919141ce31893"
     }
   },
-  "publisher_sha256": "9b13941d9a792ec3a8aca13926d194873198e7aca372c330fe3feca206d8b134",
+  "publisher_sha256": "829536dc37505f21a2dafe9e636113e56705040167354dc2fc1bdf552d5dfcd0",
   "reference_configuration": {
     "docker": {
       "actual_parent_limits": {
@@ -897,39 +899,39 @@
         "memory.swap.max": "0"
       },
       "cpu_placement": "affinity",
-      "image_id": "sha256:0847faafffcafd526f348743677527e0db588b46b31b7142d1cab17f95834cb5",
-      "image_inspection_sha256": "d42d179b93b418bb651e7349c0dcf28ca20118520301d5e41e22d3d65c8ca6f9",
+      "image_id": "sha256:8b6d6e292d94372efb800a2899c6366aa7f431786b2adcfd81da109339691110",
+      "image_inspection_sha256": "576c8ca2d2326d2b19e9f1b1c0e2ae069207d1b5f9ef9ee3970a80271b05a090",
       "input": "same frozen fixture, read-only bind at workspace/input",
-      "launcher_sha256": "d47ccf28bf7aaeca60f0a96af30ab4ee5f61a7f9705ee1cc082d8c547210ef3f",
+      "launcher_sha256": "ec153330c6ae597d7aa46b4adf0222ded7206889858305733c74a11030c29ec1",
       "launcher_source_sha256": "ef3dde7e512e7f21efd6b01da31668cad2c1f96333da2cf67833acd9af663da1",
       "limitation": "payload and daemon affinity 0,1; no delegated cpuset, so early runc CPU placement is not proven",
       "output": "container writable overlay2 layer; copied out after timing",
       "ready": "host pre-exec marker before docker start --attach; create/import excluded",
       "runtime_cgroup_observation": "host cgroup namespace; payload reports actual parent path once before exec",
-      "setup_sha256": "6bde13efa3bad434104db7cad93882cca5af95220e4cf8a24053a48a4b062498",
+      "setup_sha256": "89046758277a1c988890ef06881d5e81042b155f64b8284907d87e04480bb176",
       "storage_driver": "overlay2"
     },
     "fc-system": {
       "assets_summary": {
         "disk_sha256": {
-          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
-          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+          "root_disk": "7e4b07233e31830a0247df30c5574f7bcedfe6a3c1538b67e14cac8c6eaae47e",
+          "work_disk": "26b017481e87276179e215ffbb7cf9cdc49ce55c9894af9826538b636dcfb61a"
         },
-        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_receipt_sha256": "44b030c46d08f3dde21a34376d607b83ce21fe20e30076b4ad247d5e01673b5d",
         "kernel_sha256": {
-          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "config": "4da2a11de221a1dc48381fc71b00b9edeecaf844da92623097b8bf4046e50aeb",
           "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
-          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
-          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
-          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
-          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+          "initrd": "488119c13a774037975d63ee69ac2b6ad39d4b81865b32bb637f57a5507e2f82",
+          "kernel": "d72be984cd992176cb1cd19bd4b074372ee0be5e79b426dc506fbc49abdbc079",
+          "provenance": "2c66bb6c29846a1db8438395b6119b5bef2c9fbd9180036dcc6aee64919f76a0",
+          "vmlinuz": "3de692df9e8d14d8dc3c0d935ec4c04fbe9231d8bdc18aeda1b6f0e20c7a1d1c"
         },
         "manifest": {
-          "files": 25,
-          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+          "files": 23,
+          "sha256": "3d2990e4f1559f997700a5ba09bd7c4a8ff8235c4459783c3af94c5349058e93"
         },
         "minimal_init_sha256": {
-          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init": "3c120bf8fff7accd6d465803322e7baeeaeaa5d92df403f102c9eacccce873cd",
           "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
         },
         "root_disk_bytes": 8589934592,
@@ -942,17 +944,17 @@
       "guest_memory_mib": 512,
       "guest_vcpus": 2,
       "kernel": {
-        "distribution": "Fedora Linux 44",
+        "distribution": "Fedora 45",
         "origin": "official-distro-stock",
         "package": "kernel-core",
-        "package_version": "7.2.8-200.fc44.x86_64",
+        "package_version": "7.2.11-300.fc45.x86_64",
         "pvisor_firmware": false,
-        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+        "source_url": "https://www.kernel.org/"
       },
       "network": "no network device",
       "runtime": {
         "sha256": "c41309a2452e05149c5183e867c4d34b9b8d07e2885673d465714e238ad57d98",
-        "version": "Firecracker v1.13.1\n\n2026-10-17T21:41:04.593999421 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+        "version": "Firecracker v1.13.1\n\n2026-10-25T12:53:39.737612364 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
       },
       "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
       "transport": "virtio-mmio",
@@ -961,24 +963,24 @@
     "qemu": {
       "assets_summary": {
         "disk_sha256": {
-          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
-          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+          "root_disk": "7e4b07233e31830a0247df30c5574f7bcedfe6a3c1538b67e14cac8c6eaae47e",
+          "work_disk": "26b017481e87276179e215ffbb7cf9cdc49ce55c9894af9826538b636dcfb61a"
         },
-        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_receipt_sha256": "44b030c46d08f3dde21a34376d607b83ce21fe20e30076b4ad247d5e01673b5d",
         "kernel_sha256": {
-          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "config": "4da2a11de221a1dc48381fc71b00b9edeecaf844da92623097b8bf4046e50aeb",
           "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
-          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
-          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
-          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
-          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+          "initrd": "488119c13a774037975d63ee69ac2b6ad39d4b81865b32bb637f57a5507e2f82",
+          "kernel": "d72be984cd992176cb1cd19bd4b074372ee0be5e79b426dc506fbc49abdbc079",
+          "provenance": "2c66bb6c29846a1db8438395b6119b5bef2c9fbd9180036dcc6aee64919f76a0",
+          "vmlinuz": "3de692df9e8d14d8dc3c0d935ec4c04fbe9231d8bdc18aeda1b6f0e20c7a1d1c"
         },
         "manifest": {
-          "files": 25,
-          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+          "files": 23,
+          "sha256": "3d2990e4f1559f997700a5ba09bd7c4a8ff8235c4459783c3af94c5349058e93"
         },
         "minimal_init_sha256": {
-          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init": "3c120bf8fff7accd6d465803322e7baeeaeaa5d92df403f102c9eacccce873cd",
           "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
         },
         "root_disk_bytes": 8589934592,
@@ -987,7 +989,7 @@
       },
       "boot_firmware": {
         "name": "bios-256k.bin",
-        "sha256": "3068c0b80988e2f2b04eaeda0b950e139b1760f5d269fc3587b819ff1f9f06c1"
+        "sha256": "54b82a3188d542bb97f2623d2e947a41e5f5cd32c84bddb67c6819301975b7d4"
       },
       "device_cache": "QEMU cache=writeback with flush enabled",
       "durability": "payload file/directory synchronization retained; normal work unmount/reboot-to-exit outside completion clock",
@@ -995,17 +997,17 @@
       "guest_memory_mib": 512,
       "guest_vcpus": 2,
       "kernel": {
-        "distribution": "Fedora Linux 44",
+        "distribution": "Fedora 45",
         "origin": "official-distro-stock",
         "package": "kernel-core",
-        "package_version": "7.2.8-200.fc44.x86_64",
+        "package_version": "7.2.11-300.fc45.x86_64",
         "pvisor_firmware": false,
-        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+        "source_url": "https://www.kernel.org/"
       },
       "network": "no network device",
       "runtime": {
-        "sha256": "27cd395848940fc6482256d85096fc64bc4fe3f3e909824d51c202f8314cd9e9",
-        "version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+        "sha256": "b3daaa0a3ff17a70357dc5ad51a0f045e93212f603383ab85681f152b488a1ad",
+        "version": "QEMU emulator version 11.1.2 (qemu-11.1.2-1.fc45)\nCopyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers"
       },
       "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
       "transport": "virtio-pci",
@@ -1014,24 +1016,24 @@
     "qemu-microvm": {
       "assets_summary": {
         "disk_sha256": {
-          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
-          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+          "root_disk": "7e4b07233e31830a0247df30c5574f7bcedfe6a3c1538b67e14cac8c6eaae47e",
+          "work_disk": "26b017481e87276179e215ffbb7cf9cdc49ce55c9894af9826538b636dcfb61a"
         },
-        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_receipt_sha256": "44b030c46d08f3dde21a34376d607b83ce21fe20e30076b4ad247d5e01673b5d",
         "kernel_sha256": {
-          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "config": "4da2a11de221a1dc48381fc71b00b9edeecaf844da92623097b8bf4046e50aeb",
           "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
-          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
-          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
-          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
-          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+          "initrd": "488119c13a774037975d63ee69ac2b6ad39d4b81865b32bb637f57a5507e2f82",
+          "kernel": "d72be984cd992176cb1cd19bd4b074372ee0be5e79b426dc506fbc49abdbc079",
+          "provenance": "2c66bb6c29846a1db8438395b6119b5bef2c9fbd9180036dcc6aee64919f76a0",
+          "vmlinuz": "3de692df9e8d14d8dc3c0d935ec4c04fbe9231d8bdc18aeda1b6f0e20c7a1d1c"
         },
         "manifest": {
-          "files": 25,
-          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+          "files": 23,
+          "sha256": "3d2990e4f1559f997700a5ba09bd7c4a8ff8235c4459783c3af94c5349058e93"
         },
         "minimal_init_sha256": {
-          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init": "3c120bf8fff7accd6d465803322e7baeeaeaa5d92df403f102c9eacccce873cd",
           "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
         },
         "root_disk_bytes": 8589934592,
@@ -1048,62 +1050,24 @@
       "guest_memory_mib": 512,
       "guest_vcpus": 2,
       "kernel": {
-        "distribution": "Fedora Linux 44",
+        "distribution": "Fedora 45",
         "origin": "official-distro-stock",
         "package": "kernel-core",
-        "package_version": "7.2.8-200.fc44.x86_64",
+        "package_version": "7.2.11-300.fc45.x86_64",
         "pvisor_firmware": false,
-        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+        "source_url": "https://www.kernel.org/"
       },
       "network": "no network device",
       "runtime": {
-        "sha256": "27cd395848940fc6482256d85096fc64bc4fe3f3e909824d51c202f8314cd9e9",
-        "version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+        "sha256": "b3daaa0a3ff17a70357dc5ad51a0f045e93212f603383ab85681f152b488a1ad",
+        "version": "QEMU emulator version 11.1.2 (qemu-11.1.2-1.fc45)\nCopyright (c) 2003-2026 Fabrice Bellard and the QEMU Project developers"
       },
       "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
       "transport": "virtio-mmio",
       "userspace": "same frozen prepared tools and static payload; minimal PID1, no distro services"
     }
   },
-  "reference_runtime_observation": {
-    "docker_version": {
-      "Client": {
-        "ApiVersion": "1.56",
-        "Arch": "amd64",
-        "Os": "linux",
-        "Version": "29.8.2"
-      },
-      "Server": {
-        "ApiVersion": "1.56",
-        "Arch": "amd64",
-        "Components": [
-          {
-            "Name": "Engine",
-            "Version": "29.8.2"
-          },
-          {
-            "Name": "containerd",
-            "Version": "2.3.5"
-          },
-          {
-            "Name": "runc",
-            "Version": "1.5.2"
-          },
-          {
-            "Name": "docker-init",
-            "Version": "0.19.0"
-          },
-          {
-            "Name": "rootlesskit",
-            "Version": "3.2.0"
-          }
-        ],
-        "MinAPIVersion": "1.40",
-        "Os": "linux",
-        "Version": "29.8.2"
-      }
-    }
-  },
+  "reference_runtime_observation": null,
   "resource_scale": "128/640 MiB WSS and 1 GiB logical writes at fixed 512 MiB reference; native/host have parent 2 GiB, not 512 MiB guest limit",
   "role": "user-facing",
   "sampling": {
@@ -1126,41 +1090,33 @@
   "scope": "fresh cross-mode layered filesystem cohort; 12 mechanisms, four resource anchors, three separate complete workflows",
   "source": {
     "artifacts": {
-      "embedded-guest": "493098ca81ae216d4a8fff348ec4f8833172f235a9624c70addd31e7c89e63aa",
-      "pvisor": "f9875b52b041e99cc62871284b68b7183834d238b74e6b4d9851f9d3744fe0a9",
-      "pvisor-cache": "fa1eaf5bdefb180d9a0e179db8809331bcba9debeba7d98327b1273bb142a72d"
+      "pvisor": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f",
+      "pvisor-guest": "18c651535e1c20bbefa0900a681f72d59bb278a0be569306db7741df8dda6276"
     },
-    "build_profile": "performance",
-    "build_receipt_sha256": "3f790a1d6b6532346043ceb8ac42ab82abdd3ee7f24ea35a7d903239dda781f3",
-    "head": "1a9395eebb8555443323f84be5ab2116bf605a69",
-    "source_files": 1141,
-    "source_hashes_sha256": "1891dcb1ffcb7ec78dadf56831b451509b80e2406c5f0811d2f68184889a2dde"
+    "build_profile": null,
+    "build_receipt_sha256": "b7d2786b67433ae20f84fafbc0927b6456992f56865a0f7ba3dd19427bfc6e17",
+    "head": "9e1b8f1543ed25e2c2fd9690e5d8cca7b2487d1f",
+    "source_files": 1216,
+    "source_hashes_sha256": "f245d76c7aa8d7f003bcb2e981f8acc23facc8bc9b695fdcfa8dbdd198a75d32"
   },
   "state": "partial",
   "timing": "Ready from common pre-exec launch marker; isolation harness preparation and exit excluded; completed=work+final_sync, setup/validation separate",
   "toolroot": {
     "installed": {
-      "bench-artifacts/libkrunfw.so.5.6.2": "e0fde88b23e59f86a37afce0a163061393db66d561f8664304d26cab27730be4",
-      "bench-artifacts/payload": "7fbc8103e8791706e1c9cca01737de00466a4282e5f9da47b2722d5e20278be1",
-      "bench-artifacts/pvisor": "f9875b52b041e99cc62871284b68b7183834d238b74e6b4d9851f9d3744fe0a9",
-      "bench-artifacts/pvisor-cache": "fa1eaf5bdefb180d9a0e179db8809331bcba9debeba7d98327b1273bb142a72d",
-      "bench-artifacts/pvisor-guest": "493098ca81ae216d4a8fff348ec4f8833172f235a9624c70addd31e7c89e63aa",
-      "bench-artifacts/workload": "04696784264d95b50ecfd9d13e2c82aac8cf79e7be0a13b3b5518e5eebfc59bb"
+      "bench-artifacts/libkrunfw.so.5.6.2": "4291201e9d63335b35c37902b2d45b8f96bd7675bb53a56a597163f0623cf87e",
+      "bench-artifacts/payload": "a66221031b8db246106f230f248ca009a7a1be5783222848625245ac3329ae20",
+      "bench-artifacts/pvisor": "e99449c839a8ce9db58a902596196708d4168cd7e3ec6cc95fba44344b98c94f",
+      "bench-artifacts/pvisor-guest": "18c651535e1c20bbefa0900a681f72d59bb278a0be569306db7741df8dda6276",
+      "bench-artifacts/workload": "f1b6cae222648b3f53e380070537e1d30e8c2b7f3fb89e04dc2643569208d09e"
     },
     "prepared_tools": {
-      "usr/bin/cc": "153e46b4657620f2baef1b4a70b4b4f275772faa5b0fb9e415697e87ebcb7fea",
-      "usr/bin/git": "86c21d0ccccfb45c107c213b693d1132413959f71c6b0a4165f07c5072d47b34",
-      "usr/bin/python3": "0d64bd6d66d68dac91cdadafc46e22d4f09f22bdc997aaae870f42865b024a3e",
-      "usr/libexec/gcc/x86_64-redhat-linux/16/cc1": "db2d9b0c3b8172c4aba92c570eba00c8c862c9f69d93735a448a5fe4596ac275"
+      "usr/bin/cc": "66317f5338535ded9ce9e2fc7b1c20d33bf96b7d6d1c35a71aa6dc309be3a57e",
+      "usr/bin/git": "b2dc7e49a1e23c71158ac1afb4580c489e9a28d63a09b467a3cfb2f721f0557d",
+      "usr/bin/python3": "8f9b3657aa73659bdee8d4ff9da604fba390870be227a8c626029c2402cb063c",
+      "usr/libexec/gcc/x86_64-redhat-linux/16/cc1": "9e4e7c84c7f758410d68592b7d6e892a77909fa171f6949d07837647f210db30"
     },
-    "receipt_sha256": "6bc78357e9bbfbe1ad8055881d2e50dbc7b99e92cadaf092141b7ab7016f6806",
-    "runtime_dependencies": {
-      "lib64/ld-linux-x86-64.so.2": "4e5d39355699e90fa29313d3100e82af4a23290028c58c364d6a249ef6a78e5e",
-      "lib64/libbz2.so.1": "ef3c4ed7e70d03d7c406fb1cea9552e74d0b20006e7d8f66a60dc1a6009f4800",
-      "lib64/libc.so.6": "a5c5ad9d59d3c69eda93aa8f82930ba06cc4e893a113e66c85ad6e96243d53c8",
-      "lib64/libgcc_s.so.1": "c71a62b5ef442ab8cf4470874dee6f2383d73a744f0006b6d287412f131c2e09",
-      "lib64/libm.so.6": "16a03ce6d24c8a46742206d4a9c1d35bb6577ae2384f153dc6ef4a4b62b5357f"
-    }
+    "receipt_sha256": "a139d551cecd241eed1727ffcb314a95757c70fdb4bf23f3a52b8c5bf784326c",
+    "runtime_dependencies": {}
   },
   "validation": "guest round oracle, checked completion and independent host final retained-state oracle; physical overlay markers strictly interpreted",
   "vm_configuration": {
@@ -1178,6 +1134,7 @@
         "RUST_LOG": "off"
       },
       "executor": "ordinary pvisor CLI VM",
+      "firmware_binding": "static musl product embeds the selected source-built firmware",
       "guest_memory_mib": 512,
       "guest_vcpus": 2,
       "host_lifecycle": "fresh private Host per case/environment",
@@ -1199,6 +1156,7 @@
         "RUST_LOG": "off"
       },
       "executor": "ordinary pvisor CLI VM",
+      "firmware_binding": "static musl product embeds the selected source-built firmware",
       "guest_memory_mib": 512,
       "guest_vcpus": 2,
       "host_lifecycle": "fresh private Host per case/environment",
@@ -1206,23 +1164,5 @@
       "requested_host_writeback": 0,
       "rootfs_ownership": "ordinary directory; no immutable-generation claim"
     }
-  },
-  "publication_layout": {
-    "archive": "docs-assets-cleanup-20261018",
-    "original_provenance_sha256": "e3532effa8c7498e7e02cc9e45f551969a5103fdd31c501c96ef6937a1c53bf6",
-    "formats": [
-      "csv",
-      "svg"
-    ],
-    "scope": "Public paths deduplicated; measurements and retained output hashes unchanged. Original full publication receipt retained in the local archive."
-  },
-  "download_projection": {
-    "archive": "docs-assets-prune-20261018",
-    "previous_provenance_sha256": "a4c3dbd467664e124d7d18e361b5e2574f886e3a761142d912cce0b4261cd5e9",
-    "archived_outputs": {
-      "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv": "b68fcb716a49113112a6664bf7c4c224c9db1400094730e06e3bdc0b5096f553",
-      "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv": "3f451ad1fae2fc48e53aeb75e0c141e82d16a7957b3eccef45f87c5e17d59248"
-    },
-    "measurement_scope_changed": false
   }
 }

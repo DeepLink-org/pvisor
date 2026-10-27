@@ -271,18 +271,30 @@ races, composed lowers, remote backing and hardlink ordering.
 
 ## Apply inventory and publication
 
-Excluded paths protect effects as well as visibility. Directory removal,
-replacement, rename and exchange reject physical excluded descendants even
-without deny rules. Apply planning and prepared-intent recovery independently
-reject changes inside excluded paths or recursive replacements of their
-ancestors, including old stages. This ancestor check is conservative even if a
-configured excluded descendant is currently absent. macOS uses the same ASCII
-case-insensitive exclusion matching as the serving view.
+Same-user apply processes use a common private lock directory beneath canonical
+`/tmp`, independent of each process's TMPDIR. Target identity selects the lock;
+directory/file ownership, modes, no-follow opens and unaliased files are checked
+before acquiring it. A waiting apply rechecks conflicts after obtaining ownership.
 
-Importing lower metadata never copies the three supported overlay opaque xattrs
-into the upper: source metadata must not become overlay control state. Ordinary
-user xattrs remain preserved. Raw upper snapshot/restore retains opaque markers
-because it copies existing overlay state rather than importing lower metadata.
+Directory removal, rename/replacement, exchange and opaque materialization
+validate physical descendants, including excluded names hidden from enumeration,
+before publishing upper mutations. A hidden empty view is not authority to
+delete the physical tree. A rejected parent operation leaves ordinary sibling
+changes eligible for review/apply. Symlink targets are not traversed.
+
+Apply planning and Prepared recovery independently check protected effects:
+selected entries cannot affect excluded/denied paths, and whole-directory
+replacement cannot contain reserved excluded paths. Denied descendants and
+apply-selection exclusion globs are checked against the physical target tree,
+including after restoring an interrupted replacement. Unsafe older stages fail
+without silently dropping protection. This conservatively rejects replacement
+of an ancestor of a reserved exclusion even when that excluded path is absent.
+
+Ordinary lower metadata import filters the opaque control attributes recognized
+by the merge algorithm. Other user xattrs are retained. Raw upper snapshots and
+reopening an existing upper preserve legitimate control attributes.
+
+macOS uses the same ASCII case-insensitive exclusion matching as the serving view.
 
 Apply planning collects one request-local upper inventory containing relative
 raw paths, whiteout flags and no-follow metadata. Change classification and

@@ -1,6 +1,8 @@
 # Job, Operation, Attempt and Event
 
-A **Job** is a persistent CLI unit of work. `pvisor spawn` creates it; `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on it directly. Each current Job has one internal Run record. Disk `run-*` IDs, `run.json` and Run Bundle names remain unchanged for compatibility.
+A Job represents the user's persistent work, a Run stores its internal record, an Attempt identifies one execution, and Events record facts during processing. Records and files awaiting acceptance have lifetimes that continue after execution ends.
+
+See [Jobs and storage](../concepts/jobs.md) for creating and finding Jobs from the CLI. Each current Job has one internal Run record; disk `run-*` IDs, `run.json` and Run Bundle names remain unchanged for compatibility.
 
 The [single-node daemon](daemon/index.md) manages OpenSandbox-profile `sb-*` sandboxes through VM-only NativeRuntime. Private supervisor records bind each generation to native Run/Attempt IDs; sandbox IDs are not public Job IDs. The API does not implement stage/apply, checkpoints or Run Bundle export. Native execution is embedded, but the Job workflow below is not automatically exposed; external orchestration owns cross-host identities.
 
@@ -25,6 +27,25 @@ Admission resolves the driver network configuration once, applies scoped policie
 Workspace fork creates a file branch from a logical checkpoint; execution fork restores a new Job from a supported machine checkpoint. Both retain lineage, with restoration scope determined by checkpoint kind.
 
 The durable Job service also owns completion publication. `ManagedJobRun` gives the actual Attempt join and `Server::finish` to a runtime task; frontends hold a wait adapter. A failed or dropped frontend wait requests cancellation, while accepted completion work continues reconciling and publishing as long as the Tokio runtime remains alive. Runtime shutdown and host-process exit retain their own recovery boundaries.
+
+## Attempt completion {#attempt-completion}
+
+An Attempt with retained storage confirms its result through `completion.json`. The receipt contains `RunResult` and a BLAKE3 digest of the saved Bundle bytes. Validation checks Run/Attempt identity, terminal state, exit code and start/finish times. Run and execution Job states project that result. A terminal field, Bundle file or process exit alone cannot confirm completion.
+
+Session advances normal finalization serially:
+
+1. Stop managed writers, clean up attachments and check observations; synchronize and seal staged files under the stage contract.
+2. Save the Bundle, fixing the result, observations and warnings known during finalization.
+3. Save the Run state projection and commit the completion receipt binding that result and Bundle.
+4. Publish `Completed` and the `run.completed`, `run.failed`, `run.cancelled` or `run.hibernated` terminal event. The durable Job service publishes Job state after joining the Attempt.
+
+Once the receipt commits, terminal-event write failure is an audit gap reported through the run return and logs. It neither rewrites the bound Bundle nor publishes an opposite terminal state. Reconcile the execution result and event coverage separately: a valid completion receipt may exist without terminal events.
+
+After owner exit, when the Attempt is no longer held, reads and recovery check its receipt. A valid receipt reconciles Run and an execution Job still targeting that Attempt. Old results cannot overwrite a Job that has advanced to another Attempt or withdrawn continuation rights. A missing receipt retains the stage and yields Unknown. `review` supplies no unconfirmed execution result; `apply`, `drop` and capture requiring a stopped Attempt refuse execution. Corrupt data, digest mismatch or foreign identity returns an error rather than rewriting records to manufacture success.
+
+The receipt binds the Attempt result and Bundle without spanning Journal, apply ledgers, snapshot publication and external services in one transaction. In-memory execution has no such disk receipt. [Records and version matrix](records-and-versions.md#execution-records) owns legacy reading rules; [Failure semantics](failure-semantics.md#reconciliation) owns lost-response recovery.
+
+Source entry points: `pvisor/src/session/lifecycle.rs`, `runtime/attempt.rs`, `runtime/completion.rs`, `runtime/registry.rs` and `runtime/job_service/views.rs`. Tests in `completion.rs` cover repeated commit, identity/digest checks, missing receipts and state projection. Platform and process-fault coverage require separate acceptance.
 
 ## Effect: consequences of execution
 

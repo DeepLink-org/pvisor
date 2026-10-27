@@ -1,11 +1,10 @@
 # 排查一次 Run
 
-Run 没有按预期工作时，先查看 Run Bundle，不要立即用更强的参数重复命令。
-Bundle 会记录请求的边界、实际安装的机制，以及限制 Run 能够声称的警告。
+Job 没有按预期工作时，先查看它的 Run Bundle，核对请求的边界、实际安装的机制和警告，再决定是否调整参数重试。
 
 ## 先做三个只读检查
 
-在运行命令的项目目录中执行：
+在运行命令的项目目录中执行。若使用了显式 stage，将示例中的 `last` 替换为该路径；[Job 与存储](../concepts/jobs.md)说明如何重新定位任务：
 
 ```bash
 pvisor status last
@@ -53,8 +52,7 @@ Agent 修改的是 Run-owned view。写入该 view 之外的路径可能被记�
 执行审查和模型流量捕获是两个独立决策。先确认 Run 已完成且 Bundle 可读，再检查
 capture 配置和传给 `--record-destination` 的目标路径。
 
-如果目标目录是空的，阅读[捕获 Agent 轨迹](capture.md)，确认配置后再启动新的 Run。
-本地 Run Bundle 是执行记录；只有打开 capture 时，它才会带上模型请求和响应。
+目标目录为空时，按[模型流量捕获步骤](capture.md)检查代理或 base URL 配置，再启动新 Job。Run Bundle 用于核对执行结果；启用 capture 后，模型请求和响应记录在 Gateway Journal 中，查找时使用捕获目录。
 
 ## 提交 issue 前
 

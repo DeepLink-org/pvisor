@@ -16,12 +16,12 @@ if [[ "${PVISOR_WHEEL_PORTABLE:-0}" == 1 ]]; then
 else
   uv build --wheel --out-dir "$staging" --config-setting "cargo-profile=$cargo_profile"
 fi
-for wheel in "$staging"/pvisor-*.whl; do
+for wheel in "$staging"/pvisor_sandbox-*.whl; do
   python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke
 done
-uv run --locked --only-group dev twine check "$staging"/pvisor-*.whl
+uv run --locked --only-group dev twine check "$staging"/pvisor_sandbox-*.whl
 mkdir -p dist
-mv "$staging"/pvisor-*.whl dist/
+mv "$staging"/pvisor_sandbox-*.whl dist/
 for source in "$staging"/pvisor-firmware-source-*.tar.gz; do
   if [[ -f "$source" ]]; then mv "$source" dist/; fi
 done

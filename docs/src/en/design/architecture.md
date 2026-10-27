@@ -1,6 +1,6 @@
 # Core architecture
 
-pVisor processes Operations: it accepts requests, decides how to handle and place them according to policy, calls the actual execution mechanism, then describes what happened through Events.
+pVisor organizes Agent CLIs, scripts and automation commands into manageable Jobs: it resolves policy and execution boundaries before launch, manages file, network and machine resources during execution, and retains reviewable results afterward. Operations describe requests; Events describe facts observed while processing them.
 
 There are two responsibilities: **core provides definitions; pvisor provides implementation.** External callers submit execution requests, control execution through a run handle and observe progress and results through Events.
 
@@ -27,6 +27,36 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `RuntimeJobService` in independent supervisors and reuses in-process `AttemptService` for controls on the same live Attempt. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Job stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
+
+## Technical layers and resource ownership {#technical-layers}
+
+![Execution entries, Runtime, host services and the CPU, RAM, devices and platform implementations inside a VM](assets/pvisor-architecture.svg)
+
+Entries submit configuration, Runtime organizes Sessions and Attempts, and host services provide files, networking, images and durable storage. Host, OCI and VM are distinct execution paths; the diagram expands VM state and its host relationships below. Crate dependencies express code reuse. Resource ownership determines who stops, synchronizes and releases state.
+
+### Host data services {#host-services}
+
+File paths converge at `FilesystemService`. Host FUSE / FSKit adapters and the VM virtio-fs entry share OverlayCore authorization, layered lookup, copy-up and preimage semantics. Each entry retains its inode, handle, protocol-permission and queue state. The VM calls the file service directly without an intermediate host FUSE mount. Staged candidates and target workspace files have separate publication points; [Filesystem design](overlayfs.md#filesystem-service) owns write and recovery ordering.
+
+OverlayNet owns connection authorization and forwarding. VM virtio-net delivers Ethernet frames to the host userspace data plane. Explicit proxy and VM NIC attachment have different coverage. Optional Gateway consumes model-protocol requests for routing, conversion, credential delegation and capture; ordinary network forwarding does not automatically acquire model semantics. See [Network design](overlaynet.md) and [Gateway](gateway.md) for attachment relationships.
+
+The image cache supplies pinned-revision metadata and verified content reads to the file service. The VM owns live mappings and device state; host storage owns image objects, RAM backing, snapshot directories and publication transactions. Cache hits, shared file contents and shared physical RAM pages belong to different layers. [Shared image cache](lazy-image-v2.md) and [Memory mechanisms](memory-optimization/index.md) own their reference and reclamation rules.
+
+### State inside a VM {#vm-ownership}
+
+`pvisor_vm::api` accepts configuration and resource ownership. `VmRuntime::run` starts one VM in a dedicated runner and supplies `VmmHandle` through the ready callback. The handle provides control without extending VM lifetime. The caller still supervises the runner, binds file/network resources, and owns snapshot compatibility and persistence.
+
+| State | Owner and collaboration boundary |
+| --- | --- |
+| Guest processes | `pvisor-guest` is Linux PID 1: it launches workloads, reaps descendants and synchronizes visible virtio-fs mounts before reporting exit |
+| vCPU and execution control | `pvisor-vm` owns CPU threads, registers, interrupts and the event loop; KVM / HVF adapters remain inside the crate |
+| RAM and mappings | `pvisor-vm` manages GPA/HVA, backing and mapping lifetimes; host storage adapters manage referenced files or blocks |
+| Virtual devices | The queue owner publishes the used ring; workers and RAM leases keep request buffers valid during processing |
+| Freeze and restore | The VM coordinates CPU parking, device draining and the RAM gate; callers save and publish matching machine/file state within the freeze window |
+
+Ordinary pause confirms CPU parking while devices may still access RAM. Full freeze must also handle queues and memory references. Restore validates compatibility, installs mappings/device state while paused, then explicitly resumes. Physical sharing, cold pages and offload depend on platform, backing and profile; they cannot be assumed simultaneously available. [VM design](vm-runtime.md#freeze) and [Environment snapshots](environment-snapshot.md) own call ordering and post-failure state.
+
+Source entry points: `pvisor/src/session/lifecycle.rs`, `pvisor-overlay-core/src/service.rs`, `pvisor/src/image/cache/backend.rs`, `pvisor-vm/src/api.rs`, `handle.rs` and `devices/virtio/`.
 
 ## API boundaries and migration status {#api-boundaries}
 
@@ -148,7 +178,13 @@ Transport/process tests do not establish guest correctness or real-VM TUI covera
 
 ## A production execution path
 
-For the full preparation, launch-fact commit, dispatch, cleanup and terminal-publication sequence see the walkthrough in [Design and internals](index.md#execution). The three ownership-level contracts follow.
+The runtime resolves RunSpec, effective policy and executor capabilities before preparing filesystem, network and execution attachments. It calls `RunExecutor::execute` only after required launch facts commit successfully. Preparation may already have created directories or sockets, so a commit failure still requires resource cleanup.
+
+The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage.
+
+For example, when a request allows networking but workspace policy denies it, admission derives an effective network configuration and passes the same configuration to the network driver and executor. Preparation must not reread mutable configuration and allow recorded decisions to diverge from installed egress.
+
+Source entry points: `pvisor/src/runtime/run.rs::resolve_run`, `pvisor/src/session.rs` and `pvisor/src/runtime/job_service/managed.rs`.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 
@@ -179,10 +215,11 @@ Core shares file/network policy evaluation. User, workspace, session and executo
 | Record | Question answered |
 | --- | --- |
 | `run.json` | What are the Job's identity, state, executor and local resources? |
+| `completion.json` | Which result and exact Bundle bytes have committed together for this Attempt? |
 | Run Bundle | What are the result, control observations, artifacts and file/network summaries? |
 | Event Journal/Trace | Which facts were published and how are they related? |
 | Overlay diff/preimages | Which changes await review and what original state must apply check? |
 
-Each record has its own scope. Events reconstruct observed operation history, not all external state. Native agent trajectory replay is also not deterministic replay of arbitrary effects.
+A durable Attempt's completion receipt binds its result and Bundle. Run and execution Job records retain state projections; Events supply fact observations. [Attempt completion](execution-model.md#attempt-completion) owns commit ordering and reconciliation when a receipt is absent. Reconstructing external state also requires the corresponding inputs and execution mechanisms. [Replay design](replay.md) owns native agent trajectory recovery scope.
 
 Review staged files before applying them. OverlayCore validates targets, persists apply intent, updates files and recovers. A batch is not an atomic filesystem transaction. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for `apply`/`drop`/checkpoint recovery and irreversible effects; see [Review and apply](../guides/review-apply.md) for the workflow.

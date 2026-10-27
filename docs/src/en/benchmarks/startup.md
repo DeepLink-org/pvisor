@@ -2,9 +2,9 @@
 
 ## Motivation {#motivation}
 
-Agent workloads arrive in bursts of short-lived calls: a task finishes and its environment is discarded, then the next task builds a new one. Each call pays the startup wait again, so the cost accumulates with call volume. Startup latency decides how soon the first command runs and how often a developer is willing to create an isolated environment for one task.
+With prepared userspace and warm page caches, pVisor VM reaches its first command close to a container and before the tested reference VMs; host and staged runs wait less. Short-lived tasks create a fresh environment each time, so startup waiting accumulates with call volume. Consider that wait together with the isolation boundary you need.
 
-pVisor's VM work brings startup close to a container: median Ready 130.71 ms against Docker rootless at 105.03 ms, and below the reference VMs (Firecracker MMIO 287.13 ms, QEMU microvm 260.10 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
+pVisor VM has a median Ready time of 130.71 ms against Docker rootless at 105.03 ms, and below the reference VMs (Firecracker MMIO 287.13 ms, QEMU microvm 260.10 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
 
 ## Experiment design {#interpretation}
 

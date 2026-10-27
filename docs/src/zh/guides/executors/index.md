@@ -12,10 +12,10 @@
 
 ## 怎么选
 
-- **只想审查文件改动、使用本机工具链**：host 加 `--safe`。
-- **需要强制网络边界**：VM（`--overlaynet auto`），或 host 加 `--overlaynet-deny-all`。
-- **需要固定的 Linux 用户空间**：container 或 VM 加 OCI 镜像。
-- **需要独立内核**：VM。
+- 使用本机工具链、只需审查文件改动时，选 host 加 `--safe`。
+- 需要强制网络边界时，选 VM（`--overlaynet auto`），或 host 加 `--overlaynet-deny-all`。
+- 需要固定的 Linux 用户空间时，选 container 或 VM 加 OCI 镜像。
+- 需要独立内核时，选 VM。
 
 用 `--executor` 选择执行器。`--safe` 要求文件和网络隔离，无法落实时拒绝启动。当前 container 不支持 `--safe`；暂存与网络配置见[容器执行器指南](container.md)。
 

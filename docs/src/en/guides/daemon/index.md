@@ -12,14 +12,14 @@ Preflight checks perform real controller writes and KVM API calls. There is no h
 
 Create requests use a local template key in `images_dir/<key>.json`; creation performs no registry pull or complete image extraction. First use `prepare-image` to prepare a trusted image and pin its revision; prefer digests in deployments. The base must contain `/bin/sh`, `/bin/sleep` and the workload tools; E2B shell commands also require `/bin/bash`.
 
-New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Legacy standalone-rootfs manifests retain their bootstrap contract; see the [image contract](../../design/daemon/operations.md#image-contract).
+New templates use the Rust process/file engine in `pvisor-guest` by default. The host supervisor translates SDK protocols into host-only guest control requests; you do not need to write a vsock bootstrap. Explicit `--execd`/`--envd` selects upstream services. Every template requires a pinned V2 pool binding; standalone-rootfs manifests are rejected; see the [image contract](../../design/daemon/operations.md#image-contract).
 
 ## Install and start {#install}
 
 Linux x86_64 and macOS ARM64 wheels install `pvisor-daemon` alongside `pvisor`. Cache serving works on both platforms; the sandbox service below requires Linux x86_64:
 
 ```bash
-pip install pvisor
+pip install pvisor-sandbox
 pvisor-daemon --help
 pvisor-daemon protocol
 ```
@@ -170,7 +170,7 @@ Cache and pool components can also run independently without the sandbox API. Bo
 
 ## Restart and state ownership {#restart}
 
-One daemon exclusively owns its private state; owner identity is persisted before native creation/control. Private IPC verifies same-UID peer, owner, sandbox ID, generation and a secret token; persistent identity binds the boot ID and cgroup device/inode. IDs are never reused or restarted. IPC loss means unknown, not Missing or cleanup evidence. Persistent delete intent and the supervisor's exclusive lock block late starts; cleanup uses identity-bound `cgroup.kill`, never stores PIDs or kills by PID, and releases capacity only after the cgroup is empty and the owner lock is released. A replaced or lost cgroup without persistent tombstone evidence under the same boot does not prove the object is absent.
+After an API-only restart, reconnect to surviving supervisors with the original private state and owner identity. Only one daemon may use a state directory. Sandbox IDs are never reused or restarted. If a connection is lost, retain the record and capacity until you reconcile the state and confirm deletion; the lost connection does not prove the VM is gone. See [lifecycle control](../../design/daemon/index.md#control) for identity checks and deletion order, and [storage recovery](../../design/daemon/storage.md#reconcile) for restart reconciliation.
 
 Pending delete intent survives restarts and is not overridden by native observations. Unknown deletion state retains the reservation. A natively lost sandbox still shows Failed until explicitly deleted. Do not delete state to fix errors, and never share it between two daemons. The registry is bounded by the configured capacity and a 16 MiB total logical v1-equivalent budget; it is neither an infinitely retained distributed-task archive nor a Run Bundle/artifact store.
 
@@ -182,9 +182,9 @@ Deletion/reconciliation can continue tombstone-based cleanup when the original r
 
 ## Isolation and trust boundaries {#isolation}
 
-The native supervisor embeds `pvisor::PVisor` in a separate child process outside the daemon's lifecycle, configures only `VmExecutor`, and holds the RunHandle. The sandbox cgroup limits the whole supervisor/VMM/helper tree: total CPU rate **10–8000 millicores**, hard memory, zero swap, `pids.max=512` and group OOM. vCPU count rounds the quota up (at most 8); guest RAM rounds down to MiB; the hard memory limit also covers host-side overhead. Paused, Failed and uncertain records keep their conservative reservations.
+Budget resources for the whole supervisor/VMM/helper process tree. Its cgroup enforces total CPU rate **10–8000 millicores**, hard memory, zero swap, `pids.max=512` and group OOM. vCPU count rounds the quota up (at most 8); guest RAM rounds down to MiB. The hard memory limit includes host-side overhead. Paused, Failed and uncertain records retain their reservations.
 
-The startup callback checks started/delete/tombstone markers under the owner lock and joins the identity-bound cgroup **before exec** through a pre-opened `cgroup.procs` FD. Invoking the hidden command outside that cgroup fails closed.
+See [actual controls and physical memory](../../design/daemon/index.md#reservations) for cgroup entry before startup and supervisor isolation.
 
 Native OverlayNet provides VM egress networking. OpenSandbox network-policy requests are unsupported and rejected; a rejected request does not switch egress to deny-all.
 

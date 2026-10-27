@@ -145,5 +145,85 @@ class LazyStageCoverageTests(unittest.TestCase):
             COVERAGE.lazy_stage_publication()
 
 
+class LazyV2CoverageTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="lazy-v2-coverage-synthetic-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        patch = mock.patch.object(COVERAGE, "REPO", self.root)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def receipt(self):
+        outputs = {}
+        for name in ["capacity", "remote", "runtime"]:
+            path = self.root / f"docs/overrides/assets/benchmarks/lazy-v2-{name}.svg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("synthetic figure fixture")
+            outputs[str(path.relative_to(self.root))] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        evidence = dict(
+            benchmark_id="B-LAZY-STARTUP",
+            role="user-facing",
+            state="passed",
+            scope="v2-native-docker-local-and-remote",
+            counts=dict(
+                storage_pairs=15,
+                startup_pairs=30,
+                memory_pairs=5,
+                remote_pairs=90,
+                remote_formal_trials=360,
+                remote_warmup_trials=36,
+                local_read_pairs=60,
+                local_read_trials=120,
+                local_read_warmup_trials=12,
+            ),
+            cohorts={
+                phase: dict(
+                    state="complete",
+                    batch="synthetic-" + phase,
+                    manifest_sha256="a" * 64,
+                    summary_sha256="b" * 64,
+                    binary_sha256="c" * 64,
+                )
+                for phase in ["storage", "runtime", "remote", "local-reads"]
+            },
+            outputs=outputs,
+        )
+        path = self.root / "docs/overrides/assets/benchmarks/lazy-image-v2.provenance.json"
+        path.write_text(json.dumps(evidence))
+        return path, evidence
+
+    def test_absent_receipt_does_not_mark_current_storage_as_rerun(self):
+        self.assertIsNone(COVERAGE.lazy_v2_publication())
+
+    def test_complete_receipts_and_unchanged_exports_are_required(self):
+        path, evidence = self.receipt()
+        self.assertEqual(COVERAGE.lazy_v2_publication()["counts"]["remote_formal_trials"], 360)
+        evidence["cohorts"]["runtime"]["state"] = "failed"
+        path.write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            COVERAGE.lazy_v2_publication()
+
+    def test_changed_figure_cannot_retain_measured_coverage(self):
+        _, evidence = self.receipt()
+        (self.root / next(iter(evidence["outputs"]))).write_text("modified")
+        with self.assertRaisesRegex(ValueError, "export changed"):
+            COVERAGE.lazy_v2_publication()
+
+    def test_incomplete_sample_count_and_mixed_binary_are_rejected(self):
+        path, evidence = self.receipt()
+        evidence["counts"]["remote_formal_trials"] = 359
+        path.write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError, "invalid current"):
+            COVERAGE.lazy_v2_publication()
+        evidence["counts"]["remote_formal_trials"] = 360
+        evidence["cohorts"]["remote"]["binary_sha256"] = "d" * 64
+        path.write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError, "different binaries"):
+            COVERAGE.lazy_v2_publication()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,11 +9,41 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// Fast workloads can complete and auto-remove between startup observations.
+// Their committed generation result must still determine status and streams.
+func TestRapidAutoRemovalKeepsExactExitAndStreams(t *testing.T) {
+	e := newEngine(t)
+	var workers sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			name := fmt.Sprintf("%s-fast-%d", e.name, worker)
+			defer e.cleanup(name)
+			for round := 0; round < 64; round++ {
+				wantCode := []int{0, 7, 17}[round%3]
+				wantOut := fmt.Sprintf("out-%d-%d", worker, round)
+				wantErr := fmt.Sprintf("err-%d-%d", worker, round)
+				script := fmt.Sprintf("printf %s; printf %s >&2; exit %d", wantOut, wantErr, wantCode)
+				code, out, stderr := e.call("", "run", "--rm", "--name", name,
+					"--cpus", "1", "--memory", "256m", "--network", "none", e.image, "sh", "-c", script)
+				if code != wantCode || out != wantOut || stderr != wantErr {
+					t.Errorf("worker %d round %d: code=%d want=%d stdout=%q want=%q stderr=%q want=%q",
+						worker, round, code, wantCode, out, wantOut, stderr, wantErr)
+					return
+				}
+			}
+		}(worker)
+	}
+	workers.Wait()
+}
 
 // Source: system/160-volumes.bats and e2e/run_volume_test.go (anonymous volumes).
 // Observe persistence and isolation through exec, without volume inspect/list.
@@ -44,6 +74,39 @@ func TestAnonymousVolumesAreIsolated(t *testing.T) {
 			t.Fatalf("anonymous volumes overlap: %s contains %q", name, out)
 		}
 	}
+}
+
+// Regression: image entrypoints chown managed data before dropping privileges.
+func TestManagedVolumePreservesNonRootOwnershipAndPermissions(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux managed filesystem contract")
+	}
+	e := newEngine(t)
+	second := e.name + "-reader"
+	t.Cleanup(func() { e.cleanup(second) })
+	volume := e.name + "-owned"
+	e.want(0, "", "run", "-d", "--name", e.name, "-v", volume+":/data", e.image, "sleep", "300")
+	e.want(0, "", "exec", e.name, "sh", "-c", "chown 1234:2345 /data && chmod 2770 /data")
+	out, _ := e.want(0, "", "exec", "-u", "1234:2345", e.name, "sh", "-c", "printf retained > /data/value && chmod 640 /data/value && stat -c '%u:%g:%a' /data/value")
+	if out != "1234:2345:640\n" {
+		t.Fatalf("created metadata: %q", out)
+	}
+	e.want(0, "", "exec", "-u", "1235:2346", e.name, "sh", "-c", "if cat /data/value; then exit 1; fi")
+	e.want(0, "", "stop", "-t", "1", e.name)
+	e.want(0, "", "start", e.name)
+	out, _ = e.want(0, "", "exec", "-u", "1234:2345", e.name, "sh", "-c", "test $(stat -c %u /data/value) = 1234 && cat /data/value")
+	if out != "retained" {
+		t.Fatalf("restart lost data/identity: %q", out)
+	}
+	e.want(0, "", "run", "-d", "--name", second, "-v", volume+":/data:ro", e.image, "sleep", "300")
+	out, _ = e.want(0, "", "exec", "-u", "1234:2345", second, "cat", "/data/value")
+	if out != "retained" {
+		t.Fatalf("read-only peer data: %q", out)
+	}
+	e.want(0, "", "exec", second, "sh", "-c", "if chown 0:0 /data/value; then exit 1; fi; if touch /data/forbidden; then exit 2; fi")
+	e.want(0, "", "exec", e.name, "sh", "-c", "chmod 000 /data/value && printf root-access > /data/value && test $(stat -c %a /data/value) = 0")
+	e.want(0, "", "exec", "-u", "1234:2345", e.name, "sh", "-c", "if cat /data/value; then exit 1; fi")
+	e.want(0, "", "exec", e.name, "sh", "-c", "chmod 640 /data/value && ln /data/value /data/alias && chown 1234:2345 /data/alias && test $(stat -c %u /data/value) = 1234")
 }
 
 // Source: system/160-volumes.bats (shared files and read-only mounting).
@@ -286,6 +349,54 @@ func TestConcurrentStartSharesOneGeneration(t *testing.T) {
 		pending.Wait()
 	}
 	e.want(0, "", "exec", e.name, "sh", "-c", `for i in $(seq 1 80); do test "$(cat /count)" = 5 && exit 0; sleep .05; done; exit 1`)
+}
+
+// Regression: observation must never win a detached owner's lease admission.
+func TestConcurrentStartRemainsReliableDuringLogObservation(t *testing.T) {
+	e := newEngine(t)
+	e.want(0, "", "run", "-d", "--name", e.name, "--cpus", "1", "-m", "256m", e.image,
+		"sh", "-c", `n=$(cat /count 2>/dev/null || echo 0); echo $((n+1)) > /count; exec sleep 600`)
+	stop := make(chan struct{})
+	var observers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		observers.Add(1)
+		go func() {
+			defer observers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				code, _, stderr := e.call("", "logs", e.name)
+				if code != 0 || stderr != "" {
+					t.Errorf("log observation: exit=%d err=%q", code, stderr)
+					return
+				}
+			}
+		}()
+	}
+	defer func() { close(stop); observers.Wait() }()
+	for generation := 1; generation <= 16; generation++ {
+		e.want(0, "", "exec", e.name, "sh", "-c", fmt.Sprintf(`for i in $(seq 1 80); do test "$(cat /count)" = %d && exit 0; sleep .05; done; exit 1`, generation))
+		e.want(0, "", "stop", "-t", "0", e.name)
+		var pending sync.WaitGroup
+		barrier := make(chan struct{})
+		for i := 0; i < 4; i++ {
+			pending.Add(1)
+			go func() {
+				defer pending.Done()
+				<-barrier
+				code, out, stderr := e.call("", "start", e.name)
+				if code != 0 || out != e.name+"\n" || stderr != "" {
+					t.Errorf("observed start: exit=%d out=%q err=%q", code, out, stderr)
+				}
+			}()
+		}
+		close(barrier)
+		pending.Wait()
+	}
+	e.want(0, "", "exec", e.name, "sh", "-c", `for i in $(seq 1 80); do test "$(cat /count)" = 17 && exit 0; sleep .05; done; exit 1`)
 }
 
 // Source: e2e/rm_test.go and run_test.go (--rm), extended to cleanup races.

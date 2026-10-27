@@ -59,7 +59,7 @@ VM 的 lazy image 直接调用远程只读后端，无需中间宿主 FUSE 挂�
 普通本地 lower 和 VM staged workspace 继续经 virtio-fs 直接服务；host
 staged 仍通过宿主 FUSE 执行。不可变句柄、硬链接对象身份、元数据 generation
 和内容摘要由后端保留；共享镜像缓存不共享可写 upper 或 journal。
-镜像存储合同见[共享镜像缓存 v1](shared-image-cache-storage.md#filesystem-access)。
+镜像存储合同见[共享镜像缓存 V2](lazy-image-v2.md#filesystem-access)。
 
 直接后端建立私有元数据投影，以保留现有本地 inode/FD、路径检查和快照合同。
 投影是普通目录及稀疏占位文件，没有 FUSE 挂载；guest 属性来自镜像元数据，
@@ -132,6 +132,8 @@ freeze/reset 停止接收、排空在途请求、发布完成并 join worker；�
 upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件；没有块级 delta 或压缩格式。merged 是投影视图，不是一份额外完整副本。preimage 只存指纹，不存原文件内容；真正需要保留的目录原数据在 target 旁的 backup 中。
 
 ## 3. 关键数据和核心机制详细设计 {#detailed-design}
+
+普通文件通常按整文件 copy-up；安全的 `O_TRUNC` 情形可以跳过旧字节复制，不应将普通写入理解为块级增量。源码入口为 `pvisor-overlay-core/src/core.rs::copy_up_for_open`，应用流程入口为 `apply.rs::apply_overlay_selected`。
 
 ### 合成、copy-up 与 POSIX 节点 {#copy-up}
 

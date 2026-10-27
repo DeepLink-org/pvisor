@@ -11,7 +11,7 @@ Use Python 3.10 or newer, preferably in a dedicated virtual environment:
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
-python -m pip install pvisor
+python -m pip install pvisor-sandbox
 pvisor --version
 ```
 
@@ -66,9 +66,9 @@ Consult [Choose an executor](../guides/executors/index.md) when you need a diffe
 Run these commands in the Python environment where pVisor is installed:
 
 ```bash
-python -m pip install --upgrade pvisor
+python -m pip install --upgrade pvisor-sandbox
 # Uninstall when needed:
-python -m pip uninstall pvisor
+python -m pip uninstall pvisor-sandbox
 ```
 
 Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstalling leaves Job state and user caches in place.
@@ -80,6 +80,22 @@ Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstal
 To install without Python, download the native archive for your platform and `SHA256SUMS` from [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases). Verify and extract the archive, add its `bin` directory to `PATH`, and keep its files together. Replace the complete directory when upgrading.
 
 See the [release guide](../community/releasing.md#one-time-setup) for Homebrew tap publication requirements and configuration.
+
+Job startup requires the executable and its ancestor directories to be owned by
+you or root and not writable by other users; root-owned sticky directories such
+as `/tmp` are allowed. Homebrew may create its Cellar with group write permission.
+If startup reports `unsafe owner executable ancestor`, inspect the named directory.
+For a single-owner Homebrew installation whose Cellar is group-writable, remove
+write permission for group and other users before testing:
+
+```bash
+chmod go-w "$(brew --cellar)"
+brew test DeepLink-org/pvisor/pvisor
+```
+
+This changes that directory's permissions, without recursing into installed
+packages. For a shared Homebrew installation that needs group write access,
+install the wheel or native archive under your own protected directory instead.
 
 <a id="3-install-from-source-when-needed"></a>
 

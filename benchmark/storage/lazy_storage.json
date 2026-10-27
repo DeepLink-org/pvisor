@@ -1,0 +1,1 @@
+{"storage":"$ python3 @REPO@/benchmark/storage/lazy_benefits.py --phase storage --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"}

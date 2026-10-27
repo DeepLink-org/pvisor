@@ -1,10 +1,14 @@
 # 逻辑检查点与分叉
 
-在全部应用或丢弃暂存内容之前，可以从当前文件系统状态分叉出一个新 Job，让 Agent 换一种方式继续：
+工作区分叉保留当前文件提案，用新命令尝试另一种做法。先确认父 Job 是已停止、且启动策略可重建的 host Job，父子 stage 位于同一文件系统，并且尚未全部 apply/drop 清理暂存数据。VM/container 或带 Gateway 路由的 Job 不支持这条工作区分叉路径。
+
+满足这些条件后，可以分叉出一个新 Job，让 Agent 换一种方式继续：
 
 ```bash
 pvisor fork last -- codex
 ```
+
+`last` 只查找默认存储。父 Job 使用显式 stage 时，将它替换为该 stage 路径或 Job ID，选择规则见[Job 与存储](../concepts/jobs.md)。
 
 ## 行为
 
@@ -21,7 +25,7 @@ pvisor fork last -- codex
 | 首次修改时记录的冲突基线 | 外部服务状态、已发生的网络调用 |
 | 与源 Job 的来源关系 | 所有底层宿主文件的不可变副本 |
 
-因此 fork 是"从同一份文件改动重新开始"，不是进程级的快照恢复。快照内容同步落盘后才发布 manifest。
+子 Job 从这份文件改动启动新命令，原进程的内存不会继续。快照内容同步落盘后才发布 manifest。需要继续 VM 执行状态时，使用另一种[execution checkpoint](../reference/cli.md#full-vm-execution-checkpoints)，并检查对应 profile 的支持条件。
 
 ## 嵌入式 API
 

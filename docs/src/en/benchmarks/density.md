@@ -14,7 +14,7 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
-Count the tasks that pass every check within one fixed cgroup budget as valid completed tasks. That count is how much real work the system finishes; more of them under the same budget means higher effective capacity.
+Count tasks that pass every check within a fixed cgroup budget as valid completed tasks. This count represents the valid results delivered within that budget. More completed tasks under the same budget mean higher effective capacity.
 
 Compare native processes, pVisor stage, pVisor VM and Podman 5.8.7 on Linux/x86_64. Each batch has a fresh cgroup with a shared two-core quota, CPU 0/1 affinity, a 2 GiB memory limit and zero swap. The coordinator, payloads and helpers are inside the budget; Podman payload/conmon membership is checked. Each VM has 2 vCPU/256 MiB, still constrained by the common total budget.
 

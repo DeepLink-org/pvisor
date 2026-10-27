@@ -4,11 +4,11 @@
 
 判断 rollout executor，要看整次尝试：创建环境、模型与工具交替、验证、赋 reward 和重试。本机工具密集型尝试中，stage 的实测修复成本更低、已测活跃容量更高，代价是宿主进程边界；需要独立 guest 内核时选 VM。任务、模型和训练层保持现有实现，专用集成按未验证看待。
 
-在两核、2 GiB 共同预算下，stage 在 32 路完成 160/160 个任务，VM 在 32 路完成 138/160、在 16 路完成 80/80。固定修复任务 stage 为 0.64 s，VM 为 3.25 s。前缀准备每种格式 6.07–6.59 ms；冷启动的 lazy shell 读取 2.58 MB 内容，完整 OCI 镜像为 41.84 MB。这些都没有训练吞吐、成功率或 reward 的实测提升。
+在两核、2 GiB 共同预算下，stage 在 32 路完成 160/160 个任务，VM 在 32 路完成 138/160、在 16 路完成 80/80。固定修复任务 stage 为 0.64 s，VM 为 3.25 s。前缀准备每种格式 6.07–6.59 ms；冷客户端 shell 的总响应为 2.86 MiB，原生 Docker 完整拉取为 28.39 MiB。这些都没有训练吞吐、成功率或 reward 的实测提升。
 
 <!-- measurement-status:start -->
 
-这些数值与结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
+工具与训练相关数字保留原历史批次；镜像供给使用独立的当前 V2 复测，见[复测覆盖](index.md#measurement-coverage)。
 
 <!-- measurement-status:end -->
 
@@ -42,14 +42,14 @@
 | 固定修复到退出，2026-10-06 | Completion P50：staged 0.64 s、Docker 0.81 s、VM 3.25 s、QEMU microvm 1.40 s；各 60/60 有效 | 已准备工具计划；内核、文件系统和缓存不同，不能作纯 VMM 排名 |
 | 已准备 shell 启动 | Ready P50：staged 25.13 ms、VM 100.91 ms；各 N=60 | 首次输出不包含后续工具工作；与修复和 lazy 批次分开 |
 | 前缀准备，2026-10-06 | 七种格式各 60/60；六种的低簇中位数为 6.07–6.59 ms、高簇为 11.15–16.24 ms；Mini-SWE-Agent 未分簇 P50 为 6.75 ms | 不重新执行工具、不启动 Agent、不写工作区 |
-| Lazy 冷客户端 shell，2026-10-10 | Ready P50 186.1 ms；内容 2,580,417 字节（2.58 MB），Docker 完整 OCI 内容为 41,842,292 字节（41.84 MB）；各 N=30 | 服务在本机预备；交付格式不同，未测真实 WAN 或训练负载 |
+| Lazy 冷客户端 shell，2026-10-25 | 总响应 2.86 MiB，原生 Docker 28.39 MiB；各 N=30 | 当前 V2、同 digest Ubuntu、本机服务预备；含元数据、不含 TLS／网络 headers；不是训练负载 |
 | 工作区边界，2026-10-06 | Staged/safe/VM 保留写入并阻止已测视图外访问，各 3/3；已测 OCI/Podman 可写挂载直接写宿主 | 路径/socket 夹具，不是全面逃逸审计或远端副作用回滚 |
 
 [修复对照](agent-tasks.md#reference-env)报告 staged 减 Docker 的 completion 中位数差为 −175.84 ms（95% CI −178.85 至 −174.55 ms），VM 减 microvm 为 +1849.00 ms（1834.43 至 1855.78 ms）。Stage 的优势伴随宿主进程边界；VM 提供 guest 内核，但该工具计划成本更高，完全成功的活跃批次容量更低。两者都不能证明模型质量或普遍 rollout 速度。
 
 真实客户端兼容性是独立批次：[VM 中 Codex](agent-tasks.md#cli-compatibility)完成本地受控响应工具闭环，P50 9.01 s、N=30。Claude Code VM 在预检中达到 90 s 初始化期限，有效样本 N=0，没有可用耗时估计；固定工具计划不能证明所有 Agent 均兼容。
 
-Lazy 冷客户端 Ready 排除镜像服务首次准备；镜像已缓存时，Docker 通常更快。内容字节不包含完整网络流量，也不能预测大型仓库任务的传输量。[VM 内存选项](vm-memory/index.md)可辅助预算等待模型的阶段，但 offload 需要恢复，压缩收益取决于内容；N=1 静态读数与快照大小不能证明停驻或活跃 rollout 容量。
+Lazy 冷客户端 Ready 排除镜像服务首次准备；镜像已缓存或扫描完整 Python 库树时，原生 Docker 更快。内容字节不包含完整网络流量，也不能预测大型仓库任务的传输量。[VM 内存选项](vm-memory/index.md)可辅助预算等待模型的阶段，但 offload 需要恢复，压缩收益取决于内容；N=1 静态读数与快照大小不能证明停驻或活跃 rollout 容量。
 
 原生 Agent resume 负责客户端会话/上下文。Prepare-only 提供经过校验的历史前缀，实际文件保持不变，任务环境需另行恢复。VM checkpoint/fork 负责捕获的执行状态及关联资源，受生命周期与 backing 前提约束。没有同条件原生 resume 速度排名、完整远端连接恢复或远端 API 副作用回滚的证据；工具重新执行需单独校验副作用与正确性。
 

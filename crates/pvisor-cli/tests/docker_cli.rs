@@ -1,9 +1,9 @@
 //! Docker-profile command routing and opt-in native VM acceptance.
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    time::Duration,
 };
 
 fn command(home: &Path) -> Command {
@@ -69,6 +69,26 @@ fn docker_run_rejects_a_foreign_platform_before_pulling() {
     assert!(stderr.contains("cross-architecture emulation"), "{stderr}");
     assert!(!stderr.contains("Pulling"), "{stderr}");
     assert_eq!(fs::read_dir(home.join("instances")).unwrap().count(), 0);
+}
+
+#[test]
+fn stop_infinite_timeout_reaches_container_lookup_and_invalid_negative_is_inert() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    let invalid = command(&home)
+        .args(["stop", "-t", "-2", "missing"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(!home.exists(), "invalid timeout changed storage");
+    for arguments in [
+        vec!["stop", "-t", "-1", "missing"],
+        vec!["stop", "--timeout=-1", "missing"],
+    ] {
+        let output = command(&home).args(arguments).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("No such container"));
+    }
 }
 
 #[test]
@@ -145,6 +165,17 @@ impl Native {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pvisor")));
         fs::copy(&source_binary, &binary).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let firmware = source_binary.parent().unwrap().join("libkrunfw.so.5");
+            if firmware.is_file() {
+                std::os::unix::fs::symlink(
+                    firmware.canonicalize().unwrap(),
+                    temporary.path().join("libkrunfw.so.5"),
+                )
+                .unwrap();
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             let firmware = source_binary
@@ -176,37 +207,33 @@ impl Native {
                 .unwrap()
                 .pull(reference.to_str().unwrap())
                 .unwrap();
-            assert!(
-                image.cache.is_some(),
-                "native image acceptance must use the local pool"
-            );
-            assert!(image.rootfs.as_os_str().is_empty());
+            assert!(image.cache.handle.starts_with("pvisor-v2:"));
             image
         } else {
             let rootfs = PathBuf::from(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect(
                 "set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep",
             ));
-            pvisor::docker::Image {
-                reference: "fixture:latest".into(),
-                id: format!("sha256:{}", "1".repeat(64)),
-                digest: format!("sha256:{}", "2".repeat(64)),
-                platform: if cfg!(target_arch = "aarch64") {
-                    "linux/arm64"
-                } else {
-                    "linux/amd64"
-                }
-                .into(),
-                rootfs: rootfs.canonicalize().unwrap(),
-                cache: None,
-                env: BTreeMap::new(),
-                entrypoint: Vec::new(),
-                cmd: Vec::new(),
-                cwd: "/".into(),
-                user: String::new(),
-                stop_signal: 15,
-                volumes: Vec::new(),
-                created_ms: 0,
-            }
+            let dockerfile = temporary.path().join("Dockerfile");
+            fs::write(&dockerfile, "FROM scratch\nCOPY . /\n").unwrap();
+            pvisor::docker::build::build(
+                &pvisor::docker::Store::open(home.clone()).unwrap(),
+                &pvisor::docker::build::BuildOptions {
+                    context: rootfs,
+                    file: dockerfile,
+                    tags: vec!["fixture:latest".into()],
+                    build_args: std::collections::BTreeMap::new(),
+                    target: None,
+                    platform: None,
+                    pull: false,
+                    cpus: 1,
+                    memory_mib: 32,
+                    network: false,
+                    timeout: Duration::from_secs(30),
+                    quiet: true,
+                    output: None,
+                },
+            )
+            .unwrap()
         };
         image.reference = "fixture:latest".into();
         // This is an isolated catalog fixture, never a real user's image store.
@@ -285,6 +312,75 @@ impl Drop for Native {
             .args(["rm", "-f", "native-test"])
             .output();
     }
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_IMAGE or PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_stop_infinite_timeout_waits_past_default_grace_without_escalating() {
+    use std::time::{Duration, Instant};
+    let native = Native::new();
+    native.call(&["run", "-d", "--name", "native-test", "--cpus", "1", "-m", "256m", "--network", "none", "fixture",
+        "sh", "-c", "trap 'touch /stop-requested; sleep 11; echo graceful; exit 0' TERM; touch /stop-ready; while :; do sleep 1; done"], None, 0);
+    native.call(
+        &[
+            "exec",
+            "native-test",
+            "sh",
+            "-c",
+            "while test ! -f /stop-ready; do sleep 0.01; done",
+        ],
+        None,
+        0,
+    );
+    let invalid = native.call(
+        &["stop", "--timeout", "9223372036854775807", "native-test"],
+        None,
+        1,
+    );
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr)
+            .contains("stop timeout exceeds monotonic clock range")
+    );
+    native.call(
+        &[
+            "exec",
+            "native-test",
+            "sh",
+            "-c",
+            "test ! -e /stop-requested",
+        ],
+        None,
+        0,
+    );
+    let started = Instant::now();
+    let mut child = Command::new(&native.binary)
+        .env("PVISOR_DOCKER_HOME", &native.home)
+        .args(["stop", "-t", "-1", "native-test"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(25) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("infinite stop did not finish after the guest's graceful exit");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"native-test\n");
+    assert!(started.elapsed() >= Duration::from_secs(10));
+    assert_eq!(
+        native.call(&["logs", "native-test"], None, 0).stdout,
+        b"graceful\n"
+    );
 }
 
 #[test]
@@ -521,8 +617,8 @@ fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
             .unwrap(),
         b"hello"
     );
-    assert!(image.rootfs.as_os_str().is_empty());
-    assert!(image.cache.is_some());
+    assert!(image.cache.handle.starts_with("pvisor-v2:"));
+    assert!(serde_json::to_value(image).unwrap().get("rootfs").is_none());
     assert!(archive.is_file());
     fs::write(
         context.join("Dockerfile"),

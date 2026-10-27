@@ -1,8 +1,42 @@
 # Replay recorded trajectories
 
-SandboxReplay replays an agent trajectory inside a fresh sandbox you prepared: it reruns the tool calls before a recovery boundary, rebuilds the agent's native context from the observations that new sandbox produces, and then continues running from the boundary. It creates a derived Run in the [Run and Attempt model](../design/execution-model.md).
+To reproduce a failure or retry from a historical step, prepare a fresh sandbox and the agent's native trajectory, then run `pvisor replay`. By default it reruns tool calls before the selected boundary, rebuilds context from the new results and lets the agent continue. Tool calls may repeat file or remote side effects; set sandbox permissions for the task before running.
 
-## 1. Concepts
+The agent saves its native trajectory; [Gateway capture](capture.md) produces a model-traffic Event Journal. SandboxReplay processes sessions through native-trajectory adapters and creates a derived Run in the [Run and Attempt model](../design/execution-model.md).
+
+<span id="3-install-and-run-location"></span>
+
+## 1. Install and run location {#installation}
+
+`pvisor replay` usually runs directly inside the new sandbox you prepared, so pVisor must be installed in that sandbox or mounted read-only on the sandbox's `PATH`. When the sandbox has Python 3.10 or newer, install the released version directly:
+
+~~~bash
+python -m pip install pvisor-sandbox
+
+command -v pvisor
+pvisor --version
+pvisor replay --help
+~~~
+
+If you build outside the sandbox and copy the binary in, the build machine and the target sandbox must share a compatible operating system, CPU architecture, and dynamic runtime. The agent runtime must also match the pinned version of the replay profile you select; adapter mechanisms and pinned versions are documented in [Replay design](../design/replay.md).
+
+<span id="4-minimal-usage"></span>
+
+## 2. Minimal usage {#usage}
+
+~~~bash
+pvisor replay \
+  --agent claude-code \
+  --trajectory /input/session.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/claude
+~~~
+
+Execution modes (default continuation, `--replay-only`, `--prepare-only`), step budgets, the boundary prompt, the `sandbox-playback.result/v3` result protocol, and per-agent CLI/TOML forms are governed by the [`pvisor replay` command reference](../reference/cli.md#replay-an-agent-trajectory).
+
+<span id="1-concepts"></span>
+
+## 3. Concepts {#concepts}
 
 An agent trajectory can be written as:
 
@@ -18,7 +52,9 @@ Task → A1 → O1 → ... → AN → ON → A(N+1) → ...
 
 When an assistant response contains several parallel tool calls, they form one action batch, and the recovery boundary cannot fall inside a batch.
 
-## 2. Replay semantics
+<span id="2-replay-semantics"></span>
+
+## 4. Replay semantics {#replay-semantics}
 
 SandboxReplay does two things in order:
 
@@ -44,32 +80,6 @@ Native system prompt + tool definitions + original task
 ~~~
 
 The prompt is injected once after `O′N` and before the first live model inference, and it does not replace the original task. `prepare-only` and `replay-only` send no live model request, so they never inject it. Without configuration, the original "the request ends exactly at `O′N`" semantics still hold.
-
-## 3. Install and run location
-
-`pvisor replay` usually runs directly inside the new sandbox you prepared, so pVisor must be installed in that sandbox or mounted read-only on the sandbox's `PATH`. When the sandbox has Python 3.10 or newer, install the released version directly:
-
-~~~bash
-python -m pip install pvisor
-
-command -v pvisor
-pvisor --version
-pvisor replay --help
-~~~
-
-If you build outside the sandbox and copy the binary in, the build machine and the target sandbox must share a compatible operating system, CPU architecture, and dynamic runtime. The agent runtime must also match the pinned version of the replay profile you select; adapter mechanisms and pinned versions are documented in [Replay design](../design/replay.md).
-
-## 4. Minimal usage
-
-~~~bash
-pvisor replay \
-  --agent claude-code \
-  --trajectory /input/session.jsonl \
-  --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
-~~~
-
-Execution modes (default continuation, `--replay-only`, `--prepare-only`), step budgets, the boundary prompt, the `sandbox-playback.result/v3` result protocol, and per-agent CLI/TOML forms are governed by the [`pvisor replay` command reference](../reference/cli.md#replay-an-agent-trajectory).
 
 ## Experiments and development material
 

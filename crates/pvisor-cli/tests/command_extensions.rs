@@ -2,6 +2,73 @@
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn owner_requires_non_writable_installation_ancestors() {
+    let temporary = tempfile::tempdir().unwrap();
+    let cellar = temporary.path().join("Cellar");
+    let installation = cellar.join("pvisor/0.3.0/libexec");
+    fs::create_dir_all(&installation).unwrap();
+    let kernel = installation.join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    let jobs = temporary.path().join("jobs");
+    let run = || {
+        Command::new(&kernel)
+            .args(["spawn", "--executor", "host", "--", "/bin/echo", "hello"])
+            .current_dir(temporary.path())
+            .env("PVISOR_RUN_HOME", &jobs)
+            .output()
+            .unwrap()
+    };
+    for mode in [0o775, 0o777] {
+        fs::set_permissions(&cellar, fs::Permissions::from_mode(mode)).unwrap();
+        let output = run();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unsafe owner executable ancestor")
+        );
+        assert!(!jobs.exists(), "untrusted installation admitted a Job");
+    }
+    fs::set_permissions(&cellar, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"hello\n");
+}
+
+#[test]
+fn linked_frontend_dispatches_companions_from_the_real_installation() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let installation = temporary.path().join("libexec");
+    let links = temporary.path().join("bin");
+    fs::create_dir(&installation).unwrap();
+    fs::create_dir(&links).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), installation.join("pvisor")).unwrap();
+    let kernel = links.join("pvisor");
+    symlink(installation.join("pvisor"), &kernel).unwrap();
+    for name in ["daemon", "replay", "tui"] {
+        let filename = format!("pvisor-{name}");
+        let companion = installation.join(&filename);
+        fs::write(&companion, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&companion, links.join(filename)).unwrap();
+        for args in [vec![name, "--help"], vec!["help", name]] {
+            let output = Command::new(&kernel).args(&args).output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(42),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"--help\n");
+        }
+    }
+}
+
+#[test]
 fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
     let temporary = tempfile::tempdir().unwrap();
     for (name, expected, absent) in [
@@ -88,6 +155,194 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
 }
 
 #[test]
+fn daemon_companion_is_discovered_inertly_and_forwards_management_commands() {
+    let temporary = tempfile::tempdir().unwrap();
+    let kernel = temporary.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    let marker = temporary.path().join("executed");
+    let companion = temporary.path().join("pvisor-daemon");
+    fs::write(
+        &companion,
+        format!(
+            "#!/bin/sh\n: > '{}'\nprintf '%s\\n' \"$@\"\nexit 42\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
+    let help = Command::new(&kernel).arg("--help").output().unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("  daemon "));
+    assert!(!marker.exists());
+    for (args, expected) in [
+        (
+            vec![
+                "daemon",
+                "start",
+                "--memory-pool",
+                "--state",
+                "space argument",
+            ],
+            "start\n--memory-pool\n--state\nspace argument\n",
+        ),
+        (vec!["help", "daemon"], "--help\n"),
+        (vec!["daemon", "status"], "status\n"),
+        (vec!["daemon", "stop"], "stop\n"),
+    ] {
+        let output = Command::new(&kernel).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(42));
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+    assert!(marker.exists());
+}
+
+#[test]
+fn automatic_pool_selection_reaches_daemon_for_jobs_and_containers_and_propagates_errors() {
+    let temporary = tempfile::tempdir().unwrap();
+    let kernel = temporary.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
+    let marker = temporary.path().join("executed");
+    let parent_marker = temporary.path().join("parent");
+    let companion = temporary.path().join("pvisor-daemon");
+    fs::write(&companion, format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"$PPID\" > '{}'\nprintf 'pool-unavailable-canary\\n' >&2\nexit 7\n", marker.display(), parent_marker.display()
+    )).unwrap();
+    fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
+    for args in [
+        vec!["run", "--memory-pool", "auto", "unused-image"],
+        vec!["run", "-M", "unused-image"],
+        vec!["spawn", "-M", "--rootfs", "/", "--", "/bin/true"],
+        vec![
+            "spawn",
+            "--vm-memory-pool",
+            "auto",
+            "--rootfs",
+            "/",
+            "--",
+            "/bin/true",
+        ],
+    ] {
+        let child = Command::new(&kernel)
+            .args(args)
+            .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
+            .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let frontend_pid = child.id();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("pool-unavailable-canary"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&marker).unwrap(), b"resolve-memory-pool\n");
+        assert_eq!(
+            fs::read_to_string(&parent_marker).unwrap(),
+            frontend_pid.to_string(),
+            "user-wide services must start outside the Job owner's cleanup tree"
+        );
+        fs::remove_file(&marker).unwrap();
+    }
+    // Explicit sockets preserve the old fail-closed path and do not bootstrap.
+    let socket = temporary.path().join("missing.sock");
+    let output = Command::new(&kernel)
+        .args(["run", "--memory-pool"])
+        .arg(socket)
+        .arg("unused-image")
+        .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!marker.exists());
+    let output = Command::new(&kernel)
+        .args(["images", "-q"])
+        .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn job_pool_startup_remains_cancellable_while_the_companion_waits() {
+    use std::time::{Duration, Instant};
+    let temporary = tempfile::tempdir().unwrap();
+    let binary = temporary.path().join("pvisor");
+    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &binary).unwrap();
+    let ready = temporary.path().join("ready");
+    let release = temporary.path().join("release");
+    let done = temporary.path().join("done");
+    struct Release(std::path::PathBuf, std::path::PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, b"");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self.1.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    let _release = Release(release.clone(), done.clone());
+    let companion = temporary.path().join("pvisor-daemon");
+    fs::write(
+        &companion,
+        format!(
+            "#!/bin/sh\n: > '{}'\nn=0\nwhile test ! -f '{}' && test \"$n\" -lt 500; do sleep 0.02; n=$((n+1)); done\n: > '{}'\nexit 7\n",
+            ready.display(),
+            release.display(),
+            done.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(binary)
+        .args(["spawn", "-M", "--rootfs", "/", "--", "/bin/true"])
+        .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !ready.exists() {
+        let _ = child.kill();
+        let output = child.wait_with_output().unwrap();
+        panic!(
+            "resolver did not start: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // The child is still ours and has not been reaped, so its PID cannot recycle.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut finished = false;
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !finished {
+        let _ = child.kill();
+    }
+    fs::write(release, b"").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(finished, "cancellation waited for companion startup");
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PATH", "")
@@ -152,7 +407,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
             assert!(!section.contains("  tui "), "{section}");
         }
     }
-    for name in ["service", "daemon", "memory-pool"] {
+    for name in ["service", "memory-pool"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     for heading in [
@@ -218,7 +473,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     let marker = temporary.path().join("executed");
-    for name in ["service", "daemon", "memory-pool", "cluster", "worker"] {
+    for name in ["service", "memory-pool", "cluster", "worker"] {
         let companion = temporary.path().join(format!("pvisor-{name}"));
         fs::write(
             &companion,
@@ -240,7 +495,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
         assert!(output.status.success());
         let help = String::from_utf8_lossy(&output.stdout);
         assert!(!help.contains("Extensions:"), "{help}");
-        for name in ["service", "daemon", "memory-pool", "cluster", "worker"] {
+        for name in ["service", "memory-pool", "cluster", "worker"] {
             assert!(!help.contains(&format!("\n  {name} ")), "{help}");
         }
     }
@@ -285,7 +540,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
             assert!(output.stdout.is_empty(), "{args:?}");
         }
     }
-    for name in ["daemon", "memory-pool"] {
+    for name in ["memory-pool"] {
         for args in [vec!["help", name], vec![name, "--help"]] {
             let output = Command::new(&kernel)
                 .args(&args)
@@ -397,7 +652,7 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
     let untrusted = tempfile::tempdir().unwrap();
     let kernel = installation.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
-    for name in ["tui", "probe"] {
+    for name in ["daemon", "tui", "probe"] {
         let path = untrusted.path().join(format!("pvisor-{name}"));
         fs::write(&path, "#!/bin/sh\nexit 42\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -408,7 +663,7 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
             .unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        if name == "tui" {
+        if name == "tui" || name == "daemon" {
             assert!(error.contains("companion is not installed"), "{error}");
         } else {
             assert!(!error.contains("was removed"), "{error}");

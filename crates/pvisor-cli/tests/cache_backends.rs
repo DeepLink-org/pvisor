@@ -5,7 +5,6 @@ use std::{
     path::Path,
     process::{Command, Output},
     sync::atomic::Ordering,
-    time::{SystemTime, UNIX_EPOCH},
 };
 #[path = "common/s3.rs"]
 mod s3;
@@ -23,27 +22,59 @@ fn architecture() -> &'static str {
         "amd64"
     }
 }
-fn source_fixture(root: &Path) -> String {
-    source_fixture_for_architecture(root, architecture())
+struct Registry {
+    child: std::process::Child,
+    reference: String,
+    digest: String,
 }
-fn source_fixture_for_architecture(root: &Path, target: &str) -> String {
-    let digest = format!("sha256:{}", "c".repeat(64));
-    let image = root.join("rootfs-v3/sha256").join(&digest[7..]);
-    fs::create_dir_all(&image).unwrap();
-    fs::write(image.join("large"), vec![42u8; 2 * 1024 * 1024 + 13]).unwrap();
-    for n in 0..100 {
-        fs::write(image.join(format!("small-{n:03}")), format!("value-{n}")).unwrap();
+impl Registry {
+    fn start(root: &Path, target: &str, guest: Option<&Path>) -> Self {
+        use std::io::{BufRead, BufReader};
+        let python = std::env::var_os("UV_PYTHON").unwrap_or_else(|| "python3".into());
+        let mut command = Command::new(python);
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/registry.py"))
+            .arg(root.parent().unwrap().join("registry"))
+            .arg(target)
+            .stdout(std::process::Stdio::piped());
+        if let Some(guest) = guest {
+            command.arg(guest);
+        }
+        let mut registry = Self {
+            child: command.spawn().unwrap(),
+            reference: String::new(),
+            digest: String::new(),
+        };
+        let mut line = String::new();
+        BufReader::new(registry.child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let ready: serde_json::Value = serde_json::from_str(&line).expect("registry readiness");
+        registry.reference = ready["reference"].as_str().unwrap().into();
+        registry.digest = ready["digest"].as_str().unwrap().into();
+        registry
     }
-    std::os::unix::fs::symlink("large", image.join("alias")).unwrap();
-    let metadata = root.join("metadata/prepared-v1");
-    fs::create_dir_all(&metadata).unwrap();
-    let key =
-        serde_json::to_vec(&["registry-1.docker.io", "library/example", "test", target]).unwrap();
-    fs::write(metadata.join(format!("{}.json", digest_bytes(&key))), serde_json::to_vec(&serde_json::json!({
-        "checked_at": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-        "prepared": {"digest": digest, "env": {"EXAMPLE":"value"}, "entrypoint":["/bin/sh"], "cmd":["-c"]}
-    })).unwrap()).unwrap();
-    digest
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+impl Drop for Registry {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+fn source_fixture(root: &Path) -> Registry {
+    Registry::start(root, architecture(), None)
+}
+fn source_fixture_for_architecture(root: &Path, target: &str) -> Registry {
+    Registry::start(root, target, None)
+}
+fn clean_imports(root: &Path) {
+    for name in ["blobs", "rootfs-v3", "metadata"] {
+        assert!(!root.join(name).exists(), "retained raw {name}");
+    }
+    assert_eq!(fs::read_dir(root.join("staging")).unwrap().count(), 0);
 }
 fn digest_bytes(bytes: &[u8]) -> String {
     digest(bytes)
@@ -66,6 +97,10 @@ fn cli(root: &Path, backend: &str, location: &str, s3: Option<&MockS3>, args: &[
             .env("AWS_ENDPOINT", &s3.endpoint)
             .env("AWS_ALLOW_HTTP", "true");
     }
+    let ca = root.join("registry/ca.pem");
+    if ca.exists() {
+        command.env("SSL_CERT_FILE", ca);
+    }
     command.output().unwrap()
 }
 fn successful(output: Output) -> Vec<u8> {
@@ -81,7 +116,8 @@ fn successful(output: Output) -> Vec<u8> {
 fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_daemon() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
-    let digest = source_fixture(&source);
+    let mut registry = source_fixture(&source);
+    let digest = registry.digest.clone();
     let s3 = MockS3::start();
     let prepared = successful(cli(
         tmp.path(),
@@ -92,21 +128,20 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
             "--image-store",
             source.to_str().unwrap(),
             "prepare",
-            "example:test",
+            &registry.reference,
         ],
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
     let objects = s3.objects.lock().unwrap();
-    let blobs = objects
-        .keys()
-        .filter(|key| key.contains("/data/sha256/"))
-        .count();
+    let blobs = objects.keys().filter(|key| key.contains("/data/")).count();
     drop(objects);
     assert!(
-        blobs == 102,
-        "100 independent small files plus two distinct chunks of the large file"
+        blobs == 3,
+        "one small-file pack plus two distinct chunks of the large file"
     );
+    clean_imports(&source);
+    registry.stop();
     fs::remove_dir_all(&source).unwrap();
     s3.read_only.store(true, Ordering::Relaxed);
     let before_puts = s3.puts.load(Ordering::Relaxed);
@@ -115,7 +150,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
         "s3",
         "s3://cache-bucket/team",
         Some(&s3),
-        &["--read-only", "prepare", "example:test"],
+        &["--read-only", "prepare", &registry.reference],
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     assert_eq!(prepared["digest"], digest);
@@ -187,7 +222,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
             "--image-store",
             blocked_staging.to_str().unwrap(),
             "prepare",
-            "example:test",
+            &registry.reference,
         ],
     );
     assert!(!denied.status.success());
@@ -205,7 +240,8 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     } else {
         "amd64"
     };
-    let image_digest = source_fixture_for_architecture(&source, target);
+    let mut registry = source_fixture_for_architecture(&source, target);
+    let image_digest = registry.digest.clone();
     let s3 = MockS3::start();
     let publish = || {
         let output = cli(
@@ -215,7 +251,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
             Some(&s3),
             &[
                 "publish",
-                "example:test",
+                &registry.reference,
                 "--architecture",
                 target,
                 "--image-store",
@@ -259,7 +295,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
     drop(restored);
     assert!(
         s3.gets.load(Ordering::Relaxed) > 0,
-        "v1 CAS and immutable reuse verification require GetObject"
+        "V2 CAS and immutable reuse verification require GetObject"
     );
     let head_key = original
         .keys()
@@ -269,6 +305,27 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
         serde_json::from_slice(&s3.objects.lock().unwrap()[head_key]).unwrap();
     assert_eq!(head["generation"], 2);
     assert_eq!(first["image_handle"], second["image_handle"]);
+    clean_imports(&source);
+    let old_head = s3.objects.lock().unwrap()[head_key].clone();
+    s3.read_only.store(true, Ordering::Relaxed);
+    let failed = cli(
+        tmp.path(),
+        "s3",
+        "s3://cache-bucket/team",
+        Some(&s3),
+        &[
+            "--image-store",
+            source.to_str().unwrap(),
+            "publish",
+            &registry.reference,
+            "--architecture",
+            target,
+        ],
+    );
+    assert!(!failed.status.success(), "injected upload refusal");
+    clean_imports(&source);
+    assert_eq!(s3.objects.lock().unwrap()[head_key], old_head);
+    registry.stop();
     fs::remove_dir_all(&source).unwrap();
     s3.deny_reads.store(false, Ordering::Relaxed);
     s3.read_only.store(true, Ordering::Relaxed);
@@ -300,7 +357,7 @@ fn explicit_s3_publisher_rebuilds_missing_objects_and_conditionally_updates_its_
             "--image-store",
             staging.to_str().unwrap(),
             "publish",
-            "example:test",
+            &registry.reference,
         ],
     );
     assert!(!rejected.status.success());
@@ -336,7 +393,7 @@ fn publisher_rejects_server_backend_before_connecting() {
 fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
-    source_fixture(&source);
+    let mut registry = source_fixture(&source);
     let shared = tmp.path().join("shared");
     let prepared = successful(cli(
         tmp.path(),
@@ -347,11 +404,64 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
             "--image-store",
             source.to_str().unwrap(),
             "publish",
-            "example:test",
+            &registry.reference,
         ],
     ));
     let prepared: serde_json::Value = serde_json::from_slice(&prepared).unwrap();
     let handle = prepared["image_handle"].as_str().unwrap();
+    clean_imports(&source);
+    // Fail after the config and manifest have been downloaded, so cleanup must
+    // remove a partially populated import rather than just an empty directory.
+    fs::write(tmp.path().join("registry/fail"), b"layer").unwrap();
+    for operation in ["publish", "prepare"] {
+        let mut args = vec![
+            "--image-store",
+            source.to_str().unwrap(),
+            operation,
+            &registry.reference,
+        ];
+        if operation == "prepare" {
+            args.push("--refresh");
+        }
+        let failed = cli(
+            tmp.path(),
+            "filesystem",
+            shared.to_str().unwrap(),
+            None,
+            &args,
+        );
+        assert!(!failed.status.success(), "injected registry failure");
+        clean_imports(&source);
+        let previous = successful(cli(
+            tmp.path(),
+            "filesystem",
+            shared.to_str().unwrap(),
+            None,
+            &["--read-only", "prepare", &registry.reference],
+        ));
+        let previous: serde_json::Value = serde_json::from_slice(&previous).unwrap();
+        assert_eq!(
+            previous["image_handle"], handle,
+            "failed import cannot replace HEAD"
+        );
+    }
+    fs::write(tmp.path().join("registry/ca.pem"), b"invalid CA bundle").unwrap();
+    let failed = cli(
+        tmp.path(),
+        "filesystem",
+        shared.to_str().unwrap(),
+        None,
+        &[
+            "--image-store",
+            source.to_str().unwrap(),
+            "publish",
+            &registry.reference,
+        ],
+    );
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("SSL_CERT_FILE"));
+    clean_imports(&source);
+    registry.stop();
     fs::remove_dir_all(source).unwrap();
     let contents = successful(cli(
         tmp.path(),
@@ -386,7 +496,7 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
         "filesystem",
         absent.to_str().unwrap(),
         None,
-        &["--read-only", "prepare", "example:test"],
+        &["--read-only", "prepare", &registry.reference],
     );
     assert!(!output.status.success());
     assert!(
@@ -406,8 +516,29 @@ fn vm_reads_daemonless_filesystem_and_s3_images_without_projecting_storage_crede
         &guest_source,
         r#"
 fn main() {
-    let data = std::fs::read("/large").unwrap();
-    assert_eq!(data, vec![42u8; 2 * 1024 * 1024 + 13]);
+    let data = vec![42u8; 2 * 1024 * 1024 + 13];
+    // Exercise guest page faults through both packed and multi-chunk lowers,
+    // retaining mappings after closing their file descriptors.
+    unsafe extern "C" {
+        fn mmap(address: *mut std::ffi::c_void, length: usize, protection: i32,
+                flags: i32, fd: i32, offset: i64) -> *mut std::ffi::c_void;
+        fn munmap(address: *mut std::ffi::c_void, length: usize) -> i32;
+    }
+    use std::os::fd::AsRawFd;
+    for (path, expected) in [("/large", data), ("/small-099", b"value-99".to_vec())] {
+        let file = std::fs::File::open(path).unwrap();
+        unsafe {
+            let address = mmap(std::ptr::null_mut(), expected.len(), 1, 2, file.as_raw_fd(), 0);
+            assert_ne!(address as isize, -1);
+            drop(file);
+            assert_eq!(std::slice::from_raw_parts(address.cast::<u8>(), expected.len()), expected);
+            assert_eq!(munmap(address, expected.len()), 0);
+        }
+    }
+    assert_eq!(std::fs::read("/large").unwrap(), vec![42u8; 2 * 1024 * 1024 + 13]);
+    for n in 0..100 {
+        assert_eq!(std::fs::read(format!("/small-{n:03}")).unwrap(), format!("value-{n}").as_bytes());
+    }
     assert_eq!(std::env::var("EXAMPLE").unwrap(), "value");
     for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
         "PVISOR_CACHE_BACKEND", "PVISOR_CACHE_LOCATION", "PVISOR_CACHE_READ_ONLY"] {
@@ -441,15 +572,7 @@ fn main() {
     for backend in ["filesystem", "s3"] {
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("source");
-        let digest = source_fixture(&source);
-        fs::copy(
-            &guest,
-            source
-                .join("rootfs-v3/sha256")
-                .join(&digest[7..])
-                .join("guest"),
-        )
-        .unwrap();
+        let mut registry = Registry::start(&source, architecture(), Some(&guest));
         let s3 = MockS3::start();
         let shared = tmp.path().join("shared");
         let location = if backend == "s3" {
@@ -466,9 +589,11 @@ fn main() {
                 "--image-store",
                 source.to_str().unwrap(),
                 "prepare",
-                "example:test",
+                &registry.reference,
             ],
         ));
+        clean_imports(&source);
+        registry.stop();
         fs::remove_dir_all(source).unwrap();
         s3.read_only.store(true, Ordering::Relaxed);
         let config = tmp.path().join("vm.toml");
@@ -506,7 +631,7 @@ fn main() {
                 "--gateway-mode",
                 "off",
                 "--rootfs",
-                "image=example:test",
+                &format!("image={}", registry.reference),
                 "--memory",
                 "128MiB",
                 "--timeout",
@@ -542,11 +667,8 @@ fn main() {
             "{bundle}"
         );
         assert_eq!(bundle["run"]["exit_code"], 0);
-        assert_eq!(
-            fs::read_dir(tmp.path().join("reader-staging/rootfs-v3/sha256"))
-                .unwrap()
-                .count(),
-            0,
+        assert!(
+            !tmp.path().join("reader-staging").exists(),
             "reader must not extract a local OCI root"
         );
     }
@@ -556,7 +678,7 @@ fn main() {
 fn a_lost_head_acknowledgement_is_reconciled_after_sdk_conditional_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
-    source_fixture(&source);
+    let registry = source_fixture(&source);
     let s3 = MockS3::start();
     let mut previous = None;
     for generation in 1..=2 {
@@ -568,7 +690,7 @@ fn a_lost_head_acknowledgement_is_reconciled_after_sdk_conditional_retry() {
             Some(&s3),
             &[
                 "publish",
-                "example:test",
+                &registry.reference,
                 "--image-store",
                 source.to_str().unwrap(),
             ],

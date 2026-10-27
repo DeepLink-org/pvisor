@@ -4,7 +4,6 @@ use crate::image::{
     cache,
     oci::{ImageStore, PreparedImage},
 };
-use pvisor_journal::api::{DurableFiles, Persistence};
 
 impl Store {
     pub(super) fn image_pull_lock(
@@ -12,46 +11,31 @@ impl Store {
         reference: &str,
         architecture: &str,
     ) -> anyhow::Result<File> {
-        let directory = self.root.join("images/pull-locks");
-        private_directory(&directory)?;
-        let (reference, _) = crate::image::oci::cache_reference(reference)?;
-        use sha2::{Digest, Sha256};
-        let key = crate::util::encode_hex(&Sha256::digest(serde_json::to_vec(&(
-            reference,
-            architecture,
-        ))?));
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(key))?;
-        file.lock_exclusive()?;
-        Ok(file)
+        self.images.pull_lock(reference, architecture)
     }
     /// Open a pinned image without registry access. Pool metadata/content errors
     /// fail rather than falling back to an unverified directory or mutable tag.
     /// Keep the returned owner until OverlayCore and VM consumers have stopped.
     /// Foreign images may be inspected; VM admission still requires native CPU.
     pub fn open_image(&self, image: &Image) -> anyhow::Result<ImageRoot> {
-        let Some(cached) = &image.cache else {
-            ensure!(image.rootfs.is_dir(), "legacy image rootfs is missing");
-            return Ok(ImageRoot {
-                root: image.rootfs.clone(),
-                _owner: None,
-            });
-        };
-        let scratch = self.root.join("images/projections");
+        self.open_cached(&image.cache, &image.digest, &image.platform)
+    }
+
+    pub(super) fn open_cached(
+        &self,
+        cached: &CachedImage,
+        digest: &str,
+        platform: &str,
+    ) -> anyhow::Result<ImageRoot> {
+        let scratch = self.images.projections();
         private_directory(&scratch)?;
         let owner = cache::open_local_image(
             &cached.location,
             &cached.handle,
-            canonical_platform(&image.platform)?
+            canonical_platform(platform)?
                 .strip_prefix("linux/")
                 .unwrap(),
-            &image.digest,
+            digest,
             &scratch,
         )?;
         Ok(ImageRoot {
@@ -60,25 +44,17 @@ impl Store {
         })
     }
 
-    pub(super) fn pool_image(
+    pub(super) fn pool_image<Backing>(
         &self,
-        image: &mut Image,
+        image: Image<Backing>,
+        rootfs: &Path,
         source: &ImageStore,
         config: &[u8],
-    ) -> anyhow::Result<()> {
-        let hex = crate::image::oci::digest_hex(&image.id)?;
-        use sha2::{Digest, Sha256};
-        ensure!(
-            crate::util::encode_hex(&Sha256::digest(config)) == hex,
-            "image config digest mismatch"
-        );
-        let configs = self.root.join("images/configs");
-        private_directory(&configs)?;
-        Persistence::atomic_write(&configs.join(format!("{hex}.json")), config, 0o600)?;
-        let location = self.root.join("images/pool-v1");
-        private_directory(&location)?;
+    ) -> anyhow::Result<Image> {
+        self.images.retain_config(&image.id, config)?;
+        let location = self.images.writable_pool()?;
         let prepared = PreparedImage {
-            rootfs: image.rootfs.clone(),
+            rootfs: rootfs.into(),
             digest: image.digest.clone(),
             env: image.env.clone(),
             entrypoint: image.entrypoint.clone(),
@@ -93,39 +69,20 @@ impl Store {
                 .strip_prefix("linux/")
                 .unwrap(),
         )?;
-        image.cache = Some(CachedImage { location, handle });
-        image.rootfs = PathBuf::new();
-        Ok(())
+        Ok(image.map_cache(|_| CachedImage { location, handle }))
     }
 
     pub(super) fn image_config_path(&self, image: &Image) -> anyhow::Result<PathBuf> {
-        if let Some(cache) = &image.cache {
-            return Ok(cache
-                .location
-                .parent()
-                .context("pool has no owner directory")?
-                .join("configs")
-                .join(format!(
-                    "{}.json",
-                    crate::image::oci::digest_hex(&image.id)?
-                )));
-        }
-        Ok(
-            if image
-                .rootfs
-                .parent()
-                .is_some_and(|p| p.join("blobs").exists())
-            {
-                image
-                    .rootfs
-                    .parent()
-                    .unwrap()
-                    .join("blobs/sha256")
-                    .join(&image.id[7..])
-            } else {
-                self.root.join("images/blobs/sha256").join(&image.id[7..])
-            },
-        )
+        Ok(image
+            .cache
+            .location
+            .parent()
+            .context("pool has no owner directory")?
+            .join("configs")
+            .join(format!(
+                "{}.json",
+                crate::image::oci::digest_hex(&image.id)?
+            )))
     }
 }
 
@@ -133,6 +90,7 @@ impl Store {
 mod tests {
     use super::super::build::{BuildOptions, build};
     use super::*;
+
     use pvisor_overlay_core::backend;
 
     fn options(context: &Path, tag: &str) -> BuildOptions {
@@ -214,8 +172,13 @@ mod tests {
         .unwrap();
         let second = build(&store, &opts).unwrap();
         assert_ne!(first.id, second.id);
-        assert!(first.rootfs.as_os_str().is_empty() && second.rootfs.as_os_str().is_empty());
-        let objects = files(&store.root.join("images/pool-v1/data"));
+        assert!(
+            serde_json::to_value(&first)
+                .unwrap()
+                .get("rootfs")
+                .is_none()
+        );
+        let objects = files(&store.root.join("images/pool-v2/data"));
         assert_eq!(
             objects.len(),
             2,
@@ -256,6 +219,123 @@ mod tests {
     }
 
     #[test]
+    fn canonical_aliases_replace_one_tag_and_keep_containers_and_other_tags_pinned() {
+        let temporary = tempfile::tempdir().unwrap();
+        let context = temporary.path().join("context");
+        fs::create_dir(&context).unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nENV VERSION=first\nCMD [\"/first\"]\n",
+        )
+        .unwrap();
+        let mut opts = options(&context, "app:test");
+        opts.tags
+            .extend(["docker.io/library/app:test".into(), "app:other".into()]);
+        let first = build(&store, &opts).unwrap();
+        assert_eq!(store.images().unwrap().len(), 2);
+        let pinned = store
+            .create(create("index.docker.io/library/app:test"))
+            .unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nENV VERSION=second\nCMD [\"/second\"]\n",
+        )
+        .unwrap();
+        let second = build(
+            &store,
+            &options(&context, "registry-1.docker.io/library/app:test"),
+        )
+        .unwrap();
+        assert_ne!(first.id, second.id);
+        for alias in [
+            "app:test",
+            "library/app:test",
+            "docker.io/library/app:test",
+            "index.docker.io/library/app:test",
+            "registry-1.docker.io/library/app:test",
+        ] {
+            let current = store.create(create(alias)).unwrap();
+            assert_eq!(current.image.id, second.id, "{alias}");
+            assert_eq!(current.image.env["VERSION"], "second");
+            store.remove(&current.id, false).unwrap();
+        }
+        assert_eq!(
+            store.local_image("app:other").unwrap().unwrap().id,
+            first.id
+        );
+        assert_eq!(store.resolve(&pinned.id).unwrap().image.id, first.id);
+        store.rmi("docker.io/library/app:test", false).unwrap();
+        assert!(store.local_image("app:test").unwrap().is_none());
+        assert_eq!(store.images().unwrap().len(), 1);
+        assert_eq!(
+            store.resolve(&pinned.id).unwrap().image.env["VERSION"],
+            "first"
+        );
+    }
+
+    #[test]
+    fn conflicting_canonical_catalog_and_ambiguous_id_prefix_fail_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let context = temporary.path().join("context");
+        fs::create_dir(&context).unwrap();
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nCMD [\"/first\"]\n",
+        )
+        .unwrap();
+        let store = Store::open(temporary.path().join("docker")).unwrap();
+        let first = build(&store, &options(&context, "app:test")).unwrap();
+        let mut duplicate = first.clone();
+        duplicate.reference = "docker.io/library/app:test".into();
+        duplicate.id = format!("sha256:{}", "1".repeat(64));
+        fs::write(
+            store.root.join("images.json"),
+            serde_json::to_vec(&[first.clone(), duplicate.clone()]).unwrap(),
+        )
+        .unwrap();
+        for result in [
+            store.images().map(|_| ()),
+            store.local_image("app:test").map(|_| ()),
+            store.rmi("app:test", true).map(|_| ()),
+        ] {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate canonical")
+            );
+        }
+        duplicate.reference = "app:other".into();
+        duplicate.id = format!("sha256:{}", "a".repeat(64));
+        let mut first = first;
+        first.id = format!("sha256:aaaa{}", "b".repeat(60));
+        store
+            .save_catalog(&BTreeMap::from([
+                (image_reference_key(&first.reference).unwrap(), first),
+                (
+                    image_reference_key(&duplicate.reference).unwrap(),
+                    duplicate,
+                ),
+            ]))
+            .unwrap();
+        assert!(
+            store
+                .local_image("aaaa")
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous image ID")
+        );
+        assert!(
+            store
+                .rmi("aaaa", true)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous image ID")
+        );
+    }
+
+    #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn pooled_images_accept_memory_sharing_and_check_projected_root_authority() {
         use std::os::unix::fs::PermissionsExt;
@@ -269,7 +349,12 @@ mod tests {
         .unwrap();
         let store = Store::open(temporary.path().join("docker")).unwrap();
         let image = build(&store, &options(&context, "sharing:test")).unwrap();
-        assert!(image.rootfs.as_os_str().is_empty());
+        assert!(
+            serde_json::to_value(&image)
+                .unwrap()
+                .get("rootfs")
+                .is_none()
+        );
         let private = temporary.path().join("pool");
         fs::create_dir(&private).unwrap();
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();

@@ -1,5 +1,7 @@
 # pVisor versus OpenSandbox: startup, disk and memory measurements
 
+[Fixed-version deployment comparison](opensandbox-deployment-comparison.md) summarizes the same startup and memory cohorts without new sampling.
+
 > Historical cohorts retain their pinned sources, artifacts and timing scope. See the [benchmark registry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/registry.csv) for active experiments and preparation status.
 
 ## Motivation {#motivation}

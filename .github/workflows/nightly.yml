@@ -25,68 +25,44 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          tools: python
+          tools: python rust
           setup: none
       - id: ver
         shell: bash
         run: |
-          version="$(mise run check-release-version -- --skip-lockfile)"
+          version="$(mise run check-release-version)"
           local_version="g${GITHUB_RUN_NUMBER}.${GITHUB_SHA:0:7}"
           echo "local_version=$local_version" >> "$GITHUB_OUTPUT"
           echo "version=$version+$local_version" >> "$GITHUB_OUTPUT"
 
-  wheels:
+  verify:
+    name: Build and verify nightly
     needs: meta
-    uses: ./.github/workflows/wheel.yml
+    uses: ./.github/workflows/distribution.yml
     with:
-      artifact_prefix: nightly-wheel
+      version: ${{ needs.meta.outputs.version }}
+      artifact_prefix: nightly
       local_version: ${{ needs.meta.outputs.local_version }}
 
   publish:
     name: Publish nightly release
-    needs: [meta, wheels]
+    needs: [meta, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-build-env
-        with:
-          tools: python
-          setup: none
-
-      - name: Download wheels
+      - name: Download verified wheels
         uses: actions/download-artifact@v4
         with:
-          pattern: nightly-wheel-*
-          merge-multiple: true
+          name: nightly-wheels
           path: dist
 
-      - name: Download corresponding firmware sources
+      - name: Download verified native distribution set
         uses: actions/download-artifact@v4
         with:
-          pattern: firmware-source-nightly-wheel-*
-          merge-multiple: true
+          name: nightly-native
           path: dist
-
-      - name: Require complete corresponding firmware source set
-        run: |
-          test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
-          test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
-
-      - name: Verify complete nightly artifact set
-        env:
-          VERSION: ${{ needs.meta.outputs.version }}
-        run: mise run check-release-artifacts -- dist --version "$VERSION"
-
-      - name: Prepare native downloads and checksums
-        env:
-          VERSION: ${{ needs.meta.outputs.version }}
-        run: |
-          python3 scripts/ci/build_release_assets.py dist \
-            --version "$VERSION" --repository "$GITHUB_REPOSITORY"
 
       - name: Publish rolling nightly release
         uses: ncipollo/release-action@v1
@@ -99,7 +75,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: dist/*.whl,dist/pvisor-*.tar.gz,dist/SHA256SUMS
+          artifacts: dist/pvisor_sandbox-*.whl,dist/pvisor-*.tar.gz,dist/SHA256SUMS
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 

@@ -19,20 +19,8 @@ nav = [
     { "安装指南" = "start/installation.md" },
     { "本地工作流：运行与审查" = "start/first-run.md" },
     { "执行基础设施：工具执行接入示例" = "start/infrastructure.md" },
-    { "选择执行环境" = "guides/executors/index.md" },
   ] },
-  { "了解 pVisor" = [
-    { "简介" = "why/index.md" },
-    { "核心概念" = "concepts/jobs.md" },
-    { "核心功能" = [
-      { "文件级监管与隔离" = "concepts/staging.md" },
-      { "沙箱生命周期管理" = "concepts/lifecycle.md" },
-      { "镜像与内存优化" = "concepts/resource-optimization.md" },
-      { "状态保存与分支复用" = "concepts/resource-reuse.md" },
-    ] },
-    { "安全与支持范围" = "security/index.md" },
-  ] },
-  { "本地工作流" = [
+  { "用户指南" = [
     { "本地工作流总览" = "guides/index.md" },
     { "接入你的 Agent" = [
       { "接入你的 Agent" = "guides/agents/index.md" },
@@ -40,10 +28,17 @@ nav = [
       { "Codex CLI" = "guides/agents/codex.md" },
       { "任意脚本与自动化命令" = "guides/agents/custom-scripts.md" },
     ] },
-    { "访问与凭据配置" = [
+    { "执行器" = [
+      { "选择执行环境" = "guides/executors/index.md" },
+      { "host 执行器" = "guides/executors/host.md" },
+      { "原生 OCI 容器" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "策略" = [
       { "文件策略" = "guides/policies/files.md" },
       { "使用 OverlayNet 控制网络访问" = "guides/policies/network.md" },
       { "凭据与环境变量" = "guides/policies/credentials.md" },
+      { "加固建议" = "security/hardening.md" },
     ] },
     { "任务操作" = [
       { "审查并应用改动" = "guides/review-apply.md" },
@@ -59,52 +54,48 @@ nav = [
       { "3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md" },
       { "4. 为不可信任务声明边界" = "cases/04-boundaries.md" },
       { "5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md" },
-      { "6. 验证暂存、应用与丢弃契约" = "cases/06-stage-apply.md" },
     ] },
-  ] },
-  { "执行基础设施" = [
-    { "定位与接入" = [
+    { "部署与系统接入" = [
       { "Agent 执行基础设施" = "guides/infrastructure/index.md" },
       { "接入方式与能力矩阵" = "guides/infrastructure/integration.md" },
-    ] },
-    { "VM 生命周期操作" = "guides/infrastructure/lifecycle.md" },
-    { "Daemon 上手" = [
+      { "管理 VM 生命周期" = "guides/infrastructure/lifecycle.md" },
       { "运行单机 daemon" = "guides/daemon/index.md" },
+      { "共享镜像缓存与存储后端" = "reference/shared-image-cache.md" },
     ] },
-    { "轨迹记录与回放" = [
+    { "轨迹与 RL rollout" = [
       { "捕获 Agent 轨迹" = "guides/capture.md" },
       { "回放历史轨迹" = "guides/replay.md" },
-    ] },
-    { "RL rollout" = "guides/rl-rollouts.md" },
-  ] },
-  { "参考手册" = [
-    { "执行器" = [
-      { "host 执行器" = "guides/executors/host.md" },
-      { "原生 OCI 容器" = "guides/executors/container.md" },
-      { "pVisor VM" = "guides/executors/vm.md" },
+      { "RL rollout" = "guides/rl-rollouts.md" },
     ] },
     { "命令与配置参考" = [
       { "命令与场景参考" = "reference/index.md" },
       { "`pvisor` 命令参考" = "reference/cli.md" },
-      { "Job 用法与存储" = "reference/jobs.md" },
       { "配置文件参考" = "reference/config.md" },
       { "策略字段参考" = "reference/policy.md" },
       { "Run Bundle 格式" = "reference/run-bundle.md" },
+      { "Job 用法与存储" = "reference/jobs.md" },
       { "机器可读输出" = "reference/json-output.md" },
       { "环境变量" = "reference/env-vars.md" },
       { "退出码与错误" = "reference/exit-codes.md" },
       { "平台与执行器支持矩阵" = "reference/platforms.md" },
       { "稳定性与兼容承诺" = "reference/stability.md" },
-      { "pVisor Job 用户场景与回归示例" = "reference/cases.md" },
-      { "共享镜像缓存与存储后端" = "reference/shared-image-cache.md" },
     ] },
+  ] },
+  { "基本概念" = [
+    { "pVisor 概览" = "why/index.md" },
+    { "核心概念" = "concepts/jobs.md" },
+    { "核心功能" = [
+      { "文件级监管与隔离" = "concepts/staging.md" },
+      { "沙箱生命周期管理" = "concepts/lifecycle.md" },
+      { "镜像与内存优化" = "concepts/resource-optimization.md" },
+      { "状态保存与分支复用" = "concepts/resource-reuse.md" },
+    ] },
+    { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
     { "安全" = [
-      { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
+      { "安全概览" = "security/index.md" },
       { "威胁模型" = "security/threat-model.md" },
       { "执行器边界" = "security/executor-boundaries.md" },
-      { "加固建议" = "security/hardening.md" },
       { "已知限制" = "security/known-limitations.md" },
-      { "漏洞披露政策" = "security/disclosure.md" },
       { "第三方审计" = "security/audits.md" },
     ] },
   ] },
@@ -126,9 +117,9 @@ nav = [
       { "回放保真度" = "benchmarks/replay-fidelity.md" },
     ] },
   ] },
-  { "设计与研究" = [
+  { "系统设计" = [
     { "整体架构与执行" = [
-      { "pVisor 如何工作" = "design/index.md" },
+      { "架构总览" = "design/index.md" },
       { "核心设计原则" = "design/principles.md" },
       { "核心架构" = "design/architecture.md" },
       { "Job、Operation、Attempt 与 Event" = "design/execution-model.md" },
@@ -148,8 +139,7 @@ nav = [
     ] },
     { "文件系统子系统" = [
       { "文件架构、请求与暂存" = "design/overlayfs.md" },
-      { "共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md" },
-      { "Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md" },
+      { "Lazy Image V2：压缩目录索引与内容池" = "design/lazy-image-v2.md" },
     ] },
     { "网络子系统" = [
       { "网络架构、出口与协议" = "design/overlaynet.md" },
@@ -175,11 +165,11 @@ nav = [
       { "记录与版本矩阵" = "design/records-and-versions.md" },
       { "失败语义与重试" = "design/failure-semantics.md" },
     ] },
-    { "实验特性" = [
+    { "实验设计" = [
       { "阶段与范围" = "design/experimental/index.md" },
       { "EXP-001（观测原型）：vCPU 空闲观测与自动内存卸载" = "design/experimental/vcpu-idle-offload/index.md" },
       { "EXP-002（设计阶段）：Guest 内核文件系统缓存" = "design/experimental/guest-stage-cache/index.md" },
-      { "EXP-003（设计阶段）：Agent 异步 I/O 与完成队列" = "design/experimental/agent-io-completion/index.md" },
+      { "EXP-003（受限 PoC）：Agent 异步 I/O 与完成队列" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "研究方向" = [
       { "研究方向" = "design/research/index.md" },
@@ -190,23 +180,33 @@ nav = [
       { "VM 启动性能分析" = "lab-notes/vm-startup-performance-analysis.md" },
       { "端到端任务性能分析" = "lab-notes/agent-task-performance-analysis.md" },
       { "VM 内存性能分析" = "lab-notes/vm-memory-performance-analysis.md" },
-      { "OpenSandbox：启动、磁盘与内存" = "lab-notes/opensandbox-performance-analysis.md" },
+      { "OpenSandbox 对比：启动、磁盘与内存" = "lab-notes/opensandbox-performance-analysis.md" },
+      { "V2 与原生 Docker：存储、启动与内存" = "lab-notes/image-format-performance-analysis.md" },
       { "文件系统性能分析" = "lab-notes/filesystem-performance-analysis.md" },
       { "缓存与异步写入性能曲线" = "lab-notes/filesystem-io-performance-analysis.md" },
       { "Benchmark 方法与证据" = "lab-notes/benchmark-methodology-evidence.md" },
     ] },
   ] },
   { "参与开发" = [
-    { "开发指南" = [
+    { "开始贡献" = [
       { "社区" = "community/index.md" },
       { "贡献指南" = "community/contributing.md" },
+    ] },
+    { "开发与调试" = [
       { "工程说明" = "community/development.md" },
-      { "测试与 semspec" = "community/testing.md" },
       { "复现 Run 生命周期" = "community/examples.md" },
+    ] },
+    { "测试与语义规格" = [
+      { "测试与 semspec" = "community/testing.md" },
+      { "pVisor Job 用户场景与回归示例" = "reference/cases.md" },
+      { "暂存、应用与丢弃规格（未审核草稿）" = "cases/06-stage-apply.md" },
+    ] },
+    { "发布与维护" = [
       { "发布 PolicyVisor" = "community/releasing.md" },
       { "路线图" = "community/roadmap.md" },
       { "变更日志" = "community/changelog.md" },
       { "治理" = "community/governance.md" },
+      { "漏洞披露政策" = "security/disclosure.md" },
     ] },
   ] },
 ]

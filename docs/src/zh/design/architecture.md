@@ -1,6 +1,6 @@
 # 核心架构
 
-pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定如何处理和放置，调用实际执行机制，再通过 Event 描述发生了什么。
+pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在启动前确定策略与执行边界，运行时管理文件、网络和机器资源，结束后保留可审查的结果。Operation 描述处理请求，Event 描述处理过程中发生的事实。
 
 这条主线分成两个职责：**core 提供定义，pvisor 提供实现。** 外部调用方提交执行请求，通过运行句柄控制一次执行，通过 Event 观察它的过程和结果。
 
@@ -27,6 +27,36 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 [Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `AttemptService` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
+
+## 技术分层与资源归属 {#technical-layers}
+
+![执行入口、Runtime、宿主服务与 VM 内部的 CPU、RAM、设备和平台实现](assets/pvisor-architecture.svg)
+
+执行入口提交配置，Runtime 组织 Session 和 Attempt，宿主服务提供文件、网络、镜像和持久存储。Host、OCI 和 VM 是不同的执行路径；图中向下展开 VM 的内部状态及其与宿主的关系。crate 依赖表达代码复用，资源归属决定谁负责停止、同步和释放。
+
+### 宿主数据服务 {#host-services}
+
+文件路径在 `FilesystemService` 汇合。Host 的 FUSE / FSKit 适配器与 VM 的 virtio-fs 入口共享 OverlayCore 的授权、分层查找、copy-up 和 preimage 语义；inode、handle、协议权限与队列仍由各入口持有。VM 直接调用文件服务，不建立中间宿主 FUSE 挂载。暂存的候选文件与目标工作区分别发布，具体写入和恢复顺序见[文件系统设计](overlayfs.md#filesystem-service)。
+
+OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame 交给宿主用户态数据面。显式代理与 VM 网卡接入具有不同的覆盖范围。可选 Gateway 消费模型协议请求，负责路由、转换、凭据委托和捕获；普通网络转发不会自动产生模型语义。接入关系见[网络设计](overlaynet.md)和[Gateway](gateway.md)。
+
+镜像缓存为文件服务提供固定 revision 的元数据和校验后的内容读取。VM 持有运行中的映射与设备状态，宿主存储层持有镜像对象、RAM backing、快照目录和发布事务。缓存命中、文件内容共享与 RAM 物理页共享发生在不同层次，各自的引用和回收规则见[共享镜像缓存](lazy-image-v2.md)与[内存机制](memory-optimization/index.md)。
+
+### VM 内部状态 {#vm-ownership}
+
+`pvisor_vm::api` 接收配置和资源所有权，`VmRuntime::run` 在独立 runner 内启动 VM，并通过 ready 回调交出 `VmmHandle`。handle 提供控制，不延长 VM 生命周期；调用方仍负责监管 runner、绑定文件和网络资源，以及快照兼容性与持久化。
+
+| 状态 | 所有者与协作边界 |
+| --- | --- |
+| Guest 进程 | `pvisor-guest` 作为 Linux PID 1 启动工作负载、回收后代，并在报告退出前同步可见的 virtio-fs 挂载 |
+| vCPU 与执行控制 | `pvisor-vm` 持有 CPU 线程、寄存器、中断和事件循环；KVM / HVF 适配留在 crate 内 |
+| RAM 与映射 | `pvisor-vm` 管理 GPA 与 HVA、backing 和映射生命周期；宿主存储适配器管理被引用的文件或块 |
+| 虚拟设备 | 队列 owner 发布 used ring；worker 与 RAM lease 保持请求缓冲区在处理期间有效 |
+| 冻结与恢复 | VM 协调 CPU 停驻、设备排空和 RAM gate；调用方在冻结窗口内保存并发布匹配的机器与文件状态 |
+
+普通 pause 只确认 CPU 停驻，设备仍可能访问 RAM。完整冻结需要同时处理 CPU、队列和内存引用；恢复先校验兼容性，在暂停状态安装映射与设备状态，再显式 resume。物理共享、冷页和 offload 按平台、backing 与 profile 选择，不能假定同时可用。调用与失败后状态由 [VM 设计](vm-runtime.md#freeze)和[环境快照](environment-snapshot.md)维护。
+
+源码入口：`pvisor/src/session/lifecycle.rs`、`pvisor-overlay-core/src/service.rs`、`pvisor/src/image/cache/backend.rs`、`pvisor-vm/src/api.rs`、`handle.rs` 和 `devices/virtio/`。
 
 ## API 边界与迁移状态 {#api-boundaries}
 
@@ -132,7 +162,13 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 
 ## 一条生产执行路径
 
-准备、事实提交、派发、清理与终态的完整时序见[设计与底层原理](index.md#execution)的走读。下面是所有权视角的三条合同。
+实际顺序是先解析 RunSpec，确定有效策略与执行器能力，再准备文件、网络和运行附件。必要启动事实提交成功后才调用 `RunExecutor::execute`。准备本身可能创建目录或 socket，所以提交失败仍需要清理已准备资源。
+
+执行器返回 `ExecutorOutput`，Session 继续做清理、控制观察核对和结果保存。
+
+例如，请求允许网络访问而 workspace 策略拒绝全部网络时，准入形成有效网络配置，再将同一配置交给网络驱动和执行器；准备阶段不应重新读取可变配置，避免记录与实际出口不一致。
+
+源码入口：`pvisor/src/runtime/run.rs::resolve_run`、`pvisor/src/session.rs`、`pvisor/src/runtime/job_service/managed.rs`。
 
 `RunSpec` 是调用方的执行配置输入；`Operation` 是结构化的操作描述。目前唯一生产操作是 `run.execute`，包含程序、参数和工作目录。执行器实际消费有效 RunSpec 及准备好的驱动附件。`PVisor::resolve_operation` 使用同一准入路径，供启动前审查，不能代替实际执行及安装证据。
 
@@ -163,10 +199,11 @@ core 共享文件／网络策略求值。user、workspace、session 和执行器
 | 记录 | 回答的问题 |
 | --- | --- |
 | `run.json` | 这项 Job 的身份、状态、执行器及本地资源是什么？ |
+| `completion.json` | 当前 Attempt 的哪个结果与哪一份 Bundle 字节已经绑定提交？ |
 | Run Bundle | 结果、控制观察、产物及文件／网络摘要是什么？ |
 | Event Journal／Trace | 已发布了哪些事实，它们如何关联？ |
 | Overlay diff／preimage | 哪些文件仍待审查，应用时应检查什么原始状态？ |
 
-这些记录各有范围。Event 可以重建已观察到的操作过程，无法仅凭日志恢复全部外部状态。Agent 原生轨迹 replay 也不是任意副作用的确定性重放。
+持久 Attempt 的完成回执绑定结果与 Bundle，Run 和 execution Job 保存状态投影，Event 提供事实观察。提交顺序与缺失回执时的核对见[Attempt 完成协议](execution-model.md#attempt-completion)。Event 可以重建已观察到的操作过程；恢复外部状态还需要对应的输入与执行机制。Agent 原生轨迹 replay 的恢复范围由 [Replay 设计](replay.md)维护。
 
 暂存文件先审查再应用。OverlayCore 负责目标校验、持久化应用意图、更新及恢复；一个批次不是原子文件系统事务。`apply`、`drop` 与文件检查点的恢复范围及不能撤销的外部副作用见[能力与证据](../concepts/capabilities-and-evidence.md)，操作流程见[审查与应用](../guides/review-apply.md)。

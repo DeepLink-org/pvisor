@@ -128,11 +128,14 @@ requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
 The OCI executor injects the `pvisor` executable and delegates the Job through
 `spawn --executor host --spec ... --result-file ...` inside the container.
-Its RunSpec is mounted read-only, and its writable output directory excludes the
-OCI bundle/state. Result reads reject symlinks, nonregular files, foreign Run
-identities and payloads over 16 MiB. Boundary-writable JSON supplies transcript
-bytes only: the host-observed OCI runtime exit determines completion, and delegated
-AgentCtl directives, metrics, artifacts and enforcement claims are not imported.
+Only the spec file is mounted read-only; a separate output directory is writable.
+OCI bundle/state directories remain private and overlapping rootfs/mount sources
+are rejected. Delegated JSON is bounded to 16 MiB, opened without following a
+symlink or blocking on a FIFO, and checked for Run/inner-Attempt consistency.
+It supplies output text only: host-observed runtime exit status decides the
+outcome, and guest-produced controls, metrics, artifacts and AgentCtl snapshots
+are not accepted as host enforcement evidence. Enforce mode still requires
+independently installed executor observations and fails if they are missing.
 
 ## Explicit runtime experiments
 
@@ -355,7 +358,7 @@ reconciliation rather than forged into a completed receipt. Frontend wait errors
 and early success cannot bypass native teardown or hide publication failures.
 Dropping the managed run or its wait future requests cancellation; the completion
 task retains publication ownership while its Tokio runtime remains alive. This
-is not crash recovery or persistence after process/runtime shutdown. Resume/fork
+does not keep the completion task alive after process/runtime shutdown. Resume/fork
 do not report `Finished` solely because a launcher callback returned success.
 
 Managed starts with durable storage also retain a private, versioned
@@ -374,6 +377,24 @@ executor observations; it does not authenticate the producer or prove artifact
 contents. Wall-clock timestamps can move backwards and are not a monotonic audit
 clock. Capture completion and replay tool receipts have narrower scopes than a
 complete-run capture or an exactly-once external side-effect guarantee.
+
+New durable Attempts write Run schema 2 with `completion_protocol = 1` and Bundle
+schema 5. After native teardown, the runtime writes the Bundle, commits a private
+`completion.json` binding the exact Bundle BLAKE3 digest and terminal RunResult,
+then publishes completion notifications. Once committed, Bundle bytes and the
+completion result are immutable; later audit publication failures are returned
+as warnings and do not replace the terminal outcome. Completion reads are bounded
+to 64 MiB and reject symlinks, FIFOs and other non-regular files.
+
+Stopped status reconciles Run and active Job projections from the receipt under
+their mutation leases; it never re-executes the workload or overwrites a successor
+Attempt. Before a receipt is confirmed, an owner lost to a crash is `Unknown`:
+retained files are not approved, and review/apply/drop/checkpoint refuse mutation.
+A Bundle or terminal Run record alone does not prove completion. A failed final
+sync may leave a receipt visible; reopening validates its full binding before
+projecting it. Legacy Run schema 1 and Bundle schema 4 remain readable with their
+original guarantees. These local receipts do not make remote side effects or
+event delivery exactly once, and are not power-loss acceptance evidence.
 
 The lower-level `PVisor::run()` and `RuntimeJobService::start()` still return a bare
 `RunHandle`. Embedded Attempt callers and daemon detached supervisors retain their
@@ -765,47 +786,89 @@ stage/apply, capture or existing daemon APIs.
 preparation observations for frontend rendering; existing `pull`/`create` callers
 remain silent. Download counts use received compressed bytes, and layer readiness
 follows verification and extraction rather than merely reaching an expected size.
+Registry connections have a ten-second connect bound and a thirty-second
+blocking request/body-read idle bound; a progressing large layer is not limited
+to thirty seconds in total. Idempotent blob transfers retry once after a timeout,
+broken connection or interrupted HTTP body. Each attempt discards its temporary
+bytes and restarts hashing from zero. Digest/size mismatches, authentication/status
+errors and permanent local storage failures are not retried, except that 429/503
+GET responses allow one retry honoring a valid `Retry-After` up to ten seconds
+(one second when absent). HTTP dates are supported; malformed or longer delays
+return the status without retrying early or waiting unboundedly. Partial data never
+becomes a published blob; a retry resets that layer's received-byte observation.
 `pull_for_platform_with_progress` selects `linux/amd64` or `linux/arm64`
 (`linux/arm64/v8` is an alias), independently of the host. Image records retain
-their canonical platform; legacy records default to native because previous
-versions only pulled native images. A reference holds one platform, replaced
+their explicit canonical platform; records missing it are rejected. A reference holds one platform, replaced
 atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
-New Docker pulls and completed builds default to the local immutable cache pool
-under `PVISOR_DOCKER_HOME/images/pool-v1` (beneath the default user-local
-`pvisor/docker` directory when unset). They reuse the cache's V1 file/metadata
-index, authenticated fixed revision, conditional publication and direct VM
-backend. They do not retain a complete extracted rootfs or OCI layer archives.
-Original OCI configuration bytes are retained separately under `images/configs`
-so subsequent builds preserve configuration such as labels and SHELL. A repeated
-pull still resolves the registry manifest/config, but a matching catalogued pool
-revision skips layer download and extraction. Pulls of the same reference/platform
-serialize without holding the catalog lock across network I/O.
+Docker pull/build, daemonless Job image preparation and the cache service share
+one local V2 image store under the user data directory, `pvisor/docker/images`.
+`PVISOR_IMAGE_STORE` overrides this root for all three entry points. An explicit
+Job/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
+set, the common image root is that directory's `images`, preserving isolated
+stores; embedded `Store::open(root)` always keeps images under `root/images`
+and ignores environment defaults. See [local image storage](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
+for platform paths and layout.
 
-`Image.cache` binds the pool location and immutable handle; its legacy `rootfs`
-field is empty. Embedded consumers call `Store::open_image`, retain the returned
+The common root owns `pool-v2`, original OCI `configs`, temporary `staging`,
+reference/platform `locks` and lifetime-owned `projections`. Imports use one
+temporary OCI store and remove downloaded layers/extracted roots on normal
+success/failure. Docker pull still resolves manifest/config, then reuses a
+matching shared pool revision without downloading layers. Local pool tags remain
+available offline until an explicit pull/refresh or another publication replaces
+them. Build tags also publish V2 references usable by Jobs without a registry.
+Short and fully qualified Docker Hub aliases use the OCI parser's canonical
+registry/repository/tag identity for catalog lookup, replacement and removal.
+Equivalent build tags publish once; distinct tags remain independent. Catalogs
+with duplicate canonical identities fail rather than selecting an arbitrary
+revision. Existing containers retain their pinned image. Each distinct tag commits
+independently; there is no multi-tag filesystem transaction. Container `images.json` remains
+its frontend catalog; `rmi` removes catalog references, not shared pool objects.
+
+Published `Image` records require `CachedImage`, binding the pool location and
+immutable handle. There is no directory-root field or fallback. Private builds
+use a distinct backing type in `Image<BuildSource>`/`Instance<BuildSource>`;
+their working-tree descriptors cannot deserialize as published images. Embedded
+consumers call `Store::open_image`, retain the returned
 `ImageRoot` through all OverlayCore/VM access, and use its `rootfs()` as the lower.
 That path is a temporary metadata/sparse-file projection: native host reads must
 not bypass the filesystem backend. Ordinary VM reads fetch only needed content
 blocks, with bounded decoded memory caches and no persistent raw block mirror.
 Copy-up may materialize a whole file in the projection before copying into upper;
-normal projection teardown removes it. Legacy records without `cache` continue
-to use their existing directories, including already created containers. No
-existing image directories are automatically deleted or migrated.
+normal projection teardown removes it. Old directory records, missing platform
+fields and obsolete storage formats are rejected. Use a fresh store and re-pull
+or rebuild images; no compatibility reader or automatic migration is provided.
+Stop and clean up old containers through the old version before switching stores.
 
-Pool data is deduplicated by raw content SHA-256 across files, paths and images.
-Each existing V1 content chunk (at most 1 MiB) is independently encoded using
-Zstd level 3 when it saves more than 64 bytes, otherwise raw, in a versioned
-13-byte envelope containing magic, codec and decoded length. Reads bound input
-and decoded size, then verify the raw digest before returning bytes. Metadata
-remains uncompressed for indexed range reads. `pool-format.json` and the internal
-`pool+file://` binding identify this separate physical encoding. Its physical
-`format.json` also rejects ordinary raw V1 readers/publishers; the pool adapter
-supplies the unchanged logical index format. Ordinary
-filesystem/S3 V1 prefixes remain raw and are not converted in place. This is not
-the proposed small-file-pack V2 format. Current index entry/object limits remain.
+Filesystem/S3 publish and writable prepare import OCI sources under a scoped
+`staging/.import-*` directory, removed on success and error after publication
+finishes. They retain no raw OCI layers, extracted roots or prepared records.
+Read-only preparation needs no local import directory. Registry TLS can add a
+PEM CA bundle through the host-only `SSL_CERT_FILE`; invalid bundles fail closed.
+
+Pool, filesystem and S3 stores use one V2 physical format. All filesystem
+metadata is inline in independently compressed directory radix frames, routed by
+fixed-seed XXH3-64 with SHA-256 integrity. Oversized directories split recursively
+into 16 buckets. Small files (at most 64 KiB) pack by directory into at most
+1 MiB raw payloads, with independently decoded 16 KiB target data frames. Indexes hold
+blob/frame/slot references; slot offsets live in data frames. File attributes
+never enter content blobs. Previous-HEAD content placements survive rename,
+cross-directory moves and chmod; partially overlapping packs across images do
+not guarantee per-file physical deduplication. Large files retain independently
+addressed 1 MiB chunks, now also seekable Zstd frames. The format uses Zstd level 3
+and standard seekable footers, without the old pool-only envelope/raw fallback.
+
+`pool-format.json` rejects retired physical encodings without modifying them.
+V1 handles/readers/publishers are removed: republish OCI images into an empty V2
+prefix. Old catalog/container records require recreation in the current format.
+Existing files are not automatically deleted. Storage versions are independent of
+the socket protocol, which now accepts only envelope version 2.
+The index object limit is 64 MiB, controls 1 MiB, with at most 1,000,000 entries
+and 2,000,000 content spans; object limits can be reached first. Publication still
+plans metadata in O(N) memory while staging encoded content on disk and bounding
+upload concurrency. See [the storage design](../../docs/src/en/design/lazy-image-v2.md).
 
 Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
 not enable DAX or make the mutable physical projection Immutable. A cold small
@@ -834,17 +897,54 @@ its owner dies. Stop escalation goes through the current owner and generation;
 lookup and force-stop publication share the removal lock, with no lock held
 while waiting for termination. This prevents `--rm` teardown from racing a
 force-stop record into a deleted instance. No command signals a host PID saved
-in metadata. VM setup errors and workload
+in metadata. `Store::stop` treats `Duration::MAX` as an infinite graceful wait,
+matching CLI `stop --timeout -1`; it never writes a force-stop record in this
+mode. Finite unrepresentable monotonic deadlines fail before signal delivery.
+VM setup errors and workload
 exit codes remain visible in completion records and instance output.
 Concurrent starts join the same starting generation and wait for its bounded
 readiness or failure; they do not spawn a second owner or reject a healthy
-in-progress launch. Waiting never retains the catalog lock.
+in-progress launch. Waiting for generation readiness never retains the catalog lock.
+New launches acquire the owner lease during catalog admission and transfer that
+same open file description across self-exec. Detached owners validate the
+descriptor and generation before touching VM resources. Liveness observations
+cannot steal the acquisition window or make concurrent starts all fail with a
+spurious existing-owner error. Failure to spawn releases the admitted lease.
+Liveness probes use compatible shared locks; only an owner's exclusive lease
+makes them report active, so simultaneous observers cannot report one another
+as an owner or make a stopped-container removal spuriously busy.
+Startup observes instance state before checking the generation's completion
+receipt, so a rapid exit or automatic removal cannot turn a committed workload
+result into a launch failure between those observations.
+Unlocked catalog scans tolerate an unrelated record disappearing during
+automatic removal; malformed records and other read failures remain errors.
+Foreground output following likewise observes owner leases before completion,
+preserving a concurrently committed exit code instead of reporting owner loss.
+Foreground `--rm` waits for physical instance removal before returning the
+committed exit code, allowing immediate name reuse. A committed result remains
+latched after owner exit; removal that still has not finished after thirty
+seconds reports a cleanup error and retains the record for inspection.
+The completing owner removes its instance and anonymous volumes under the
+catalog lock while retaining its own lease. It does not unlock and compete with
+client liveness probes through the public stopped-container removal path.
+Liveness probes open existing lease files without creating them, so observation
+cannot recreate a lock while the owner is deleting its directory. Anonymous
+volume retention considers other containers, excluding the instance being removed.
 
 Published TCP relays cancel the guest tunnel on client reset or failed input
 writes, releasing the bounded connection slot without waiting for the guest
 application to time out. Orderly client write-half close still forwards EOF and
 allows the complete guest response. Completion cancels blocked companion pumps
 before joining them; cloned descriptors must not retain finished tunnels.
+Publication bind failures identify the host address/port and guest port while
+retaining the underlying I/O error. Address conflicts use the stable diagnostic
+`address already in use`, independently of platform/toolchain error wording.
+Published listener workers are cancelled and joined before completion and owner
+lease release, so a successful stop cannot leave the old listener bound while
+the owner finishes its remaining teardown.
+Readiness polling wakes immediately for new connections while retaining a
+bounded cancellation check. Listener failures terminate the generation with a
+diagnostic instead of silently leaving a live VM with an unavailable endpoint.
 
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
@@ -912,24 +1012,25 @@ The detailed command, platform, storage and memory limits above remain relevant
 to embedded callers where they describe runtime behavior, and to the installed
 application where they describe frontend behavior.
 
-## Lazy image V2
+## Lazy image reader and transport
 
-Lazy images keep the existing immutable published-image format and handles.
-V2 optimizes the private host reader; it does not change OCI contents, guest
-commands, copy-up/export ownership, or the physical-lower stability declaration.
+Lazy storage V2 uses compressed directory frames and `pvisor-v2:` immutable
+handles. Reader and transport capabilities below are independent of the storage
+version; OCI contents, guest commands, copy-up/export ownership and the
+physical-lower stability declaration retain their contracts.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
-  The client reads the existing 64 KiB binary B+tree and file records locally,
-  including permissions, ownership and symlink metadata, instead of issuing
-  Stat/List RPCs. The pinned COMMIT authenticates the checksum catalog and pages;
-  only eight immutable metadata basenames are readable, with bounded ranges.
-  Legacy JSON response receipts are neither trusted nor written in this mode.
-  Invalid metadata propagates an error without silently falling back to RPC;
-  invalid local binary cache entries may be refetched and authenticated.
-  Authenticated raw pages and decoded B+tree nodes share a 256-entry LRU.
-  Nodes are validated once per residency rather than decoded on every lookup;
-  raw/node allocations remain budget-charged through their last active reference.
-  Persistent disk caches have no aggregate eviction quota. File-content reads remain unchanged. Initial immutable-object,
+  The client loads authenticated directory radix frames, including permissions,
+  ownership and symlink metadata, rather than issuing Stat/List RPCs. COMMIT
+  authenticates root.bin, which anchors the frame-reference tree. Only six
+  immutable metadata basenames are accepted, with bounded ranges. Legacy JSON
+  response receipts are neither trusted nor written in this mode. Invalid
+  metadata fails without silently falling back to RPC; invalid local encoded
+  cache frames may be refetched. Decoded nodes have a 16 MiB/4,096-entry LRU;
+  allocations stay budget-charged through the last active reference. Content
+  frames have a separate 64 MiB/4,096-entry cache. Same-key misses coalesce with
+  bounded concurrent admission. Persistent encoded disk caches have no total
+  eviction quota. Initial immutable-object,
   header and root-page reads are synchronous: runner lower reconstruction happens
   before Linux user-namespace setup, which requires kernel-level single-threadedness;
   joining temporary reader threads is not a safe substitute.
@@ -944,7 +1045,7 @@ commands, copy-up/export ownership, or the physical-lower stability declaration.
   Prefetch never downloads file content or projects speculative guest names.
 - Remote list continuations are opaque and separate from local directory/FUSE
   cookies. Resume after page eviction replays from a retained boundary or zero;
-  local ordinals are never passed to the portable B-tree as remote cursors.
+  local ordinals are never passed to the portable index as remote cursors.
 - TCP/Unix readers negotiate framed protocol 2 with harmless Ping requests and
   reuse up to four connections per client. TCP uses NODELAY on both endpoints.
   Idle client streams expire after four seconds, before the server's five-second
@@ -953,27 +1054,25 @@ commands, copy-up/export ownership, or the physical-lower stability declaration.
   their error kinds and permit reuse; framing, transport or integrity errors
   discard the stream. Ordinary cache clients do not replay failed actual requests;
     the private bridge's pinned read clients have the bounded exception below.
-- Protocol 1 remains one-request-per-connection. A V2 client falls back before
-  sending the actual request when an old service rejects the version or closes
-  the harmless handshake. Authentication failures, malformed replies and
-  handshake timeouts are not downgrade signals. Filesystem/S3 object transports
-  do not use the socket pool; metadata prefetch still applies.
+- Only protocol 2 is accepted. One harmless Ping negotiates each new stream;
+  refusal, EOF or invalid replies fail without reconnecting through an older
+  protocol. Filesystem/S3 object transports do not use the socket pool; metadata
+  prefetch still applies.
 - The service admits at most 64 connections, separates their framing/idle waits
   from 16 file workers and two preparation workers, and bounds each pending
   request queue to 16. Saturation returns a busy error or closes an unadmitted
   connection; callers must handle these failures. Idle connections and long
   preparations do not occupy file workers.
 
-The Linux private host-network bridge accepts envelope 1 (one exchange) and
-2 (sequential persistent exchanges). It admits at most 32 connection handlers,
+The Linux private host-network bridge accepts only envelope 2
+(sequential persistent exchanges). It admits at most 32 connection handlers,
 separates frame/idle/write waits from four execution workers, and bounds queued
 requests to 16. Queue saturation returns a framed busy error; unadmitted
 connections close. Each exchange is confined to the pinned immutable handle
-and metadata whitelist. Bridge V2 is enabled by default. On both bridge hops,
+and metadata whitelist. On both bridge hops,
 private clients retry an exact-handle Stat/List/Read or whitelisted Metadata at
 most once on EOF, broken/reset/aborted/disconnected transport or connect refusal.
-The failed lease is released, and retry uses a fresh stream (negotiated V2, or
-already-established V1 fallback). Pool wait, connect, handshake and body I/O
+The failed lease is released, and retry uses a fresh V2 stream. Pool wait, connect, handshake and body I/O
 share the original per-hop deadline. Timeout, busy/not-found/auth errors,
 malformed frames/digest declarations and verified-body digest mismatches are
 not retryable. Prepare/Open and ordinary clients retain no-replay semantics.
@@ -985,26 +1084,24 @@ not cancel already queued/executing upstream work, whose outcome may be unknown.
 Only immutable read operations qualify; no mutation is replayed. Detached bridge
 threads live in the dedicated child process, never the pre-namespace VM runner.
 
-For private engineering A/B, `PVISOR_LAZY_BRIDGE_V2=0` retains the previous
-single-exchange bridge and socket-worker scheduling independently of upstream
-V2. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
+The single-exchange bridge and `PVISOR_LAZY_BRIDGE_V2` switch are removed. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
 private directory. Bridge-created shared counter files contain only aggregate
 counts/timings, not credentials or image paths; read after process teardown.
 Live snapshots are approximate, killed-process gauges may remain nonzero,
 and files are not reboot-durable. The benchmark caller owns file cleanup.
 
-V2 is enabled by default. For engineering comparison only, set
+For engineering comparison only, set
 `PVISOR_LAZY_IMAGE_V2=0` before constructing the client and VM runner to disable
-client index pages, metadata prefetch and connection reuse; other values retain
-V2. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
+client index pages, metadata prefetch and connection reuse; the wire protocol
+remains V2 in every mode. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
 RPC/prefetch path and pooling. These are private
 rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
 See the [archived same-artifact NumPy A/B](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/lazy_image_v2.py); historical
 Docker measurements are a different cohort. Contract tests cover real portable
-pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
-fallback and concurrent service progress. Linux KVM performance measurements do
+pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, rejected V1
+envelopes and concurrent service progress. Linux KVM performance measurements do
 not establish macOS/HVF, live S3 or WAN coverage.
 
 ## Physical lower stability (explicit experiment contract)
@@ -1388,6 +1485,16 @@ upper directory remains private (0700).
 Managed volume directories retain guest-selected modes across reopen, including
 image copy-up permissions. They must remain owned directories (never symlinks);
 the enclosing store and volumes catalog remain private 0700 directories.
+On Linux, named and anonymous volumes use the VM's managed-filesystem attachment:
+guest ownership and modes persist in private inode xattrs while physical backing
+stays accessible to the invoking host account. This supports ordinary image
+entrypoints which chown a volume before dropping privileges, without requiring
+host root. Guest root cannot forge the internal metadata through xattr operations.
+Ordinary bind mounts retain native host permissions. Managed symlink and special
+file ownership beyond guest root is explicitly unsupported; volume initialization
+propagates such errors. Host read-only attachments continue to reject mutations.
+An empty managed volume must first be initialized through a writable mount;
+its first use as read-only returns an explicit error before VM launch.
 
 ## Explicit same-host VM peer networks
 

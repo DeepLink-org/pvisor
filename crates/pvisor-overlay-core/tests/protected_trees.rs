@@ -1,11 +1,11 @@
 //! Hidden descendants and imported metadata must not acquire mutation authority.
 use pvisor_overlay_core::{
-    OverlayCore,
+    FileAccessPolicy, OverlayCore,
     apply::{
         ApplySelection, OverlayRecord, OverlayState, OverlayUpper, apply_overlay,
-        plan_overlay_apply, restore_overlay_upper,
+        apply_overlay_selected, plan_overlay_apply, restore_overlay_upper,
     },
-    sys,
+    stage, sys,
 };
 use std::{
     ffi::OsStr,
@@ -261,5 +261,263 @@ fn lower_opaque_attributes_are_not_imported_but_upper_snapshots_keep_them() {
             sys::get_xattr(&restored.join("dir"), OsStr::new(control)).unwrap(),
             b"y"
         );
+    }
+}
+
+#[test]
+fn excluded_descendants_block_destructive_tree_operations_before_publication() {
+    for operation in [
+        "remove",
+        "rename",
+        "replace",
+        "exchange",
+        "materialize",
+        "prepare",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let lower = tmp.path().join("lower");
+        fs::create_dir_all(lower.join("dir/nested")).unwrap();
+        fs::create_dir_all(lower.join("empty")).unwrap();
+        fs::write(lower.join("dir/nested/secret"), b"protected").unwrap();
+        fs::write(lower.join("dir/normal"), b"normal").unwrap();
+        let upper = tmp.path().join("upper");
+        let core = OverlayCore::new_with_exclusions(
+            vec![lower.clone()],
+            upper.clone(),
+            None,
+            vec!["dir/nested/secret".into()],
+        )
+        .unwrap();
+        core.remove(Path::new("dir/normal"), false).unwrap();
+        assert!(core.list_names(Path::new("dir/nested")).unwrap().is_empty());
+        let dir = Path::new("dir");
+        let empty = Path::new("empty");
+        let result = match operation {
+            "remove" => core.remove(Path::new("dir/nested"), true),
+            "rename" => core.rename(dir, Path::new("moved"), false),
+            "replace" => core.rename(empty, Path::new("dir/nested"), false),
+            "exchange" => core.exchange(dir, empty),
+            "materialize" => core.materialize_tree(dir).map(|_| ()),
+            "prepare" => core
+                .prepare_rename_copy_up(dir, empty, false, true)
+                .map(|_| ()),
+            _ => unreachable!(),
+        };
+        assert!(result.is_err(), "{operation}");
+        assert_eq!(
+            fs::read(lower.join("dir/nested/secret")).unwrap(),
+            b"protected"
+        );
+        assert!(!upper.join("moved").exists());
+        assert!(!upper.join("dir/.wh.nested").exists());
+        assert!(!core.is_opaque(dir));
+    }
+}
+
+#[test]
+fn destination_exclusions_also_block_tree_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lower = tmp.path().join("lower");
+    fs::create_dir_all(lower.join("source")).unwrap();
+    fs::write(lower.join("source/secret"), b"data").unwrap();
+    let core = OverlayCore::new_with_exclusions(
+        vec![lower],
+        tmp.path().join("upper"),
+        None,
+        vec!["destination/secret".into()],
+    )
+    .unwrap();
+    assert!(
+        core.rename(Path::new("source"), Path::new("destination"), false)
+            .is_err()
+    );
+    assert!(!core.is_opaque(Path::new("source")));
+}
+
+#[test]
+fn sealed_legacy_stages_cannot_apply_effects_over_excluded_descendants() {
+    for operation in ["delete", "replace", "opaque"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir_all(target.join("dir")).unwrap();
+        fs::write(target.join("dir/secret"), b"protected").unwrap();
+        let stage_dir = tmp.path().join("stage");
+        let upper = stage_dir.join("upper");
+        let journal = stage_dir.join("preimages");
+        stage::begin(&journal, stage::StageDurability::Checkpoint).unwrap();
+        // Produce a valid stage with an older/unrestricted writer, then restore
+        // its owner's exclusions. Apply must enforce the actual effect closure.
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(stage_dir.join("work")),
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        if operation == "opaque" {
+            core.materialize_tree(Path::new("dir")).unwrap();
+        } else {
+            core.remove(Path::new("dir/secret"), false).unwrap();
+            core.remove(Path::new("dir"), true).unwrap();
+            if operation == "replace" {
+                core.create_file(Path::new("dir"), 0o600, libc::O_WRONLY)
+                    .unwrap();
+            }
+        }
+        drop(core);
+        stage::seal(&upper, &journal).unwrap();
+        let mut record = OverlayRecord {
+            id: "protected".into(),
+            generation: 0,
+            target: target.clone(),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: upper,
+                work_dir: stage_dir.join("work"),
+            },
+            merged_dir: stage_dir.join("merged"),
+            stage_dir,
+            excluded_paths: vec!["dir/secret".into()],
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        for protection in ["excluded", "denied", "selection"] {
+            record.excluded_paths = if protection == "excluded" {
+                vec!["dir/secret".into()]
+            } else {
+                vec![]
+            };
+            record.access_policy = FileAccessPolicy::new(
+                if protection == "denied" {
+                    vec!["dir/secret".into()]
+                } else {
+                    vec![]
+                },
+                vec![],
+            )
+            .unwrap();
+            let selection = ApplySelection {
+                excludes: if protection == "selection" {
+                    vec!["dir/secret".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            };
+            assert!(
+                plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).is_err(),
+                "{operation} {protection}"
+            );
+            assert!(
+                apply_overlay_selected(&mut record, std::slice::from_ref(&target), &selection)
+                    .is_err(),
+                "{operation} {protection}"
+            );
+            assert_eq!(fs::read(target.join("dir/secret")).unwrap(), b"protected");
+        }
+    }
+}
+
+#[test]
+fn rejecting_parent_removal_still_allows_applying_an_unprotected_sibling() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target");
+    fs::create_dir_all(target.join("dir")).unwrap();
+    fs::write(target.join("dir/secret"), b"protected").unwrap();
+    fs::write(target.join("dir/normal"), b"normal").unwrap();
+    let stage_dir = tmp.path().join("stage");
+    let journal = stage_dir.join("preimages");
+    stage::begin(&journal, stage::StageDurability::Checkpoint).unwrap();
+    let upper = stage_dir.join("upper");
+    let exclusions = vec!["dir/secret".into()];
+    let core = OverlayCore::new_with_exclusions_and_preimages(
+        vec![target.clone()],
+        upper.clone(),
+        Some(stage_dir.join("work")),
+        exclusions.clone(),
+        Some(journal.clone()),
+    )
+    .unwrap();
+    core.remove(Path::new("dir/normal"), false).unwrap();
+    assert!(core.remove(Path::new("dir"), true).is_err());
+    drop(core);
+    stage::seal(&upper, &journal).unwrap();
+    let mut record = OverlayRecord {
+        id: "protected".into(),
+        generation: 0,
+        target: target.clone(),
+        baseline_lower: None,
+        upper: OverlayUpper {
+            upper_dir: upper,
+            work_dir: stage_dir.join("work"),
+        },
+        merged_dir: stage_dir.join("merged"),
+        stage_dir,
+        excluded_paths: exclusions,
+        access_policy: Default::default(),
+        auto_apply: false,
+        auto_discard: false,
+        protect_target: false,
+        state: OverlayState::Staged,
+    };
+    apply_overlay(&mut record).unwrap();
+    assert_eq!(fs::read(target.join("dir/secret")).unwrap(), b"protected");
+    assert!(!target.join("dir/normal").exists());
+}
+
+#[test]
+fn lower_control_xattrs_do_not_hide_children_after_metadata_import() {
+    for name in ["user.overlay.opaque", "user.fuseoverlayfs.opaque"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let lower = tmp.path().join("lower");
+        fs::create_dir_all(lower.join("dir")).unwrap();
+        fs::write(lower.join("visible"), b"root").unwrap();
+        fs::write(lower.join("dir/child"), b"child").unwrap();
+        for path in [&lower, &lower.join("dir")] {
+            sys::set_xattr(path, OsStr::new(name), b"y", 0).unwrap();
+            sys::set_xattr(path, OsStr::new("user.pvisor-test"), b"metadata", 0).unwrap();
+        }
+        let upper = tmp.path().join("upper");
+        let core = OverlayCore::new(vec![lower.clone()], upper.clone(), None).unwrap();
+        assert!(
+            core.list_names(Path::new(""))
+                .unwrap()
+                .contains(&"visible".into())
+        );
+        core.copy_up(Path::new("dir")).unwrap();
+        assert!(
+            core.list_names(Path::new("dir"))
+                .unwrap()
+                .contains(&"child".into())
+        );
+        for path in [&upper, &upper.join("dir")] {
+            assert!(!pvisor_overlay_core::is_opaque_directory(path));
+            assert_eq!(
+                sys::get_xattr(path, OsStr::new("user.pvisor-test")).unwrap(),
+                b"metadata"
+            );
+        }
+        // Existing upper control state must retain its semantics on reopen.
+        drop(core);
+        sys::set_xattr(&upper.join("dir"), OsStr::new(name), b"y", 0).unwrap();
+        let restored = tmp.path().join("restored");
+        restore_overlay_upper(&upper, &restored).unwrap();
+        assert!(pvisor_overlay_core::is_opaque_directory(
+            &restored.join("dir")
+        ));
+        let core = OverlayCore::open_existing_for_layout(
+            pvisor_overlay_core::OverlayLayout::new(vec![lower.clone()], lower).unwrap(),
+            upper,
+            None,
+            vec![],
+            None,
+        )
+        .unwrap();
+        assert!(core.is_opaque(Path::new("dir")));
+        assert!(core.list_names(Path::new("dir")).unwrap().is_empty());
     }
 }

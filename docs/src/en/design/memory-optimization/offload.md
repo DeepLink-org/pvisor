@@ -26,7 +26,7 @@ Resume restores required hypervisor mappings, reopens the device gate and restar
 
 ## Backing identity and storage choice {#backing}
 
-RAM uses a shared file mapping. Stable backing identity—not a particular pathname—lets the
+RAM uses a shared file mapping. A stable backing identity, independent of a particular pathname, lets the
 same process fault pages back without replacing its host RAM addresses or copying a new image.
 Current path publication uses a hard link to the original inode; a compressed alias links the
 manifest, whose reference to the original sidecar directory remains unchanged.

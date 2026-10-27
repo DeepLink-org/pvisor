@@ -91,6 +91,10 @@ FC 使用 stock 内核/MMIO，受控停止不能算正常退出。任何失败�
 
 ## TurboOCI 按需镜像对照
 
+当前 V2 相对原生 Docker 的完整库存、预准备实例、远程冷／热和本地 mmap 主对照
+使用 [storage/lazy_benefits.py 与 local_reads.py](../storage/README.md#lazy-image-user-decisions)。
+以下 TurboOCI／OverlayBD 协议及保留批次是独立专项，不能用旧制品的结果填充当前 V2 用户页。
+
 [TurboOCI 对照协议](TURBO_OCI.md)属于 B-LAZY-STARTUP，分别比较客户端准备、
 Ready、正常退出和传输成本，与上面的已准备环境热缓存启动表保持独立。
 独立 OverlayBD/TCMU 环境已部署，操作和功能验证见

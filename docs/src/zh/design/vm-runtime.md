@@ -2,6 +2,8 @@
 
 `pvisor-vm` 把 guest CPU、RAM 和虚拟设备放在同一个生命周期内管理。硬件虚拟化执行 guest 指令，宿主设备处理 I/O，控制接口协调暂停、映射维护与状态捕获。上层 `pvisor` 提供文件树、网络出口、存储和 runner 监督；VM 内部掌握这些操作何时可以安全触碰机器状态。
 
+Host 进程与 OCI 容器使用宿主内核，容器通过 namespace、资源控制和 Runtime 配置形成边界；VM 工具使用 guest 内核。Host 上的代理环境变量需要程序配合，受控 VM 虚拟网卡则提供统一出口；VM 同时引入 guest RAM、设备处理和启动成本。具体控制依执行器和平台而定，见[隔离机制](isolation.md)。
+
 ## 子系统框图与所有权 {#architecture}
 
 ![VM 子系统的调用方、guest、vCPU、RAM、设备与冻结边界](assets/vm-subsystem.svg)
@@ -40,7 +42,7 @@ vCPU 线程反复进入后端执行，再根据 exit 原因处理寄存器、设
 
 ![guest 文件请求跨 virtqueue 进入宿主，并发布 used ring](assets/filesystem-request.svg)
 
-guest 驱动将请求和响应缓冲区放进 RAM，把 GPA、长度与方向写入 descriptor chain，再发布 available 条目并通知设备。宿主必须校验这些范围，才能把 GPA 转成可访问的宿主映射。请求完成后，queue owner 写回响应并发布 used 条目，guest 才能重用对应缓冲区。
+guest 驱动将请求和响应缓冲区放进 RAM，把 GPA、长度与方向写入 descriptor chain，再发布 available 条目并通知设备。宿主必须校验这些范围，才能把 GPA 转成可访问的宿主映射。请求完成后，queue owner 写回响应并发布 used 条目，guest 才能重用对应缓冲区。 校验包括 guest 地址是否落在允许的 RAM 范围内、长度是否溢出，以及缓冲区读写方向是否正确。
 
 virtio-fs 目前保留一个普通 request queue 和一个 hiprio queue。可重叠的大 READ 与目录读取交给有界 blocking I/O worker，短请求和需要串行的修改由队列 owner 处理。worker 返回结果，owner 独占 available/used ring 更新；并发 I/O 不改变 ring 的所有权。
 

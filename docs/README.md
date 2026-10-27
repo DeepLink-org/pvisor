@@ -16,9 +16,9 @@ runtime does not make their controls, records, defaults or lifecycle APIs
 interchangeable. Describe Agent-specific integrations as such; keep supervision
 levels independent of concurrency and deployment scale.
 
-Use `pvisor` for the Python distribution, import package, and wheel filename
-prefix. Use current Rust crate names, `PVISOR_*` environment variables, and
-repository/deployment URLs. Separate requested policy, installed controls, and observed
+Use `pvisor-sandbox` for the Python distribution and `pvisor_sandbox` for the wheel
+filename prefix. Keep `pvisor` for the Python import package and CLI. Use current
+Rust crate names, `PVISOR_*` environment variables, and repository/deployment URLs. Separate requested policy, installed controls, and observed
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
 
@@ -200,77 +200,44 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 
 ## Information architecture
 
-Value before mechanism, mechanism before implementation. Keep Home first,
-followed by eight sections: Quick start → Understanding pVisor → Local workflows → Execution
-infrastructure → Reference → Benchmarks → Design and research → Contributing
-(首页 → 快速开始 → 了解 pVisor → 本地工作流 → 执行基础设施 → 参考手册 → 基准测试 → 设计与研究 → 参与开发).
-Keep section headings separate from article links: leave `navigation.indexes`
-disabled so index articles remain explicit child entries. Keep `navigation.sections`
-disabled and use native expandable groups with matching peer typography; child
-articles are distinguished by indentation.
-Quick start owns Installation, Local workflow: run and review, Execution
-infrastructure: tool execution integration example, and Choose an executor, in that order.
-Installation installs the CLI on the execution machine, groups Host and Linux/KVM
-prerequisites by scenario, and then links to the two quick starts. Keep alternative
-installation and maintenance options after those entry points. Choose an executor
-is optional guidance for changing environments, not a prerequisite to both examples.
-The local path demonstrates staging,
-review, and selective apply. The infrastructure path uses the checked-in
-`examples/pvisor/07-vm-task` caller script and CLI adapter on Linux/KVM to run
-two fixed `qutebrowser-667` SWE tool calls in one VM and return feedback together.
-Do not describe the caller as an integrated framework or the adapter as an
-implemented Worker service. Explain how users run the example, read results and
-reuse its calling structure. State the fixed-batch and synchronous-return boundaries
-directly rather than presenting a development-status or future-work section.
-Keep detailed script responsibilities, fields, cleanup rules and engineering
-validation scope in the example README. Keep machine
-names and internal validation progress out of the user-facing quick start;
-distinguish verified offline execution from unverified registry downloads in
-the example README. Keep the original commands and candidate
-patch traceable; distinguish the fixed excerpt from full SWE evaluation or a
-live Agent loop. Run the checked-in example directly rather than duplicating
-its Python source or requiring readers to create scripts. Installation owns Host
-prerequisites; the image supplies guest dependencies. Retain the two scenario
-entry points without introducing a separate single-node onboarding route.
-Keep `concepts/lifecycle.md` focused on Agent-native wait management and the
-Pause/Offload/Resume relationship. The verified live CLI walkthrough belongs at
-`guides/infrastructure/lifecycle.md` under Execution infrastructure; retain old
-concept-page walkthrough anchors as links to the matching guide steps. Keep onboarding
-separate from checkpoint restoration and performance claims, and record the
-version and platform actually verified. Keep optional setup and detailed
-policies in their owning guides, linked from the onboarding pages.
-Understanding pVisor opens with Introduction and Core concepts, followed by a
-Core capabilities group with four articles: file-level oversight and isolation,
-sandbox lifecycle management, image and memory optimization, and state
-preservation and branch reuse. Security/support scope follows the group. Core concepts
-explains the Agent/Host/environment, file/network, task/record and state/resource
-relationships; Job commands, selectors and storage live at `reference/jobs.md`.
-Keep existing paths and anchors under `why/`, `concepts/` and `security/`.
-`concepts/resource-reuse.md` owns state semantics; resource mechanisms live at
-`concepts/resource-optimization.md`. Distinguish workspace checkpoints, full
-execution checkpoints, and same-instance live offload.
-The homepage gives equal entry points to local review and agent execution
-infrastructure. Local workflows owns Agent integration, access and credential
-configuration, review and accepting file results. Execution infrastructure owns
-inference/evaluation/rollout integration; trajectory capture and replay form a
-separate group from RL rollouts, with links from both scenario overviews.
-Reference owns executor details, policy field definitions, command/format references and
-detailed security contracts. Design and research owns implementation explanations,
-experimental features and the Lab notes group; moving navigation does not move
-articles or change their URLs. Concept pages explain supported mechanisms and
-link to owning contracts; they do not promote experimental versions to default
-capabilities or duplicate configuration matrices.
-The homepage remains accessible through its own tab and the site logo. Preserve
-the separation between tutorials, guides, references and explanations.
-Within each tab, keep the sidebar to two levels: topic group → article. Flatten
-subgroups into their parent group; do not add a third sidebar level.
+Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
+→ Basic concepts → Benchmarks → System design → Contributing
+(首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
+Quick start owns installation, the local run-and-review example and the infrastructure tool-execution example. User guide owns
+local workflows, Agent integration, executors, policies, task operations, platform
+integration, daemon setup, trajectories and command/configuration reference.
+Basic concepts owns the product overview, core concepts, the four core capabilities,
+evidence and security boundaries. Job usage and storage belongs in the reference group. Benchmarks owns measured results. System design owns architecture,
+subsystems, research, experimental designs and lab notes. Contributing owns the
+development and release workflow, regression cases and semantic specifications.
+
+Group infrastructure integration, daemon setup and shared image cache usage under
+User guide → Deployment and integration. Keep hardening with the policy guides.
+Contributing has four groups: Start contributing, Development and debugging,
+Testing and semantic specifications, and Release and maintenance. Put regression
+cases and the unreviewed STAGE specifications in the testing group; the learning
+path retains its five task tutorials. Vulnerability disclosure belongs under
+Release and maintenance, with reporting links retained in the security articles.
+
+Keep experimental feature designs under the System design → Experimental design
+(系统设计 → 实验设计) group and engineering experiment records under System design
+→ Lab notes (系统设计 → 实验记录). Neither is a separate top-level tab.
+Keep section headings separate from article links: leave `navigation.indexes` and
+`navigation.sections` disabled so peer entries use consistent typography and
+index articles remain explicit child entries.
+
+Keep existing article paths, including `guides/infrastructure/`,
+`design/experimental/` and `lab-notes/`, so incoming links remain valid. The
+homepage remains accessible through its own tab and the site logo. Preserve the
+separation between tutorials, guides, references and explanations. Within each
+tab, keep the sidebar to two levels: topic group → article.
 
 The canonical Chinese documentation uses these sections:
 
-- `why/`: product definition, Agent-native positioning, system role and scenario entry points.
+- `why/`: product scope, the two workflows, independent supervision and scale axes, and fit checks with comparisons.
 - `start/`: installation and the first reproducible Job, ending with where to go next.
 - `guides/`: the local workflow overview and task guides; `infrastructure/` owns the platform overview and integration matrix, with shared policies and executors linked from both routes.
-- `concepts/`: the user mental model — jobs, file oversight, lifecycle, state reuse, resources and evidence.
+- `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
 - `benchmarks/`: reproducible measurements and dated comparisons.
 - `security/`: what is protected, what is not, and how to report issues.
 - `reference/`: CLI, configuration, schemas and platform support matrices.
@@ -279,7 +246,7 @@ The canonical Chinese documentation uses these sections:
 - `community/`: contributing, development, testing, release, roadmap and policies.
 
 Experimental feature documents live under `design/experimental/` in both locale
-trees and appear in the Design and research tab. Keep the feature registry,
+trees and appear under System design → Experimental design. Keep the feature registry,
 designs, implementation plans and validation records there. Each feature has
 one `index.md` combining its status, design, implementation plan and validation
 records; do not split a feature into separate articles. The experimental registry
@@ -301,11 +268,11 @@ Readers and entry points:
 
 | Reader | Entry | Main path |
 | --- | --- | --- |
-| Developer using an agent | home → local workflows | local overview → first run → connect your agent → review and apply |
-| Platform / DevOps | home → execution infrastructure | infrastructure overview → integration matrix → executor/daemon setup → capacity evidence |
-| Security reviewer | security | threat model → executor boundaries → capabilities and evidence → disclosure |
-| Researcher (MLSys, agentic RL) | home → execution infrastructure | interface selection → rollout/evaluation handoff → state reuse → evidence and research |
-| Contributor | community | contributing → development → testing → architecture |
+| Developer using an agent | Quick start → User guide | installation → first run → connect your agent → review and apply |
+| Platform / DevOps | User guide | infrastructure overview → integration matrix → executor/daemon setup → capacity evidence |
+| Security reviewer | Basic concepts → Security | threat model → executor boundaries → capabilities and evidence → disclosure |
+| Researcher (MLSys, agentic RL) | User guide → System design | interface selection → rollout/evaluation handoff → state reuse → evidence and research |
+| Contributor | Contributing | contributing → development → testing → architecture |
 
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
@@ -380,7 +347,7 @@ matter or navigation label. Removing `status: todo` does not complete a missing
 field reference, schema, experiment, or policy decision. Keep outstanding items
 explicit and attach the implementation or verification that completes each one.
 Preserve page paths and bilingual parity. Keep both locale navigation trees in
-the Home-plus-eight-section order defined above.
+the seven-tab order defined above.
 
 ### Writing style
 

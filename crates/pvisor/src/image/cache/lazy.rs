@@ -1,7 +1,7 @@
 //! Lazy image preparation with separate host FUSE and direct VM ownership.
 use super::backend::RemoteFs;
 use super::{CacheClient, Request as CacheRequest, Response, architecture, hash};
-use crate::image::oci::{ImageStore, PreparedImage};
+use crate::image::oci::PreparedImage;
 use anyhow::{Context, ensure};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
@@ -39,20 +39,17 @@ impl Drop for FuseMount {
     }
 }
 
+/// Resolve an image and retain its lazy lower for the caller's VM lifetime.
+/// Explicit storage overrides shared environment/default paths. Without a selected
+/// remote backend or available implicit server, preparation uses the local V2 pool.
+/// The returned owner must outlive every filesystem/VM consumer. Failed imports
+/// remove temporary OCI trees, retain previously committed revisions and return errors.
 pub fn prepare_vm_image(
     image: &str,
     store: Option<PathBuf>,
 ) -> anyhow::Result<(PreparedImage, Option<super::direct::DirectImage>)> {
-    let client = CacheClient::discover()?;
-    let store = ImageStore::new(store)?;
-    let Some(client) = client else {
-        return Ok((
-            super::progress::loading("resolving and preparing local image", || {
-                store.prepare(image)
-            })?,
-            None,
-        ));
-    };
+    let store = crate::image::store::LocalStore::discover(store)?;
+    let client = CacheClient::discover()?.map_or_else(|| CacheClient::local(&store), Ok)?;
     let downloads = super::progress::Downloads::new(image);
     crate::diagnostics::diagnostic(format_args!(
         "pVisor image: lazy loading from {}",
@@ -66,7 +63,8 @@ pub fn prepare_vm_image(
                 refresh: false,
             })
         })?;
-    let (prepared, mount) = direct_prepared(client, response, &store.root, downloads, None)?;
+    let (prepared, mount) =
+        direct_prepared(client, response, &store.projections(), downloads, None)?;
     Ok((prepared, Some(mount)))
 }
 
@@ -98,7 +96,7 @@ pub fn open_image_handle_for_host(
     config: super::CacheConfig,
     handle: &str,
 ) -> anyhow::Result<LazyImage> {
-    let store = ImageStore::new(config.image_store.clone())?;
+    let store = crate::image::store::LocalStore::discover(config.image_store.clone())?;
     let client = CacheClient::from_config(config)?;
     let (response, _) = client.request(CacheRequest::Open {
         handle: handle.into(),
@@ -107,7 +105,7 @@ pub fn open_image_handle_for_host(
     let (prepared, mount) = mount_prepared(
         client,
         response,
-        &store.root,
+        &store.projections(),
         super::progress::Downloads::new(handle),
         Some(handle),
     )?;
@@ -147,7 +145,7 @@ pub fn open_image_handle_for_vm(
     config: super::CacheConfig,
     handle: &str,
 ) -> anyhow::Result<LazyImage> {
-    let store = ImageStore::new(config.image_store.clone())?;
+    let store = crate::image::store::LocalStore::discover(config.image_store.clone())?;
     let client = CacheClient::from_config(config)?;
     let (response, _) = client.request(CacheRequest::Open {
         handle: handle.into(),
@@ -156,7 +154,7 @@ pub fn open_image_handle_for_vm(
     let (prepared, owner) = direct_prepared(
         client,
         response,
-        &store.root,
+        &store.projections(),
         super::progress::Downloads::new(handle),
         Some(handle),
     )?;
@@ -198,12 +196,15 @@ fn prepare_remote(
         );
     }
     let read_handle = image_handle;
+    let pooled = client.is_local_pool();
     let cache = dirs::cache_dir()
         .context("cannot find user cache directory")?
         .join("pvisor/blocks")
         .join(&hash(client.address().as_bytes())[7..])
         .join(&hash(read_handle.as_bytes())[7..]);
-    fs::create_dir_all(&cache)?;
+    if !pooled {
+        fs::create_dir_all(&cache)?;
+    }
     downloads.totals(totals);
     if let Some(totals) = totals {
         crate::diagnostics::diagnostic(format_args!(
@@ -212,7 +213,7 @@ fn prepare_remote(
             totals.bytes as f64 / (1024.0 * 1024.0)
         ));
     }
-    let metadata_cache = Some({
+    let metadata_cache = (!pooled).then(|| {
         let generation = metadata_generation;
         dirs::cache_dir()
             .expect("cache directory already resolved")
@@ -259,7 +260,7 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<FuseMount> {
     #[cfg(target_os = "macos")]
     options.push(MountOption::CUSTOM("backend=fskit".into()));
     let session = Session::new(filesystem, &mountpoint, &options)
-        .context("mount lazy image lower (FUSE is required); unset PVISOR_CACHE_BACKEND/PVISOR_CACHE_LOCATION and set PVISOR_CACHE_SERVER=off to use local OCI extraction")?;
+        .context("mount lazy image lower (FUSE is required for host access); VM image preparation uses a direct lazy lower without a host FUSE mount")?;
     #[cfg(target_os = "linux")]
     let session = BackgroundSession::new_interruptible(session)?;
     #[cfg(not(target_os = "linux"))]

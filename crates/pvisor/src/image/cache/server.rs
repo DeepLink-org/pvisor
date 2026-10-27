@@ -4,7 +4,7 @@ use super::protocol::{Envelope, read_frame, write_frame};
 use super::storage::Storage;
 use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV, endpoint};
 use super::{Request, Response};
-use crate::image::oci::ImageStore;
+use crate::image::store::LocalStore;
 use anyhow::{Context, bail, ensure};
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
@@ -19,9 +19,13 @@ use std::time::Duration;
 #[cfg(test)]
 mod tests;
 
-fn reader(store: &ImageStore) -> anyhow::Result<PortableCache> {
+fn reader(root: &std::path::Path) -> anyhow::Result<PortableCache> {
+    let store = LocalStore::open(root.to_owned())?;
     Ok(PortableCache::new(
-        Storage::filesystem(store.root.join("cache-v1"), true)?,
+        Storage::Pool(Arc::new(super::pool::PoolStorage::open(
+            store.writable_pool()?,
+            true,
+        )?)),
         Some(store.root.clone()),
         false,
     ))
@@ -71,13 +75,8 @@ const FILE_WORKERS: usize = 16;
 const PREPARE_WORKERS: usize = 2;
 type ExchangeResult = anyhow::Result<(Response, Vec<u8>)>;
 
-// Only legacy V1 preparation hands its stream to a worker. Persistent stream
-// reads, writes, idle waits and result waits belong to bounded connection handlers.
-enum PrepareReply {
-    Connection(Stream, Option<ConnectionPermit>),
-    Result(mpsc::SyncSender<ExchangeResult>),
-}
-type PrepareJob = (PrepareReply, Request);
+// Connections keep their sockets and admission permits; workers return results.
+type PrepareJob = (mpsc::SyncSender<ExchangeResult>, Request);
 
 struct ConnectionPermit(Arc<AtomicUsize>);
 impl ConnectionPermit {
@@ -150,16 +149,7 @@ fn start_request_workers(
                     let job = receive.lock().unwrap().recv();
                     let Ok((reply, request)) = job else { break };
                     let result = execute(request);
-                    match reply {
-                        PrepareReply::Connection(stream, _permit) => {
-                            if let Err(error) = reply_result(stream, result) {
-                                eprintln!("cache preparation: {error}");
-                            }
-                        }
-                        PrepareReply::Result(send) => {
-                            let _ = send.send(result);
-                        }
-                    }
+                    let _ = reply.send(result);
                 }
             })
         })
@@ -183,14 +173,13 @@ fn serve_connection_queued(
     token: Option<&str>,
     prepare: Option<&mpsc::SyncSender<PrepareJob>>,
     files: Option<&mpsc::SyncSender<PrepareJob>>,
-    mut permit: Option<ConnectionPermit>,
+    _permit: Option<ConnectionPermit>,
 ) -> anyhow::Result<()> {
     stream.nodelay()?;
     stream.timeouts(Duration::from_secs(5))?;
     if let Stream::Unix(socket) = &stream {
         ensure_same_user(socket)?;
     }
-    let mut version = None;
     loop {
         // Also bounds idle persistent connections and incomplete request frames.
         stream.timeouts(Duration::from_secs(5))?;
@@ -222,9 +211,7 @@ fn serve_connection_queued(
             )?;
             return Ok(());
         }
-        if !matches!(envelope.version, 1 | 2)
-            || version.is_some_and(|version| version != envelope.version)
-        {
+        if envelope.version != 2 {
             write_frame(
                 &mut stream,
                 &Response::Error {
@@ -234,34 +221,12 @@ fn serve_connection_queued(
             )?;
             return Ok(());
         }
-        version = Some(envelope.version);
         let request = envelope.request;
         let result = if matches!(request, Request::Prepare { .. })
             && let Some(queue) = prepare
         {
-            if envelope.version == 1 {
-                // Keep admission counted across the legacy queue handoff too.
-                return match queue
-                    .try_send((PrepareReply::Connection(stream, permit.take()), request))
-                {
-                    Ok(()) => Ok(()),
-                    Err(
-                        mpsc::TrySendError::Full((PrepareReply::Connection(stream, _permit), _))
-                        | mpsc::TrySendError::Disconnected((
-                            PrepareReply::Connection(stream, _permit),
-                            _,
-                        )),
-                    ) => reply_result(
-                        stream,
-                        Err(anyhow::anyhow!(
-                            "image preparation queue is busy; retry later"
-                        )),
-                    ),
-                    _ => unreachable!(),
-                };
-            }
             let (send, receive) = mpsc::sync_channel(1);
-            match queue.try_send((PrepareReply::Result(send), request)) {
+            match queue.try_send((send, request)) {
                 Ok(()) => receive
                     .recv_timeout(TIMEOUT)
                     .context("wait for image preparation; outcome may be unknown")?,
@@ -271,7 +236,7 @@ fn serve_connection_queued(
             }
         } else if let Some(queue) = files {
             let (send, receive) = mpsc::sync_channel(1);
-            match queue.try_send((PrepareReply::Result(send), request)) {
+            match queue.try_send((send, request)) {
                 Ok(()) => receive
                     .recv_timeout(TIMEOUT)
                     .context("wait for cache request; outcome may be unknown")?,
@@ -282,9 +247,6 @@ fn serve_connection_queued(
             store.request(request)
         };
         write_result(&mut stream, result)?;
-        if envelope.version == 1 {
-            return Ok(());
-        }
     }
 }
 
@@ -320,11 +282,11 @@ fn write_result(
 
 pub(super) fn serve(
     address: String,
-    store: ImageStore,
+    store: LocalStore,
     token: Option<String>,
     ready: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let store = Arc::new(reader(&store)?);
+    let store = Arc::new(reader(&store.root)?);
     let token = Arc::new(token);
     // Bind before starting workers so address conflicts fail without orphan workers.
     enum Listener {

@@ -67,4 +67,4 @@ Use at most four simultaneous real native guests, counting live source VMs; cap 
 
 The daemon pool is separate from node-backed restoration. Physical-pool loss fails dependent VMs; sealed-compressed clients retain delivered handles for local recovery and stop new publication; API restart retains the detached component but cannot recover failed pool contents. See [activation, ownership and limits](../../guides/daemon/index.md#memory-pool).
 
-Related designs: [daemon architecture](index.md), [shared image storage](../shared-image-cache-storage.md), [memory optimization](../memory-optimization/index.md) and [experimental cold RAM pool](../memory-optimization/proof-of-concept.md).
+Related designs: [daemon architecture](index.md), [shared image storage](../lazy-image-v2.md), [memory optimization](../memory-optimization/index.md) and [experimental cold RAM pool](../memory-optimization/proof-of-concept.md).

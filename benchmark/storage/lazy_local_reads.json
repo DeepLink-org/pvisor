@@ -1,0 +1,1 @@
+{"local-reads":"$ python3 @REPO@/benchmark/storage/local_reads.py --binary @BINARY@ --inputs @INPUTS@ --output @OUTPUT@"}

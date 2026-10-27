@@ -18,9 +18,9 @@ pVisor 还会注入运行时变量，例如 `PVISOR_RUN_ID`、`PVISOR_AGENTCTL_*
 
 ## HOME 与本地凭据文件
 
-- **`--safe`**：HOME（以及显式设置的 `CODEX_HOME`）使用独立的私有 stage。macOS 上 Agent 使用临时 HOME，不能直接读取原主目录；Linux 上启动器通过私有 stage 投影宿主 HOME。HOME 的改动在 Run 结束后丢弃。
-- **视图内的 `.ssh`、`.gnupg` 与私钥文件**：`--safe` 预设拒绝访问，见[文件策略](files.md)。
-- **Linux 注意**：overlay deny 规则不会隐藏工作区视图之外原路径上的秘密文件；需要更强保证时使用 `--filesystem sandbox` 或 VM。
+使用 `--safe` 时，HOME（以及显式设置的 `CODEX_HOME`）使用独立的私有 stage。macOS 上 Agent 使用临时 HOME，不能直接读取原主目录；Linux 上启动器通过私有 stage 投影宿主 HOME。HOME 的改动在 Run 结束后丢弃。
+
+`--safe` 预设拒绝访问视图内的 `.ssh`、`.gnupg` 与私钥文件，见[文件策略](files.md)。Linux 上，overlay deny 规则不会隐藏工作区视图之外原路径上的秘密文件；需要更强保证时使用 `--filesystem sandbox` 或 VM。
 
 ## 两种交付 API Key 的方式
 

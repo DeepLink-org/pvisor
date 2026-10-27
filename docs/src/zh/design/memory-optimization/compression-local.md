@@ -1,7 +1,7 @@
 # 实例内压缩
 
-让可压缩冷内容由单个实例掌控，无需池化服务也能保存或恢复。
-这种选择优先缩小所有权与故障边界，而不是追求跨实例共享。
+实例内压缩由单个实例保存和恢复可压缩的冷内容，无需池化服务。
+它优先保持较小的所有权与故障边界，不负责跨实例共享。
 
 ## 目标与现状 {#status}
 
@@ -88,8 +88,8 @@ memfd 槽位经引用固定后，由 VM 以 `MAP_PRIVATE` 映射；它不注册 
 该模式需要内核缺页 userfaultfd，服务丢失后保留本地恢复。独立双 VM 正确性
 探针已验证池终止后的 guest refault 和文件 I/O，见[池化压缩](compression-pool.md)。部署入口见 [daemon memory pool](../../guides/daemon/index.md#memory-pool)。
 
-选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：
-字节不变仍可能被频繁读取。重新核对保护内容，不保证工作负载延迟。
+选择策略通过实验性的驱逐/refault 探测寻找候选内容，不能直接检测读取热度：
+内容不变的页面仍可能被频繁读取。重新核对可以保护内容，但不保证工作负载延迟。
 历史编码池与 Linux 客户端持有 sealed backing 的实现见[池化压缩](compression-pool.md)，
 不能用它们替代物理池的合同。Apple Silicon 另有 `physical-pages` 的 16 KiB 物理共享，
 使用私有文件映射与 live owner；默认 HVF 压缩池仍是不同后端，见[平台与故障边界](index.md#direction)。
