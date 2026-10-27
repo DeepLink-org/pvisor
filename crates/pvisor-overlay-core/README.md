@@ -354,3 +354,25 @@ entries must retain their inode identity and type. This is an opt-in experiment,
 not a change to the persistence contract or the default. Measure fresh-stage,
 same-binary serial/parallel trials without tracing; retain failures and verify
 lower immutability, upper bytes and completion markers before claiming a gain.
+
+## Hole-preserving checkpoint and restore copies
+
+Cargo feature `sparse-checkpoint-copy` plus an explicit
+`PVISOR_SPARSE_CHECKPOINT_COPY` run-time selection opt into copying only the data
+extents of a regular file, so a logically large but physically sparse pending
+upper stays sparse in a checkpoint snapshot and in each restored branch. Both
+gates default off: an unset, empty or `0` selector keeps the original
+byte-for-byte copy; `1`/`all` enables every site; `checkpoint`/`restore` selects
+one site; any unrecognised value disables the candidate.
+
+The destination is always a new independently owned inode, never a hard link and
+never a reflink. Data extents come from `lseek(SEEK_DATA)`/`lseek(SEEK_HOLE)` and
+are copied with `copy_file_range`, falling back to `pread`/`pwrite`; a filesystem
+that cannot query holes degrades to a dense copy of the same logical bytes.
+`ENOSPC`, `EDQUOT`, `EIO` and other genuine failures are returned unchanged. The
+candidate installs no metadata, performs no extra `fsync`, and leaves the
+hardlink table, directory syncs, parent sync, ownership/mode/xattr/time
+installation and the Apply preimage/target conflict checks untouched.
+
+`PVISOR_SPARSE_COPY_TRACE=<file>` is an opt-in diagnostic that appends one JSON
+line per copied regular file. It never changes the copy outcome.

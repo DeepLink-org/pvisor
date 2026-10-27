@@ -56,8 +56,9 @@ pub use implant::{ExecutionOverlayHint, ImplantPlan, OverlayHint};
 pub use overlay::apply_overlay;
 pub use overlay::{
     ApplySelection, ChangeEntry, ChangeEntryType, ChangeKind, OverlayState, ReadOnlyOverlayMount,
-    apply_overlay_selected, discard_overlay, load_apply_records, mount_overlay_record_read_only,
-    overlay_changes, overlay_status, restore_overlay_upper, snapshot_overlay_upper,
+    UpperCopySite, apply_overlay_selected, discard_overlay, load_apply_records,
+    mount_overlay_record_read_only, overlay_changes, overlay_status, restore_overlay_upper_as,
+    snapshot_overlay_upper,
 };
 #[cfg(test)]
 pub use overlay::{OverlayRecord, OverlayUpper};
