@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Landlock-only filesystem isolation
+
+- Add a filesystem policy that installs Landlock against the host view without
+  creating user, mount or PID namespaces, so `--filesystem sandbox` keeps
+  enforcing a path boundary on hosts that deny `mount(2)` instead of silently
+  returning to an unisolated host process.
+- Withhold `/` and the projected home and XDG roots in that mode. Without a
+  synthetic root to project them behind, either grant would expose every sibling
+  of the workspace; the launcher redirects `HOME` into a private temporary
+  directory instead.
+- Record the installed mechanism as `linux-landlock-host` and name the boundary
+  actually in effect, rather than always reporting namespace isolation.
+- Keep the projected host procfs when the runtime denies mounting a fresh one,
+  instead of failing the whole sandbox setup.
+
 ### Snapshot RAM mount isolation
 
 - Keep transient snapshot RAM mounts and pager specifications in validated private

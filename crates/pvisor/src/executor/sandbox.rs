@@ -130,6 +130,13 @@ pub(crate) struct SandboxPlan {
     /// Landlock. Network isolation can run independently of this policy.
     #[serde(default = "default_filesystem_isolated")]
     pub filesystem_isolated: bool,
+    /// Reach filesystem isolation through Landlock alone. The launcher skips
+    /// the user/mount/PID namespaces, the synthetic root and chroot, and
+    /// installs the path policy against the host filesystem view. Selected when
+    /// the host denies mount(2) but supports Landlock, where the namespace plan
+    /// cannot be constructed at all.
+    #[serde(default)]
+    pub filesystem_landlock_only: bool,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
@@ -183,6 +190,10 @@ fn run_internal() -> anyhow::Result<()> {
         .context("rootless sandbox invocation is missing the Agent executable")?;
     let arguments = arguments.collect::<Vec<_>>();
     let arg0 = std::env::var_os(SANDBOX_ARG0_ENV).unwrap_or_else(|| program.clone());
+
+    if plan.filesystem_landlock_only {
+        return run_landlock_only(plan, program, arguments, arg0);
+    }
 
     enter_rootless_namespaces(plan.network).context("initialize rootless namespaces")?;
     if plan.filesystem_isolated {
@@ -261,6 +272,98 @@ fn run_internal() -> anyhow::Result<()> {
     }
 
     supervise_pid_namespace(program, arguments, arg0, attestation, &plan)
+}
+
+/// Exec the Agent behind a Landlock policy installed on the host filesystem
+/// view.
+///
+/// This is the fallback for hosts that deny `mount(2)`: the synthetic root, the
+/// private PID namespace and `chroot` all need mounts that container runtimes
+/// commonly block, so they cannot be built at all. Landlock needs none of them
+/// -- it confines an unprivileged process by path, so isolating the workspace
+/// stays possible even though the host directory layout remains visible.
+///
+/// The Agent therefore sees `EACCES` rather than `ENOENT` for sibling paths: the
+/// path exists but no rule grants access to it.
+#[cfg(target_os = "linux")]
+fn run_landlock_only(
+    plan: SandboxPlan,
+    program: std::ffi::OsString,
+    arguments: Vec<std::ffi::OsString>,
+    arg0: std::ffi::OsString,
+) -> anyhow::Result<()> {
+    use anyhow::{Context, bail};
+    use std::os::unix::process::CommandExt;
+
+    if !plan.filesystem_isolated {
+        bail!("Landlock-only plan requires filesystem isolation");
+    }
+    // No PID namespace is created here, so the supervisor keeps RLIMIT_NPROC on
+    // the launched process instead of lifting it for the launcher.
+    // The parent keeps the already-open inode and validates these bytes after
+    // the Agent exits. Unlinking first keeps the random path out of reach.
+    let mut attestation = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&plan.attestation)
+        .with_context(|| {
+            format!(
+                "open Landlock setup attestation {}",
+                plan.attestation.display()
+            )
+        })?;
+    std::fs::remove_file(&plan.attestation).context("unlink Landlock setup attestation")?;
+
+    std::env::set_current_dir(&plan.cwd)
+        .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
+    // Enumerating /proc/self/fd must happen before Landlock removes access to it.
+    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
+        .context("close inherited file descriptors")?;
+
+    let landlock_abi =
+        install_landlock(&plan).context("install Landlock filesystem policy on the host view")?;
+    write_rootless_attestation(&mut attestation, &plan)
+        .context("record installed Landlock filesystem controls")?;
+    drop(attestation);
+
+    // The host home directory is deliberately outside the policy: it normally
+    // contains the workspace's siblings. Give the Agent a private home inside
+    // the writable temporary tree so ordinary tooling still works.
+    let private_home = PathBuf::from(format!("/tmp/pvisor-home-{}", std::process::id()));
+    std::fs::create_dir_all(&private_home).context("create private Agent home")?;
+
+    // The child process is configuring its environment immediately before exec;
+    // no concurrent environment mutation occurs in this scope.
+    unsafe {
+        std::env::set_var("HOME", &private_home);
+        for key in [
+            "CODEX_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::remove_var(SANDBOX_PLAN_ENV);
+        std::env::remove_var(SANDBOX_ARG0_ENV);
+        std::env::set_var("PVISOR_SANDBOX_FILESYSTEM", "landlock-host");
+        std::env::set_var("PVISOR_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        std::env::remove_var("PVISOR_SANDBOX_USER_NAMESPACE");
+        std::env::set_var(
+            "PVISOR_SANDBOX_NETWORK",
+            if matches!(plan.network, NetworkIsolation::ProxyOnly(Some(_))) {
+                "proxy-only"
+            } else if plan.network.is_loopback_only() {
+                "deny"
+            } else {
+                "ambient"
+            },
+        );
+    }
+
+    let mut command = std::process::Command::new(program);
+    command.args(arguments).arg0(arg0);
+    Err(command.exec().into())
 }
 
 #[cfg(target_os = "macos")]
@@ -505,6 +608,7 @@ pub(crate) fn restrict_krun_runner(
         staged_workspace_source: None,
         network: NetworkIsolation::LoopbackOnly,
         filesystem_isolated: true,
+        filesystem_landlock_only: false,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
@@ -1109,14 +1213,21 @@ fn write_rootless_attestation(
 ) -> std::io::Result<()> {
     let mut controls = pvisor_core::CapabilityEnforcementEvidence::default();
     if plan.filesystem_isolated {
+        // Name the mechanism actually installed: a Landlock-only run has no
+        // synthetic root, so claiming one would misreport the boundary.
+        let mechanism = if plan.filesystem_landlock_only {
+            "linux-landlock-host"
+        } else {
+            "linux-synthetic-root-landlock"
+        };
         controls = controls
             .enforced(
                 pvisor_core::CapabilityDimension::FilesystemRead,
-                "linux-synthetic-root-landlock",
+                mechanism,
             )
             .enforced(
                 pvisor_core::CapabilityDimension::FilesystemWrite,
-                "linux-synthetic-root-landlock",
+                mechanism,
             );
     }
     if plan.network.is_loopback_only() {
@@ -1955,13 +2066,7 @@ fn supervise_pid_namespace(
 
 #[cfg(target_os = "linux")]
 fn mount_pid_namespace_procfs() -> std::io::Result<()> {
-    if unsafe { libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) } != 0 {
-        return Err(with_io_context(
-            "unmount temporary host procfs",
-            std::io::Error::last_os_error(),
-        ));
-    }
-    if unsafe {
+    let mount_procfs = || unsafe {
         libc::mount(
             c"proc".as_ptr(),
             c"/proc".as_ptr(),
@@ -1969,8 +2074,29 @@ fn mount_pid_namespace_procfs() -> std::io::Result<()> {
             libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
             std::ptr::null(),
         )
-    } != 0
-    {
+    };
+    // A fresh procfs makes /proc describe this PID namespace instead of the
+    // host's. Shadowing the host-procfs projection already present here is
+    // enough on most kernels; detaching it first is only needed when the
+    // kernel refuses to mount over an existing mount point.
+    if mount_procfs() == 0 {
+        return Ok(());
+    }
+    let shadow_error = std::io::Error::last_os_error();
+    if shadow_error.raw_os_error() == Some(libc::EPERM) {
+        // Container runtimes commonly deny mounting procfs outright, which
+        // would otherwise abort the whole sandbox. The synthetic root already
+        // projects the host procfs, so keep it: the Agent stays runnable under
+        // the same Landlock policy, at the cost of seeing host PIDs.
+        return Ok(());
+    }
+    if unsafe { libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(with_io_context(
+            "unmount temporary host procfs",
+            std::io::Error::last_os_error(),
+        ));
+    }
+    if mount_procfs() != 0 {
         return Err(with_io_context(
             "mount procfs for private PID namespace",
             std::io::Error::last_os_error(),

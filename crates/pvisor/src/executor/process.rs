@@ -222,6 +222,10 @@ pub struct ProcessExecutor {
     /// `Some` selects the platform sandbox launcher. The normal library
     /// default intentionally remains the compatibility host process.
     sandbox_launcher: Option<PathBuf>,
+    /// Confine the Agent with Landlock alone instead of entering the
+    /// user/mount/PID namespaces and building a synthetic root. Used on hosts
+    /// that deny `mount(2)`, where the namespace plan cannot be constructed.
+    landlock_only: bool,
 }
 
 struct PreparedCommand {
@@ -496,6 +500,7 @@ impl ProcessExecutor {
         }
         Ok(Self {
             sandbox_launcher: Some(launcher),
+            landlock_only: false,
         })
     }
 
@@ -505,6 +510,44 @@ impl ProcessExecutor {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "the rootless local process executor is only available on Linux",
+        ))
+    }
+
+    /// Build a Linux executor that confines the Agent with Landlock alone.
+    /// The launcher installs the path policy against the host filesystem view
+    /// without entering any namespace. This is the only filesystem boundary
+    /// available where the host denies `mount(2)` but implements Landlock;
+    /// siblings outside the workspace stay unreadable, though their paths
+    /// remain visible and report `EACCES` rather than `ENOENT`.
+    #[cfg(target_os = "linux")]
+    pub fn landlock_only_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let launcher = launcher.into().canonicalize()?;
+        if !is_executable(&launcher) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Landlock sandbox launcher is not executable: {}",
+                    launcher.display()
+                ),
+            ));
+        }
+        Ok(Self {
+            sandbox_launcher: Some(launcher),
+            landlock_only: true,
+        })
+    }
+
+    /// Whether this executor confines the Agent with Landlock alone.
+    pub fn is_landlock_only(&self) -> bool {
+        cfg!(target_os = "linux") && self.landlock_only
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn landlock_only_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let _ = launcher.into();
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the Landlock local process executor is only available on Linux",
         ))
     }
 
@@ -530,6 +573,7 @@ impl ProcessExecutor {
         }
         Ok(Self {
             sandbox_launcher: Some(launcher),
+            landlock_only: false,
         })
     }
 
@@ -570,7 +614,7 @@ impl ProcessExecutor {
         }
         let (mut command, sandbox_plan, resources) = if let Some(launcher) = &self.sandbox_launcher
         {
-            platform_launcher_command(launcher, spec, invocation, &program)?
+            platform_launcher_command(launcher, spec, invocation, &program, self.landlock_only)?
         } else {
             let mut command = Command::new(program);
             command.args(&invocation.args);
@@ -590,7 +634,9 @@ impl ProcessExecutor {
             // created its private PID namespace and reaper. Applying it to
             // the launcher itself can make setup fail with EAGAIN when the
             // host user already has more processes than the requested cap.
-            if sandbox_plan.is_some() {
+            // A Landlock-only run has no PID namespace, so the limit must stay
+            // on the launched process.
+            if sandbox_plan.is_some() && !self.landlock_only {
                 limits.processes = None;
             }
             install_resource_limit_hook(&mut command, limits);
@@ -651,6 +697,22 @@ pub fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
         landlock_runtime_available()
             && probe(["--user", "--mount", "--pid", "--fork", "true"].as_slice())
     }
+}
+
+/// Whether the host can enforce a filesystem policy with Landlock alone.
+///
+/// Hosts that deny `mount(2)` cannot run the namespace launcher at all, but the
+/// Landlock LSM still confines an unprivileged process by path, so the
+/// workspace policy remains enforceable without a synthetic root.
+#[cfg(target_os = "linux")]
+pub fn landlock_only_runtime_available() -> bool {
+    crate::executor::sandbox::landlock_runtime_available()
+}
+
+/// Landlock is a Linux LSM; no other platform can substitute for it here.
+#[cfg(not(target_os = "linux"))]
+pub fn landlock_only_runtime_available() -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -721,6 +783,7 @@ fn platform_launcher_command(
     spec: &RunSpec,
     invocation: &ProcessInvocation,
     program: &Path,
+    landlock_only: bool,
 ) -> std::io::Result<(Command, Option<String>, SandboxResources)> {
     let program = program.canonicalize().map_err(|error| {
         std::io::Error::new(
@@ -745,6 +808,7 @@ fn platform_launcher_command(
             .to_owned(),
         network,
         filesystem_isolated,
+        landlock_only,
     )?;
     let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
     let plan_path = sandbox_root
@@ -766,6 +830,8 @@ fn platform_launcher_command(
     spec: &RunSpec,
     invocation: &ProcessInvocation,
     program: &Path,
+    // Landlock is Linux-only; macOS keeps its Seatbelt plan.
+    _landlock_only: bool,
 ) -> std::io::Result<(Command, Option<String>, SandboxResources)> {
     let program = program.canonicalize().map_err(|error| {
         std::io::Error::new(
@@ -961,6 +1027,7 @@ fn rootless_plan(
     attestation: PathBuf,
     network: NetworkIsolation,
     filesystem_isolated: bool,
+    filesystem_landlock_only: bool,
 ) -> std::io::Result<SandboxPlan> {
     let cwd = invocation
         .cwd
@@ -990,16 +1057,23 @@ fn rootless_plan(
     // Run mounts private copy-on-write views of them at the same paths, so
     // programs launched later from a shell get the same protection as the
     // initial executable.
+    //
+    // A Landlock-only Run has no mount to project those roots behind, so
+    // granting them would expose every sibling of the workspace that happens to
+    // live under the same home directory. The launcher redirects HOME (and the
+    // XDG roots) into the private temporary tree instead.
     let safe = crate::executor::sandbox::sandbox_required(spec);
     let mut staged_roots = Vec::new();
-    for path in projected_state_roots(invocation) {
-        if safe {
-            if path == Path::new("/") {
-                return Err(std::io::Error::other("safe state root cannot be /"));
+    if !filesystem_landlock_only {
+        for path in projected_state_roots(invocation) {
+            if safe {
+                if path == Path::new("/") {
+                    return Err(std::io::Error::other("safe state root cannot be /"));
+                }
+                staged_roots.push(path);
+            } else {
+                read_write.push(path);
             }
-            staged_roots.push(path);
-        } else {
-            read_write.push(path);
         }
     }
     staged_roots.sort_unstable_by(|left, right| {
@@ -1040,10 +1114,17 @@ fn rootless_plan(
         read_write.push(source.clone());
         read_write.push(path.clone());
     }
-    if !safe {
+    if !safe && !filesystem_landlock_only {
         // The synthetic root itself is writable, and projected host paths
-        // retain their ordinary lower filesystem write semantics.
+        // retain their ordinary lower filesystem write semantics. A
+        // Landlock-only run has no synthetic root, so granting "/" here would
+        // hand the Agent the whole host filesystem and void the policy.
         read_write.push(PathBuf::from("/"));
+    }
+    if filesystem_landlock_only {
+        // Without a synthetic root there is no private tmpfs to redirect
+        // temporary files into, and the Agent still needs somewhere to write.
+        push_existing(&mut read_write, Path::new("/tmp"));
     }
     let graphical_display = project_graphical_session(invocation, &mut read_only, &mut read_write);
 
@@ -1154,6 +1235,7 @@ fn rootless_plan(
         staged_workspace_source,
         network,
         filesystem_isolated,
+        filesystem_landlock_only,
         process_limit: spec.runtime.resource_limits.processes,
     })
 }
@@ -1292,7 +1374,9 @@ fn process_exit_outcome(
 #[async_trait]
 impl RunExecutor for ProcessExecutor {
     fn descriptor(&self) -> ExecutorPlan {
-        let (name, isolation) = if self.is_rootless() {
+        let (name, isolation) = if self.is_landlock_only() {
+            ("local-landlock-v1", IsolationKind::SandboxedProcess)
+        } else if self.is_rootless() {
             ("local-rootless-v1", IsolationKind::RootlessProcess)
         } else if self.is_seatbelt() {
             ("local-seatbelt-v1", IsolationKind::SandboxedProcess)
@@ -1301,7 +1385,14 @@ impl RunExecutor for ProcessExecutor {
         };
         let mut capability_plan = CapabilityEnforcementPlan::default()
             .planned(CapabilityDimension::Resources, "posix-rlimit");
-        if self.is_rootless() {
+        if self.is_landlock_only() {
+            capability_plan = capability_plan
+                .planned(CapabilityDimension::FilesystemRead, "linux-landlock-host")
+                .planned(
+                    CapabilityDimension::FilesystemWrite,
+                    "linux-landlock-host",
+                );
+        } else if self.is_rootless() {
             capability_plan = capability_plan
                 .planned(
                     CapabilityDimension::FilesystemRead,
@@ -2173,6 +2264,7 @@ mod tests {
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
             true,
+            false,
         )
         .unwrap();
         assert!(normal.read_write.contains(&PathBuf::from("/")));
@@ -2200,6 +2292,7 @@ mod tests {
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
             true,
+            false,
         )
         .unwrap();
         assert!(!safe.read_write.contains(&PathBuf::from("/")));
@@ -2207,6 +2300,54 @@ mod tests {
         assert_eq!(safe.staged_workspace, Some(workspace));
         assert_eq!(safe.staged_workspace_source, Some(merged));
         assert!(safe.filesystem_isolated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_only_plan_withholds_the_host_root_and_state_roots() {
+        // A Landlock rule is the only boundary in this mode, so anything
+        // granted here becomes readable: "/" would grant the whole host, and
+        // the user's home usually contains the workspace's siblings.
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let workspace = home.join("project");
+        for path in [&home, &workspace] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let mut spec = RunSpec::process("run", "bash", "/bin/bash");
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.inherit_env = false;
+        invocation.cwd = Some(workspace.display().to_string());
+        invocation
+            .env
+            .insert("HOME".into(), home.display().to_string());
+        let RunInvocation::Process(invocation) = &spec.invocation;
+
+        let plan = rootless_plan(
+            &spec,
+            invocation,
+            Path::new("/bin/bash"),
+            temporary.path().join("root"),
+            temporary.path().join("attestation"),
+            NetworkIsolation::Ambient,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(plan.filesystem_landlock_only);
+        assert!(
+            !plan.read_write.contains(&PathBuf::from("/")),
+            "the host root must never be granted when Landlock is the only boundary"
+        );
+        assert!(
+            !plan.read_write.contains(&home),
+            "the user home must not be granted: it can contain sibling workspaces"
+        );
+        let workspace = workspace.canonicalize().unwrap();
+        assert!(plan.read_write.contains(&workspace));
+        assert!(plan.read_write.contains(&PathBuf::from("/tmp")));
+        assert!(plan.staged_roots.is_empty());
     }
 
     #[cfg(target_os = "linux")]

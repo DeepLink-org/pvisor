@@ -1489,6 +1489,10 @@ async fn execute_config(
     };
 
     let mut native_workspace_executor = None;
+    // Tracks the Landlock-only fallback so the boundary banner names the
+    // mechanism that is actually installed.
+    #[cfg(target_os = "linux")]
+    let mut landlock_only_boundary = false;
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host => {
@@ -1505,6 +1509,30 @@ async fn execute_config(
                     Err(error) => {
                         run_log!(
                             "pVisor safe-best-effort: rootless launcher unavailable ({error}); falling back to host process"
+                        );
+                        Arc::new(ProcessExecutor::default())
+                    }
+                }
+            } else if !safe
+                && filesystem_isolated
+                && pvisor::landlock_only_runtime_available()
+            {
+                // The namespace plan needs mount(2) to build its synthetic
+                // root. Hosts that deny it (container runtimes commonly do)
+                // can still confine the workspace by path: Landlock needs no
+                // namespace, so keep a real filesystem boundary instead of
+                // silently running the Agent on the bare host view.
+                run_log!(
+                    "pVisor boundary: mount namespaces unavailable; using Landlock-only filesystem isolation"
+                );
+                match ProcessExecutor::landlock_only_with_launcher(std::env::current_exe()?) {
+                    Ok(executor) => {
+                        landlock_only_boundary = true;
+                        Arc::new(executor)
+                    }
+                    Err(error) => {
+                        run_log!(
+                            "pVisor safe-best-effort: Landlock launcher unavailable ({error}); falling back to host process"
                         );
                         Arc::new(ProcessExecutor::default())
                     }
@@ -1778,7 +1806,9 @@ async fn execute_config(
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
                 {
-                    let process_boundary = if filesystem_isolated {
+                    let process_boundary = if landlock_only_boundary {
+                        "Landlock path policy on the host view; no namespaces created"
+                    } else if filesystem_isolated {
                         "rootless user/mount/PID namespaces + PID 1 reaper"
                     } else if network_namespace_required {
                         "private network namespace + process supervisor"
