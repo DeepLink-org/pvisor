@@ -15,7 +15,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from check_release_artifacts import validate_artifacts
+from check_release_artifacts import validate_artifacts, validate_release_set
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay", "pvisor-daemon")
@@ -59,6 +59,10 @@ def native_archive(wheel: Path, destination: Path) -> None:
 
 def homebrew_formula(version: str, repository: str, archives: dict[str, Path]) -> str:
     """Render a project tap formula; signed macOS binaries are copied unchanged."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("Homebrew requires a stable version")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be owner/name")
     base = f"https://github.com/{repository}/releases/download/v{version}"
     macos = archives["macos-arm64"]
     linux = archives["linux-x86_64"]
@@ -99,6 +103,17 @@ class Pvisor < Formula
   end
 end
 '''
+
+
+def refresh_formula(directory: Path, version: str, repository: str, output: Path) -> None:
+    """Render current tap metadata separately, leaving the published set untouched."""
+    wheels = validate_release_set(directory, version)
+    if output.resolve().is_relative_to(directory.resolve()):
+        raise ValueError("formula output must be outside the immutable release set")
+    archives = {platform: directory / f"pvisor-{version}-{platform}.tar.gz" for platform in wheels}
+    formula = homebrew_formula(version, repository, archives)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(formula)
 
 
 def build_assets(directory: Path, version: str, repository: str, *, stable: bool) -> None:
@@ -176,10 +191,16 @@ def main() -> None:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--repository")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--smoke-wheel",
         action="store_true",
         help="Treat directory as one native wheel and test its archive",
+    )
+    mode.add_argument(
+        "--formula-output",
+        type=Path,
+        help="Render only current Homebrew metadata from a verified published set to this path",
     )
     parser.add_argument("--stable", action="store_true", help="Also generate the Homebrew formula")
     args = parser.parse_args()
@@ -188,7 +209,10 @@ def main() -> None:
     else:
         if not args.repository:
             parser.error("--repository is required when building a release set")
-        build_assets(args.directory, args.version, args.repository, stable=args.stable)
+        if args.formula_output:
+            refresh_formula(args.directory, args.version, args.repository, args.formula_output)
+        else:
+            build_assets(args.directory, args.version, args.repository, stable=args.stable)
 
 
 if __name__ == "__main__":

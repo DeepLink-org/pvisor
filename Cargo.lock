@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "globset",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-daemon"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-gateway"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-guest"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "serde",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-journal"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "fs2",
@@ -3101,7 +3101,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-overlay-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "fs2",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-overlayfs"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "fuser",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-overlaynet"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3162,7 +3162,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-replay"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-shim"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "pvisor-vm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bitfield",

@@ -5,12 +5,24 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Build only, or resume a channel from an accepted tag run (on main)
+        type: choice
+        options: [build, github, pypi, homebrew]
+        default: build
+      release_tag:
+        description: Unchanged stable tag to resume (required for channel recovery)
+        type: string
+      source_run_id:
+        description: Original Publish Release run with successful build and acceptance
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -21,44 +33,129 @@ jobs:
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      recovery: ${{ steps.mode.outputs.recovery }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Select build or channel recovery
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANNEL: ${{ inputs.channel }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          recovery=false
+          if [[ "$EVENT" == workflow_dispatch && "$CHANNEL" != build ]]; then
+            [[ "$CHANNEL" == github || "$CHANNEL" == pypi || "$CHANNEL" == homebrew ]] || exit 1
+            [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "Resume channels from main" >&2; exit 1; }
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected release_tag vX.Y.Z" >&2; exit 1; }
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Expected a positive source_run_id" >&2; exit 1; }
+            if [[ "$CHANNEL" == homebrew && -z "$TAP_REPOSITORY" ]]; then
+              echo "Configure HOMEBREW_TAP_REPOSITORY before resuming Homebrew" >&2
+              exit 1
+            fi
+            recovery=true
+          elif [[ -n "$RELEASE_TAG" || -n "$SOURCE_RUN_ID" ]]; then
+            echo "release_tag and source_run_id are only used for channel recovery" >&2
+            exit 1
+          fi
+          echo "recovery=$recovery" >> "$GITHUB_OUTPUT"
+
       - uses: ./.github/actions/setup-build-env
         with:
-          tools: python rust
+          tools: ${{ steps.mode.outputs.recovery == 'true' && 'python' || 'python rust' }}
           setup: none
 
       - name: Fetch main release boundary
+        if: steps.mode.outputs.recovery != 'true'
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Validate tag, versions, and lockfile
         id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          RECOVERY: ${{ steps.mode.outputs.recovery }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
+          if [[ "$RECOVERY" == true ]]; then
+            echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           args=(--main-ref origin/main)
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          if [[ "$EVENT" == "push" ]]; then
             args+=(--tag "${GITHUB_REF_NAME}")
           fi
           version="$(mise run check-release-version -- "${args[@]}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
   verify:
     name: Build and verify release
     needs: validate
+    if: needs.validate.outputs.recovery != 'true'
     uses: ./.github/workflows/distribution.yml
     with:
       version: ${{ needs.validate.outputs.version }}
       artifact_prefix: release
       stable: true
 
+  restore:
+    name: Restore immutable release artifacts
+    needs: validate
+    if: needs.validate.outputs.recovery == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python
+          setup: none
+      - name: Restore the original accepted release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python3 scripts/ci/check_release_artifacts.py dist --version "$RELEASE_VERSION" \
+            --source-run "$SOURCE_RUN_ID" --repository "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wheels
+          path: dist/pvisor_sandbox-*.whl
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-native
+          path: |
+            dist/pvisor-*.tar.gz
+            dist/pvisor.rb
+            dist/SHA256SUMS
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
   pypi-publish:
     name: Publish to PyPI
-    if: github.event_name == 'push'
+    if: >-
+      !cancelled() && needs.github-release.result == 'success' &&
+      (github.event_name == 'push' || inputs.channel == 'pypi')
     # Publish binaries to PyPI only after their corresponding sources are public.
-    needs: [validate, verify, github-release]
+    needs: [validate, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -92,8 +189,10 @@ jobs:
 
   github-release:
     name: Publish GitHub Release
-    if: github.event_name == 'push'
-    needs: [validate, verify]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' &&
+      ((github.event_name == 'push' && needs.verify.result == 'success') || needs.restore.result == 'success')
+    needs: [validate, verify, restore]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -125,27 +224,52 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           mise run publish-release -- github dist --version "$RELEASE_VERSION" \
-            --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+            --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
 
   homebrew-test:
     name: Test Homebrew installation
-    if: github.event_name == 'push'
+    if: >-
+      !cancelled() && needs.github-release.result == 'success' &&
+      (github.event_name == 'push' || inputs.channel == 'homebrew')
     needs: [validate, github-release]
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python
+          setup: none
       - uses: actions/download-artifact@v4
         with:
           name: release-native
           path: dist
+      - uses: actions/download-artifact@v4
+        if: needs.validate.outputs.recovery == 'true'
+        with:
+          name: release-wheels
+          path: dist
+      - name: Prepare current formula for the original binaries
+        env:
+          RECOVERY: ${{ needs.validate.outputs.recovery }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          mkdir -p formula
+          if [[ "$RECOVERY" == true ]]; then
+            python3 scripts/ci/build_release_assets.py dist --version "$RELEASE_VERSION" \
+              --repository "$GITHUB_REPOSITORY" --formula-output formula/pvisor.rb
+          else
+            cp dist/pvisor.rb formula/pvisor.rb
+          fi
       - name: Install and test the published archive through Homebrew
         shell: bash
         run: |
           set -euo pipefail
           brew tap-new pvisor/release-test
-          cp dist/pvisor.rb "$(brew --repository pvisor/release-test)/Formula/pvisor.rb"
+          cp formula/pvisor.rb "$(brew --repository pvisor/release-test)/Formula/pvisor.rb"
           brew install pvisor/release-test/pvisor
           # Owner bootstrap rejects replaceable executable ancestors.
           chmod go-w "$(brew --cellar)"
@@ -154,11 +278,20 @@ jobs:
           hello="$("$pvisor_bin" spawn --executor host -- /bin/echo hello)"
           test "$hello" = hello
           brew uninstall pvisor/release-test/pvisor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-homebrew-formula
+          path: formula/pvisor.rb
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
 
   homebrew-publish:
     name: Update project Homebrew tap
-    if: github.event_name == 'push' && vars.HOMEBREW_TAP_REPOSITORY != ''
-    needs: [github-release, homebrew-test]
+    if: >-
+      !cancelled() && needs.homebrew-test.result == 'success' && vars.HOMEBREW_TAP_REPOSITORY != '' &&
+      (github.event_name == 'push' || inputs.channel == 'homebrew')
+    needs: [validate, homebrew-test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -172,11 +305,11 @@ jobs:
           path: tap
       - uses: actions/download-artifact@v4
         with:
-          name: release-native
+          name: release-homebrew-formula
           path: dist
       - name: Commit the tested formula
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail

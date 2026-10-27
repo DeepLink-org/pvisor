@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
+import subprocess
 import sys
 import zipfile
 from email.parser import BytesParser
@@ -91,15 +94,138 @@ def validate_artifacts(
     return found
 
 
+def validate_release_set(
+    directory: Path, version: str, *, max_bytes: int = DEFAULT_MAX_BYTES
+) -> dict[str, Path]:
+    """Require the complete immutable stable set before resuming a channel."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ArtifactValidationError("recovery requires a stable X.Y.Z version")
+    manifest = directory / "SHA256SUMS"
+    if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 65536:
+        raise ArtifactValidationError("missing or invalid SHA256SUMS")
+    checksums: dict[str, str] = {}
+    for line in manifest.read_text().splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9_.-]+)", line)
+        if not match or match[2] in checksums:
+            raise ArtifactValidationError("invalid or duplicate SHA256SUMS entry")
+        checksums[match[2]] = match[1]
+    paths = {path.name: path for path in directory.iterdir() if path.name != "SHA256SUMS"}
+    if set(paths) != set(checksums):
+        raise ArtifactValidationError("SHA256SUMS does not cover exactly the downloaded set")
+    for name, path in paths.items():
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ArtifactValidationError(f"{name}: expected a nonempty regular file")
+        with path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != checksums[name]:
+            raise ArtifactValidationError(f"{name}: SHA-256 mismatch")
+    wheels = validate_artifacts(directory, version, max_bytes=max_bytes)
+    expected = {wheel.name for wheel in wheels.values()} | {"pvisor.rb"}
+    for platform in PLATFORM_PATTERNS:
+        expected.add(f"pvisor-{version}-{platform}.tar.gz")
+        expected.add(f"pvisor-firmware-source-{platform}.tar.gz")
+    if set(paths) != expected:
+        raise ArtifactValidationError("expected both native archives, firmware sources and formula")
+    return wheels
+
+
+def validate_recovery_source(
+    run: dict, jobs: list[dict], repository: str, version: str, tag_sha: str
+) -> None:
+    """A failed publisher is recoverable only after the original tag's gates passed."""
+    if (
+        run.get("repository", {}).get("full_name") != repository
+        or run.get("head_repository", {}).get("full_name") != repository
+        or run.get("path") != ".github/workflows/release.yml"
+        or run.get("event") != "push"
+        or run.get("status") != "completed"
+        or run.get("head_branch") != f"v{version}"
+        or not re.fullmatch(r"[0-9a-f]{40}", tag_sha)
+        or run.get("head_sha") != tag_sha
+    ):
+        raise ArtifactValidationError("source must be a completed release run at the unchanged tag")
+    verified = [
+        job
+        for job in jobs
+        if job.get("name") == "Build and verify release / Verify release artifact set"
+    ]
+    if len(verified) != 1 or verified[0].get("conclusion") != "success":
+        raise ArtifactValidationError("source run did not pass the complete distribution gates")
+
+
+def restore_artifacts(directory: Path, version: str, repository: str, run_id: int) -> None:
+    """Download an accepted run's original bytes, never rebuild an immutable version."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or run_id <= 0:
+        raise ArtifactValidationError("expected owner/repository and a positive source run ID")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ArtifactValidationError("recovery requires a stable X.Y.Z version")
+
+    def api(endpoint: str, *options: str):
+        return json.loads(
+            subprocess.check_output(
+                ["gh", "api", f"repos/{repository}/{endpoint}", *options],
+                timeout=60,
+            )
+        )
+
+    run = api(f"actions/runs/{run_id}")
+    pages = api(f"actions/runs/{run_id}/jobs?per_page=100&filter=latest", "--paginate", "--slurp")
+    tag_sha = api(f"commits/v{version}")["sha"]
+    validate_recovery_source(
+        run, [job for page in pages for job in page["jobs"]], repository, version, tag_sha
+    )
+    subprocess.run(
+        [
+            "gh",
+            "run",
+            "download",
+            str(run_id),
+            "--repo",
+            repository,
+            "--name",
+            "release-wheels",
+            "--name",
+            "release-native",
+            "--dir",
+            str(directory),
+        ],
+        check=True,
+        timeout=600,
+    )
+    # gh separates multiple named artifacts; merge only after checking for collisions.
+    for name in ("release-wheels", "release-native"):
+        staged = directory / name
+        for path in staged.iterdir():
+            destination = directory / path.name
+            if destination.exists() or destination.is_symlink():
+                raise ArtifactValidationError(f"duplicate restored asset: {path.name}")
+            path.rename(destination)
+        staged.rmdir()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument(
+        "--complete", action="store_true", help="Verify the full stable release set"
+    )
+    parser.add_argument("--source-run", type=int, help="Restore a verified tag run's artifacts")
+    parser.add_argument("--repository", help="Source owner/repository (required with --source-run)")
     args = parser.parse_args()
+    if args.source_run is not None and not args.repository:
+        parser.error("--source-run requires --repository")
 
     try:
-        found = validate_artifacts(args.directory, args.version, max_bytes=args.max_bytes)
+        if args.source_run is not None:
+            restore_artifacts(args.directory, args.version, args.repository, args.source_run)
+        validate = (
+            validate_release_set
+            if args.complete or args.source_run is not None
+            else validate_artifacts
+        )
+        found = validate(args.directory, args.version, max_bytes=args.max_bytes)
     except ArtifactValidationError as error:
         print(f"release artifact validation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error

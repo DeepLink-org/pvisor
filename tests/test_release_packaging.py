@@ -1078,8 +1078,8 @@ class ReleasePackagingTests(unittest.TestCase):
                     assert "name: nightly-wheels" in contents
                     assert "name: nightly-native" in contents
                 else:
-                    assert "needs: [validate, verify]" in contents
-                    assert "needs: [validate, verify, github-release]" in contents
+                    assert "needs: [validate, verify, restore]" in contents
+                    assert "needs: [validate, github-release]" in contents
                     assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
                     assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
         shared = (ROOT / ".github/workflows/distribution.yml").read_text()
