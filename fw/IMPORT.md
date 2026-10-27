@@ -19,7 +19,9 @@ ABI roundtrip regression tests. The import also includes these uncommitted
 working-tree changes, rather than merely exporting HEAD:
 
 - `Makefile`: build generic Linux x86-64 `vmlinux` only, skipping `bzImage`.
-- `config-libkrunfw_x86_64`: disable IPv6 for the IPv4-only guest.
+- `config-libkrunfw_x86_64`: disable IPv6 for the IPv4-only guest; enable the
+  netfilter family (NAT, nftables, legacy xtables, MASQUERADE, br_netfilter)
+  so Docker-in-VM bridge networking works without `--iptables=false`.
 - `patches/0040-tsi-guard-ipv6-udp-lookup.patch`: guard the IPv6 UDP lookup
   with `IS_REACHABLE(CONFIG_IPV6)` so TSI can build without IPv6.
 - `README.md`: document IPv4-only behavior and the `vmlinux` build path.

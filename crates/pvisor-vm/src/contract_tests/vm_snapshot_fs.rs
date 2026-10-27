@@ -163,6 +163,50 @@ impl GuestFs {
             .unwrap();
         result
     }
+    /// Drive a no-reply FUSE op (FORGET): the descriptor returns on the used
+    /// ring with no response body, so the reply assertions do not apply.
+    fn request_forget(&mut self, opcode: fuse::Opcode, inode: u64, payload: &[u8]) {
+        let input = fuse::InHeader {
+            len: (std::mem::size_of::<fuse::InHeader>() + payload.len()) as u32,
+            opcode: opcode as u32,
+            unique: u64::from(self.next) + 1,
+            nodeid: inode,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+            ..Default::default()
+        };
+        self.mem
+            .write_slice(input.as_slice(), GuestAddress(0x20000))
+            .unwrap();
+        self.mem
+            .write_slice(
+                payload,
+                GuestAddress(0x20000 + input.as_slice().len() as u64),
+            )
+            .unwrap();
+        self.mem
+            .write_obj(0x20000_u64, GuestAddress(0x8000))
+            .unwrap();
+        self.mem.write_obj(input.len, GuestAddress(0x8008)).unwrap();
+        self.mem.write_obj(0_u16, GuestAddress(0x800c)).unwrap();
+        self.mem.write_obj(0_u16, GuestAddress(0x800e)).unwrap();
+        self.mem
+            .write_obj(
+                0_u16,
+                GuestAddress(0xc004 + u64::from(self.next % 1024) * 2),
+            )
+            .unwrap();
+        self.next = self.next.wrapping_add(1);
+        self.mem.write_obj(self.next, GuestAddress(0xc002)).unwrap();
+        self.events[1].write(1).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while self.mem.read_obj::<u16>(GuestAddress(0xd002)).unwrap() != self.next {
+            assert!(Instant::now() < deadline, "FUSE worker timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn freeze(&mut self) -> DeviceSnapshot {
         let deadline = Instant::now() + Duration::from_secs(3);
         while !self.fs.freeze().unwrap() {
@@ -1713,4 +1757,86 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
         .as_slice(),
     );
     assert!(!listing.windows(4).any(|part| part == b"gone"));
+}
+
+#[test]
+fn create_release_forget_cycles_do_not_leak_host_descriptors() {
+    // The passthrough backend owns one host descriptor per inode and one per
+    // open handle; RELEASE must return the handle descriptor and FORGET the
+    // inode descriptor. A sequential create/open/close workload therefore has
+    // to keep the host descriptor count flat once the guest releases its
+    // dentry references — otherwise the runner hits RLIMIT_NOFILE and the
+    // guest sees EMFILE while barely holding any descriptors itself.
+    #[cfg(target_os = "linux")]
+    fn descriptor_count() -> usize {
+        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn descriptor_count() -> usize {
+        0
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let mut sandbox = GuestFs::new(root.path(), None);
+    sandbox.request(
+        fuse::Opcode::Init,
+        0,
+        fuse::InitInCompat {
+            major: 7,
+            minor: 31,
+            ..Default::default()
+        }
+        .as_slice(),
+    );
+
+    // Warm up every lazily-created service descriptor, then measure.
+    for round in 0..2 {
+        let before = descriptor_count();
+        for i in 0..64 {
+            let mut create = fuse::CreateIn {
+                flags: (libc::O_WRONLY | libc::O_CREAT) as u32,
+                mode: 0o644,
+                ..Default::default()
+            }
+            .as_slice()
+            .to_vec();
+            create.extend_from_slice(format!("leak{round}-{i}\0").as_bytes());
+            let created = sandbox.request(fuse::Opcode::Create, 1, &create);
+            let entry_size = std::mem::size_of::<fuse::EntryOut>();
+            let inode = u64::from_ne_bytes(created[..8].try_into().unwrap());
+            let handle =
+                u64::from_ne_bytes(created[entry_size..entry_size + 8].try_into().unwrap());
+            sandbox.request(
+                fuse::Opcode::Release,
+                inode,
+                fuse::ReleaseIn {
+                    fh: handle,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            sandbox.request_forget(
+                fuse::Opcode::Forget,
+                inode,
+                fuse::ForgetIn { nlookup: 1 }.as_slice(),
+            );
+        }
+        let after = descriptor_count();
+        if after > before + 4 {
+            #[cfg(target_os = "linux")]
+            for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+                let entry = entry.unwrap();
+                let link = std::fs::read_link(entry.path()).unwrap_or_default();
+                if link.to_string_lossy().contains("leak") || link.to_string_lossy().contains("tmp")
+                {
+                    eprintln!(
+                        "leaked fd {}: {}",
+                        entry.file_name().to_string_lossy(),
+                        link.display()
+                    );
+                }
+            }
+            panic!("descriptor leak across create/release/forget: {before} -> {after}");
+        }
+    }
 }

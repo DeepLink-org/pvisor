@@ -908,11 +908,44 @@ fn run_vm_runner_requested() -> Result<bool> {
     std::process::exit(exit_code);
 }
 
+/// The virtio-fs passthrough keeps one host descriptor per guest inode
+/// until the guest's dentry cache evicts it (FUSE FORGET), so descriptor
+/// demand scales with the guest's file working set rather than with open
+/// handles — the same characteristic as virtiofsd, which answers it with a
+/// ~1M descriptor limit. The runner inherits containerd's soft limit
+/// (systemd default 1024), which turns into guest-visible `EMFILE` after a
+/// few hundred files; raise the soft limit to the inherited hard limit so
+/// the working-set ceiling tracks the deployment's configured maximum.
+/// Failure is logged, never fatal: the inherited soft limit still applies.
+#[cfg(feature = "vm")]
+fn lift_descriptor_limit() {
+    // SAFETY: `rlimit` is a plain C struct; getrlimit/setrlimit only touch it.
+    unsafe {
+        let mut limits = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, limits.as_mut_ptr()) != 0 {
+            return;
+        }
+        let mut limits = limits.assume_init();
+        if limits.rlim_cur == limits.rlim_max {
+            return;
+        }
+        let raised = limits.rlim_max;
+        limits.rlim_cur = raised;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limits) != 0 {
+            eprintln!(
+                "pvisor shim VM runner: raising RLIMIT_NOFILE to {raised} failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
 /// The VM is the isolation boundary: no container namespaces here. A
 /// private mount namespace keeps the snapshotter materialization off the
 /// host while the in-process virtio-fs still serves it to the guest.
 #[cfg(feature = "vm")]
 fn vm_runner_main() -> Result<i32> {
+    lift_descriptor_limit();
     let plan: ContainerPlan = read_plan(ENV_PLAN)?;
     let start_fd = fd_from_env(ENV_START_FD)?;
 
