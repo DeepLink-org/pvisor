@@ -17,6 +17,13 @@
 - Keep the projected host procfs when the runtime denies mounting a fresh one,
   instead of failing the whole sandbox setup.
 
+### Rootless capability probe
+
+- Probe with `unshare --map-root-user`, matching the `uid_map`/`gid_map` writes
+  the launcher always performs. A kernel that allows `CLONE_NEWUSER` but rejects
+  that write previously passed the plain `--user` probe and then failed during
+  Agent setup, aborting the Run instead of selecting the available fallback.
+
 ### Snapshot RAM mount isolation
 
 - Keep transient snapshot RAM mounts and pager specifications in validated private

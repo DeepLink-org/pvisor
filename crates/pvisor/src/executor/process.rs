@@ -677,6 +677,11 @@ impl ProcessExecutor {
 /// mutating the pVisor process itself.  A short-lived `unshare` child keeps the
 /// probe safe in a multithreaded Tokio process and distinguishes an unavailable
 /// host capability from a later Agent failure.
+///
+/// The probe maps the current user into the new namespace (`--map-root-user`)
+/// because the launcher always writes `uid_map`/`gid_map` before building the
+/// sandbox. Kernels that allow `CLONE_NEWUSER` but reject that write would
+/// otherwise pass a plain `--user` probe and then fail during Agent setup.
 #[cfg(target_os = "linux")]
 pub fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
     let probe = |args: &[&str]| {
@@ -692,10 +697,24 @@ pub fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
         // Network-only Runs still use a user namespace so the Agent cannot
         // create another namespace and escape deny-all. Landlock is omitted
         // at runtime, so it must not be a prerequisite for this probe.
-        probe(["--user", "--mount", "--net", "--fork", "true"].as_slice())
+        probe([
+            "--map-root-user",
+            "--mount",
+            "--net",
+            "--fork",
+            "true",
+        ]
+        .as_slice())
     } else {
         landlock_runtime_available()
-            && probe(["--user", "--mount", "--pid", "--fork", "true"].as_slice())
+            && probe([
+                "--map-root-user",
+                "--mount",
+                "--pid",
+                "--fork",
+                "true",
+            ]
+            .as_slice())
     }
 }
 
