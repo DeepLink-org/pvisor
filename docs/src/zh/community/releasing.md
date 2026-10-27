@@ -32,11 +32,11 @@ Python 源码分发包（sdist）不在发布集中。
    macOS 托管的 Apple Silicon runner 不支持嵌套虚拟化，因此执行安装 smoke
    检查。无需注册自托管 runner。
 
-4. 如需自动发布 Homebrew，先创建项目自有的 `DeepLink-org/homebrew-pvisor` tap 并初始化一次提交。
-   设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/homebrew-pvisor`，以及仅对此 tap
-   拥有 Contents 写权限的 secret `HOMEBREW_TAP_TOKEN`。变量未配置时跳过 tap 更新，
-   仍生成配方并运行 macOS Homebrew 安装测试。安装、命令定位及 `brew test` 通过后，
-   工作流才提交 `Formula/pvisor.rb`，不注册或启动系统服务。
+4. Homebrew 使用当前仓库中的 `Formula/pvisor.rb`。发布任务为内置
+   `GITHUB_TOKEN` 申请 `contents: write` 权限，检出默认分支，且仅提交实际通过
+   安装、命令定位和 `brew test` 的配方。不需要独立 tap 仓库、变量或个人访问
+   token。分支保护仍然生效；推送被拒绝会使任务失败，处理仓库策略后可恢复。
+   不注册或启动系统服务。
 
 GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上传时
 创建项目，但不预留名称。
@@ -79,7 +79,7 @@ GitHub 的 **Re-run jobs** 仍使用原提交，无法带上修复。不要为�
 | --- | --- |
 | `github` | 恢复已验收制品，补齐 GitHub Release 附件 |
 | `pypi` | 恢复制品，检查／补齐 GitHub Release，再仅上传同版本缺失的 wheel |
-| `homebrew` | 恢复制品，检查／补齐 GitHub Release，用当前脚本重新生成 tap 配方，测试安装并更新已配置的 tap |
+| `homebrew` | 恢复制品，检查／补齐 GitHub Release，用当前脚本重新生成 tap 配方，测试安装并更新默认分支的 `Formula/pvisor.rb` |
 
 恢复流程跳过完整 CI、编译和各平台 wheel 验收。原运行的 **Verify release
 artifact set** 必须成功；该任务依赖完整的共享分发流水线。来源必须是本仓库

@@ -26,7 +26,13 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
    acceptance; macOS runs installation smoke checks because hosted Apple Silicon
    runners do not support nested virtualization. No self-hosted runner is required.
 
-4. For automatic Homebrew publication, create the project-owned `DeepLink-org/homebrew-pvisor` tap with an initial commit. Set repository variable `HOMEBREW_TAP_REPOSITORY` to `DeepLink-org/homebrew-pvisor` and secret `HOMEBREW_TAP_TOKEN` to a token with Contents write access to that tap only. When the variable is absent, tap publication is skipped; formula generation and the macOS Homebrew installation test still run. The release workflow commits `Formula/pvisor.rb` only after installation, command discovery and `brew test` pass. No service is registered or started.
+4. Homebrew uses `Formula/pvisor.rb` in this repository. The publication job
+   requests `contents: write` for the built-in `GITHUB_TOKEN`, checks out the
+   default branch and commits only the formula that passed installation,
+   command discovery and `brew test`. No separate tap repository, variable or
+   personal access token is required. Branch protection still applies; a rejected
+   push fails the job and can be recovered after resolving the repository policy.
+   No service is registered or started.
 
 No PyPI API token is stored in GitHub. A pending publisher can create the project on the first successful upload but does not reserve its name.
 
@@ -64,7 +70,7 @@ Set `release_tag=vX.Y.Z`, set `source_run_id` to the original tag-triggered
 | --- | --- |
 | `github` | Restore accepted artifacts and fill missing GitHub Release attachments |
 | `pypi` | Restore artifacts, check/complete GitHub Release, then upload only missing identical-version wheels |
-| `homebrew` | Restore artifacts, check/complete GitHub Release, regenerate tap metadata with current scripts, test installation and update the configured tap |
+| `homebrew` | Restore artifacts, check/complete GitHub Release, regenerate tap metadata with current scripts, test installation and update `Formula/pvisor.rb` on the default branch |
 
 Recovery skips required CI, compilation and platform wheel acceptance. It requires
 the source run's **Verify release artifact set** job to have passed; that job

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish immutable releases; retry only files whose existing bytes agree."""
+"""Publish immutable releases and their tested Homebrew metadata."""
 
 from __future__ import annotations
 
@@ -156,18 +156,68 @@ def prepare_pypi(directory: Path, version: str) -> bool:
     return bool(list(directory.glob("*.whl")))
 
 
+def homebrew_publish(directory: Path, version: str, tap: Path) -> None:
+    """Commit only the tested formula; keep rejected pushes visible for recovery."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise ValueError("Homebrew requires a stable version")
+
+    def formula_version(content: str) -> tuple[int, ...]:
+        match = re.search(r'^  version "([0-9]+)\.([0-9]+)\.([0-9]+)"$', content, re.M)
+        if not match:
+            raise ValueError("Cannot read stable formula version")
+        return tuple(map(int, match.groups()))
+
+    proposed = (directory / "pvisor.rb").read_bytes()
+    expected = tuple(map(int, version.split(".")))
+    if formula_version(proposed.decode()) != expected:
+        raise ValueError("Tested formula does not match the selected release version")
+    destination = tap / "Formula/pvisor.rb"
+    if destination.exists():
+        current = destination.read_bytes()
+        if formula_version(current.decode()) > expected:
+            raise RuntimeError("Refusing to downgrade the Homebrew tap")
+        if current == proposed:
+            return
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tap, check=True, timeout=60)
+
+    git("symbolic-ref", "--quiet", "HEAD")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(proposed)
+    git("add", "--", "Formula/pvisor.rb")
+    git(
+        "-c",
+        "user.name=github-actions[bot]",
+        "-c",
+        "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+        "commit",
+        "--only",
+        "-m",
+        f"pvisor v{version}",
+        "--",
+        "Formula/pvisor.rb",
+    )
+    git("push", "origin", "HEAD")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("channel", choices=("github", "pypi"))
+    parser.add_argument("channel", choices=("github", "pypi", "homebrew"))
     parser.add_argument("directory", type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--repository")
     parser.add_argument("--tag")
+    parser.add_argument("--tap", type=Path)
     args = parser.parse_args()
     if args.channel == "github":
         if not args.repository or not args.tag:
             parser.error("github requires --repository and --tag")
         github_publish(args.directory, args.version, args.repository, args.tag)
+    elif args.channel == "homebrew":
+        if not args.tap:
+            parser.error("homebrew requires --tap")
+        homebrew_publish(args.directory, args.version, args.tap)
     else:
         pending = prepare_pypi(args.directory, args.version)
         if output := os.environ.get("GITHUB_OUTPUT"):

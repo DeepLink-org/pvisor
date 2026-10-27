@@ -43,8 +43,15 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/in
 ```
 
 Stable and nightly GitHub Releases include native archives and SHA-256 checksums.
-The stable workflow generates a Homebrew formula and can update the project tap
-after its [one-time setup](docs/src/en/community/releasing.md#one-time-setup).
+This repository also serves as the Homebrew tap:
+
+```bash
+brew tap DeepLink-org/pvisor https://github.com/DeepLink-org/pvisor.git
+brew install DeepLink-org/pvisor/pvisor
+```
+
+The stable workflow tests the formula before updating `Formula/pvisor.rb` on
+the default branch, using the built-in GitHub token.
 
 Platform requirements and executor setup are covered in the
 [installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/).

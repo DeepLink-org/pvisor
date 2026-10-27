@@ -47,7 +47,6 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -57,10 +56,6 @@ jobs:
             [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "Resume channels from main" >&2; exit 1; }
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected release_tag vX.Y.Z" >&2; exit 1; }
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Expected a positive source_run_id" >&2; exit 1; }
-            if [[ "$CHANNEL" == homebrew && -z "$TAP_REPOSITORY" ]]; then
-              echo "Configure HOMEBREW_TAP_REPOSITORY before resuming Homebrew" >&2
-              exit 1
-            fi
             recovery=true
           elif [[ -n "$RELEASE_TAG" || -n "$SOURCE_RUN_ID" ]]; then
             echo "release_tag and source_run_id are only used for channel recovery" >&2
@@ -289,19 +284,20 @@ jobs:
   homebrew-publish:
     name: Update project Homebrew tap
     if: >-
-      !cancelled() && needs.homebrew-test.result == 'success' && vars.HOMEBREW_TAP_REPOSITORY != '' &&
+      !cancelled() && needs.homebrew-test.result == 'success' &&
       (github.event_name == 'push' || inputs.channel == 'homebrew')
     needs: [validate, homebrew-test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     concurrency:
       group: homebrew-tap
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ref: ${{ github.event.repository.default_branch }}
           path: tap
       - uses: actions/download-artifact@v4
         with:
@@ -309,30 +305,7 @@ jobs:
           path: dist
       - name: Commit the tested formula
         env:
-          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        shell: bash
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          set -euo pipefail
-          mkdir -p tap/Formula
-          # A delayed older release must never downgrade the current tap.
-          python3 - <<'PYTHON'
-          import re
-          from pathlib import Path
-          def version(path):
-              match = re.search(r'^  version "([0-9]+)\.([0-9]+)\.([0-9]+)"$', path.read_text(), re.M)
-              if not match:
-                  raise SystemExit(f"Cannot read stable formula version: {path}")
-              return tuple(map(int, match.groups()))
-          current = Path("tap/Formula/pvisor.rb")
-          if current.exists() and version(current) > version(Path("dist/pvisor.rb")):
-              raise SystemExit("Refusing to downgrade the Homebrew tap")
-          PYTHON
-          cp dist/pvisor.rb tap/Formula/pvisor.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/pvisor.rb
-          if ! git diff --cached --quiet; then
-            git commit -m "pvisor $RELEASE_TAG"
-            git push
-          fi
+          python3 tap/scripts/ci/publish_release.py homebrew dist \
+            --version "$RELEASE_VERSION" --tap tap

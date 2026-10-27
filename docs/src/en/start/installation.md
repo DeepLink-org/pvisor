@@ -37,15 +37,20 @@ Before upgrading, check release notes and deployed `PVISOR_*` settings. Local st
 
 ### Homebrew and native downloads
 
-After the project tap has been configured and its first stable release published:
+Add this repository as a tap, then install the stable native package:
 
 ```bash
+brew tap DeepLink-org/pvisor https://github.com/DeepLink-org/pvisor.git
 brew install DeepLink-org/pvisor/pvisor
 brew test DeepLink-org/pvisor/pvisor
 # Upgrade: brew upgrade pvisor / brew uninstall pvisor
 ```
 
-The tap uses `DeepLink-org/homebrew-pvisor`; maintainers must complete the [one-time setup](../community/releasing.md#one-time-setup) before this command is available. Supported platforms are Apple Silicon macOS and Linux x86_64. Homebrew does not install Python or build Rust, and does not start the daemon as a service.
+The tap uses `Formula/pvisor.rb` in this source repository. The explicit URL is
+required because Homebrew's short tap form assumes a `homebrew-` repository
+prefix. After the initial tap, `brew update` retrieves formula updates from this
+repository. Supported platforms are Apple Silicon macOS and Linux x86_64.
+Homebrew does not install Python or build Rust, and does not start the daemon as a service.
 
 Job startup requires the executable and its ancestor directories to be owned by
 you or root and not writable by other users; root-owned sticky directories such

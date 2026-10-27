@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,7 +17,115 @@ publication = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(publication)
 
 
+def tap_fixture(root, version=None):
+    remote, tap, staged = root / "remote.git", root / "tap", root / "dist"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "clone", str(remote), str(tap)], check=True, capture_output=True)
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", *args], cwd=tap, text=True, stderr=subprocess.STDOUT
+        ).strip()
+
+    git("config", "user.name", "Fixture")
+    git("config", "user.email", "fixture@example.test")
+    git("config", "commit.gpgsign", "false")
+    (tap / "README.md").write_text("source repository\n")
+    if version:
+        (tap / "Formula").mkdir()
+        (tap / "Formula/pvisor.rb").write_text(f'  version "{version}"\n# old recipe\n')
+    git("add", ".")
+    git("commit", "-m", "Initial source commit")
+    git("push", "-u", "origin", "main")
+    staged.mkdir()
+    (staged / "pvisor.rb").write_text('  version "0.3.1"\n# tested recipe\n')
+    return remote, tap, staged, git
+
+
 class ReleasePublicationTests(unittest.TestCase):
+    def test_homebrew_updates_only_formula_on_main_and_retries_without_new_commits(self):
+        for current in (None, "0.3.0", "0.3.1"):
+            with self.subTest(current=current), workspace() as (root, _):
+                remote, tap, staged, git = tap_fixture(root, current)
+                (tap / "README.md").write_text("unrelated staged source change\n")
+                git("add", "README.md")
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(Path(publication.__file__)),
+                        "homebrew",
+                        str(staged),
+                        "--version",
+                        "0.3.1",
+                        "--tap",
+                        str(tap),
+                    ],
+                    check=True,
+                )
+                self.assertEqual(
+                    git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"),
+                    "Formula/pvisor.rb",
+                )
+                self.assertEqual(git("show", "HEAD:README.md"), "source repository")
+                self.assertEqual(git("diff", "--cached", "--name-only"), "README.md")
+                published = subprocess.check_output(
+                    ["git", "--git-dir", str(remote), "show", "main:Formula/pvisor.rb"]
+                )
+                self.assertEqual(published, (staged / "pvisor.rb").read_bytes())
+                head = git("rev-parse", "HEAD")
+                publication.homebrew_publish(staged, "0.3.1", tap)
+                self.assertEqual(head, git("rev-parse", "HEAD"))
+
+    def test_homebrew_rejects_downgrades_and_wrong_release_without_mutating_checkout(self):
+        for current, version, error in (
+            ("0.4.0", "0.3.1", RuntimeError),
+            ("0.3.0", "0.3.2", ValueError),
+            ("0.3.0", "0.3.1+g42.abcdef0", ValueError),
+            ("broken", "0.3.1", ValueError),
+        ):
+            with self.subTest(current=current, version=version), workspace() as (root, _):
+                _, tap, staged, git = tap_fixture(root, current)
+                before = (tap / "Formula/pvisor.rb").read_bytes()
+                head = git("rev-parse", "HEAD")
+                with self.assertRaises(error):
+                    publication.homebrew_publish(staged, version, tap)
+                self.assertEqual(before, (tap / "Formula/pvisor.rb").read_bytes())
+                self.assertEqual(head, git("rev-parse", "HEAD"))
+                self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_homebrew_rejects_detached_checkout_before_changing_formula(self):
+        with workspace() as (root, _):
+            _, tap, staged, git = tap_fixture(root, "0.3.0")
+            before = (tap / "Formula/pvisor.rb").read_bytes()
+            git("checkout", "--detach")
+            with self.assertRaises(subprocess.CalledProcessError):
+                publication.homebrew_publish(staged, "0.3.1", tap)
+            self.assertEqual((tap / "Formula/pvisor.rb").read_bytes(), before)
+            self.assertEqual(git("status", "--porcelain"), "")
+
+    def test_homebrew_propagates_rejected_pushes_and_preserves_remote_formula(self):
+        with workspace() as (root, _):
+            remote, tap, staged, git = tap_fixture(root, "0.3.0")
+            before = git("rev-parse", "HEAD")
+            hook = remote / "hooks/pre-receive"
+            hook.write_text("#!/bin/sh\nexit 1\n")
+            hook.chmod(0o755)
+            with self.assertRaises(subprocess.CalledProcessError):
+                publication.homebrew_publish(staged, "0.3.1", tap)
+            self.assertEqual(
+                subprocess.check_output(
+                    ["git", "--git-dir", str(remote), "rev-parse", "main"], text=True
+                ).strip(),
+                before,
+            )
+            self.assertEqual(
+                (tap / "Formula/pvisor.rb").read_bytes(), (staged / "pvisor.rb").read_bytes()
+            )
+
     def test_mismatch_fails_before_any_channel_mutates(self):
         with workspace() as (root, _):
             wheel = root / "pvisor_sandbox-0.3.0-py3-none-platform.whl"

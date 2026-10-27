@@ -43,15 +43,18 @@ npm、Cargo 安装入口与可选版本的独立安装器仍属
 
 ### Homebrew 与原生下载包
 
-项目 tap 完成配置并发布首个稳定版本后，可运行：
+把当前仓库添加为 tap，再安装稳定版原生包：
 
 ```bash
+brew tap DeepLink-org/pvisor https://github.com/DeepLink-org/pvisor.git
 brew install DeepLink-org/pvisor/pvisor
 brew test DeepLink-org/pvisor/pvisor
 # Upgrade: brew upgrade pvisor / brew uninstall pvisor
 ```
 
-tap 使用 `DeepLink-org/homebrew-pvisor`；维护者需要先完成[一次性设置](../community/releasing.md#one-time-setup)，此命令才能使用。
+tap 使用当前源码仓库中的 `Formula/pvisor.rb`。首次添加时需要显式 URL，
+因为 Homebrew 的简写形式默认给仓库名添加 `homebrew-` 前缀。
+之后 `brew update` 会从当前仓库获取配方更新。
 支持 Apple Silicon macOS 和 Linux x86_64。Homebrew 不安装 Python、不编译 Rust，也不把 daemon 启动为系统服务。
 
 Job 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；

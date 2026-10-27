@@ -818,7 +818,7 @@ python3 scripts/packaging/verify_wheel.py "$1" --install-smoke --acceptance-log 
 '''
 
 [tasks.publish-release]
-description = "按摘要校验已有发布内容，只上传缺失制品"
+description = "发布不可变制品或已测试的 Homebrew 配方"
 hide = true
 run = '''
 #!/usr/bin/env bash
