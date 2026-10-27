@@ -1,51 +1,85 @@
 # Installation
 
-Install the native CLI with Python 3.10 or newer, then run a local command. Current wheels support Linux x86_64 and Apple Silicon macOS; installing a release package needs neither Rust nor a kernel build toolchain.
+Install pVisor on the machine that will execute tool commands: your computer for the local workflow, or a Linux/KVM node for the infrastructure example. Current release packages support Linux x86_64 and Apple Silicon macOS; installation requires neither Rust nor a kernel build toolchain.
 
-## 1. Install the tools
+<a id="1-install-the-tools"></a>
 
-Use a dedicated virtual environment to avoid changing the system Python environment:
+## 1. Install the CLI {#install-cli}
+
+Use Python 3.10 or newer, preferably in a dedicated virtual environment:
 
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
 python -m pip install pvisor-sandbox
+pvisor --version
 ```
 
-Check the command:
+The command should print the pVisor version. Reactivate this environment in each new terminal. You can also install into an existing project virtual environment.
+
+<a id="2-check-platform-prerequisites"></a>
+
+## 2. Prepare your chosen environment {#prepare-environment}
+
+Complete only the setup for your chosen path. Neither quick-start example requires a model account or API key.
+
+### Local workflow {#local-prerequisites}
+
+The example uses local tools and a workspace, with the Host executor staging file changes. No VM image, Docker or Podman is required. Prepare Git, Bash and the filesystem-mount support for your platform:
+
+- **Linux x86_64**: FUSE mounting support is required, with access to `/dev/fuse` and a usable `fusermount3` or `fusermount` command. The example's isolation mode also requires permission to create user namespaces; see the [Host executor](../guides/executors/host.md) for platform boundaries.
+- **Apple Silicon macOS**: install macFUSE 5.4.0 or newer, then enable macFUSE in System Settings → General → Login Items & Extensions → File System Extensions:
 
 ```bash
-pvisor --version
-pvisor spawn -- /bin/echo hello
+brew install --cask macfuse
 ```
 
-The wheel installs `pvisor`, `pvisor-tui`, `pvisor-replay` and `pvisor-daemon` into that environment's bin directory without a Python launcher. Reactivate the environment in a new terminal, or use `~/.venvs/pvisor/bin/pvisor` directly. You can also install into an existing project virtual environment.
+macOS uses macFUSE's FSKit backend without loading a kernel extension or reducing boot security. If FSKit is unavailable, execution fails instead of falling back to direct writes. Staging requires `--safe` or `--stage`; ordinary Host Jobs write directly to the workspace by default.
 
-Upgrade in the same environment:
+<a id="4-enable-vm-or-oci-execution-when-needed"></a>
+
+### Execution infrastructure {#vm-and-oci}
+
+Prepare the **Linux x86_64 node** that will run the example:
+
+- **KVM and isolation permissions**: the current account needs read/write access to `/dev/kvm` and permission to create user namespaces. For `setgroups` or `uid_map` errors, ask the administrator to check user namespace and AppArmor policies. KVM permissions do not replace these requirements; AppArmor rules must match the actual CLI path.
+- **Caller environment**: install Git and Bash, and run the caller script in the Python environment from the previous step. The task image supplies Python, project code and test dependencies inside the VM; it does not inherit the Host virtual environment.
+- **Image access**: first use requires access to Docker Hub and sufficient disk space to cache the image, but no Docker Daemon. See the [VM executor guide](../guides/executors/vm.md#prepare-a-rootfs) for offline preparation.
+
+The example script creates the VM; you do not need to start one manually. See the [VM executor guide](../guides/executors/vm.md) for other VM platforms, rootfs and mount options.
+
+## 3. Choose a quick start {#verify-installation}
+
+| Your goal | Start here |
+| --- | --- |
+| Run commands locally, then review and accept file changes | [Local workflow: run and review](first-run.md) |
+| Execute tools from a caller script and return feedback to an Agent or framework | [Execution infrastructure: tool execution integration example](infrastructure.md) |
+
+Consult [Choose an executor](../guides/executors/index.md) when you need a different execution environment.
+
+<a id="other-installation-methods"></a>
+
+## Other installation and maintenance options {#installation-options}
+
+### Upgrade and uninstall {#upgrade-and-uninstall}
+
+Run these commands in the Python environment where pVisor is installed:
 
 ```bash
 python -m pip install --upgrade pvisor-sandbox
-```
-
-To uninstall:
-
-```bash
+# Uninstall when needed:
 python -m pip uninstall pvisor-sandbox
 ```
 
-Before upgrading, check release notes and deployed `PVISOR_*` settings. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically; uninstalling the Python package also leaves this runtime data in place. npm, Cargo and a standalone version-selecting installer remain part of the [distribution proposal](../community/releasing.md#distribution-plan).
+Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstalling leaves Job state and user caches in place.
 
-### Homebrew and native downloads
+<a id="homebrew-and-native-downloads"></a>
 
-After the project tap has been configured and its first stable release published:
+### Homebrew and native downloads {#native-downloads}
 
-```bash
-brew install DeepLink-org/pvisor/pvisor
-brew test DeepLink-org/pvisor/pvisor
-# Upgrade: brew upgrade pvisor / brew uninstall pvisor
-```
+To install without Python, download the native archive for your platform and `SHA256SUMS` from [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases). Verify and extract the archive, add its `bin` directory to `PATH`, and keep its files together. Replace the complete directory when upgrading.
 
-The tap uses `DeepLink-org/homebrew-pvisor`; maintainers must complete the [one-time setup](../community/releasing.md#one-time-setup) before this command is available. Supported platforms are Apple Silicon macOS and Linux x86_64. Homebrew does not install Python or build Rust, and does not start the daemon as a service.
+See the [release guide](../community/releasing.md#one-time-setup) for Homebrew tap publication requirements and configuration.
 
 Job startup requires the executable and its ancestor directories to be owned by
 you or root and not writable by other users; root-owned sticky directories such
@@ -63,19 +97,11 @@ This changes that directory's permissions, without recursing into installed
 packages. For a shared Homebrew installation that needs group write access,
 install the wheel or native archive under your own protected directory instead.
 
-For installation without a package manager, open [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) and download `pvisor-X.Y.Z-linux-x86_64.tar.gz` or `pvisor-X.Y.Z-macos-arm64.tar.gz`, together with `SHA256SUMS`. Verify the matching checksum (`sha256sum ARCHIVE` on Linux, `shasum -a 256 ARCHIVE` on macOS), extract the archive into a version-specific directory owned by you (for example under `~/.local/opt/pvisor`) and add its `bin` directory to `PATH`. Keep all files in `bin` together. Replace the complete directory when upgrading; remove it and its `PATH` entry to uninstall. Job state and user caches remain in place. The rolling `nightly` release provides the same native archive layout.
+<a id="3-install-from-source-when-needed"></a>
 
-## 2. Check platform prerequisites
+<a id="3-nightly-and-source-builds"></a>
 
-Wheel installation supports macOS and Linux and requires Python 3.10 or newer. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
-
-```bash
-brew install --cask macfuse
-```
-
-macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This path loads no kernel extension and needs neither Recovery mode nor reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
-
-## 3. Nightly and source builds
+### Nightly and source builds {#nightly-source}
 
 Install a nightly build from `main` inside the activated Python environment:
 
@@ -83,35 +109,8 @@ Install a nightly build from `main` inside the activated Python environment:
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
-To modify or build the native programs, check out the source and prepare the toolchain using the [development instructions](../community/development.md):
+To modify or build the native programs, follow the [development instructions](../community/development.md) to obtain the source, prepare the toolchain and build the CLI.
 
-```bash
-git clone https://github.com/DeepLink-org/pvisor.git
-cd pvisor
-```
+### Single-node Daemon {#daemon}
 
-Build and install the CLI from the prepared checkout:
-
-```bash
-mise run install-cli
-```
-
-To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. Installed native scripts ignore `PVISOR_BIN`. Editable Python installation is not a native CLI build; use `mise run build` or `mise run install-cli`.
-
-## Install the single-node daemon {#daemon}
-
-Linux x86_64 and macOS ARM64 wheels both include the separate `pvisor-daemon` executable. Cache serving and standalone memory pools work on both platforms; the OpenSandbox/E2B sandbox API requires Linux x86_64/KVM and delegated cgroup v2.
-
-Prepare a trusted base with `prepare-image`; new templates default to the Rust guest engine and shared compressed image pool. The pinned SDKs' core lifecycle, command and file flows have native validation; full SDK conformance and production density remain unestablished. See the [daemon guide](../guides/daemon/index.md) for deployment, protocol scope and evidence. Stage/apply and checkpoint APIs remain on the native Job path; external schedulers handle cross-node orchestration.
-
-## 4. Enable VM or OCI execution when needed
-
-The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:
-
-```bash
-pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
-```
-
-Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS does not require a C cross compiler. See [development](../community/development.md) for build prerequisites.
-
-Once the environment is ready, follow [your first run](first-run.md) through staging, review and selective apply. See [executor boundaries](../security/executor-boundaries.md) to check which file and network controls were actually installed.
+Release packages include `pvisor-daemon`. For OpenSandbox/E2B SDK access, follow the [Daemon guide](../guides/daemon/index.md) to prepare a Linux/KVM node and delegated cgroup v2, and check support for your chosen APIs. Both quick-start examples use the CLI and require no running Daemon.

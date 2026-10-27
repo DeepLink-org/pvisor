@@ -1,58 +1,85 @@
 # 安装指南
 
-用 Python 3.10 或更新版本安装原生 CLI，随后运行一个本地命令。
-当前 wheel 支持 Linux x86_64 和 Apple Silicon macOS；安装发布包无需 Rust 或内核构建工具链。
+在运行工具命令的机器上安装 pVisor：本地工作流使用你的电脑，执行基础设施示例使用 Linux/KVM 节点。当前发布包支持 Linux x86_64 和 Apple Silicon macOS；安装发布包无需 Rust 或内核构建工具链。
 
-## 1. 安装工具
+<a id="1"></a>
 
-建议在独立虚拟环境中安装，避免修改系统 Python 环境：
+## 1. 安装 CLI {#install-cli}
+
+使用 Python 3.10 或更新版本，建议安装到独立虚拟环境：
 
 ```bash
 python3 -m venv ~/.venvs/pvisor
 source ~/.venvs/pvisor/bin/activate
 python -m pip install pvisor-sandbox
+pvisor --version
 ```
 
-确认安装：
+应输出 pVisor 的版本号。打开新终端后，重新激活此环境；已有项目虚拟环境时，也可以在其中安装。
+
+<a id="2"></a>
+
+## 2. 按使用场景准备环境 {#prepare-environment}
+
+只需完成所选路径的准备。两个快速开始示例均无需模型账号或 API Key。
+
+### 本地工作流 {#local-prerequisites}
+
+示例使用本机工具和工作区，通过 Host 执行器暂存文件改动，无需 VM 镜像、Docker 或 Podman。请准备 Git、Bash，以及平台对应的文件系统挂载支持：
+
+- **Linux x86_64**：需要 FUSE 挂载支持，当前用户可访问 `/dev/fuse`，并可使用 `fusermount3` 或 `fusermount`。示例的隔离模式还要求系统允许创建 user namespace；平台边界见 [Host 执行器](../guides/executors/host.md)。
+- **Apple Silicon macOS**：安装 macFUSE 5.4.0 或更新版本，并在“系统设置 → 通用 → 登录项与扩展 → 文件系统扩展”中启用 macFUSE：
 
 ```bash
-pvisor --version
-pvisor spawn -- /bin/echo hello
+brew install --cask macfuse
 ```
 
-wheel 将 `pvisor`、`pvisor-tui`、`pvisor-replay` 和 `pvisor-daemon` 安装到该环境的
-bin 目录，不经过 Python 启动器。打开新终端后重新激活环境，或直接使用
-`~/.venvs/pvisor/bin/pvisor`。已有项目虚拟环境时，也可以在其中安装。
+macOS 使用 macFUSE 的 FSKit 后端，无需加载内核扩展或降低启动安全级别。FSKit 不可用时会报错，不会自动退化为直接写入。暂存仅在使用 `--safe` 或 `--stage` 时启用；普通 Host Job 默认直接写入工作区。
 
-在同一环境中升级：
+<a id="4-vm-oci"></a>
+
+### 执行基础设施 {#vm-and-oci}
+
+在运行示例的 **Linux x86_64 节点**上准备：
+
+- **KVM 与隔离权限**：当前账号可读写 `/dev/kvm`，且允许创建 user namespace。若出现 `setgroups` 或 `uid_map` 权限错误，请管理员检查 user namespace 和 AppArmor 策略；KVM 权限不能替代这些条件，AppArmor 规则应匹配实际 CLI 路径。
+- **调用方环境**：安装 Git、Bash，并使用上一步的 Python 环境运行调用脚本。VM 内的 Python、项目代码和测试依赖由任务镜像提供，不继承 Host 的虚拟环境。
+- **镜像获取**：首次运行可访问 Docker Hub，并有足够磁盘空间缓存镜像，无需 Docker Daemon。离线准备方式见 [VM 执行器指南](../guides/executors/vm.md#rootfs)。
+
+示例脚本会创建 VM，无需先手动启动一台。其他 VM 平台、rootfs 和挂载选项见 [VM 执行器指南](../guides/executors/vm.md)。
+
+## 3. 选择上手路径 {#verify-installation}
+
+| 你想做什么 | 从这里开始 |
+| --- | --- |
+| 在本机运行命令，审查并接受文件改动 | [本地工作流：运行与审查](first-run.md) |
+| 从调用脚本执行工具，并把反馈交回 Agent 或框架 | [执行基础设施：工具执行接入示例](infrastructure.md) |
+
+需要更换执行方式时，再查阅[选择执行环境](../guides/executors/index.md)。
+
+<a id="other-installation-methods"></a>
+
+## 其他安装与维护方式 {#installation-options}
+
+### 升级与卸载 {#upgrade-and-uninstall}
+
+在安装 pVisor 的 Python 环境中运行：
 
 ```bash
 python -m pip install --upgrade pvisor-sandbox
-```
-
-需要卸载时运行：
-
-```bash
+# Uninstall when needed:
 python -m pip uninstall pvisor-sandbox
 ```
 
-升级前检查发布说明和部署中的 `PVISOR_*` 设置。本地状态（`.pvisor`）和用户缓存
-（`pvisor/`）不会自动搬迁，卸载 Python 包也不清理这些运行数据。
-npm、Cargo 安装入口与可选版本的独立安装器仍属
-[分发提案](../community/releasing.md#distribution-plan)。
+升级前检查发布说明和部署中的 `PVISOR_*` 设置。卸载不会清理 Job 状态与用户缓存。
 
-### Homebrew 与原生下载包
+<a id="homebrew"></a>
 
-项目 tap 完成配置并发布首个稳定版本后，可运行：
+### Homebrew 与原生下载包 {#native-downloads}
 
-```bash
-brew install DeepLink-org/pvisor/pvisor
-brew test DeepLink-org/pvisor/pvisor
-# Upgrade: brew upgrade pvisor / brew uninstall pvisor
-```
+不使用 Python 安装时，可从 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) 下载对应平台的原生归档及 `SHA256SUMS`。校验后解压，将 `bin` 加入 `PATH`，并保持其中的文件在一起；升级时替换完整目录。
 
-tap 使用 `DeepLink-org/homebrew-pvisor`；维护者需要先完成[一次性设置](../community/releasing.md#one-time-setup)，此命令才能使用。
-支持 Apple Silicon macOS 和 Linux x86_64。Homebrew 不安装 Python、不编译 Rust，也不把 daemon 启动为系统服务。
+Homebrew tap 的发布条件与配置见[发布指南](../community/releasing.md#one-time-setup)。
 
 Job 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；
 root 拥有、带 sticky bit 的目录（如 `/tmp`）除外。Homebrew 的 Cellar 可能带有
@@ -67,30 +94,11 @@ brew test DeepLink-org/pvisor/pvisor
 此命令只修改 Cellar 目录本身的权限，不递归修改已安装的软件包。
 需要保留组写权限的共享 Homebrew 安装，应改用 wheel 或原生归档，安装到自己拥有的受保护目录。
 
-不使用包管理器时，打开 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases)，下载
-`pvisor-X.Y.Z-linux-x86_64.tar.gz` 或 `pvisor-X.Y.Z-macos-arm64.tar.gz`，以及 `SHA256SUMS`。
-核对对应的校验值（Linux 用 `sha256sum 归档文件`，macOS 用 `shasum -a 256 归档文件`），
-将归档解压到当前用户拥有、按版本命名的目录（例如 `~/.local/opt/pvisor` 下），把其中的 `bin` 加入 `PATH`，并保持 `bin` 中的全部文件在一起。
-升级时替换整个目录；卸载时删除该目录及 `PATH` 项，Job 状态和用户缓存仍保留。
-滚动 `nightly` 发布提供相同布局的原生归档。
+<a id="3"></a>
 
-## 2. 检查平台要求
+<a id="3-nightly"></a>
 
-wheel 安装支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Job 默认直接写入工作区；
-`--safe` 或 `--stage` 才使用文件系统暂存。在 macOS 上运行暂存的 host Job 前，先安装 macFUSE：
-
-```bash
-brew install --cask macfuse
-```
-
-macOS 默认使用 macFUSE 的 **FSKit 后端**。安装 macFUSE 5.4.0 或更新版本（旧版 FSKit 存在小写入变零的数据损坏问题）后，在
-“系统设置 → 通用 → 登录项与扩展 → 文件系统扩展”中启用 macFUSE。
-这条路径不加载内核扩展，不需要进入 Recovery 或降低启动安全级别。
-挂载点位于 `/Volumes/pvisor-*`，暂存数据仍保存在 Job 的 stage 目录。
-FSKit 不可用时会直接报错，不会自动切换内核后端或退化为直写。
-libkrun VM executor 不需要 macFUSE。
-
-## 3. Nightly 与源码构建
+### Nightly 与源码构建 {#nightly-source}
 
 需要 `main` 的 nightly 构建时，在已激活的 Python 环境中安装：
 
@@ -98,45 +106,8 @@ libkrun VM executor 不需要 macFUSE。
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
-需要自行修改或构建原生程序时，获取源码并按
-[开发环境说明](../community/development.md)准备工具链：
+需要修改或构建原生程序时，按[开发环境说明](../community/development.md)获取源码、准备工具链并构建 CLI。
 
-```bash
-git clone https://github.com/DeepLink-org/pvisor.git
-cd pvisor
-```
+### 单节点 Daemon {#daemon}
 
-在准备完成的 checkout 中构建并安装 CLI：
-
-```bash
-mise run install-cli
-```
-
-测试特定原生构建时，直接调用其路径（例如 `target/debug/pvisor`），或把其目录放在 `PATH` 最前。
-安装后的原生脚本忽略 `PVISOR_BIN`。Editable Python 安装不是原生 CLI 构建；
-使用 `mise run build` 或 `mise run install-cli`。
-
-## 安装单节点 daemon {#daemon}
-
-Linux x86_64 和 macOS ARM64 wheel 都包含独立的 `pvisor-daemon` 可执行文件。缓存和独立内存池可在两平台运行；OpenSandbox／E2B sandbox API 需要 Linux x86_64/KVM 与委派 cgroup v2。
-
-通过 `prepare-image` 准备可信基础镜像，新模板默认使用 Rust guest 引擎与共享压缩镜像池。固定版本 SDK 的核心生命周期、命令和文件流程已有原生验证；完整 SDK conformance 与生产密度仍未建立。部署命令、协议范围和证据见[daemon 指南](../guides/daemon/index.md)。Stage/apply 与 checkpoint API 仍由原生 Job 路径提供；跨节点编排交给外部调度器。
-
-## 4. 需要时启用 VM 或 OCI 执行
-
-默认本地工作流不要求安装 Docker 或 Podman。使用 VM executor 运行 OCI 镜像时，可以显式指定：
-
-```bash
-pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
-```
-
-未指定 rootfs 或镜像时，Linux 上 VM 默认通过 virtiofs 和 OverlayFS 使用宿主 `/`，
-不拉取镜像；macOS 上需要显式指定 Linux rootfs 或镜像。
-`--image-store DIR` 修改本地内容寻址缓存，
-`--mount SOURCE[:TARGET]:ACCESS` 暴露宿主路径，`--rootfs DIR` 指向预先准备的 Linux rootfs。
-Linux 使用 KVM；Apple Silicon macOS 使用 HVF。guest supervisor 是静态 musl Rust ELF，
-由 Rust 自带 linker 构建，macOS 不需要 C 交叉编译器。源码构建前的工具链准备见
-[工程说明](../community/development.md)。
-
-环境准备完成后，用[第一次运行](first-run.md)完成暂存、审查和选择性 apply。
-需要检查实际安装的文件与网络控制时，查看[执行器边界](../security/executor-boundaries.md)。
+发布包包含 `pvisor-daemon`。需要通过 OpenSandbox／E2B SDK 接入时，按 [Daemon 指南](../guides/daemon/index.md)准备 Linux/KVM 节点与委派的 cgroup v2，并确认所用 API 的支持范围。两个快速开始示例使用 CLI，无需启动 Daemon。

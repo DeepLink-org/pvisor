@@ -150,6 +150,8 @@ Upper stores complete copied-up files: a one-byte edit can copy the entire file.
 
 ## 3. Detailed data and mechanisms {#detailed-design}
 
+Regular files generally use whole-file copy-up; safe `O_TRUNC` cases can skip copying old bytes. Ordinary writes should not be treated as block deltas. Source entry points are `pvisor-overlay-core/src/core.rs::copy_up_for_open` and `apply.rs::apply_overlay_selected` for application.
+
 ### Merge, copy-up and POSIX nodes {#copy-up}
 
 ![Original files, preimages, temporary copy-up and private writes](assets/overlay-copy-up.svg)

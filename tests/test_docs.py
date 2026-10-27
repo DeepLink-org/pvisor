@@ -384,7 +384,11 @@ class DocsTests(unittest.TestCase):
             )
             assert "security/index.md" in pages(security)
             quickstart = config["nav"][1][expected_sections[locale][1]]
-            assert pages(quickstart) == ["start/installation.md", "start/first-run.md"]
+            assert pages(quickstart) == [
+                "start/installation.md",
+                "start/first-run.md",
+                "start/infrastructure.md",
+            ]
             guide = config["nav"][2][expected_sections[locale][2]]
             assert {
                 "guides/index.md",
@@ -394,6 +398,14 @@ class DocsTests(unittest.TestCase):
                 "guides/policies/files.md",
                 "reference/cli.md",
             } <= set(pages(guide))
+            assert {
+                "concepts/jobs.md",
+                "concepts/staging.md",
+                "concepts/lifecycle.md",
+                "concepts/resource-optimization.md",
+                "concepts/resource-reuse.md",
+            } <= set(pages(concepts))
+            assert {"reference/jobs.md", "guides/infrastructure/lifecycle.md"} <= set(pages(guide))
             design = config["nav"][5][expected_sections[locale][5]]
             experiments_label = "实验设计" if locale == "zh" else "Experimental design"
             experiments = next(

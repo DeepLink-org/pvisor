@@ -2,6 +2,8 @@
 
 `pvisor-vm` manages guest CPUs, RAM and virtual devices within one lifecycle. Hardware virtualization executes guest instructions, host devices handle I/O, and control interfaces coordinate pausing, mapping maintenance and capture. The enclosing `pvisor` runtime supplies file trees, network egress, storage and runner supervision; VM internals determine when these operations can safely access machine state.
 
+Host processes and OCI containers use the host kernel; containers establish boundaries through namespaces, resource controls and Runtime configuration. VM tools use the guest kernel. Host proxy environment variables require program cooperation, whereas a controlled VM virtual NIC provides a common egress. VMs also incur guest RAM, device-processing and startup costs. Controls depend on executor and platform; see [Isolation mechanisms](isolation.md).
+
 ## Subsystem diagram and ownership {#architecture}
 
 ![VM caller, guest, vCPUs, RAM, devices and coordinated freeze boundary](assets/vm-subsystem.svg)
@@ -40,7 +42,7 @@ The event loop receives device events and control notifications. CPU control req
 
 ![A guest file request crosses a virtqueue and completes with used-ring publication](assets/filesystem-request.svg)
 
-The guest driver places request and response buffers in RAM, records GPA, length and direction in a descriptor chain, publishes an available entry and notifies the device. The host validates those ranges before converting GPA into an accessible host mapping. On completion, the queue owner writes the response and publishes a used entry, allowing the guest to reuse its buffers.
+The guest driver places request and response buffers in RAM, records GPA, length and direction in a descriptor chain, publishes an available entry and notifies the device. The host validates those ranges before converting GPA into an accessible host mapping. On completion, the queue owner writes the response and publishes a used entry, allowing the guest to reuse its buffers. Validation checks that guest addresses lie within permitted RAM, lengths do not overflow, and buffer access directions are valid.
 
 virtio-fs currently retains one normal request queue and one hiprio queue. Overlappable large READs and directory reads use bounded blocking I/O workers; the queue owner handles short requests and mutations requiring serialization. Workers return results, while the owner alone updates available/used rings. Concurrent I/O preserves ring ownership.
 

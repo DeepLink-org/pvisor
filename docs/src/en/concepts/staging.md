@@ -1,42 +1,51 @@
-# Staging and apply semantics
+# File-level oversight and isolation {#apply}
 
-Staging keeps a Job's workspace changes in a copy-on-write upper layer. Only an explicit `apply` changes the target workspace. This makes file changes reversible before apply: select what to merge, discard the stage, or fork it.
+<span id="staging-and-apply-semantics"></span>
 
-Each promise below corresponds to a case in `docs/src/zh/cases/06-stage-apply.md`, reproducible with `mise run cases -- --suite stage`. For the workflow, see [Review and apply changes](../guides/review-apply.md).
+pVisor manages Agent access and modifications at file granularity: it constrains access by path, isolates workspace changes, and supports review and selective acceptance. Access rules and execution results correspond directly to files and directories, making it easier to inspect what an Agent can access and what it changed.
 
-## Promises
+## Constrain access and modification {#access-scope}
 
-| Promise | Meaning | Semantic case |
-| --- | --- | --- |
-| Workspace unchanged before apply | After success, a nonzero exit, or signal termination, workspace paths, types, contents, permission bits and link targets match their initial state until apply | S-STAGE-001 |
-| The Job reads its own changes | The Job sees its writes, deletions and renames while the host workspace remains unchanged | S-STAGE-002 |
-| Review shows the net effect | The list equals the net additions, deletions and modifications; files created then deleted are absent | S-STAGE-003 |
-| Applying everything equals direct execution | Staging a script then running `apply --all` produces the same complete tree as running the script directly in the workspace | S-STAGE-004 |
-| Apply is refused after drop | Drop leaves the workspace unchanged; subsequent apply is rejected without effect | S-STAGE-005 |
-| Selective apply affects only the selected subtree | `apply --path P` changes only P and descendants; two selective batches covering all changes equal one `--all` | S-STAGE-006 |
-| Repeated apply has no additional effect | Reapplying paths already applied does not change the workspace | S-STAGE-007 |
-| Conflicts preserve external changes | If a target is externally modified, created or deleted after staging, apply is refused and the external state is preserved completely | S-STAGE-008 |
-| A conflicting batch has no effect | If any selected path conflicts, this apply changes none of the selected paths | S-STAGE-009 |
-| Unrelated external changes do not block apply | External changes to paths untouched by the agent are preserved and do not block apply | S-STAGE-010 |
-| Directory deletion preserves external additions | Apply is refused if the agent deleted a directory and an external writer subsequently added files inside it | S-STAGE-011 |
-| Apply stays inside the workspace | If a directory is replaced by a link pointing outside after staging, apply is refused and both trees remain unchanged | S-STAGE-012 |
-| Return values agree with effects | Successful link creation leaves a link; failed creation leaves none | S-STAGE-013 (known macOS gap below) |
-| Executable bits and link targets survive | Executable bits and symbolic link targets are preserved without dereferencing links | S-STAGE-014 |
+OverlayCore provides a managed file view. File policies define read-only inputs, writable paths and prohibited access; the executor restricts processes from bypassing that view to access host files. The isolation scope depends on the executor; see [Executor boundaries](../security/executor-boundaries.md).
 
-These cases are drafts without human approval. A passing test demonstrates that the implementation satisfies the script; it does not mean the semantics have been reviewed. See [Testing and semspec](../community/testing.md).
+Staging isolates candidate changes; it does not replace access control. See [File policies](../guides/policies/files.md) to configure access for a task.
 
-## Known gaps
+## From staging to accepting changes {#candidate-changes}
 
-- **S-STAGE-013 is XFAIL on macOS**: macFUSE can return EPERM when creating a symbolic link even though the link was created. See [Known limitations](../security/known-limitations.md).
-- **Renames appear as deletion plus addition**: the review list has no separate rename representation.
-- **Multi-file apply is not atomic to external editors**: conflict checks precede writes; stop other writers during apply. After interruption, `apply-ledger.json` allows a prepared batch to recover forward.
+File changes follow **Stage → Review → Apply / Drop**. Stage is a mechanism enabled with `--safe` or `--stage`, not a separate `stage` subcommand.
 
-## Irreversible effects {#不可逆的部分}
+| Operation | Purpose |
+| --- | --- |
+| **Stage: retain candidate changes** | The Agent reads base files and saves changes in a private upper layer. Later tool calls see those changes without writing directly to the target workspace. Success, failure or termination does not automatically accept candidates. |
+| **Review: inspect changes** | Inspect additions, modifications and deletions alongside execution results, installed controls and warnings, then choose which files to accept. Review itself does not modify the target workspace. |
+| **Apply: accept changes** | After checking for conflicts, write all candidates or selected paths into the target workspace. Unselected changes remain available for later batches. |
+| **Drop: discard candidates** | Discard the remaining unaccepted changes. Discarded candidates can no longer be applied; accepted changes are not undone. |
 
-Staging covers workspace files. These effects bypass it and cannot be undone by either `apply` or `drop`:
+For example, if a run changes `src/` and temporary files, review the result, accept only `src/`, then discard the remaining candidates. See [Review and apply changes](../guides/review-apply.md) for commands.
 
-- Remote API calls, database writes, sent messages and other external effects;
-- Host paths explicitly shared with `--mount SOURCE:write`;
-- Batches already applied: drop does not undo them.
+To preserve current candidates and try another approach, use [workspace checkpoints and branches](resource-reuse.md#state-scope) before applying everything or dropping the stage.
 
-For writes to HOME, the VM root and other locations, see [Staging and storage](../reference/cli.md#暂存与存储).
+<a id="staging-semantics"></a>
+<a id="promises"></a>
+
+## File-change handling rules {#file-change-rules}
+
+| Rule | Description |
+| --- | --- |
+| Show net changes | Review presents final net additions, modifications and deletions. Temporary files created and then deleted are absent; renames appear as deletion plus addition. |
+| Preserve file attributes | Applying changes preserves executable bits and symbolic-link targets as well as file contents, without replacing links with their targets' contents. See the platform exceptions below. |
+| Apply in batches or repeat | Selective apply accepts chosen paths and their subtrees. Batches covering all changes produce the same result as applying everything at once; repeating apply on accepted paths adds no changes. See [Selective apply rules](../guides/review-apply.md) for path dependencies. |
+| Check conflicts and path boundaries | A conflict in the selected scope rejects the batch before writing. External edits to untouched paths do not block application. Directory deletion checks for external additions, and paths replaced with links outside the workspace cannot redirect writes beyond it. |
+
+<a id="known-gaps"></a>
+<a id="不可逆的部分"></a>
+
+## Scope and limitations {#scope-and-limitations}
+
+- Workspace staging does not cover external effects such as remote API calls, database writes or sent messages. It also does not protect host paths explicitly shared for writing with `--mount SOURCE:write`.
+- Apply writes to the target workspace; Drop cannot roll those writes back.
+- Multi-file apply is not atomic to external editors; stop other writers during application. See [Review and apply changes](../guides/review-apply.md) for interrupted-apply recovery and conflict handling.
+
+See [Staging and storage](../reference/cli.md#暂存与存储) for writes to HOME, the VM root and other locations, and [Known limitations](../security/known-limitations.md) for platform behavior such as macOS symbolic links.
+
+See the [semantic specifications (unreviewed drafts)](../cases/06-stage-apply.md) for complete Stage / Apply / Drop behavior, including comparison of applying everything with direct execution. See [Testing and semspec](../community/testing.md) for the distinction between test results and human approval.

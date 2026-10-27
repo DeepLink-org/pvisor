@@ -35,12 +35,16 @@
 
 想保留文件方案再试一种做法时，先检查[工作区分叉](fork-checkpoint.md)的前提。需要继续 CPU、RAM 和设备状态时，选择[执行检查点入口](infrastructure/integration.md#capabilities)。
 
+## 轨迹记录与回放 {#trajectories}
+
+本地任务需要追踪模型交互时使用[轨迹捕获](capture.md)，需要重建受支持的 Agent 历史并继续执行时使用[回放](replay.md)。同一套指南也用于推理与评测中的[上下文保留](infrastructure/index.md#inference)；需要将执行结果交付训练流程时，再参考 [RL rollout](rl-rollouts.md)。
+
 ## 扩展到并行任务与 CI {#automation}
 
 并行任务分别使用独立工作区、stage 和 Job 身份。按[并行 Agent 流程](parallel-agents.md#batch)收集各任务结果，再协调合入同一个目标树；任务数增加后，接受条件仍由你或评审流程确定。
 
 [CI 工作流](ci.md)把运行结果、产物上传和接受改动分开处理。保留失败与超时的证据，使评审步骤能判断是否重跑、修复或丢弃。
 
-需要追踪模型交互时使用[轨迹捕获](capture.md)，恢复受支持的 Agent 历史时使用[回放](replay.md)。失败可按[排查一次 Run](troubleshooting.md)定位。
+失败可按[排查一次 Run](troubleshooting.md)定位。
 
 当任务由推理服务、评测器或训练器发起，使用[Agent 执行基础设施](infrastructure/index.md)确定状态和资源由谁管理；两条流程共享相同的执行器与能力说明。

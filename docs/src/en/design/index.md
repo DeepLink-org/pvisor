@@ -1,228 +1,240 @@
-# How pVisor works
+# Architecture overview
 
-Letting an Agent work continuously means entrusting a system with processes, file changes, network requests and memory state. Once the task starts, a developer needs to know what it can access, which state can survive an interruption, and which results to accept. Running many tasks adds another question: which contents can be stored once, and which costs necessarily grow with task count?
+Agent execution requires ongoing management of tool processes, file and network access, task state and resources. In local workflows, pVisor constrains access, isolates file changes and supports result review. On cluster execution nodes, pVisor provides managed sandboxes for inference, evaluation and training frameworks, supporting concurrent tasks and branches through lifecycle management, image and memory optimization, and state reuse. Both scenarios share the same underlying mechanisms; the frameworks own cross-node scheduling and task orchestration.
 
-pVisor implements these responsibilities along execution, filesystem, network and storage paths. Consider a small task: an Agent reads `config.toml`, queries an external HTTPS service, and writes an updated configuration. Assume VM execution with workspace staging enabled. This task connects the user request to the guest kernel, virtual devices, host files and final apply. Ordinary Host Jobs write through by default; staging requires `--safe`, `--ask` or an explicit stage.
-
-## 1. Overall design: execution and result boundaries {#architecture}
+## 1. Overall architecture and component responsibilities {#architecture}
 
 ![pVisor technical architecture: runtime and host services, with pvisor-vm expanded into vCPUs, RAM, devices, snapshots and platform backends](assets/pvisor-architecture.svg)
 
-The runtime organizes an execution as a Session: admission resolves effective configuration, drivers prepare resources, an executor runs the workload, and the Session reclaims resources and publishes results. `pvisor-core` defines shared identities, policies and facts. Executors and drivers own actual system calls and platform resources.
+pVisor organizes task execution on the Host and manages execution environments through file, network and state services. The components have the following responsibilities and relationships:
 
-Files and networks have different publication behavior. File changes can remain in a private upper until someone accepts them; a request sent to a remote service may already have produced an effect. File apply is consequently a separate publication action, while execution controls must act before requests leave. Examining logs afterwards cannot replace runtime restrictions.
+| Components | Responsibilities and relationships |
+| --- | --- |
+| **Runtime and Executor** | The Runtime organizes task execution and resource management; the Executor carries out requests in a specific execution environment. |
+| **OverlayCore and OverlayNet** | Manage file views and candidate changes, and network egress, respectively, enforcing access rules on file and network interactions. |
+| **Image Cache** | Provides reusable image metadata and content for demand reads. |
+| **VMM and guest** | The Host-side VMM manages VM resources and devices; the guest kernel and tool processes execute tasks. |
+| **State storage and execution records** | Preserve recoverable state and execution facts for task restoration, result review and failure reconciliation. |
 
-A task passes through admission, execution, state preservation and result publication. The [Core architecture](architecture.md) ownership table maps requests, Attempt ownership and state to crates.
+The Runtime starts and manages execution environments through Executors. In the VM path, the VMM runs the guest to execute tools; guest file and network requests pass through virtual devices to OverlayCore and OverlayNet, while Image Cache supplies image content for file reads. OverlayCore retains candidate changes produced during execution. State storage and execution records preserve supported recovery state and execution facts, respectively, for subsequent restoration and review.
 
-The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and guest process/file protocol adapters, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
+## 2. A task from start to finish {#execution}
 
-Memory, filesystems and networking are organized around address mappings, exported file trees and the virtual NIC. Snapshots combine their local state at a consistent cut; execution records retain reconcilable operation facts. The single-node daemon manages admission, ownership and shared resources across VMs. Each subsystem owns state while sharing lifecycle requirements with the VM and Session.
-
-## 2. Starting a task and owning its completion {#execution}
+Consider a VM tool execution: an Agent reads `config.toml`, queries an external HTTPS service and modifies the configuration. Workspace staging is enabled, retaining file changes as candidates for subsequent review. See the [local workflow quick start](../start/first-run.md) for enabling staging and default write behavior.
 
 ### Job, Attempt and Session
 
-A Job is the persistent identity of managed work; an Attempt identifies one actual execution. Supported execution resume retains the Job and creates a new Attempt. Execution fork creates an independent Job with lineage. A Session is the runtime object owning one Attempt's resources.
+Three concepts connect task identity, actual execution and resource management:
 
-Cancellation shows why these identities matter. Closing a frontend changes observation or waiting. Requesting cancellation expresses an intent to stop. Even after a process exits, filesystem teardown, device shutdown and recording may remain. Giving each action to a frontend that can disappear creates a window where execution has ended but resources or Job state remain unfinished.
+| Concept | Role in this execution |
+| --- | --- |
+| **Job** | Gives the managed task a persistent identity linking state, records and candidate results. |
+| **Attempt** | Identifies one actual execution; the example's reads, queries and modifications occur within this execution. |
+| **Session** | The internal Runtime object managing this execution's resources, organizing preparation, cleanup and result persistence. |
+
+An Agent's application task can include multiple model interactions and tool calls; the caller decides how to map them to Jobs. See [Execution model](execution-model.md) for Job/Attempt identity changes during checkpoint restoration and branching.
 
 ![Sequence from RunSpec through preparation, launch facts, execution, cleanup and terminal publication](assets/execution-sequence.svg)
 
-The runtime resolves RunSpec, effective policy and executor capabilities before preparing filesystem, network and execution attachments. It calls `RunExecutor::execute` only after required launch facts commit successfully. Preparation may already have created directories or sockets, so a commit failure still requires resource cleanup.
+Execution proceeds through three stages:
 
-The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage. The durable Job service's `ManagedJobRun` separately owns the real Attempt join and `Server::finish`. The frontend receives a wait adapter. A failed or dropped frontend wait requests cancellation. Accepted completion publication remains owned by a runtime task while its Tokio runtime survives.
+1. **Preparation.** Resolve requests and policies, check executor capabilities, and prepare file, network and execution resources.
+2. **Execution.** Commit required launch records before starting tools, associating execution with the current Attempt. Tools read the configuration, query the service and retain file changes in the stage.
+3. **Completion.** After tools exit, clean up resources and check installed controls. When storage is retained, save the Bundle, commit an Attempt completion receipt binding the result to its Bundle digest, then publish terminal events. File candidates still await caller review and acceptance; see the [Attempt completion protocol](execution-model.md#attempt-completion).
 
-With retained storage, Session saves the Bundle, commits a receipt binding the result and Bundle digest, then publishes terminal events. After owner exit, the receipt governs reconciliation of state projections. A missing receipt retains Unknown and the stage. [Attempt completion](execution-model.md#attempt-completion) defines the ordering.
+Cancellation requests, tool exit and task completion are distinct events; Runtime and the durable Job service must still finish cleanup and save results. See [Execution model](execution-model.md) for preparation failure, cancellation and completion rules, and [Core architecture](architecture.md) for the call sequence.
 
-### Why resolve policy once?
+<a id="why-resolve-policy-once"></a>
 
-Suppose a request allows networking but workspace policy denies all network access. Admission must derive an effective network configuration and pass that same configuration to both driver and executor. If preparation reads mutable configuration again, the recorded decision and installed egress may disagree.
+### Effective policy and installed controls {#_2}
 
-Requested snapshots, policy narrowing, Placement and final observations therefore remain distinct records. `resolve_operation` supports pre-execution review; resolution alone does not establish installed controls. See [Execution model](execution-model.md) for identity, result and cancellation contracts.
+Admission produces a consistent effective configuration for drivers and executors. Successful policy resolution does not establish enforcement; installed controls and observed results still require checking. See [Execution model](execution-model.md) and [Core architecture](architecture.md) for configuration propagation and policy narrowing.
 
-Source entry points: `pvisor/src/runtime/run.rs::resolve_run`, `pvisor/src/session.rs` and `pvisor/src/runtime/job_service/managed.rs`.
+## 3. VM execution and Host/guest interaction {#os-foundations}
 
-## 3. VM and virtual devices: the OS beneath executors {#os-foundations}
+In the VM path, tool processes use system calls provided by the guest kernel. Requests for Host-provided file and network resources pass through virtual devices to Host services. The VMM manages vCPUs, guest RAM and device execution, coordinating tool execution with resource access.
 
-The overall diagram expands `pvisor-vm` into vCPU, RAM and device state: CPUs execute the guest, devices handle host I/O, and RAM connects them. The [VM subsystem](vm-runtime.md) explains startup, queue ownership and consistency boundaries.
+<a id="processes-kernels-and-virtual-machines"></a>
 
-### Processes, kernels and virtual machines
+### Processes, kernels and virtual machines {#_3}
 
-When a program calls `read`, `write` or `connect`, its kernel interprets file descriptors, address spaces and permissions. A Host process directly uses the host kernel. An OCI container also uses that kernel, with namespaces, resource controls and runtime configuration establishing boundaries. A VM program first enters the guest kernel, which uses virtual devices to reach resources supplied by the host.
-
-Most ordinary instructions and guest-kernel work run through hardware virtualization. pVisor need not interpret every guest syscall: it owns exported file trees, the virtual network attachment and VM lifecycle. Device requests requiring service enter their corresponding host implementations. Guest tmpfs operations and kernel-cache hits do not automatically become OverlayCore requests.
-
-This determines the available control points. A proxy environment variable on the Host requires program cooperation. Attaching the VM's sole virtual NIC to a controlled path allows programs that ignore those variables to pass through the same egress. A VM also introduces guest RAM, device processing and startup costs. Controls depend on executor and platform; see [Isolation mechanisms](isolation.md).
+Ordinary instructions and most guest-kernel work run through hardware virtualization. Only device requests requiring Host services enter their corresponding host implementations. Guest tmpfs operations and kernel-cache hits do not automatically become OverlayCore requests. See [VM subsystem](vm-runtime.md) and [Isolation mechanisms](isolation.md) for kernel and control-point differences across execution environments.
 
 ### Virtio: carrying I/O through shared queues
 
-A virtio device lets a guest driver and host device implementation share queues. The guest prepares request buffers in its RAM and publishes descriptors to an available queue. A descriptor identifies a guest buffer address, length and access direction. The host consumes the request, writes response buffers, publishes a used entry and notifies the guest according to the protocol.
-
-Guest-supplied addresses must be validated: the range must belong to permitted RAM, lengths must not overflow, and buffer directions must be valid. Those RAM mappings must remain usable throughout device processing. This explains why parking CPUs alone does not make RAM safe to capture or reclaim: device threads can still access request buffers.
+In the pVisor VM path, virtio-fs connects guest file access to Host-side file services. Guest tools read and modify files through ordinary file interfaces. Requests within the managed file view are handled by Host-side OverlayCore according to access rules, and results are returned to the guest.
 
 ![A guest read travels through VFS, virtio-fs queues and the host file service](assets/filesystem-request.svg)
 
-For a read that misses the guest page cache:
+For a file read that misses the guest page cache:
 
-1. `read(fd, …)` enters guest VFS and reaches the file's virtio-fs mount.
-2. virtio-fs encodes a FUSE `READ` message. Here FUSE denotes the file-operation protocol.
-3. The guest submits a descriptor chain to the virtqueue and notifies the host device.
-4. The `pvisor-vm` worker reads and validates the request, using the adapter's inode and handle state.
-5. Operations in the exported tree enter the shared `FilesystemService` and OverlayCore for path authorization, layered lookup or backend reads.
-6. After response bytes reach guest buffers, the queue owner publishes the used entry. Its device RAM lease remains held through publication.
+1. The guest tool reads a file, and the guest kernel routes the request to the virtio-fs driver for that file's mount.
+2. The Host device implementation validates the request and calls the file service. OverlayCore handles authorization and the file view to access the required content.
+3. The Host writes results into guest buffers and notifies the guest to continue execution.
 
-Host staging reaches the same file service through a host FUSE mount. The VM calls it directly from virtio-fs, without another trip through host `/dev/fuse`. File semantics are shared; each adapter still owns protocol state, permission translation and queue lifecycle.
+Requests and responses travel through shared queues and buffers in guest RAM. Access to that memory must remain valid while devices process them.
 
-Source entry points: `pvisor-vm/src/devices/virtio/fs/worker.rs` and `pvisor-overlay-core/src/service.rs`. See [Shared filesystem service](overlayfs.md#filesystem-service).
+Host and VM file-access adapters reuse file-service semantics while owning their protocol state and request lifecycles. See [Shared filesystem service](overlayfs.md#filesystem-service).
 
-## 4. Memory: what is shared and where writes go {#resources}
+## 4. File staging: copy-up and conflict detection {#file-mechanism}
 
-### Three addresses and one physical content page
+File staging lets an Agent keep modifying an independent file view while preserving the target workspace until the caller reviews and accepts candidate changes.
 
-A guest process uses a virtual address, GVA, translated by guest page tables into a guest physical address, GPA. The VMM creates host virtual RAM mappings, HVA, and registers guest memory regions with KVM/HVF. Hardware virtualization maps guest physical addresses to host physical pages. Host device implementations also use HVA to access guest buffers.
+<a id="lower-upper-and-the-read-view"></a>
 
-Two VMs using GPA `0x1000` need not share any physical page. Sharing requires host private mappings to reference the same immutable backing, with kernel copy-on-write creating private pages on modification. The arrows below describe mapping relationships, not software calls made on every CPU memory access.
+### Layered views and private changes {#staging-layers}
 
-![GVA, GPA, HVA, a shared physical page and a private page after a write](assets/vm-address-space.svg)
+Lowers supply existing file contents, the upper holds this execution's candidate changes, and the merged view is what tools see. Lookup checks the upper first, then lowers in priority order. This avoids copying the full directory tree upfront; it does not establish an immutable lower snapshot or deduplicated backing content.
 
-Snapshot restore can create private COW mappings from the same validated baseline. A and B initially read the same backing. A's write creates its own page while B keeps reading the baseline. Sharing reduces duplicate unmodified residency and defers allocation and copying until writes occur.
-
-### Moving equal live pages into a physical pool
-
-The optional Linux daemon physical pool handles equal resident 4 KiB pages across VM sessions. Candidates initially retain bounded hashes. When equal content appears across sessions, the pool supplies a reference-pinned memfd slot. The VM rechecks live bytes with CPUs parked and device access drained, then replaces the relevant region with a read-only FD's `MAP_PRIVATE` mapping.
-
-![Equal contents share a pool slot until A writes a private copy](assets/memory-cow.svg)
-
-Two orderings matter. Recheck content before replacing a mapping, or writes after sampling can be lost. Release a still-mapped old slot only after removing its mapping, or slot reuse can change bytes visible to another VM. A disconnected connection alone cannot release those references: the pool waits for pidfd confirmation of peer exit.
-
-Raw-page sharing needs no userfaultfd and does not compress unique contents. It adds reference overhead and a pool-process failure domain; losing the current pool fails dependent VMs. Snapshot COW, KSM, physical pooling, cold compression and offload each have compatibility constraints. Their savings cannot be added together into an assumed delivered total. See [Memory optimization](memory-optimization/index.md) for budgets.
-
-### Why cold compression needs two quiescent windows
-
-Per-instance live compression addresses contents that are not duplicated across VMs but encode into fewer bytes. Before releasing original RAM, the system needs a recovery object and confirmation that contents have not changed between sampling and publication.
-
-![Capture, encode outside the barrier, recheck, reclaim and restore on fault](assets/cold-page-cycle.svg)
-
-The experimental Linux pager captures candidate blocks in a first short window, releases the guest, and encodes and publishes outside it. A second window rechecks live contents. Changed blocks, incompressible blocks and rejected publications remain resident. Only unchanged contents with a retained recovery source are discarded.
-
-Accessing reclaimed memory triggers kernel-fault-capable userfaultfd, blocking the accessor. The pager decodes, checks length and checksum, completes `UFFD_COPY`, and only then wakes access and releases its cold reference. Corrupt recovery fails the runner rather than substituting zeroes. Unchanged bytes can still be read frequently, so this remains experimental eviction/refault probing rather than a reliable read-heat measurement.
-
-Capacity planning includes shared pages, private COW, pool indexes, compressed objects, encoding scratch and restoration peaks. Summing per-process RSS double-counts shared pages; compression ratios omit CPU costs and refault tails.
-
-Source entry points: `pvisor-vm/src/handle.rs` and `pvisor-vm/src/cold_ram_linux.rs`; public contracts are in `pvisor_vm::api`. See [Per-instance compression](memory-optimization/compression-local.md) and [Whole-VM offload](memory-optimization/offload.md) for their recovery paths.
-
-## 5. File staging: copy-up and conflict detection {#file-mechanism}
-
-### Lower, upper and the read view
-
-A layered filesystem separates read sources from write destinations. Lowers supply existing contents; an upper retains this execution's changes. Lookup first checks the upper, then the lowers in priority order. The merged view does not require copying the entire tree in advance.
-
-On the first in-place edit of lower `config.toml`, OverlayCore records the target preimage, copies the original contents and metadata into a private temporary node, then renames it into the upper. Subsequent writes affect the upper, leaving the lower unchanged. A regular file generally requires whole-file copy-up. The implementation skips copying old bytes in safe `O_TRUNC` cases; ordinary writes are not block deltas.
+On the first in-place edit of lower `config.toml`, OverlayCore copies the required contents into the private upper. Subsequent edits go to that layer, and tools read their own changes. The target workspace awaits Apply. Regular files generally use whole-file copy-up rather than block deltas.
 
 ![config.toml moves from lower A through a preimage and temporary copy to upper C](assets/overlay-copy-up.svg)
 
-Deletions need an explicit representation. Removing an upper entry alone can expose its lower counterpart, so deleting a lower file creates a `.wh.name` whiteout. Opaque markers stop old lower children reappearing when certain directories are recreated or replaced. Renaming a lower directory also requires materializing its merged contents before moving it, rather than moving an empty directory shell.
+Staging must also represent deletions and directory changes. Candidates must satisfy completion and durability conditions before Apply. See [OverlayCore details](overlayfs.md#detailed-design) for deletion markers, directory materialization and synchronization policies.
 
-Rename keeps partially copied files out of view; durability still requires synchronization. Managed stages default to syncing the observation log and upper after the task ends and writers stop, then publishing a seal. An unsealed managed stage rejects apply or reuse. Strict mode synchronizes first-mutation records earlier; [OverlayCore](overlayfs.md#preimages) defines the ordering.
+<a id="why-the-upper-is-insufficient"></a>
 
-### Why the upper is insufficient
+### Preimage fingerprints and conflict detection {#staging-conflicts}
 
-While an Agent reads A and produces C, a developer may change the target to D. The upper says what should be written, but does not identify the old state on which it depends. A preimage retains the target's content and metadata fingerprint so apply can detect that conflict.
+While an Agent produces candidate C based on target file A, an external edit may change the target to D. The upper retains C but cannot alone identify the target state it depends on. A preimage stores the target's content and metadata fingerprints so Apply can detect conflicts; it is not a complete copy of the old file.
 
 ![Comparing preimage A, candidate C and target D, followed by apply ledger stages](assets/apply-conflict.svg)
 
-For a live lower, protection starts at the first actual observation of file contents; a write without a prior read uses the pre-mutation state. Frozen layouts use an explicit target baseline. Ordinary stat and directory listing do not hash every file. If an extra lower supplies B while the eventual target contains A, A remains the conflict baseline.
+Conflict checks concern the target workspace that will receive changes. With additional lowers, tool-visible content may differ from the target baseline and must be tracked separately. See [Preimages and conflict baselines](overlayfs.md#preimages) for observation timing, live lowers and frozen layouts.
 
-Under the target lock, apply first recovers pending batches, closes the selected paths over required dependencies, and compares the target with preimages. It persists Prepared intent before modifying the target, records TargetApplied after target updates, prunes accepted upper entries and finally records Committed. An interrupted operation can reconcile retained phases and recover forward.
+### Accepting candidates and recovery boundaries {#staging-acceptance}
 
-These are ordered file operations. External readers may see intermediate states, and the advisory lock coordinates only cooperating callers. The mechanism supplies conflict checks, selective acceptance and recovery information; it does not serialize arbitrary external editors. `drop` discards candidate files without undoing HTTPS requests already sent.
+Apply checks conflicts for selected paths, writes accepted candidates to the target workspace and records application progress. Unselected candidates remain available. Progress records support reconciliation and recovery after interruption; see [OverlayCore details](overlayfs.md#detailed-design) for batch stages and path dependencies.
 
-Source entry points: `pvisor-overlay-core/src/core.rs::copy_up_for_open` and `apply.rs::apply_overlay_selected`. See [OverlayCore details](overlayfs.md#detailed-design) for path validation, hard links and recovery.
+Multi-file Apply is an ordered sequence of operations. External readers may see intermediate states, and the target lock coordinates only cooperating callers; it is not an atomic transaction against arbitrary editors. Drop discards remaining candidates without undoing accepted changes or external effects such as HTTPS requests already sent.
 
-## 6. Images: shared contents and demand reads {#image-mechanism}
+## 5. Images: shared contents and demand reads {#image-mechanism}
 
-Fully unpacking every image duplicates files and pays download costs before a task accesses them. The shared image cache keeps paths, permissions, directories and hard-link identities in each image's metadata, while storing file contents as reusable immutable objects.
+Agent execution environments often use similar tools and dependencies, while an individual task accesses only some files. pVisor separates image directory structure from file contents, allowing identical content to be reused across images and supported demand-loading paths to fetch content as tasks access it.
 
-Separating paths from content identity lets different paths in two images reference equal bytes, while the same path in different revisions can contain different bytes. A run pins `image + platform + revision` at startup instead of following mutable tags or HEAD, avoiding a mixture of old and new versions.
+**Content sharing** reduces duplicate storage: each image retains its own paths, permissions, directories and hard-link identities, while the V2 content pool reuses equal content within its supported layouts. Large-file chunks can be shared across images; small files are packed in groups, so partially overlapping sets do not guarantee per-file physical deduplication. Sharing image content does not establish shared guest RAM across VMs.
+
+**Demand reads** reduce upfront preparation by fetching required content when files are accessed. A run pins the image, platform and content version at startup rather than following mutable tags, preventing mixed versions within a task. Content sharing determines what can be reused; demand reads determine when to fetch it.
 
 ![A pinned image revision maps paths to content blocks for range reads](assets/image-read.svg)
 
-A `read(offset, length)` locates the inode and file-content index, computes intersecting blocks, and fetches local or remote objects only on cache misses. After the corresponding integrity checks it slices the requested range. Metadata paging and content caching have separate boundaries. Content misses do not hold a global file-service lock.
+The file service uses pinned-version metadata to locate content. Cache hits are read directly; misses fetch and verify content from a local or remote backend before returning the requested range. See [Shared image cache](lazy-image-v2.md) for indexes, content blocks and version publication rules.
 
-A VM lazy lower directly uses the shared file service. A private metadata projection preserves structures needed for native inode/FD and path checks, while file contents come from the content backend on a FUSE `READ`; sparse placeholder holes are not returned as actual file bytes. A first ordinary modification must materialize the original file and copy it up. Complete export or snapshot can also fetch previously untouched content.
+Docker-style local storage also uses the V2 compressed pool, but retains all encoded content after pull rather than fetching only a remote working set. See [Image V2 design](lazy-image-v2.md) and [Lazy image benchmarks](../benchmarks/lazy-image-startup.md) for the two paths' disk, read and memory costs.
 
-Lazy loading consequently moves some preparation work into first access. Hot-cache benefits, cold misses, metadata and copy-up costs need separate measurements. See [Shared image cache](lazy-image-v2.md) for storage and publication contracts. Source entry points are `pvisor/src/image/cache/backend.rs`, `direct.rs` and `storage.rs`.
+Demand-loaded images supply base content for the file view, while task modifications enter a private upper. A first ordinary file modification may need to fetch original contents before copy-up; complete export or snapshot can also read previously untouched content. See [Shared filesystem service](overlayfs.md#filesystem-service) for VM integration and metadata projection.
 
-Current Docker-style local storage also uses this compressed pool. After pull, complete encoded content is read through directory hash-radix indexes and independent frames without a resident complete extracted tree. This differs from remote working-set delivery: the cache service still prepares all source content, and remote VM clients may persist raw file blocks. The [lazy-image benchmark](../benchmarks/lazy-image-startup.md) separately reports disk, cold/warm clients, first/repeated mmap and instance memory. Compression ratios do not establish universal performance superiority.
+Demand loading reduces preparation before execution while shifting some costs to first access. Benefits depend on the accessed files, cache state and write behavior. Evaluate cold-cache reads, warm-cache reuse, metadata access and copy-up costs separately.
 
-## 7. Networking: the interception point determines control strength {#network-mechanism}
+## 6. Network access control and model interaction {#network-mechanism}
+
+In the VM execution path, guest network requests pass through the virtual network device to OverlayNet on the Host, which checks access policy and establishes outbound connections. The guest and OverlayNet maintain one TCP connection, while the Host and external service maintain another. OverlayNet forwards data between them, placing outbound access under a common egress control point.
 
 ### From a hostname to two TCP connections
 
-The VM path carries guest virtio-net Ethernet frames over a length-prefixed UnixStream into OverlayNet's smoltcp userspace stack. The guest believes it connects to the target service; the host opens an upstream connection and bridges bytes between two TCP connections.
-
-Hostname policy encounters a basic problem: `connect` uses an IP address, losing the name the application originally requested. pVisor's synthetic DNS assigns a stable address within an Attempt and retains its name mapping. When a guest SYN arrives, egress can recover the logical name before checking port, transport, resolution and scoped policy.
+For `api.example.com:443`, the application requests a hostname, while connection establishment uses an IP address. pVisor's synthetic DNS retains a stable name/address mapping within an Attempt so OverlayNet can recover the logical destination when a connection request arrives. The synthetic address associates the connection with a hostname; it is not the external service's actual address.
 
 ![DNS names, synthetic addresses, guest SYN, policy authorization and host TCP](assets/network-path.svg)
 
-For `api.example.com:443`, the path authorizes the name and connection parameters, handles host resolution and corresponding address restrictions, then advances the guest handshake after authorization and a successful upstream connection. The synthetic address is an association identity, not a public destination. A host connector that hides its final endpoint behind an opaque alias also limits IP/CIDR policy visibility.
+OverlayNet first checks the hostname, port and transport, then checks the Host-resolved addresses against the applicable policies. The guest handshake proceeds and data forwarding begins only after authorization and a successful outbound connection. Policy denial or connection failure is not reported as an established connection. See [OverlayNet](overlaynet.md#vm-request-path) for address visibility, supported protocols and transport implementation.
 
-The VM currently provides IPv4 TCP and local DNS service. General UDP, IPv6, QUIC, incoming connections and unsupported destinations are rejected; TSI remains disabled. Host/container selective policy still primarily uses an explicit proxy. Proposed netns/seccomp drivers retain separate implementation status. See [OverlayNet](overlaynet.md) for the full matrix.
+Selective Host/container network policy primarily relies on explicit proxies, whose coverage depends on applications using them. This differs from the VM egress path. See [Network control](../guides/policies/network.md) for executor-specific support.
 
-### Egress authorization and model observations
+<a id="egress-authorization-and-model-observations"></a>
 
-A TCP gate decides whether to establish a connection but cannot inspect model messages inside ordinary TLS ciphertext. Gateway receives model requests through explicit protocol configuration for known Agents, supplying routing, conversion and optional capture. Its observations cover model traffic that reaches it; filesystem writes and other network requests follow their respective paths.
+### Egress authorization and model observations {#_7}
 
-An allowed HTTPS connection and a captured complete model call are therefore different facts. Their observation points explain why network counters, Gateway trajectories and Event Journal records need explicit scopes.
+OverlayNet controls whether a connection may be established, but cannot read model messages inside ordinary TLS ciphertext. Gateway handles model requests routed through explicit protocol configuration, providing routing, protocol conversion and optional recording. It observes only model interactions that pass through it; other network requests and file writes remain managed by their respective paths.
 
-Source entry points: `ensure_listener` and `connect_vm_egress` in `pvisor-overlaynet/src/vm.rs`, plus `pvisor-gateway`. See [Gateway design](gateway.md) for protocol routing.
+Allowing an HTTPS connection therefore does not mean its model calls have been recorded. See [Gateway design](gateway.md) for model protocols and recording scope.
 
-## 8. Snapshots: saving RAM is insufficient {#snapshot-mechanism}
+## 7. Memory sharing, write isolation and compression {#resources}
 
-Suppose guest CPUs are parked while a virtio-fs worker is about to write a read response into guest RAM. Capturing RAM now and queue state later can produce a snapshot containing a used ring that says the request completed alongside a buffer that never received its data. After restore, the guest may read incomplete results without resubmitting the request.
+Agent execution environments may contain identical tools, dependencies and initial state, while subsequent changes must remain independent. Sharing reduces duplicate content, copy-on-write keeps each instance's modifications private, and compression reduces the space needed to retain content. Mechanisms depend on supported configurations and are not all enabled by default.
 
-A full checkpoint therefore needs CPU, RAM, device queues and captured filesystems at one consistent cut. pvisor-vm acknowledges CPU parking, asks device workers to return queue ownership and drain RAM leases, then closes the memory-access gate. The caller captures compatible state within this window.
+<a id="three-addresses-and-one-physical-content-page"></a>
+
+### Address mappings and shared content {#_4}
+
+GVA is a guest-process virtual address, GPA a guest physical address, and HVA the Host mapping used to access guest RAM. Two VMs using GPA `0x1000` need not share a physical page; sharing depends on underlying content and mappings.
+
+![GVA, GPA, HVA, a shared physical page and a private page after a write](assets/vm-address-space.svg)
+
+Address relationships and content sharing are different layers. The arrows do not represent software calls made on every memory access. See [Memory architecture](memory-optimization/index.md) for registration and mapping details.
+
+<a id="moving-equal-live-pages-into-a-physical-pool"></a>
+
+### Sharing paths and private writes {#_5}
+
+Sharing can start from a common baseline or discover equal pages during execution. The paths establish sharing at different times:
+
+| Path | How sharing is established |
+| --- | --- |
+| Restore from a common baseline | Supported snapshot restoration paths create private COW mappings from the same verified baseline, reusing unmodified content. |
+| Deduplicate running pages | The optional Linux physical pool identifies equal resident pages across VM instances and establishes shared mappings after rechecking their contents. |
+
+For example, A and B initially read the same baseline. A's write creates its own page while B keeps reading the baseline. Copy-on-write preserves sharing benefits and independent modifications, deferring some allocation and copying until writes occur.
+
+![Equal contents share a pool slot until A writes a private copy](assets/memory-cow.svg)
+
+Live deduplication must recheck contents before replacing mappings to avoid losing changes made after sampling. Shared content must remain retained while mapped. See [Memory deduplication](memory-optimization/deduplication.md) for pool reference management, failure scope and supported configurations.
+
+<a id="why-cold-compression-needs-two-quiescent-windows"></a>
+
+### Cold-content compression and demand restoration {#_6}
+
+Unique content may also be stored in fewer bytes. Per-instance compression creates compressed objects and reclaims original resident memory only after confirming unchanged content and a reliable recovery source. Subsequent access requires decoding and restoration, adding CPU, allocation and waiting costs.
+
+![Capture, encode outside the barrier, recheck, reclaim and restore on fault](assets/cold-page-cycle.svg)
+
+Per-instance cold compression remains an experimental Linux path. Unmodified content is not necessarily infrequently read. See [Per-instance compression](memory-optimization/compression-local.md) for reclamation conditions, budgets and fault recovery.
+
+Lifecycle management determines when a running VM pauses, offloads resident memory and resumes execution; sharing and compression reduce the resource cost of retained content. Pause stops vCPUs, Offload saves RAM and requests resident-page reclamation once device-access conditions are met, and Resume continues the original VM. This differs from creating a durable checkpoint; see [Sandbox lifecycle management](../concepts/lifecycle.md#live-lifecycle).
+
+These mechanisms have separate compatibility conditions, and their benefits cannot simply be added. Capacity evaluation must account for management overhead, restoration peaks and task latency. See [Memory architecture](memory-optimization/index.md) for combinations and measurement methods, and [Whole-VM offload](memory-optimization/offload.md) for offload implementation.
+
+## 8. Execution checkpoints and state restoration {#snapshot-mechanism}
+
+An execution checkpoint preserves a task's execution position so it can continue later. It must retain mutually consistent CPU, memory, device and captured filesystem state. **Pausing** vCPUs stops guest instructions, while Host-side device processing may continue. **Freezing** additionally coordinates device access to establish a safe capture window. A **checkpoint** is the recoverable state saved and durably published from that window.
+
+For example, while a file read is pending, the Host may still be writing its result into guest memory. Saving memory before that write and device state after completion would restore a request marked as completed without its result data. Memory and device state must therefore be captured within the same coordinated window.
 
 ![CPU, device and RAM state converge into one capture window before publication and restore](assets/checkpoint-cut.svg)
 
-The VM runtime owns freezing and capture; storage owns objects, digests, references and durable checkpoint publication. Restore validates build/host/profile compatibility and RAM topology, prepares independent filesystem copies and private RAM mappings, installs CPU/device state, then releases execution. Failed freeze or device drain leaves the runner stopped for caller termination.
+The VMM first stops vCPUs and coordinates devices to finish in-flight processing, allowing consistent machine-state capture. The higher-level state store saves the captured content, filesystem state and references needed for restoration, then publishes the checkpoint. Restore first validates compatibility and installs memory, CPU, device and file state while paused; execution continues only after installation completes. Failed freezing or restore validation must not release execution. See [VM requests and consistency](vm-runtime.md#freeze) for device coordination and failure handling, and the [Snapshot subsystem](environment-snapshot.md#consistent-cut) for capture and durable publication.
 
-A workspace checkpoint retains a file branch. An Agent trajectory retains model context and tool history. An execution checkpoint retains machine state for a supported profile. Current native Job full VM checkpoints require no network device, private RAM and an owned complete rootfs. The networked example above cannot simply assume support for this capture mode.
+Execution checkpoints restore only the captured machine and filesystem state; they cannot undo changes already made by remote services. Current native Job full VM checkpoints require no network device, private RAM and an owned complete rootfs, so the preceding networked task cannot directly use this capability. See [Job checkpoint design](job-checkpoint-cli.md) for the full support conditions.
 
-Remote server state lies outside the machine cut. Saving local socket data cannot rewind that server. Current profile restrictions avoid treating distributed recovery as a property of local snapshots.
+Workspace checkpoints preserve file progress without continuing the execution position held in CPU and memory. See [State preservation and branch reuse](../concepts/resource-reuse.md) for when to use each kind, and [Trajectory replay](replay.md) for reusing model context and tool history.
 
-Source entry points: `pvisor-vm/src/vmm/mod.rs::freeze_for_snapshot`, `handle.rs` and `pvisor/src/environment_snapshot/`. See [Full environment snapshots](environment-snapshot.md) and [Job checkpoints](job-checkpoint-cli.md) for user contracts.
+## 9. Execution events and durable records {#boundaries}
 
-## 9. Journal: when a fact becomes committed {#boundaries}
-
-Execution facts can originate in different asynchronous tasks, so timestamps cannot supply a reliable commit order. A disk Journal serializes appends with a single writer and in-process mutex, assigning increasing positions. Event IDs identify retries; `caused_by` expresses causal dependencies.
+During task execution, components such as Runtime and Gateway produce events describing policy decisions, execution results and model interactions. An Event describes an observed fact. Journal stores events in commit order and returns a receipt identifying the event, its record position and durability. Successfully committing a record does not mean the task succeeded; a failure event can also be saved successfully.
 
 ![Event validation, append, sync, receipt and recovery using a stable identity](assets/journal-commit.svg)
 
-The normal path validates the Event, checks duplicate IDs, appends a JSON Record plus LF, calls `sync_all`, updates indexes, then sends live notification and returns a LocalSync receipt. Position is a record number, not a byte offset. Notifications serve live display; the file owns durable history.
+A disk Journal validates an event, writes its record and completes local synchronization before returning a LocalSync receipt. Live notifications support timely display, while complete history is read from Journal. The event ID identifies the same event, position gives commit order within one Journal, and causal references describe known dependencies. Commit order is not necessarily the order in which events occurred. See [Operation and Event](operations-events.md) for event fields and [Journal design](journal.md#append) for appends and receipts.
 
-A write or sync failure can leave partial or complete bytes. An error cannot establish that nothing committed. The Journal returns Unknown and isolates the current handle. Reopening scans complete lines and rebuilds indexes. An incomplete tail without LF can be truncated; a complete corrupt line fails validation. Retrying the same Event ID and content returns its original position if present; the same ID with different contents is rejected.
+A record may have been written even if the caller did not receive its receipt. The caller therefore cannot assume it was not committed. After recovery, retrying the original event ID with identical content returns the original position if the record exists, or appends the event if it does not. Reusing an ID with different content is rejected. See [Journal recovery](journal.md#recovery) for handling unknown commit outcomes, handles and file recovery.
 
-This distinguishes retrying a record from rerunning a task or resending a remote request. The Journal's deduplication contract covers the first operation; the others may create new effects. RunRecord, Bundle, Event Journal and apply ledger also lack a shared atomic commit point, so recovery must reconcile their respective states.
+A Journal receipt confirms an event's record position and durability; an Attempt completion receipt binds the execution result to its Bundle. The Attempt receipt does not form one transaction covering Journal, file acceptance records and external effects. A missing terminal event does not establish that the task never completed; consult the [Attempt completion protocol](execution-model.md#attempt-completion). Event deduplication covers record appends, not exactly-once execution of commands or remote requests. Recovery must reconcile records with actual effects; see [Failure semantics and retries](failure-semantics.md#reconciliation) and the [Records and version matrix](records-and-versions.md).
 
-Source entry points: `pvisor-journal/src/journal.rs::append` and `trace.rs`. See [Journal design](journal.md) for format, cancellation and recovery, the [Version matrix](records-and-versions.md) for cross-module compatibility, and [Failure semantics and retries](failure-semantics.md) for reconciliation when effects are uncertain.
+Checkpoints preserve recoverable execution state, while Journal preserves observed execution events. Reading event history alone neither restores a VM nor repeats external operations.
 
-## 10. Turning design tradeoffs into research questions {#principles}
+## 10. Design tradeoffs and outcome evaluation {#principles}
 
-These mechanisms move costs. Copy-up defers file copying, lazy images defer content reads, COW defers private-page allocation, and cold compression exchanges CPU and recovery latency for residency. Whether they improve task density depends on whether the shifted costs are smaller for the actual workload.
+The preceding architecture explains how pVisor manages execution boundaries, task state and resources. Research and evaluation ask a further question: while preserving execution correctness and isolation semantics, can these designs reduce task costs and support more concurrent tasks?
 
 ![Problems, mechanism hypotheses, experiments, lifecycle metrics and scoped conclusions](assets/research-cycle.svg)
 
-Concrete counterexamples guide experiments. Repeated, read-heavy VMs can expose sharing benefits; write-heavy tasks break sharing. Tasks touching a small image subset may benefit from lazy loading, while full traversal or extensive copy-up can shift preparation costs into execution. Repeated cold-block refaults may reduce ready memory while worsening tool-call tails.
+Benefits depend on the workload: access scope, the proportion of private writes and how often reclaimed content is accessed again all affect whether resource savings translate into more completed tasks.
 
-Pin tasks, inputs, output checks, versions and total budgets, then measure correct completions, CPU, memory peaks, memory-time and restoration latency separately. Supervision cost additionally needs actual review, rejection and rework data; machine runtime cannot stand in for human attention. [Research directions](research/index.md) retain these hypotheses and integration boundaries. [Benchmarks](../benchmarks/index.md) retain each dataset's measurement scope.
+Compare correct task completions, end-to-end latency and resource use with the same tasks, inputs, versions, correctness requirements and resource budgets. Include environment preparation, execution, waiting and restoration costs. Evaluating file-review benefits also requires actual review time, rejection and rework data; machine runtime cannot stand in for human effort.
 
-The [Experimental features](experimental/index.md) registry records platform, profile and implementation stage. vCPU idle observation currently provides an M0 observation prototype; automatic offload still needs validation. The guest filesystem cache remains an RFC proposing local metadata operations and ordinary read-only open while preserving host stage ownership and access boundaries. Both routes require complete lifecycle and resource measurements to establish net benefit.
+See [Research directions](research/index.md) for hypotheses and evaluation methods, and [Benchmarks](../benchmarks/index.md) for existing measurements and their scope. [Experimental features](experimental/index.md) maintains exploratory designs and implementation stages. The [vCPU idle observation approach](experimental/vcpu-idle-offload/index.md) and [guest filesystem cache approach](experimental/guest-stage-cache/index.md) each document their own platform scope, validation results and remaining work.
 
-## 11. Returning to the whole system {#results}
+## 11. Module collaboration and integration with higher-level systems {#results}
 
-The example now forms a complete path. Admission fixes policy; the Session prepares VM, files and networking; the guest reads a lower through virtio-fs and opens HTTPS through controlled egress; writes copy up into the upper; completion synchronizes the stage, reclaims resources and retains facts. Finally, the developer uses preimage checks to publish selected candidate files into the target.
+pVisor organizes execution through Runtime, enforces access rules through file and network services, manages resources through lifecycle, image and memory mechanisms, and separately retains candidate changes, recoverable state and execution events. Together, these modules provide a managed execution environment in which callers can inspect results, handle failures and, where supported, continue or branch tasks.
 
-Execution isolation constrains access, staging constrains file publication, snapshots constrain recoverable state, and Journal constrains committed facts. Each module has a state owner, publication point and failure result on which an external orchestrator can base retry, fork or acceptance decisions.
-
-Implementation scope remains explicit: the daemon has a VM-only NativeRuntime and an opt-in Linux physical pool, while its API does not expose native Job stage/apply or execution checkpoints. External orchestration and RL integration still need a separate handoff and end-to-end validation. Implemented mechanisms alone do not establish production density or long-term recovery conclusions.
+In local workflows, callers can review and accept candidate file changes. In execution infrastructure, higher-level frameworks assign tasks, collect feedback and decide subsequent actions, while pVisor manages sandboxes on execution nodes. Available capabilities differ by integration path. See [Choose an integration method](../guides/infrastructure/integration.md) for interfaces and support scope, and [Single-node daemon architecture](daemon/index.md) for the Daemon's runtime, resource pool and API boundaries.

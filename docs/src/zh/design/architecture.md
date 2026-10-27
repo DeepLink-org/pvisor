@@ -162,7 +162,13 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 
 ## 一条生产执行路径
 
-准备、事实提交、派发、清理与终态的完整时序见[设计与底层原理](index.md#execution)的走读。下面是所有权视角的三条合同。
+实际顺序是先解析 RunSpec，确定有效策略与执行器能力，再准备文件、网络和运行附件。必要启动事实提交成功后才调用 `RunExecutor::execute`。准备本身可能创建目录或 socket，所以提交失败仍需要清理已准备资源。
+
+执行器返回 `ExecutorOutput`，Session 继续做清理、控制观察核对和结果保存。
+
+例如，请求允许网络访问而 workspace 策略拒绝全部网络时，准入形成有效网络配置，再将同一配置交给网络驱动和执行器；准备阶段不应重新读取可变配置，避免记录与实际出口不一致。
+
+源码入口：`pvisor/src/runtime/run.rs::resolve_run`、`pvisor/src/session.rs`、`pvisor/src/runtime/job_service/managed.rs`。
 
 `RunSpec` 是调用方的执行配置输入；`Operation` 是结构化的操作描述。目前唯一生产操作是 `run.execute`，包含程序、参数和工作目录。执行器实际消费有效 RunSpec 及准备好的驱动附件。`PVisor::resolve_operation` 使用同一准入路径，供启动前审查，不能代替实际执行及安装证据。
 

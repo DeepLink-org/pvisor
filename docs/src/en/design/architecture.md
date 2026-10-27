@@ -178,7 +178,13 @@ Transport/process tests do not establish guest correctness or real-VM TUI covera
 
 ## A production execution path
 
-For the full preparation, launch-fact commit, dispatch, cleanup and terminal-publication sequence see the walkthrough in [Design and internals](index.md#execution). The three ownership-level contracts follow.
+The runtime resolves RunSpec, effective policy and executor capabilities before preparing filesystem, network and execution attachments. It calls `RunExecutor::execute` only after required launch facts commit successfully. Preparation may already have created directories or sockets, so a commit failure still requires resource cleanup.
+
+The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage.
+
+For example, when a request allows networking but workspace policy denies it, admission derives an effective network configuration and passes the same configuration to the network driver and executor. Preparation must not reread mutable configuration and allow recorded decisions to diverge from installed egress.
+
+Source entry points: `pvisor/src/runtime/run.rs::resolve_run`, `pvisor/src/session.rs` and `pvisor/src/runtime/job_service/managed.rs`.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 

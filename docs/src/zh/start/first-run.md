@@ -1,86 +1,103 @@
-# 第一次运行
+<a id="_1"></a>
 
-这个示例不需要 Agent 账号或 API Key。一个脚本扮演"假 Agent"：改源码、删文件、写一个额外文件、试图读项目内的敏感路径、试图访问外网；随后你审查结果，只合入想要的改动。请先完成[安装](installation.md)，包括宿主机暂存所需的 FUSE/macFUSE。
+# 本地工作流：运行与审查 {#local-workflow}
 
-## 1. 准备演示项目
+使用本机工具和工作区运行演示脚本，再审查并选择性合入文件改动，无需 VM 镜像或模型 API。请先完成[本地工作流环境准备](installation.md#local-prerequisites)。
+
+<a id="1"></a>
+
+## 1. 准备演示项目与脚本 {#prepare-demo}
 
 ```bash
-mkdir -p pvisor-demo/project/src pvisor-demo/project/.ssh
+mkdir -p pvisor-demo/project/src
 cd pvisor-demo/project
 printf 'print("v1")\n' > src/app.py
 printf 'legacy\n' > src/legacy.txt
-printf 'FAKE-KEY\n' > .ssh/id_rsa
-git init -q && git add -A && git commit -qm init
+git init -q
+git add src
+git -c user.name='pVisor Demo' -c user.email='demo@example.invalid' -c commit.gpgsign=false commit -qm init
 ```
 
-`.ssh/id_rsa` 只是项目里的占位文件，用来演示暂存视图内的敏感路径被拒；本示例不读写你真实的 `~/.ssh`。
+演示目录应是新目录。Git 身份仅用于这次基线提交，不修改你的全局配置。
 
-## 2. 写一个"假 Agent"
+<a id="2-agent"></a>
+
+<a id="demo-script"></a>
+
+脚本会修改 `src/app.py`、删除 `src/legacy.txt`，并创建不准备合入的 `scratch.txt`：
 
 ```bash
 cat > ../agent.sh <<'SH'
 #!/usr/bin/env bash
-set -u
-printf 'print("patched")\n' >> src/app.py     # edit source
-rm -f src/legacy.txt                          # delete a file
-printf 'scratch\n' > scratch.txt              # extra change at the workspace root
-cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
-curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
+set -eu
+printf 'print("patched")\n' >> src/app.py
+rm src/legacy.txt
+printf 'scratch\n' > scratch.txt
 SH
 chmod +x ../agent.sh
 ```
 
-## 3. 让它在边界内全自动执行
+<a id="3"></a>
+
+## 2. 运行并暂存改动 {#run-and-stage}
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
-`--safe` 要求落实文件与网络隔离，并按预设拒绝 `.ssh`、`.gnupg` 与私钥文件等敏感路径；它不选择执行器，也不会静默回退到无隔离的 host 进程。`--overlaynet-deny-all` 独立安装强制网络边界。暂存目录放在项目外，每次运行使用新目录。
+`--safe` 要求文件与网络隔离，无法落实时拒绝启动；`--overlaynet-deny-all` 强制阻断外部网络访问。`--stage` 指定候选改动的存储位置，应放在项目外，每次运行使用新目录。
 
-## 4. 审查：改动与拦截都在记录里
+**预期结果：**脚本正常退出，三项改动留在暂存目录，原项目尚未变化。在当前终端检查：
 
-这次 Job 的存储就是暂存目录，用路径定位它：
+```bash
+cat src/app.py
+cat src/legacy.txt
+test ! -e scratch.txt && echo 'scratch.txt: absent'
+```
+
+应输出：
+
+```text
+print("v1")
+legacy
+scratch.txt: absent
+```
+
+<a id="4"></a>
+
+## 3. 审查候选改动 {#review-changes}
+
+用暂存路径定位这次 Job：
 
 ```bash
 pvisor status --review ../stage-001
 ```
 
-**File access observations** 列出到达 OverlayFS 的路径与结果：`src/app.py` 的写入、`src/legacy.txt` 的删除、`scratch.txt` 的写入，以及 `.ssh/id_rsa` 读取被拒（`denied=1`）。**Network access observations** 列出到达 OverlayNet 的目标与结果：`example.com` 被拒。
+**预期结果：**记录中包含 `src/app.py` 的修改、`src/legacy.txt` 的删除和 `scratch.txt` 的新增。核对退出码、实际生效的控制与警告，再决定接受哪些改动；运行结束不代表改动已合入。
 
-普通 host 上的选择性代理依赖客户端配合，只有经过代理的请求会被记录。记录中没有某个目标，不能说明它从未被访问。强制网络边界由 `--overlaynet-deny-all`、容器离线模式或 VM 提供，见[网络控制](../guides/policies/network.md)。
+<a id="5"></a>
 
-## 5. 只合入你要的部分
+## 4. 只合入你要的部分 {#apply-changes}
 
 ```bash
 pvisor apply ../stage-001 --path src
 pvisor drop ../stage-001
-git status --short
+git diff -- src
 ```
 
-`apply --path src` 只把 `src` 下的改动写入项目，`drop` 丢弃剩余的 `scratch.txt`。若你在 Run 期间自己改了同一个文件，`apply` 会拒绝覆盖，而不会静默合并。
+**预期结果：**
 
-## 6. 换成你的命令
+| 文件 | 合入前 | 合入并丢弃剩余改动后 |
+| --- | --- | --- |
+| `src/app.py` | 只有 `print("v1")` | 新增一行 `print("patched")` |
+| `src/legacy.txt` | 仍然存在 | 已删除 |
+| `scratch.txt` | 项目中不存在，仅在 stage 中 | 项目中仍不存在，候选已丢弃 |
 
-```bash
-pvisor spawn --safe --stage ../agent-stage-001 -- codex
-pvisor status --review ../agent-stage-001
-```
+`apply --path src` 只接受 `src` 下的改动；`drop` 丢弃剩余候选，不会撤销已经接受的修改。`git diff -- src` 应显示源码新增行和文件删除。若你在运行期间修改了同一文件，`apply` 会拒绝覆盖；处理方式见[审查并应用改动](../guides/review-apply.md)。
 
-已安装的 Agent CLI 使用同一个入口。用 `--stage PATH` 时，后续命令请把该路径或命令输出的 Job ID（`run-*`）显式传进去；`last` 只在默认存储中解析，跨项目并行时不要依赖它。
+<a id="6"></a>
+<a id="7"></a>
 
-## 7. 换成真实任务之后
+## 下一步 {#next-steps}
 
-运行真实任务前，先限定任务范围，保留当前仓库基线，确认 Agent 已安装在所选执行环境中。模型服务与凭据由你配置，pVisor 不替 Agent 选择 provider。以显式交付 OpenAI Key 的 Codex 为例，先在宿主环境设置 `OPENAI_API_KEY`：
-
-```bash
-pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
-pvisor status --review ../agent-task-001
-pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
-```
-
-`--safe` 按直接可执行文件名匹配网络预设；增加 `--overlaynet-allow` 会替换预设列表，依赖下载或其他模型服务要连同模型 API 一起列出。HOME 状态写入在退出后丢弃，不要依赖这次运行保存登录状态。其他 Agent 的凭据与接入条件见[Agent 接入](../guides/agents/index.md)。
-
-Job 停止后检查退出码、实际控制、警告和改动；非零退出也可能留下候选。决定保留哪些文件后，按[审查与应用](../guides/review-apply.md)处理合入与冲突。想保留文件提案、换一种方式重试时，先检查[工作区分叉的前提条件](../guides/fork-checkpoint.md)，再清理暂存数据。
-
-扩大任务范围前有两项约束。Linux host 的选择性代理仍是协作式，需要强制选择性出口时准备已安装 Agent 的 VM，凭据交付方式见[凭据与环境变量](../guides/policies/credentials.md)。增加并发时为每个任务准备独立 worktree 和 stage，用显式路径定位结果，逐份审查，不并发 apply 到同一目标树；[并行工作区流程](../guides/parallel-agents.md#batch)先用两个离线任务验证记录和合入，再替换成真实 Agent。
+将演示命令替换为自己的 Agent CLI，按 [Agent 接入](../guides/agents/index.md)准备所需工具、模型服务与凭据。需要 Linux 镜像或独立内核时，查阅[选择执行环境](../guides/executors/index.md)。

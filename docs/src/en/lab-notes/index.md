@@ -16,3 +16,5 @@ Complete CSV/JSON, provenance summaries and raw records remain in each batch's l
 | [Filesystem performance analysis](filesystem-performance-analysis.md) | Load measurements and retest records for OverlayFS configurations |
 | [Cache and asynchronous-write performance curves](filesystem-io-performance-analysis.md) | Engineering curves for request size, concurrency, synchronization, and write coalescing |
 | [Benchmark methodology and evidence](benchmark-methodology-evidence.md) | Measurement scope and evidence inventory of historical cohorts |
+
+| [Memory offload during Agent waits](agent-offload-performance-analysis.md) | Fixed SWE replay, Host wait management and memory/latency tradeoffs |

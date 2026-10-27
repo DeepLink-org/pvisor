@@ -133,6 +133,8 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 
 ## 3. 关键数据和核心机制详细设计 {#detailed-design}
 
+普通文件通常按整文件 copy-up；安全的 `O_TRUNC` 情形可以跳过旧字节复制，不应将普通写入理解为块级增量。源码入口为 `pvisor-overlay-core/src/core.rs::copy_up_for_open`，应用流程入口为 `apply.rs::apply_overlay_selected`。
+
 ### 合成、copy-up 与 POSIX 节点 {#copy-up}
 
 ![原始文件、原像指纹、临时 copy-up 与私有写入](assets/overlay-copy-up.svg)

@@ -203,11 +203,11 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
 → Basic concepts → Benchmarks → System design → Contributing
 (首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
-Quick start owns installation and the first reproducible Job. User guide owns
+Quick start owns installation, the local run-and-review example and the infrastructure tool-execution example. User guide owns
 local workflows, Agent integration, executors, policies, task operations, platform
 integration, daemon setup, trajectories and command/configuration reference.
-Basic concepts owns the product overview, Jobs, staging, evidence and security
-boundaries. Benchmarks owns measured results. System design owns architecture,
+Basic concepts owns the product overview, core concepts, the four core capabilities,
+evidence and security boundaries. Job usage and storage belongs in the reference group. Benchmarks owns measured results. System design owns architecture,
 subsystems, research, experimental designs and lab notes. Contributing owns the
 development and release workflow, regression cases and semantic specifications.
 
@@ -222,6 +222,10 @@ Release and maintenance, with reporting links retained in the security articles.
 Keep experimental feature designs under the System design → Experimental design
 (系统设计 → 实验设计) group and engineering experiment records under System design
 → Lab notes (系统设计 → 实验记录). Neither is a separate top-level tab.
+Keep section headings separate from article links: leave `navigation.indexes` and
+`navigation.sections` disabled so peer entries use consistent typography and
+index articles remain explicit child entries.
+
 Keep existing article paths, including `guides/infrastructure/`,
 `design/experimental/` and `lab-notes/`, so incoming links remain valid. The
 homepage remains accessible through its own tab and the site logo. Preserve the
