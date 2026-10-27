@@ -39,13 +39,15 @@ if [[ $# -gt 0 ]]; then echo "too many arguments for test-nightly-installer" >&2
 work=$(mktemp -d)
 trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
 trap 'rm -rf "$work"' EXIT
-export INSTALL_TEST_ROOT="$work" INSTALL_TEST_REPO="$MISE_PROJECT_ROOT"
+export INSTALL_TEST_ROOT="$work" INSTALL_TEST_VERSION='1.2.3+g42.abcdef0'
+mkdir -p "$work/site-packages/pvisor"
+printf '__version__ = "%s"\n' "$INSTALL_TEST_VERSION" > "$work/site-packages/pvisor/__init__.py"
 cat > "$work/python" <<'PY'
 #!/usr/bin/env python3
 import io, json, os, sys, sysconfig, urllib.request
 from pathlib import Path
 root = Path(os.environ['INSTALL_TEST_ROOT'])
-sys.path.insert(0, os.environ['INSTALL_TEST_REPO'])
+sys.path.insert(0, str(root / 'site-packages'))
 if sys.argv[1:3] == ['-m', 'pip']:
     with (root / 'pip.log').open('a') as log:
         log.write(json.dumps(sys.argv[3:]) + '\n')
@@ -54,7 +56,8 @@ elif sys.argv[1] == '-c':
     exec(sys.argv[2])
 elif sys.argv[1] == '-':
     names = ('legacy-package', 'pvisor', 'pvisor_sandbox') if os.environ['INSTALL_TEST_INCLUDE_PVISOR'] == '1' else ('legacy-package', 'pvisor')
-    assets = [{'name': f'{name}-0.3.0-py3-none-{platform}.whl', 'browser_download_url': f'https://example.test/{name}-{platform}.whl'}
+    version = os.environ['INSTALL_TEST_VERSION']
+    assets = [{'name': f'{name}-{version}-py3-none-{platform}.whl', 'browser_download_url': f'https://example.test/{name}-{platform}.whl'}
               for name in names for platform in ('macosx_11_0_arm64', 'manylinux_2_28_x86_64')]
     urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps({'assets': assets}).encode())
     sys.argv = sys.argv[1:]
@@ -65,7 +68,7 @@ for included in 1 0; do
   for missing in none pvisor pvisor-tui pvisor-replay pvisor-daemon; do
     rm -f "$work/pip.log"
     for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do
-      printf '#!/bin/sh\necho "pvisor 0.3.0"\n' > "$work/$binary"
+      printf '#!/bin/sh\necho "pvisor %s"\n' "$INSTALL_TEST_VERSION" > "$work/$binary"
       chmod +x "$work/$binary"
     done
     if [[ "$missing" != none ]]; then rm "$work/$missing"; fi
@@ -83,7 +86,7 @@ for included in 1 0; do
       ! grep -Fq pvisor-memory-pool "$work/stdout" "$work/stderr"
       grep -Fq https://example.test/pvisor_sandbox- "$work/pip.log"
       ! grep -Fq legacy-package "$work/pip.log"
-      grep -Fq 'pVisor 0.3.0' "$work/stdout"
+      grep -Fxq "pVisor $INSTALL_TEST_VERSION" "$work/stdout"
     fi
   done
 done
