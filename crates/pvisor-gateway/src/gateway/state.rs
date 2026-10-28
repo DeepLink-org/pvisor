@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context;
+use axum::serve::ListenerExt;
 use pvisor_core::{ControlController, PolicyControlController};
 use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
@@ -318,6 +319,8 @@ async fn serve_with_bound_listeners(
     let admin_shutdown = wait_shutdown(stop_rx.clone());
     let app = build_router(state);
 
+    let admin_listener = super::shutdown::StopListener::new(admin_listener, stop_rx.clone());
+    let listener = super::shutdown::StopListener::new(listener, stop_rx.clone());
     let admin_handle: JoinHandle<()> = tokio::spawn(async move {
         tracing::debug!(target: "pvisor_gateway", "capture admin API on http://{admin_listen}");
         if let Err(error) = axum::serve(admin_listener, admin_app)
@@ -333,7 +336,8 @@ async fn serve_with_bound_listeners(
     }
     tracing::debug!(target: "pvisor_gateway", "capture LLM proxy on http://{listen}");
     let serve_result = axum::serve(
-        listener,
+        // Axum's TapIo supplies SocketAddr connect-info for custom listeners.
+        listener.tap_io(|_| {}),
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(wait_shutdown(stop_rx))

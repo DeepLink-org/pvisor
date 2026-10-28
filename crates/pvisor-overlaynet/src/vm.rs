@@ -69,7 +69,7 @@ const FLOW_BUFFER_CHUNKS: usize = TCP_BUFFER_BYTES / (16 * 1024);
 const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Wall-clock budget for one flow to finish its handshake (SYN received,
 /// upstream connected, guest ACK). Flows still waiting in `WaitingForSyn`
-/// or `Connecting` past this deadline are aborted and their table slot
+/// or `Connecting`, or still awaiting the guest ACK, are aborted and their table slot
 /// reclaimed, so a burst of short-lived connections cannot pin the table
 /// until the idle timeout. This mirrors SYN-proxy handshake deadlines in
 /// Envoy/nginx rather than TCP's multi-minute SYN retry ladder.
@@ -955,7 +955,8 @@ fn reap_closed_flows(
     for (key, flow) in flows.iter() {
         if sockets.get::<tcp::Socket>(flow.handle).state() == tcp::State::Closed {
             closed.push(*key);
-        } else if matches!(flow.phase, FlowPhase::WaitingForSyn | FlowPhase::Connecting)
+        } else if (matches!(flow.phase, FlowPhase::WaitingForSyn | FlowPhase::Connecting)
+            || guest_handshake_pending(sockets.get::<tcp::Socket>(flow.handle).state()))
             && now - flow.created_at >= TCP_HANDSHAKE_TIMEOUT
         {
             expired.push(*key);
@@ -1695,6 +1696,112 @@ mod tests {
         );
         tokio::task::yield_now().await;
         assert!(probe.is_finished());
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(32),
+        );
+        assert!(flows.is_empty());
+    }
+
+    #[test]
+    fn upstream_connected_without_guest_ack_still_expires() {
+        let destination = ROUTER_IPV4;
+        let key = FlowKey {
+            guest_port: 40000,
+            destination_addr: destination,
+            destination_port: 443,
+        };
+        let mut device = FrameDevice::default();
+        let mut config = InterfaceConfig::new(HardwareAddress::Ethernet(ROUTER_MAC));
+        config.random_seed = 1;
+        let mut interface = Interface::new(config, &mut device, Instant::ZERO);
+        interface.update_ip_addrs(|addresses| {
+            addresses
+                .push(IpCidr::new(IpAddress::Ipv4(destination), 24))
+                .unwrap()
+        });
+        let mut sockets = SocketSet::new(Vec::new());
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        );
+        socket.listen((destination, 443)).unwrap();
+        socket.pause_synack(true);
+        let handle = sockets.add(socket);
+        let mut frame = vec![0; 14 + 20 + 20];
+        let mut ethernet = EthernetFrame::new_unchecked(&mut frame);
+        ethernet.set_src_addr(EthernetAddress(VM_MAC));
+        ethernet.set_dst_addr(ROUTER_MAC);
+        ethernet.set_ethertype(EthernetProtocol::Ipv4);
+        let mut ip = Ipv4Packet::new_unchecked(ethernet.payload_mut());
+        ip.set_version(4);
+        ip.set_header_len(20);
+        ip.set_total_len(40);
+        ip.set_hop_limit(64);
+        ip.set_next_header(IpProtocol::Tcp);
+        ip.set_src_addr(GUEST_IPV4);
+        ip.set_dst_addr(destination);
+        ip.fill_checksum();
+        let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
+        tcp.set_src_port(key.guest_port);
+        tcp.set_dst_port(key.destination_port);
+        tcp.set_header_len(20);
+        tcp.set_syn(true);
+        tcp.set_window_len(1024);
+        tcp.set_seq_number(smoltcp::wire::TcpSeqNumber(123));
+        tcp.fill_checksum(&IpAddress::Ipv4(GUEST_IPV4), &IpAddress::Ipv4(destination));
+        device.receive_queue.push_back(frame);
+        interface.poll(Instant::ZERO, &mut device, &mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::SynReceived
+        );
+        let mut flows = HashMap::from([(
+            key,
+            Flow {
+                handle,
+                destination: FlowDestination::Gateway("127.0.0.1:443".parse().unwrap()),
+                phase: FlowPhase::Connecting,
+                created_at: Instant::ZERO,
+                upstream: None,
+                upstream_task: None,
+                inbound: VecDeque::new(),
+                inbound_offset: 0,
+                dns_input: Vec::new(),
+                remote_eof: false,
+            },
+        )]);
+        let (sender, _receiver) = mpsc::channel(1);
+        let metrics = InterceptionMetrics::default();
+        apply_flow_event(
+            FlowEvent::Connected {
+                key,
+                sender,
+                policy_authorized: false,
+            },
+            &mut flows,
+            &mut sockets,
+            &metrics,
+        );
+        assert_eq!(flows[&key].phase, FlowPhase::Connected);
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(29),
+        );
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::SynReceived
+        );
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(31),
+        );
         reap_closed_flows(
             &mut sockets,
             &mut flows,

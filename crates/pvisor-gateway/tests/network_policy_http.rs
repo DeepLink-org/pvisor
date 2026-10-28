@@ -1575,3 +1575,113 @@ upstream = "http://127.0.0.1:9/v1"
     assert!(body.contains("api.openai.com"), "{body}");
     let _ = stop.send(());
 }
+
+#[test]
+fn shutdown_interrupts_uploads_and_ordinary_proxy_headers_and_bodies() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    for phase in ["upload", "headers", "body", "backpressure"] {
+        let supplier = TcpListener::bind("127.0.0.1:0").unwrap();
+        supplier.set_nonblocking(true).unwrap();
+        let target = supplier.local_addr().unwrap();
+        let config = ProxyConfig::from_toml_str(
+            "listen = '127.0.0.1:0'\nadmin_listen = '127.0.0.1:0'\nmodels = []\n[network]\nmode = 'allowlist'\nallowed_hosts = ['127.0.0.1']",
+        ).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let gateway = InProcessCapture::start(
+            config,
+            storage.path().into(),
+            Arc::new(NoopCaptureObserver::new()),
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(&gateway.listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut upstream = None;
+        if phase == "upload" {
+            client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let mut admin = TcpStream::connect(&gateway.admin_listen).unwrap();
+                admin
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                admin.write_all(b"GET /admin/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+                let mut response = String::new();
+                admin.read_to_string(&mut response).unwrap();
+                let body = response.split_once("\r\n\r\n").unwrap().1;
+                if serde_json::from_str::<serde_json::Value>(body).unwrap()["active_requests"] == 1
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            client
+                .write_all(
+                    format!("GET http://{target}/slow HTTP/1.1\r\nHost: {target}\r\n\r\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match supplier.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            if phase == "backpressure" {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 67108864\r\n\r\nx")
+                    .unwrap();
+                let mut received = Vec::new();
+                while !received.ends_with(b"\r\n\r\nx") {
+                    let mut byte = [0];
+                    assert_eq!(client.read(&mut byte).unwrap(), 1);
+                    received.push(byte[0]);
+                }
+                stream.set_nonblocking(true).unwrap();
+                let data = vec![b'x'; 8 * 1024 * 1024];
+                let mut remaining = data.as_slice();
+                while !remaining.is_empty() {
+                    match stream.write(remaining) {
+                        Ok(0) => panic!("supplier disconnected"),
+                        Ok(n) => remaining = &remaining[n..],
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            } else if phase == "body" {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n")
+                    .unwrap();
+                let mut received = Vec::new();
+                while !received.ends_with(b"\r\nx\r\n") {
+                    let mut byte = [0];
+                    assert_eq!(client.read(&mut byte).unwrap(), 1);
+                    received.push(byte[0]);
+                }
+            }
+            upstream = Some(stream);
+        }
+        let (done, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done.send(gateway.shutdown()).unwrap();
+        });
+        // Keep both ends open: stopping must not depend on either peer closing.
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect(phase)
+            .unwrap();
+        worker.join().unwrap();
+        drop(upstream);
+        drop(client);
+    }
+}
