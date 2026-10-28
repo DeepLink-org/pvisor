@@ -21,6 +21,16 @@ its static IPv4 address and route directly, without waiting for DHCP. Gateway ca
 the guest's virtual router; Gateway and ordinary VM egress share the Attempt
 controller, metrics, and bandwidth buckets.
 
+The driver tracks at most `max_flows` concurrent TCP flows (default 1024;
+each flow owns two 64 KiB socket buffers, so the cap doubles as the
+worst-case memory bound). A flow whose handshake — SYN received, upstream
+connect, guest ACK — does not complete within 30 seconds is aborted and its
+table slot reclaimed on the next pass, so bursts of short-lived connections
+cannot pin the table until the idle timeout. A full table refuses new SYNs
+(the guest sees `Connection refused`) and emits a rate-limited warning.
+Synthetic DNS answers `localhost` from the guest's loopback address instead
+of allocating a synthetic egress address.
+
 Does not own LLM protocol adaptation, upstream selection, session correlation,
 capture events, or Journal writes.
 [`pvisor-gateway`](../pvisor-gateway/README.md) implements `OverlaySink`

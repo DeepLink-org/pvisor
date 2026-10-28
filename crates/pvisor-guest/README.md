@@ -2,6 +2,17 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Guest initialization also provides two environment defaults that container
+runtimes normally inject and container images routinely omit. When the image
+ships no `/etc/hosts`, the supervisor writes the conventional loopback
+entries (`127.0.0.1 localhost` and the IPv6 forms); without them `localhost`
+falls through to the synthetic DNS resolver, which answers every name from
+its egress range and turns loopback binds into `EADDRNOTAVAIL`. When the
+launch environment omits `HOME`, the supervisor defaults it from the guest
+`/etc/passwd` entry of the effective uid — an unset OCI user means root,
+matching Docker's defaulting — for the workload and for sidecars (and the
+command shells they spawn), falling back to `/` when no entry matches.
+
 Before reading launch configuration or starting any child, PID 1 disables normal
 dump access and claims a host-generated 128-bit exit token on the root virtio-fs
 device. The kernel-supplied caller must be guest root/PID 1; ordinary workloads
