@@ -956,6 +956,7 @@ impl Task for PvisorTask {
                 .iter()
                 .filter_map(|injection| injection.bridge)
                 .collect();
+            entry.egress_gate = plan.egress_gate.clone();
         }
         let (exit_tx, _) = watch::channel(None);
         self.inner.tasks.lock().expect("tasks mutex").insert(
@@ -1355,6 +1356,14 @@ impl Task for PvisorTask {
             for port in live.entry.bridge_ports {
                 let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&req.id, port));
             }
+            // The gate belongs to the sidecar task that published it, but
+            // only the VM workload task's plan carries its path; unlinking
+            // here on the graceful path covers the common teardown, while
+            // the runner exit and sandbox shutdown unlinks remain the
+            // belt-and-braces for force teardowns.
+            if let Some(gate) = &live.entry.egress_gate {
+                let _ = std::fs::remove_file(gate);
+            }
         }
         #[cfg(feature = "vm")]
         if let Some(attachment) = live.vm_network {
@@ -1652,6 +1661,12 @@ impl Sandbox for PvisorSandbox {
             warn!("kill sandbox holder: {error}");
         }
         state.internal.close_start();
+        // The egress gate file is keyed by this sandbox id and only this
+        // shim's sidecar publishes it; drop it here so a sandbox torn down
+        // without per-task deletes (shim crash, force teardown) leaves no
+        // residue behind. Idempotent when no sidecar ever published one.
+        #[cfg(feature = "vm")]
+        let _ = std::fs::remove_file(crate::network::egress_gate_path(&req.sandbox_id));
         let task_count = self.inner.tasks.lock().expect("tasks mutex").len();
         if task_count == 0 {
             info!("sandbox {} shut down with no live tasks", req.sandbox_id);
