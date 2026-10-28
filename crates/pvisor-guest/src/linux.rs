@@ -191,6 +191,7 @@ fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
     if !Path::new("/dev/fd").exists() {
         std::os::unix::fs::symlink("/proc/self/fd", "/dev/fd")?;
     }
+    ensure_etc_hosts_at(Path::new("/etc/hosts"))?;
     // PID 1 can already be a session leader, in which case setsid returns EPERM.
     if unsafe { libc::setsid() } < 0
         && io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
@@ -219,6 +220,25 @@ fn initialize(stdio_ports: Option<[bool; 3]>) -> io::Result<()> {
     let socket = network_socket()?;
     interface_up(socket.as_raw_fd(), "lo")?;
     Ok(())
+}
+
+/// Container images routinely ship no `/etc/hosts`: Docker and Kubernetes
+/// inject it at start, but the VM guest consumes the image rootfs directly
+/// and kubelet's bind mount never crosses the VM boundary. Without the
+/// file, `localhost` falls through to the synthetic DNS resolver, which
+/// answers every name from its egress range and turns loopback binds into
+/// `EADDRNOTAVAIL`. Write the conventional loopback entries when the image
+/// does not provide the file; an image-provided file always wins.
+fn ensure_etc_hosts_at(path: &Path) -> io::Result<bool> {
+    const DEFAULT_HOSTS: &str = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n";
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, DEFAULT_HOSTS)?;
+    Ok(true)
 }
 
 fn redirect(fd: libc::c_int, path: &Path) -> io::Result<()> {
@@ -484,6 +504,20 @@ fn run() -> io::Result<i32> {
                         null()
                     }
                 };
+                // Sidecar env is the workload environment overlaid by the
+                // payload's own; give it the same Docker-style HOME
+                // defaulting the workload gets (root's passwd entry) so
+                // command-execution daemons — and the shells they spawn —
+                // see a usable HOME.
+                if !config.env.contains_key("HOME") && !sidecar.env.contains_key("HOME") {
+                    command.env(
+                        "HOME",
+                        process::default_home(
+                            0,
+                            &fs::read_to_string("/etc/passwd").unwrap_or_default(),
+                        ),
+                    );
+                }
                 if let Err(error) = command
                     .stdin(Stdio::null())
                     .stdout(stdio.0)
@@ -685,6 +719,24 @@ fn sync_virtiofs_mounts() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn etc_hosts_defaults_only_when_the_image_ships_none() {
+        let temporary = tempfile::tempdir().unwrap();
+        // An image-provided hosts file always wins.
+        let provided = temporary.path().join("provided/hosts");
+        fs::create_dir_all(provided.parent().unwrap()).unwrap();
+        fs::write(&provided, "10.0.0.1 custom\n").unwrap();
+        assert!(!ensure_etc_hosts_at(&provided).unwrap());
+        assert_eq!(fs::read_to_string(&provided).unwrap(), "10.0.0.1 custom\n");
+        // A missing file gets the conventional loopback entries for both
+        // families, with the parent directory created when absent.
+        let missing = temporary.path().join("nested/etc/hosts");
+        assert!(ensure_etc_hosts_at(&missing).unwrap());
+        let written = fs::read_to_string(&missing).unwrap();
+        assert!(written.contains("127.0.0.1\tlocalhost"));
+        assert!(written.contains("::1\tlocalhost ip6-localhost ip6-loopback"));
+    }
 
     #[test]
     fn bootstrap_repairs_every_closed_stdio_combination_without_changing_open_fds() {

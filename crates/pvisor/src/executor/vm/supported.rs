@@ -2189,6 +2189,8 @@ fn capture_checkpoint(
     }
     let result = (|| -> Result<_, String> {
         operation.validate().map_err(|e| e.to_string())?;
+        super::checkpoint::native::require_persistent_stages(&spec.root, spec.workspace.as_ref())
+            .map_err(|e| format!("{e:#}"))?;
         if spec.cold_ram_compression
             || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
         {

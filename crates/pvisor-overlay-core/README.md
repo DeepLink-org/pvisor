@@ -354,3 +354,49 @@ entries must retain their inode identity and type. This is an opt-in experiment,
 not a change to the persistence contract or the default. Measure fresh-stage,
 same-binary serial/parallel trials without tracing; retain failures and verify
 lower immutability, upper bytes and completion markers before claiming a gain.
+
+## Ephemeral stage completion
+
+`stage::begin(journal, StageDurability::Ephemeral)` explicitly selects a fresh,
+non-reusable stage. The policy marker is still durably published before exposing
+writers, so a recovered stage cannot silently inherit the legacy strict policy.
+Existing managed or legacy stages cannot be converted to this mode.
+
+After all writers stop, `stage::complete` validates the complete observation log
+and upper directory, then writes `completed-volatile-v1` without syncing the
+journal/upper tree. It never writes `sealed-v1`. Interrupted or corrupt journals
+still fail completion. Successful completion leaves workload output available
+for immediate inspection; it does not promise its survival after a host crash.
+`OverlayState::Staged` alone is not a durability assertion.
+
+`stage::seal`, `require_sealed`, apply, checkpoint and stage reuse reject this
+policy even if a seal file exists. A completed ephemeral stage admits no further
+writes. Default checkpoint and strict stages still seal through `complete`.
+Explicit workload fsync and `sync_journal` retain their existing behavior;
+preimage capture/hashing, initialization, metadata/audit writes, copy-up, RAM
+writeback and offload safety are not disabled. This option isolates the cost of
+the automatic stage completion barrier; it is not a no-I/O or no-journaling mode.
+
+### Unrecorded ephemeral stages
+
+`stage::begin_with_recording(path, Ephemeral, StageRecording::Off)` admits a fresh
+metadata directory. Durability and recording are bound by one atomically written
+`durability-v1` marker (`pvisor.stage.ephemeral-unrecorded/1`). Existing policies
+retain recording; incompatible settings, nonempty metadata, unknown markers and
+mixed observation data are rejected. Keep this metadata path in host/VM configs:
+it enforces the ephemeral lifetime and checkpoint/apply refusal even though
+`entries`, `log-v2` and the observation-completeness marker are never created.
+
+Core skips first-observation fingerprints, journal publication and the directory
+walk used solely for descendant preimages. Access/path/alias checks, copy-up,
+whiteouts, permissions, hardlinks and normal writes remain. Explicit filesystem
+fsync still reaches the backing file/directory; only the absent observation
+journal drain becomes a no-op. Workload output is retained for inspection, but
+there is no first-observation history, apply/conflict detection, checkpoint or
+cross-run reuse. Initialization/audit metadata remain durable. This does not
+disable integrity hashes used by images or other unrelated subsystems.
+
+`tests/unrecorded_stage.rs` covers retained file semantics and lower isolation,
+zero observation fingerprints/publications, concurrent copy-up, access denials,
+policy admission, corrupt/mixed state and read-only completion. Stage tests also
+exercise apply/reuse refusal with both ephemeral recording settings.

@@ -378,7 +378,8 @@ Field names and types are checked against the Rust serde structures during the d
 | `overlayfs.prepared_workspace.store` | `PathBuf` | `unset` | Required when selected; independent private SnapshotStore, workspace catalog authenticated at execution; `--workspace-base-store` |
 | `overlayfs.prepared_workspace.base` | `BaseReference` | `unset` | Required when selected; base identity durably pinned by the workspace catalog |
 | `overlayfs.prepared_workspace.base.id` | `String` | `unset` | Required when selected; 64 lowercase hexadecimal SHA-256 seal identity; `--workspace-base` |
-| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint` or `strict`; `--stage-durability`; isolation and content conflicts are unchanged |
+| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint`, `strict`, or `ephemeral`; `--stage-durability`; ephemeral skips durable completion and rejects apply/checkpoint/reuse |
+| `overlayfs.recording` | `pvisor_core::overlay::StageRecording` | `"on"` | `on` or `off`; `--stage-recording`; off requires a fresh ephemeral stage and omits observation journals/fingerprints/preimages; normal I/O and explicit fsync remain |
 | `overlayfs.max_size` | `Option<u64>` | `unset` | Aggregate staged bytes; `--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `required` | Host source path |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `unset` | Agent-visible mount path; normalization supplies it when omitted |

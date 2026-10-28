@@ -151,6 +151,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
         durability: pvisor_overlay_core::stage::policy(&checkpoint.preimages_snapshot)?,
+        recording: pvisor_overlay_core::stage::recording(&checkpoint.preimages_snapshot)?,
         prepared_workspace: None,
         access_policy: checkpoint.access_policy.clone(),
         base: Some(checkpoint.target.clone()),

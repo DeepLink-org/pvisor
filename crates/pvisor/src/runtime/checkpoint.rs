@@ -116,6 +116,7 @@ fn create_checkpoint(
         .overlay
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Run {} has no OverlayFS stage", record.run_id))?;
+    pvisor_overlay_core::stage::require_persistent(&record.stage_dir().join("preimages"))?;
     let expected_state = match consistency {
         CheckpointConsistency::Stopped => OverlayState::Staged,
         CheckpointConsistency::AgentQuiesced => OverlayState::Active,
@@ -402,6 +403,30 @@ mod tests {
     use crate::runtime::job_service::{RuntimeJobService, ServiceContext};
     use crate::runtime::{OverlayRecord, OverlayUpper, RunLineage};
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn ephemeral_stopped_and_live_checkpoints_fail_before_creating_copies() {
+        use pvisor_overlay_core::stage::{self, StageDurability};
+        for recording in [stage::StageRecording::On, stage::StageRecording::Off] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut record = stopped_record(temp.path());
+            stage::begin_with_recording(
+                &temp.path().join("preimages"),
+                StageDurability::Ephemeral,
+                recording,
+            )
+            .unwrap();
+            for (consistency, state) in [
+                (CheckpointConsistency::Stopped, OverlayState::Staged),
+                (CheckpointConsistency::AgentQuiesced, OverlayState::Active),
+            ] {
+                record.overlay.as_mut().unwrap().state = state;
+                let error = create_checkpoint(&record, Some("ephemeral"), consistency).unwrap_err();
+                assert!(error.to_string().contains("EPHEMERAL_STAGE"));
+                assert!(!temp.path().join(CHECKPOINTS_DIR).exists());
+            }
+        }
+    }
 
     #[test]
     fn live_checkpoint_seals_its_copy_and_never_seals_the_running_source() {

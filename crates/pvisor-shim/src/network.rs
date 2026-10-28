@@ -53,13 +53,34 @@ pub struct EgressRule {
     pub target: String,
 }
 
+/// Split a sidecar rule target `host[:port]` the same way the
+/// `io.pvisor.vm.network.allow` annotation path does: first colon separates
+/// an IPv4 literal or hostname from a decimal port. Without the split the
+/// port would corrupt the host pattern and every `host:port` target would
+/// compile into a policy that can never match.
+fn split_egress_target(target: &str) -> anyhow::Result<(String, u16)> {
+    match target.split_once(':') {
+        Some((host, port)) => {
+            let port = port
+                .parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("invalid port in egress rule target `{target}`"))?;
+            if host.is_empty() {
+                anyhow::bail!("empty host in egress rule target `{target}`");
+            }
+            Ok((host.to_string(), port))
+        }
+        None => Ok((target.to_string(), 0)),
+    }
+}
+
 /// Compile the OpenSandbox sidecar policy into a network config. Deny by
 /// default turns the egress rules into an allowlist (targets may be wildcard
 /// domains; empty target ports mean every port); allow by default keeps the
 /// network public with explicit deny rules, which take precedence over every
 /// allow — so under allow-by-default an allow rule admits nothing beyond the
 /// default and is dropped instead of becoming a public-mode allow entry
-/// (which policy compilation rejects).
+/// (which policy compilation rejects). Rule targets use the sidecar
+/// contract's `host[:port]` form; a target without a port admits every port.
 ///
 /// The OpenSandbox rule syntax cannot express the private-address opt-in the
 /// annotation path exposes (`io.pvisor.vm.network.allow-private`), so it is
@@ -81,9 +102,10 @@ fn egress_rules_config(
         ..Default::default()
     };
     for rule in &rules.egress {
+        let (host, port) = split_egress_target(&rule.target)?;
         let access = pvisor_core::NetworkAccessRule {
-            host: rule.target.clone(),
-            ports: Vec::new(),
+            host,
+            ports: if port != 0 { vec![port] } else { Vec::new() },
             transports: Vec::new(),
             allow_private_ips: allow_private,
         };
@@ -291,6 +313,63 @@ mod tests {
             transport: NetworkTransport::TcpTunnel,
             resolved_ip: None,
         }
+    }
+
+    #[test]
+    fn gate_targets_parse_host_port_like_the_annotation_path() {
+        // deny-default: `host:port` lands in the rule's port list instead of
+        // corrupting the host pattern, for names and IPv4 literals alike.
+        let config =
+            egress_rules_config(&rules("deny", &[("allow", "example.com:443")]), false).unwrap();
+        assert_eq!(config.rules[0].host, "example.com");
+        assert_eq!(config.rules[0].ports, vec![443]);
+
+        let config =
+            egress_rules_config(&rules("deny", &[("allow", "10.140.84.58:18999")]), true).unwrap();
+        assert_eq!(config.rules[0].host, "10.140.84.58");
+        assert_eq!(config.rules[0].ports, vec![18999]);
+        assert!(config.rules[0].allow_private_ips);
+
+        // A bare host keeps the every-port meaning shared with annotations.
+        let config =
+            egress_rules_config(&rules("deny", &[("allow", "example.com")]), false).unwrap();
+        assert_eq!(config.rules[0].host, "example.com");
+        assert!(config.rules[0].ports.is_empty());
+
+        // allow-default: deny rules keep their port, allow rules stay dropped.
+        let config = egress_rules_config(
+            &rules("allow", &[("deny", "blocked.example.com:8080")]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(config.deny_rules[0].host, "blocked.example.com");
+        assert_eq!(config.deny_rules[0].ports, vec![8080]);
+
+        // Malformed ports fail compilation instead of building a policy that
+        // can never match.
+        assert!(
+            egress_rules_config(&rules("deny", &[("allow", "example.com:https")]), false).is_err()
+        );
+        assert!(egress_rules_config(&rules("deny", &[("allow", ":443")]), false).is_err());
+    }
+
+    #[test]
+    fn compiled_gate_policy_matches_port_scoped_targets() {
+        // End to end through NetworkPolicy::compile: the port from the
+        // sidecar target actually gates the decision.
+        let config =
+            egress_rules_config(&rules("deny", &[("allow", "example.com:443")]), false).unwrap();
+        let policy = NetworkPolicy::compile(&config).unwrap();
+        let mut allowed = request("example.com");
+        allowed.port = Some(443);
+        assert!(policy.authorize(&PolicyControlController, &allowed).is_ok());
+        let mut refused = request("example.com");
+        refused.port = Some(80);
+        assert!(
+            policy
+                .authorize(&PolicyControlController, &refused)
+                .is_err()
+        );
     }
 
     #[test]

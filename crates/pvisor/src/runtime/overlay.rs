@@ -75,7 +75,7 @@ impl OverlayMount {
     /// Unmount and mark staging as [`OverlayState::Staged`] (keep upper).
     pub fn unmount(mut self) -> anyhow::Result<OverlayRecord> {
         self.unmount_inner()?;
-        seal_overlay_record(&self.record)?;
+        complete_overlay_record(&self.record)?;
         self.record.state = OverlayState::Staged;
         write_overlay_record(&self.record)?;
         Ok(self.record.clone())
@@ -112,7 +112,9 @@ impl Drop for OverlayMount {
         if self.unmount_inner().is_err() {
             return;
         }
-        if self.record.state == OverlayState::Active && seal_overlay_record(&self.record).is_ok() {
+        if self.record.state == OverlayState::Active
+            && complete_overlay_record(&self.record).is_ok()
+        {
             self.record.state = OverlayState::Staged;
             let _ = write_overlay_record(&self.record);
         }
@@ -230,6 +232,7 @@ pub fn resolve_overlay_workspace(
 pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> OverlayHint {
     OverlayHint {
         durability: None,
+        recording: None,
         execution_snapshot: None,
         access_policy: record.access_policy.clone(),
         lower_dirs,
@@ -331,9 +334,19 @@ pub(crate) fn mount_overlay_record_observed(
     observation: Option<FsMetrics>,
     lower_mutability: &[pvisor_overlay_core::LayerMutability],
     durability: pvisor_core::overlay::StageDurability,
+    recording: pvisor_core::overlay::StageRecording,
 ) -> Result<OverlayMount, OverlayError> {
+    recording
+        .validate(durability)
+        .map_err(|e| OverlayError::Prepare(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
+    }
+    if record.auto_apply && durability == pvisor_core::overlay::StageDurability::Ephemeral {
+        return Err(OverlayError::Prepare(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ephemeral stages cannot auto-apply",
+        )));
     }
     let mut record = record.clone();
     record.merged_dir = host_mountpoint(&record.merged_dir);
@@ -350,8 +363,12 @@ pub(crate) fn mount_overlay_record_observed(
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     Persistence::create_dir_all_durable(&record.upper.work_dir)
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-    pvisor_overlay_core::stage::begin(&record.stage_dir.join("preimages"), durability)
-        .map_err(OverlayError::Prepare)?;
+    pvisor_overlay_core::stage::begin_with_recording(
+        &record.stage_dir.join("preimages"),
+        durability,
+        recording,
+    )
+    .map_err(OverlayError::Prepare)?;
 
     let mut config = OverlayMountConfig::new(
         lower_dirs.to_vec(),
@@ -394,8 +411,9 @@ pub(crate) fn prepare_overlay_record_mountless(
     lower_dirs: &[PathBuf],
     run_id: &str,
     durability: pvisor_core::overlay::StageDurability,
+    recording: pvisor_core::overlay::StageRecording,
 ) -> Result<OverlayRecord, OverlayError> {
-    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, false, durability)
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, false, durability, recording)
 }
 
 pub(crate) fn prepare_execution_overlay_record(
@@ -403,8 +421,9 @@ pub(crate) fn prepare_execution_overlay_record(
     lower_dirs: &[PathBuf],
     run_id: &str,
     durability: pvisor_core::overlay::StageDurability,
+    recording: pvisor_core::overlay::StageRecording,
 ) -> Result<OverlayRecord, OverlayError> {
-    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, true, durability)
+    prepare_overlay_record_mountless_inner(record, lower_dirs, run_id, true, durability, recording)
 }
 
 fn prepare_overlay_record_mountless_inner(
@@ -413,9 +432,19 @@ fn prepare_overlay_record_mountless_inner(
     run_id: &str,
     preserve_existing: bool,
     durability: pvisor_core::overlay::StageDurability,
+    recording: pvisor_core::overlay::StageRecording,
 ) -> Result<OverlayRecord, OverlayError> {
+    recording
+        .validate(durability)
+        .map_err(|e| OverlayError::Prepare(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
+    }
+    if record.auto_apply && durability == pvisor_core::overlay::StageDurability::Ephemeral {
+        return Err(OverlayError::Prepare(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ephemeral stages cannot auto-apply",
+        )));
     }
     for dir in lower_dirs.iter().chain([&record.stage_dir]) {
         crate::util::persistence_step(run_id, "overlay", "directory_prepare", || {
@@ -429,8 +458,12 @@ fn prepare_overlay_record_mountless_inner(
         record.baseline_lower.as_deref(),
     )
     .map_err(OverlayError::Prepare)?;
-    pvisor_overlay_core::stage::begin(&record.stage_dir.join("preimages"), durability)
-        .map_err(OverlayError::Prepare)?;
+    pvisor_overlay_core::stage::begin_with_recording(
+        &record.stage_dir.join("preimages"),
+        durability,
+        recording,
+    )
+    .map_err(OverlayError::Prepare)?;
     // Share backing validation and journal initialization with the host adapter.
     crate::util::persistence_step(run_id, "overlay", "backing_and_journal", || {
         let open = if preserve_existing {
@@ -458,15 +491,15 @@ fn prepare_overlay_record_mountless_inner(
 
 pub(crate) fn stage_overlay_record(record: &mut OverlayRecord) -> anyhow::Result<()> {
     if record.state == OverlayState::Active {
-        seal_overlay_record(record)?;
+        complete_overlay_record(record)?;
         record.state = OverlayState::Staged;
         write_overlay_record(record)?;
     }
     Ok(())
 }
 
-fn seal_overlay_record(record: &OverlayRecord) -> anyhow::Result<()> {
-    pvisor_overlay_core::stage::seal(record.upper.path(), &record.stage_dir.join("preimages"))?;
+fn complete_overlay_record(record: &OverlayRecord) -> anyhow::Result<()> {
+    pvisor_overlay_core::stage::complete(record.upper.path(), &record.stage_dir.join("preimages"))?;
     Ok(())
 }
 
@@ -757,6 +790,64 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_mountless_completion_and_auto_apply_admission() {
+        use pvisor_core::overlay::StageDurability;
+        for recording in [
+            pvisor_core::overlay::StageRecording::On,
+            pvisor_core::overlay::StageRecording::Off,
+        ] {
+            let tmp = tempdir().unwrap();
+            let lower = tmp.path().join("lower");
+            fs::create_dir(&lower).unwrap();
+            let stage = tmp.path().join("stage");
+            let config = OverlayConfig {
+                enabled: true,
+                target: Some(lower.to_string_lossy().into_owned()),
+                stage_dir: Some(stage.to_string_lossy().into_owned()),
+                ..OverlayConfig::default()
+            };
+            let mut record = resolve_overlay_workspace(&config, tmp.path(), "ephemeral")
+                .unwrap()
+                .unwrap();
+            record.auto_apply = true;
+            assert!(
+                prepare_overlay_record_mountless(
+                    &record,
+                    std::slice::from_ref(&lower),
+                    "ephemeral",
+                    StageDurability::Ephemeral,
+                    recording,
+                )
+                .is_err()
+            );
+            assert!(!stage.exists());
+            record.auto_apply = false;
+            let mut prepared = prepare_overlay_record_mountless(
+                &record,
+                &[lower],
+                "ephemeral",
+                StageDurability::Ephemeral,
+                recording,
+            )
+            .unwrap();
+            fs::write(prepared.upper.path().join("result"), b"workload result").unwrap();
+            stage_overlay_record(&mut prepared).unwrap();
+            assert_eq!(prepared.state, OverlayState::Staged);
+            assert_eq!(
+                load_overlay_record(&stage).unwrap().state,
+                OverlayState::Staged
+            );
+            assert_eq!(
+                fs::read(prepared.upper.path().join("result")).unwrap(),
+                b"workload result"
+            );
+            assert!(stage.join("preimages/completed-volatile-v1").is_file());
+            assert!(!stage.join("preimages/sealed-v1").exists());
+            assert!(pvisor_overlay_core::stage::require_sealed(&stage.join("preimages")).is_err());
+        }
+    }
+
+    #[test]
     fn mountless_preparation_creates_backing_state_without_a_merged_mount() {
         let tmp = tempdir().unwrap();
         let lower = tmp.path().join("lower");
@@ -780,9 +871,14 @@ mod tests {
             protect_target: false,
             state: OverlayState::Active,
         };
-        let prepared =
-            prepare_overlay_record_mountless(&record, &[lower], "test-run", Default::default())
-                .unwrap();
+        let prepared = prepare_overlay_record_mountless(
+            &record,
+            &[lower],
+            "test-run",
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
         assert!(prepared.upper.path().is_dir());
         assert!(stage.join("work").is_dir());
         assert!(stage.join("preimages/entries/format-v2.json").is_file());
@@ -791,15 +887,17 @@ mod tests {
                 &prepared,
                 std::slice::from_ref(&prepared.target),
                 "interrupted-reopen",
-                Default::default()
+                Default::default(),
+                Default::default(),
             )
             .is_err()
         );
-        seal_overlay_record(&prepared).unwrap();
+        complete_overlay_record(&prepared).unwrap();
         prepare_overlay_record_mountless(
             &prepared,
             std::slice::from_ref(&prepared.target),
             "test-reopen",
+            Default::default(),
             Default::default(),
         )
         .unwrap();
@@ -831,6 +929,7 @@ mod tests {
             &legacy,
             std::slice::from_ref(&legacy.target),
             "legacy-reopen",
+            Default::default(),
             Default::default(),
         )
         .unwrap();
@@ -950,6 +1049,7 @@ mod tests {
             std::slice::from_ref(&lower),
             None,
             &[],
+            Default::default(),
             Default::default(),
         )
         .unwrap();

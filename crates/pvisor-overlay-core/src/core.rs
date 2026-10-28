@@ -258,6 +258,7 @@ pub struct OverlayCore {
     copied_hard_links: Mutex<HashMap<(u64, u64), Vec<PathBuf>>>,
     hard_link_sources: Mutex<HashMap<(u64, u64), PathBuf>>,
     preimage_dir: Option<PathBuf>,
+    record_observations: bool,
     preimage_log: Option<Mutex<crate::preimage_log::PreimageLog>>,
     fingerprint_flights: FingerprintFlights,
     // Read observations are published without fsync. Before the first upper
@@ -1006,6 +1007,15 @@ impl OverlayCore {
         let immutable_lower_negative_cache_enabled = lower_negative_cache_setting(
             std::env::var_os("PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE").as_deref(),
         )? && immutable_lower_cache_enabled;
+        let record_observations = preimage_dir
+            .as_deref()
+            .map(crate::stage::recording)
+            .transpose()?
+            .unwrap_or_default()
+            == crate::stage::StageRecording::On;
+        if !record_observations {
+            crate::stage::require_no_observations(preimage_dir.as_deref().unwrap())?;
+        }
         let initialize = !matches!(mode, BuildMode::Existing);
         if initialize {
             fs::create_dir_all(&upper)?;
@@ -1074,7 +1084,9 @@ impl OverlayCore {
                 }
             }
         }
-        if let Some(directory) = &preimage_dir {
+        if let Some(directory) = &preimage_dir
+            && record_observations
+        {
             if initialize {
                 fs::create_dir_all(directory.join("entries"))?;
             } else {
@@ -1101,6 +1113,7 @@ impl OverlayCore {
         }
         let preimage_log = preimage_dir
             .as_ref()
+            .filter(|_| record_observations)
             .map(|directory| {
                 if compact_preimages(directory)? {
                     // A registered log must exist. Never recreate a lost journal.
@@ -1159,6 +1172,7 @@ impl OverlayCore {
             hard_link_sources: Mutex::new(HashMap::new()),
             access: crate::FileAccessPolicy::default(),
             preimage_dir,
+            record_observations,
             preimage_log,
             fingerprint_flights: FingerprintFlights::default(),
             preimage_lock: Mutex::new(BTreeSet::new()),
@@ -1205,7 +1219,7 @@ impl OverlayCore {
     /// migrate an existing journal. Reopening automatically preserves its format.
     /// Legacy readers reject the format marker instead of losing observations.
     pub fn with_compact_preimages(mut self) -> io::Result<Self> {
-        if self.preimage_log.is_some() {
+        if !self.record_observations || self.preimage_log.is_some() {
             return Ok(self);
         }
         let Some(directory) = self.preimage_dir.as_ref() else {
@@ -1392,6 +1406,9 @@ impl OverlayCore {
 
     /// Order all observations before an explicit fsync, or snapshot capture.
     pub fn sync_preimages(&self) -> io::Result<()> {
+        if !self.record_observations {
+            return Ok(());
+        }
         if let Some(log) = &self.preimage_log {
             log.lock()
                 .map_err(|_| io::Error::other("preimage log lock poisoned"))?
@@ -1428,6 +1445,9 @@ impl OverlayCore {
             return Ok(());
         };
         Self::validate_rel(rel)?;
+        if !self.record_observations {
+            return Ok(());
+        }
         if let Some(log) = &self.preimage_log {
             let _span = self.profile.span("journal_log");
             if log
@@ -1621,7 +1641,10 @@ impl OverlayCore {
         // without a journal (including the private VM rootfs) have none to
         // capture. Namespace and access checks belong to the caller and remain
         // necessary independently of whether observations are recorded.
-        if self.preimage_dir.is_none() {
+        if !self.stage_writable {
+            return Err(error(libc::EROFS));
+        }
+        if !self.record_observations || self.preimage_dir.is_none() {
             return Ok(());
         }
         self.record_preimage(destination)?;
@@ -2323,7 +2346,8 @@ impl OverlayCore {
         reject_symlink: bool,
     ) -> io::Result<ResolvedMetadata> {
         let _span = self.profile.span("observe_read");
-        if !self.layout.frozen_baseline
+        if self.record_observations
+            && !self.layout.frozen_baseline
             && self.preimage_dir.is_some()
             && !self.read_observation_is_recorded(rel)
         {

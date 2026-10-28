@@ -2,7 +2,7 @@
 //! all writers before sealing. A seal is a completion boundary, not a snapshot
 //! of an upper that continues to change; live checkpoints seal their own copy.
 use crate::{load_preimages, preimage_journal_is_complete};
-pub use pvisor_core::overlay::StageDurability;
+pub use pvisor_core::overlay::{StageDurability, StageRecording};
 use pvisor_journal::api::{DurableFiles, Persistence};
 use std::{
     collections::HashSet,
@@ -16,6 +16,8 @@ use std::{
 const POLICY: &str = "durability-v1";
 const SEAL: &str = "sealed-v1";
 const SEALED: &[u8] = b"pvisor.stage.sealed/1\n";
+const VOLATILE: &str = "completed-volatile-v1";
+const COMPLETED_VOLATILE: &[u8] = b"pvisor.stage.completed-volatile/1\n";
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -33,6 +35,16 @@ fn open(path: &Path, directory: bool) -> io::Result<File> {
 /// Missing policy means the original strict journal contract, including legacy
 /// stages. Unknown or corrupt policy is an error, never a relaxed fallback.
 pub fn policy(journal: &Path) -> io::Result<StageDurability> {
+    settings(journal).map(|(durability, _)| durability)
+}
+
+/// Recording policy bound atomically to durability before writers start.
+/// Legacy and existing ephemeral stages retain recording. Unknown markers fail.
+pub fn recording(journal: &Path) -> io::Result<StageRecording> {
+    settings(journal).map(|(_, recording)| recording)
+}
+
+fn settings(journal: &Path) -> io::Result<(StageDurability, StageRecording)> {
     match open(&journal.join(POLICY), false) {
         Ok(mut file) => {
             use std::io::Read;
@@ -42,12 +54,22 @@ pub fn policy(journal: &Path) -> io::Result<StageDurability> {
             let mut bytes = Vec::new();
             file.by_ref().take(128).read_to_end(&mut bytes)?;
             match bytes.as_slice() {
-                b"pvisor.stage.checkpoint/1\n" => Ok(StageDurability::Checkpoint),
-                b"pvisor.stage.strict/1\n" => Ok(StageDurability::Strict),
+                b"pvisor.stage.checkpoint/1\n" => {
+                    Ok((StageDurability::Checkpoint, StageRecording::On))
+                }
+                b"pvisor.stage.strict/1\n" => Ok((StageDurability::Strict, StageRecording::On)),
+                b"pvisor.stage.ephemeral/1\n" => {
+                    Ok((StageDurability::Ephemeral, StageRecording::On))
+                }
+                b"pvisor.stage.ephemeral-unrecorded/1\n" => {
+                    Ok((StageDurability::Ephemeral, StageRecording::Off))
+                }
                 _ => Err(invalid("unsupported stage durability policy")),
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(StageDurability::Strict),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok((StageDurability::Strict, StageRecording::On))
+        }
         Err(error) => Err(error),
     }
 }
@@ -67,6 +89,29 @@ fn managed(journal: &Path) -> io::Result<bool> {
 /// stages must be sealed before reuse: an interrupted upper cannot be promoted
 /// to a trusted result simply by reopening and syncing whatever survived.
 pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
+    begin_with_recording(journal, durability, StageRecording::On)
+}
+
+/// Admit a fresh stage with explicit recording. Off requires ephemeral and a
+/// fresh metadata directory. Retain this directory in host/VM configurations:
+/// it carries lifecycle and checkpoint prohibitions even without a journal.
+pub fn begin_with_recording(
+    journal: &Path,
+    durability: StageDurability,
+    recording: StageRecording,
+) -> io::Result<()> {
+    recording.validate(durability).map_err(invalid)?;
+    if recording == StageRecording::Off {
+        match fs::read_dir(journal) {
+            Ok(mut entries) => {
+                if entries.next().transpose()?.is_some() {
+                    return Err(invalid("unrecorded stage requires fresh metadata"));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
     fs::create_dir_all(journal)?;
     if managed(journal)? {
         require_sealed(journal)?;
@@ -80,6 +125,9 @@ pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
         // Its missing policy remains strict, including old journals without
         // complete-v1. New policies are registered only before initialization.
         match fs::symlink_metadata(journal.join("entries")) {
+            Ok(_) if durability == StageDurability::Ephemeral => {
+                return Err(invalid("cannot make a legacy stage ephemeral"));
+            }
             Ok(_) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -87,6 +135,10 @@ pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
         let bytes: &[u8] = match durability {
             StageDurability::Checkpoint => b"pvisor.stage.checkpoint/1\n",
             StageDurability::Strict => b"pvisor.stage.strict/1\n",
+            StageDurability::Ephemeral if recording == StageRecording::Off => {
+                b"pvisor.stage.ephemeral-unrecorded/1\n"
+            }
+            StageDurability::Ephemeral => b"pvisor.stage.ephemeral/1\n",
         };
         Persistence::atomic_write(&journal.join(POLICY), bytes, 0o600).map_err(io::Error::other)?;
     }
@@ -103,7 +155,10 @@ pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
     Ok(())
 }
 
+/// Require a durable stage completion. Ephemeral stages are never accepted,
+/// even if a seal file is present; their policy cannot be upgraded by reopening.
 pub fn require_sealed(journal: &Path) -> io::Result<()> {
+    require_persistent(journal)?;
     if !managed(journal)? {
         return Ok(());
     }
@@ -140,6 +195,21 @@ pub(crate) fn admits_writes(journal: &Path) -> io::Result<bool> {
     if !managed(journal)? {
         return Ok(true);
     }
+    if policy(journal)? == StageDurability::Ephemeral {
+        return match open(&journal.join(VOLATILE), false) {
+            Ok(mut file) => {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                file.by_ref().take(128).read_to_end(&mut bytes)?;
+                if !file.metadata()?.is_file() || bytes != COMPLETED_VOLATILE {
+                    return Err(invalid("invalid volatile stage completion marker"));
+                }
+                Ok(false)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error),
+        };
+    }
     match fs::symlink_metadata(journal.join(SEAL)) {
         Ok(_) => {
             require_sealed(journal)?;
@@ -150,8 +220,60 @@ pub(crate) fn admits_writes(journal: &Path) -> io::Result<bool> {
     }
 }
 
-/// Persist all observations before an explicit workload fsync or snapshot.
-pub fn sync_journal(journal: &Path) -> io::Result<()> {
+/// Reject operations requiring durable or reusable backing before side effects.
+/// A missing policy retains the legacy strict contract; corrupt policies fail.
+pub fn require_persistent(journal: &Path) -> io::Result<()> {
+    if policy(journal)? == StageDurability::Ephemeral {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "EPHEMERAL_STAGE: apply, checkpoint and stage reuse require checkpoint or strict durability",
+        ));
+    }
+    Ok(())
+}
+
+/// Finish an exclusively owned stage after stopping every writer. Persistent
+/// modes seal normally. Ephemeral mode validates enabled observations and retains upper
+/// bytes, but publishes only a volatile completion marker, never a durable seal.
+/// Normal writes, explicit workload fsync and metadata/audit persistence remain.
+/// On failure the stage must not be reported complete. This is not a checkpoint.
+pub fn complete(upper: &Path, journal: &Path) -> io::Result<()> {
+    if policy(journal)? != StageDurability::Ephemeral {
+        return seal(upper, journal);
+    }
+    if recording(journal)? == StageRecording::Off {
+        require_no_observations(journal)?;
+    } else {
+        if !preimage_journal_is_complete(journal) {
+            return Err(invalid("stage journal initialization is incomplete"));
+        }
+        validate_journal(journal)?;
+    }
+    open(upper, true)?;
+    // Keep an explicit non-durable marker. Do not publish sealed-v1 or call a
+    // durable writer: normal exit is not a promise about storage after a crash.
+    use std::io::Write;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(journal.join(VOLATILE))?
+        .write_all(COMPLETED_VOLATILE)
+}
+
+pub(crate) fn require_no_observations(journal: &Path) -> io::Result<()> {
+    for name in ["entries", "complete-v1", crate::core::PREIMAGE_LOG_NAME] {
+        match fs::symlink_metadata(journal.join(name)) {
+            Ok(_) => return Err(invalid("unrecorded stage contains observation data")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn validate_journal(journal: &Path) -> io::Result<()> {
     if crate::core::compact_preimages(journal)? {
         crate::preimage_log::PreimageLog::read_complete(
             &journal.join(crate::core::PREIMAGE_LOG_NAME),
@@ -159,6 +281,15 @@ pub fn sync_journal(journal: &Path) -> io::Result<()> {
     } else {
         load_preimages(journal)?;
     }
+    Ok(())
+}
+
+/// Persist all observations before an explicit workload fsync or snapshot.
+pub fn sync_journal(journal: &Path) -> io::Result<()> {
+    if recording(journal)? == StageRecording::Off {
+        return require_no_observations(journal);
+    }
+    validate_journal(journal)?;
     sync_tree(journal, &mut HashSet::new())
 }
 
@@ -199,6 +330,7 @@ fn seal_with_upper(
     journal: &Path,
     sync_upper: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    require_persistent(journal)?;
     if !managed(journal)? {
         return Ok(());
     }
@@ -348,6 +480,127 @@ mod tests {
     use super::*;
     use crate::{OverlayCore, OverlayLayout, apply::apply_overlay, fingerprint_at};
     use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
+
+    #[test]
+    fn ephemeral_completion_retains_bytes_but_cannot_seal_apply_or_reuse() {
+        for recording in [StageRecording::On, StageRecording::Off] {
+            let temp = tempfile::tempdir().unwrap();
+            let (core, mut record) =
+                fixture_with_recording(temp.path(), StageDurability::Ephemeral, recording);
+            fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
+            // Explicit workload journal synchronization still works in this mode.
+            core.sync_preimages().unwrap();
+            drop(core);
+            let journal = temp.path().join("preimages");
+            assert!(admits_writes(&journal).unwrap());
+            assert!(require_sealed(&journal).is_err());
+            // A durable seal must fail before invoking the upper sync callback.
+            let error = seal_with_upper(record.upper.path(), &journal, |_| {
+                panic!("ephemeral stage must not enter durable sealing")
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            complete(record.upper.path(), &journal).unwrap();
+            assert_eq!(
+                fs::read(record.upper.path().join("value")).unwrap(),
+                b"staged"
+            );
+            assert_eq!(fs::read(record.target.join("value")).unwrap(), b"original");
+            assert_eq!(
+                load_preimages(&journal).unwrap().len(),
+                usize::from(recording == StageRecording::On)
+            );
+            assert!(!journal.join(SEAL).exists());
+            assert_eq!(
+                fs::read(journal.join(VOLATILE)).unwrap(),
+                COMPLETED_VOLATILE
+            );
+            assert!(!admits_writes(&journal).unwrap());
+            assert!(
+                apply_overlay(&mut record)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("EPHEMERAL_STAGE")
+            );
+            for mode in [
+                StageDurability::Ephemeral,
+                StageDurability::Checkpoint,
+                StageDurability::Strict,
+            ] {
+                assert!(begin(&journal, mode).is_err());
+            }
+            // Neither a forged/stale seal nor a clean process reopen upgrades it.
+            fs::write(journal.join(SEAL), SEALED).unwrap();
+            assert!(require_sealed(&journal).is_err());
+            let reopened = OverlayCore::open_existing(
+                vec![record.target.clone()],
+                record.upper.upper_dir.clone(),
+                Some(record.upper.work_dir.clone()),
+                vec![],
+                Some(journal),
+            )
+            .unwrap();
+            assert_eq!(
+                reopened
+                    .copy_up(Path::new("value"))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EROFS)
+            );
+        }
+    }
+
+    #[test]
+    fn ephemeral_completion_rejects_corruption_and_unsafe_markers() {
+        use std::io::Write;
+        for corrupt_log in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (core, record) = fixture(temp.path(), StageDurability::Ephemeral);
+            core.observe_read(Path::new("value")).unwrap();
+            drop(core);
+            let journal = temp.path().join("preimages");
+            if corrupt_log {
+                OpenOptions::new()
+                    .append(true)
+                    .open(journal.join(crate::core::PREIMAGE_LOG_NAME))
+                    .unwrap()
+                    .write_all(b"PVR2")
+                    .unwrap();
+            } else {
+                fs::remove_file(journal.join("complete-v1")).unwrap();
+            }
+            assert!(complete(record.upper.path(), &journal).is_err());
+            assert!(!journal.join(VOLATILE).exists());
+            assert!(!journal.join(SEAL).exists());
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (core, record) = fixture(temp.path(), StageDurability::Ephemeral);
+        drop(core);
+        let journal = temp.path().join("preimages");
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&outside, journal.join(VOLATILE)).unwrap();
+        assert!(complete(record.upper.path(), &journal).is_err());
+        assert!(admits_writes(&journal).is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn ordinary_completion_still_seals_and_ephemeral_cannot_adopt_legacy() {
+        for durability in [StageDurability::Checkpoint, StageDurability::Strict] {
+            let temp = tempfile::tempdir().unwrap();
+            let (core, record) = fixture(temp.path(), durability);
+            drop(core);
+            let journal = temp.path().join("preimages");
+            complete(record.upper.path(), &journal).unwrap();
+            require_sealed(&journal).unwrap();
+            assert!(!journal.join(VOLATILE).exists());
+        }
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("entries")).unwrap();
+        assert!(begin(temp.path(), StageDurability::Ephemeral).is_err());
+        assert_eq!(policy(temp.path()).unwrap(), StageDurability::Strict);
+    }
 
     #[test]
     fn worker_configuration_is_bounded_and_explicit() {
@@ -504,11 +757,19 @@ mod tests {
     }
 
     fn fixture(root: &Path, durability: StageDurability) -> (OverlayCore, OverlayRecord) {
+        fixture_with_recording(root, durability, StageRecording::On)
+    }
+
+    fn fixture_with_recording(
+        root: &Path,
+        durability: StageDurability,
+        recording: StageRecording,
+    ) -> (OverlayCore, OverlayRecord) {
         let target = root.join("target");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("value"), b"original").unwrap();
         let journal = root.join("preimages");
-        begin(&journal, durability).unwrap();
+        begin_with_recording(&journal, durability, recording).unwrap();
         let core = OverlayCore::new_for_layout_with_compact_preimages(
             OverlayLayout::new(vec![target.clone()], target.clone()).unwrap(),
             root.join("upper"),

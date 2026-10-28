@@ -59,10 +59,21 @@ const ROUTER_MAC: EthernetAddress = EthernetAddress([0x02, 0x50, 0x56, 0x00, 0x0
 const FRAME_MTU: usize = 1514;
 const MAX_FRAME_LEN: usize = 65_535;
 const TCP_BUFFER_BYTES: usize = 64 * 1024;
-const DEFAULT_MAX_FLOWS: usize = 256;
+/// Concurrent TCP flows the backend tracks before refusing new SYNs. Each
+/// flow owns two `TCP_BUFFER_BYTES` socket buffers, so the cap is also the
+/// worst-case memory bound (1024 flows ≈ 128 MiB per VM, reached only when
+/// that many connections are simultaneously tracked).
+const DEFAULT_MAX_FLOWS: usize = 1024;
 const TCP_CHANNEL_DEPTH: usize = 256;
 const FLOW_BUFFER_CHUNKS: usize = TCP_BUFFER_BYTES / (16 * 1024);
 const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Wall-clock budget for one flow to finish its handshake (SYN received,
+/// upstream connected, guest ACK). Flows still waiting in `WaitingForSyn`
+/// or `Connecting` past this deadline are aborted and their table slot
+/// reclaimed, so a burst of short-lived connections cannot pin the table
+/// until the idle timeout. This mirrors SYN-proxy handshake deadlines in
+/// Envoy/nginx rather than TCP's multi-minute SYN retry ladder.
+const TCP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_POLL_DELAY: StdDuration = StdDuration::from_millis(100);
 const SYNTHETIC_DNS_CAPACITY: usize = 4096;
 const DNS_MAX_MESSAGE: usize = 4096;
@@ -231,6 +242,9 @@ struct Flow {
     handle: SocketHandle,
     destination: FlowDestination,
     phase: FlowPhase,
+    /// Stack-clock creation time; bounds how long a never-established flow
+    /// may hold a table slot (see `TCP_HANDSHAKE_TIMEOUT`).
+    created_at: Instant,
     upstream: Option<mpsc::Sender<Vec<u8>>>,
     upstream_task: Option<JoinHandle<()>>,
     inbound: VecDeque<(Vec<u8>, Option<OwnedSemaphorePermit>)>,
@@ -362,6 +376,7 @@ async fn run_backend(
                                     &dns,
                                     &config,
                                     &metrics,
+                                    smol_now(clock),
                                 );
                             }
                             if !supported_guest_frame(frame, guest_address) {
@@ -394,7 +409,7 @@ async fn run_backend(
                 &metrics,
             );
             let _ = interface.poll(now, &mut frame_device, &mut sockets);
-            reap_closed_flows(&mut sockets, &mut flows, &metrics);
+            reap_closed_flows(&mut sockets, &mut flows, &metrics, now);
             let delay = interface
                 .poll_delay(smol_now(clock), &sockets)
                 .map(|delay| StdDuration::from_micros(delay.total_micros()))
@@ -470,6 +485,7 @@ fn ensure_listener(
     dns: &SyntheticDns,
     config: &VmNetworkConfig,
     metrics: &InterceptionMetrics,
+    now: Instant,
 ) {
     if flows.contains_key(&key) {
         return;
@@ -481,6 +497,7 @@ fn ensure_listener(
             key.destination_port,
             NetworkTransport::TcpTunnel,
         );
+        warn_flow_table_full(flows.len(), config.max_flows);
         return;
     }
     let destination = if key.destination_port == 53 {
@@ -550,6 +567,7 @@ fn ensure_listener(
             } else {
                 FlowPhase::WaitingForSyn
             },
+            created_at: now,
             upstream: None,
             upstream_task: None,
             inbound: VecDeque::new(),
@@ -908,17 +926,41 @@ fn apply_flow_event(
     }
 }
 
+/// One rate-limited line per five seconds while the table is full: every
+/// refused SYN is guest-visible as `Connection refused`, and an unthrottled
+/// warn per packet would flood the runner diagnostics during bursts.
+fn warn_flow_table_full(len: usize, capacity: usize) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = std::time::Instant::now();
+    let due = last.is_none_or(|then| now.duration_since(then) >= StdDuration::from_secs(5));
+    if due {
+        *last = Some(now);
+        tracing::warn!(
+            flows = len,
+            capacity,
+            "VM TCP flow table full; new connections are refused until flows are reaped"
+        );
+    }
+}
+
 fn reap_closed_flows(
     sockets: &mut SocketSet<'static>,
     flows: &mut HashMap<FlowKey, Flow>,
     metrics: &InterceptionMetrics,
+    now: Instant,
 ) {
-    let closed = flows
-        .iter()
-        .filter_map(|(key, flow)| {
-            (sockets.get::<tcp::Socket>(flow.handle).state() == tcp::State::Closed).then_some(*key)
-        })
-        .collect::<Vec<_>>();
+    let mut closed = Vec::new();
+    let mut expired = Vec::new();
+    for (key, flow) in flows.iter() {
+        if sockets.get::<tcp::Socket>(flow.handle).state() == tcp::State::Closed {
+            closed.push(*key);
+        } else if matches!(flow.phase, FlowPhase::WaitingForSyn | FlowPhase::Connecting)
+            && now - flow.created_at >= TCP_HANDSHAKE_TIMEOUT
+        {
+            expired.push(*key);
+        }
+    }
     for key in closed {
         if let Some(mut flow) = flows.remove(&key) {
             sockets.remove(flow.handle);
@@ -926,6 +968,21 @@ fn reap_closed_flows(
                 task.abort();
             }
             metrics.tcp_flow_closed();
+        }
+    }
+    // Abort stalled handshakes so their slot returns on the next pass
+    // (the abort moves the socket to Closed); the RST the abort emits also
+    // converts an indefinite pause into an explicit refusal for the guest.
+    for key in expired {
+        if let Some(flow) = flows.get_mut(&key) {
+            sockets.get_mut::<tcp::Socket>(flow.handle).abort();
+            if let Some(task) = flow.upstream_task.take() {
+                task.abort();
+            }
+            tracing::warn!(
+                ?key,
+                "VM TCP flow handshake timed out; aborting to reclaim the slot"
+            );
         }
     }
 }
@@ -1059,7 +1116,16 @@ impl SyntheticDns {
                     .and_then(|config| crate::peer::lookup_peer_name(config, &question.name));
                 let peer_only = self.peers.as_ref().is_some_and(|p| !p.aliases.is_empty())
                     && !question.name.contains('.');
-                let answer = if peer.is_some() {
+                let localhost = question
+                    .name
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case("localhost");
+                let answer = if localhost {
+                    // Loopback never allocates a synthetic egress address:
+                    // resolvers that skip /etc/hosts must still reach the
+                    // guest's own loopback, not the VM data plane.
+                    Some(Ipv4Addr::LOCALHOST)
+                } else if peer.is_some() {
                     peer
                 } else if peer_only {
                     None
@@ -1381,6 +1447,7 @@ mod tests {
                 port: 53,
             },
             phase: FlowPhase::LocalDns,
+            created_at: Instant::ZERO,
             upstream: None,
             upstream_task: None,
             inbound: (0..FLOW_BUFFER_CHUNKS)
@@ -1502,6 +1569,7 @@ mod tests {
                     port: 443,
                 },
                 phase: FlowPhase::Connecting,
+                created_at: Instant::ZERO,
                 upstream: None,
                 upstream_task: None,
                 inbound: VecDeque::new(),
@@ -1549,6 +1617,91 @@ mod tests {
             dns.hostname(Ipv4Addr::new(198, 18, 0, 1)),
             Some("api.example.com")
         );
+    }
+
+    #[test]
+    fn localhost_resolves_to_loopback_without_allocating() {
+        let mut dns = SyntheticDns::default();
+        for name in ["localhost", "LOCALHOST"] {
+            let response = dns.answer(&query(name, 1));
+            assert_eq!(
+                u16::from_be_bytes([response[2], response[3]]) & 0x0f,
+                0,
+                "{name} must resolve"
+            );
+            assert_eq!(&response[response.len() - 4..], &[127, 0, 0, 1], "{name}");
+        }
+        assert!(
+            dns.by_name.is_empty(),
+            "loopback must not allocate a synthetic address"
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_handshake_flows_are_reclaimed_after_the_deadline() {
+        let key = FlowKey {
+            guest_port: 40000,
+            destination_addr: Ipv4Addr::new(198, 18, 0, 9),
+            destination_port: 443,
+        };
+        let mut sockets = SocketSet::new(Vec::new());
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 1024]),
+            tcp::SocketBuffer::new(vec![0; 1024]),
+        );
+        socket
+            .listen(IpEndpoint::new(
+                IpAddress::Ipv4(key.destination_addr),
+                key.destination_port,
+            ))
+            .unwrap();
+        let handle = sockets.add(socket);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let probe = task.abort_handle();
+        let mut flows = HashMap::from([(
+            key,
+            Flow {
+                handle,
+                destination: FlowDestination::Egress {
+                    host: "slow.example".into(),
+                    port: 443,
+                },
+                phase: FlowPhase::Connecting,
+                created_at: Instant::ZERO,
+                upstream: None,
+                upstream_task: Some(task),
+                inbound: VecDeque::new(),
+                inbound_offset: 0,
+                dns_input: Vec::new(),
+                remote_eof: false,
+            },
+        )]);
+        let metrics = InterceptionMetrics::default();
+        // Before the deadline the stalled handshake keeps its slot.
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(5),
+        );
+        assert!(flows.contains_key(&key));
+        // Past the deadline the socket is aborted (its upstream task with
+        // it) and the slot returns on the next pass.
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(31),
+        );
+        tokio::task::yield_now().await;
+        assert!(probe.is_finished());
+        reap_closed_flows(
+            &mut sockets,
+            &mut flows,
+            &metrics,
+            Instant::ZERO + Duration::from_secs(32),
+        );
+        assert!(flows.is_empty());
     }
 
     #[test]

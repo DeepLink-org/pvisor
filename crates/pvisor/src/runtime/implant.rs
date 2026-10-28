@@ -7,6 +7,8 @@ use std::path::PathBuf;
 pub struct OverlayHint {
     /// None preserves the configured persistence policy.
     pub durability: Option<pvisor_core::overlay::StageDurability>,
+    /// None preserves configured observation recording; off requires ephemeral.
+    pub recording: Option<pvisor_core::overlay::StageRecording>,
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Shared read-only lower layers (host paths).
     pub lower_dirs: Vec<PathBuf>,

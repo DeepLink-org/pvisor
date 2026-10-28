@@ -947,6 +947,53 @@ pub(super) mod native {
             .collect()
     }
 
+    // Called before freezing a running VM and again before capture I/O. Native
+    // snapshots must not turn an ephemeral stage into a recoverable artifact.
+    pub(in crate::executor::vm) fn require_persistent_stages(
+        root: &OverlayDeviceSpec,
+        workspace: Option<&OverlayDeviceSpec>,
+    ) -> anyhow::Result<()> {
+        for device in std::iter::once(root).chain(workspace) {
+            if let Some(journal) = &device.preimages {
+                pvisor_overlay_core::stage::require_persistent(journal)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn native_checkpoint_rejects_ephemeral_root_or_workspace() {
+        use pvisor_overlay_core::stage::{self, StageDurability};
+        for recording in [stage::StageRecording::On, stage::StageRecording::Off] {
+            let temp = tempfile::tempdir().unwrap();
+            let device = OverlayDeviceSpec {
+                lower_mutability: vec![],
+                lowers: vec![],
+                upper: temp.path().join("upper"),
+                work: None,
+                preimages: None,
+                apply_target: None,
+                baseline_lower: None,
+                excluded: vec![],
+                access_policy: Default::default(),
+            };
+            let journal = temp.path().join("preimages");
+            stage::begin_with_recording(&journal, StageDurability::Ephemeral, recording).unwrap();
+            assert!(!journal.join("entries").exists());
+            let mut ephemeral = device.clone();
+            ephemeral.preimages = Some(journal);
+            require_persistent_stages(&device, None).unwrap();
+            assert!(
+                require_persistent_stages(&ephemeral, None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("EPHEMERAL_STAGE")
+            );
+            assert!(require_persistent_stages(&device, Some(&ephemeral)).is_err());
+        }
+    }
+
     pub(in crate::executor::vm) fn capture_lower_bindings(
         root: &OverlayDeviceSpec,
         workspace: Option<&OverlayDeviceSpec>,
@@ -1625,6 +1672,7 @@ pub(super) mod native {
             .unwrap_or_else(|| recorded.lowers.last().unwrap().clone());
         let overlay = crate::OverlayHint {
             durability: Some(pvisor_overlay_core::stage::policy(&recorded_preimages)?),
+            recording: Some(pvisor_overlay_core::stage::recording(&recorded_preimages)?),
             access_policy: recorded.access_policy.clone(),
             lower_dirs: recorded.lowers.clone(),
             // Rebound copies have a new lifetime; do not inherit an old promise
@@ -1970,6 +2018,7 @@ pub(super) mod native {
         delta: Option<&pvisor_vm::api::RamDeltaSpec>,
         filesystem_reuse: &[FilesystemReuse],
     ) -> anyhow::Result<CaptureReady> {
+        require_persistent_stages(&spec.root, spec.workspace.as_ref())?;
         let binding = spec
             .checkpoint
             .as_ref()

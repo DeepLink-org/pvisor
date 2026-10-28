@@ -630,6 +630,10 @@ pub(crate) fn prepare_attempt(
 
     let mut overlay_cfg = config.overlay.clone();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
+    overlay_cfg
+        .recording
+        .validate(overlay_cfg.durability)
+        .map_err(anyhow::Error::msg)?;
 
     crate::util::startup_mark_run("storage.overlay_begin", spec.run_id.as_str());
     let prepared_overlay = prepare_overlay(
@@ -778,6 +782,10 @@ pub(crate) fn prepare_overlay_attempt(
     let root_session = spec.run_id.as_str().to_string();
     let mut overlay_cfg = pvisor_core::overlay::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
+    overlay_cfg
+        .recording
+        .validate(overlay_cfg.durability)
+        .map_err(anyhow::Error::msg)?;
     crate::util::startup_mark_run("storage.overlay_begin", spec.run_id.as_str());
     let prepared_overlay = prepare_overlay(
         &overlay_cfg,
@@ -1145,6 +1153,9 @@ fn apply_overlay_override(
     overlay_cfg: &mut pvisor_core::overlay::OverlayConfig,
     overlay_override: &OverlayHint,
 ) {
+    if let Some(recording) = overlay_override.recording {
+        overlay_cfg.recording = recording;
+    }
     if let Some(durability) = overlay_override.durability {
         overlay_cfg.durability = durability;
     }
@@ -1289,6 +1300,7 @@ fn prepare_overlay(
                             &lowers,
                             root_session,
                             overlay_cfg.durability,
+                            overlay_cfg.recording,
                         )?
                     } else {
                         prepare_overlay_record_mountless(
@@ -1296,6 +1308,7 @@ fn prepare_overlay(
                             &lowers,
                             root_session,
                             overlay_cfg.durability,
+                            overlay_cfg.recording,
                         )?
                     },
                     None,
@@ -1308,6 +1321,7 @@ fn prepare_overlay(
                     Some(metrics.clone()),
                     &lower_mutability,
                     overlay_cfg.durability,
+                    overlay_cfg.recording,
                 )?;
                 let record = mount.record().clone();
                 (Some(mount), record, Some(metrics))
@@ -1710,6 +1724,7 @@ mod tests {
                 std::slice::from_ref(&target),
                 "hibernated",
                 Default::default(),
+                Default::default(),
             )
             .unwrap();
             std::fs::write(record.upper.path().join("value"), b"partial").unwrap();
@@ -1776,6 +1791,7 @@ mod tests {
             &record,
             std::slice::from_ref(&target),
             "test-run",
+            Default::default(),
             Default::default(),
         )
         .unwrap();
