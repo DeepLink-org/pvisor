@@ -354,7 +354,8 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `overlayfs.prepared_workspace.store` | `PathBuf` | `未设置` | 选择时必填；独立私有 SnapshotStore，执行时认证 workspace catalog；`--workspace-base-store` |
 | `overlayfs.prepared_workspace.base` | `BaseReference` | `未设置` | 选择时必填；已由 workspace catalog 持久 pin 的基底标识 |
 | `overlayfs.prepared_workspace.base.id` | `String` | `未设置` | 选择时必填；64 位小写十六进制 seal SHA-256；`--workspace-base` |
-| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint` 或 `strict`；`--stage-durability`；不改变隔离和内容冲突检测 |
+| `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint`、`strict` 或 `ephemeral`；`--stage-durability`；ephemeral 跳过持久化完成流程并拒绝 apply/checkpoint/复用 |
+| `overlayfs.recording` | `pvisor_core::overlay::StageRecording` | `"on"` | `on` 或 `off`；`--stage-recording`；off 要求新建 ephemeral stage，省略观测 journal、指纹和 preimage；保留正常 I/O 与显式 fsync |
 | `overlayfs.max_size` | `Option<u64>` | `未设置` | 暂存总字节额度；`--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `必需` | 宿主源路径 |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `未设置` | Agent 可见的挂载路径；省略时由规范化过程补充 |
