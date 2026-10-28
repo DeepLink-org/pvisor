@@ -372,6 +372,12 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 
 ## Overlay protocol correctness
 
+Guest READ/READDIR/READDIRPLUS reply descriptors shorter than the 16-byte FUSE
+header return a transport error without invoking the filesystem or panicking.
+SETATTR validates a selected mode against the supported 16-bit range before
+dispatch and replies with Linux EINVAL on overflow; unselected mode bytes are
+ignored. These malformed requests do not terminate the VMM's filesystem workers.
+
 Guest OPEN flags are Linux wire values. The adapter translates access mode,
 APPEND and TRUNC before passing them to the native-flag Core service; native
 passthrough adapters still receive the original wire flags. In particular, Linux

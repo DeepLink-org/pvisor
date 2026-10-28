@@ -467,7 +467,10 @@ impl<F: FileSystem + Sync> Server<F> {
 
         let valid = SetattrValid::from_bits_truncate(setattr_in.valid);
 
-        let st: bindings::stat64 = setattr_in.into();
+        let st = match bindings::stat64::try_from(setattr_in) {
+            Ok(st) => st,
+            Err(error) => return reply_error(error, in_header.unique, w),
+        };
 
         match self.fs.setattr(
             Context::from(in_header),
@@ -889,7 +892,10 @@ impl<F: FileSystem + Sync> Server<F> {
         };
 
         // Split the writer into 2 pieces: one for the `OutHeader` and the rest for the data.
-        let data_writer = ZCWriter(w.split_at(size_of::<OutHeader>()).unwrap());
+        let data_writer = ZCWriter(
+            w.split_at(size_of::<OutHeader>())
+                .map_err(Error::QueueWriter)?,
+        );
         let read_completion = data_writer.0.file_read_completion();
 
         match self.fs.read(
@@ -1398,7 +1404,9 @@ impl<F: FileSystem + Sync> Server<F> {
         }
 
         // Skip over enough bytes for the header.
-        let mut cursor = w.split_at(size_of::<OutHeader>()).unwrap();
+        let mut cursor = w
+            .split_at(size_of::<OutHeader>())
+            .map_err(Error::QueueWriter)?;
         let mut lookups = DirectoryReplyLookups {
             fs: &self.fs,
             ctx: Context::from(in_header),
@@ -2719,6 +2727,88 @@ mod guest_cache_tests {
         try_request(server, opcode, body, body.len()).unwrap()
     }
 
+    #[test]
+    fn short_reply_buffers_return_errors_without_panicking() {
+        let server = Server::new(NullFs, false);
+        for (opcode, body) in [
+            (
+                Opcode::Read,
+                ReadIn {
+                    size: 1,
+                    ..Default::default()
+                }
+                .as_slice()
+                .to_vec(),
+            ),
+            (Opcode::Readdir, ReadIn::default().as_slice().to_vec()),
+            (Opcode::Readdirplus, ReadIn::default().as_slice().to_vec()),
+        ] {
+            for capacity in [0, 8, 15, 16] {
+                let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+                let mut descriptors = vec![(DescriptorType::Readable, body.len() as u32)];
+                if capacity != 0 {
+                    descriptors.push((DescriptorType::Writable, capacity));
+                }
+                let chain = create_descriptor_chain(
+                    &mem,
+                    GuestAddress(0),
+                    GuestAddress(0x100),
+                    descriptors,
+                    0,
+                )
+                .unwrap();
+                mem.write_slice(&body, GuestAddress(0x100)).unwrap();
+                let plan = OwnedDescriptorChain::new(chain).unwrap();
+                let (reader, writer) = plan.reader_writer(&mem).unwrap();
+                let result = server.handle_message(
+                    (
+                        InHeader {
+                            len: (size_of::<InHeader>() + body.len()) as u32,
+                            opcode: opcode as u32,
+                            ..Default::default()
+                        },
+                        reader,
+                    ),
+                    writer,
+                    false,
+                    &None,
+                    &Arc::new(AtomicI32::new(0)),
+                    #[cfg(target_os = "macos")]
+                    &None,
+                );
+                if capacity < size_of::<OutHeader>() as u32 {
+                    assert!(
+                        matches!(result, Err(Error::QueueWriter(_))),
+                        "{opcode:?}, capacity={capacity}: {result:?}"
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), size_of::<OutHeader>());
+                    let header: OutHeader = mem
+                        .read_obj(GuestAddress(0x100 + body.len() as u64))
+                        .unwrap();
+                    assert_eq!(header.error, -bindings::LINUX_ENOSYS);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn setattr_rejects_unrepresentable_modes_before_dispatch() {
+        let server = Server::new(NullFs, false);
+        for (valid, mode, expected) in [
+            (SetattrValid::MODE.bits(), 0x1_0000, libc::EINVAL),
+            (SetattrValid::MODE.bits(), 0xffff, bindings::LINUX_ENOSYS),
+            (0, u32::MAX, bindings::LINUX_ENOSYS),
+        ] {
+            let arg = SetattrIn {
+                valid,
+                mode,
+                ..Default::default()
+            };
+            let (header, _) = request(&server, Opcode::Setattr, arg.as_slice());
+            assert_eq!(header.error, -expected);
+        }
+    }
     fn try_request<F: FileSystem + Sync>(
         server: &Server<F>,
         opcode: Opcode,
