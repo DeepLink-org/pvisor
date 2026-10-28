@@ -519,9 +519,12 @@ struct OverlayFsOverrides {
     /// Fixed read generation; the live workspace remains the apply target.
     #[arg(long, requires = "workspace_base_store", value_name = "ID")]
     workspace_base: Option<String>,
-    /// Stage persistence: checkpoint (default), or sync each first mutation.
-    #[arg(long = "stage-durability", value_name = "checkpoint|strict")]
+    /// Stage persistence: checkpoint (default), strict, or ephemeral (no durable completion/apply).
+    #[arg(long = "stage-durability", value_name = "checkpoint|strict|ephemeral")]
     durability: Option<pvisor_core::overlay::StageDurability>,
+    /// Per-file observation recording; off requires ephemeral stage durability.
+    #[arg(long = "stage-recording", value_name = "on|off")]
+    recording: Option<pvisor_core::overlay::StageRecording>,
     /// Host path mount: SOURCE[:TARGET]:ACCESS. ACCESS is read, stage, or write.
     #[arg(long = "mount", value_name = "SOURCE[:TARGET]:ACCESS")]
     mounts: Vec<FilesystemMountArg>,
@@ -2422,6 +2425,7 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
     let enables_overlayfs = args.overlayfs.workspace_base.is_some()
         || !args.overlayfs.mounts.is_empty()
         || args.overlayfs.durability.is_some()
+        || args.overlayfs.recording.is_some()
         || !args.overlayfs.access.is_empty()
         || args.overlayfs.clear_access
         || args.overlayfs.max_size.is_some()
@@ -2474,11 +2478,20 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
         if let Some(value) = args.overlayfs.max_size {
             overlayfs.stage_size_bytes = Some(value.0);
         }
+        if let Some(value) = args.overlayfs.recording {
+            overlayfs.recording = value;
+        }
         if let Some(value) = args.overlayfs.durability {
             overlayfs.durability = value;
         }
     }
 
+    if let Some(overlayfs) = &config.overlayfs {
+        overlayfs
+            .recording
+            .validate(overlayfs.durability)
+            .map_err(anyhow::Error::msg)?;
+    }
     let enables_overlaynet = !args.overlaynet.overlaynet_allow.is_empty()
         || !args.overlaynet.overlaynet_deny.is_empty()
         || !args.overlaynet.overlaynet_limit.is_empty()
@@ -3180,6 +3193,7 @@ fn resolve_overlay(
     let merged_dir = overlayfs.merged_dir.clone();
     Ok(Some(OverlayHint {
         durability: Some(overlayfs.durability),
+        recording: Some(overlayfs.recording),
         execution_snapshot: None,
         access_policy: overlayfs.access_policy.clone(),
         lower_dirs: compose,
@@ -3383,6 +3397,54 @@ mod tests {
     }
 
     #[test]
+    fn stage_recording_requires_ephemeral_and_survives_config_and_hint() {
+        use pvisor_core::overlay::{StageDurability, StageRecording};
+        for durability in ["checkpoint", "strict"] {
+            let mut config = RunConfig::default();
+            let args = preset_args(&[
+                "--stage-durability",
+                durability,
+                "--stage-recording",
+                "off",
+                "--",
+                "true",
+            ]);
+            assert!(
+                apply_cli(&mut config, args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires ephemeral")
+            );
+        }
+        let mut config = RunConfig::default();
+        apply_cli(
+            &mut config,
+            preset_args(&[
+                "--stage-durability",
+                "ephemeral",
+                "--stage-recording",
+                "off",
+                "--",
+                "true",
+            ]),
+        )
+        .unwrap();
+        let settings = config.overlayfs.as_ref().unwrap();
+        assert_eq!(settings.recording, StageRecording::Off);
+        assert_eq!(settings.durability, StageDurability::Ephemeral);
+        let encoded = serde_json::to_string(settings).unwrap();
+        let decoded: OverlayFsSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.recording, StageRecording::Off);
+        let temp = tempfile::tempdir().unwrap();
+        let hint = resolve_overlay(&config, temp.path(), &temp.path().join("stage"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(hint.recording, Some(StageRecording::Off));
+        assert_eq!(OverlayFsSettings::default().recording, StageRecording::On);
+        assert!("disabled".parse::<StageRecording>().is_err());
+    }
+
+    #[test]
     fn stage_durability_defaults_to_checkpoint_and_accepts_strict_override() {
         use pvisor_core::overlay::StageDurability;
         let args = preset_args(&[
@@ -3400,6 +3462,32 @@ mod tests {
         );
         assert!("unsupported".parse::<StageDurability>().is_err());
     }
+    #[test]
+    fn ephemeral_stage_durability_survives_frontend_override() {
+        use pvisor_core::overlay::StageDurability;
+        let args = preset_args(&[
+            "--stage",
+            "/tmp/ephemeral-stage",
+            "--stage-durability",
+            "ephemeral",
+            "--",
+            "true",
+        ]);
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, args).unwrap();
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().durability,
+            StageDurability::Ephemeral
+        );
+        let encoded =
+            serde_json::to_string(&config.overlayfs.as_ref().unwrap().durability).unwrap();
+        assert_eq!(encoded, "\"ephemeral\"");
+        assert_eq!(
+            serde_json::from_str::<StageDurability>(&encoded).unwrap(),
+            StageDurability::Ephemeral
+        );
+    }
+
     use super::*;
 
     fn prepared_workspace_config(root: &Path, workspace: &Path) -> RunConfig {

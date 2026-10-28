@@ -58,3 +58,18 @@ port and transport restrictions still apply.
 An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.
+
+## Stage durability
+
+`overlay::StageDurability` defaults to `Checkpoint`; `Strict` additionally persists
+first-mutation observations. Explicit `Ephemeral` omits the automatic completion
+data drain and offers no durable stage, apply, checkpoint or execution reuse.
+It retains isolation, observation records and workload-requested synchronization.
+This setting is not a global switch for all runtime or audit persistence.
+
+### Optional stage observation recording
+
+`StageRecording::{On, Off}` is serialized as `on`/`off`; omission defaults to
+`On`. `OverlayConfig.recording = Off` requires `StageDurability::Ephemeral`.
+It disables only per-file observations for apply/recovery. Normal file I/O,
+access checks, explicit fsync, execution results and audit records remain.

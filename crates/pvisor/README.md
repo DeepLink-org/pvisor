@@ -1613,3 +1613,32 @@ unvalidated compatibility record escapes the call. The digest fields, selected
 firmware path, boot identity and restore checks stay unchanged. This is
 not a metadata-only cache or deferred validation. Existing snapshot compatibility
 records and file-selection/error contracts remain unchanged.
+
+## Optional ephemeral stage completion
+
+`OverlayHint.durability = Some(StageDurability::Ephemeral)` opts a fresh stage
+into completion without a durable upper/preimage tree drain. Runtime teardown
+still stops all writers, validates observations and records the result, but
+uses `stage::complete` and never publishes a durable seal for this policy.
+The retained `Staged` record describes lifecycle state, not crash durability;
+consumers requiring durable artifacts must continue to call `require_sealed`.
+Auto-apply is rejected before stage preparation. Stopped and live logical
+checkpoints reject this policy before copying; execution-checkpoint sealing and
+Attempt reuse also reject it. Read-only inspection and discard remain available.
+Normal `Checkpoint`/`Strict` behavior and all offload safety barriers are unchanged.
+This removes only automatic stage completion synchronization: preimage hashing,
+explicit workload fsync, normal I/O, and metadata/audit persistence remain.
+
+### Disposable stages without per-file recovery records
+
+Set `OverlayHint.recording = Some(pvisor_core::StageRecording::Off)` together
+with `durability = Some(StageDurability::Ephemeral)`. The frontend equivalent is
+`[overlayfs] durability = "ephemeral"` and `recording = "off"`. Omission preserves
+all existing recording, including ephemeral's original observation validation.
+
+The runtime keeps a private stage-policy path in host and native VM configs while
+Core omits the observation journal and its fingerprints/preimages. It rejects
+invalid combinations before stage preparation, retains normal output and audit
+records, and rejects apply/auto-apply, logical/native checkpoint and stage reuse.
+Explicit file/directory fsync, isolation, result validation and live RAM offload
+safety are unchanged. No runtime memory/offload policy is modified.

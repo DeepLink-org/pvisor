@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 pub use crate::file_access::{FileAccessContext, FileAccessDecision, FileAccessPolicy};
 
-/// Persistence boundary for an owned stage. This does not change isolation or
-/// content-based apply conflict detection.
+/// Persistence boundary for an owned stage. Isolation is unchanged; ephemeral
+/// stages cannot be applied, checkpointed or reopened for execution.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StageDurability {
@@ -19,6 +19,10 @@ pub enum StageDurability {
     Checkpoint,
     /// Persist each first mutation's observation before changing the upper.
     Strict,
+    /// Retain ordinary writes and, by default, observations; omit automatic completion
+    /// data drain. No crash recovery, apply, checkpoint or stage reuse is offered.
+    /// Explicit workload fsync and live RAM offload safety are unchanged.
+    Ephemeral,
 }
 
 impl std::str::FromStr for StageDurability {
@@ -27,7 +31,8 @@ impl std::str::FromStr for StageDurability {
         match value {
             "checkpoint" => Ok(Self::Checkpoint),
             "strict" => Ok(Self::Strict),
-            _ => Err("stage durability must be checkpoint or strict".into()),
+            "ephemeral" => Ok(Self::Ephemeral),
+            _ => Err("stage durability must be checkpoint, strict or ephemeral".into()),
         }
     }
 }
@@ -359,6 +364,40 @@ mod unix_paths {
     }
 }
 
+/// Optional first-observation records for stage apply/recovery. Normal file I/O,
+/// access checks and explicit workload fsync are independent of this setting.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StageRecording {
+    /// Record observations as before (including in ephemeral stages).
+    #[default]
+    On,
+    /// Omit observation journals and their fingerprints; requires ephemeral.
+    Off,
+}
+
+impl StageRecording {
+    /// Reject unsupported combinations before admitting writers or creating a stage.
+    pub fn validate(self, durability: StageDurability) -> Result<(), &'static str> {
+        if self == Self::Off && durability != StageDurability::Ephemeral {
+            Err("stage recording off requires ephemeral durability")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl std::str::FromStr for StageRecording {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err("stage recording must be on or off".into()),
+        }
+    }
+}
+
 /// Filesystem overlay settings (same capture TOML; applied by pVisor).
 ///
 /// Model: **target** (read-only base / apply destination) + **staging** (upper
@@ -369,6 +408,9 @@ mod unix_paths {
 pub struct OverlayConfig {
     #[serde(default)]
     pub durability: StageDurability,
+    /// Per-file observation recording; off is accepted only with ephemeral.
+    #[serde(default)]
+    pub recording: StageRecording,
     #[serde(default)]
     pub access_policy: FileAccessPolicy,
     /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
