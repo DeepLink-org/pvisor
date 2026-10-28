@@ -1,6 +1,6 @@
 # Offload file formats
 
-[Design](index.md) · [File byte-layout SVG](../../../zh/design/offload/assets/overview.svg)
+[Design](index.md) · [File byte-layout SVG](../../assets/diagrams/design/offload/overview.svg)
 
 ## 1. Motivation {#motivation}
 
@@ -101,7 +101,7 @@ N<=8192 and the reader limits k to 1,000,000. Manifest size grows with pathname 
 
 ### Manifest: binary envelope with a JSON descriptor
 
-![Manifest bytes and head record](../../../zh/design/offload/assets/manifest-layout.svg)
+![Manifest bytes and head record](../../assets/diagrams/design/offload/manifest-layout.svg)
 
 #### Exact byte layout
 
@@ -152,7 +152,7 @@ This is a semantic representation, not JSON serialization. All record lengths mu
 
 ### Generation: frames, seek table, JSON index and footer
 
-![Generation byte layout](../../../zh/design/offload/assets/generation-layout.svg)
+![Generation byte layout](../../assets/diagrams/design/offload/generation-layout.svg)
 
 #### Offsets
 
@@ -246,7 +246,7 @@ Each seek-table frame must have 1..66560 input bytes (64 KiB plus 1024) and 1..6
 
 ### Other files
 
-![Raw file and sparse-page layouts](../../../zh/design/offload/assets/raw-and-staging-layout.svg)
+![Raw file and sparse-page layouts](../../assets/diagrams/design/offload/raw-and-staging-layout.svg)
 
 | File | Internal bytes | Independent restore? |
 |---|---|---|

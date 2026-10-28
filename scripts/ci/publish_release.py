@@ -130,7 +130,7 @@ def github_publish(directory: Path, version: str, repository: str, tag: str) -> 
                 "The generated Homebrew formula is attached as `pvisor.rb`; the "
                 "project tap is updated when configured and after Homebrew acceptance.\n\n"
                 "Corresponding firmware sources are attached. See the "
-                "[installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/) "
+                "[installation guide](https://deeplink-org.github.io/pvisor/start/installation/) "
                 "for platform and virtualization requirements.",
                 "--latest",
                 "--title",

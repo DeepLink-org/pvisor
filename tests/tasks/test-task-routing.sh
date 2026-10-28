@@ -347,6 +347,8 @@ check_line python3 scripts/packaging/stage_wheel_binaries.py --profile release -
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 PVISOR_TASK_TEST_BAD_BUILD=1 run docs-serve en -a 127.0.0.1:3002
 check_line uv run --locked --only-group dev zensical serve -f docs/zensical.en.toml -a 127.0.0.1:3002
 grep -Fq 'continuing live preview' "$work/stderr"
+run docs-serve
+check_line uv run --locked --only-group dev zensical serve -f docs/zensical.en.toml
 PVISOR_TASK_TEST_BAD_DOCS_PREFLIGHT=1 expect_failure docs-build
 {
   command_line python3 benchmark/docs.py check

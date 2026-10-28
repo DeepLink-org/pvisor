@@ -53,7 +53,7 @@ N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样�
 | QEMU q35 | 0.099 [0.095–0.101] | 0.058 [0.055–0.059] | 3.170 [3.160–3.288] |
 | QEMU microvm | 0.133 [0.132–0.143] | 0.055 [0.055–0.056] | 3.433 [3.350–4.858] |
 
-![三个完整任务的逐轮完成时间](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg)
+![三个完整任务的逐轮完成时间](../assets/benchmarks/filesystem-layered-references/workflow-rounds.svg)
 
 散点为独立环境，连线为对应轮次中位数。各任务分别判断，不合成总分；普通可变工作区不会因重复访问自动取得 Immutable lower 缓存资格。
 
@@ -95,11 +95,11 @@ N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样�
 
 单位 ms，同样累计三轮并包含最终同步。逻辑操作数不等于 guest→host 请求数。
 
-![请求粒度与工作、同步完成吞吐](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg)
+![请求粒度与工作、同步完成吞吐](../assets/benchmarks/filesystem-layered-references/write-request-size.svg)
 
 两个粒度是实测锚点，连线不表示中间粒度已测。
 
-![全部机制的工作与同步完成耗时比](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
+![全部机制的工作与同步完成耗时比](../assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
 同批 Native 中位数为 1，越小越短；这是描述性水位，不是确认性加速比。
 
@@ -138,7 +138,7 @@ N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样�
 <details markdown="1">
 <summary>查看工作集、并发曲线与失败明细</summary>
 
-![工作集和 worker 数下的完成吞吐与失败](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg)
+![工作集和 worker 数下的完成吞吐与失败](../assets/benchmarks/filesystem-layered-references/resource-workers.svg)
 
 | 模式 | 负载 | 环境 | 结果 |
 | --- | --- | --- | --- |
@@ -199,6 +199,6 @@ Firecracker、QEMU q35、QEMU microvm 共用未修改的官方 stock 内核、�
 
 ### 来源与复现 {#run}
 
-[全部分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [失败与缺失](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[全部分层统计](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [失败与缺失](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../assets/benchmarks/filesystem-layered-references/provenance.json)
 
 2026-10-25，源码 `9e1b8f15`，基于 main `92a4ce4e`。完整原始记录、冻结工具、二进制与固件、预检失败和派生图表保留在本地 `benchmark/filesystem/.data/user-rebase-20261025-c/`；此前公开材料也已归档。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md#user-workloads) · [缓存与异步写工程分析](../lab-notes/filesystem-io-performance-analysis.md)。工程开关归因不用于补齐用户数据。

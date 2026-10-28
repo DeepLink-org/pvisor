@@ -1,7 +1,7 @@
 # Contributing to PolicyVisor
 
 Thanks for helping. This page is the short version; the full guide is
-[community/contributing](https://deeplink-org.github.io/pvisor/en/community/contributing/).
+[community/contributing](https://deeplink-org.github.io/pvisor/community/contributing/).
 
 ## Before you start
 
@@ -42,7 +42,7 @@ mise run lint             # clippy and ruff
 mise run docs-build       # build and check the documentation site
 ```
 
-See [development](https://deeplink-org.github.io/pvisor/en/community/development/)
+See [development](https://deeplink-org.github.io/pvisor/community/development/)
 for platform setup (FUSE/macFUSE, KVM/HVF, OCI runtimes).
 
 ### Local tool overrides
@@ -90,7 +90,7 @@ an approval:
   snapshots are human-only maintainer actions.
 
 Run `mise run cases -- --suite stage` for the STAGE domain and `mise run semspec -- lint docs/src/zh/cases` for the
-specifications. Details: [testing](https://deeplink-org.github.io/pvisor/en/community/testing/).
+specifications. Details: [testing](https://deeplink-org.github.io/pvisor/community/testing/).
 
 ## Pull requests
 

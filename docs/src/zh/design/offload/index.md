@@ -34,7 +34,7 @@ VMM 以 `MAP_SHARED` 映射文件，vCPU 和 virtio 设备继续通过原有地�
 
 每个非均匀的 64 KiB 块独立使用 zstd level 1 压缩，并通过 seek table 定位。零块和其他均匀字节块只保存 fill。读取一个块不需要解压整个 RAM，但当前解码粒度仍是完整块。
 
-磁盘目录、逐文件大小、schema 和字节图见[文件格式](disk-layout-and-schema.md)。[SVG 全集](assets/overview.svg)展开 manifest、generation、原始 RAM、staging 和 pin 的内部结构。
+磁盘目录、逐文件大小、schema 和字节图见[文件格式](disk-layout-and-schema.md)。[SVG 全集](../../assets/diagrams/design/offload/overview.svg)展开 manifest、generation、原始 RAM、staging 和 pin 的内部结构。
 
 ## 3. 关键数据和核心机制详细设计 {#detailed-design}
 

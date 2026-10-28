@@ -109,12 +109,13 @@ class LiveTableTests(unittest.TestCase):
 
 def write_locale_configs(docs):
     for locale in ("en", "zh"):
+        suffix = "zh/" if locale == "zh" else ""
         (docs / f"zensical.{locale}.toml").write_text(
-            f'[project]\ndocs_dir = "src/{locale}"\nsite_dir = "site/{locale}"\n'
-            f'site_url = "https://example.org/pvisor/{locale}/"\n'
+            f'[project]\ndocs_dir = "src/{locale}"\nsite_dir = "site/{suffix}"\n'
+            f'site_url = "https://example.org/pvisor/{suffix}"\n'
             'nav = ["index.md", "start/what-is-pvisor.md"]\n'
             "[project.extra]\nalternate = [\n"
-            '{lang = "en", link = "https://example.org/pvisor/en/"},\n'
+            '{lang = "en", link = "https://example.org/pvisor/"},\n'
             '{lang = "zh", link = "https://example.org/pvisor/zh/"}]\n'
         )
 
@@ -125,27 +126,25 @@ def _make_generated_site(tmp_path, resources):
     write_locale_configs(tmp_path)
     site = tmp_path / "site"
     site.mkdir()
-    entry = '<html lang="en"><a href="zh/">中文</a><a href="en/">English</a></html>'
-    (tmp_path / "index.html").write_text(entry)
-    (site / "index.html").write_text(entry)
     for locale in ("en", "zh"):
+        suffix = "zh/" if locale == "zh" else ""
         for route in ("", "start/what-is-pvisor/", "why/", "start/first-run/"):
             source_path = "why/index.md" if route == "why/" else route.rstrip("/") + ".md"
             source = tmp_path / "src" / locale / (source_path if route else "index.md")
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("# Example {#shared}\n")
-            dest = site / locale / route / "index.html"
+            dest = site / suffix / route / "index.html"
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(
                 f'<html lang="{locale}"><h1 id="shared">Example</h1>'
                 '<div class="admonition tip">Tip</div><pre>example</pre>'
                 + "".join(
-                    f'<a class="md-select__link" href="https://example.org/pvisor/{lang}/{route}">{lang}</a>'
+                    f'<a class="md-select__link" href="https://example.org/pvisor/{"zh/" if lang == "zh" else ""}{route}">{lang}</a>'
                     for lang in ("en", "zh")
                 )
-                + f'<a class="md-nav__link" href="/pvisor/{locale}/">Home</a></html>'
+                + f'<a class="md-nav__link" href="/pvisor/{suffix}">Home</a></html>'
             )
-        (site / locale / "search.json").write_text(
+        (site / suffix / "search.json").write_text(
             json.dumps(
                 {
                     "config": {"lang": [locale]},
@@ -420,12 +419,12 @@ class DocsTests(unittest.TestCase):
         assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
         for locale, config in configs.items():
             assert config["docs_dir"] == f"src/{locale}"
-            assert config["site_dir"] == f"site/{locale}"
-            assert config["site_url"] == published_root + locale + "/"
+            assert config["site_dir"] == ("site/zh" if locale == "zh" else "site")
+            assert config["site_url"] == published_root + ("zh/" if locale == "zh" else "")
             assert config["theme"]["language"] == locale
             assert config["plugins"]["search"]["lang"] == [locale]
             assert {alt["lang"]: alt["link"] for alt in config["extra"]["alternate"]} == {
-                lang: published_root + lang + "/" for lang in ("en", "zh")
+                lang: published_root + ("zh/" if lang == "zh" else "") for lang in ("en", "zh")
             }
             navigation = pages(config["nav"])
             assert len(navigation) == len(set(navigation))
@@ -433,16 +432,6 @@ class DocsTests(unittest.TestCase):
                 assert (ROOT / "docs" / config["docs_dir"] / path).is_file()
             assert "redirects" not in config["plugins"]
             assert "redirect_maps" not in (ROOT / f"docs/zensical.{locale}.toml").read_text()
-
-    def test_root_current_language_entry(self):
-        entry = ROOT / "docs/index.html"
-        parser = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["Page"](entry)
-        assert not parser.redirect
-        from urllib.parse import urljoin
-
-        published_root = "https://deeplink-org.github.io/pvisor/"
-        links = {urljoin(published_root, href) for tag, href, _ in parser.links if tag == "a"}
-        assert {published_root + locale + "/" for locale in ("en", "zh")} <= links
 
     def test_generated_site_check_rejects_success_without_articles(self):
         with workspace() as (tmp_path, resources):
@@ -464,12 +453,16 @@ class DocsTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "article not rendered: en/index.md"):
                 checker()
 
-    def test_generated_site_accepts_only_locale_configs_and_copied_current_entry(self):
+    def test_generated_site_accepts_english_at_root_and_chinese_under_zh(self):
         with workspace() as (tmp_path, resources):
             generated_site = _make_generated_site(tmp_path, resources)
             docs, checker = generated_site
             assert not (docs / "zensical.toml").exists()
             checker()
+            page = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["Page"]
+            assert page(docs / "site/index.html").language == "en"
+            assert page(docs / "site/zh/index.html").language == "zh"
+            assert not (docs / "site/en").exists()
 
     def test_generated_site_derives_published_root_from_locale_urls(self):
         with workspace() as (tmp_path, resources):
@@ -497,21 +490,27 @@ class DocsTests(unittest.TestCase):
             ("redirect_maps", "legacy redirect plugin is forbidden"),
             ("redirect_page", "meta refresh redirect is forbidden"),
             ("root_redirect", "meta refresh redirect is forbidden"),
-            ("root_not_copied", "root index.html must be copied"),
+            ("root_source", "root homepage must be generated"),
+            ("site_dir", "site_dir must publish English at root"),
+            ("english_prefix", "site_url must be the published site root"),
             ("root_old_entry", "missing current zh language entry"),
             ("site_url", "site_url must be an absolute published locale URL"),
             ("alternate", "alternate links must use absolute published locale URLs"),
             ("raw_data", "raw .data evidence included"),
             ("language", "html lang=zh, expected en"),
+            ("root_language", "html lang=zh, expected en"),
             ("search_language", "missing native locale search index"),
             ("search_target", "search result leaves locale"),
+            ("search_escape", "search result leaves locale"),
             ("search_anchor", "search result anchor missing"),
             ("selector_origin", "language selector leaves published site"),
             ("selector_relative", "language selector must use an absolute published URL"),
             ("selector_article", "language selector loses current article"),
             ("navigation_locale", "navigation changes language"),
+            ("zh_navigation_locale", "navigation changes language"),
             ("breadcrumb_locale", "breadcrumb leaves current language"),
             ("missing_link", "missing a missing/"),
+            ("unpublished_asset", "img leaves published site"),
             ("missing_anchor", "missing anchor #missing"),
             ("callout", "missing rendered callout"),
             ("code_block", "missing rendered code block"),
@@ -523,7 +522,7 @@ class DocsTests(unittest.TestCase):
 
                     docs, checker = generated_site
                     config = docs / "zensical.en.toml"
-                    article = docs / "site/en/start/what-is-pvisor/index.html"
+                    article = docs / "site/start/what-is-pvisor/index.html"
                     entry = docs / "site/index.html"
 
                     def replace(path, old, new):
@@ -559,18 +558,27 @@ class DocsTests(unittest.TestCase):
                         page = article if mutation == "redirect_page" else entry
                         with page.open("a") as stream:
                             stream.write('<meta http-equiv="Refresh" content="0; url=en/">')
-                        if mutation == "root_redirect":
-                            (docs / "index.html").write_bytes(entry.read_bytes())
-                    elif mutation == "root_not_copied":
-                        entry.write_text(entry.read_text() + "\n")
-                    elif mutation == "root_old_entry":
-                        replace(entry, 'href="zh/"', 'href="legacy/"')
+                    elif mutation == "root_source":
                         (docs / "index.html").write_bytes(entry.read_bytes())
+                    elif mutation == "site_dir":
+                        replace(config, 'site_dir = "site/"', 'site_dir = "site/en"')
+                    elif mutation == "english_prefix":
+                        replace(
+                            config,
+                            'site_url = "https://example.org/pvisor/"',
+                            'site_url = "https://example.org/pvisor/en/"',
+                        )
+                    elif mutation == "root_old_entry":
+                        replace(
+                            entry,
+                            'href="https://example.org/pvisor/zh/"',
+                            'href="https://example.org/pvisor/legacy/"',
+                        )
                     elif mutation == "site_url":
                         replace(
                             config,
-                            'site_url = "https://example.org/pvisor/en/"',
-                            'site_url = "/pvisor/en/"',
+                            'site_url = "https://example.org/pvisor/"',
+                            'site_url = "/pvisor/"',
                         )
                     elif mutation == "alternate":
                         replace(
@@ -579,17 +587,21 @@ class DocsTests(unittest.TestCase):
                             'link = "/pvisor/zh/"',
                         )
                     elif mutation == "raw_data":
-                        (docs / "site/en/.data").mkdir()
+                        (docs / "site/.data").mkdir()
                     elif mutation == "language":
                         replace(article, 'lang="en"', 'lang="zh"')
+                    elif mutation == "root_language":
+                        replace(entry, 'lang="en"', 'lang="zh"')
                     elif mutation.startswith("search_"):
-                        search = docs / "site/en/search.json"
+                        search = docs / "site/search.json"
                         index = json.loads(search.read_text())
                         if mutation == "search_language":
                             index["config"]["lang"] = ["zh"]
+                        elif mutation == "search_escape":
+                            index["items"][0]["location"] = "../"
                         else:
                             index["items"][0]["location"] = (
-                                "../zh/" if mutation == "search_target" else "#missing"
+                                "zh/" if mutation == "search_target" else "#missing"
                             )
                         search.write_text(json.dumps(index))
                     elif mutation.startswith("selector_"):
@@ -601,12 +613,18 @@ class DocsTests(unittest.TestCase):
                         }[mutation]
                         replace(article, old, new)
                     elif mutation == "navigation_locale":
-                        replace(article, 'href="/pvisor/en/"', 'href="/pvisor/zh/"')
+                        replace(article, 'href="/pvisor/"', 'href="/pvisor/zh/"')
+                    elif mutation == "zh_navigation_locale":
+                        replace(
+                            docs / "site/zh/start/what-is-pvisor/index.html",
+                            'href="/pvisor/zh/"',
+                            'href="/pvisor/"',
+                        )
                     elif mutation == "breadcrumb_locale":
                         replace(
                             article,
-                            'class="md-nav__link" href="/pvisor/en/"',
-                            'class="md-path__link" href="/pvisor/"',
+                            'class="md-nav__link" href="/pvisor/"',
+                            'class="md-path__link" href="/pvisor/zh/"',
                         )
                     elif mutation in ("missing_link", "missing_anchor"):
                         with article.open("a") as stream:
@@ -615,15 +633,19 @@ class DocsTests(unittest.TestCase):
                                 + ("missing/" if mutation == "missing_link" else "#missing")
                                 + '">Broken</a>'
                             )
+                    elif mutation == "unpublished_asset":
+                        (docs / "unpublished.svg").write_text("<svg/>")
+                        with article.open("a") as stream:
+                            stream.write('<img src="../../../unpublished.svg">')
                     elif mutation == "callout":
                         replace(
-                            docs / "site/en/why/index.html",
+                            docs / "site/why/index.html",
                             'class="admonition tip"',
                             'class="plain"',
                         )
                     elif mutation == "code_block":
                         replace(
-                            docs / "site/en/start/first-run/index.html",
+                            docs / "site/start/first-run/index.html",
                             "<pre>example</pre>",
                             "example",
                         )

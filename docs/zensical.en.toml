@@ -2,10 +2,10 @@
 [project]
 site_name = "PolicyVisor"
 site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
-site_url = "https://deeplink-org.github.io/pvisor/en/"
+site_url = "https://deeplink-org.github.io/pvisor/"
 docs_dir = "src/en"
 watch = ["src/en/benchmarks", "semspec_tables.py"]
-site_dir = "site/en"
+site_dir = "site"
 cache_dir = ".cache/en"
 dev_addr = "127.0.0.1:3001"
 repo_name = "DeepLink-org/pvisor"
@@ -240,7 +240,7 @@ accent = "custom"
 
 [[project.extra.alternate]]
 name = "English"
-link = "https://deeplink-org.github.io/pvisor/en/"
+link = "https://deeplink-org.github.io/pvisor/"
 lang = "en"
 
 [[project.extra.alternate]]

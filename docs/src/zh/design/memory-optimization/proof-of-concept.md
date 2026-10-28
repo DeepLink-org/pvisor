@@ -79,13 +79,13 @@ SHA-256("PVRES1\0\0" || decoded_length:u64_le || decoded_bytes)
 
 第一张图展开同一个 64 KiB 块的 GPA、HVA、宿主 backing 和文件 offset。本机一个块覆盖四个 16 KiB 宿主页：驻留时它们来自文件映射；Cold 时 GPA 解映射、HVA 替换为匿名 `PROT_NONE`；恢复后 HVA 不变，但 backing 已是私有匿名 RAM。原文件的洞不会被重新填成当前 RAM。
 
-![GPA、HVA、宿主页与原文件的实际映射关系](assets/memory-mapping.svg)
+![GPA、HVA、宿主页与原文件的实际映射关系](../../assets/diagrams/design/memory-optimization/memory-mapping.svg)
 
 图中的 P / Q 只表示 backing 页，不是已测 PFN，也不保证物理连续或始终驻留。文件映射及其页缓存不是两份独立 RAM；虚拟范围也不等于已经分配了相同大小的物理页。
 
 第二张图展开池进程的普通堆分配：内容索引和各连接的 token 表引用同一个 Arc 对象；对象包含 ID、长度和 Payload，Zstd / Raw 字节由单独的 `Box<[u8]>` 分配保存。runner 只持 token 与 ID，经过 Unix socket 传输原始块，没有直接映射池 payload。
 
-![共享池堆对象、临时缓冲和磁盘文件关系](assets/pool-and-files.svg)
+![共享池堆对象、临时缓冲和磁盘文件关系](../../assets/diagrams/design/memory-optimization/pool-and-files.svg)
 
 当前没有专用 slab / arena，不能把小编码对象画成紧密占满一组宿主页。对象布局也没有固定 Rust ABI：图只列字段及真实分配关系，不给出未经验证的 struct offset。文件树中只有 socket 端点、各 VM 原 backing 和可选诊断 JSON；压缩对象没有磁盘文件，诊断 JSON 不是 manifest。
 

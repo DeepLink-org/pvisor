@@ -96,8 +96,8 @@ Example, from startup latency:
   macro, `benchmark/docs.json` or a `*.render.json` file.
 
 ```bash
-mise run docs-serve         # native Chinese preview on 127.0.0.1:3000
-mise run docs-serve -- en      # native English preview on 127.0.0.1:3001
+mise run docs-serve         # native English preview on 127.0.0.1:3001
+mise run docs-serve -- zh      # native Chinese preview on 127.0.0.1:3000
 mise run docs-serve -- zh -a 127.0.0.1:3002
 mise run docs-build         # clean-build both languages and validate generated pages
 mise run docs-build -- --require-recorded  # same build with CI's strict translation check
@@ -153,22 +153,25 @@ semspec build failures warn and continue with an existing renderer when availabl
 `docs-build` explicitly disables live mode and retains strict checks.
 
 Zensical has one theme language and search index per project. Keep exactly two
-native configurations: `zensical.zh.toml` and `zensical.en.toml`, building each
-locale directly into `site/zh` and `site/en`. `docs/index.html` is a small static
-language selector copied unchanged to the published root; it needs no third
-Zensical project. Builds start with a clean `docs/site/` to remove stale outputs.
+native configurations: `zensical.zh.toml` and `zensical.en.toml`, building
+English directly into `site/` and Chinese into `site/zh/`. English is the published
+root homepage; Chinese remains available at `/zh/`. Build English first, then
+Chinese, so cleaning the root output cannot erase the Chinese build. Do not add
+a static language landing page or rewrite generated HTML. Builds start with a
+clean `docs/site/` to remove stale outputs.
 Both locale configurations own their translated navigation and native search.
 The language selector keeps the current article. Published pages retain absolute
 published-site language links. On loopback hosts (`127.0.0.1`, `localhost`, or
 `[::1]`), the theme's `alternate.js` points the menu to the local preview and
 preserves the current section anchor. Run both native servers in separate
-terminals to preview unpublished translations. Use adjacent ports: Chinese on N,
+terminals to preview unpublished translations, starting English before Chinese
+because English cleans the root output. Use adjacent ports: Chinese on N,
 English on N + 1. The defaults are 3000 and 3001; for example:
 
 ```bash
-mise run docs-serve -- zh -a 127.0.0.1:3040
-# In another terminal:
 mise run docs-serve -- en -a 127.0.0.1:3041
+# In another terminal:
+mise run docs-serve -- zh -a 127.0.0.1:3040
 ```
 
 Both processes must remain running for language switching to work. A single
@@ -176,6 +179,9 @@ locale server does not serve the other language. Stop both previews before
 `mise run docs-build`, which clears their shared output directory, then restart them.
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
+Local asset links must stay within the published output. Put diagrams shared by
+both languages in `overrides/assets/diagrams/`, and link to their locale's
+`assets/diagrams/` copy instead of reaching into the other source tree.
 
 `docs/overrides/home.html` overrides the native content block for the full-width
 homepage. The header, mobile drawer, sidebars and table of contents remain
@@ -192,8 +198,8 @@ regression tests and `mise run docs-build -- --require-recorded` before uploadin
 `docs/src/zh/` and `docs/src/en/` contain the complete locale source trees and
 their product homepages. `docs/overrides/assets/` holds shared static resources
 that Zensical publishes natively in each project. The `docs/` root holds site
-infrastructure — the two locale TOML files, the static `index.html` language
-selector, `translations.json`, `overrides/`, and this file. Keep each document next to what it serves: tool and
+infrastructure — the two locale TOML files, `translations.json`, `overrides/`,
+and this file. Keep each document next to what it serves: tool and
 specification documents live with their tool (for example `tools/semspec/DESIGN.md`),
 and user-facing protocol pages belong in the site's `reference/` tree, not at the
 `docs/` root. `docs/site/` is generated output; never edit it by hand.
@@ -491,7 +497,7 @@ versions, claims and limitations before recording. This revision file is not a
 semspec approval ledger and never replaces human semantic approval.
 
 Maintain matching navigation paths in `zensical.zh.toml` and `zensical.en.toml`.
-The root navigation links to both locale homepages. Update incoming links and navigation
+The English root homepage and Chinese `/zh/` homepage link to both languages. Update incoming links and navigation
 when moving an article; do not add historical redirects. Documented pages become searchable in both
 languages together. Do not fill
 missing measurements, audit results or maintainer decisions with inferred claims;

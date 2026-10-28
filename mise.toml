@@ -151,9 +151,8 @@ python3 scripts/check-reference.py
 python3 scripts/check-docs.py --preflight-build
 cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec"
 rm -rf docs/site
-PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
 PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.en.toml
-cp docs/index.html docs/site/index.html
+PVISOR_DOCS_LIVE=0 PYTHONPATH="$MISE_PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="$CARGO_TARGET_DIR/semspec/debug/semspec" uv run --locked --only-group dev zensical build --clean --strict -f docs/zensical.zh.toml
 python3 scripts/check-docs.py "$@"
 '''
 
@@ -162,7 +161,7 @@ description = "本地 zh/en 预览；其余参数传给 Zensical"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -lt 1 ]]; then set -- "$@" zh; fi
+if [[ $# -lt 1 ]]; then set -- "$@" en; fi
 case "$1" in
   zh|en) config="docs/zensical.$1.toml" ;;
   *) echo "expected zh or en, got: $1" >&2; exit 2 ;;

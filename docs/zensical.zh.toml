@@ -240,7 +240,7 @@ accent = "custom"
 
 [[project.extra.alternate]]
 name = "English"
-link = "https://deeplink-org.github.io/pvisor/en/"
+link = "https://deeplink-org.github.io/pvisor/"
 lang = "en"
 
 [[project.extra.alternate]]

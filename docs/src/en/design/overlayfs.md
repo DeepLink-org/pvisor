@@ -117,7 +117,7 @@ Freeze/reset stops intake, drains requests, publishes completions and joins work
 
 ### Files and their actual relationships {#disk-layout}
 
-![OverlayCore physical directories, files and projection relationships](../../zh/design/assets/overlaycore-layout.svg)
+![OverlayCore physical directories, files and projection relationships](../assets/diagrams/design/overlaycore-layout.svg)
 
 Figure annotations are in Chinese.
 
