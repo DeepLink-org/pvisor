@@ -34,7 +34,7 @@ Immutable generations avoid overwriting data still being read. Publication makes
 
 Each nonuniform 64 KiB block is independently compressed at zstd level 1 and located through a seek table. Uniform blocks, including zero, use fill entries. Reading one block does not decode all RAM, although the current decoder still processes a complete block.
 
-[File formats](disk-layout-and-schema.md) specifies directories, sizes, schemas and byte diagrams. The [SVG atlas](../../../zh/design/offload/assets/overview.svg) expands manifest, generation, raw RAM, staging and pin bytes. Shared SVG labels are currently Chinese; field descriptions are provided here in English.
+[File formats](disk-layout-and-schema.md) specifies directories, sizes, schemas and byte diagrams. The [SVG atlas](../../assets/diagrams/design/offload/overview.svg) expands manifest, generation, raw RAM, staging and pin bytes. Shared SVG labels are currently Chinese; field descriptions are provided here in English.
 
 ## 3. Detailed data and mechanisms {#detailed-design}
 

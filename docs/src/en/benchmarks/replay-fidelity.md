@@ -40,7 +40,7 @@ This independent cohort measures one fixed synthetic trajectory (task 0) per ada
 
 {{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
 
-[Hyperfine data CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
+[Hyperfine data CSV](../assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
 
 ### Scope {#acceptance}
 

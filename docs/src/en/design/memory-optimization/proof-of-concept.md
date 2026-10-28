@@ -79,13 +79,13 @@ A `BTreeMap` indexes objects, serialized by one pool mutex. Hashing, duplicate c
 
 The first figure expands one 64 KiB block across GPA, HVA, host backing and file offset. On the experiment machine it spans four 16 KiB host pages. Resident blocks use file-backed mappings; Cold blocks have no GPA mapping and their HVA range becomes anonymous `PROT_NONE`. Restoration preserves HVA but replaces backing with private anonymous RAM. Holes in the original file are not refilled with current RAM.
 
-![Actual GPA, HVA, host-page and original-file mappings](../../../zh/design/memory-optimization/assets/memory-mapping.svg)
+![Actual GPA, HVA, host-page and original-file mappings](../../assets/diagrams/design/memory-optimization/memory-mapping.svg)
 
 Figure annotations are in Chinese. P/Q denote backing pages, not measured PFNs, with no guarantee of physical contiguity or continuous residency. A file mapping and its page cache are not two independent RAM copies. A virtual range does not imply an equal physical allocation.
 
 The second figure expands ordinary pool-process heap allocations. The content index and per-connection token maps reference one Arc object containing ID, length and Payload. Zstd/Raw bytes live in a separate `Box<[u8]>` allocation. Runners hold tokens and IDs, transmitting raw blocks over Unix sockets without directly mapping pool payload.
 
-![Pool heap objects, transient buffers and disk files](../../../zh/design/memory-optimization/assets/pool-and-files.svg)
+![Pool heap objects, transient buffers and disk files](../../assets/diagrams/design/memory-optimization/pool-and-files.svg)
 
 There is no dedicated slab/arena, so small encoded objects cannot be drawn as densely filling host pages. Rust struct ABI is not fixed either: the figure lists fields and actual allocation relationships, without unverified struct offsets. Disk entries consist of the socket endpoint, each VM's original backing and optional diagnostic JSON. Compressed objects have no disk files, and diagnostic JSON is not a manifest.
 

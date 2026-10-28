@@ -118,7 +118,7 @@ shape CSV、shape 配对比、parameters CSV 和独立诊断 counters CSV 保存
 
 S02先在setup中完整构建100个C单元，任务时钟只含每轮真实等量修改、单元重编译、链接、执行校验及最终同步。S03包含本地解包、128个小文件、32 MiB的1 KiB流写、发布前全字节核对、文件/目录同步和原子发布。高熵模式生成位于工作时钟内；准备、后续验证和退出单列。这里的SDK任务时间不代表普通CLI启动或完整项目首次构建。
 
-![三个完整任务的逐轮工作与同步完成时间](../../../overrides/assets/benchmarks/filesystem-workloads-v2/workflow-times.svg)
+![三个完整任务的逐轮工作与同步完成时间](../assets/benchmarks/filesystem-workloads-v2/workflow-times.svg)
 
 #### 机制：小写受益，大写与读控制存在成本
 
@@ -139,7 +139,7 @@ S02先在setup中完整构建100个C单元，任务时钟只含每轮真实等�
 
 小写合并空间与收益一致，大写已经达到1 MiB协议粒度，附加缓存、复制、调度或同步成本尚未分解。读控制点约2%–3%的退化及M03的小差异也保留，不从多个N3区间挑出胜点推导总体改善。M05/M08使用固定块置换`(405i+113) mod 1024`全覆盖，仅作为乱序访问锚点，不是独立均匀随机抽样。M09三个时间比为0.281/0.832/0.823，变异很大；WRITE数不变，不能说跨文件合并已生效。
 
-![机制负载逐轮配对耗时比](../../../overrides/assets/benchmarks/filesystem-workloads-v2/mechanism-normalized-time.svg)
+![机制负载逐轮配对耗时比](../assets/benchmarks/filesystem-workloads-v2/mechanism-normalized-time.svg)
 
 独立N1计数覆盖每个case的三轮、setup、验证和退出，包含S02首次完整编译，不能当作任务阶段计数或物理磁盘I/O。下列协议写字节不等于Rust行内逻辑字节；工具子进程亦会发出写入。
 
@@ -161,7 +161,7 @@ M11三轮累计同步完成时间下降76.7%，但首轮前台读时间比为1.2
 | R2 | 5.617→4.709 | 0.949 [0.819, 1.056] | 76.7% |
 | R3 | 6.562→4.748 | 0.740 [0.724, 0.759] | 83.7% |
 
-![混合任务前台读与同步完成时间分开](../../../overrides/assets/benchmarks/filesystem-workloads-v2/mixed-foreground-vs-completion.svg)
+![混合任务前台读与同步完成时间分开](../assets/benchmarks/filesystem-workloads-v2/mixed-foreground-vs-completion.svg)
 
 #### 资源边界：工作集增大后，同步负担变重
 
@@ -178,11 +178,11 @@ M11三轮累计同步完成时间下降76.7%，但首轮前台读时间比为1.2
 
 四worker下，候选三轮最终同步时间中位数由230.5升至4,048.2 ms，完成时间收益收窄。N1中R04的WRITE为3,365，少于R02的4,057，因此请求数不能单独解释耗时。640 MiB工作集还比128 MiB保留5倍最终字节，重复覆盖和实际同步工作也改变；这些点不能证明纯guest缓存容量效应。dirty/reclaim、队列占用与物理写量未知，不宣称稳态或饱和。
 
-![固定工作量下的资源四点吞吐](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-throughput.svg)
+![固定工作量下的资源四点吞吐](../assets/benchmarks/filesystem-workloads-v2/resource-throughput.svg)
 
-![整个环境的CPU和采样内存成本](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-environment-cost.svg)
+![整个环境的CPU和采样内存成本](../assets/benchmarks/filesystem-workloads-v2/resource-environment-cost.svg)
 
-![首轮worker 0写入返回进度](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-worker-submission.svg)
+![首轮worker 0写入返回进度](../assets/benchmarks/filesystem-workloads-v2/resource-worker-submission.svg)
 
 进度表示worker 0的pwrite返回，不是四worker总进度或host应用前缀。CPU与采样memory.current包含setup、验证和退出，不能给出精确工作阶段占比或guest RAM offload收益。host只独立验证最终保留状态，并核对OverlayFS标记；不据此推导中间状态落盘或掉电耐久。
 

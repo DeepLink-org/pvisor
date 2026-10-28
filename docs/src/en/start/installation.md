@@ -77,6 +77,15 @@ Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstal
 
 ### Homebrew and native downloads {#native-downloads}
 
+Install from the [project Homebrew tap](https://github.com/DeepLink-org/Formula):
+
+```bash
+brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
+brew install DeepLink-org/formula/pvisor
+```
+
+The explicit repository URL is required because the tap is named `Formula`, rather than `homebrew-formula`. The tap contains package metadata; binaries come from GitHub Releases. Update with `brew update` and `brew upgrade DeepLink-org/formula/pvisor`.
+
 To install without Python, download the native archive for your platform and `SHA256SUMS` from [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases). Verify and extract the archive, add its `bin` directory to `PATH`, and keep its files together. Replace the complete directory when upgrading.
 
 See the [release guide](../community/releasing.md#one-time-setup) for Homebrew tap publication requirements and configuration.
@@ -90,7 +99,7 @@ write permission for group and other users before testing:
 
 ```bash
 chmod go-w "$(brew --cellar)"
-brew test DeepLink-org/pvisor/pvisor
+brew test DeepLink-org/formula/pvisor
 ```
 
 This changes that directory's permissions, without recursing into installed

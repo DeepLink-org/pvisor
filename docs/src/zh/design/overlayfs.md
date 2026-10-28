@@ -102,7 +102,7 @@ freeze/reset 停止接收、排空在途请求、发布完成并 join worker；�
 
 ### 文件布局与实际关系 {#disk-layout}
 
-![OverlayCore 的物理目录、文件与映射关系](assets/overlaycore-layout.svg)
+![OverlayCore 的物理目录、文件与映射关系](../assets/diagrams/design/overlaycore-layout.svg)
 
 ```text
 <compose lower 0>/ … <compose lower n>/   只读组合层，前者优先

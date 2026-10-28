@@ -53,7 +53,7 @@ N=3 median [minimum–maximum], seconds; three dependent rounds are not nine ind
 | QEMU q35 | 0.099 [0.095–0.101] | 0.058 [0.055–0.059] | 3.170 [3.160–3.288] |
 | QEMU microvm | 0.133 [0.132–0.143] | 0.055 [0.055–0.056] | 3.433 [3.350–4.858] |
 
-![Per-round completion for three complete tasks](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg)
+![Per-round completion for three complete tasks](../assets/benchmarks/filesystem-layered-references/workflow-rounds.svg)
 
 Points are independent environments; lines are corresponding-round medians. Tasks are assessed separately without a composite score. Repeated access does not give an ordinary mutable workspace Immutable-lower cache eligibility.
 
@@ -95,11 +95,11 @@ Milliseconds, N=3 medians of three-round completion sums. Sequential writes tota
 
 Milliseconds, three-round sums including final synchronization. Logical operation counts are not guest-to-host request counts.
 
-![Request size versus work and synchronized completion throughput](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg)
+![Request size versus work and synchronized completion throughput](../assets/benchmarks/filesystem-layered-references/write-request-size.svg)
 
 The two sizes are measured anchors; connecting lines do not establish intermediate sizes.
 
-![Work and synchronized completion relative to Native](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
+![Work and synchronized completion relative to Native](../assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
 Native's same-cohort median is 1, lower is faster. These are descriptive levels, not confirmatory speedups.
 
@@ -138,7 +138,7 @@ Seconds, N=3 medians of three-round completion sums. Every round writes a logica
 <details markdown="1">
 <summary>Working-set plots and failures</summary>
 
-![Completion throughput and failures by working set and workers](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg)
+![Completion throughput and failures by working set and workers](../assets/benchmarks/filesystem-layered-references/resource-workers.svg)
 
 | Mode | Workload | Environment | Outcome |
 | --- | --- | --- | --- |
@@ -199,6 +199,6 @@ Earlier seven-tool, five-mode and nine-mode results retain their original scopes
 
 ### Evidence and reproduction {#run}
 
-[All workload levels](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Failures and missing observations](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [Provenance](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[All workload levels](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Failures and missing observations](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [Provenance](../assets/benchmarks/filesystem-layered-references/provenance.json)
 
 2026-10-25, source `9e1b8f15`, based on main `92a4ce4e`. Full raw observations, frozen tools/binaries/firmware, failed preflights and derived plots remain locally in `benchmark/filesystem/.data/user-rebase-20261025-c/`; the previous public materials are archived there too. [Reproduction](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md#user-workloads) · [Cache and asynchronous-write engineering analysis](../lab-notes/filesystem-io-performance-analysis.md). Engineering attribution does not fill missing user results.

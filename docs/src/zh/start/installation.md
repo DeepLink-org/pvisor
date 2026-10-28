@@ -77,6 +77,15 @@ python -m pip uninstall pvisor-sandbox
 
 ### Homebrew 与原生下载包 {#native-downloads}
 
+从[项目 Homebrew tap](https://github.com/DeepLink-org/Formula) 安装：
+
+```bash
+brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
+brew install DeepLink-org/formula/pvisor
+```
+
+tap 仓库名为 `Formula`，而不是 `homebrew-formula`，因此添加时需要指定完整 URL。tap 只包含软件包元数据，二进制从 GitHub Releases 下载。升级时运行 `brew update` 和 `brew upgrade DeepLink-org/formula/pvisor`。
+
 不使用 Python 安装时，可从 [GitHub Releases](https://github.com/DeepLink-org/pvisor/releases) 下载对应平台的原生归档及 `SHA256SUMS`。校验后解压，将 `bin` 加入 `PATH`，并保持其中的文件在一起；升级时替换完整目录。
 
 Homebrew tap 的发布条件与配置见[发布指南](../community/releasing.md#one-time-setup)。
@@ -88,7 +97,7 @@ root 拥有、带 sticky bit 的目录（如 `/tmp`）除外。Homebrew 的 Cell
 
 ```bash
 chmod go-w "$(brew --cellar)"
-brew test DeepLink-org/pvisor/pvisor
+brew test DeepLink-org/formula/pvisor
 ```
 
 此命令只修改 Cellar 目录本身的权限，不递归修改已安装的软件包。

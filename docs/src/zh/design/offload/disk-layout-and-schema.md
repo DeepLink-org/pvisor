@@ -1,6 +1,6 @@
 # offload 文件格式
 
-[设计说明](index.md) · [文件内部布局 SVG](assets/overview.svg)
+[设计说明](index.md) · [文件内部布局 SVG](../../assets/diagrams/design/offload/overview.svg)
 
 ## 1. Motivation {#motivation}
 
@@ -106,7 +106,7 @@ N 最大 8192，k 的读端预算最大 1,000,000。manifest 不会随着 RAM L 
 
 ### manifest：二进制 envelope＋JSON descriptor
 
-![manifest 字节布局、head record 与 magic 逐字节展开](assets/manifest-layout.svg)
+![manifest 字节布局、head record 与 magic 逐字节展开](../../assets/diagrams/design/offload/manifest-layout.svg)
 
 #### 精确字节布局
 
@@ -159,7 +159,7 @@ HeadRecord { magic, logical_bytes: u64, head_id: [u8;32], checksum: [u8;32] }
 
 ### `.pvdelta`：payload＋seek table＋JSON index＋footer
 
-![generation 字节布局、seek table 和 footer 展开](assets/generation-layout.svg)
+![generation 字节布局、seek table 和 footer 展开](../../assets/diagrams/design/offload/generation-layout.svg)
 
 #### offset 与 footer
 
@@ -255,7 +255,7 @@ seek table 中每个 frame 的输入必须为 1..66560 字节（64 KiB＋1024）
 
 ### 其他文件
 
-![原始 RAM、staging、pin、逻辑文件与 alias 的实际内容](assets/raw-and-staging-layout.svg)
+![原始 RAM、staging、pin、逻辑文件与 alias 的实际内容](../../assets/diagrams/design/offload/raw-and-staging-layout.svg)
 
 | 文件 | 内部布局 | 是否可独立恢复 RAM |
 |---|---|---|

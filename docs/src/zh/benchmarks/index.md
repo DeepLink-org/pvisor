@@ -76,7 +76,7 @@ Markdown 保留面向用户的表格，仅为必要的用户统计提供共享 C
 
 ### 来源与复现 {#run}
 
-[九配置分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[九配置分层统计](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [来源摘要](../assets/benchmarks/filesystem-layered-references/provenance.json)
 
 其他主题的完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
 

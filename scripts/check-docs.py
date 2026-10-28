@@ -235,6 +235,11 @@ def check(strict=False):
         issues.append("only the two native locale configurations are allowed")
     navigation = {}
     published_sites = {}
+    locale_dirs = {"en": ROOT, "zh": ROOT / "zh"}
+
+    def page_locale(path):
+        return "zh" if path.is_relative_to(locale_dirs["zh"]) else "en"
+
     for locale, config in configs.items():
         locale_source = ROOT.parent / config["docs_dir"]
         navigation[locale] = list(nav_pages(config["nav"]))
@@ -252,28 +257,33 @@ def check(strict=False):
         if (
             url.scheme not in ("http", "https")
             or not url.netloc
-            or not url.path.endswith(f"/{locale}/")
+            or not url.path.endswith("/")
+            or url.query
+            or url.fragment
         ):
             issues.append(f"{locale}: site_url must be an absolute published locale URL")
+        if (ROOT.parent / config["site_dir"]).resolve() != locale_dirs[locale].resolve():
+            issues.append(f"{locale}: site_dir must publish English at root and Chinese under zh/")
     if navigation["en"] != navigation["zh"]:
         issues.append("locale navigation article paths do not match")
-    published = published_sites["en"]._replace(path=published_sites["en"].path.removesuffix("en/"))
+    published = published_sites["en"]
+    if published.path.endswith(("/en/", "/zh/")):
+        issues.append("en: site_url must be the published site root")
     for locale, config in configs.items():
-        if published_sites[locale] != published._replace(path=published.path + locale + "/"):
+        suffix = "zh/" if locale == "zh" else ""
+        if published_sites[locale] != published._replace(path=published.path + suffix):
             issues.append(f"{locale}: site_url does not share the published site root")
         if {alt["lang"]: alt["link"] for alt in config["extra"]["alternate"]} != {
-            lang: published._replace(path=published.path + lang + "/").geturl()
+            lang: published._replace(path=published.path + ("zh/" if lang == "zh" else "")).geturl()
             for lang in ("en", "zh")
         }:
             issues.append(f"{locale}: alternate links must use absolute published locale URLs")
     entry = ROOT / "index.html"
     entry_source = ROOT.parent / "index.html"
-    if (
-        not entry_source.is_file()
-        or not entry.is_file()
-        or entry.read_bytes() != entry_source.read_bytes()
-    ):
-        issues.append("root index.html must be copied from docs/index.html")
+    if entry_source.exists():
+        issues.append(
+            "root homepage must be generated from the English article, not docs/index.html"
+        )
     if entry.resolve() in pages:
         entry_links = {
             urljoin(published.geturl(), href)
@@ -281,7 +291,7 @@ def check(strict=False):
             if tag == "a"
         }
         for locale in ("en", "zh"):
-            if published._replace(path=published.path + locale + "/").geturl() not in entry_links:
+            if published_sites[locale].geturl() not in entry_links:
                 issues.append(f"root index.html: missing current {locale} language entry")
     for path, page in pages.items():
         if page.redirect:
@@ -291,9 +301,11 @@ def check(strict=False):
         for article in (source / locale).rglob("*.md"):
             if ".data" in article.parts:
                 continue
-            relative = article.relative_to(source).with_suffix("")
+            relative = article.relative_to(source / locale).with_suffix("")
             target = (
-                ROOT / (relative.parent if relative.name == "index" else relative) / "index.html"
+                locale_dirs[locale]
+                / (relative.parent if relative.name == "index" else relative)
+                / "index.html"
             )
             article_paths.add(target.resolve())
             if target.resolve() not in pages:
@@ -304,20 +316,24 @@ def check(strict=False):
         raise SystemExit("\n".join(sorted(set(issues))))
 
     for locale in ("en", "zh"):
-        index = json.loads((ROOT / locale / "search.json").read_text())
+        index = json.loads((locale_dirs[locale] / "search.json").read_text())
         if index["config"]["lang"] != [locale] or not index["items"]:
             issues.append(f"{locale}: missing native locale search index")
         for item in index["items"]:
             url = urlsplit(item["location"])
-            dest = (ROOT / locale / unquote(url.path) / "index.html").resolve()
-            if not dest.is_relative_to(ROOT / locale) or dest not in pages:
+            dest = (locale_dirs[locale] / unquote(url.path) / "index.html").resolve()
+            if (
+                not dest.is_relative_to(locale_dirs[locale])
+                or page_locale(dest) != locale
+                or dest not in pages
+            ):
                 issues.append(f"{locale}: search result leaves locale: {item['location']}")
             elif url.fragment and unquote(url.fragment) not in pages[dest].ids:
                 issues.append(f"{locale}: search result anchor missing: {item['location']}")
     for path, page in pages.items():
         rel = path.relative_to(ROOT)
-        locale = rel.parts[0] if rel.parts[0] in ("en", "zh") else None
-        if locale and page.language != locale:
+        locale = page_locale(path)
+        if page.language != locale:
             issues.append(f"{rel}: html lang={page.language}, expected {locale}")
         for tag, href, classes in page.links:
             url = urlsplit(href)
@@ -351,35 +367,34 @@ def check(strict=False):
             )
             if dest.is_dir():
                 dest /= "index.html"
+            if not dest.is_relative_to(ROOT):
+                issues.append(f"{rel}: {tag} leaves published site: {href}")
+                continue
             # A 404 has no matching article and returns to the language homepage.
             if path in article_paths and "md-select__link" in classes and dest.is_relative_to(ROOT):
-                target_rel = dest.relative_to(ROOT)
-                if target_rel.parts[1:] != rel.parts[1:]:
+                target_rel = dest.relative_to(locale_dirs[page_locale(dest)])
+                if target_rel != path.relative_to(locale_dirs[locale]):
                     issues.append(f"{rel}: language selector loses current article: {href}")
             if not dest.exists():
                 issues.append(f"{rel}: missing {tag} {href}")
             elif url.fragment and dest in pages and unquote(url.fragment) not in pages[dest].ids:
                 issues.append(f"{rel}: missing anchor {href}")
             if (
-                locale
-                and (
-                    "md-tabs__link" in classes
-                    or "md-nav__link" in classes
-                    or "md-logo" in classes
-                    or "md-path__link" in classes
-                )
-                and dest.is_relative_to(ROOT)
-            ):
-                dest_locale = dest.relative_to(ROOT).parts[0]
-                if dest_locale in ("en", "zh") and dest_locale != locale:
+                "md-tabs__link" in classes
+                or "md-nav__link" in classes
+                or "md-logo" in classes
+                or "md-path__link" in classes
+            ) and dest.is_relative_to(ROOT):
+                dest_locale = page_locale(dest)
+                if dest_locale != locale:
                     issues.append(f"{rel}: navigation changes language: {href}")
                 if "md-path__link" in classes and dest_locale != locale:
                     issues.append(f"{rel}: breadcrumb leaves current language: {href}")
     for locale in ("en", "zh"):
-        why = (ROOT / locale / "why/index.html").read_text()
+        why = (locale_dirs[locale] / "why/index.html").read_text()
         if 'class="admonition' not in why:
             issues.append(f"{locale}/why/index: missing rendered callout")
-        first_run = (ROOT / locale / "start/first-run/index.html").read_text()
+        first_run = (locale_dirs[locale] / "start/first-run/index.html").read_text()
         if "<pre" not in first_run:
             issues.append(f"{locale}/start/first-run: missing rendered code block")
     issues.extend(check_duplicates(source))

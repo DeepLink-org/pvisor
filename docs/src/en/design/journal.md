@@ -29,7 +29,7 @@ Position offset is a zero-based record ordinal, not a byte offset or observation
 
 ### Disk file and in-memory indexes {#disk-layout}
 
-![Journal JSONL byte layout, indexes and file relationships](../../zh/design/assets/journal-layout.svg)
+![Journal JSONL byte layout, indexes and file relationships](../assets/diagrams/design/journal-layout.svg)
 
 Figure annotations are in Chinese.
 

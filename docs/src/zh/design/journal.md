@@ -29,7 +29,7 @@ position 的 offset 是从 0 开始的记录序号，不是字节 offset，也�
 
 ### 磁盘文件与内存索引 {#disk-layout}
 
-![Journal JSONL 字节布局、索引与文件关系](assets/journal-layout.svg)
+![Journal JSONL 字节布局、索引与文件关系](../assets/diagrams/design/journal-layout.svg)
 
 ```text
 <recording destination>/

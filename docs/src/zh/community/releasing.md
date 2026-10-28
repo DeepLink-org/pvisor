@@ -32,8 +32,8 @@ Python 源码分发包（sdist）不在发布集中。
    macOS 托管的 Apple Silicon runner 不支持嵌套虚拟化，因此执行安装 smoke
    检查。无需注册自托管 runner。
 
-4. 如需自动发布 Homebrew，先创建项目自有的 `DeepLink-org/homebrew-pvisor` tap 并初始化一次提交。
-   设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/homebrew-pvisor`，以及仅对此 tap
+4. 如需自动发布 Homebrew，使用项目自有的 [`DeepLink-org/Formula`](https://github.com/DeepLink-org/Formula) tap。
+   设置仓库变量 `HOMEBREW_TAP_REPOSITORY=DeepLink-org/Formula`，以及仅对此 tap
    拥有 Contents 写权限的 secret `HOMEBREW_TAP_TOKEN`。变量未配置时跳过 tap 更新，
    仍生成配方并运行 macOS Homebrew 安装测试。安装、命令定位及 `brew test` 通过后，
    工作流才提交 `Formula/pvisor.rb`，不注册或启动系统服务。

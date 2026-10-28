@@ -76,7 +76,7 @@ Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four 
 
 ### Sources and reproduction {#run}
 
-[Nine-mode layered statistics](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[Nine-mode layered statistics](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Provenance summary](../assets/benchmarks/filesystem-layered-references/provenance.json)
 
 Complete CSV/JSON and raw records for other topics remain in their local cohorts or the documentation data archive.
 

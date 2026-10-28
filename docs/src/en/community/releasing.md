@@ -26,7 +26,7 @@ The release set contains Linux x86_64 and Apple Silicon macOS wheels, native `.t
    acceptance; macOS runs installation smoke checks because hosted Apple Silicon
    runners do not support nested virtualization. No self-hosted runner is required.
 
-4. For automatic Homebrew publication, create the project-owned `DeepLink-org/homebrew-pvisor` tap with an initial commit. Set repository variable `HOMEBREW_TAP_REPOSITORY` to `DeepLink-org/homebrew-pvisor` and secret `HOMEBREW_TAP_TOKEN` to a token with Contents write access to that tap only. When the variable is absent, tap publication is skipped; formula generation and the macOS Homebrew installation test still run. The release workflow commits `Formula/pvisor.rb` only after installation, command discovery and `brew test` pass. No service is registered or started.
+4. For automatic Homebrew publication, use the project-owned [`DeepLink-org/Formula`](https://github.com/DeepLink-org/Formula) tap. Set repository variable `HOMEBREW_TAP_REPOSITORY` to `DeepLink-org/Formula` and secret `HOMEBREW_TAP_TOKEN` to a token with Contents write access to that tap only. When the variable is absent, tap publication is skipped; formula generation and the macOS Homebrew installation test still run. The release workflow commits `Formula/pvisor.rb` only after installation, command discovery and `brew test` pass. No service is registered or started.
 
 No PyPI API token is stored in GitHub. A pending publisher can create the project on the first successful upload but does not reserve its name.
 

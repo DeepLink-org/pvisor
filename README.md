@@ -43,11 +43,18 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/in
 ```
 
 Stable and nightly GitHub Releases include native archives and SHA-256 checksums.
-The stable workflow generates a Homebrew formula and can update the project tap
-after its [one-time setup](docs/src/en/community/releasing.md#one-time-setup).
+Install with Homebrew from the [project tap](https://github.com/DeepLink-org/Formula):
+
+```bash
+brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
+brew install DeepLink-org/formula/pvisor
+```
+
+The stable workflow generates a Homebrew formula and can update the tap after
+its [one-time setup](docs/src/en/community/releasing.md#one-time-setup).
 
 Platform requirements and executor setup are covered in the
-[installation guide](https://deeplink-org.github.io/pvisor/en/start/installation/).
+[installation guide](https://deeplink-org.github.io/pvisor/start/installation/).
 
 Run an installed Agent CLI from your project directory:
 
@@ -237,7 +244,7 @@ wheels install without a kernel build toolchain.
 - [CLI reference](docs/src/en/reference/cli.md): commands and configuration
 - [Architecture](docs/src/en/design/architecture.md): component boundaries and execution flow
 - [Experimental features](docs/src/en/design/experimental/index.md): stages and validation gates
-- [中文文档](https://deeplink-org.github.io/pvisor/zh/start/first-run/)
+- [中文文档](https://deeplink-org.github.io/pvisor/zh/)
 
 Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports:
 [SECURITY.md](SECURITY.md).

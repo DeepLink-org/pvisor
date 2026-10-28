@@ -118,7 +118,7 @@ Times below are medians across three environments after summing synchronization-
 
 S02 fully builds 100 C units during setup; task timing covers a real equal edit each round, unit recompilation, relinking, execution checks, and final synchronization. S03 includes local extraction, 128 small files, a 32-MiB stream written in one-KiB requests, complete prepublication byte checks, file/directory synchronization, and atomic publication. High-entropy pattern generation is inside work timing; preparation, subsequent validation, and exit are separate. These SDK task times do not represent ordinary-CLI startup or a whole project's initial build.
 
-![Per-round work and synchronization-completed times for three complete tasks](../../../overrides/assets/benchmarks/filesystem-workloads-v2/workflow-times.svg)
+![Per-round work and synchronization-completed times for three complete tasks](../assets/benchmarks/filesystem-workloads-v2/workflow-times.svg)
 
 #### Mechanisms: small writes benefit, with costs for large writes and read controls
 
@@ -139,7 +139,7 @@ S02 fully builds 100 C units during setup; task timing covers a real equal edit 
 
 Small-write merging opportunity aligns with the benefit. Large writes already reach the one-MiB protocol granularity; additional caching, copying, scheduling, and synchronization costs have not been separated. The approximately 2%–3% read-control regressions and M03's small difference remain visible; selecting wins across many N3 intervals cannot establish an overall improvement. M05/M08 cover every block through the fixed permutation `(405i+113) mod 1024`, providing nonsequential anchors rather than independent uniform random samples. M09's three time ratios are 0.281/0.832/0.823, showing substantial variation; unchanged WRITE counts do not support cross-file merging.
 
-![Per-round paired mechanism time ratios](../../../overrides/assets/benchmarks/filesystem-workloads-v2/mechanism-normalized-time.svg)
+![Per-round paired mechanism time ratios](../assets/benchmarks/filesystem-workloads-v2/mechanism-normalized-time.svg)
 
 Separate N1 counters cover each case's three rounds, setup, validation, and exit, including S02's initial full compilation. They are not task-phase counts or physical disk I/O. Protocol write bytes below differ from Rust's explicit logical counters; tool subprocesses also issue writes.
 
@@ -161,7 +161,7 @@ M11's three-round synchronization-completed time falls 76.7%, but the first-roun
 | R2 | 5.617→4.709 | 0.949 [0.819, 1.056] | 76.7% |
 | R3 | 6.562→4.748 | 0.740 [0.724, 0.759] | 83.7% |
 
-![Foreground-read and synchronization-completed times shown separately](../../../overrides/assets/benchmarks/filesystem-workloads-v2/mixed-foreground-vs-completion.svg)
+![Foreground-read and synchronization-completed times shown separately](../assets/benchmarks/filesystem-workloads-v2/mixed-foreground-vs-completion.svg)
 
 #### Resource boundaries: synchronization grows with the working set
 
@@ -178,11 +178,11 @@ Increasing candidate workers from one to four changes median three-round complet
 
 At four workers, the candidate's median three-round final-sync sum rises from 230.5 to 4,048.2 ms as completed-time benefit shrinks. N1 WRITE is 3,365 for R04, fewer than R02's 4,057, so request counts alone cannot explain elapsed time. A 640-MiB working set also retains five times the final bytes of 128 MiB, changing repeated-overwrite and synchronization work; these points do not isolate a pure guest-cache-capacity effect. Dirty/reclaim activity, queue occupancy, and physical write volume are unknown. Neither steady state nor saturation is established.
 
-![Resource-anchor throughput at fixed logical work](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-throughput.svg)
+![Resource-anchor throughput at fixed logical work](../assets/benchmarks/filesystem-workloads-v2/resource-throughput.svg)
 
-![Whole-environment CPU and sampled-memory costs](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-environment-cost.svg)
+![Whole-environment CPU and sampled-memory costs](../assets/benchmarks/filesystem-workloads-v2/resource-environment-cost.svg)
 
-![First-round worker-zero write-return progress](../../../overrides/assets/benchmarks/filesystem-workloads-v2/resource-worker-submission.svg)
+![First-round worker-zero write-return progress](../assets/benchmarks/filesystem-workloads-v2/resource-worker-submission.svg)
 
 Progress means pwrite returns to worker zero, not aggregate four-worker progress or host-applied bytes. CPU and sampled memory.current include setup, validation, and exit, preventing exact work-phase shares or guest-RAM-offload claims. Host checks independently verify final retained state and OverlayFS markers; they do not establish intermediate persistence or power-loss durability.
 
