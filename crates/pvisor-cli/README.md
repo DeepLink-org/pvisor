@@ -572,3 +572,41 @@ while it is unshared. The temporary descriptors are closed immediately; no exist
 FD, reserved runner destination or resource limit changes. Preparation failure is
 nonfatal so a low descriptor limit does not disable host Jobs. A failed later VM
 FD duplication retains its normal error. Other platforms keep their existing path.
+
+## Optional ephemeral Job stages
+
+For disposable jobs that do not need apply or checkpoint/restart recovery:
+
+```bash
+pvisor spawn --stage /path/to/fresh-stage --stage-durability ephemeral -- COMMAND
+```
+
+The equivalent configuration is `[overlayfs] durability = "ephemeral"`.
+The default remains `checkpoint`; `strict` remains available. Ephemeral completion
+retains ordinary output and validates observations, but omits the automatic
+upper/preimage tree sync. It publishes a volatile marker instead of a durable
+seal. Apply (including auto-apply), logical/execution checkpoints, and reuse
+for another Attempt are unsupported. Read-only inspection does not certify
+post-crash output. Use a new stage for each job.
+
+Guest fsync, normal writes, preimage hashing, audit/Job metadata persistence and
+RAM offload writeback are unchanged. This is a stage completion option, not a
+global persistence-off switch. Any comparison must disclose the reduced stage
+guarantee and use the same binary/input for the two durability settings; no
+performance or cross-runtime fairness claim follows from enabling it.
+
+To also omit execution-time observations used for apply/recovery:
+
+```bash
+pvisor spawn --stage /path/to/fresh-stage --stage-durability ephemeral \
+  --stage-recording off -- COMMAND
+```
+
+`--stage-recording on|off` defaults to `on`; `off` requires `ephemeral`, including
+when settings come from TOML. The equivalent config is `[overlayfs]` with
+`durability = "ephemeral"` and `recording = "off"`. This skips per-file journals
+and their fingerprints, not ordinary writes, explicit fsync, image integrity
+checks, execution results or audit logs. Outputs remain inspectable, but cannot
+be applied, checkpointed or reused. Existing ephemeral behavior is unchanged
+without this additional option. No performance benefit has yet been measured
+for recording-off mode.

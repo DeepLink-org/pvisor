@@ -2308,6 +2308,52 @@ impl OverlayFs {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn unrecorded_ephemeral_explicit_sync_reaches_file_and_propagates_errors() {
+        use pvisor_overlay_core::{
+            OverlayCore,
+            stage::{self, StageDurability, StageRecording},
+        };
+        use std::os::fd::OwnedFd;
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let journal = root.path().join("preimages");
+        stage::begin_with_recording(&journal, StageDurability::Ephemeral, StageRecording::Off)
+            .unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![lower],
+            root.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        let service = Arc::new(FilesystemService::new(core));
+        let file = service
+            .create_file(Path::new("result"), 0o600, libc::O_RDWR)
+            .unwrap();
+        let mut lease = FileIoLease {
+            file: Arc::new(file),
+            core: service,
+            path: "result".into(),
+            backing: root.path().join("upper/result"),
+            profile: Default::default(),
+        };
+        assert_eq!(lease.write(0, b"correct result", 0).unwrap(), 14);
+        lease.sync(false).unwrap();
+        lease.sync(true).unwrap();
+        assert_eq!(lease.read(0, 14).unwrap(), b"correct result");
+        assert!(!journal.join("entries").exists());
+        // A socket is not fsync-able. If disabling journals accidentally bypasses
+        // the backing syscall, this must fail instead of silently succeeding.
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd: OwnedFd = socket.into();
+        lease.file = Arc::new(File::from(fd));
+        assert!(lease.sync(false).is_err());
+        assert!(lease.sync(true).is_err());
+    }
+
+    #[test]
     fn file_io_lease_keeps_the_descriptor_alive_after_handle_removal_and_unlink() {
         let root = tempfile::tempdir().unwrap();
         let lower = root.path().join("lower");

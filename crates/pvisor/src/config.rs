@@ -466,6 +466,8 @@ pub enum FilesystemMode {
 pub struct OverlayFsSettings {
     /// First-mutation fsyncs (strict), or durable checkpoint/completion boundaries.
     pub durability: pvisor_core::overlay::StageDurability,
+    /// Per-file observation records; off requires ephemeral durability.
+    pub recording: pvisor_core::overlay::StageRecording,
     /// Optional fixed read generation for a fresh native VM workspace stage.
     /// The live `run.workspace` remains the apply destination. CLI workers must
     /// authenticate the workspace catalog and hold its lease through teardown;
@@ -506,6 +508,7 @@ impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
             durability: Default::default(),
+            recording: Default::default(),
             prepared_workspace: None,
             access_policy: Default::default(),
             mount: Vec::new(),

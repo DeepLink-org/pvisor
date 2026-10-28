@@ -488,3 +488,13 @@ Copy-up and apply contracts are documented in
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 - [Review and apply effects](../../docs/src/zh/guides/review-apply.md)
 - [`pvisor`](../pvisor/README.md)
+
+## Ephemeral observation recording
+
+The shared Core honors the explicit stage recording policy while retaining the
+private metadata path. With recording off, file I/O leases still call the native
+file fsync/datasync after the now-empty journal drain. The adapter contract test
+checks correct write/read output and verifies that a non-fsync-able descriptor
+still returns an error; disabling records must never turn fsync into success
+without executing the backing operation. Mounted FUSE/real Guest acceptance is
+separate from this in-process test.
