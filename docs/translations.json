@@ -65,7 +65,7 @@
   "design/operations-events.md": "0e4177d25a57353e5b0d5fa9039a4ff3a89042dcc4431efa0d8cea5e008ade42",
   "design/overlayfs.md": "2b97aebda5ec1ec9e2cee4e39934a30b19813318750a7aa33e10144770647cc0",
   "design/overlaynet.md": "7522fc2cd2a1862e3004309847b6b1b0c0ecdb4150598dd738d9259c28bd4a33",
-  "design/principles.md": "af5bf7de57bdf26b41fad889037af0b21f4dbdc23a526b18c5f8408147bc977f",
+  "design/principles.md": "0799339d40c013ddf9561d8b5ed2ceba87651fcb07ad54bb84e170d8920e0fd7",
   "design/records-and-versions.md": "d7a8ead6a9ec5ac8452b6959d2e5b1e1306479dd76554f84618d30c9f774c57d",
   "design/replay.md": "5cd8ece736489805f49513a661ffbdb779cada228512f80ad905f6411f48f6e9",
   "design/research/agent-lifecycle-cost.md": "501b11b437fbe7a4d523816f8abe61ba3539674c53774baa0b61cd06628d2a0a",
