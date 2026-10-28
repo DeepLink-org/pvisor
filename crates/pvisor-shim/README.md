@@ -313,7 +313,11 @@ regression, not a mystery.
   allowlist; allow-by-default keeps the network public with deny rules,
   where allow entries are redundant — deny rules win and the default
   already admits everything else — and are dropped at compilation instead
-  of failing the policy). The 3-second gate window only spans the
+  of failing the policy). Rule targets use the sidecar contract's
+  `host[:port]` form — a port scopes the compiled rule to that port, the
+  same split the `io.pvisor.vm.network.allow` annotation applies. The gate
+  file is unlinked on the workload task's delete and on sandbox shutdown,
+  so teardown on any path leaves no residue in `/run`. The 3-second gate window only spans the
   sidecar's Create, which kubelet issues milliseconds after the workload's
   Start. The gate stays a live channel for the task's lifetime: a runner
   thread re-reads it and hot-swaps the compiled overlaynet policy on every

@@ -96,6 +96,10 @@ pub struct TaskEntry {
     /// VM tasks: bridged injection ports whose `/run/pvisor-bridge-*`
     /// sockets must be unlinked when the task goes away.
     pub bridge_ports: Vec<u16>,
+    /// VM tasks with an egress sidecar: the sandbox-scoped gate file the
+    /// sidecar publishes and the runner's policy watcher re-reads. The task
+    /// delete path unlinks it so teardown on any path leaves no residue.
+    pub egress_gate: Option<PathBuf>,
 }
 
 impl TaskEntry {
@@ -120,6 +124,7 @@ impl TaskEntry {
             exit: None,
             execs: HashMap::new(),
             bridge_ports: Vec::new(),
+            egress_gate: None,
         }
     }
 

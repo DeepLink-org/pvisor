@@ -271,23 +271,33 @@ fn identity(user: &str) -> io::Result<(u32, u32, Vec<u32>)> {
     Ok((uid, gid, additional))
 }
 
+/// The passwd home directory of `uid`, or the filesystem root when the
+/// image ships no matching entry — the same defaulting semantics Docker
+/// applies when the environment omits HOME. Malformed lines never match.
+pub(crate) fn default_home(uid: u32, passwd: &str) -> &str {
+    passwd
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<_> = line.split(':').collect();
+            // `then`, not `then_some`: the index must only be evaluated for
+            // well-formed lines.
+            (fields.len() >= 6 && fields[2].parse::<u32>().ok() == Some(uid)).then(|| fields[5])
+        })
+        .unwrap_or("/")
+}
+
 fn command(config: &GuestConfig) -> io::Result<Command> {
     let mut command = config.command()?;
     let options = config.process.clone().unwrap_or_default();
     let identity = options.user.as_deref().map(identity).transpose()?;
-    if let Some((uid, _, _)) = &identity
-        && !config.env.contains_key("HOME")
-    {
+    if !config.env.contains_key("HOME") {
+        // Docker-equivalent defaulting: derive HOME from the guest passwd
+        // entry of the effective uid — an unset OCI user means root here,
+        // matching the default identity — and fall back to the filesystem
+        // root when the image ships no matching entry.
+        let uid = identity.as_ref().map(|(uid, _, _)| *uid).unwrap_or(0);
         let passwd = fs::read_to_string("/etc/passwd").unwrap_or_default();
-        let home = passwd
-            .lines()
-            .find_map(|line| {
-                let fields: Vec<_> = line.split(':').collect();
-                (fields.len() >= 6 && fields[2].parse::<u32>().ok() == Some(*uid))
-                    .then(|| fields[5])
-            })
-            .unwrap_or("/");
-        command.env("HOME", home);
+        command.env("HOME", default_home(uid, &passwd));
     }
     let limits = config
         .limits
@@ -438,6 +448,19 @@ impl Processes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_home_follows_the_effective_uid_and_falls_back_to_root_dir() {
+        let passwd = concat!(
+            "root:x:0:0:root:/root:/bin/sh\n",
+            "www-data:x:33:33::/var/www:/usr/sbin/nologin\n",
+            "malformed line without fields\n",
+        );
+        assert_eq!(default_home(0, passwd), "/root");
+        assert_eq!(default_home(33, passwd), "/var/www");
+        assert_eq!(default_home(1000, passwd), "/");
+        assert_eq!(default_home(0, ""), "/");
+    }
 
     #[test]
     fn one_reaper_routes_exec_exits_and_reaps_orphans_while_main_is_alive() {
