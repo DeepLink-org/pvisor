@@ -1,35 +1,37 @@
 # Core design principles
 
-Operation is the object being processed, pvisor owns the execution lifecycle, and Event provides the observation interface.
+pVisor is designed around three questions: how to constrain Agent execution, how to manage state and resources throughout a task, and how to establish its results. These principles explain the rationale and boundaries of those designs. See the [architecture overview](index.md) for component responsibilities and execution flows.
 
-![Requests, effective decisions, installed controls and observations retain separate authority](assets/evidence-flow.svg)
+## Separate shared contracts from execution implementations {#separate-definitions-from-execution}
 
-## Separate definitions from execution
+Interfaces and executors should share consistent semantics for operations, policies and outcomes, while their implementations own platform-specific mechanisms. Core defines shared contracts; the pVisor Runtime and drivers implement execution. For example, Host and VM executors use shared operation and outcome contracts, but run tools through host processes and a guest respectively, and may support different controls. Contracts should expand with actual integration needs, avoiding premature abstractions for capabilities without callers. See [core architecture](architecture.md) for component responsibilities.
 
-Shared operations, policies, Placement, outcomes and interaction contracts belong in core. Admission, scheduling, process launch, sockets, resource preparation and lifecycle belong in pvisor and drivers. Find an existing production caller before adding a type; do not add another executor or control protocol for a future interface.
+## Ground guarantees in actual execution boundaries {#guarantees-require-actual-boundaries}
 
-## Separate requests, decisions and facts
+A requested policy states constraints; guarantees depend on installed controls and the access paths they cover. For example, OverlayNet checks access rules at the VM network egress, while model messages inside ordinary TLS connections enter the model observation path only when integrated through Gateway. Accepting a policy or recording an access does not, by itself, establish enforcement. Capability descriptions must reflect the actual control boundaries of the executor and platform. See [capabilities and evidence](../concepts/capabilities-and-evidence.md) and [isolation design](isolation.md).
 
-Requests describe intent, policy decisions describe effective constraints, Placement describes the selected execution location, and observations describe what happened. Rewrites preserve both original and effective snapshots rather than overwriting the request. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for the boundary between plans and actual controls.
+## Give cleanup and terminal publication one owner {#one-lifecycle-owner}
 
-## Preserve known causal dependencies
+Whether execution finishes normally, is cancelled or fails partway through, an explicit owner must complete cleanup and publish its terminal state. Multiple components must not independently declare completion. Session owns the Attempt lifecycle; drivers report output and observations. For example, after a tool process exits, resource cleanup and required result persistence still need to finish before the task terminal state is published. Cancellation requests a stop rather than establishing completion, and execution failures must be reported separately from recording failures. See the [execution model](execution-model.md#attempt-completion) for completion handling.
 
-If a step depends on an earlier result, it must wait for that result. Placement, forwarding and recording cannot reverse the dependency. Causal references express known dependencies, Journal positions express commit order, and timestamps express observation time. None replaces another or establishes a global order of effects across Jobs.
+## Match resource residency to execution needs {#resource-lifecycle}
 
-## One lifecycle owner
+Retaining an Agent's execution context does not require keeping all resources resident at all times. Sharing and demand loading reduce duplicate storage and premature preparation; lifecycle management determines when resources remain resident or are reclaimed. For example, on supported model-wait paths, the Host continues waiting for the response and uses guest idle evidence to manage VM pause, memory offload and resume. Reclamation must meet execution and device-access safety conditions and weigh wait length against recovery cost, rather than minimize resident memory alone. See [sandbox lifecycle management](../concepts/lifecycle.md) and [image and memory optimization](../concepts/resource-optimization.md) for the mechanisms.
 
-Session owns resource preparation, execution, cancellation, cleanup and terminal publication for an Attempt. Drivers report output and observations rather than publishing the terminal state of the entire Job. Cancellation is a request; completion is a result. Recording failures and execution failures are reported separately.
+## Separate execution changes from result acceptance {#review-files-before-applying-them}
 
-## Guarantees require actual boundaries
+Successful execution does not mean every file change should be accepted, and failed execution can leave useful changes. With staging enabled, candidate changes remain separate for the caller to review and selectively accept. For example, an Agent’s edits to `config.toml` stay in a private upper layer until the caller reviews the diff and uses Apply to write selected changes to the target workspace. This mechanism covers files within the staging scope; it cannot undo external side effects that have already occurred. See [file-level supervision and isolation](../concepts/staging.md) for operations and scope.
 
-Actual interception mechanisms provide file and network controls. Guarantees must state platform and coverage. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for `null` counters, capture coverage and sources of enforcement.
+<a id="records-reconstruct-facts"></a>
 
-## Review files before applying them
+## Keep intent, decisions and facts distinct in records {#separate-requests-decisions-and-facts}
 
-With staging enabled, workspace changes stay in the Overlay; explicit review and apply change the target. Failed execution can still leave reviewable changes. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for recovery scopes and irreversible external effects.
+Records should connect execution intent, actual decisions and observed results while preserving their distinct meanings. None can substitute for another. When requests are rewritten, both original and effective snapshots must be retained so that the final decision does not overwrite the original intent. For example, requesting access to a domain, having that access authorized, and successfully connecting are distinct facts; an authorization decision cannot substitute for the runtime outcome. The information categories and their associated objects are shown below:
 
-## Records reconstruct facts
+![Distinguishing requests, policy decisions, installed controls, observations and result acceptance](assets/evidence-flow.svg)
 
-Public records should explain requests, actual rewrites, placement, results and provenance. Snapshots and causal chains make facts reviewable. Deterministic replay of effects also requires initial state, external inputs and the corresponding execution mechanism; Event records alone are insufficient.
+Records make execution reviewable, but Events alone cannot deterministically replay side effects. See [Operation and Event](operations-events.md) for record semantics, and [replay design](replay.md) for the state, inputs and execution mechanisms replay requires.
 
-See [Core architecture](architecture.md), [Operation and Event](operations-events.md) and [Isolation design](isolation.md) for mechanisms.
+## Preserve execution dependencies {#preserve-known-causal-dependencies}
+
+An Agent's next operation may depend on an earlier output. Scheduling, forwarding and execution must preserve that known dependency even when placement or concurrency changes. For example, if an Agent edits a configuration and then runs a test that depends on it, the test must read the updated state rather than run early because of concurrent scheduling. Records must retain the corresponding causal references. Journal commit order and observation time cannot substitute for causality or establish a global order of effects across Jobs. See [Operation and Event](operations-events.md) and [Journal design](journal.md) for record fields and ordering semantics.
