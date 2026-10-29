@@ -137,6 +137,12 @@ pub(crate) struct SandboxPlan {
     /// cannot be constructed at all.
     #[serde(default)]
     pub filesystem_landlock_only: bool,
+    /// Run the setup phases and stop before any Agent code, exiting successfully
+    /// when the sandbox could be constructed. The capability probe uses this so
+    /// it exercises exactly the syscalls a real Run performs instead of
+    /// approximating them with `unshare(1)`.
+    #[serde(default)]
+    pub probe_only: bool,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
@@ -181,6 +187,9 @@ fn run_internal() -> anyhow::Result<()> {
     let encoded = std::fs::read(&plan_path).context("read rootless sandbox plan")?;
     let plan: SandboxPlan =
         serde_json::from_slice(&encoded).context("decode rootless sandbox plan")?;
+    if plan.probe_only {
+        return run_probe(plan);
+    }
     let mut arguments = std::env::args_os().skip(2);
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         bail!("invalid internal rootless sandbox invocation");
@@ -272,6 +281,25 @@ fn run_internal() -> anyhow::Result<()> {
     }
 
     supervise_pid_namespace(program, arguments, arg0, attestation, &plan)
+}
+
+/// Validate the sandbox by performing the same setup a real Run performs, then
+/// exit successfully.
+///
+/// The capability probe uses this instead of approximating the launcher with
+/// `unshare(1)`: the launcher maps the caller's own uid (`{uid} {uid} 1`) and
+/// calls `mount(2)` directly, so a command-line probe with `--map-root-user`
+/// and the `mount` binary reports both false positives and false negatives.
+#[cfg(target_os = "linux")]
+fn run_probe(plan: SandboxPlan) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    enter_rootless_namespaces(plan.network).context("probe rootless namespaces")?;
+    if plan.filesystem_isolated {
+        enter_child_pid_namespace().context("probe private PID namespace")?;
+        enter_synthetic_root(&plan).context("probe synthetic root")?;
+    }
+    std::process::exit(0);
 }
 
 /// Exec the Agent behind a Landlock policy installed on the host filesystem
@@ -609,6 +637,7 @@ pub(crate) fn restrict_krun_runner(
         network: NetworkIsolation::LoopbackOnly,
         filesystem_isolated: true,
         filesystem_landlock_only: false,
+        probe_only: false,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;

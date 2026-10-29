@@ -673,49 +673,78 @@ impl ProcessExecutor {
     }
 }
 
-/// Probe the namespace primitives used by the default Linux launcher without
-/// mutating the pVisor process itself.  A short-lived `unshare` child keeps the
-/// probe safe in a multithreaded Tokio process and distinguishes an unavailable
-/// host capability from a later Agent failure.
+/// Probe whether this host can construct the sandbox the launcher builds.
 ///
-/// The probe maps the current user into the new namespace (`--map-root-user`)
-/// because the launcher always writes `uid_map`/`gid_map` before building the
-/// sandbox. Kernels that allow `CLONE_NEWUSER` but reject that write would
-/// otherwise pass a plain `--user` probe and then fail during Agent setup.
+/// The probe replays the launcher's own setup in a child process instead of
+/// approximating it with `unshare(1)`. Approximation is not faithful enough:
+/// the launcher maps the caller's own uid (`{uid} {uid} 1`) and calls
+/// `mount(2)` directly, so a `--map-root-user` CLI probe reports false
+/// negatives (the `mount` binary refuses a non-root euid) and missing steps
+/// report false positives (for example a host that creates every namespace but
+/// cannot project `/proc` inside them).
 #[cfg(target_os = "linux")]
-pub fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
-    let probe = |args: &[&str]| {
-        StdCommand::new("unshare")
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    };
-    if preserve_host_filesystem {
-        // Network-only Runs still use a user namespace so the Agent cannot
-        // create another namespace and escape deny-all. Landlock is omitted
-        // at runtime, so it must not be a prerequisite for this probe.
-        probe([
-            "--map-root-user",
-            "--mount",
-            "--net",
-            "--fork",
-            "true",
-        ]
-        .as_slice())
-    } else {
-        landlock_runtime_available()
-            && probe([
-                "--map-root-user",
-                "--mount",
-                "--pid",
-                "--fork",
-                "true",
-            ]
-            .as_slice())
+pub fn rootless_runtime_available(
+    launcher: impl AsRef<Path>,
+    preserve_host_filesystem: bool,
+) -> bool {
+    // Network-only Runs omit Landlock at runtime, so it must not gate them.
+    if !preserve_host_filesystem && !landlock_runtime_available() {
+        return false;
     }
+    probe_launcher(launcher.as_ref(), !preserve_host_filesystem)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_launcher(launcher: &Path, filesystem_isolated: bool) -> bool {
+    let Ok(mut resources) = SandboxResources::create() else {
+        return false;
+    };
+    let (Some(root), Some(attestation)) = (resources.path(), resources.attestation_path()) else {
+        return false;
+    };
+    let root = root.to_owned();
+    let attestation = attestation.to_owned();
+
+    let mut read_only = std::iter::once(PathBuf::from("/proc")).collect::<Vec<_>>();
+    for path in ["/bin", "/usr", "/etc", "/lib", "/lib64"] {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            read_only.push(path);
+        }
+    }
+    let plan = SandboxPlan {
+        root,
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        attestation,
+        read_only,
+        read_write: Vec::new(),
+        staged_roots: Vec::new(),
+        staged_workspace: None,
+        staged_workspace_source: None,
+        network: if filesystem_isolated {
+            NetworkIsolation::Ambient
+        } else {
+            NetworkIsolation::LoopbackOnly
+        },
+        filesystem_isolated,
+        filesystem_landlock_only: false,
+        probe_only: true,
+        process_limit: None,
+    };
+    let Ok(encoded) = serde_json::to_vec(&plan) else {
+        return false;
+    };
+    let Ok(plan_path) = resources.write_plan(&encoded) else {
+        return false;
+    };
+    StdCommand::new(launcher)
+        .arg(INTERNAL_SANDBOX_ARG)
+        .env(SANDBOX_PLAN_ENV, plan_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Whether the host can enforce a filesystem policy with Landlock alone.
@@ -1255,6 +1284,7 @@ fn rootless_plan(
         network,
         filesystem_isolated,
         filesystem_landlock_only,
+        probe_only: false,
         process_limit: spec.runtime.resource_limits.processes,
     })
 }

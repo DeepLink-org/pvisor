@@ -1359,11 +1359,13 @@ async fn execute_config(
 
     let filesystem_isolated = config.filesystem == FilesystemMode::Sandbox;
 
-    // Probe rootless support while resolving independent launch inputs.
+    // Probe rootless support while resolving independent launch inputs. The
+    // probe replays the launcher's own setup, so it needs this executable.
     #[cfg(target_os = "linux")]
     let rootless_probe = (config.run.executor == RunExecutorKind::Host).then(|| {
-        tokio::task::spawn_blocking(move || {
-            pvisor::rootless_runtime_available(!filesystem_isolated)
+        tokio::task::spawn_blocking(move || match std::env::current_exe() {
+            Ok(launcher) => pvisor::rootless_runtime_available(&launcher, !filesystem_isolated),
+            Err(_) => false,
         })
     });
 

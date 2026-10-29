@@ -19,10 +19,16 @@
 
 ### Rootless capability probe
 
-- Probe with `unshare --map-root-user`, matching the `uid_map`/`gid_map` writes
-  the launcher always performs. A kernel that allows `CLONE_NEWUSER` but rejects
-  that write previously passed the plain `--user` probe and then failed during
-  Agent setup, aborting the Run instead of selecting the available fallback.
+- Replay the launcher's own setup in a child process instead of approximating it
+  with `unshare(1)`. The approximation was wrong in both directions: the `mount`
+  binary refuses a non-root euid under the launcher's identity mapping (false
+  negative on hosts where the sandbox works), and the probe never exercised the
+  `/proc` projection the synthetic root starts with, so a privileged container
+  that creates every namespace but cannot project `/proc` inside them was
+  reported as capable and then aborted during Agent setup (false positive).
+- Map the caller's own uid in the probe, matching the `uid_map`/`gid_map` writes
+  the launcher always performs, so a kernel that allows `CLONE_NEWUSER` but
+  rejects that write no longer reports the host as capable.
 
 ### Snapshot RAM mount isolation
 
