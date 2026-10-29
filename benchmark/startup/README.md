@@ -232,3 +232,9 @@ rustc --edition=2024 -O benchmark/startup/fd_probe.rs -o /tmp/pvisor-fd-probe
 `first_ns` 是首次 `F_DUPFD_CLOEXEC >= 202`，`second_ns` 是已扩展表后的第二次复制；
 `preallocated` 在线程创建前先扩展并关闭该 FD。保留高 FD 的防 `dup2` 冲突约束，
 不得从诊断直接推导降低固定 FD 编号是安全优化；该微诊断不启动 VM，不是产品收益对照。
+
+## OCI 准备辅助工具
+
+[实验专用 umoci 适配](oci_prepare/README.md)对应 B-OCI-PREP-ENG，保留默认行为，
+支持显式单遍 Guest 元数据恢复和完整内容审核。只构建和测试解包器，不启动 VM，
+不改变现有启动 benchmark 或 pVisor 产品镜像路径。

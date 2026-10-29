@@ -689,6 +689,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 三臂为冻结 pVisor 原生后端默认模式、同制品显式物理池、官方 OpenSandbox 1.1.0 配独立 rootless Docker。API、VMM/supervisor、pool 或 dockerd/containerd/shim 全部在专属受限产品组内，外部 SDK 协调器和观察者不计入；四核配额、4 GiB、零 swap，镜像预备且宿主页缓存保留，不改变宿主 KSM/sysctl 或停止无关任务。预检每臂一组独立保存，正式至少五轮固定种子随机交替；每臂新服务、新实例。采集空服务、1/4 实例空闲窗口，四实例相同 64 MiB 确定性数据就绪后观察 30 秒，之后每实例完整改写为独有数据并观察 10 秒；全量数据校验、独立文件写入、实际 cgroup/CPU 限制、宿主进程归属与确认删除为门禁。PSS 为完整产品映射的驻留物理内存，不能代替未映射缓存和内核成本；同时给 cgroup memory.current/stat、峰值和 CPU，预备缓存的组外计费明确披露。保留失败及全部有效慢样本，失败停止，预检不混入正式数据；按轮配对 bootstrap 95% CI，分簇时单列，不作 P99、真实 Agent 工作集或生产密度推断。
 - **历史入口：** `benchmark/opensandbox/memory.py`，静态负载为同目录 `memory_worker.rs`；复现与来源见目录 README。
 
+### B-OCI-PREP-ENG：OCI 准备路径工程验收 {#b-oci-prep-eng}
+
+- **角色：** engineering A/B；仅工程辅助工具和 PR 证据，不更新用户启动水位。
+- **Motivation：** 判断移除未使用的 bundle 产物、合并 Guest 元数据恢复后，是否仍能产出一致的 rootfs。
+- **想要的结论：** 完整内容与元数据审核通过后，再判断准备阶段的耗时；不推导 VM 启动、SWE 或跨运行时收益。
+- **实验设计：** 单层未压缩 OCI、空目标、独立输入副本；两组同一二进制，开关关闭加第二遍恢复与开关开启单遍恢复。原完整审核单列；预算和超时固定，不启动 VM、不修改全局缓存。历史单次顺序样本只作为探索记录，无配对区间，不发布加速百分比。
+- **辅助入口：** [startup/oci_prepare/README.md](startup/oci_prepare/README.md) 中的离线构建与小型资格测试；不提供通用测量入口或修改现有 JSON 占位表。完整历史 harness 和证据保留在本地 `.data/`，正式测量仍需独立注册冻结协议。
+
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
 - **JSON 入口状态：** 未准备 [startup/guest_init.json](startup/guest_init.json)（拒绝测量）。

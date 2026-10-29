@@ -1,0 +1,322 @@
+--- a/cmd/umoci/raw-unpack.go
++++ b/cmd/umoci/raw-unpack.go
+@@ -22,0 +23 @@
++	"os"
+@@ -46,0 +48 @@
++		cli.BoolFlag{Name: "pvisor-metadata", Usage: "EXPERIMENTAL: restore pVisor Guest metadata during single-layer rootless extraction"},
+@@ -84,0 +87,9 @@
++	unpackOptions.PvisorMetadata = ctx.Bool("pvisor-metadata")
++	if unpackOptions.PvisorMetadata {
++		if !meta.MapOptions.Rootless || unpackOptions.KeepDirlinks {
++			return errors.New("pvisor metadata requires rootless without keep-dirlinks")
++		}
++		if _, err := os.Lstat(rootfsPath); !os.IsNotExist(err) {
++			return errors.New("pvisor metadata requires a new rootfs")
++		}
++	}
+@@ -129,0 +141,3 @@
++	if unpackOptions.PvisorMetadata && (len(manifest.Layers) != 1 || manifest.Layers[0].MediaType != ispec.MediaTypeImageLayer) {
++		return errors.New("pvisor metadata supports one uncompressed OCI tar layer only")
++	}
+--- a/oci/layer/types.go
++++ b/oci/layer/types.go
+@@ -23,0 +24,4 @@
++	// PvisorMetadata is an experimental single-layer rootless metadata profile.
++	// Disabled by default; never used for repacking.
++	PvisorMetadata bool
++
+--- a/oci/layer/tar_extract.go
++++ b/oci/layer/tar_extract.go
+@@ -45,0 +46,2 @@
++	pvisorMetadata bool
++
+@@ -91,0 +94 @@
++		pvisorMetadata:  opt.PvisorMetadata,
+@@ -228,0 +232,3 @@
++	if te.pvisorMetadata {
++		return te.applyPvisorMetadata(path, hdr)
++	}
+@@ -388,0 +395,5 @@
++	if te.pvisorMetadata {
++		if err := validatePvisorHeader(hdr, te.mapOptions.Rootless); err != nil {
++			return err
++		}
++	}
+@@ -691 +702 @@
+-	if hdr.Typeflag != tar.TypeLink {
++	if hdr.Typeflag != tar.TypeLink || te.pvisorMetadata {
+--- a/oci/layer/pvisor_metadata.go
++++ b/oci/layer/pvisor_metadata.go
+@@ -0,0 +1,124 @@
++// Experimental pVisor extraction profile. All default umoci paths are unchanged.
++package layer
++
++import (
++	"archive/tar"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
++const pvisorStat = "user.containers.override_stat"
++
++// Restrict the profile to the audited experiment contract, not general OCI.
++func validatePvisorHeader(h *tar.Header, rootless bool) error {
++	if !rootless {
++		return fmt.Errorf("pvisor metadata requires rootless")
++	}
++	if filepath.IsAbs(h.Name) {
++		return fmt.Errorf("absolute archive path: %q", h.Name)
++	}
++	for _, part := range strings.Split(h.Name, "/") {
++		if part == ".." {
++			return fmt.Errorf("parent traversal: %q", h.Name)
++		}
++	}
++	if strings.HasPrefix(filepath.Base(h.Name), ".wh.") {
++		return fmt.Errorf("whiteouts not supported in experiment profile")
++	}
++	if h.Mode < 0 || h.Mode & ^int64(07777) != 0 || h.Uid < 0 || h.Gid < 0 {
++		return fmt.Errorf("invalid Guest identity")
++	}
++	switch h.Typeflag {
++	case tar.TypeReg, tar.TypeRegA, tar.TypeDir, tar.TypeLink:
++	case tar.TypeSymlink:
++		if h.Uid != os.Geteuid() {
++			return fmt.Errorf("symlink uid cannot be preserved rootlessly")
++		}
++	default:
++		return fmt.Errorf("unsupported experiment type: %d", h.Typeflag)
++	}
++	if h.Typeflag == tar.TypeLink {
++		if filepath.IsAbs(h.Linkname) {
++			return fmt.Errorf("absolute hardlink target")
++		}
++		for _, part := range strings.Split(h.Linkname, "/") {
++			if part == ".." {
++				return fmt.Errorf("hardlink traversal")
++			}
++		}
++	}
++	for name := range h.Xattrs {
++		if name == pvisorStat || !strings.HasPrefix(name, "user.") {
++			return fmt.Errorf("unsupported or reserved xattr: %q", name)
++		}
++	}
++	return nil
++}
++
++// Called with the original archive header, before unmapHeader can discard
++// archived user.rootlesscontainers or replace Guest ownership. Directory
++// save/restore stays on the original restoreMetadata path and retains these
++// on-disk xattrs; it must never synthesize a Guest identity from a Host stat.
++func (te *TarExtractor) applyPvisorMetadata(path string, h *tar.Header) error {
++	st, err := os.Lstat(path)
++	if err != nil {
++		return err
++	}
++	if h.Typeflag == tar.TypeSymlink {
++		if st.Mode()&os.ModeSymlink == 0 {
++			return fmt.Errorf("expected symlink")
++		}
++		if err := os.Lchown(path, h.Uid, h.Gid); err != nil {
++			return err
++		}
++		var actual unix.Stat_t
++		if err := unix.Lstat(path, &actual); err != nil {
++			return err
++		}
++		if int(actual.Uid) != h.Uid || int(actual.Gid) != h.Gid {
++			return fmt.Errorf("symlink owner mismatch")
++		}
++	} else {
++		kind := uint32(unix.S_IFREG)
++		access := os.FileMode(0600)
++		if h.Typeflag == tar.TypeDir {
++			kind = unix.S_IFDIR
++			access = 0700
++			if !st.IsDir() {
++				return fmt.Errorf("expected directory")
++			}
++		} else if !st.Mode().IsRegular() {
++			return fmt.Errorf("expected regular inode")
++		}
++		// TAR FileMode translates the Unix setuid/setgid/sticky bits correctly.
++		if err := os.Chmod(path, h.FileInfo().Mode()|access); err != nil {
++			return err
++		}
++		if err := te.fsEval.Lclearxattrs(path, ignoreXattrs); err != nil {
++			return err
++		}
++		for name, value := range h.Xattrs {
++			if err := unix.Lsetxattr(path, name, []byte(value), 0); err != nil {
++				return err
++			}
++		}
++		value := fmt.Sprintf("%d:%d:%o", h.Uid, h.Gid, kind|uint32(h.Mode))
++		if err := unix.Lsetxattr(path, pvisorStat, []byte(value), 0); err != nil {
++			return err
++		}
++	}
++	mtime := h.ModTime
++	if mtime.IsZero() {
++		mtime = time.Now()
++	}
++	atime := h.AccessTime
++	if atime.IsZero() {
++		atime = mtime
++	}
++	return te.fsEval.Lutimes(path, atime, mtime)
++}
+--- a/oci/layer/pvisor_metadata_test.go
++++ b/oci/layer/pvisor_metadata_test.go
+@@ -0,0 +1,145 @@
++package layer
++
++import (
++	"archive/tar"
++	"bytes"
++	"fmt"
++	"golang.org/x/sys/unix"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++func pvRead(t *testing.T, p, k string) string {
++	t.Helper()
++	b := make([]byte, 4096)
++	n, e := unix.Lgetxattr(p, k, b)
++	if e != nil {
++		t.Fatal(e)
++	}
++	return string(b[:n])
++}
++func pvHeader(n string, typ byte, mode int64) *tar.Header {
++	return &tar.Header{Name: n, Typeflag: typ, Mode: mode, Uid: 123, Gid: 456, ModTime: time.Unix(123456, 0)}
++}
++func TestPvisorSinglePassMetadata(t *testing.T) {
++	root := t.TempDir()
++	te := NewTarExtractor(UnpackOptions{PvisorMetadata: true, MapOptions: MapOptions{Rootless: true}})
++	d := pvHeader("d", tar.TypeDir, 0555)
++	d.Xattrs = map[string]string{"user.test": "parent", "user.rootlesscontainers": "archived"}
++	if e := te.UnpackEntry(root, d, bytes.NewReader(nil)); e != nil {
++		t.Fatal(e)
++	}
++	f := pvHeader("d/f", tar.TypeReg, 04755)
++	f.Size = 3
++	f.Xattrs = map[string]string{"user.test": "payload"}
++	if e := te.UnpackEntry(root, f, bytes.NewReader([]byte("abc"))); e != nil {
++		t.Fatal(e)
++	}
++	if got := pvRead(t, filepath.Join(root, "d"), pvisorStat); got != "123:456:40555" {
++		t.Fatal(got)
++	}
++	if got := pvRead(t, filepath.Join(root, "d"), "user.test"); got != "parent" {
++		t.Fatal(got)
++	}
++	if got := pvRead(t, filepath.Join(root, "d"), "user.rootlesscontainers"); got != "archived" {
++		t.Fatal(got)
++	}
++	if got := pvRead(t, filepath.Join(root, "d/f"), pvisorStat); got != "123:456:104755" {
++		t.Fatal(got)
++	}
++	var st unix.Stat_t
++	if e := unix.Lstat(filepath.Join(root, "d/f"), &st); e != nil {
++		t.Fatal(e)
++	}
++	if st.Mode&07777 != 04755 {
++		t.Fatal(st.Mode)
++	}
++	link := pvHeader("hard", tar.TypeLink, 04755)
++	link.Linkname = "d/f"
++	link.Xattrs = f.Xattrs
++	if e := te.UnpackEntry(root, link, bytes.NewReader(nil)); e != nil {
++		t.Fatal(e)
++	}
++	var other unix.Stat_t
++	unix.Lstat(filepath.Join(root, "hard"), &other)
++	if other.Ino != st.Ino {
++		t.Fatal("not hardlink")
++	}
++	sym := pvHeader("sym", tar.TypeSymlink, 0777)
++	sym.Uid = os.Getuid()
++	sym.Gid = os.Getgid()
++	sym.Linkname = "d/f"
++	if e := te.UnpackEntry(root, sym, bytes.NewReader(nil)); e != nil {
++		t.Fatal(e)
++	}
++	unix.Lstat(filepath.Join(root, "sym"), &other)
++	if int(other.Uid) != sym.Uid || int(other.Gid) != sym.Gid {
++		t.Fatal("symlink identity")
++	}
++}
++func TestPvisorRejectUnsupported(t *testing.T) {
++	for _, n := range []string{"/escape", "../escape", "d/../escape", ".wh.foo", ".wh..wh..opq"} {
++		t.Run(n, func(t *testing.T) {
++			h := pvHeader(n, tar.TypeReg, 0644)
++			if validatePvisorHeader(h, true) == nil {
++				t.Fatal("accepted", n)
++			}
++		})
++	}
++	for _, typ := range []byte{tar.TypeChar, tar.TypeBlock, tar.TypeFifo} {
++		h := pvHeader("bad", typ, 0644)
++		if validatePvisorHeader(h, true) == nil {
++			t.Fatal("accepted special")
++		}
++	}
++	h := pvHeader("ok", tar.TypeReg, 0644)
++	if validatePvisorHeader(h, false) == nil {
++		t.Fatal("accepted non-rootless")
++	}
++	for _, attr := range []string{pvisorStat, "security.capability"} {
++		h.Xattrs = map[string]string{attr: "x"}
++		if validatePvisorHeader(h, true) == nil {
++			t.Fatal("accepted attr")
++		}
++	}
++}
++func TestPvisorSymlinkEscapeConfined(t *testing.T) {
++	base := t.TempDir()
++	root := filepath.Join(base, "root")
++	os.Mkdir(root, 0700)
++	outside := filepath.Join(base, "victim")
++	os.WriteFile(outside, []byte("safe"), 0600)
++	te := NewTarExtractor(UnpackOptions{PvisorMetadata: true, MapOptions: MapOptions{Rootless: true}})
++	sym := pvHeader("link", tar.TypeSymlink, 0777)
++	sym.Uid = os.Getuid()
++	sym.Gid = os.Getgid()
++	sym.Linkname = "../../"
++	if e := te.UnpackEntry(root, sym, bytes.NewReader(nil)); e != nil {
++		t.Fatal(e)
++	}
++	f := pvHeader("link/victim", tar.TypeReg, 0644)
++	f.Size = 3
++	if e := te.UnpackEntry(root, f, bytes.NewReader([]byte("new"))); e != nil {
++		t.Fatal(e)
++	}
++	b, _ := os.ReadFile(outside)
++	if string(b) != "safe" {
++		t.Fatal("escaped")
++	}
++}
++func TestPvisorDefaultDisabled(t *testing.T) {
++	root := t.TempDir()
++	te := NewTarExtractor(UnpackOptions{MapOptions: MapOptions{Rootless: true}})
++	h := pvHeader("file", tar.TypeReg, 0644)
++	h.Uid = os.Getuid()
++	h.Gid = os.Getgid()
++	if e := te.UnpackEntry(root, h, bytes.NewReader(nil)); e != nil {
++		t.Fatal(e)
++	}
++	_, e := unix.Lgetxattr(filepath.Join(root, "file"), pvisorStat, make([]byte, 128))
++	if e != unix.ENODATA {
++		t.Fatal(fmt.Sprint(e))
++	}
++}
