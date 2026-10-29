@@ -49,23 +49,51 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn needs_krun_enomem_workaround() -> bool {
-    match std::env::var("PVISOR_KRUN_ENOMEM_WORKAROUND").as_deref() {
-        Ok("1") => return true,
-        Ok("0") => return false,
-        _ => {}
+    let override_value = std::env::var("PVISOR_KRUN_ENOMEM_WORKAROUND").ok();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok();
+    krun_workaround_policy(override_value.as_deref(), release.as_deref())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn krun_workaround_policy(override_value: Option<&str>, release: Option<&str>) -> bool {
+    match override_value {
+        Some("1") => true,
+        Some("0") => false,
+        _ => release.is_none_or(kernel_release_needs_krun_workaround),
     }
-    std::fs::read_to_string("/proc/sys/kernel/osrelease").map_or(true, |release| {
-        kernel_release_needs_krun_workaround(&release)
-    })
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn kernel_release_needs_krun_workaround(release: &str) -> bool {
-    release
-        .split('.')
-        .next()
-        .and_then(|major| major.parse::<u32>().ok())
-        .is_none_or(|major| major < 7)
+    // Upstream 916b7f42b3b3 fixes the KVM initialization race in 6.14;
+    // stable b1fbf1b68bbf backports it to 6.12.44. This is version-based,
+    // not proof of vendor patch contents; retain the explicit override.
+    let mut fields = release.strip_suffix('\n').unwrap_or(release).split('-');
+    let version = fields.next().unwrap_or_default();
+    if fields.any(|suffix| {
+        suffix.is_empty()
+            || suffix.starts_with("rc")
+            || !suffix
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._+".contains(&c))
+    }) {
+        return true;
+    }
+    let mut components = version.strip_suffix('+').unwrap_or(version).split('.');
+    let mut number = || {
+        let text = components.next()?;
+        if text.is_empty() || !text.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        text.parse::<u32>().ok()
+    };
+    let (Some(major), Some(minor), Some(patch)) = (number(), number(), number()) else {
+        return true;
+    };
+    if components.next().is_some() {
+        return true;
+    }
+    !(major > 6 || (major == 6 && (minor >= 14 || (minor == 12 && patch >= 44))))
 }
 
 #[cfg(all(target_os = "linux", target_env = "musl", not(target_arch = "x86_64")))]
@@ -1748,10 +1776,10 @@ impl RunExecutor for VmExecutor {
                 });
             }
         }
-        // The vendored workaround sleeps before every KVM_RUN. It is still
-        // needed on the Fedora 43 / Linux 6.17 host used by pVisor's Linux
-        // validation, but makes newer kernels much slower. Keep it for 6.x
-        // and unknown hosts; allow an explicit override for diagnostics.
+        // The vendored workaround sleeps before every KVM_RUN. Retain protection
+        // where the upstream fix is not known from the release, or release
+        // detection fails. Vendor backports/reverts can differ: the explicit
+        // diagnostic override still takes precedence.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if needs_krun_enomem_workaround() {
             command.env("KRUN_ENOMEM_WORKAROUND", "1");
@@ -4013,12 +4041,100 @@ mod tests {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
-    fn krun_workaround_keeps_slow_path_on_older_or_unknown_kernels() {
-        assert!(kernel_release_needs_krun_workaround("6.17.0-foo"));
-        assert!(kernel_release_needs_krun_workaround("unknown"));
-        assert!(!kernel_release_needs_krun_workaround(
-            "7.1.13-200.fc44.x86_64"
-        ));
+    fn krun_workaround_tracks_upstream_and_stable_fix_boundaries() {
+        for release in [
+            "6.12.44",
+            "6.12.45",
+            "6.12.100",
+            "6.14.0",
+            "6.14.1",
+            "6.17.0-19-generic\n",
+            "6.17.0-foo",
+            "6.18.0",
+            "7.0.0",
+            "8.1.0",
+        ] {
+            assert!(!krun_workaround_policy(None, Some(release)), "{release}");
+        }
+        for release in [
+            "5.15.0", "6.11.0", "6.12.13", "6.12.43", "6.13.0", "6.13.12",
+        ] {
+            assert!(krun_workaround_policy(None, Some(release)), "{release}");
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_accepts_vendor_suffixes_without_treating_them_as_patchlevels() {
+        for release in [
+            "6.12.44-1-amd64",
+            "6.14.0-27-generic",
+            "6.17.1-200.fc43.x86_64",
+            "6.17.0+",
+            "7.1.13-200.fc44.x86_64",
+        ] {
+            assert!(!krun_workaround_policy(None, Some(release)), "{release}");
+        }
+        for release in [
+            "6.12.0-100-generic",
+            "6.12.43-999-vendor",
+            "6.13.12-200.fc41.x86_64",
+        ] {
+            assert!(krun_workaround_policy(None, Some(release)), "{release}");
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_prereleases_and_malformed_versions_stay_conservative() {
+        for release in [
+            "6.14.0-rc1",
+            "6.14.0-rc7+",
+            "7.0.0-rc1",
+            "6.12.44-rc1",
+            "",
+            "unknown",
+            "7",
+            "7.foo",
+            "6.14",
+            "6.14.0.1",
+            "6.14.0-",
+            "6.14.0 ",
+            "6.14.0\n\n",
+            "+7.0.0",
+            "4294967296.0.0",
+        ] {
+            assert!(krun_workaround_policy(None, Some(release)), "{release}");
+        }
+        assert!(krun_workaround_policy(None, None));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_explicit_override_wins_over_kernel_detection() {
+        for release in [
+            None,
+            Some("unknown"),
+            Some("6.12.43"),
+            Some("6.12.44"),
+            Some("6.17.0-19-generic"),
+            Some("7.0.0-rc1"),
+            Some("7.1.13"),
+        ] {
+            assert!(krun_workaround_policy(Some("1"), release));
+            assert!(!krun_workaround_policy(Some("0"), release));
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn krun_workaround_invalid_overrides_fall_back_to_version_policy() {
+        for value in [None, Some(""), Some("false"), Some("0 "), Some("2")] {
+            assert!(krun_workaround_policy(value, None));
+            assert!(krun_workaround_policy(value, Some("unknown")));
+            assert!(krun_workaround_policy(value, Some("6.12.43")));
+            assert!(!krun_workaround_policy(value, Some("6.12.44")));
+        }
     }
 
     #[test]
