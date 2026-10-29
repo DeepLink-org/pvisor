@@ -695,7 +695,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 判断移除未使用的 bundle 产物、合并 Guest 元数据恢复后，是否仍能产出一致的 rootfs。
 - **想要的结论：** 完整内容与元数据审核通过后，再判断准备阶段的耗时；不推导 VM 启动、SWE 或跨运行时收益。
 - **实验设计：** 单层未压缩 OCI、空目标、独立输入副本；两组同一二进制，开关关闭加第二遍恢复与开关开启单遍恢复。原完整审核单列；预算和超时固定，不启动 VM、不修改全局缓存。历史单次顺序样本只作为探索记录，无配对区间，不发布加速百分比。
-- **辅助入口：** [startup/oci_prepare/README.md](startup/oci_prepare/README.md) 中的离线构建与小型资格测试；不提供通用测量入口或修改现有 JSON 占位表。完整历史 harness 和证据保留在本地 `.data/`，正式测量仍需独立注册冻结协议。
+- **辅助入口：** [startup/oci_prepare/README.md](startup/oci_prepare/README.md) 中的离线构建与小型资格测试；通用测量入口尚未准备，[startup/oci_prepare.json](startup/oci_prepare.json) 仅作注册占位，拒绝测量。完整历史 harness 和证据保留在本地 `.data/`，正式测量仍需独立注册冻结协议。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
