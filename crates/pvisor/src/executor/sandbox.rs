@@ -1250,14 +1250,8 @@ fn write_rootless_attestation(
             "linux-synthetic-root-landlock"
         };
         controls = controls
-            .enforced(
-                pvisor_core::CapabilityDimension::FilesystemRead,
-                mechanism,
-            )
-            .enforced(
-                pvisor_core::CapabilityDimension::FilesystemWrite,
-                mechanism,
-            );
+            .enforced(pvisor_core::CapabilityDimension::FilesystemRead, mechanism)
+            .enforced(pvisor_core::CapabilityDimension::FilesystemWrite, mechanism);
     }
     if plan.network.is_loopback_only() {
         controls = controls.enforced(

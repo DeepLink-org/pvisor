@@ -1515,10 +1515,7 @@ async fn execute_config(
                         Arc::new(ProcessExecutor::default())
                     }
                 }
-            } else if !safe
-                && filesystem_isolated
-                && pvisor::landlock_only_runtime_available()
-            {
+            } else if !safe && filesystem_isolated && pvisor::landlock_only_runtime_available() {
                 // The namespace plan needs mount(2) to build its synthetic
                 // root. Hosts that deny it (container runtimes commonly do)
                 // can still confine the workspace by path: Landlock needs no

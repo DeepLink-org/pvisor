@@ -855,8 +855,10 @@ fn platform_launcher_command(
             .expect("created rootless attestation")
             .to_owned(),
         network,
-        filesystem_isolated,
-        landlock_only,
+        FilesystemPlan {
+            isolated: filesystem_isolated,
+            landlock_only,
+        },
     )?;
     let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
     let plan_path = sandbox_root
@@ -1066,6 +1068,18 @@ fn platform_launcher_command(
     ))
 }
 
+/// How a host Run should isolate the Agent's filesystem view.
+///
+/// `isolated` builds the synthetic root and enforces Landlock over it;
+/// `landlock_only` skips the namespace plan and confines the host view with
+/// Landlock alone, for hosts that deny the mounts the synthetic root needs.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct FilesystemPlan {
+    isolated: bool,
+    landlock_only: bool,
+}
+
 #[cfg(target_os = "linux")]
 fn rootless_plan(
     spec: &RunSpec,
@@ -1074,8 +1088,7 @@ fn rootless_plan(
     root: PathBuf,
     attestation: PathBuf,
     network: NetworkIsolation,
-    filesystem_isolated: bool,
-    filesystem_landlock_only: bool,
+    filesystem: FilesystemPlan,
 ) -> std::io::Result<SandboxPlan> {
     let cwd = invocation
         .cwd
@@ -1112,7 +1125,7 @@ fn rootless_plan(
     // XDG roots) into the private temporary tree instead.
     let safe = crate::executor::sandbox::sandbox_required(spec);
     let mut staged_roots = Vec::new();
-    if !filesystem_landlock_only {
+    if !filesystem.landlock_only {
         for path in projected_state_roots(invocation) {
             if safe {
                 if path == Path::new("/") {
@@ -1162,14 +1175,14 @@ fn rootless_plan(
         read_write.push(source.clone());
         read_write.push(path.clone());
     }
-    if !safe && !filesystem_landlock_only {
+    if !safe && !filesystem.landlock_only {
         // The synthetic root itself is writable, and projected host paths
         // retain their ordinary lower filesystem write semantics. A
         // Landlock-only run has no synthetic root, so granting "/" here would
         // hand the Agent the whole host filesystem and void the policy.
         read_write.push(PathBuf::from("/"));
     }
-    if filesystem_landlock_only {
+    if filesystem.landlock_only {
         // Without a synthetic root there is no private tmpfs to redirect
         // temporary files into, and the Agent still needs somewhere to write.
         push_existing(&mut read_write, Path::new("/tmp"));
@@ -1239,7 +1252,7 @@ fn rootless_plan(
         }
     }
 
-    if filesystem_isolated {
+    if filesystem.isolated {
         for capability in &spec.capabilities.filesystem {
             let path = PathBuf::from(&capability.path);
             let path = if path.is_absolute() {
@@ -1282,8 +1295,8 @@ fn rootless_plan(
         staged_workspace,
         staged_workspace_source,
         network,
-        filesystem_isolated,
-        filesystem_landlock_only,
+        filesystem_isolated: filesystem.isolated,
+        filesystem_landlock_only: filesystem.landlock_only,
         probe_only: false,
         process_limit: spec.runtime.resource_limits.processes,
     })
@@ -1437,10 +1450,7 @@ impl RunExecutor for ProcessExecutor {
         if self.is_landlock_only() {
             capability_plan = capability_plan
                 .planned(CapabilityDimension::FilesystemRead, "linux-landlock-host")
-                .planned(
-                    CapabilityDimension::FilesystemWrite,
-                    "linux-landlock-host",
-                );
+                .planned(CapabilityDimension::FilesystemWrite, "linux-landlock-host");
         } else if self.is_rootless() {
             capability_plan = capability_plan
                 .planned(
@@ -2312,8 +2322,10 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
-            true,
-            false,
+            FilesystemPlan {
+                isolated: true,
+                landlock_only: false,
+            },
         )
         .unwrap();
         assert!(normal.read_write.contains(&PathBuf::from("/")));
@@ -2340,8 +2352,10 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
-            true,
-            false,
+            FilesystemPlan {
+                isolated: true,
+                landlock_only: false,
+            },
         )
         .unwrap();
         assert!(!safe.read_write.contains(&PathBuf::from("/")));
@@ -2379,8 +2393,10 @@ mod tests {
             temporary.path().join("root"),
             temporary.path().join("attestation"),
             NetworkIsolation::Ambient,
-            true,
-            true,
+            FilesystemPlan {
+                isolated: true,
+                landlock_only: true,
+            },
         )
         .unwrap();
 
