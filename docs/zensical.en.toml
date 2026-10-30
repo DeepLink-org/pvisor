@@ -238,6 +238,10 @@ scheme = "slate"
 primary = "custom"
 accent = "custom"
 
+[project.extra.analytics]
+provider = "google"
+property = "G-C92RYZYG96"
+
 [[project.extra.alternate]]
 name = "English"
 link = "https://deeplink-org.github.io/pvisor/"
