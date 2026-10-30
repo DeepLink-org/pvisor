@@ -8,6 +8,7 @@
 #}
 {% block extrahead %}
   {{ super() }}
+  <meta name="google-site-verification" content="TKYUnwvJb9LuG04tabQQwEtNqPsm8dTdMfmW9iRFnhY" />
   {%- set is_home = page.canonical_url == config.site_url -%}
   {%- if page.meta and page.meta.title -%}
     {%- set page_title = page.meta.title ~ " - " ~ config.site_name -%}
