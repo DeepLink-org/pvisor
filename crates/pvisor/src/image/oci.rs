@@ -1339,7 +1339,11 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(3);
                 loop {
                     match listener.accept() {
-                        Ok((socket, _)) => return socket,
+                        Ok((socket, _)) => {
+                            // Accepted sockets inherit nonblocking mode on macOS.
+                            socket.set_nonblocking(false).unwrap();
+                            return socket;
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             assert!(Instant::now() < deadline, "missing retry connection");
                             std::thread::sleep(Duration::from_millis(1));

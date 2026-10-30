@@ -1586,3 +1586,12 @@ VMM 的 payload 校验/选择、guest memory 创建与内核加载、hypervisor/
 外层 span 仍包含内层日志成本。诊断会扰动启动，重叠阶段不能相加；未启用时不采集时钟。
 这些阶段覆盖 VMM 准备，guest/application Ready 必须通过独立输出 observer 确认。
 采集和汇总见 [启动诊断工具](../../benchmark/startup/startup_profile.py)。
+
+## Linux compressed RAM session shutdown
+
+After all legitimate mapped and file consumers close, dropping the RAM mount
+explicitly wakes and joins its FUSE serving thread. Copies inherited into
+unrelated mount namespaces do not extend the serving lifetime. Active-use
+writeback and generation publication are unchanged. macOS retains its existing
+shutdown path. The ignored namespace-retention regression test requires Linux
+FUSE and permitted user/mount namespaces; run it explicitly on a suitable host.
