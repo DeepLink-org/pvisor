@@ -43,6 +43,7 @@ impl Mount {
         ];
         // Each VM owns its mount and session thread. There is no decompressed
         // userspace cache.
+        #[cfg(not(target_os = "linux"))]
         let session = fuser::spawn_mount2(
             RamFs {
                 store: store.clone(),
@@ -50,6 +51,17 @@ impl Mount {
             temporary.path(),
             &options,
         )?;
+        // Unrelated mount namespaces can retain inherited copies after all RAM
+        // consumers have closed. Explicit last-owner shutdown wakes the FUSE
+        // reader so those copies cannot keep this session's join blocked.
+        #[cfg(target_os = "linux")]
+        let session = BackgroundSession::new_interruptible(fuser::Session::new(
+            RamFs {
+                store: store.clone(),
+            },
+            temporary.path(),
+            &options,
+        )?)?;
         let mount = Self {
             session: Some(session),
             _directory: temporary,
