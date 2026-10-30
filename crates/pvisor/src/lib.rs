@@ -115,6 +115,7 @@ pub use runtime::{JobDirectoryLock, RunRecord, RunRecordState, control_observati
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
 pub use executor::delegated::DelegatedRunOutput;
+pub use executor::process::landlock_only_runtime_available;
 #[cfg(target_os = "linux")]
 pub use executor::process::rootless_runtime_available;
 pub use runtime::{

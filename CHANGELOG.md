@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Landlock-only filesystem isolation
+
+- Add a filesystem policy that installs Landlock against the host view without
+  creating user, mount or PID namespaces, so `--filesystem sandbox` keeps
+  enforcing a path boundary on hosts that deny `mount(2)` instead of silently
+  returning to an unisolated host process.
+- Withhold `/` and the projected home and XDG roots in that mode. Without a
+  synthetic root to project them behind, either grant would expose every sibling
+  of the workspace; the launcher redirects `HOME` into a private temporary
+  directory instead.
+- Record the installed mechanism as `linux-landlock-host` and name the boundary
+  actually in effect, rather than always reporting namespace isolation.
+- Keep the projected host procfs when the runtime denies mounting a fresh one,
+  instead of failing the whole sandbox setup.
+
+### Rootless capability probe
+
+- Replay the launcher's own setup in a child process instead of approximating it
+  with `unshare(1)`. The approximation was wrong in both directions: the `mount`
+  binary refuses a non-root euid under the launcher's identity mapping (false
+  negative on hosts where the sandbox works), and the probe never exercised the
+  `/proc` projection the synthetic root starts with, so a privileged container
+  that creates every namespace but cannot project `/proc` inside them was
+  reported as capable and then aborted during Agent setup (false positive).
+- Map the caller's own uid in the probe, matching the `uid_map`/`gid_map` writes
+  the launcher always performs, so a kernel that allows `CLONE_NEWUSER` but
+  rejects that write no longer reports the host as capable.
+
 ### Snapshot RAM mount isolation
 
 - Keep transient snapshot RAM mounts and pager specifications in validated private
