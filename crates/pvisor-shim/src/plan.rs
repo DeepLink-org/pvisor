@@ -785,8 +785,10 @@ impl ContainerPlan {
                     .map(|entry| match entry.split_once(':') {
                         Some((host, port)) => port
                             .parse::<u16>()
+                            .ok()
+                            .filter(|port| *port != 0 && !host.is_empty())
                             .map(|port| (host.to_string(), port))
-                            .map_err(|_| {
+                            .ok_or_else(|| {
                                 PlanError::UnsupportedConstraint(format!(
                                     "invalid io.pvisor.vm.network.allow port in `{entry}`"
                                 ))

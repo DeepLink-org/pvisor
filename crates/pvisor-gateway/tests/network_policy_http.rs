@@ -14,8 +14,8 @@ use pvisor_core::{
 };
 use pvisor_gateway::config::ProxyConfig;
 use pvisor_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
+use pvisor_gateway::serve_with_listeners_and_shutdown;
 use pvisor_gateway::sink::NoopCaptureObserver;
-use pvisor_gateway::{serve_with_listeners_and_shutdown, serve_with_runtime_control};
 use tokio::sync::oneshot;
 
 struct DenyModelController;
@@ -29,14 +29,6 @@ impl ControlController for DenyModelController {
             network => PolicyControlController.authorize(network),
         }
     }
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 async fn spawn_mock_http() -> (u16, oneshot::Sender<()>) {
@@ -261,37 +253,26 @@ async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<
     (format!("http://{listen}"), tmp, stop_tx)
 }
 
-async fn spawn_proxy_with_controller(
+fn spawn_proxy_with_controller(
     toml: &str,
     controller: Arc<dyn ControlController>,
-) -> (String, tempfile::TempDir, oneshot::Sender<()>) {
-    let listen_port = free_port();
-    let admin_port = free_port();
+) -> (InProcessCapture, tempfile::TempDir) {
     let toml = toml
-        .replace("{{LISTEN}}", &format!("127.0.0.1:{listen_port}"))
-        .replace("{{ADMIN}}", &format!("127.0.0.1:{admin_port}"));
+        .replace("{{LISTEN}}", "127.0.0.1:0")
+        .replace("{{ADMIN}}", "127.0.0.1:0");
     let cfg = ProxyConfig::from_toml_str(&toml).expect("proxy toml");
     let tmp = tempfile::tempdir().unwrap();
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let (stop_tx, stop_rx) = oneshot::channel::<()>();
-    let storage = tmp.path().to_path_buf();
-    let sink: Arc<dyn pvisor_gateway::sink::CaptureEventObserver> =
-        Arc::new(NoopCaptureObserver::new());
-    tokio::spawn(async move {
-        let _ = serve_with_runtime_control(
-            cfg,
-            storage,
-            sink,
+    let proxy = InProcessCapture::start_with_runtime(
+        cfg,
+        tmp.path().to_path_buf(),
+        Arc::new(NoopCaptureObserver::new()),
+        InProcessRuntime {
             controller,
-            Some(ready_tx),
-            async move {
-                let _ = stop_rx.await;
-            },
-        )
-        .await;
-    });
-    ready_rx.await.expect("proxy ready");
-    (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
+            ..InProcessRuntime::default()
+        },
+    )
+    .expect("test Gateway failed to start");
+    (proxy, tmp)
 }
 
 #[tokio::test]
@@ -1146,18 +1127,16 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
 #[tokio::test]
 async fn e2e_network_only_allowlist_forwards_absolute_llm_uri() {
     let (mock_port, mock_stop) = spawn_mock_http().await;
-    let listen = format!("127.0.0.1:{}", free_port());
-    let admin = format!("127.0.0.1:{}", free_port());
-    let config = ProxyConfig::from_toml_str(&format!(
-        r#"listen = "{listen}"
-admin_listen = "{admin}"
+    let config = ProxyConfig::from_toml_str(
+        r#"listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
 agent_id = "t"
 models = []
 [network]
 mode = "allowlist"
 allowed_hosts = ["127.0.0.1"]
-"#
-    ))
+"#,
+    )
     .unwrap();
     let storage = tempfile::tempdir().unwrap();
     let proxy = InProcessCapture::start_with_runtime(
@@ -1478,8 +1457,7 @@ name = "*"
 upstream = "http://127.0.0.1:{mock_port}/v1"
 "#
     );
-    let (proxy, _tmp, stop) =
-        spawn_proxy_with_controller(&toml, Arc::new(DenyModelController)).await;
+    let (proxy, _tmp) = spawn_proxy_with_controller(&toml, Arc::new(DenyModelController));
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -1487,7 +1465,7 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
         .build()
         .unwrap();
     let resp = client
-        .post(format!("{proxy}/v1/chat/completions"))
+        .post(format!("http://{}/v1/chat/completions", proxy.listen))
         .header("content-type", "application/json")
         .body(r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#)
         .send()
@@ -1498,7 +1476,7 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
         resp.text().await.unwrap().contains("model-not-allowed"),
         "denial should expose the stable pVisor reason"
     );
-    let _ = stop.send(());
+    proxy.shutdown().unwrap();
     let _ = mock_stop.send(());
 }
 
@@ -1574,4 +1552,114 @@ upstream = "http://127.0.0.1:9/v1"
     let body = resp.text().await.unwrap();
     assert!(body.contains("api.openai.com"), "{body}");
     let _ = stop.send(());
+}
+
+#[test]
+fn shutdown_interrupts_uploads_and_ordinary_proxy_headers_and_bodies() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    for phase in ["upload", "headers", "body", "backpressure"] {
+        let supplier = TcpListener::bind("127.0.0.1:0").unwrap();
+        supplier.set_nonblocking(true).unwrap();
+        let target = supplier.local_addr().unwrap();
+        let config = ProxyConfig::from_toml_str(
+            "listen = '127.0.0.1:0'\nadmin_listen = '127.0.0.1:0'\nmodels = []\n[network]\nmode = 'allowlist'\nallowed_hosts = ['127.0.0.1']",
+        ).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let gateway = InProcessCapture::start(
+            config,
+            storage.path().into(),
+            Arc::new(NoopCaptureObserver::new()),
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(&gateway.listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut upstream = None;
+        if phase == "upload" {
+            client.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let mut admin = TcpStream::connect(&gateway.admin_listen).unwrap();
+                admin
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                admin.write_all(b"GET /admin/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+                let mut response = String::new();
+                admin.read_to_string(&mut response).unwrap();
+                let body = response.split_once("\r\n\r\n").unwrap().1;
+                if serde_json::from_str::<serde_json::Value>(body).unwrap()["active_requests"] == 1
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            client
+                .write_all(
+                    format!("GET http://{target}/slow HTTP/1.1\r\nHost: {target}\r\n\r\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match supplier.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            if phase == "backpressure" {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 67108864\r\n\r\nx")
+                    .unwrap();
+                let mut received = Vec::new();
+                while !received.ends_with(b"\r\n\r\nx") {
+                    let mut byte = [0];
+                    assert_eq!(client.read(&mut byte).unwrap(), 1);
+                    received.push(byte[0]);
+                }
+                stream.set_nonblocking(true).unwrap();
+                let data = vec![b'x'; 8 * 1024 * 1024];
+                let mut remaining = data.as_slice();
+                while !remaining.is_empty() {
+                    match stream.write(remaining) {
+                        Ok(0) => panic!("supplier disconnected"),
+                        Ok(n) => remaining = &remaining[n..],
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            } else if phase == "body" {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n")
+                    .unwrap();
+                let mut received = Vec::new();
+                while !received.ends_with(b"\r\nx\r\n") {
+                    let mut byte = [0];
+                    assert_eq!(client.read(&mut byte).unwrap(), 1);
+                    received.push(byte[0]);
+                }
+            }
+            upstream = Some(stream);
+        }
+        let (done, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done.send(gateway.shutdown()).unwrap();
+        });
+        // Keep both ends open: stopping must not depend on either peer closing.
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect(phase)
+            .unwrap();
+        worker.join().unwrap();
+        drop(upstream);
+        drop(client);
+    }
 }

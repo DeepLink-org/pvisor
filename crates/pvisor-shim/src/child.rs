@@ -1100,9 +1100,6 @@ fn vm_runner_main() -> Result<i32> {
             let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&plan.id, port));
         }
     }
-    if let Some(gate) = &plan.egress_gate {
-        let _ = std::fs::remove_file(gate);
-    }
     result
 }
 
