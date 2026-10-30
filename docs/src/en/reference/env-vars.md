@@ -39,7 +39,7 @@ Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PR
 
 ## Startup diagnostics and source builds {#build-and-diagnostics}
 
-`PVISOR_STARTUP_TIMING` enables startup phase logs by default; set it to `0` to disable them for measurements without logging overhead. It changes diagnostic output, not task policy.
+`PVISOR_STARTUP_TIMING=1` enables startup checkpoints, persistence timings and frontend/owner correlation logs. They are disabled by default; `0` keeps them disabled. This changes diagnostic output only; task policy, Run records, workload output, errors, warnings and staging notices are unchanged. `PVISOR_STARTUP_PROFILE=1` independently enables detailed JSON timing spans.
 
 `PVISOR_VM_FS_WRITEBACK` controls guest writeback. New staged VM sessions default to off; `1` explicitly requests it and `0` disables it. Restored sessions without an override preserve their negotiated mode; explicit `0` rejects a writeback-enabled snapshot. It is mutually exclusive with the host write cache below. Validation of this firmware/host fix covers Linux x86_64/KVM, without extending that evidence to macOS.
 

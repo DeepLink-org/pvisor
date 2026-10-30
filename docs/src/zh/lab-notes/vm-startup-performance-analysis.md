@@ -154,15 +154,15 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
 ### 常态化启动诊断日志
 
-启动日志帮助定位等待发生在哪个阶段，默认开启；设置 `PVISOR_STARTUP_TIMING=0` 可关闭。本文分别保留无日志的原完整矩阵和开启日志的最新复测，比较时应使用同一批次。
+启动日志帮助定位等待发生在哪个阶段，现在默认关闭；设置 `PVISOR_STARTUP_TIMING=1` 可开启。本文分别保留无日志的原完整矩阵和开启日志的最新复测，比较时应使用同一批次。
 
 ??? note "日志字段与采集方式"
 
-    当前实现默认输出 `pvisor-startup level=info` 阶段日志，无需调试开关。字段包括 Unix 时间 `timestamp_ms`、`pid`/`ppid`、JSON 引号包裹的 `run_id`、`stage`、`monotonic_us` 和 `process_elapsed_us`。Run ID 生成前的进程事件使用 `"-"`；结合 PID 与后续带 Run ID 的事件关联，父进程和 runner 的同一 Run 使用相同 ID。时间差使用宿主单调时钟计算，不能使用可能调整的墙上时钟。
+    设置 `PVISOR_STARTUP_TIMING=1` 后，当前实现输出 `pvisor-startup level=info` 阶段日志。字段包括 Unix 时间 `timestamp_ms`、`pid`/`ppid`、JSON 引号包裹的 `run_id`、`stage`、`monotonic_us` 和 `process_elapsed_us`。Run ID 生成前的进程事件使用 `"-"`；结合 PID 与后续带 Run ID 的事件关联，父进程和 runner 的同一 Run 使用相同 ID。时间差使用宿主单调时钟计算，不能使用可能调整的墙上时钟。
 
     普通 CLI 输出到 stderr，可由生产日志采集器保留；TUI 沿用前端诊断日志文件，VM runner 通过预先打开的专用描述符写入同一通道，避免污染 Agent 终端。日志只包含阶段与身份计时字段，不含命令、环境变量或凭据。输出尽力而为，不增加 fsync，也不作为恢复元数据。
 
-    `PVISOR_STARTUP_TIMING=0` 可显式关闭计时日志，用于无埋点基准；`1` 与不设置都开启。本文历史测量值来自归档制品，不能据此声称新增常态日志没有任何开销。`cli.session_started` 和 `runner.vmm_built` 分别表示 Session 已启动和 VMM 已构造，不代表 guest 或业务服务就绪；还没有通用 guest-ready 通知。
+    不设置或设置 `PVISOR_STARTUP_TIMING=0` 都关闭计时日志，用于无埋点基准；只有 `1` 开启。历史测量使用默认开启日志的制品，归档结果不能据此证明日志没有开销。`cli.session_started` 和 `runner.vmm_built` 分别表示 Session 已启动和 VMM 已构造，不代表 guest 或业务服务就绪；还没有通用 guest-ready 通知。
 
 ## 4. 实验数据与分析
 

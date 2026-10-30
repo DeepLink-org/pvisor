@@ -1,3 +1,7 @@
+---
+description: Review a staged Job's file changes, apply selected paths, and handle preimage conflicts through the recovery ledger.
+---
+
 # Review and apply changes
 
 Start a staged run from the project directory:

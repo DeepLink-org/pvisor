@@ -1,9 +1,13 @@
+---
+description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独立的 HOME 与 CODEX_HOME 暂存，以及如何审查暂存的文件改动。"
+---
+
 # Codex CLI
 
 ```bash
 pvisor spawn --safe -- codex
 pvisor status --review last
-pvisor apply last --path src   # 或：pvisor drop last
+pvisor apply last --path src   # or: pvisor drop last
 ```
 
 ## `--safe` 为 Codex 做了什么

@@ -1,3 +1,7 @@
+---
+description: Install the pvisor CLI from a Python wheel on Linux x86_64 or Apple Silicon macOS, check platform prerequisites, and pick a quick start.
+---
+
 # Installation
 
 Install pVisor on the machine that will execute tool commands: your computer for the local workflow, or a Linux/KVM node for the infrastructure example. Current release packages support Linux x86_64 and Apple Silicon macOS; installation requires neither Rust nor a kernel build toolchain.

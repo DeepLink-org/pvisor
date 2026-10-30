@@ -1,3 +1,7 @@
+---
+description: Run Claude Code, Codex CLI, or any script as a pVisor Job with workspace staging, network policy, and a recorded Run Bundle.
+---
+
 # Connect your agent
 
 Run existing Agent CLIs, scripts, and automation through one entry point, without changing the agent. Install the command in the selected executor and configure the provider in the agent itself first. An agent installed on the host does not automatically appear in an image. Replace `<agent-command>` below with the actual command:

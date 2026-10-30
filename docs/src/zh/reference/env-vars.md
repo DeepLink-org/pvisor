@@ -39,7 +39,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 ## 启动诊断与源码构建 {#build-and-diagnostics}
 
-`PVISOR_STARTUP_TIMING` 默认启用启动阶段日志；设为 `0` 关闭，适合不带日志开销的测量。它只影响诊断输出，不改变任务策略。
+`PVISOR_STARTUP_TIMING=1` 启用启动阶段 checkpoint、持久化计时和 frontend/owner 关联日志。默认关闭；`0` 保持关闭。它只影响诊断输出；任务策略、Run 记录、工作负载输出、错误、警告和暂存提示不变。`PVISOR_STARTUP_PROFILE=1` 独立启用详细 JSON 计时 span。
 
 `PVISOR_VM_FS_WRITEBACK` 控制 guest 写回：新建 staged VM 会话默认关闭，`1` 显式请求，`0` 关闭；未覆盖的恢复会话保留原协商模式，显式 `0` 拒绝已开启写回的快照。它与下方 host 写缓存互斥。本次新固件/宿主修复的验证范围为 Linux x86_64/KVM，不能据此外推 macOS。
 

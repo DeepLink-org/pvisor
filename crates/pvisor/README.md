@@ -1,6 +1,7 @@
 # PolicyVisor (pVisor)
 
-**Scaling autonomous agent execution.**
+**Run a coding agent in a staged workspace, review its file changes, and apply
+only what you keep.**
 
 PolicyVisor (pVisor) manages execution for Agent CLIs, scripts, and automation
 commands. The **p** stands for **Policy**: connect requested capabilities,
@@ -1584,7 +1585,9 @@ requests stay inside the VM; no host process or filesystem fallback is provided.
 完成协议读取另记录 `completion.load`、`completion.read_file` 和
 `completion.validate_bundle`，包括有界读取字节数与 Bundle 摘要/类型/语义验证。
 这些 span 嵌套，不能相加；诊断写入及追踪会扰动耗时，不能代替关闭诊断的基准。
-`PVISOR_STARTUP_TIMING=0` 单独关闭原有 checkpoint/持久化日志，不关闭 profile。
+checkpoint、持久化计时和 frontend/owner 关联日志默认关闭；设置
+`PVISOR_STARTUP_TIMING=1` 开启，`0` 保持关闭。该开关独立于 profile，
+不改变执行策略、Run 记录或错误、警告与暂存边界提示。
 
 普通 host 执行另外标记 `process.spawn_begin` / `process.spawn_ready`，供分析器截断启动窗口。
 这些标记说明宿主已创建进程，不证明应用或 VM guest 就绪。不同进程、不同 profiler 的相对

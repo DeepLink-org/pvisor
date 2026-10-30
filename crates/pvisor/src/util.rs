@@ -72,11 +72,11 @@ pub(crate) fn write_run_bytes(
 
 fn startup_logging_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0"))
+    *ENABLED.get_or_init(|| std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1"))
 }
 
 /// Routine host checkpoints; guest clocks have a different epoch.
-/// `PVISOR_STARTUP_TIMING=0` suppresses output for uninstrumented benchmarks.
+/// Disabled by default; set `PVISOR_STARTUP_TIMING=1` to enable diagnostic output.
 pub fn startup_mark(stage: &str) {
     startup_checkpoint(stage, None);
 }

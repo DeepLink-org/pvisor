@@ -1,7 +1,7 @@
 # Native Zensical configuration; no generated configuration or HTML post-processing.
 [project]
 site_name = "PolicyVisor"
-site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
+site_description = "Run a coding agent in a staged workspace, review its file changes, and apply only the paths you keep. Apache-2.0; runs locally on Linux x86_64 and Apple Silicon macOS."
 site_url = "https://deeplink-org.github.io/pvisor/"
 docs_dir = "src/en"
 watch = ["src/en/benchmarks", "semspec_tables.py"]

@@ -1,9 +1,13 @@
+---
+description: "Run Codex CLI under pVisor: the --safe network allowlist, separate HOME and CODEX_HOME stages, and reviewing staged file changes."
+---
+
 # Codex CLI
 
 ```bash
 pvisor spawn --safe -- codex
 pvisor status --review last
-pvisor apply last --path src   # 或：pvisor drop last
+pvisor apply last --path src   # or: pvisor drop last
 ```
 
 ## What `--safe` does for Codex

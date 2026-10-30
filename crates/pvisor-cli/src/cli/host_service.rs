@@ -542,7 +542,7 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
                 pvisor::JobDirectoryLock::acquire(&record, context.command.operation())?,
             );
         }
-        if std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0") {
+        if std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1") {
             pvisor::diagnostics::diagnostic(format_args!(
                 "pvisor-owner-request level=info version={} request_id={} frontend_pid={} owner_pid={}",
                 AGENTCTL_HOST_VERSION,

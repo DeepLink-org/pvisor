@@ -1,3 +1,7 @@
+---
+description: Run a demo script in a staged workspace, review the file changes it made, and apply only the paths you accept. No VM image or model API is needed.
+---
+
 <a id="your-first-run"></a>
 
 # Local workflow: run and review {#local-workflow}
