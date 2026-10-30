@@ -252,6 +252,9 @@ jobs:
           # Use the original static product artifact from the smoke-test build.
           PVISOR_BINARY: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/debug/pvisor
           PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
+          # Keep fatal VMM diagnostics when a workload exits unexpectedly.
+          PVISOR_KRUN_LOG: "1"
+          RUST_LOG: error
           CONTRACT_LOGS: ${{ runner.temp }}/podman-contracts
         shell: bash
         run: |
