@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::mem;
+use std::{io, mem};
 
 use super::bindings;
 use bitflags::bitflags;
@@ -907,12 +907,18 @@ pub struct SetattrIn {
 }
 unsafe impl ByteValued for SetattrIn {}
 
-impl From<SetattrIn> for bindings::stat64 {
+impl TryFrom<SetattrIn> for bindings::stat64 {
+    type Error = io::Error;
+
     #[allow(clippy::useless_conversion)]
-    fn from(sai: SetattrIn) -> bindings::stat64 {
+    fn try_from(sai: SetattrIn) -> io::Result<bindings::stat64> {
         let mut out: bindings::stat64 = unsafe { mem::zeroed() };
-        // We need this conversion on macOS.
-        out.st_mode = sai.mode.try_into().unwrap();
+        // Linux wire modes must fit macOS's 16-bit mode_t; unselected fields are ignored.
+        if sai.valid & FATTR_MODE != 0 {
+            out.st_mode = u16::try_from(sai.mode)
+                .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?
+                .into();
+        }
         out.st_uid = sai.uid;
         out.st_gid = sai.gid;
         out.st_size = sai.size as i64;
@@ -923,7 +929,7 @@ impl From<SetattrIn> for bindings::stat64 {
         out.st_mtime_nsec = sai.mtimensec.into();
         out.st_ctime_nsec = sai.ctimensec.into();
 
-        out
+        Ok(out)
     }
 }
 
