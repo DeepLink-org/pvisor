@@ -64,6 +64,10 @@ fn split_egress_target(target: &str) -> anyhow::Result<(String, u16)> {
             let port = port
                 .parse::<u16>()
                 .map_err(|_| anyhow::anyhow!("invalid port in egress rule target `{target}`"))?;
+            anyhow::ensure!(
+                port != 0,
+                "invalid zero port in egress rule target `{target}`"
+            );
             if host.is_empty() {
                 anyhow::bail!("empty host in egress rule target `{target}`");
             }
@@ -115,9 +119,6 @@ fn egress_rules_config(
             "allow" => {}
             other => anyhow::bail!("unsupported egress rule action {other:?}"),
         }
-    }
-    if default_deny && config.rules.is_empty() {
-        anyhow::bail!("deny-by-default policy without allow rules denies everything");
     }
     Ok(config)
 }
@@ -252,7 +253,8 @@ pub fn watch_gate(egress: pvisor_overlaynet::EgressRuntime, gate: &Path, allow_p
     std::thread::Builder::new()
         .name("pvisor-egress-gate".into())
         .spawn(move || {
-            let mut last = std::fs::read_to_string(&gate).unwrap_or_default();
+            // The file may have changed since the runner compiled its initial policy.
+            let mut last = String::new();
             loop {
                 std::thread::sleep(GATE_WATCH_INTERVAL);
                 let Ok(contents) = std::fs::read_to_string(&gate) else {
@@ -354,6 +356,62 @@ mod tests {
     }
 
     #[test]
+    fn explicit_zero_port_is_never_an_all_port_grant() {
+        for action in ["allow", "deny"] {
+            assert!(
+                egress_rules_config(&rules("deny", &[(action, "example.com:0")]), false).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn gate_watcher_applies_first_read_and_subsequent_deny_all() {
+        use pvisor_overlaynet::{BandwidthRegistry, EgressRuntime};
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        let runtime = |config: pvisor_core::NetworkConfig| {
+            EgressRuntime::with_bandwidth_registry(
+                NetworkPolicy::compile(&config).unwrap(),
+                Arc::new(PolicyControlController),
+                BandwidthRegistry::default(),
+            )
+        };
+        let active = runtime(Default::default());
+        let temporary = tempfile::tempdir().unwrap();
+        let gate = temporary.path().join("gate.json");
+        // This policy arrived after initial compilation but before watcher startup.
+        std::fs::write(
+            &gate,
+            r#"{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com:443"}]}"#,
+        )
+        .unwrap();
+        super::watch_gate(active.clone(), &gate, false);
+        for (config, update) in [
+            (
+                egress_rules_config(&rules("deny", &[("allow", "example.com:443")]), false)
+                    .unwrap(),
+                None,
+            ),
+            (
+                egress_rules_config(&rules("deny", &[]), false).unwrap(),
+                Some(r#"{"defaultAction":"deny","egress":[]}"#),
+            ),
+        ] {
+            if let Some(update) = update {
+                std::fs::write(&gate, update).unwrap();
+            }
+            let expected = format!("{:?}", runtime(config));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while format!("{active:?}") != expected {
+                assert!(Instant::now() < deadline, "gate policy was never applied");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[test]
     fn compiled_gate_policy_matches_port_scoped_targets() {
         // End to end through NetworkPolicy::compile: the port from the
         // sidecar target actually gates the decision.
@@ -436,11 +494,18 @@ mod tests {
     }
 
     #[test]
-    fn deny_by_default_without_allow_rules_is_rejected() {
-        assert!(egress_rules_config(&rules("deny", &[]), false).is_err());
-        assert!(
-            egress_rules_config(&rules("deny", &[("deny", "blocked.example.com")]), false).is_err()
-        );
+    fn deny_by_default_without_allow_rules_denies_every_destination() {
+        for entries in [vec![], vec![("deny", "blocked.example.com")]] {
+            let config = egress_rules_config(&rules("deny", &entries), false).unwrap();
+            let policy = NetworkPolicy::compile(&config).unwrap();
+            for host in ["blocked.example.com", "other.example.com"] {
+                assert!(
+                    policy
+                        .authorize(&PolicyControlController, &request(host))
+                        .is_err()
+                );
+            }
+        }
     }
 
     #[test]

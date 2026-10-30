@@ -315,13 +315,15 @@ regression, not a mystery.
   already admits everything else — and are dropped at compilation instead
   of failing the policy). Rule targets use the sidecar contract's
   `host[:port]` form — a port scopes the compiled rule to that port, the
-  same split the `io.pvisor.vm.network.allow` annotation applies. The gate
-  file is unlinked on the workload task's delete and on sandbox shutdown,
-  so teardown on any path leaves no residue in `/run`. The 3-second gate window only spans the
+  same split the `io.pvisor.vm.network.allow` annotation applies; an explicit
+  zero port is rejected instead of granting every port. An empty deny-default
+  allowlist is a valid deny-all policy, including during live updates. The gate
+  belongs to the sandbox and is unlinked on sandbox shutdown, not on individual
+  workload exit/delete, so workload restarts retain their policy. The 3-second gate window only spans the
   sidecar's Create, which kubelet issues milliseconds after the workload's
   Start. The gate stays a live channel for the task's lifetime: a runner
-  thread re-reads it and hot-swaps the compiled overlaynet policy on every
-  change (a rule set that fails to compile keeps the previous policy and is
+  thread applies its first read too, covering updates during initial VM setup,
+  then hot-swaps the compiled overlaynet policy on every change (a rule set that fails to compile keeps the previous policy and is
   logged). The sidecar's own runtime API can only update nftables inside
   the pod netns, which VM traffic never traverses — republishing the gate
   file is the dynamic-policy contract for VM workloads. The sidecar rule

@@ -195,3 +195,13 @@ fn vm_ignored_host_resources_do_not_create_a_host_cgroup() {
     assert!(planned.wants_vm());
     assert!(planned.cgroup.is_none());
 }
+
+#[test]
+fn vm_network_annotation_rejects_explicit_zero_ports() {
+    for target in ["example.com:0", ":443"] {
+        let mut input = base();
+        input["annotations"] = json!({"io.pvisor.executor":"vm",
+            "io.pvisor.vm.network":"allowlist", "io.pvisor.vm.network.allow":target});
+        assert!(plan(input).unwrap().vm_network_plan().is_err());
+    }
+}

@@ -956,7 +956,6 @@ impl Task for PvisorTask {
                 .iter()
                 .filter_map(|injection| injection.bridge)
                 .collect();
-            entry.egress_gate = plan.egress_gate.clone();
         }
         let (exit_tx, _) = watch::channel(None);
         self.inner.tasks.lock().expect("tasks mutex").insert(
@@ -1355,14 +1354,6 @@ impl Task for PvisorTask {
             let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
             for port in live.entry.bridge_ports {
                 let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&req.id, port));
-            }
-            // The gate belongs to the sidecar task that published it, but
-            // only the VM workload task's plan carries its path; unlinking
-            // here on the graceful path covers the common teardown, while
-            // the runner exit and sandbox shutdown unlinks remain the
-            // belt-and-braces for force teardowns.
-            if let Some(gate) = &live.entry.egress_gate {
-                let _ = std::fs::remove_file(gate);
             }
         }
         #[cfg(feature = "vm")]

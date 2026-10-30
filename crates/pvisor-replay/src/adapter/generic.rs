@@ -1245,51 +1245,7 @@ fn continue_native_cli(
         .map(|bridge| bridge.finish())
         .or_else(|| opencode_bridge.take().map(|bridge| bridge.finish()));
     let bridge_error = bridge_result.and_then(|result| result.err());
-    if !output.status.success() && matches!(agent, NativeJsonlAgent::Opencode) {
-        // OpenCode can wedge silently between tool executions; the idle
-        // watchdog then terminates it.  Keep any complete live turns that
-        // were already produced instead of discarding them with the sandbox.
-        let events_path = log_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("opencode-events.jsonl");
-        let db_path = context.state_dir.join("opencode-data/opencode/opencode.db");
-        let mut raw = read_regular_file(&events_path)
-            .or_else(|_| read_regular_file(&log_path))
-            .unwrap_or_default();
-        if !String::from_utf8_lossy(&raw).contains("\"step_finish\"") {
-            let session_id = opencode_session_id(&session_id);
-            if rebuild_opencode_events_from_db(&db_path, &events_path, &session_id)? {
-                raw = read_regular_file(&events_path).unwrap_or_default();
-            }
-        }
-        let rescued = parse_json_lines_from_log(&raw);
-        let complete = rescued
-            .iter()
-            .filter(|event| event.get("type") == Some(&json!("step_finish")))
-            .count();
-        if complete > 0 {
-            journal.append(
-                "continuation_terminated_with_partial_turns",
-                [
-                    ("agent".into(), json!("opencode")),
-                    ("exit".into(), json!(output.status.to_string())),
-                    ("rescued_step_finish".into(), json!(complete)),
-                ],
-            )?;
-        } else {
-            let process_error = ReplayError::classify_continuation(
-                format!(
-                    "{} replay/continuation exited {}; see {}",
-                    agent.label(),
-                    output.status,
-                    log_path.display()
-                ),
-                &String::from_utf8_lossy(&output.stderr_tail),
-            );
-            return Err(process_error);
-        }
-    } else if !output.status.success() {
+    if !output.status.success() && !step_limited {
         let process_error = ReplayError::classify_continuation(
             format!(
                 "{} replay/continuation exited {}; see {}",

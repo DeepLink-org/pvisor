@@ -11,6 +11,7 @@ pub mod models_list;
 mod overlaynet_config;
 mod reasoning;
 mod router;
+mod shutdown;
 mod state;
 mod streaming;
 mod upstream;

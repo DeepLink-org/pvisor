@@ -28,6 +28,11 @@ isolate an unsandboxed process from other processes running as the same host UID
 Embedded users can supply `InProcessRuntime.client_token` and `run_id` explicitly.
 HTTP upstreams use a ten-minute read-inactivity timeout rather than a ten-minute
 total-stream deadline, so active long streams can continue.
+Shutdown allows one second for existing cancellation responses, then closes
+remaining proxy and admin transport I/O before draining accepted
+capture work. Partial request uploads, ordinary proxy upstream waits and clients
+that stop reading cannot retain a connection indefinitely during Attempt teardown.
+Normal response framing, trailers and backpressure are unchanged.
 
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
