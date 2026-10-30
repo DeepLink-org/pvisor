@@ -1,9 +1,13 @@
+---
+description: "Run Claude Code under pVisor: what --safe allows on the network, how to pass ANTHROPIC_API_KEY, and how to review and apply its file changes."
+---
+
 # Claude Code
 
 ```bash
 pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
 pvisor status --review last
-pvisor apply last --path src   # 或：pvisor drop last
+pvisor apply last --path src   # or: pvisor drop last
 ```
 
 ## What `--safe` does for Claude Code

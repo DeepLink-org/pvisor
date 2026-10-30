@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{#
+  Social and structured-data metadata. GitHub Pages serves the same page to
+  crawlers and link unfurlers, so the tags are generated from the page's own
+  description rather than a site-wide constant. The image is the repository's
+  social preview card, committed under assets/logos/.
+#}
+{% block extrahead %}
+  {{ super() }}
+  {%- set is_home = page.canonical_url == config.site_url -%}
+  {%- if page.meta and page.meta.title -%}
+    {%- set page_title = page.meta.title ~ " - " ~ config.site_name -%}
+  {%- elif page.title and not is_home -%}
+    {%- set page_title = page.title | striptags ~ " - " ~ config.site_name -%}
+  {%- else -%}
+    {%- set page_title = config.site_name -%}
+  {%- endif -%}
+  {%- set page_desc = page.meta.description if page.meta and page.meta.description else config.site_description -%}
+  {%- set og_image = config.site_url ~ "assets/logos/pvisor-social.png" -%}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+  <meta property="og:title" content="{{ page_title }}">
+  <meta property="og:description" content="{{ page_desc }}">
+  <meta property="og:url" content="{{ page.canonical_url or config.site_url }}">
+  <meta property="og:image" content="{{ og_image }}">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="PolicyVisor: run a coding agent in a staged workspace, review its changes, apply the paths you keep.">
+  <meta property="og:locale" content="{% if config.theme.language == 'zh' %}zh_CN{% else %}en_US{% endif %}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ page_title }}">
+  <meta name="twitter:description" content="{{ page_desc }}">
+  <meta name="twitter:image" content="{{ og_image }}">
+  {% if is_home %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "PolicyVisor",
+    "alternateName": "pVisor",
+    "applicationCategory": "DeveloperApplication",
+    "applicationSubCategory": "Sandbox runtime for AI coding agents",
+    "operatingSystem": "Linux x86_64, macOS ARM64",
+    "url": {{ config.site_url | tojson }},
+    "codeRepository": "https://github.com/DeepLink-org/pvisor",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "description": {{ config.site_description | tojson }},
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+  {% endif %}
+{% endblock %}

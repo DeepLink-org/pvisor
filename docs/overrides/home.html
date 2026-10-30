@@ -8,25 +8,80 @@
   <section class="pc-home-hero">
     <div class="pc-home-hero-grid">
       <div class="pc-home-copy">
-        <p class="pc-home-kicker">PolicyVisor (pVisor)</p>
-        <h1>{% if zh %}Agent 原生沙箱框架{% else %}An agent-native sandbox framework{% endif %}</h1>
-        <p>{% if zh %}在本地运行 Agent，提供执行隔离、访问控制、任务管理与文件改动审查，让执行更安全、可控。{% else %}Run agents locally with execution isolation, access controls, task management, and file change review for safer execution and greater control.{% endif %}</p>
-        <p>{% if zh %}在集群中集成 pVisor，为 Agentic 场景下的大规模推理、评测与 RL 后训练提供高效执行环境。{% else %}Integrate pVisor into clusters to provide efficient execution environments for large-scale agentic inference, evaluation, and RL post-training.{% endif %}</p>
-        <p>{% if zh %}在本机运行 Agent Job 并审查改动，用 Docker 风格命令管理独立 VM，或通过 <a href="guides/daemon/">OpenSandbox/E2B SDK</a> 驱动本地沙箱。{% else %}Run agent Jobs and review their changes, manage independent VMs with Docker-style commands, or drive local sandboxes through <a href="guides/daemon/">OpenSandbox/E2B SDKs</a>.{% endif %}</p>
+        <h1>PolicyVisor</h1>
+        <p class="pc-home-tagline">{% if zh %}Agent 原生沙箱框架{% else %}An agent-native sandbox framework{% endif %}</p>
+        <p>{% if zh %}在暂存工作区中运行你的 Agent，审查文件改动，再把选中的部分合入工作区。{% else %}Run your agent in a staged workspace. Review its file changes and apply only the paths you keep.{% endif %}</p>
+        <div class="pc-home-actions">
+          <a class="pc-home-btn primary" href="start/first-run/">{% if zh %}运行第一个 Job{% else %}Run one Job{% endif %}</a>
+          <a class="pc-home-btn" href="https://github.com/DeepLink-org/pvisor">GitHub</a>
+        </div>
+        <pre class="pc-home-install"><code>pip install pvisor-sandbox</code></pre>
+        <details class="pc-home-brew">
+          <summary>{% if zh %}或通过 Homebrew 安装{% else %}Or install with Homebrew{% endif %}</summary>
+          <pre class="pc-home-install"><code>brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
+brew install DeepLink-org/formula/pvisor</code></pre>
+          <a href="start/installation/#native-downloads">{% if zh %}Homebrew 与原生安装说明{% else %}Homebrew and native installation guide{% endif %}</a>
+        </details>
+        <p class="pc-home-platforms">Linux x86_64 · Apple Silicon macOS<br><a href="start/installation/">{% if zh %}安装方式与平台要求{% else %}Installation and prerequisites{% endif %}</a></p>
       </div>
-      <div class="pc-home-terminal-wrap">
-        <a class="pc-home-mode" href="guides/">
-          <strong>{% if zh %}本地 Agent 工作流{% else %}Local agent workflows{% endif %}</strong>
-          <span>{% if zh %}准备任务 → 暂存执行 → 审查改动 → 选择合入。{% else %}Prepare a task → execute with staging → review changes → apply selected paths.{% endif %}</span>
-          <span>{% if zh %}从一次离线演示开始，再接入你的 Agent。{% else %}Start with an offline demonstration, then connect your agent.{% endif %}</span>
-        </a>
-        <a class="pc-home-mode" href="guides/infrastructure/">
-          <strong>{% if zh %}Agent 执行基础设施{% else %}Agent execution infrastructure{% endif %}</strong>
-          <span>{% if zh %}准备环境 → 运行工具 → 交付状态与结果 → 回收资源。{% else %}Prepare an environment → run tools → deliver state and results → reclaim resources.{% endif %}</span>
-          <span>{% if zh %}为推理、评测和 rollout 选择接口与生命周期。{% else %}Choose interfaces and lifecycles for inference, evaluation, and rollouts.{% endif %}</span>
-        </a>
+      <div class="pc-home-terminal-wrap pc-home-examples" role="group" aria-label="{% if zh %}命令示例{% else %}Command examples{% endif %}">
+        <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-docker" aria-controls="pc-home-docker-example" checked>
+        <label class="pc-home-example-label" for="pc-home-docker">{% if zh %}Docker 风格 CLI{% else %}Docker Style CLI{% endif %}</label>
+        <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-job" aria-controls="pc-home-job-example">
+        <label class="pc-home-example-label" for="pc-home-job">{% if zh %}Agent 风格 CLI{% else %}Agent Style CLI{% endif %}</label>
+        <div class="pc-home-job-example" id="pc-home-job-example">
+        <div class="pc-home-terminal" data-ui>
+          <div class="pc-home-terminal-bar">{% if zh %}在你的项目目录中{% else %}In your project directory{% endif %}</div>
+          <pre class="pc-home-terminal-body"><code><span class="pc-home-comment"># {% if zh %}运行 Agent，文件写入暂存区{% else %}Run your agent with staged writes{% endif %}</span>
+pvisor spawn --safe -- claude
+
+<span class="pc-home-comment"># {% if zh %}查看候选改动{% else %}Review the file changes{% endif %}</span>
+pvisor review last --diff
+
+<span class="pc-home-comment"># {% if zh %}只合入选中的路径{% else %}Keep the paths you choose{% endif %}</span>
+pvisor apply last --path src</code></pre>
+          <p class="pc-home-terminal-note">{% if zh %}暂存的改动由你决定合入或丢弃。{% else %}You decide which staged changes to apply or drop.{% endif %}</p>
+        </div>
+        <p class="pc-home-requirement">{% if zh %}<code>--safe</code> 的文件暂存需要 FUSE。{% else %}Staging with <code>--safe</code> requires FUSE.{% endif %} <a href="start/installation/">{% if zh %}查看配置要求{% else %}Check setup requirements{% endif %}</a></p>
+        </div>
+        <div class="pc-home-docker-example" id="pc-home-docker-example">
+          <div class="pc-home-terminal" data-ui>
+            <div class="pc-home-terminal-bar">{% if zh %}熟悉的容器命令，每个容器一个 VM{% else %}Familiar container commands, one VM per container{% endif %}</div>
+            <pre class="pc-home-terminal-body"><code><span class="pc-home-comment"># {% if zh %}拉取镜像，启动独立 VM{% else %}Pull an image and start a separate VM{% endif %}</span>
+pvisor pull alpine:3.20
+pvisor run -d --name demo \
+  alpine:3.20 sleep 600
+
+<span class="pc-home-comment"># {% if zh %}执行命令、查看日志并清理{% else %}Execute, inspect logs, and clean up{% endif %}</span>
+pvisor exec demo echo hello
+pvisor logs demo
+pvisor stop demo
+pvisor rm demo</code></pre>
+          </div>
+          <p class="pc-home-requirement">{% if zh %}实验性 Docker 兼容命令子集；不提供 Docker Engine API 或 Compose。{% else %}Experimental Docker-compatible command subset; Docker Engine API and Compose are not supported.{% endif %} <a href="reference/cli/#container-commands">{% if zh %}查看支持范围{% else %}See supported commands{% endif %}</a></p>
+        </div>
       </div>
     </div>
+  </section>
+  <section class="pc-home-stats">
+    <div class="pc-home-stats-grid">
+      <a href="benchmarks/startup/">
+        <span class="pc-home-stat-value">130.71<span class="pc-home-stat-unit">ms</span></span>
+        <span class="pc-home-stat-label">{% if zh %}VM 环境就绪中位数{% else %}Median VM ready time{% endif %}</span>
+        <span class="pc-home-stat-note">{% if zh %}同批：rootless Docker 105.03 ms，Firecracker 287.13 ms{% else %}Same batch: rootless Docker 105.03 ms, Firecracker 287.13 ms{% endif %}</span>
+      </a>
+      <a href="benchmarks/supervision-cost/">
+        <span class="pc-home-stat-value">141<span class="pc-home-stat-unit">ms</span></span>
+        <span class="pc-home-stat-label">{% if zh %}10,000 个文件中改 20 个、保留 10 个{% else %}10,000 files, 20 changed, 10 kept{% endif %}</span>
+        <span class="pc-home-stat-note">{% if zh %}同批：Git worktree 248 ms，btrfs reflink 343 ms{% else %}Same batch: Git worktree 248 ms, btrfs reflink 343 ms{% endif %}</span>
+      </a>
+      <a href="benchmarks/density/">
+        <span class="pc-home-stat-value">160<span class="pc-home-stat-unit">/160</span></span>
+        <span class="pc-home-stat-label">{% if zh %}两个核、2 GiB 下 32 并发的有效任务{% else %}Valid tasks at 32 concurrent in two cores, 2 GiB{% endif %}</span>
+        <span class="pc-home-stat-note">{% if zh %}同批：Podman 160/160；VM 在 16 并发下 80/80{% else %}Same batch: Podman 160/160; VM 80/80 at 16{% endif %}</span>
+      </a>
+    </div>
+    <p class="pc-home-stats-source">{% if zh %}三组独立实验，各自固定配置与样本量。条件与完整表格见 <a href="benchmarks/">基准测试</a>。{% else %}Three separate experiments, each with its own configuration and sample size. Conditions and full tables are in <a href="benchmarks/">benchmarks</a>.{% endif %}</p>
   </section>
   <section class="pc-home-value">
     <h2>{% if zh %}核心能力{% else %}Core capabilities{% endif %}</h2>
@@ -55,9 +110,25 @@
     <p>{% if zh %}具体能力与支持范围取决于接入方式、执行器和平台。{% else %}Capabilities and support depend on the integration interface, executor, and platform.{% endif %} <a href="why/">{% if zh %}查看 pVisor 概览{% else %}Explore the pVisor overview{% endif %}</a></p>
   </section>
   <section class="pc-home-modes">
-    <h2>{% if zh %}性能与验证{% else %}Performance and validation{% endif %}</h2>
-    <p class="pc-home-lede">{% if zh %}通过基准测试与验证实验，展示 pVisor 的启动延迟、内存占用、并发密度，以及执行隔离与轨迹回放的表现。{% else %}Benchmarks and validation experiments show pVisor’s startup latency, memory use, concurrency density, and behavior in execution isolation and trajectory replay.{% endif %}</p>
-    <p><a href="benchmarks/">{% if zh %}查看基准测试与验证结果{% else %}View benchmarks and validation results{% endif %}</a></p>
+    <h2>{% if zh %}选择你的使用方式{% else %}Choose your starting point{% endif %}</h2>
+    <div class="pc-home-mode-grid">
+      <a class="pc-home-mode" href="guides/">
+        <strong>{% if zh %}本地 Agent 工作流{% else %}Local agent workflows{% endif %}</strong>
+        <span>{% if zh %}通过执行隔离、访问控制、任务记录与文件审查，管理本地 Agent、脚本和自动化命令。从离线演示开始，再接入你的 Agent。{% else %}Manage local agents, scripts, and automation with execution isolation, access controls, task records, and file review. Start with an offline demonstration, then connect your agent.{% endif %}</span>
+      </a>
+      <a class="pc-home-mode" href="guides/infrastructure/">
+        <strong>{% if zh %}Agent 执行基础设施{% else %}Agent execution infrastructure{% endif %}</strong>
+        <span>{% if zh %}将 pVisor 集成到集群，为大规模推理、评测与 RL 后训练提供执行环境。选择接口，管理环境准备、工具执行、状态交付与资源回收。{% else %}Integrate pVisor into clusters for large-scale inference, evaluation, and RL post-training. Choose an interface and manage environment setup, tool execution, state delivery, and resource cleanup.{% endif %}</span>
+      </a>
+    </div>
+    <p class="pc-home-integrations">{% if zh %}其他入口：每个容器一个 VM 的 Docker 风格 CLI，以及供 OpenSandbox、E2B SDK 接入的本地 daemon。{% else %}Other entry points: a Docker-style CLI with one VM per container, and a local daemon for OpenSandbox and E2B SDK clients.{% endif %}</p>
+    <p class="pc-home-lede">{% if zh %}文件改动可以审查后接受或丢弃；远程调用、数据库写入和已发送的消息不受 apply/drop 影响，仍会生效。{% else %}File changes can be reviewed and accepted or dropped. Remote calls, database writes and sent messages are outside apply/drop and stay in effect.{% endif %}</p>
+    <p class="pc-home-run-links">
+      <a href="start/first-run/">{% if zh %}第一个 Job{% else %}First run{% endif %}</a>
+      <a href="start/installation/">{% if zh %}安装与平台前置{% else %}Installation and prerequisites{% endif %}</a>
+      <a href="guides/daemon/">OpenSandbox / E2B SDK</a>
+      <a href="security/">{% if zh %}边界覆盖什么{% else %}What the boundary covers{% endif %}</a>
+    </p>
   </section>
   <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a> · <a href="community/">{% if zh %}参与开发{% else %}Contribute{% endif %}</a></p></footer>
 </div>

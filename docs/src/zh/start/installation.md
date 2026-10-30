@@ -1,3 +1,7 @@
+---
+description: 在 Linux x86_64 或 Apple Silicon macOS 上从 Python wheel 安装 pvisor 命令，检查平台前置条件并选择快速开始。
+---
+
 # 安装指南
 
 在运行工具命令的机器上安装 pVisor：本地工作流使用你的电脑，执行基础设施示例使用 Linux/KVM 节点。当前发布包支持 Linux x86_64 和 Apple Silicon macOS；安装发布包无需 Rust 或内核构建工具链。

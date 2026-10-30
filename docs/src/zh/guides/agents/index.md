@@ -1,3 +1,7 @@
+---
+description: 用一个入口把 Claude Code、Codex CLI 或任意脚本作为 pVisor Job 运行，带工作区暂存、网络策略和 Run Bundle 记录。
+---
+
 # 接入你的 Agent
 
 pVisor 用一个统一入口运行现有的 Agent CLI、脚本和自动化命令，不需要修改 Agent。先在所选 executor 内安装命令并配置 Agent 自身的 provider；使用镜像时，宿主安装的 Agent 不会自动出现在镜像中。下面的 `<agent-command>` 要替换为实际命令：

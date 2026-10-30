@@ -1,7 +1,7 @@
 [project]
 name = "pvisor-sandbox"
 version = "0.3.1"
-description = "Scaling autonomous agent execution"
+description = "Run a coding agent in a staged workspace, review its file changes, and apply only what you keep."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

@@ -68,7 +68,7 @@ def homebrew_formula(version: str, repository: str, archives: dict[str, Path]) -
     linux = archives["linux-x86_64"]
     return f'''# Generated from the verified release wheels; do not edit checksums by hand.
 class Pvisor < Formula
-  desc "Scaling autonomous agent execution"
+  desc "Sandbox for coding agents with staged, reviewable file changes"
   homepage "https://deeplink-org.github.io/pvisor/"
   version "{version}"
   license "Apache-2.0"

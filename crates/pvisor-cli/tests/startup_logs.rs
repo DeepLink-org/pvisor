@@ -15,7 +15,7 @@ fn informational_commands_do_not_emit_execution_diagnostics() {
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
             .args(&args)
-            .env_remove("PVISOR_STARTUP_TIMING")
+            .env("PVISOR_STARTUP_TIMING", "1")
             .env("PVISOR_STARTUP_PROFILE", "1")
             .env_remove("PVISOR_DIAGNOSTICS_FD")
             .env_remove("PVISOR_UI_CHILD")
@@ -27,7 +27,7 @@ fn informational_commands_do_not_emit_execution_diagnostics() {
 }
 
 #[test]
-fn startup_logs_are_default_correlated_and_route_to_frontend() {
+fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
     let temp = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
     command
@@ -47,11 +47,37 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
         .env("HOME", temp.path())
         .env("PVISOR_RUN_HOME", temp.path().join("runs"))
         .env_remove("PVISOR_STARTUP_TIMING")
+        .env_remove("PVISOR_STARTUP_PROFILE")
         .env_remove("PVISOR_DIAGNOSTICS_FD")
         .env_remove("PVISOR_UI_CHILD")
         .env_remove("PVISOR_UI_STAGE_FILE")
         .env_remove("PVISOR_UI_LOG_FILE");
     let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"WORKLOAD_READY\n");
+    let log = String::from_utf8(output.stderr).unwrap();
+    for prefix in [
+        "pvisor-startup ",
+        "pvisor-persistence ",
+        "pvisor-owner-request ",
+    ] {
+        assert!(!log.contains(prefix), "unexpected diagnostic: {log}");
+    }
+    for message in [
+        "workspace writes are direct",
+        "boundary:",
+        "Run Bundle:",
+        "run-",
+        "Review: pvisor status --review",
+    ] {
+        assert!(log.contains(message), "missing {message}: {log}");
+    }
+
+    let output = command.env("PVISOR_STARTUP_TIMING", "1").output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -104,11 +130,12 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup "));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-persistence "));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-owner-request "));
 
     let path = temp.path().join("frontend.log");
     std::fs::write(&path, "").unwrap();
     let output = command
-        .env_remove("PVISOR_STARTUP_TIMING")
+        .env("PVISOR_STARTUP_TIMING", "1")
         .env("PVISOR_UI_CHILD", "1")
         .env("PVISOR_UI_STAGE_FILE", temp.path().join("stage"))
         .env("PVISOR_UI_LOG_FILE", &path)
@@ -206,6 +233,71 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
                     .count(),
                 1
             );
+        }
+    }
+}
+
+#[test]
+fn default_output_preserves_workload_errors_and_policy_refusals() {
+    let temp = tempfile::tempdir().unwrap();
+    for (args, expected_code, message) in [
+        (
+            vec![
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'WORKLOAD_ERROR\\n' >&2; exit 7",
+            ],
+            Some(7),
+            "WORKLOAD_ERROR",
+        ),
+        (
+            vec![
+                "--safe",
+                "--filesystem",
+                "host",
+                "--",
+                "/bin/echo",
+                "SHOULD_NOT_RUN",
+            ],
+            None,
+            "--safe requires --filesystem sandbox",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .args([
+                "spawn",
+                "--no-agent-defaults",
+                "--overlaynet",
+                "off",
+                "--stdio",
+                "inherit",
+            ])
+            .args(args)
+            .current_dir(temp.path())
+            .env("HOME", temp.path())
+            .env("PVISOR_RUN_HOME", temp.path().join("runs"))
+            .env_remove("PVISOR_STARTUP_TIMING")
+            .env_remove("PVISOR_STARTUP_PROFILE")
+            .env_remove("PVISOR_DIAGNOSTICS_FD")
+            .env_remove("PVISOR_UI_CHILD")
+            .env_remove("PVISOR_UI_STAGE_FILE")
+            .env_remove("PVISOR_UI_LOG_FILE")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        if let Some(code) = expected_code {
+            assert_eq!(output.status.code(), Some(code));
+        }
+        assert!(output.stdout.is_empty());
+        let log = String::from_utf8(output.stderr).unwrap();
+        assert!(log.contains(message), "missing {message}: {log}");
+        for prefix in [
+            "pvisor-startup ",
+            "pvisor-persistence ",
+            "pvisor-owner-request ",
+        ] {
+            assert!(!log.contains(prefix), "unexpected diagnostic: {log}");
         }
     }
 }

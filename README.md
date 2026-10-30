@@ -1,80 +1,72 @@
-# <img src="docs/overrides/assets/logos/pvisor-icon.png" alt="PolicyVisor" width="72" /> PolicyVisor (pVisor)
+# <img src="https://raw.githubusercontent.com/DeepLink-org/pvisor/main/docs/overrides/assets/logos/pvisor-icon.png" alt="PolicyVisor" width="72" /> PolicyVisor (pVisor)
 
-Run agents and review their changes before choosing what to keep.
+Run a coding agent in a staged workspace, review its changes, and apply only the paths you keep.
 
-运行 Agent，查看变更，再决定哪些改动进入工作区。
+运行 Agent，改动先进入暂存区，审查后再决定哪些写入工作区。
 
 [![CI](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/DeepLink-org/pvisor/blob/main/LICENSE)
 
-pVisor runs Agent CLIs, scripts and automation with execution policies,
-copy-on-write workspace staging and execution records. Use your usual command,
-inspect the results, then accept selected file changes or discard the stage.
-The basic workflow requires no Agent SDK.
+![Run an agent, review its file changes, apply the paths you keep](https://raw.githubusercontent.com/DeepLink-org/pvisor/main/docs/overrides/assets/logos/pvisor-social.png)
 
-Jobs are the main workflow for reviewing changes before accepting them. The
-project aims to reduce supervision per task and let each machine support more
-sandboxes. VM resource sharing and idle memory reclamation are under active
-development, with support that varies by platform.
+pVisor runs your existing Agent CLI, a script or an automation command. With
+staging enabled the agent edits a copy-on-write view, so your working tree stays
+unchanged until you apply a change. `apply` takes the paths you name and checks
+the recorded preimage first, so it refuses a file that changed underneath it.
+Every Job also writes a Run Bundle with the command, the effective policy, the
+file changes, and which controls actually installed.
 
-![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
+The basic workflow needs no Agent SDK and no model account.
 
-## Start with one Job
-
-Install the native command from a Python wheel:
+## Run one Job
 
 ```bash
 pip install pvisor-sandbox
-pvisor --version
+cd your-project
+
+pvisor spawn --safe -- claude      # your Agent CLI, or any script
+pvisor review last                 # read the staged changes
+pvisor apply last --path src       # keep src/
+pvisor drop last                   # discard whatever you left staged
 ```
 
-Wheels are published for Linux x86_64 and Apple Silicon macOS. Staged host
-execution on macOS requires macFUSE 5.4.0 or newer with its FSKit extension enabled.
-VMs use KVM on Linux and Hypervisor.framework on Apple Silicon. On macOS, they
-need a Linux image or rootfs. See the
-[installation guide](docs/src/en/start/installation.md) for prerequisites.
+Replace `claude` with your Agent CLI or script. `--safe` requests the safety preset
+and refuses an executor that cannot provide isolation and staging. `last` resolves
+the latest Job registered for the current workspace; add `--diff` to print a
+unified diff beside the classified change list. With `--stage PATH` the Job
+registers against that path, so review and apply take the path instead of `last`.
+Use the printed Job ID when managing several Jobs.
 
-You can also install the same command from the rolling nightly build without a
-Rust toolchain:
+`--safe` stages writes, which needs FUSE: macFUSE 5.4.0 or newer with its FSKit
+extension on Apple Silicon macOS, `/dev/fuse` and user namespaces on Linux x86_64.
+If that is not set up yet, run `pvisor spawn -- claude`: the Job is still
+recorded, and writes go straight to your workspace. Wheels are published for
+Linux x86_64 and Apple Silicon macOS; VMs use KVM on Linux and
+Hypervisor.framework on macOS and need a Linux image or rootfs. See the
+[installation guide](https://deeplink-org.github.io/pvisor/start/installation/)
+for prerequisites.
+
+Other install methods (no Rust toolchain needed):
 
 ```bash
+# Rolling nightly build
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
-```
 
-Stable and nightly GitHub Releases include native archives and SHA-256 checksums.
-Install with Homebrew from the [project tap](https://github.com/DeepLink-org/Formula):
-
-```bash
+# Homebrew (project tap)
 brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
 brew install DeepLink-org/formula/pvisor
 ```
 
-The stable workflow generates a Homebrew formula and can update the tap after
-its [one-time setup](docs/src/en/community/releasing.md#one-time-setup).
+Stable and nightly GitHub Releases include native archives and SHA-256 checksums.
+The stable workflow generates a Homebrew formula and can update the tap after its
+[one-time setup](https://deeplink-org.github.io/pvisor/community/releasing/#one-time-setup).
 
-Platform requirements and executor setup are covered in the
-[installation guide](https://deeplink-org.github.io/pvisor/start/installation/).
-
-Run an installed Agent CLI from your project directory:
-
-```bash
-pvisor spawn --safe -- claude
-pvisor review last
-pvisor apply last --path src
-# Or discard the remaining staged changes:
-pvisor drop last
-```
-
-Replace `claude` with your Agent CLI or script. `--safe` requests the safety preset
-and keeps workspace changes in Job storage for review. Admission can refuse an
-executor that cannot satisfy the preset. `last` selects the latest Job in the
-default store; use the printed Job ID when managing several Jobs. With
-`--stage PATH`, you choose a stage explicitly and address it by its path.
-
-**Ordinary host Jobs without staging write directly to the workspace.** Staging
-covers the configured filesystem view; HOME, rootfs and explicit mounts have
-separate lifetimes. See [staging and storage](docs/src/en/reference/cli.md#暂存与存储).
+Job startup requires the executable and its ancestor directories to be owned by
+you or root and not writable by others. If Homebrew's Cellar is group-writable,
+the command stops with `unsafe owner executable ancestor` and names the
+directory; the [installation guide](https://deeplink-org.github.io/pvisor/start/installation/)
+covers that case, platform requirements and executor setup.
 
 For a minimal VM Job with a Linux image:
 
@@ -82,21 +74,32 @@ For a minimal VM Job with a Linux image:
 pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
-The [examples](examples/pvisor/README.md) cover filesystem isolation, selective
-apply, network policy, model request capture and interactive review.
+The [examples](https://github.com/DeepLink-org/pvisor/blob/main/examples/pvisor/README.md)
+cover filesystem isolation, selective apply, network policy, model request capture
+and interactive review.
 
-## What a Job gives you
+## Measured results
+
+| Workload | pVisor | Same experiment |
+| --- | --- | --- |
+| Environment ready, warm caches (VMs at 2 vCPU / 128 MiB) | VM 130.71 ms; host 33.52 ms; staged 50.59 ms | rootless Docker 105.03 ms; Firecracker 287.13 ms; QEMU microvm 260.10 ms |
+| 10,000 files, 20 changed, 10 kept | 141 ms staged | Git worktree 248 ms; btrfs reflink 343 ms |
+| Completed tasks, 2 cores / 2 GiB | staged host 160/160 at 32 concurrent; VM 80/80 at 16 | Podman 160/160 at 32 |
+
+The rows come from separate experiments with their own pinned configurations.
+Values move with platform, workload and image; the pages linked from
+[benchmarks](https://deeplink-org.github.io/pvisor/benchmarks/) state the conditions
+and the full tables, including results that do not favor pVisor.
+
+## Other capabilities
 
 | Capability | What it does |
 | --- | --- |
 | Policy admission | Resolves the executor and requested capabilities before dispatch, and records the available controls and observations. |
-| Workspace staging | Keeps writes in an overlay for inspection before you apply them to the target workspace. |
-| Selective apply | Applies selected paths, checks recorded preimages for conflicts, and tracks progress in a recovery ledger. |
-| Execution records | Produces a Run record and Run Bundle with results, filesystem changes, boundary observations and artifact references. |
 | Network and model control | OverlayNet applies network policy; optional Gateway support adds model protocol handling and request/response capture. |
 | Checkpoint and fork | Supports logical filesystem checkpoints and forks; execution snapshots are separate, restricted VM capabilities. |
 
-Execution is bounded, recoverable and checkable within the documented scopes.
+Execution is bounded, reversible and checkable within the documented scopes.
 Inspect the Run Bundle's evidence and warnings to see which controls were
 installed; requesting a policy does not prove enforcement. Logical checkpoints
 do not capture process memory, and replay does not roll back an external service.
@@ -130,9 +133,10 @@ The following limits apply across executors:
 - Crash recovery is incomplete. Attempt completion publishes several durable
   records separately, so a host-process crash between them can require reconciliation.
 
-See [capabilities and evidence](docs/src/en/concepts/capabilities-and-evidence.md),
-[staging semantics](docs/src/en/concepts/staging.md) and the
-[security documentation](docs/src/en/security/index.md) before relying on a boundary.
+See [capabilities and evidence](https://deeplink-org.github.io/pvisor/concepts/capabilities-and-evidence/),
+[staging semantics](https://deeplink-org.github.io/pvisor/concepts/staging/) and the
+[security documentation](https://deeplink-org.github.io/pvisor/security/) before
+relying on a boundary.
 
 ## Other ways to use pVisor
 
@@ -152,9 +156,10 @@ API does not expose native Job stage/apply or checkpoint/fork semantics. SDK
 support is limited to the partial profiles described above. External
 orchestrators handle cross-node placement, workflow scheduling and retries.
 
-Use the [container command profile](crates/pvisor-cli/README.md#docker-command-profile-experimental),
-[daemon contract](crates/pvisor-daemon/README.md) and
-[shim guide](crates/pvisor-shim/README.md) for supported operations and limitations.
+Use the [container command profile](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/README.md#docker-command-profile-experimental),
+[daemon contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md)
+and [shim guide](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md)
+for supported operations and limitations.
 
 ## VM density and current maturity
 
@@ -166,8 +171,9 @@ require opt-in, and availability varies across frontends.
 The runtime feature `workload-aware-memory-offloading` currently enables only
 vCPU wait observation. It does not automatically reclaim memory. Shared memory
 pools and Apple Silicon shared kernel baselines are separate opt-in mechanisms.
-See the [runtime experiments](crates/pvisor/README.md#explicit-runtime-experiments)
-and [VM implementation](crates/pvisor-vm/README.md) for their contracts.
+See the [runtime experiments](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor/README.md#explicit-runtime-experiments)
+and [VM implementation](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md)
+for their contracts.
 
 The project is a developer preview. Architecture reviews and targeted tests cover
 individual behaviors; they do not establish stable crash recovery, isolation
@@ -175,11 +181,14 @@ between hostile tenants or full OCI/SDK compatibility. Assess platform integrati
 release-artifact validation and long-running fault tests for the revision and
 configuration you use. Memory sharing alone does not establish sandbox density
 or net memory savings. Consult the
-[benchmarks](docs/src/en/benchmarks/index.md) for measured workloads and conditions.
+[benchmarks](https://deeplink-org.github.io/pvisor/benchmarks/) for measured
+workloads and conditions.
 
 ## Architecture and development
 
 The workspace has 13 crates, grouped by the responsibilities they own:
+
+![Agent CLI, admission, executor and Run Bundle in one Job](https://raw.githubusercontent.com/DeepLink-org/pvisor/main/docs/overrides/assets/diagrams/pvisor/system-products.svg)
 
 | Layer | Crates and responsibility |
 | --- | --- |
@@ -203,8 +212,9 @@ mise run test                    # Workspace Rust tests, then Python suites
 Run checks for the affected packages when making focused changes. `mise run build -- PROFILE COMPONENT`
 supports `debug`, `release` and `performance` profiles and `all`, `product`,
 `daemon`, `shim` and `shim-vm` components. Builds prepare the customized guest
-firmware from [`fw/`](fw/README.md); published wheels do not require a local kernel
-build toolchain. See the [engineering guide](docs/src/en/community/development.md)
+firmware from [`fw/`](https://github.com/DeepLink-org/pvisor/blob/main/fw/README.md);
+published wheels do not require a local kernel
+build toolchain. See the [engineering guide](https://deeplink-org.github.io/pvisor/community/development/)
 for dependencies, platform setup and validation.
 
 ## Development environment
@@ -213,12 +223,13 @@ Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.5 or newer, the
 `mise trust`, `mise install --locked`, and `mise run setup`. The checked-in `mise.toml`
 and `mise.lock` pin a reproducible default toolchain. CI and wheel builds use mise
 2026.10.18. You can select compatible local tools in the gitignored
-`mise.local.toml`; see [local tool overrides](CONTRIBUTING.md#local-tool-overrides).
+`mise.local.toml`; see [local tool overrides](https://github.com/DeepLink-org/pvisor/blob/main/CONTRIBUTING.md#local-tool-overrides).
 `uv.lock` fixes Python development dependencies in
 `.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
 The timed peer TCP recovery test reserves all nextest execution slots while it
-runs; other tests keep their normal parallelism. See [.config/nextest.toml](.config/nextest.toml).
-See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
+runs; other tests keep their normal parallelism. See [.config/nextest.toml](https://github.com/DeepLink-org/pvisor/blob/main/.config/nextest.toml).
+See [contributing](https://github.com/DeepLink-org/pvisor/blob/main/CONTRIBUTING.md)
+for the development loop and platform prerequisites.
 
 Task implementations that need more than a short command live in `scripts/tasks/`.
 Their names and shared environment are declared in `mise.toml`. CI installs tool
@@ -230,7 +241,7 @@ with the host package manager.
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and bundle
-tests live in [`fw/`](fw/README.md). CLI, daemon and single-wheel builds use this
+tests live in [`fw/`](https://github.com/DeepLink-org/pvisor/blob/main/fw/README.md). CLI, daemon and single-wheel builds use this
 source-built firmware by default, with verified kernel downloads and build caches
 keyed by their inputs. Use `mise run fw -- build` to build the firmware independently
 and `mise run fw -- test` for bundle/ABI regression tests. The directory README covers
@@ -239,17 +250,19 @@ wheels install without a kernel build toolchain.
 
 ## Documentation and community
 
-- [First run](docs/src/en/start/first-run.md): the run-review-apply workflow
-- [Why pVisor](docs/src/en/why/index.md): goals, use cases and the trust ladder
-- [CLI reference](docs/src/en/reference/cli.md): commands and configuration
-- [Architecture](docs/src/en/design/architecture.md): component boundaries and execution flow
-- [Experimental features](docs/src/en/design/experimental/index.md): stages and validation gates
+- [First run](https://deeplink-org.github.io/pvisor/start/first-run/): the run-review-apply workflow
+- [Why pVisor](https://deeplink-org.github.io/pvisor/why/): goals, use cases and the trust ladder
+- [CLI reference](https://deeplink-org.github.io/pvisor/reference/cli/): commands and configuration
+- [Architecture](https://deeplink-org.github.io/pvisor/design/architecture/): component boundaries and execution flow
+- [Experimental features](https://deeplink-org.github.io/pvisor/design/experimental/): stages and validation gates
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/)
 
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports:
-[SECURITY.md](SECURITY.md).
+Contributions: [CONTRIBUTING.md](https://github.com/DeepLink-org/pvisor/blob/main/CONTRIBUTING.md).
+Questions and setups: [Discussions](https://github.com/DeepLink-org/pvisor/discussions).
+Security reports: [SECURITY.md](https://github.com/DeepLink-org/pvisor/blob/main/SECURITY.md).
 
 ## License
 
-[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions
-and separately licensed bundled components.
+[Apache License 2.0](https://github.com/DeepLink-org/pvisor/blob/main/LICENSE). See
+[NOTICE](https://github.com/DeepLink-org/pvisor/blob/main/NOTICE) for third-party
+attributions and separately licensed bundled components.

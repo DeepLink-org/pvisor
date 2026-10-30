@@ -91,7 +91,11 @@ its response wait currently ignores CLI cancellation. Runtime Overlay and native
 capture sockets also remain in use. See [internal channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
 
 Help, version and feature queries emit no startup logs. Execution startup markers
-are emitted after command parsing and do not measure complete process entry.
+are disabled by default; set `PVISOR_STARTUP_TIMING=1` to enable checkpoints,
+persistence timings and frontend/owner correlation records. This changes diagnostics
+only; workload output, boundary/staging notices, warnings, errors and Run Bundle/review
+guidance remain visible. Enabled markers are emitted after command parsing and do
+not measure complete process entry.
 Execution lets clap build the selected parsing path; grouped root help still
 builds the full tree. The generated `help` command never defaults to `spawn`.
 `PVISOR_STARTUP_PROFILE=1` additionally records `cli.entry_to_parsed`, measured

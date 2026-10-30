@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: 1280px 630px; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 630px; }
+  body {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    background: #0b1220;
+    color: #e8eefc;
+    padding: 58px 72px 40px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+  }
+  .glow {
+    position: absolute;
+    top: -240px; right: -180px;
+    width: 760px; height: 760px;
+    background: radial-gradient(circle, rgba(73,152,244,0.20) 0%, rgba(73,152,244,0) 68%);
+  }
+  header { display: flex; align-items: center; gap: 14px; }
+  .mark { width: 46px; height: 46px; display: block; }
+  .name { font-size: 24px; font-weight: 600; letter-spacing: -0.2px; }
+  .name span { color: #8fa4c4; font-weight: 400; }
+  .body { display: flex; align-items: center; gap: 40px; }
+  .copy { width: 700px; }
+  h1 {
+    font-size: 44px;
+    line-height: 1.2;
+    font-weight: 650;
+    letter-spacing: -0.9px;
+  }
+  h1 em { font-style: normal; color: #7db4f8; }
+  .sub {
+    margin-top: 20px;
+    font-size: 20px;
+    line-height: 1.55;
+    color: #a8b8d2;
+  }
+  .term {
+    width: 380px;
+    background: #101a2c;
+    border: 1px solid #1e2f4a;
+    border-radius: 14px;
+    padding: 20px 22px;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace;
+    font-size: 14px;
+    line-height: 2.05;
+    color: #c7d5ea;
+    white-space: nowrap;
+  }
+  .term .p { color: #7db4f8; }
+  .term .c { color: #e8eefc; }
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 16px;
+    color: #7d90ad;
+    border-top: 1px solid #1c2a41;
+    padding-top: 18px;
+    white-space: nowrap;
+  }
+  footer .repo { color: #a8b8d2; }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <header>
+    <svg class="mark" viewBox="0 0 56 56" role="presentation">
+      <defs>
+        <clipPath id="r"><rect x="0" y="0" width="56" height="56" rx="13"/></clipPath>
+      </defs>
+      <g clip-path="url(#r)">
+        <rect width="56" height="56" fill="#f4f7fc"/>
+        <path d="M0 56 L56 0 L56 56 Z" fill="#2f6bff"/>
+      </g>
+      <rect x="2" y="2" width="52" height="52" rx="11.5" fill="none" stroke="#0f1a2d" stroke-width="4"/>
+    </svg>
+    <div class="name">PolicyVisor <span>(pVisor)</span></div>
+  </header>
+  <div class="body">
+    <div class="copy">
+      <h1>Review an agent&rsquo;s file changes<br><em>before they land.</em></h1>
+      <p class="sub">Run Claude Code, Codex or any script in a staged workspace.<br>Accept the paths you want; drop the rest.</p>
+    </div>
+    <div class="term">
+      <div><span class="p">$</span> pvisor spawn <span class="c">--safe -- claude</span></div>
+      <div><span class="p">$</span> pvisor review <span class="c">last</span></div>
+      <div><span class="p">$</span> pvisor apply last <span class="c">--path src</span></div>
+    </div>
+  </div>
+  <footer>
+    <span class="repo">github.com/DeepLink-org/pvisor</span>
+    <span>Apache-2.0 &middot; Linux x86_64 &middot; Apple Silicon</span>
+  </footer>
+</body>
+</html>

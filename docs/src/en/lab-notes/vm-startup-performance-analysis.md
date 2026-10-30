@@ -154,15 +154,15 @@ Every pVisor sample requires completed records and a zero exit code; VM samples 
 
 ### Routine startup diagnostics
 
-Startup logs help identify which phase accounts for the wait. They are enabled by default; set `PVISOR_STARTUP_TIMING=0` to disable them. This article retains both the original matrix without logs and the latest remeasurement with logs enabled. Use results from the same batch when comparing variants.
+Startup logs help identify which phase accounts for the wait. They are now disabled by default; set `PVISOR_STARTUP_TIMING=1` to enable them. This article retains both the original matrix without logs and the latest remeasurement with logs enabled. Use results from the same batch when comparing variants.
 
 ??? note "Log fields and collection"
 
-    The current implementation emits `pvisor-startup level=info` checkpoints by default, without a debugging switch. Fields include Unix `timestamp_ms`, `pid`/`ppid`, JSON-quoted `run_id`, `stage`, `monotonic_us` and `process_elapsed_us`. Early process events use `"-"` before Run identity exists; correlate them by PID with later identified events. Parent and runner share the same Run ID. Compute intervals using the host monotonic clock, not the adjustable wall clock.
+    With `PVISOR_STARTUP_TIMING=1`, the current implementation emits `pvisor-startup level=info` checkpoints. Fields include Unix `timestamp_ms`, `pid`/`ppid`, JSON-quoted `run_id`, `stage`, `monotonic_us` and `process_elapsed_us`. Early process events use `"-"` before Run identity exists; correlate them by PID with later identified events. Parent and runner share the same Run ID. Compute intervals using the host monotonic clock, not the adjustable wall clock.
 
     Ordinary CLI diagnostics use stderr and can be retained by production collectors. TUI diagnostics use the existing frontend log; a pre-opened dedicated descriptor sends VM runner diagnostics to the same channel without polluting the Agent terminal. Records include no commands, environment variables or credentials. Output is best-effort, adds no fsync and is not recovery metadata.
 
-    `PVISOR_STARTUP_TIMING=0` explicitly suppresses checkpoints for uninstrumented benchmarks; unset and `1` both enable logging. Historical measurements in this article use archived artifacts and do not establish zero overhead from routine logging. `cli.session_started` and `runner.vmm_built` mean Session started and VMM constructed, respectively, not guest or application readiness. There is no generic guest-ready notification yet.
+    Unset or `PVISOR_STARTUP_TIMING=0` suppresses checkpoints for uninstrumented benchmarks; only `1` enables logging. Historical measurements used artifacts that enabled logging by default; their archived results do not establish zero logging overhead. `cli.session_started` and `runner.vmm_built` mean Session started and VMM constructed, respectively, not guest or application readiness. There is no generic guest-ready notification yet.
 
 ## 4. Experimental data and analysis
 
