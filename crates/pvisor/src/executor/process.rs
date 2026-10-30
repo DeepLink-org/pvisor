@@ -538,7 +538,7 @@ impl ProcessExecutor {
     }
 
     /// Whether this executor confines the Agent with Landlock alone.
-    pub fn is_landlock_only(&self) -> bool {
+    fn is_landlock_only(&self) -> bool {
         cfg!(target_os = "linux") && self.landlock_only
     }
 
