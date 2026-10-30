@@ -14,8 +14,8 @@ use pvisor_core::{
 };
 use pvisor_gateway::config::ProxyConfig;
 use pvisor_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
+use pvisor_gateway::serve_with_listeners_and_shutdown;
 use pvisor_gateway::sink::NoopCaptureObserver;
-use pvisor_gateway::{serve_with_listeners_and_shutdown, serve_with_runtime_control};
 use tokio::sync::oneshot;
 
 struct DenyModelController;
@@ -29,14 +29,6 @@ impl ControlController for DenyModelController {
             network => PolicyControlController.authorize(network),
         }
     }
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 async fn spawn_mock_http() -> (u16, oneshot::Sender<()>) {
@@ -261,37 +253,26 @@ async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<
     (format!("http://{listen}"), tmp, stop_tx)
 }
 
-async fn spawn_proxy_with_controller(
+fn spawn_proxy_with_controller(
     toml: &str,
     controller: Arc<dyn ControlController>,
-) -> (String, tempfile::TempDir, oneshot::Sender<()>) {
-    let listen_port = free_port();
-    let admin_port = free_port();
+) -> (InProcessCapture, tempfile::TempDir) {
     let toml = toml
-        .replace("{{LISTEN}}", &format!("127.0.0.1:{listen_port}"))
-        .replace("{{ADMIN}}", &format!("127.0.0.1:{admin_port}"));
+        .replace("{{LISTEN}}", "127.0.0.1:0")
+        .replace("{{ADMIN}}", "127.0.0.1:0");
     let cfg = ProxyConfig::from_toml_str(&toml).expect("proxy toml");
     let tmp = tempfile::tempdir().unwrap();
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let (stop_tx, stop_rx) = oneshot::channel::<()>();
-    let storage = tmp.path().to_path_buf();
-    let sink: Arc<dyn pvisor_gateway::sink::CaptureEventObserver> =
-        Arc::new(NoopCaptureObserver::new());
-    tokio::spawn(async move {
-        let _ = serve_with_runtime_control(
-            cfg,
-            storage,
-            sink,
+    let proxy = InProcessCapture::start_with_runtime(
+        cfg,
+        tmp.path().to_path_buf(),
+        Arc::new(NoopCaptureObserver::new()),
+        InProcessRuntime {
             controller,
-            Some(ready_tx),
-            async move {
-                let _ = stop_rx.await;
-            },
-        )
-        .await;
-    });
-    ready_rx.await.expect("proxy ready");
-    (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
+            ..InProcessRuntime::default()
+        },
+    )
+    .expect("test Gateway failed to start");
+    (proxy, tmp)
 }
 
 #[tokio::test]
@@ -1146,18 +1127,16 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
 #[tokio::test]
 async fn e2e_network_only_allowlist_forwards_absolute_llm_uri() {
     let (mock_port, mock_stop) = spawn_mock_http().await;
-    let listen = format!("127.0.0.1:{}", free_port());
-    let admin = format!("127.0.0.1:{}", free_port());
-    let config = ProxyConfig::from_toml_str(&format!(
-        r#"listen = "{listen}"
-admin_listen = "{admin}"
+    let config = ProxyConfig::from_toml_str(
+        r#"listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
 agent_id = "t"
 models = []
 [network]
 mode = "allowlist"
 allowed_hosts = ["127.0.0.1"]
-"#
-    ))
+"#,
+    )
     .unwrap();
     let storage = tempfile::tempdir().unwrap();
     let proxy = InProcessCapture::start_with_runtime(
@@ -1478,8 +1457,7 @@ name = "*"
 upstream = "http://127.0.0.1:{mock_port}/v1"
 "#
     );
-    let (proxy, _tmp, stop) =
-        spawn_proxy_with_controller(&toml, Arc::new(DenyModelController)).await;
+    let (proxy, _tmp) = spawn_proxy_with_controller(&toml, Arc::new(DenyModelController));
 
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -1487,7 +1465,7 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
         .build()
         .unwrap();
     let resp = client
-        .post(format!("{proxy}/v1/chat/completions"))
+        .post(format!("http://{}/v1/chat/completions", proxy.listen))
         .header("content-type", "application/json")
         .body(r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#)
         .send()
@@ -1498,7 +1476,7 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
         resp.text().await.unwrap().contains("model-not-allowed"),
         "denial should expose the stable pVisor reason"
     );
-    let _ = stop.send(());
+    proxy.shutdown().unwrap();
     let _ = mock_stop.send(());
 }
 
