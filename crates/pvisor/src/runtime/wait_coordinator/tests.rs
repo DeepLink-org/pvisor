@@ -506,6 +506,16 @@ api_key = "test-key"
         ))
         .unwrap();
         let storage = tempfile::tempdir().unwrap();
+        // This test owns the HTTP client. Supply its normal run metadata rather
+        // than making the delivery barrier depend on a host-wide lsof scan.
+        pvisor_gateway::runtime::run_env::write_run_session(storage.path(), "http-session")
+            .unwrap();
+        pvisor_gateway::runtime::run_env::write_run_child_info(
+            storage.path(),
+            std::process::id(),
+            &["gateway-resume-test".into()],
+        )
+        .unwrap();
         let gateway = InProcessCapture::start_with_runtime(
             config,
             storage.path().into(),

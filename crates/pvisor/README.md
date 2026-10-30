@@ -1642,3 +1642,19 @@ invalid combinations before stage preparation, retains normal output and audit
 records, and rejects apply/auto-apply, logical/native checkpoint and stage reuse.
 Explicit file/directory fsync, isolation, result validation and live RAM offload
 safety are unchanged. No runtime memory/offload policy is modified.
+
+### Linux KVM ENOMEM workaround selection
+
+On Linux x86_64, `PVISOR_KRUN_ENOMEM_WORKAROUND=1`/`0` forces the workaround
+on/off. Otherwise stable releases >=6.14.0 and the 6.12 branch >=6.12.44 omit
+the per-`KVM_RUN` 5 ms sleep. Upstream fix `916b7f42b3b3` is present in 6.14;
+`b1fbf1b68bbf` backports it to 6.12.44. Older releases, 6.13, prereleases,
+unreadable or malformed versions keep the protection. Vendor suffixes are not
+upstream patch levels: e.g. `6.12.0-100-generic` remains conservative.
+
+This policy assumes normal upstream fix inheritance; it cannot detect vendor
+backports, reverts or custom changes from `uname` alone. Use `=1` to restore
+protection or `=0` after separately qualifying a backport. The low-level
+`KRUN_ENOMEM_WORKAROUND` is presence-based: setting it to `0` does not disable
+it; the launcher removes it for the off path. KVM error handling, retries,
+resource budgets and timeouts remain unchanged.
