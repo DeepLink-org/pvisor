@@ -305,6 +305,109 @@ checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再�
 要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
 终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
 
+## 应用暂存的项目改动 {#apply}
+
+```bash
+pvisor apply SOURCE [OPTIONS]
+pvisor apply last
+pvisor apply last --path src --dry-run --diff
+pvisor apply last --path src
+pvisor apply last --all --exclude 'build/**'
+pvisor apply last --include 'src/**' --dry-run --json
+```
+
+`SOURCE` 必填，可以是 Job ID、stage 目录、旧式 upper 目录，或 `last` 等工作区选择器。
+Apply 要求 Job 已停止、完成证据有效，且 stage 支持 apply。默认范围是记录中的项目；
+路径和 glob 均相对于该范围。项目外的改动继续保留在 stage 中。
+
+### 选择与输出 {#apply-options}
+
+| 参数 | 契约 |
+| --- | --- |
+| `--path RELATIVE_PATH` | 选择该路径及其后代；可重复。 |
+| `--include GLOB` | 使用 git 风格 glob 选择路径；可重复。用引号防止 shell 展开。 |
+| `--exclude GLOB` | 排除匹配路径；可重复。排除优先；单独使用时必须加 `--interactive`。 |
+| `--all` | 选择当前范围内的全部改动。允许配合 `--exclude`；与 `--path`、`--include` 冲突。 |
+| `-i`、`--interactive` | 打开终端选择器；已有显式正向选择会预选匹配路径。与 `--dry-run`、`--json` 冲突。 |
+| `--dry-run` | 只读预检：展示所选改动、必要依赖、阻塞原因和剩余数量；不消费暂存改动。 |
+| `--diff` | 展示有大小限制的文本 diff，跳过二进制内容。要求 `--dry-run`；与 `--json` 冲突。 |
+| `--json` | stdout 只输出一个 schema 版本 1 的结果对象；要求 `--path`、`--include` 或 `--all`，绝不打开选择器。诊断写入 stderr。 |
+| `--store DIR` | Job 查找存储，默认 `.pvisor/capture`。兼容旧别名 `-o DIR` 和 `--output-dir DIR`。 |
+| `--target PATH` | 普通工作区 stage 的旧式覆盖参数，只能指定已有工作区目录。不能覆盖 rootstage 的项目，也不能授权 `/`。 |
+| `--rootfs` | 高级操作：以特权写回记录中的 `/` 目标；与 `--target` 冲突。 |
+
+未指定选择时，仅当 **stdin 和 stdout 都是终端** 才自动打开选择器，初始没有勾选项。
+非交互调用必须提供正向选择（`--path`、`--include` 或 `--all`）；只给排除条件会被拒绝，
+即使在终端中也必须显式加 `--interactive`。正向选择默认直接执行，不再提示，
+除非加上 `--interactive` 或选择 `--dry-run`。空路径、绝对路径和包含 `..` 的选择路径均被拒绝。
+
+规划结果分别展示显式选择的 `selected` 和必要依赖 `required`，例如新父目录或硬链接同组路径。
+依赖不能静默越过项目边界或覆盖排除条件；这类选择会被阻塞。
+应用前应停止编辑器及其他目标写入者：preimage 检查不能提供跨文件事务。
+
+### 终端审查与只读预览 {#apply-preview}
+
+选择器中，↑/↓ 移动，空格切换勾选，`a` 全选可选路径，`n` 清空，`d` 查看 diff，
+Enter 进入预览，`q` 取消。被排除的路径不能勾选。预览中，`a` 应用，`b` 返回选择器，
+`d` 查看 diff，`q` 退出。执行会固定来源，并校验预览的 expected-plan token；
+计划发生变化时会展示新预览，必须再次确认。
+
+`--dry-run` 不写目标、journal、apply ledger 或 recovery 状态，不隐式恢复，
+也不创建目标目录或缺失的锁文件。预览使用严格只读的观察锁和 lease；
+已有 `job.lock` 或必需 lease 文件缺失时直接拒绝，不补建。
+新 `stage` 在启动时预建这些锁，使首次预览可直接使用。
+
+### 项目授权与兼容性 {#apply-scope}
+
+新的 Linux rootfs stage 在启动时记录 `ProjectApplyScope` version 1：
+非 `/` 的规范项目 `root` 及其 `device`、`inode` 身份。
+RunRecord 与 Run Bundle 携带该 scope，并由完成 receipt 绑定。
+Apply 重新校验绑定和目录身份；项目目录被替换、契约改变或绑定缺失都会阻塞写回。
+当前目录和 `--target` 都不能补授缺失的权限。
+缺少该契约的旧 rootstage 拒绝项目 apply；需要重建 stage 才能使用这条路径。
+普通工作区 stage 保留原有显式 target 兼容行为，不扩大范围。
+新 rootstage 的项目根目录不可覆盖。
+
+这条受限的 rootstage 项目路径支持普通文件新增、修改、删除，以及必要的新目录。
+不支持符号链接、特殊文件、opaque 改动、目录删除或替换、已有目录元数据修改和项目根目录改动。
+非 root apply 还会拒绝没有 owner-read 权限的逻辑文件模式，包括只写的 `0200`，
+因为恢复必须能在不先修改目标权限的前提下重新读取 postimage。
+新目录必须属于调用者，且 owner 可读、可搜索。
+私有 backing 的物理权限不能绕过逻辑元数据校验。这些限制不重新定义普通工作区 apply。
+
+高级 `--rootfs` 保持 effective UID 0、同 UID Job 锁和存储要求：stage 必须由 root 创建，
+位于规范的 root 所有目录，所有祖先目录也必须归 root 且不可被 group/world 写入。
+它不提权或导入普通用户 stage；`/tmp` 存储不符合要求。此时路径相对于 `/`。
+新契约 rootstage 的非 root 项目 apply 不授权 rootfs apply。
+系统写回不提供原子 OS 升级或回滚；软件包一致性、服务和启动行为须另行验证。
+
+### 结果与失败处理 {#apply-results}
+
+JSON 结果包含 `schema_version: 1`、`operation: "apply"`、`mode`
+（`preview` 或 `execute`）、`status`、`source`、`scope`、`selected`、`required`、
+`blockers`、`remaining`、`execution`、`candidates` 和 `plan`。
+Source 标识固定的 Job、stage、Attempt 和 generation；scope 标识项目或 rootfs 及目标。
+`plan` 是不透明的确认 token，不是 CLI 选项。
+`remaining.in_scope`、`remaining.outside_scope` 未知时为 null，不伪造为零。
+执行证据包含 `apply_id`、`applied`、`ledger_confirmed`、`recovery_required` 和 `error`；
+只有确认 intent 已提交后才报告 `applied` 数量。来源解析前的错误可将
+`source`、`scope`、`execution` 置为 null。参数解析器报错使用 CLI 诊断。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 预览就绪、应用成功或没有匹配改动。 |
+| `2` | 参数错误，或不满足选择、终端要求。 |
+| `3` | 预检阻塞，包括冲突、缺少授权或锁、不支持的改动、pending apply。 |
+| `1` | 执行或服务错误。 |
+| `130` | 交互取消。 |
+
+执行时没有匹配改动会打印 `No matching staged changes` 并成功退出，不扩大选择。
+空 dry-run 返回 `ready`，所选改动为空。预检阻塞不写目标。
+Pending apply 只会阻塞，不隐式恢复：保留 stage、已有 `apply-ledger.json` 和 recovery 证据，
+供检视和显式协调处理。当前没有新的 recovery CLI，也不承诺重试会自动修复。
+执行错误可能已写入部分目标；重试或 drop 前应检视执行证据并完成协调处理。
+Apply 成功不会自动运行测试，项目结果须单独验证。
+
 ## Job 检查点管理
 
 `spawn` 保持既有选项和默认行为。以下接口已支持停止 Job 的工作区检查点：

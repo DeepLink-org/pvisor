@@ -9,6 +9,7 @@ Run Bundle 是一次任务的交接记录：执行了什么、如何结束、留
 | 字段 | 来源与用途 |
 | --- | --- |
 | `schema_version` / `generated_at_unix_ms` | 格式版本与生成时间；当前版本 5 |
+| `project_apply_scope` | 可选的启动时项目写回授权；未显式 opt-in 时省略 |
 | `run` | Run/Attempt/Session 身份、命令、终态、时间、退出码、失败、输出、指标和结果产物 |
 | `executor_plan` | 可选准入计划；不能作为控制已安装的证明 |
 | `executor_observations` | 必需的实际执行器观察；强制力证据唯一来源 |
@@ -45,6 +46,7 @@ Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt
 | --- | --- | --- | --- |
 | `schema_version` | `u32` | 必需 | 新记录为 5；旧版本 4 按原契约接受 |
 | `generated_at_unix_ms` | `u64` | 必需 | Bundle 生成时间，Unix 毫秒 |
+| `project_apply_scope` | `Option<super::job_service::ProjectApplyScope>` | 可省略，默认 None；None 时省略 | 启动时的项目写回范围；缺失时为 None，不授予项目写回权限 |
 | `run` | `BundleRun` | 必需 | 执行结果与身份 |
 | `lineage` | `Option<RunLineage>` | 空时省略 | fork 时的父 Run 与 checkpoint 身份 |
 | `executor_observations` | `ExecutorObservations` | 必需 | 执行器回执；实际安装控制的权威来源 |
@@ -149,6 +151,33 @@ Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt
 | `filesystem.changes[].size_bytes` | `Option<u64>` | 空时省略 | 适用时的当前大小，字节 |
 | `filesystem.changes[].mode` | `Option<u32>` | 空时省略 | 适用时的 Unix 数值 mode，例如 420 表示 0644 |
 <!-- bundle-fields:end -->
+
+## 启动时的项目 apply 范围 {#project-apply-scope}
+
+`project_apply_scope` 是从 rootfs stage 写回项目时显式 opt-in 的契约。
+运行时在启动前从 RunSpec 的 `pvisor.project_apply_scope` 元数据取得该契约并校验，
+要求 `root` 与记录中的 workspace 一致。
+未 opt-in 时，包括缺少该契约的旧记录，写出时没有此字段，读取时为 `None`；
+不会从当前目录或文件系统摘要推断授权。
+
+对象存在时，下列字段均必填；未知字段会被拒绝：
+
+| JSON 路径 | Rust 类型 | 含义 |
+| --- | --- | --- |
+| `project_apply_scope.version` | `u32` | 契约版本；仅支持 1，与 Bundle schema 版本独立 |
+| `project_apply_scope.root` | `PathBuf` | 已有、规范的绝对项目目录，不能是 `/`；路径组件不能是符号链接 |
+| `project_apply_scope.device` | `u64` | 不跟随符号链接打开目录后取得的设备身份 |
+| `project_apply_scope.inode` | `u64` | 从同一目录取得的 inode 身份 |
+
+Bundle 从 RunRecord 复制 scope。Schema-5 读取要求它与该记录一致，
+并要求已提交的 completion receipt；回执中的 Bundle 摘要绑定这些字节。
+完成提交后，不能脱离该绑定单独改变 scope。
+Apply 会重新校验版本、规范根路径及 device/inode 身份；仅反序列化对象不授予权限。
+绑定缺失或矛盾、目录身份改变都会阻塞 rootstage 项目写回。
+普通旧式工作区 apply 保留独立的兼容契约，见 [apply 范围](cli.md#apply-scope)。
+
+该对象标识写回边界，不是项目内容快照、冻结的宿主 lower，也不代表通用快照或恢复支持。
+它不阻止并发写入者修改项目，也不授权系统根目录写回。
 
 ## 区分净变更与访问操作 {#changes}
 

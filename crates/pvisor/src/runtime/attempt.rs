@@ -73,7 +73,11 @@ impl AttemptSession {
         safe: bool,
         prepare: impl FnOnce(&mut Self) -> anyhow::Result<()>,
     ) -> anyhow::Result<Self> {
-        if let Err(error) = prepare(&mut self) {
+        let prepared = self
+            .run_record
+            .initialize_apply_observation_locks()
+            .and_then(|()| prepare(&mut self));
+        if let Err(error) = prepared {
             let snapshot = crate::AgentCtlSnapshot {
                 run_id: self.run_record.run_id.clone(),
                 attempt_id: attempt_id.to_string(),
@@ -549,6 +553,22 @@ fn initial_run_record(
         finished_at_unix_ms: None,
         storage: storage.to_path_buf(),
         workspace: preparation.workspace.clone(),
+        project_apply_scope: spec
+            .metadata
+            .get(super::job_service::PROJECT_APPLY_SCOPE_KEY)
+            .map(
+                |value| -> anyhow::Result<super::job_service::ProjectApplyScope> {
+                    let scope: super::job_service::ProjectApplyScope =
+                        serde_json::from_value(value.clone())?;
+                    scope.validate()?;
+                    anyhow::ensure!(
+                        preparation.workspace.as_deref() == Some(scope.root.as_path()),
+                        "project apply scope must match recorded workspace"
+                    );
+                    Ok(scope)
+                },
+            )
+            .transpose()?,
         overlaynet_listen: None,
         network_interception: None,
         network_interception_metrics: None,
@@ -1664,6 +1684,54 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_apply_contract_requires_matching_initial_workspace() {
+        use crate::runtime::job_service::{PROJECT_APPLY_SCOPE_KEY, ProjectApplyScope};
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().canonicalize().unwrap();
+        let scope = ProjectApplyScope::capture(&project).unwrap();
+        for workspace in [None, Some(project.join("other")), Some(project.clone())] {
+            let mut spec = pvisor_core::RunSpec::process("scope-binding", "test", "true");
+            spec.metadata.insert(
+                PROJECT_APPLY_SCOPE_KEY.into(),
+                serde_json::to_value(&scope).unwrap(),
+            );
+            if let Some(workspace) = &workspace {
+                spec.metadata.insert(
+                    "pvisor.workspace".into(),
+                    serde_json::to_value(workspace).unwrap(),
+                );
+            }
+            let preparation = crate::PVisor::new()
+                .resolve_run(spec.clone())
+                .unwrap()
+                .preparation;
+            let result =
+                super::initial_run_record(&spec, &preparation, root.path(), "attempt-scope".into());
+            if workspace.as_ref() == Some(&project) {
+                let record = result.unwrap();
+                assert_eq!(record.project_apply_scope.as_ref(), Some(&scope));
+                assert_eq!(record.workspace.as_ref(), Some(&project));
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("must match recorded workspace")
+                );
+            }
+        }
+        let spec = pvisor_core::RunSpec::process("no-scope", "test", "true");
+        let preparation = crate::PVisor::new()
+            .resolve_run(spec.clone())
+            .unwrap()
+            .preparation;
+        let record =
+            super::initial_run_record(&spec, &preparation, root.path(), "attempt-no-scope".into())
+                .unwrap();
+        assert!(record.project_apply_scope.is_none());
+    }
+
     #[test]
     fn lower_promises_require_exact_final_physical_stack() {
         use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};

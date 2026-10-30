@@ -174,6 +174,7 @@ fn empty_apply_selection_is_rejected_before_target_or_stage_mutation() {
         ApplyRequest {
             job: selection(&record),
             target: Some(target.clone()),
+            rootfs: false,
             all: false,
             selection: Default::default(),
         },
@@ -201,6 +202,7 @@ fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() 
         ApplyRequest {
             job: selection(&record),
             target: None,
+            rootfs: false,
             all: false,
             selection: super::super::ApplySelection {
                 paths: vec!["one".into()],
@@ -230,6 +232,7 @@ fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() 
         ApplyRequest {
             job: selection(&current),
             target: None,
+            rootfs: false,
             all: true,
             selection: super::super::ApplySelection::default(),
         },
@@ -272,6 +275,7 @@ fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion(
                 ApplyRequest {
                     job: selection(&record),
                     target: None,
+                    rootfs: false,
                     all: true,
                     selection: Default::default(),
                 },
@@ -491,6 +495,7 @@ fn apply_rechecks_a_generation_change_after_resolution() {
             ApplyRequest {
                 job: selection(&record),
                 target: None,
+                rootfs: false,
                 selection: super::super::ApplySelection {
                     paths: vec![],
                     includes: vec![],

@@ -15,6 +15,60 @@ use std::sync::{Arc, Condvar, Mutex};
 pub const WHITEOUT_PREFIX: &str = ".wh.";
 pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
+/// Upper-root control attribute identifying owner-accessible private VM backing.
+pub const PRIVATE_BACKING_XATTR: &str = "user.pvisor.private_backing";
+/// Per-inode logical Unix identity, encoded as decimal UID:GID:octal mode.
+pub const OVERRIDE_STAT_XATTR: &str = "user.containers.override_stat";
+
+/// Whether an attribute is private backing control state, not a guest user xattr.
+/// Logical fingerprints and apply publication exclude these names; raw snapshots
+/// must retain them together with physical backing metadata.
+pub fn is_private_metadata_xattr(name: &OsStr) -> bool {
+    name == OsStr::new(PRIVATE_BACKING_XATTR) || name == OsStr::new(OVERRIDE_STAT_XATTR)
+}
+
+fn optional_metadata_xattr(path: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
+    match sys::get_xattr(path, OsStr::new(name)) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => Ok(None),
+        #[cfg(target_os = "linux")]
+        Err(error) if error.raw_os_error() == Some(libc::ENODATA) => Ok(None),
+        #[cfg(target_os = "macos")]
+        Err(error) if error.raw_os_error() == Some(libc::ENOATTR) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Read the logical Unix identity of a no-follow backing object. Backend
+/// attributes take precedence over override_stat, then the supplied physical
+/// metadata. Permission-only override modes retain the physical file type.
+/// Missing/unsupported xattrs fall back; malformed identities and other I/O
+/// errors propagate. The caller owns path/metadata identity and synchronization;
+/// this query neither materializes content nor grants mutation authority.
+pub fn logical_identity(
+    path: &Path,
+    metadata: &Metadata,
+) -> io::Result<crate::backend::UnixIdentity> {
+    if let Some(attr) = crate::backend::attributes(path)? {
+        return Ok(crate::backend::UnixIdentity {
+            uid: attr.uid,
+            gid: attr.gid,
+            mode: attr.kind.mode() | u32::from(attr.perm),
+        });
+    }
+    let mut identity = match optional_metadata_xattr(path, OVERRIDE_STAT_XATTR)? {
+        Some(bytes) => crate::backend::UnixIdentity::parse(&bytes)?,
+        None => crate::backend::UnixIdentity {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.mode(),
+        },
+    };
+    if identity.mode & 0o170000 == 0 {
+        identity.mode |= metadata.mode() & 0o170000;
+    }
+    Ok(identity)
+}
 pub(crate) const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
 pub(crate) const PREIMAGE_LOG_NAME: &str = "log-v2";
@@ -169,6 +223,7 @@ pub struct OverlayLayout {
     baseline: PathBuf,
     frozen_baseline: bool,
     lower_mutability: Vec<LayerMutability>,
+    private_backing: bool,
 }
 impl OverlayLayout {
     pub fn new(lowers: Vec<PathBuf>, target: PathBuf) -> io::Result<Self> {
@@ -200,6 +255,7 @@ impl OverlayLayout {
             target,
             baseline,
             frozen_baseline,
+            private_backing: false,
         })
     }
     /// Declare stability in highest-to-lowest lower order. Empty means all mutable
@@ -216,6 +272,19 @@ impl OverlayLayout {
             self.lower_mutability = declarations;
         }
         Ok(self)
+    }
+
+    /// Opt into Linux private VM backing before Core initialization. The adapter
+    /// must enforce guest permissions using logical identities, never host DAC.
+    /// Fresh upper directories and copied regular files remain owned by the
+    /// invoking host user with modes 0700/0600; logical identity is stored in
+    /// override_stat. Construction persists a root marker for subsequent owners.
+    /// An unmarked nonempty upper cannot be converted; opening existing backing
+    /// requires its marker. Other platforms return Unsupported at construction.
+    /// Failure can leave private initialization metadata but never changes lowers.
+    pub fn with_private_backing(mut self) -> Self {
+        self.private_backing = true;
+        self
     }
 
     /// Validated per-lower declarations, in the same order as `lowers`.
@@ -648,9 +717,10 @@ pub fn is_opaque_directory(path: &Path) -> bool {
 }
 
 pub fn validate_guest_xattr(name: &OsStr) -> io::Result<()> {
-    if OPAQUE_XATTRS
-        .iter()
-        .any(|reserved| name == OsStr::new(reserved))
+    if name == OsStr::new(PRIVATE_BACKING_XATTR)
+        || OPAQUE_XATTRS
+            .iter()
+            .any(|reserved| name == OsStr::new(reserved))
     {
         return Err(error(libc::EPERM));
     }
@@ -812,11 +882,14 @@ fn fingerprint_xattrs(
         {
             continue;
         }
-        let value = sys::get_xattr(path, name)?;
-        if name == OsStr::new("user.containers.override_stat") {
-            identity = Some(crate::backend::UnixIdentity::parse(&value)?);
+        if name == OsStr::new(OVERRIDE_STAT_XATTR) {
+            identity = Some(crate::backend::UnixIdentity::parse(&sys::get_xattr(
+                path, name,
+            )?)?);
+        } else if !is_private_metadata_xattr(name) {
+            let value = sys::get_xattr(path, name)?;
+            entries.push((name.as_bytes().to_vec(), sha256_hex(&value)));
         }
-        entries.push((name.as_bytes().to_vec(), sha256_hex(&value)));
     }
     entries.sort();
     Ok((XattrFingerprint::Values { entries }, identity))
@@ -993,7 +1066,7 @@ impl OverlayCore {
     }
 
     fn build_for_layout(
-        layout: OverlayLayout,
+        mut layout: OverlayLayout,
         upper: PathBuf,
         work: Option<PathBuf>,
         excluded: Vec<PathBuf>,
@@ -1026,6 +1099,44 @@ impl OverlayCore {
         let actual_upper = fs::canonicalize(&upper)?;
         let actual_work = work.as_ref().map(fs::canonicalize).transpose()?;
         let upper_was_empty = crate::backend::read_dir(&upper)?.next().is_none();
+        let private_marker = optional_metadata_xattr(&upper, PRIVATE_BACKING_XATTR)?;
+        let persisted_private = match private_marker.as_deref() {
+            None => false,
+            Some(b"1") => true,
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid private backing marker",
+                ));
+            }
+        };
+        if layout.private_backing && !persisted_private && (!initialize || !upper_was_empty) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "private backing requires a fresh upper or an existing private marker",
+            ));
+        }
+        layout.private_backing |= persisted_private;
+        if layout.private_backing {
+            if !cfg!(target_os = "linux") {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "private VM backing requires Linux",
+                ));
+            }
+            // Private backing must remain owned by the serving account, including
+            // privileged servers: copy-up must never donate it to a guest owner.
+            if fs::symlink_metadata(&upper)?.uid() != unsafe { libc::geteuid() } {
+                return Err(error(libc::EPERM));
+            }
+            if persisted_private && optional_metadata_xattr(&upper, OVERRIDE_STAT_XATTR)?.is_none()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "private root identity missing",
+                ));
+            }
+        }
         let compact = if matches!(mode, BuildMode::Compact) && upper_was_empty {
             match preimage_dir.as_ref() {
                 Some(directory) => {
@@ -1183,11 +1294,15 @@ impl OverlayCore {
         );
         core.profile.add("exclusive_upper_absence_cache_enabled", 0);
         if initialize
+            && !persisted_private
             && crate::backend::read_dir(&core.upper)?.next().is_none()
             && let Some(root) = core.layout.lowers.first()
         {
             let metadata = crate::backend::symlink_metadata(root)?;
             core.copy_metadata(root, &core.upper, &metadata)?;
+        }
+        if initialize && core.layout.private_backing && !persisted_private {
+            sys::set_xattr(&core.upper, OsStr::new(PRIVATE_BACKING_XATTR), b"1", 0)?;
         }
         if compact {
             core.with_compact_preimages()
@@ -2476,18 +2591,48 @@ impl OverlayCore {
             .as_ref()
             .map_or(metadata.mode(), |a| a.kind.mode() | u32::from(a.perm));
         let nofollow = metadata.file_type().is_symlink();
-        if let Err(err) = sys::chown(destination, uid, gid, nofollow)
-            && !ignorable_ownership_error(&err)
-        {
-            return Err(err);
-        }
-        if !nofollow {
-            fs::set_permissions(destination, fs::Permissions::from_mode(mode & 0o7777))?;
-        }
-        if let Err(err) = self.copy_user_xattrs(source, destination)
-            && !ignorable_metadata_error(&err)
-        {
-            return Err(err);
+        if self.layout.private_backing && (metadata.is_dir() || metadata.is_file()) {
+            let names = sys::list_xattrs(source)?;
+            if names.iter().any(|name| {
+                name == b"system.posix_acl_access" || name == b"system.posix_acl_default"
+            }) {
+                // Installing a native ACL can rewrite mode bits and defeat
+                // private owner access. Dropping it or chmodding afterwards
+                // would instead change the guest's logical ACL semantics.
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "private backing does not support POSIX ACL metadata",
+                ));
+            }
+            let identity = logical_identity(source, metadata)?;
+            fs::set_permissions(
+                destination,
+                fs::Permissions::from_mode(if metadata.is_dir() { 0o700 } else { 0o600 }),
+            )?;
+            self.copy_user_xattrs_from_names(source, destination, names)?;
+            let value = format!("{}:{}:0{:o}", identity.uid, identity.gid, identity.mode);
+            // This is essential metadata, not best-effort chown: failure must
+            // not publish a widened physical mode as the guest's logical mode.
+            sys::set_xattr(
+                destination,
+                OsStr::new(OVERRIDE_STAT_XATTR),
+                value.as_bytes(),
+                0,
+            )?;
+        } else {
+            if let Err(err) = sys::chown(destination, uid, gid, nofollow)
+                && !ignorable_ownership_error(&err)
+            {
+                return Err(err);
+            }
+            if !nofollow {
+                fs::set_permissions(destination, fs::Permissions::from_mode(mode & 0o7777))?;
+            }
+            if let Err(err) = self.copy_user_xattrs(source, destination)
+                && !ignorable_metadata_error(&err)
+            {
+                return Err(err);
+            }
         }
         let atime = remote.as_ref().map_or_else(
             || sys::unix_time(metadata.atime(), metadata.atime_nsec()),
@@ -2506,10 +2651,20 @@ impl OverlayCore {
     }
 
     fn copy_user_xattrs(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        for name in sys::list_xattrs(source)? {
-            if OPAQUE_XATTRS
-                .iter()
-                .any(|control| name == control.as_bytes())
+        self.copy_user_xattrs_from_names(source, destination, sys::list_xattrs(source)?)
+    }
+
+    fn copy_user_xattrs_from_names(
+        &self,
+        source: &Path,
+        destination: &Path,
+        names: Vec<Vec<u8>>,
+    ) -> io::Result<()> {
+        for name in names {
+            if name == PRIVATE_BACKING_XATTR.as_bytes()
+                || OPAQUE_XATTRS
+                    .iter()
+                    .any(|control| name == control.as_bytes())
             {
                 continue;
             }
@@ -2545,7 +2700,14 @@ impl OverlayCore {
             // not issue an explicit setattr on the parent.
             self.record_preimage(&current)?;
             fs::create_dir(&upper)?;
-            self.copy_metadata(&resolved.path, &upper, &metadata)?;
+            if let Err(error) = self.copy_metadata(&resolved.path, &upper, &metadata) {
+                if self.layout.private_backing {
+                    // This parent has not published children yet. Do not leave
+                    // a failed logical-identity import visible with host modes.
+                    let _ = fs::remove_dir(&upper);
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }

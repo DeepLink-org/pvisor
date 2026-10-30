@@ -391,6 +391,128 @@ To stop a running Job, use `pvisor kill JOB_ID`. It requests graceful terminatio
 from the Job supervisor; check `pvisor status JOB_ID` for the final state. A
 stopped Job can still be reviewed and applied or dropped.
 
+## Apply staged project changes {#apply}
+
+```bash
+pvisor apply SOURCE [OPTIONS]
+pvisor apply last
+pvisor apply last --path src --dry-run --diff
+pvisor apply last --path src
+pvisor apply last --all --exclude 'build/**'
+pvisor apply last --include 'src/**' --dry-run --json
+```
+
+`SOURCE` is required: a Job ID, stage directory, legacy upper directory, or
+workspace selector such as `last`. Apply requires a stopped Job, valid completion
+evidence and an apply-capable stage. The default scope is the recorded project;
+paths and globs are relative to that scope. Outside-project changes remain staged.
+
+### Selection and output {#apply-options}
+
+| Argument | Contract |
+| --- | --- |
+| `--path RELATIVE_PATH` | Select this path and descendants; repeatable. |
+| `--include GLOB` | Select paths using git-style globs; repeatable. Quote globs against shell expansion. |
+| `--exclude GLOB` | Exclude matching paths; repeatable. Exclusions take precedence. Alone, requires `--interactive`. |
+| `--all` | Select every change in the current scope. Allows `--exclude`; conflicts with `--path` and `--include`. |
+| `-i`, `--interactive` | Open the terminal picker; explicit positive selections preselect matching paths. Conflicts with `--dry-run` and `--json`. |
+| `--dry-run` | Read-only preflight: selected changes, required dependencies, blockers and remaining counts. Does not consume staged changes. |
+| `--diff` | Bounded text diffs, skipping binary content. Requires `--dry-run`; conflicts with `--json`. |
+| `--json` | One schema-version-1 result object on stdout; requires `--path`, `--include` or `--all`, and never opens a picker. Diagnostics go to stderr. |
+| `--store DIR` | Job lookup storage, default `.pvisor/capture`. Legacy `-o DIR` and `--output-dir DIR` remain accepted aliases. |
+| `--target PATH` | Legacy override for an ordinary workspace stage, naming an existing workspace directory. Not a rootstage project override; cannot authorize `/`. |
+| `--rootfs` | Advanced, privileged writeback to the recorded `/` target; conflicts with `--target`. |
+
+Without a selection, the picker opens automatically only when **both stdin and
+stdout are terminals**. It starts with nothing checked. Non-interactive use must
+supply a positive selection (`--path`, `--include` or `--all`); exclusions alone
+are rejected, even on a terminal unless `--interactive` is explicit. Positive
+selection executes without prompting unless you add `--interactive` or choose
+`--dry-run`. Empty, absolute and `..`-containing selection paths are rejected.
+
+The planner displays explicitly `selected` changes separately from `required`
+dependencies such as new parent directories or hard-link peers. A dependency
+cannot silently cross the project boundary or override an exclusion; such a
+selection is blocked. Stop concurrent editors and other target writers before
+applying: preimage checks do not provide a multi-file transaction.
+
+### Terminal review and read-only preview {#apply-preview}
+
+In the picker, ↑/↓ moves, Space toggles, `a` selects all eligible paths, `n`
+clears selection, `d` shows a diff, Enter opens preview, and `q` cancels.
+Excluded paths cannot be checked. In preview, `a` applies, `b` returns to the
+picker, `d` shows a diff, and `q` quits. Execution pins the source and checks the
+preview's expected-plan token. If the plan changes, it shows a fresh preview
+and requires confirmation again.
+
+`--dry-run` writes neither the target nor journals, apply ledger or recovery
+state. It performs no implicit recovery and creates no target directory or
+missing lock files. Preview uses strict read-only observation locks and leases;
+missing existing `job.lock` or required lease files fail closed. New `stage`
+startup precreates these locks so its first preview can use them.
+
+### Project authority and compatibility {#apply-scope}
+
+New Linux root-filesystem stages record `ProjectApplyScope` version 1 at launch:
+a canonical project `root` other than `/`, plus `device` and `inode` identity.
+The RunRecord and Run Bundle carry this scope, bound by the completion receipt.
+Apply revalidates that binding and directory identity; replacing the project
+directory, changing the contract, or omitting the binding blocks writeback.
+Neither the current directory nor `--target` can supply missing authority.
+Older rootstages without this contract are refused for project apply; recreate
+the stage to use that path. Ordinary workspace stages retain their existing
+explicit-target compatibility without expanding its scope. A new rootstage's
+project root cannot be overridden.
+
+This restricted rootstage project path supports regular file additions,
+modifications and deletions, plus required new directories. Symlinks, special
+files, opaque changes, directory deletion/replacement, existing-directory
+metadata changes and project-root changes are unsupported. Non-root apply also
+rejects logical file modes without owner-read permission, including write-only
+`0200`, because recovery must reread postimages without first changing target
+permissions. New directories must be caller-owned and owner-readable/searchable.
+Private backing permissions do not bypass logical metadata validation. These
+restrictions do not redefine ordinary workspace apply.
+
+Advanced `--rootfs` retains its effective-UID-0, same-UID Job-lock and storage
+requirements: a root-created stage in canonical root-owned storage with
+root-owned, non-group/world-writable ancestors. It does not elevate/import a
+user-created stage; `/tmp` storage is ineligible. Paths then are relative to `/`.
+Non-root project apply on a new contracted rootstage does not authorize rootfs
+apply. System writeback is not an atomic OS upgrade or rollback; separately
+validate package consistency, services and boot behavior.
+
+### Results and failure handling {#apply-results}
+
+The JSON result has `schema_version: 1`, `operation: "apply"`, `mode`
+(`preview` or `execute`), `status`, `source`, `scope`, `selected`, `required`,
+`blockers`, `remaining`, `execution`, `candidates` and `plan`. Source identifies
+the pinned Job/stage/Attempt/generation; scope identifies project or rootfs and
+the target. `plan` is an opaque confirmation token, not a CLI option.
+`remaining.in_scope` and `remaining.outside_scope` are null when unknown, never
+invented zeroes. Execution evidence reports `apply_id`, `applied`,
+`ledger_confirmed`, `recovery_required` and `error`; `applied` is known only from
+confirmed committed intent. Errors before source resolution may have null
+`source`, `scope` and `execution`. Parser-level argument errors use CLI diagnostics.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Ready preview, successful apply, or no matching changes. |
+| `2` | Invalid arguments or selection/terminal requirements. |
+| `3` | Blocked preflight, including conflicts, missing authority/locks, unsupported changes or pending apply. |
+| `1` | Execution or service error. |
+| `130` | Interactive cancellation. |
+
+An execution with no matching changes prints `No matching staged changes` and
+succeeds without broadening the selection. An empty dry-run is a `ready` result
+with no selected changes. A blocked preflight makes no target changes. A pending
+apply is blocked without implicit recovery: preserve the stage, its existing
+`apply-ledger.json` and recovery evidence for inspection and explicit
+reconciliation. No new recovery CLI or automatic repair on retry is provided.
+An execution error may leave partial target writes; inspect the execution
+evidence and reconcile before retrying or dropping the stage. Successful apply
+does not run tests automatically; validate your project separately.
+
 ## Job checkpoint management
 
 `spawn` retains its existing options and defaults. These interfaces support workspace checkpoints for stopped Jobs:

@@ -9,6 +9,7 @@ Start with `pvisor status --review STAGE` for a summary. Automation can use `--j
 | Field | Source and purpose |
 | --- | --- |
 | `schema_version` / `generated_at_unix_ms` | Format and generation time; current version 5 |
+| `project_apply_scope` | Optional launch-time project writeback authority; omitted without explicit opt-in |
 | `run` | Run/Attempt/Session identity, command, terminal state, times, exit/failure, output, metrics, result artifacts |
 | `executor_plan` | Optional admission plan; not installation evidence |
 | `executor_observations` | Required executor observations; sole enforcement source |
@@ -45,6 +46,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 | --- | --- | --- | --- |
 | `schema_version` | `u32` | required | 5 for new records; legacy 4 is accepted under its original contract |
 | `generated_at_unix_ms` | `u64` | required | Bundle generation wall-clock time, Unix milliseconds |
+| `project_apply_scope` | `Option<super::job_service::ProjectApplyScope>` | defaulted; omitted when None | Launch-time project writeback scope; absence defaults to None and grants no project authority |
 | `run` | `BundleRun` | required | Execution outcome and identity |
 | `lineage` | `Option<RunLineage>` | omitted when empty | Parent Run and checkpoint identity, when forked |
 | `executor_observations` | `ExecutorObservations` | required | Executor receipt; authoritative installed controls |
@@ -149,6 +151,37 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 | `filesystem.changes[].size_bytes` | `Option<u64>` | omitted when empty | Current size when applicable |
 | `filesystem.changes[].mode` | `Option<u32>` | omitted when empty | Unix numeric mode when applicable, e.g. 420 is 0644 |
 <!-- bundle-fields:end -->
+
+## Launch-time project apply scope {#project-apply-scope}
+
+`project_apply_scope` is an explicit opt-in contract for project writeback from
+a root-filesystem stage. The runtime captures it before launch from
+`pvisor.project_apply_scope` RunSpec metadata, validates it and requires its
+`root` to match the recorded workspace. Without opt-in, including legacy
+records without this contract, the field is absent on write and reads as
+`None`; it is not inferred from the current directory or filesystem summary.
+
+When present, the object has these required fields; unknown fields are rejected:
+
+| JSON path | Rust type | Meaning |
+| --- | --- | --- |
+| `project_apply_scope.version` | `u32` | Contract version; only 1 is supported, independently of the Bundle schema version |
+| `project_apply_scope.root` | `PathBuf` | Existing canonical absolute project directory, never `/`; symlink components are rejected |
+| `project_apply_scope.device` | `u64` | Device identity captured from the opened directory without following symlinks |
+| `project_apply_scope.inode` | `u64` | Inode identity captured from that same directory |
+
+The Bundle copies the scope from RunRecord. Schema-5 reads require agreement
+with that record and the committed completion receipt whose Bundle digest binds
+these bytes. Once completion commits, the scope cannot be changed independently
+of that binding. Apply revalidates the version, canonical root and device/inode
+identity; deserializing the object alone grants no authority. Missing or
+contradictory bindings and directory identity changes block rootstage project
+writeback. Ordinary legacy workspace apply retains its separate compatibility
+contract; see [apply scope](cli.md#apply-scope).
+
+This object identifies a writeback boundary, not a snapshot of project contents,
+a frozen host lower, or general snapshot/restore support. It does not protect
+the project against concurrent writers or authorize system-root writeback.
 
 ## Read a change without confusing it with an operation {#changes}
 

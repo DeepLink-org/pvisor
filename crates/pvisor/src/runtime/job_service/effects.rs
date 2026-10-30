@@ -8,6 +8,13 @@ use std::path::{Path, PathBuf};
 pub struct ApplyRequest {
     pub job: JobSelection,
     pub target: Option<PathBuf>,
+    /// Explicitly authorize applying a recorded `/` target as effective UID 0.
+    /// Target overrides (even `/`) are forbidden in this mode; non-root targets
+    /// reject it. Use a root-created stage in root-controlled storage: existing
+    /// same-UID Job locks are not bypassed for sudo or `SUDO_UID`.
+    /// This is not an atomic system upgrade. Filtering package files separately
+    /// from package metadata can leave the system/package database inconsistent.
+    pub rootfs: bool,
     pub selection: ApplySelection,
     pub all: bool,
 }
@@ -51,6 +58,7 @@ impl RuntimeJobService {
             request.job,
             true,
             request.target.as_deref(),
+            request.rootfs,
             Some(&request.selection),
         )
     }
@@ -58,7 +66,7 @@ impl RuntimeJobService {
         context: &ServiceContext<'_>,
         request: DropRequest,
     ) -> anyhow::Result<MutationResponse> {
-        mutate(context, request.job, false, None, None)
+        mutate(context, request.job, false, None, false, None)
     }
 }
 fn mutate(
@@ -66,6 +74,7 @@ fn mutate(
     job: JobSelection,
     apply: bool,
     target: Option<&Path>,
+    rootfs: bool,
     selection: Option<&ApplySelection>,
 ) -> anyhow::Result<MutationResponse> {
     let selected = RuntimeJobService::resolve(context, &job)?;
@@ -81,10 +90,19 @@ fn mutate(
         .generation
         .checked_add(1)
         .context("workspace generation exhausted")?;
+    let stage = record.stage_dir();
     let mut overlay = record
         .overlay
         .take()
         .context("this Job has no OverlayFS workspace")?;
+    // Authorization must precede pending-apply recovery, which can write the
+    // recorded target even when the workspace already reports Applied.
+    if apply {
+        validate_apply_target(&overlay.target, target, rootfs, unsafe { libc::geteuid() })?;
+        if rootfs {
+            validate_rootfs_storage(&stage)?;
+        }
+    }
     let _workspace_owner = if apply {
         super::super::owned_workspace::apply_owner(&record, &overlay)?
     } else {
@@ -166,14 +184,8 @@ fn mutate(
         _ => {}
     }
     let outcome = if apply {
-        if overlay.target == Path::new("/") {
-            bail!(
-                "Job {} is a full-root libkrun changeset; fork it or drop it instead of applying it to the host root",
-                record.run_id
-            );
-        }
         if let Some(target) = target {
-            let target = resolve_apply_target(target, &record.stage_dir())?;
+            let target = resolve_apply_target(target, &stage)?;
             overlay.target = target.clone();
             overlay.baseline_lower = None;
             if let Some(primary_lower) = record.overlay_lowers.last_mut() {
@@ -213,12 +225,89 @@ fn mutate(
     })
 }
 
+fn is_system_root(target: &Path) -> anyhow::Result<bool> {
+    match target.canonicalize() {
+        Ok(path) => Ok(path == Path::new("/")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Do not create `missing/..` while discovering that it denotes `/`.
+            anyhow::ensure!(
+                !target
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir),
+                "apply target containing '..' must already exist; use an existing canonical target"
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("resolve apply target {}", target.display()))
+        }
+    }
+}
+
+pub(super) fn validate_apply_target(
+    recorded: &Path,
+    target: Option<&Path>,
+    rootfs: bool,
+    effective_uid: libc::uid_t,
+) -> anyhow::Result<()> {
+    if is_system_root(recorded)? {
+        anyhow::ensure!(
+            rootfs,
+            "applying the system root '/' requires explicit --rootfs; review the stage first, or drop it"
+        );
+        anyhow::ensure!(
+            target.is_none(),
+            "--rootfs does not support --target overrides (including --target /); use the recorded '/' target"
+        );
+        anyhow::ensure!(
+            effective_uid == 0,
+            "--rootfs requires effective UID 0 and a root-created stage; sudo apply of another user's stage is unsupported by same-UID Job locks; recreate and review the stage as root in root-controlled storage"
+        );
+    } else {
+        anyhow::ensure!(
+            !rootfs,
+            "--rootfs is only valid for a Job whose recorded target is '/'; it cannot turn a workspace stage into a system-root stage"
+        );
+        if let Some(target) = target {
+            anyhow::ensure!(
+                !is_system_root(target)?,
+                "--target / (including aliases) is forbidden for ordinary apply; create and review a rootfs stage as root and apply it with --rootfs without --target"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_rootfs_storage(stage: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let stage = stage
+        .canonicalize()
+        .context("resolve rootfs stage storage")?;
+    for directory in stage.ancestors() {
+        let metadata = std::fs::metadata(directory)?;
+        anyhow::ensure!(
+            metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0,
+            "--rootfs requires a root-created stage in root-controlled storage: {} must be root-owned and not group/world writable; sudo apply of a user stage is unsupported; recreate and review the stage as root in private storage",
+            directory.display()
+        );
+    }
+    Ok(())
+}
+
 fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        !is_system_root(target)?,
+        "--target / (including aliases) is forbidden; rootfs apply must use its recorded target without --target"
+    );
     std::fs::create_dir_all(target)
         .with_context(|| format!("create apply target {}", target.display()))?;
     let target = target
         .canonicalize()
         .with_context(|| format!("resolve apply target {}", target.display()))?;
+    anyhow::ensure!(
+        target != Path::new("/"),
+        "apply target override resolved to system root; refusing apply"
+    );
     let stage = stage.canonicalize().unwrap_or_else(|_| stage.to_path_buf());
     if target.starts_with(&stage) || stage.starts_with(&target) {
         bail!(
@@ -252,6 +341,117 @@ mod tests {
         .unwrap();
         record.write().unwrap();
         record
+    }
+
+    #[test]
+    fn system_root_requires_opt_in_and_effective_root_without_overrides() {
+        // Only exercise the authorization gate: no apply ever targets real `/`.
+        for uid in [0, 1000] {
+            let error = validate_apply_target(Path::new("/"), None, false, uid).unwrap_err();
+            assert!(error.to_string().contains("explicit --rootfs"));
+        }
+        let error = validate_apply_target(Path::new("/"), None, true, 1000).unwrap_err();
+        assert!(error.to_string().contains("effective UID 0"));
+        assert!(error.to_string().contains("same-UID Job locks"));
+        validate_apply_target(Path::new("/"), None, true, 0).unwrap();
+        for target in ["/", "/tmp/elsewhere"] {
+            let error = validate_apply_target(Path::new("/"), Some(Path::new(target)), true, 0)
+                .unwrap_err();
+            assert!(error.to_string().contains("does not support --target"));
+        }
+    }
+
+    #[test]
+    fn ordinary_apply_rejects_rootfs_and_root_target_aliases_without_creating_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let recorded = root.path().join("target");
+        std::fs::create_dir(&recorded).unwrap();
+        let alias = root.path().join("root-alias");
+        std::os::unix::fs::symlink("/", &alias).unwrap();
+        let error = validate_apply_target(&recorded, None, true, 0).unwrap_err();
+        assert!(error.to_string().contains("only valid"));
+        for target in [Path::new("/"), Path::new("/.."), alias.as_path()] {
+            let error = validate_apply_target(&recorded, Some(target), false, 0).unwrap_err();
+            assert!(error.to_string().contains("forbidden"));
+            assert!(resolve_apply_target(target, root.path()).is_err());
+        }
+        let missing_parent = root.path().join("missing/..");
+        assert!(validate_apply_target(&recorded, Some(&missing_parent), false, 0).is_err());
+        assert!(resolve_apply_target(&missing_parent, root.path()).is_err());
+        assert!(!root.path().join("missing").exists());
+    }
+
+    #[test]
+    fn unauthorized_apply_leaves_stage_and_targets_unchanged_even_before_recovery() {
+        for (recorded_root, rootfs, override_target, terminal) in [
+            (true, false, None, false),
+            (true, false, None, true),
+            (true, true, Some("/"), false),
+            (true, true, Some("missing-target"), false),
+            (false, false, Some("/"), false),
+            (false, true, Some("missing-target"), false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut record = fixture(root.path());
+            let overlay = record.overlay.as_mut().unwrap();
+            if recorded_root {
+                overlay.target = PathBuf::from("/");
+            }
+            if terminal {
+                overlay.state = OverlayState::Applied;
+            }
+            record.write().unwrap();
+            std::fs::write(root.path().join("upper/change"), b"staged").unwrap();
+            let before = std::fs::read(root.path().join("run.json")).unwrap();
+            let target = override_target.map(|target| {
+                if target == "/" {
+                    PathBuf::from(target)
+                } else {
+                    root.path().join(target)
+                }
+            });
+            let error = RuntimeJobService::apply(
+                &ServiceContext::default(),
+                ApplyRequest {
+                    job: JobSelection {
+                        selector: Some(root.path().to_path_buf()),
+                        storage: root.path().to_path_buf(),
+                    },
+                    target,
+                    rootfs,
+                    all: true,
+                    selection: ApplySelection::default(),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains(if recorded_root && !rootfs {
+                    "explicit --rootfs"
+                } else if recorded_root {
+                    "does not support --target"
+                } else if rootfs {
+                    "only valid"
+                } else {
+                    "forbidden"
+                }),
+                "{error:#}"
+            );
+            assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
+            assert_eq!(
+                std::fs::read(root.path().join("upper/change")).unwrap(),
+                b"staged"
+            );
+            assert!(!root.path().join("missing-target").exists());
+            assert!(!root.path().join("target/change").exists());
+            assert!(!root.path().join("apply-ledger.json").exists());
+        }
+    }
+
+    #[test]
+    fn rootfs_storage_rejects_user_or_shared_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        // Even in a root-run test, /tmp is not private root-controlled storage.
+        assert!(validate_rootfs_storage(root.path()).is_err());
     }
 
     #[test]
@@ -302,6 +502,7 @@ mod tests {
         let request = || ApplyRequest {
             job: job(),
             target: None,
+            rootfs: false,
             selection: ApplySelection::default(),
             all: true,
         };
@@ -367,6 +568,7 @@ mod tests {
             ApplyRequest {
                 job: job(),
                 target: None,
+                rootfs: false,
                 selection: ApplySelection::default(),
                 all: true,
             },

@@ -181,7 +181,7 @@ pub(super) struct Exec {
     invocation: Vec<String>,
 }
 
-fn memory(value: &str) -> Result<u32, String> {
+pub(super) fn memory(value: &str) -> Result<u32, String> {
     let split = value
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(value.len());
@@ -201,7 +201,7 @@ fn memory(value: &str) -> Result<u32, String> {
     u32::try_from(mib).map_err(|_| "memory size overflow".into())
 }
 
-fn environment(
+pub(super) fn environment(
     values: &[String],
     files: &[PathBuf],
 ) -> anyhow::Result<(BTreeMap<String, String>, Vec<String>)> {

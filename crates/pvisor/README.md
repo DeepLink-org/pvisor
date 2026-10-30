@@ -110,9 +110,92 @@ proxy may still be cooperative. `PolicyMode::Enforce` independently requires
 non-bypassable controls. Bundle `safe_profile_requested` comes from this typed
 request. `RunConfig.run.profile = "safe"` selects the CLI preset.
 
-Apply requests require explicit `all = true` or a nonempty path/include/exclude
-selection. Empty selection is rejected before target/stage mutation. The low-level
-OverlayCore selection contract remains unchanged for its existing callers.
+Legacy `RuntimeJobService::apply` retains its existing selection, target and
+recovery API. The command-oriented `RuntimeJobService::apply_command(context,
+request)` separates read-only planning from execution; terminal interaction and
+picker policy belong to the frontend, not the runtime.
+
+`ApplyCommandRequest` contains `job: JobSelection`, `target: Option<PathBuf>`
+(legacy normal-workspace override), `rootfs: bool`, `selection: ApplySelection`,
+`all: bool`, `dry_run: bool`, and `expected_plan: Option<String>`. Paths and globs
+must be scope-relative without absolute paths or `..`. Execution needs `all` or a
+positive path/include; `all` permits exclusions but not paths/includes. Empty and
+exclude-only selections are permitted for picker preview, not implicit interactive
+execution. Without `all` or positive paths/includes, preview only inventories
+candidates: it never interprets an empty selection as an all-changes plan. Glob matching uses scope-relative coordinates before mapping to exact
+root-overlay paths, retaining exclusions through dependency closure. Hardlink or
+other dependencies cannot enlarge project authority or revive excluded paths.
+
+The schema-1 `ApplyCommandResponse` is serializable JSON:
+
+- `operation = "apply"`, `mode = "preview" | "execute"`, and
+  `status = "ready" | "applied" | "no_changes" | "blocked" | "error"`;
+  successful previews, including picker and zero-match previews, are `ready`;
+- `source { job_id, stage, attempt_id, generation }` pins the resolved Attempt;
+- `scope { kind, target }` identifies the `project` or `rootfs` authority (target
+  may be null when authorization failed);
+- `selected`, `required`, and `candidates` contain scope-relative `ChangeEntry`
+  values; required dependencies are not presented as user-selected paths;
+- `blockers` carries admission/planning failures, and
+  `remaining { in_scope: Option<usize>, outside_scope: Option<usize> }` uses null
+  when counts cannot be confirmed. Successful preview counts describe what would
+  remain after the actual selected and required paths, not the starting inventory;
+  candidate-only preview leaves the starting counts unchanged;
+- `execution: Option<ApplyCommandExecution>` contains `apply_id`, `applied`,
+  `recovery_required`, `ledger_confirmed`, and `error`. Counts come only from
+  confirmed committed ledger intent, including when Run publication later fails;
+- `plan: Option<String>` is a confirmation token bound to source, generation,
+  target identity, candidate inventory and upper contents. Preview a candidate
+  universe, then submit explicit picker paths with its token. A changed plan
+  returns blocked with the new preview rather than expanding the selection.
+
+Rootstage project apply requires explicit launch-time opt-in: capture
+`ProjectApplyScope::capture(root)` and serialize it into RunSpec metadata key
+`pvisor.project_apply_scope`. Version 1 records an existing canonical absolute,
+non-symlink, non-`/` directory plus its device/inode. The runtime validates it at
+Attempt preparation, requires its root to match the recorded workspace, persists
+`RunRecord.project_apply_scope` and the same optional
+field in the completion-bound Run Bundle, and compares that binding on reads even
+when Bundle semantic validation was memoized. Old records default to no contract;
+workspace/cwd does not grant rootstage project apply authority. Ordinary spawn
+never adds this contract. A replaced root or symlink ancestor fails closed.
+
+Only rootstage project apply uses OverlayCore's scoped boundary API: the original
+`/` overlay, upper, preimages and schema-3 root-coordinate ledger remain in place;
+no subtree is copied into a synthetic stage. Normal workspaces retain the existing
+core apply target contract. `target` overrides cannot grant rootstage authority;
+the command planner requires an existing override directory and never creates it.
+System-root apply still needs explicit `rootfs`, effective UID 0, same-UID Job
+ownership and root-controlled storage; sudo of user stages is not authorized.
+
+Planning and execution share the same preflight with identity/admission checks
+repeated under exclusive locks. Lock order is Job-directory `job.lock`, optional
+ExecutionJob `execution-operation/lease.lock`, then Attempt `lease.lock`. Preview
+uses read-only descriptors and exclusive nonblocking flock on **existing** inodes:
+it does not create directories/files, write diagnostic owners, truncate on drop,
+or sync lock files. These locks exclude the same mutators as execution without
+initializing anything in a project that contains its own stage (for example
+`./experiment`). Execution retains its diagnostic-owner and mutation lock APIs.
+
+Explicit project-scope stage preparation initializes the Job-directory and
+ExecutionJob observation locks while holding the new Attempt lease, before
+publishing the Run record. The Attempt lease is already created by launch.
+Ordinary spawn without that explicit scope does not gain lock-initialization side
+effects. Legacy stages missing any required lock fail preview closed with an
+existing-lock error; preview never repairs or upgrades them. Recreate such a stage
+with the explicit launch contract, or reconcile it through the existing legacy
+mutation workflow before retrying preview. This limitation is not treated as a
+successful empty preview.
+
+Dry-run does not recover pending intent, create ledgers, consume upper/preimages
+or create scope/target directories. Reads can update atime; file/directory contents,
+mtime and lock owner records remain unchanged. This entry point conservatively
+blocks **both** preview and execution while any pending
+intent exists; it never uses project authority to recover unrelated system-root
+work. Existing legacy recovery remains separate. Failures retain staged intent
+and expose execution uncertainty instead of inventing “no changes”. Completion
+receipts are still required for new stopped Attempts, including failed/cancelled
+ones; missing, unknown or contradictory completion is not review approval.
 
 Admission carries the final network configuration into every Attempt driver;
 preparation does not re-resolve policy from mutable Run metadata or configuration.
@@ -1104,6 +1187,22 @@ Docker measurements are a different cohort. Contract tests cover real portable
 pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, rejected V1
 envelopes and concurrent service progress. Linux KVM performance measurements do
 not establish macOS/HVF, live S3 or WAN coverage.
+
+## Native host-root private backing (Linux)
+
+Mountless stages targeting `/` with the single lower `/` select
+`OverlayLayout::with_private_backing()` before constructing Core. The VM adapter
+selects the same contract, including ordinary `spawn --rootfs host` with that
+layout. This keeps a mode-0555 host root from making the private upper unusable
+by a rootless server. Guest identity remains the host root's logical UID/GID/mode;
+only private physical backing uses owner-accessible directory/file permissions.
+The root marker and per-object virtual identity survive repeated initialization.
+Other workspace/image and ordinary host FUSE layouts keep their defaults.
+
+Review/apply must publish logical metadata, not backend permissions or control
+xattrs; raw snapshot copies retain the separate backing representation. See
+[overlay-core's contract](../pvisor-overlay-core/README.md#explicit-private-vm-backing-metadata-linux).
+No host-root permissions or temporary-directory environment workaround is used.
 
 ## Physical lower stability (explicit experiment contract)
 

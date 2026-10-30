@@ -1533,6 +1533,26 @@ so a guest-root cold read does not accidentally fail on the host's DAC checks.
 Guest VFS/access checks still use the requested virtual mode and reject other
 guest users. Plain host shares and non-virtual stages retain native permissions.
 
+Linux native host-root overlays (apply target `/`, exactly one lower `/`) also
+explicitly select Core's private backing before root metadata initialization.
+This fixes rootless serving of host roots/copied directories such as UID 0 mode
+0555 without changing guest-visible ownership or permissions. The upper root
+persists `user.pvisor.private_backing=1`; copied directories/files stay owned by
+the host server with 0700/0600, while override_stat retains logical identity.
+Repeated initialization and snapshot reopening retain that identity, including
+an empty upper; unmarked existing nonempty backing is not implicitly converted.
+Legacy unmarked native host-root snapshot restore requires migration outside this
+path and fails rather than silently changing saved identities. Other native
+image/host FUSE defaults and the public `api` boundary are unchanged.
+
+The existing virtual CREATE/MKDIR/CHMOD path retains guest mode, umask, setgid
+and ownership checks. Guest xattr operations cannot read, list, overwrite or
+remove the two private metadata controls in virtual mode. Guest VFS/access still
+enforces logical DAC; private host-owner access is not guest write authority.
+Review/apply consumes logical metadata and filters control xattrs; raw backing
+snapshots must preserve both physical metadata and controls (see overlay-core's
+README). Symlink and special-file ownership retains existing native limitations.
+
 ### Unix/vsock connection retirement
 
 Terminated Unix/vsock proxies retain their existing five-second protocol-id

@@ -327,6 +327,95 @@ fn resource(name: &str) -> io::Result<libc::c_int> {
     Ok(value as libc::c_int)
 }
 
+struct AttachedInput {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+impl AttachedInput {
+    fn start(fd: i32, mut input: Box<dyn Write + Send>) -> Self {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancelled = stop.clone();
+        let worker = std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            while !cancelled.load(Ordering::Acquire) {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut poll, 1, 25) };
+                if ready < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if ready == 0 {
+                    continue;
+                }
+                let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if count == 0 {
+                    return Ok(());
+                }
+                if count < 0 {
+                    let error = io::Error::last_os_error();
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                let mut pending = &buffer[..count as usize];
+                while !pending.is_empty() && !cancelled.load(Ordering::Acquire) {
+                    match input.write(pending) {
+                        Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                        Ok(size) => pending = &pending[size..],
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error)
+                            if error.kind() == io::ErrorKind::BrokenPipe
+                                || error.raw_os_error() == Some(libc::EIO) =>
+                        {
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            Ok(())
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.worker.take().map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| io::Error::other("attached input pump panicked"))?
+        })
+    }
+}
+
+impl Drop for AttachedInput {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
 fn workload(config: &GuestConfig) -> io::Result<i32> {
     let mut startup = startup_profile::Span::start("guest.spawn", startup_profile_enabled(config));
     let processes = process::Processes::default();
@@ -343,18 +432,26 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
     drop(startup);
     let pumps: Vec<_> = outputs
         .into_iter()
-        .map(|(mut reader, _)| {
+        .map(|(mut reader, fd)| {
             std::thread::spawn(move || {
                 let mut buffer = [0; 16384];
-                while let Ok(size) = process::read_chunk(&mut reader, &mut buffer) {
-                    if size == 0 || io::stdout().write_all(&buffer[..size]).is_err() {
-                        break;
+                loop {
+                    let size = process::read_chunk(&mut reader, &mut buffer)?;
+                    if size == 0 {
+                        return Ok::<_, io::Error>(());
                     }
-                    let _ = io::stdout().flush();
+                    if fd == 2 {
+                        io::stderr().write_all(&buffer[..size])?;
+                        io::stderr().flush()?;
+                    } else {
+                        io::stdout().write_all(&buffer[..size])?;
+                        io::stdout().flush()?;
+                    }
                 }
             })
         })
         .collect();
+    let mut attached_input = None;
     if let Some(listener) = listener {
         control::start(
             listener,
@@ -363,12 +460,32 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
             process.id(),
             input,
         );
+    } else if config
+        .process
+        .as_ref()
+        .is_some_and(|options| options.attached)
+        && let Some(input) = input
+    {
+        attached_input = Some(AttachedInput::start(libc::STDIN_FILENO, input));
     }
-    let code = processes.supervise(process)?;
+    let code = processes.supervise(process);
+    let input_result = attached_input
+        .as_mut()
+        .map(AttachedInput::finish)
+        .transpose();
+    let mut output_result = Ok(());
     for pump in pumps {
-        let _ = pump.join();
+        let result = pump
+            .join()
+            .map_err(|_| io::Error::other("output pump panicked"))
+            .and_then(|result| result);
+        if output_result.is_ok() {
+            output_result = result;
+        }
     }
-    Ok(code)
+    input_result?;
+    output_result?;
+    code
 }
 
 fn startup_profile_enabled(config: &GuestConfig) -> bool {
@@ -719,6 +836,57 @@ fn sync_virtiofs_mounts() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_input_cancel_joins_without_stdin_eof_or_output_capacity() {
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+        let (mut source, reader) = UnixStream::pair().unwrap();
+        struct Blocked(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Write for Blocked {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let blocked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        source.write_all(b"pending").unwrap();
+        let mut pump = AttachedInput::start(reader.as_raw_fd(), Box::new(Blocked(blocked.clone())));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !blocked.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let start = Instant::now();
+        pump.finish().unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Also cancel a pump waiting on an idle bootstrap descriptor.
+        let (_source, reader) = UnixStream::pair().unwrap();
+        let (writer, _sink) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let mut pump = AttachedInput::start(reader.as_raw_fd(), Box::new(writer));
+        pump.finish().unwrap();
+    }
+
+    #[test]
+    fn attached_input_eof_closes_child_pipe() {
+        use std::os::unix::net::UnixStream;
+        let (mut source, reader) = UnixStream::pair().unwrap();
+        let (writer, mut sink) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        sink.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut pump = AttachedInput::start(reader.as_raw_fd(), Box::new(writer));
+        source.write_all(b"hello").unwrap();
+        drop(source);
+        let mut bytes = Vec::new();
+        sink.read_to_end(&mut bytes).unwrap();
+        pump.finish().unwrap();
+        assert_eq!(bytes, b"hello");
+    }
 
     #[test]
     fn etc_hosts_defaults_only_when_the_image_ships_none() {

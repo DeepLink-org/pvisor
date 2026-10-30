@@ -6,10 +6,17 @@ use super::{RunRecord, job_execution::Job};
 use pvisor_core::host_protocol::{AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlTarget};
 use std::path::{Path, PathBuf};
 
+mod apply_command;
+pub use apply_command::{
+    ApplyCommandExecution, ApplyCommandRemaining, ApplyCommandRequest, ApplyCommandResponse,
+    ApplyCommandScope, ApplyCommandSource, PROJECT_APPLY_SCOPE_KEY, ProjectApplyScope,
+};
 mod capture;
 mod effects;
 mod fork;
+mod handoff;
 pub use fork::{ExecutionForkRequest, ExecutionForkResponse};
+pub use handoff::{ExportRequest, ExportResponse};
 mod lifecycle;
 pub mod paths;
 pub mod policy;
@@ -141,10 +148,24 @@ pub fn lock_selected_job(
     context: &ServiceContext<'_>,
     record: &RunRecord,
 ) -> anyhow::Result<Option<(Job, impl Send + use<>)>> {
+    lock_selected_job_mode(context, record, false)
+}
+
+// Preserve mutation lock order: Job directory -> ExecutionJob -> Attempt lease.
+// Observation takes the identical exclusive flock, but never initializes its file.
+fn lock_selected_job_mode(
+    context: &ServiceContext<'_>,
+    record: &RunRecord,
+    observe: bool,
+) -> anyhow::Result<Option<(Job, super::registry::RunLease)>> {
     let Some(template) = Job::read(record)? else {
         return Ok(None);
     };
-    let lease = template.lock()?;
+    let lease = if observe {
+        super::registry::RunLease::observe_existing(&template.root.join("execution-operation"))?
+    } else {
+        template.lock()?
+    };
     let current = template.current()?;
     current.validate_record_target(record)?;
     let current_record = RunRecord::read(&current.active_stage)?;

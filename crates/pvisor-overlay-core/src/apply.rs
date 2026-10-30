@@ -26,6 +26,7 @@ use std::{
 const META_FILENAME: &str = "overlay.json";
 const APPLY_LEDGER_FILENAME: &str = "apply-ledger.json";
 const APPLY_LEDGER_SCHEMA_VERSION: u32 = 2;
+const PROJECT_APPLY_SCHEMA_VERSION: u32 = 3;
 use crate::core::OPAQUE_XATTRS;
 use crate::{OPAQUE_NAME as OPAQUE_WHITEOUT, WHITEOUT_PREFIX};
 
@@ -59,12 +60,123 @@ pub struct ApplyPlan {
     selected_paths: BTreeSet<PathBuf>,
 }
 
+/// Explicit authority for applying a project subtree of a root-coordinate stage.
+/// Runtime must supply a durably recorded, validated boundary, never a user target
+/// override. The path must equal overlay target joined with `overlay_prefix`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectApplyBoundary {
+    /// Absolute project directory, with no symlink or parent components.
+    pub target: PathBuf,
+    /// Nonempty normalized overlay-relative project prefix; plans keep this prefix.
+    pub overlay_prefix: PathBuf,
+    /// Recorded device of the project directory, checked on every reopen.
+    pub device: u64,
+    /// Recorded inode of the project directory; rebinding fails closed.
+    pub inode: u64,
+}
+
+/// Read-only, conflict-checked preview. Paths remain in overlay coordinates.
+#[derive(Debug, Clone)]
+pub struct ApplyPreview {
+    /// Explicitly requested changes after exclusions (not implicit dependencies).
+    pub selected: Vec<ChangeEntry>,
+    /// Additional changes needed by the dependency closure.
+    pub required: Vec<ChangeEntry>,
+    /// All eligible changes in the requested scope, before selection filtering.
+    pub candidates: Vec<ChangeEntry>,
+}
+
+fn validate_apply_admission(record: &OverlayRecord) -> Result<(), OverlayError> {
+    crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
+    if record.protect_target {
+        return Err(OverlayError::Apply(
+            "target is an immutable image rootfs".into(),
+        ));
+    }
+    if matches!(
+        record.state,
+        OverlayState::Applied | OverlayState::Discarded
+    ) {
+        return Err(OverlayError::InvalidState("overlay is terminal".into()));
+    }
+    if has_pending_applies(record)? {
+        return Err(OverlayError::InvalidState(
+            "pending apply requires explicit recovery before preview or preparation".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_overlay_apply(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    kind: ApplyTargetKind,
+) -> Result<(ApplyPlan, Vec<PathPreimage>), OverlayError> {
+    validate_apply_admission(record)?;
+    let plan = plan_overlay_apply_for_target(record, lowers, selection, kind)?;
+    validate_upper_logical_identities(record)?;
+    let preimages = prepare_apply_preimages(record, &plan.selected_paths, &plan.selected)?;
+    validate_target_preimages(record, &preimages, &plan.selected, false)?;
+    Ok((plan, preimages))
+}
+
+fn apply_preview(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    plan: ApplyPlan,
+    prefix: Option<&Path>,
+) -> Result<ApplyPreview, OverlayError> {
+    let compiled = CompiledApplySelection::compile(selection)?;
+    let (selected, required) = plan
+        .selected
+        .into_iter()
+        .partition(|change| compiled.requested(&change.relative_path()));
+    let candidates = overlay_changes(record, lowers)?
+        .into_iter()
+        .filter(|change| {
+            prefix.is_none_or(|prefix| {
+                let path = change.relative_path();
+                path != prefix && path.starts_with(prefix)
+            })
+        })
+        .collect();
+    Ok(ApplyPreview {
+        selected,
+        required,
+        candidates,
+    })
+}
+
+/// Check execution admission, dependency closure, upper identities and target
+/// preimages without recovery, target locks, Prepared intent, journal writes or
+/// consumption. Pending intent is an error, including TargetApplied intent.
+/// Writers must be stopped; this observation is not an execution reservation.
+pub fn preview_overlay_apply(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+) -> Result<ApplyPreview, OverlayError> {
+    let mut observed = record.clone();
+    reconcile_terminal_overlay(&mut observed)?;
+    let (plan, _) = prepare_overlay_apply(
+        &observed,
+        lowers,
+        selection,
+        ApplyTargetKind::resolve(&observed)?,
+    )?;
+    apply_preview(&observed, lowers, selection, plan, None)
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ApplyLedger {
     #[serde(default = "apply_ledger_schema_version")]
     schema_version: u32,
     #[serde(default)]
     records: Vec<ApplyRecord>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    project_boundaries: BTreeMap<String, ProjectApplyBoundary>,
 }
 
 fn apply_ledger_schema_version() -> u32 {
@@ -246,6 +358,8 @@ fn overlay_changes_from_inventory(
     if !upper_dir.is_dir() {
         return Ok(changes);
     }
+    // Validate the root even when it has no explicit metadata change marker.
+    let root_identity = crate::logical_identity(upper_dir, &fs::symlink_metadata(upper_dir)?)?;
     let opaque_change = |path: &Path| ChangeEntry {
         path: path.display().to_string(),
         path_bytes: raw_change_path(path),
@@ -259,7 +373,6 @@ fn overlay_changes_from_inventory(
         changes.push(opaque_change(Path::new("")));
     }
     if path_exists(&upper_dir.join(crate::ROOT_METADATA_NAME)) {
-        let metadata = fs::symlink_metadata(upper_dir)?;
         changes.push(ChangeEntry {
             path: String::new(),
             path_bytes: None,
@@ -267,7 +380,7 @@ fn overlay_changes_from_inventory(
             old_type: Some(ChangeEntryType::Directory),
             new_type: Some(ChangeEntryType::Directory),
             size_bytes: None,
-            mode: Some(metadata.mode() & 0o7777),
+            mode: Some(root_identity.mode & 0o7777),
         });
     }
     for entry in inventory {
@@ -310,7 +423,7 @@ fn overlay_changes_from_inventory(
             old_type,
             new_type: Some(new_type),
             size_bytes: new.is_file().then_some(new.len()),
-            mode: Some(new.permissions().mode() & 0o7777),
+            mode: Some(crate::logical_identity(&upper_path, new)?.mode & 0o7777),
         });
         if new.is_dir() && crate::is_opaque_directory(&upper_path) {
             changes.push(opaque_change(rel));
@@ -465,13 +578,38 @@ fn at_or_below(path: &Path, root: &Path) -> bool {
 
 /// Resolve a filtered selection into a dependency-closed apply plan.
 ///
-/// Directory ancestors and hard-link siblings are included automatically.
+/// Directory ancestors that must be created and hard-link siblings are included
+/// automatically. Existing-directory metadata requires its own selection.
 /// Opaque directories remain atomic: callers must select the opaque directory,
 /// rather than only a child whose application would implicitly delete siblings.
 pub fn plan_overlay_apply(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
+) -> Result<ApplyPlan, OverlayError> {
+    plan_overlay_apply_for_target(
+        record,
+        lower_dirs,
+        selection,
+        ApplyTargetKind::resolve(record)?,
+    )
+}
+
+fn plan_overlay_apply_for_target(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+    target_kind: ApplyTargetKind,
+) -> Result<ApplyPlan, OverlayError> {
+    plan_overlay_apply_in_scope(record, lower_dirs, selection, target_kind, None)
+}
+
+fn plan_overlay_apply_in_scope(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+    target_kind: ApplyTargetKind,
+    prefix: Option<&Path>,
 ) -> Result<ApplyPlan, OverlayError> {
     let profile = crate::profile::Profile::from_env("apply-plan");
     let _total_span = profile.span("plan");
@@ -493,7 +631,11 @@ pub fn plan_overlay_apply(
     let mut selected_paths = changes
         .iter()
         .map(|change| change.relative_path())
-        .filter(|path| compiled.requested(path) && !compiled.excluded(path))
+        .filter(|path| {
+            compiled.requested(path)
+                && !compiled.excluded(path)
+                && prefix.is_none_or(|prefix| path.starts_with(prefix) && path != prefix)
+        })
         .collect::<BTreeSet<_>>();
 
     if !selection.is_all() && selected_paths.is_empty() {
@@ -511,13 +653,18 @@ pub fn plan_overlay_apply(
         let _span = profile.span("hard_link_groups");
         upper_hard_link_groups(&inventory)
     };
-    // Ancestor closure only needs directory membership. Scanning every change
-    // for each selected path makes large flat apply batches quadratic.
+    // Only creating/replacing an ancestor is a dependency of a selected child.
+    // Existing-directory metadata is independent (including the root marker):
+    // pulling it in would silently chmod/chown unselected parents, or prevent
+    // rootfs file apply entirely. Index membership once instead of per child.
     let directory_paths = {
         let _span = profile.span("directory_index");
         changes
             .iter()
-            .filter(|change| change.new_type == Some(ChangeEntryType::Directory))
+            .filter(|change| {
+                change.new_type == Some(ChangeEntryType::Directory)
+                    && change.old_type != Some(ChangeEntryType::Directory)
+            })
             .map(ChangeEntry::relative_path)
             .collect::<BTreeSet<_>>()
     };
@@ -610,7 +757,17 @@ pub fn plan_overlay_apply(
         .filter(|change| selected_paths.contains(&change.relative_path()))
         .cloned()
         .collect::<Vec<_>>();
+    if let Some(prefix) = prefix
+        && selected_paths
+            .iter()
+            .any(|path| !path.starts_with(prefix) || path == prefix)
+    {
+        return Err(OverlayError::Apply(
+            "apply dependency closure crosses project boundary".into(),
+        ));
+    }
     validate_protected_effects(record, &selected, &compiled)?;
+    target_kind.validate_changes(&selected)?;
     Ok(ApplyPlan {
         selected,
         selected_paths,
@@ -663,6 +820,15 @@ pub fn apply_overlay_selected(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyOutcome, OverlayError> {
+    apply_overlay_selected_for_target(record, lower_dirs, selection, None)
+}
+
+fn apply_overlay_selected_for_target(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+    target_kind: Option<ApplyTargetKind>,
+) -> Result<ApplyOutcome, OverlayError> {
     reconcile_terminal_overlay(record)?;
     crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
     if record.protect_target {
@@ -677,8 +843,9 @@ pub fn apply_overlay_selected(
             record.id
         )));
     }
+    let target_kind = target_kind.map_or_else(|| ApplyTargetKind::resolve(record), Ok)?;
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
-    recover_pending_applies_locked(record, lower_dirs)?;
+    recover_pending_applies_for_target(record, lower_dirs, target_kind)?;
     match record.state {
         OverlayState::Applied if selection.is_all() => {
             return Ok(ApplyOutcome {
@@ -701,9 +868,7 @@ pub fn apply_overlay_selected(
         }
         OverlayState::Active | OverlayState::Staged => {}
     }
-    let plan = plan_overlay_apply(record, lower_dirs, selection)?;
-    let preimages = prepare_apply_preimages(record, &plan.selected_paths, &plan.selected)?;
-    validate_target_preimages(record, &preimages, &plan.selected, false)?;
+    let (plan, preimages) = prepare_overlay_apply(record, lower_dirs, selection, target_kind)?;
     let apply_id = uuid::Uuid::new_v4().to_string();
     append_apply_record(
         record,
@@ -729,13 +894,16 @@ pub fn apply_overlay_selected(
         &plan.selected,
         selection,
         false,
-        &apply_id,
+        ApplyTarget {
+            apply_id: &apply_id,
+            kind: target_kind,
+        },
     )?;
     mark_apply_target_applied(record, &apply_id)?;
     let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
     consume_applied_preimages(record, &plan.selected_paths, &plan.selected)?;
     mark_apply_committed(record, &apply_id, remaining.len())?;
-    cleanup_apply_backups(record, &apply_id)?;
+    cleanup_apply_backups(record, &apply_id, target_kind)?;
     Ok(ApplyOutcome {
         apply_id,
         applied: plan.selected,
@@ -768,15 +936,25 @@ fn recover_pending_applies_locked(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<Vec<String>, OverlayError> {
-    let records = load_apply_records(&record.stage_dir)?;
+    recover_pending_applies_for_target(record, lower_dirs, ApplyTargetKind::resolve(record)?)
+}
+
+fn recover_pending_applies_for_target(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    target_kind: ApplyTargetKind,
+) -> Result<Vec<String>, OverlayError> {
+    let ledger = load_apply_ledger(&record.stage_dir)?;
+    let records = ledger.records;
     for apply in &records {
         if apply.state == ApplyRecordState::Committed
             && apply.schema_version >= 2
             && apply.overlay_id == record.id
             && apply.overlay_generation == record.generation
             && apply.target == record.target
+            && !ledger.project_boundaries.contains_key(&apply.apply_id)
         {
-            cleanup_apply_backups(record, &apply.apply_id)?;
+            cleanup_apply_backups(record, &apply.apply_id, target_kind)?;
         }
     }
     let pending = records
@@ -800,6 +978,14 @@ fn recover_pending_applies_locked(
                 record.target.display()
             )));
         }
+        if let Some(boundary) = ledger.project_boundaries.get(&apply.apply_id) {
+            recover_project_apply(record, lower_dirs, &apply, boundary)?;
+            recovered.push(apply.apply_id);
+            continue;
+        }
+        // Older Prepared/TargetApplied records are not authority to perform
+        // unsupported root mutations, restore backups, or prune their upper.
+        target_kind.validate_changes(&apply.changes)?;
         let selected_paths = apply
             .planned_paths
             .iter()
@@ -819,17 +1005,806 @@ fn recover_pending_applies_locked(
                 &apply.changes,
                 &apply.selection,
                 true,
-                &apply.apply_id,
+                ApplyTarget {
+                    apply_id: &apply.apply_id,
+                    kind: target_kind,
+                },
             )?;
             mark_apply_target_applied(record, &apply.apply_id)?;
         }
         let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
         consume_applied_preimages(record, &selected_paths, &apply.changes)?;
         mark_apply_committed(record, &apply.apply_id, remaining.len())?;
-        cleanup_apply_backups(record, &apply.apply_id)?;
+        cleanup_apply_backups(record, &apply.apply_id, target_kind)?;
         recovered.push(apply.apply_id);
     }
     Ok(recovered)
+}
+
+// Linux proc-fd paths are used only with held descriptors and single-component
+// leaves. Never reintroduce an unchecked multi-component target path here.
+struct ProjectTarget {
+    root: File,
+    boundary: ProjectApplyBoundary,
+}
+
+fn fd_directory(file: &File) -> PathBuf {
+    use std::os::fd::AsRawFd;
+    PathBuf::from(format!("/proc/self/fd/{}/.", file.as_raw_fd()))
+}
+
+fn open_nofollow_directory(path: &Path) -> io::Result<File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+impl ProjectTarget {
+    fn open(record: &OverlayRecord, boundary: &ProjectApplyBoundary) -> Result<Self, OverlayError> {
+        if !cfg!(target_os = "linux") {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "project apply requires Linux proc-fd anchoring",
+            )
+            .into());
+        }
+        let prefix = normalize_selection_path(&boundary.overlay_prefix)?;
+        if prefix.as_os_str().is_empty()
+            || prefix != boundary.overlay_prefix
+            || !record.target.is_absolute()
+            || boundary.target != record.target.join(&prefix)
+            || boundary.target == Path::new("/")
+        {
+            return Err(OverlayError::InvalidConfig(
+                "invalid project apply boundary".into(),
+            ));
+        }
+        let root = Self::open_absolute(&boundary.target)?;
+        let metadata = root.metadata()?;
+        if (metadata.dev(), metadata.ino()) != (boundary.device, boundary.inode) {
+            return Err(OverlayError::Apply("project root identity changed".into()));
+        }
+        Ok(Self {
+            root,
+            boundary: boundary.clone(),
+        })
+    }
+
+    fn open_absolute(path: &Path) -> io::Result<File> {
+        let mut directory = open_nofollow_directory(Path::new("/"))?;
+        for component in path.components() {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    directory = open_nofollow_directory(&fd_directory(&directory).join(name))?;
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "project path must be normalized and absolute",
+                    ));
+                }
+            }
+        }
+        Ok(directory)
+    }
+
+    fn check_binding(&self) -> Result<(), OverlayError> {
+        let current = Self::open_absolute(&self.boundary.target)?.metadata()?;
+        if (current.dev(), current.ino()) != (self.boundary.device, self.boundary.inode) {
+            return Err(OverlayError::Apply("project root identity changed".into()));
+        }
+        Ok(())
+    }
+
+    fn relative<'a>(&self, path: &'a Path) -> Result<&'a Path, OverlayError> {
+        OverlayCore::validate_rel(path)?;
+        path.strip_prefix(&self.boundary.overlay_prefix)
+            .map_err(|_| OverlayError::Apply("recovery path crosses project boundary".into()))
+    }
+
+    fn directory(&self, path: &Path) -> Result<File, OverlayError> {
+        let mut directory = self.root.try_clone()?;
+        for component in path.components() {
+            let Component::Normal(name) = component else {
+                return Err(OverlayError::Apply(
+                    "invalid project-relative directory".into(),
+                ));
+            };
+            directory = open_nofollow_directory(&fd_directory(&directory).join(name))?;
+        }
+        Ok(directory)
+    }
+
+    fn parent(&self, path: &Path) -> Result<(File, PathBuf), OverlayError> {
+        let relative = self.relative(path)?;
+        let name = relative
+            .file_name()
+            .ok_or_else(|| OverlayError::Apply("cannot publish project root metadata".into()))?;
+        let parent = self.directory(relative.parent().unwrap_or(Path::new("")))?;
+        let leaf = fd_directory(&parent).join(name);
+        Ok((parent, leaf))
+    }
+
+    fn fingerprint(&self, path: &Path) -> Result<PathFingerprint, OverlayError> {
+        let relative = self.relative(path)?;
+        if relative.as_os_str().is_empty() {
+            return Ok(fingerprint_at(&fd_directory(&self.root), Path::new(""))?);
+        }
+        match self.parent(path) {
+            Ok((parent, _)) => Ok(fingerprint_at(
+                &fd_directory(&parent),
+                Path::new(relative.file_name().unwrap()),
+            )?),
+            Err(OverlayError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(PathFingerprint::Absent)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn validate_preimages(
+        &self,
+        record: &OverlayRecord,
+        preimages: &[PathPreimage],
+        changes: &[ChangeEntry],
+        recovering: bool,
+    ) -> Result<(), OverlayError> {
+        self.check_binding()?;
+        for preimage in preimages {
+            let path = preimage.relative_path();
+            let current = self.fingerprint(&path)?;
+            if preimage.state.matches(&current) {
+                continue;
+            }
+            if recovering
+                && ((matches!(preimage.state, PathFingerprint::Directory { .. })
+                    && changes.iter().any(|change| {
+                        change.relative_path() != path && change.relative_path().starts_with(&path)
+                    })
+                    && recovery_fingerprint_matches(&current, &preimage.state))
+                    || desired_fingerprint(record, &path, changes)?.is_some_and(|desired| {
+                        project_desired_matches(&current, &desired, &path, changes)
+                    }))
+            {
+                continue;
+            }
+            return Err(OverlayError::Apply(format!(
+                "target changed after staging at {}; refusing project apply",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_project_changes(
+    target: &ProjectTarget,
+    changes: &[ChangeEntry],
+    paths: &BTreeSet<PathBuf>,
+) -> Result<(), OverlayError> {
+    let change_paths = changes
+        .iter()
+        .map(ChangeEntry::relative_path)
+        .collect::<BTreeSet<_>>();
+    if &change_paths != paths {
+        return Err(OverlayError::InvalidState(
+            "project recovery changes and paths disagree".into(),
+        ));
+    }
+    for change in changes {
+        let path = change.relative_path();
+        let relative = target.relative(&path)?;
+        let regular =
+            |kind: Option<ChangeEntryType>| kind.is_none() || kind == Some(ChangeEntryType::File);
+        let new_directory = change.kind == ChangeKind::Added
+            && change.old_type.is_none()
+            && change.new_type == Some(ChangeEntryType::Directory);
+        if relative.as_os_str().is_empty()
+            || replaces_directory(change)
+            || !(new_directory || (regular(change.old_type) && regular(change.new_type)))
+        {
+            return Err(OverlayError::Apply(format!(
+                "project apply supports regular files and new directories only: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+// A newly added directory can be durable with working owner permissions while
+// children are being published. Never accept that state for an existing parent.
+fn project_desired_matches(
+    current: &PathFingerprint,
+    desired: &PathFingerprint,
+    path: &Path,
+    changes: &[ChangeEntry],
+) -> bool {
+    if recovery_fingerprint_matches(current, desired) {
+        return true;
+    }
+    if changes.iter().any(|change| {
+        change.relative_path() == path
+            && change.kind == ChangeKind::Added
+            && change.new_type == Some(ChangeEntryType::Directory)
+    }) {
+        let mut working = desired.clone();
+        if let PathFingerprint::Directory { mode, .. } = &mut working {
+            *mode |= 0o700;
+            return recovery_fingerprint_matches(current, &working);
+        }
+    }
+    false
+}
+
+fn validate_project_permissions(
+    record: &OverlayRecord,
+    changes: &[ChangeEntry],
+) -> Result<(), OverlayError> {
+    // SAFETY: geteuid has no preconditions or side effects.
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return Ok(());
+    }
+    for change in changes {
+        if change.kind == ChangeKind::Deleted {
+            continue;
+        }
+        let path = change.relative_path();
+        let source = record.upper.path().join(&path);
+        let identity = crate::logical_identity(&source, &fs::symlink_metadata(&source)?)?;
+        let unsupported = match change.new_type {
+            // Crash recovery must be able to hash an already-published file
+            // without chmodding it before validating the recorded preimage.
+            Some(ChangeEntryType::File) => identity.mode & 0o400 == 0,
+            // Recovery reopens directories, including after final metadata was
+            // installed. Temporary permissions must remain under our ownership.
+            Some(ChangeEntryType::Directory) => {
+                identity.uid != uid || identity.mode & 0o500 != 0o500
+            }
+            _ => false,
+        };
+        if unsupported {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
+                "project apply cannot safely recover permissions at {}: non-root apply requires owner-readable files and owner-readable/searchable, caller-owned new directories", path.display()
+            )).into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_project_upper_links(
+    record: &OverlayRecord,
+    paths: &BTreeSet<PathBuf>,
+    prefix: &Path,
+) -> Result<(), OverlayError> {
+    let inventory = upper_inventory(record.upper.path())?;
+    let mut groups = HashMap::<(u64, u64), Vec<&UpperEntry>>::new();
+    for entry in &inventory {
+        if !entry.whiteout && entry.metadata.is_file() && entry.metadata.nlink() > 1 {
+            groups
+                .entry((entry.metadata.dev(), entry.metadata.ino()))
+                .or_default()
+                .push(entry);
+        }
+    }
+    for group in groups.values() {
+        if group.iter().any(|entry| paths.contains(&entry.relative))
+            && (group.len() as u64 != group[0].metadata.nlink()
+                || group.iter().any(|entry| {
+                    !entry.relative.starts_with(prefix) || !paths.contains(&entry.relative)
+                }))
+        {
+            return Err(OverlayError::Apply(
+                "project hardlink group has out-of-scope or unrecorded aliases".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_project_apply(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    boundary: &ProjectApplyBoundary,
+) -> Result<(ProjectTarget, ApplyPlan, Vec<PathPreimage>), OverlayError> {
+    validate_apply_admission(record)?;
+    let target = ProjectTarget::open(record, boundary)?;
+    if !preimage_journal_is_complete(&record.stage_dir.join("preimages")) {
+        return Err(OverlayError::InvalidState(
+            "project apply requires complete recorded preimages".into(),
+        ));
+    }
+    let plan = plan_overlay_apply_in_scope(
+        record,
+        lowers,
+        selection,
+        ApplyTargetKind::FilesystemRoot,
+        Some(&boundary.overlay_prefix),
+    )?;
+    validate_project_changes(&target, &plan.selected, &plan.selected_paths)?;
+    validate_project_permissions(record, &plan.selected)?;
+    validate_project_upper_links(record, &plan.selected_paths, &boundary.overlay_prefix)?;
+    validate_upper_logical_identities(record)?;
+    let preimages = prepare_apply_preimages(record, &plan.selected_paths, &plan.selected)?
+        .into_iter()
+        .filter(|preimage| {
+            preimage
+                .relative_path()
+                .starts_with(&boundary.overlay_prefix)
+        })
+        .collect::<Vec<_>>();
+    target.validate_preimages(record, &preimages, &plan.selected, false)?;
+    Ok((target, plan, preimages))
+}
+
+fn require_root_project_record(record: &OverlayRecord) -> Result<(), OverlayError> {
+    if record.target != Path::new("/") {
+        return Err(OverlayError::InvalidConfig(
+            "project scoped apply requires the original root overlay target /".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Read-only project preview using a runtime-validated durable boundary. Selection
+/// and returned paths use root overlay coordinates. Exclusions take precedence;
+/// dependency closure crossing the prefix fails, never expands authority. No
+/// target, journal or ledger writes and no implicit recovery are performed.
+/// Linux only; directory replacement/metadata, symlinks and special files fail.
+/// Non-root callers also get Unsupported for non-owner-readable files or new
+/// directories without caller ownership and owner read/search permission: crash
+/// recovery must validate postimages without first modifying target permissions.
+pub fn preview_overlay_apply_scoped(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    boundary: &ProjectApplyBoundary,
+) -> Result<ApplyPreview, OverlayError> {
+    require_root_project_record(record)?;
+    preview_project_apply(record, lowers, selection, boundary)
+}
+
+fn preview_project_apply(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    boundary: &ProjectApplyBoundary,
+) -> Result<ApplyPreview, OverlayError> {
+    let mut observed = record.clone();
+    reconcile_terminal_overlay(&mut observed)?;
+    let (_, plan, _) = prepare_project_apply(&observed, lowers, selection, boundary)?;
+    apply_preview(
+        &observed,
+        lowers,
+        selection,
+        plan,
+        Some(&boundary.overlay_prefix),
+    )
+}
+
+/// Apply regular-file changes within the recorded project root without granting
+/// system-root apply or arbitrary target override. Runtime must validate the
+/// boundary against its durable stage record. Root-coordinate intent and boundary
+/// are committed together; global recovery reopens and checks that same boundary.
+/// Stop writers and exclusively own the stage. Failure after Prepared leaves
+/// recoverable pending intent, never consumes uncommitted changes. Linux only.
+/// Permission combinations that cannot be validated read-only during non-root
+/// recovery fail before Prepared, as in `preview_overlay_apply_scoped`. New
+/// directories retain working owner access until children are durable, then
+/// receive final metadata bottom-up; recovery uses the same ordering.
+pub fn apply_overlay_selected_scoped(
+    record: &mut OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    boundary: &ProjectApplyBoundary,
+) -> Result<ApplyOutcome, OverlayError> {
+    require_root_project_record(record)?;
+    apply_project_selected(record, lowers, selection, boundary)
+}
+
+fn apply_project_selected(
+    record: &mut OverlayRecord,
+    lowers: &[PathBuf],
+    selection: &ApplySelection,
+    boundary: &ProjectApplyBoundary,
+) -> Result<ApplyOutcome, OverlayError> {
+    // Unlike traditional apply, scoped apply never implicitly runs unrelated
+    // pending system-root work. Use explicit global recovery first.
+    reconcile_terminal_overlay(record)?;
+    let _lock = TargetApplyLock::acquire(&record.target)?;
+    let (target, plan, preimages) = prepare_project_apply(record, lowers, selection, boundary)?;
+    let apply = ApplyRecord {
+        schema_version: PROJECT_APPLY_SCHEMA_VERSION,
+        apply_id: uuid::Uuid::new_v4().to_string(),
+        created_at_unix_ms: pvisor_core::unix_now_ms(),
+        overlay_id: record.id.clone(),
+        overlay_generation: record.generation,
+        target: record.target.clone(),
+        selection: selection.clone(),
+        changes: plan.selected.clone(),
+        planned_paths: plan.selected_paths.iter().cloned().collect(),
+        preimages,
+        state: ApplyRecordState::Prepared,
+        remaining_changes: 0,
+    };
+    append_apply_record_scoped(record, apply.clone(), Some(boundary))?;
+    publish_project_apply(record, &apply, &target, false)?;
+    mark_apply_target_applied(record, &apply.apply_id)?;
+    let remaining = finish_project_apply(record, lowers, &apply, &target)?;
+    Ok(ApplyOutcome {
+        apply_id: apply.apply_id,
+        applied: apply.changes,
+        remaining,
+    })
+}
+
+fn recover_project_apply(
+    record: &mut OverlayRecord,
+    lowers: &[PathBuf],
+    apply: &ApplyRecord,
+    boundary: &ProjectApplyBoundary,
+) -> Result<(), OverlayError> {
+    if record.protect_target {
+        return Err(OverlayError::Apply(
+            "target is an immutable image rootfs".into(),
+        ));
+    }
+    let target = ProjectTarget::open(record, boundary)?;
+    let paths = apply.planned_paths.iter().cloned().collect();
+    validate_project_changes(&target, &apply.changes, &paths)?;
+    for preimage in &apply.preimages {
+        target.relative(&preimage.relative_path())?;
+    }
+    let compiled = CompiledApplySelection::compile(&apply.selection)?;
+    validate_protected_effects(record, &apply.changes, &compiled)?;
+    if apply.state == ApplyRecordState::Prepared {
+        publish_project_apply(record, apply, &target, true)?;
+        mark_apply_target_applied(record, &apply.apply_id)?;
+    }
+    finish_project_apply(record, lowers, apply, &target)?;
+    Ok(())
+}
+
+fn finish_project_apply(
+    record: &mut OverlayRecord,
+    lowers: &[PathBuf],
+    apply: &ApplyRecord,
+    target: &ProjectTarget,
+) -> Result<Vec<ChangeEntry>, OverlayError> {
+    target.check_binding()?;
+    let paths = apply.planned_paths.iter().cloned().collect();
+    let remaining = complete_target_applied(record, lowers, &paths)?;
+    consume_applied_preimages(record, &paths, &apply.changes)?;
+    mark_apply_committed(record, &apply.apply_id, remaining.len())?;
+    Ok(remaining)
+}
+
+fn publish_project_apply(
+    record: &OverlayRecord,
+    apply: &ApplyRecord,
+    target: &ProjectTarget,
+    recovering: bool,
+) -> Result<(), OverlayError> {
+    let paths = apply.planned_paths.iter().cloned().collect::<BTreeSet<_>>();
+    validate_project_changes(target, &apply.changes, &paths)?;
+    validate_project_permissions(record, &apply.changes)?;
+    validate_project_upper_links(record, &paths, &target.boundary.overlay_prefix)?;
+    if paths.iter().any(|path| {
+        !apply
+            .preimages
+            .iter()
+            .any(|preimage| preimage.relative_path() == *path)
+    }) {
+        return Err(OverlayError::InvalidState(
+            "project intent missing selected preimage".into(),
+        ));
+    }
+    validate_upper_logical_identities(record)?;
+    validate_protected_effects(
+        record,
+        &apply.changes,
+        &CompiledApplySelection::compile(&apply.selection)?,
+    )?;
+    target.validate_preimages(record, &apply.preimages, &apply.changes, recovering)?;
+    // Pin hardlink source inodes, not their published names: another writer
+    // rebinding a leaf must not turn metadata copying into symlink traversal.
+    let mut hard_links = HashMap::<(u64, u64), File>::new();
+    let mut new_directories = BTreeMap::<PathBuf, File>::new();
+    let mut changes = apply.changes.iter().collect::<Vec<_>>();
+    changes.sort_by_key(|change| change.relative_path());
+    for change in changes {
+        let path = change.relative_path();
+        target.check_binding()?;
+        let (parent, destination) = target.parent(&path)?;
+        let verify = || -> Result<(), OverlayError> {
+            target.check_binding()?;
+            let (current_parent, _) = target.parent(&path)?;
+            let before = parent.metadata()?;
+            let current = current_parent.metadata()?;
+            if (before.dev(), before.ino()) != (current.dev(), current.ino()) {
+                return Err(OverlayError::Apply(
+                    "project parent rebound during publication".into(),
+                ));
+            }
+            let preimage = apply
+                .preimages
+                .iter()
+                .find(|preimage| preimage.relative_path() == path)
+                .ok_or_else(|| {
+                    OverlayError::InvalidState("project intent missing selected preimage".into())
+                })?;
+            target.validate_preimages(
+                record,
+                std::slice::from_ref(preimage),
+                &apply.changes,
+                recovering,
+            )
+        };
+        verify()?;
+        if change.kind == ChangeKind::Deleted {
+            match fs::remove_file(&destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            let source = record.upper.path().join(&path);
+            let metadata = fs::symlink_metadata(&source)?;
+            if change.new_type == Some(ChangeEntryType::Directory) && path_exists(&destination) {
+                // Recovery may encounter an already-published new directory.
+                if !recovering
+                    || !project_desired_matches(
+                        &target.fingerprint(&path)?,
+                        &fingerprint_at(record.upper.path(), &path)?,
+                        &path,
+                        &apply.changes,
+                    )
+                {
+                    return Err(OverlayError::Apply(
+                        "project directory publication conflict".into(),
+                    ));
+                }
+                let directory = open_nofollow_directory(&destination)?;
+                verify()?;
+                let held = fingerprint_at(&fd_directory(&directory), Path::new(""))?;
+                if !project_desired_matches(
+                    &held,
+                    &fingerprint_at(record.upper.path(), &path)?,
+                    &path,
+                    &apply.changes,
+                ) {
+                    return Err(OverlayError::Apply(
+                        "project directory rebound before resuming children".into(),
+                    ));
+                }
+                let identity = crate::logical_identity(&source, &metadata)?;
+                directory.set_permissions(fs::Permissions::from_mode(
+                    (identity.mode & 0o7777) | 0o700,
+                ))?;
+                directory.sync_all()?;
+                new_directories.insert(path.clone(), directory);
+            } else {
+                let temporary_dir =
+                    fd_directory(&parent).join(format!(".pvisor-apply-{}", uuid::Uuid::new_v4()));
+                fs::DirBuilder::new().mode(0o700).create(&temporary_dir)?;
+                let temporary_owner = open_nofollow_directory(&temporary_dir)?;
+                let temporary = fd_directory(&temporary_owner).join("entry");
+                let identity = (metadata.dev(), metadata.ino());
+                let result = (|| -> Result<(), OverlayError> {
+                    if change.new_type == Some(ChangeEntryType::Directory) {
+                        fs::create_dir(&temporary)?;
+                    } else if let Some(existing) = hard_links.get(&identity) {
+                        use std::os::fd::AsRawFd;
+                        let from = c_path(Path::new(&format!(
+                            "/proc/self/fd/{}",
+                            existing.as_raw_fd()
+                        )))?;
+                        let to = c_path(&temporary)?;
+                        // SAFETY: proc-fd resolves our held inode, not a mutable
+                        // target leaf; both paths are live NUL-terminated strings.
+                        if unsafe {
+                            libc::linkat(
+                                libc::AT_FDCWD,
+                                from.as_ptr(),
+                                libc::AT_FDCWD,
+                                to.as_ptr(),
+                                libc::AT_SYMLINK_FOLLOW,
+                            )
+                        } != 0
+                        {
+                            return Err(io::Error::last_os_error().into());
+                        }
+                    } else {
+                        fs::copy(&source, &temporary)?;
+                    }
+                    // Acquire the sync/hardlink FD before logical metadata can
+                    // remove read access. Never reopen after installing final mode.
+                    let published_inode = fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&temporary)?;
+                    if change.new_type == Some(ChangeEntryType::Directory) {
+                        let identity = crate::logical_identity(&source, &metadata)?;
+                        copy_metadata_with_mode(
+                            &source,
+                            &temporary,
+                            MetadataCopy::LogicalTarget,
+                            Some(identity.mode | 0o700),
+                        )?;
+                    } else {
+                        let identity = crate::logical_identity(&source, &metadata)?;
+                        copy_metadata_with_mode(
+                            &source,
+                            &temporary,
+                            MetadataCopy::LogicalTarget,
+                            Some(identity.mode | 0o600),
+                        )?;
+                        published_inode
+                            .set_permissions(fs::Permissions::from_mode(identity.mode & 0o7777))?;
+                    }
+                    published_inode.sync_all()?;
+                    verify()?;
+                    if change.new_type == Some(ChangeEntryType::Directory) {
+                        // Directory creation must not replace even an empty concurrent directory.
+                        let from = c_path(&temporary)?;
+                        let to = c_path(&destination)?;
+                        #[cfg(target_os = "linux")]
+                        // SAFETY: both C paths are live; flags prohibit destination replacement.
+                        let rc = unsafe {
+                            libc::renameat2(
+                                libc::AT_FDCWD,
+                                from.as_ptr(),
+                                libc::AT_FDCWD,
+                                to.as_ptr(),
+                                libc::RENAME_NOREPLACE,
+                            )
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let rc = -1;
+                        if rc != 0 {
+                            return Err(io::Error::last_os_error().into());
+                        }
+                        new_directories.insert(path.clone(), published_inode);
+                    } else {
+                        // rename refuses directory destinations; never recursively remove one.
+                        fs::rename(&temporary, &destination)?;
+                        if metadata.nlink() > 1 {
+                            hard_links.insert(identity, published_inode);
+                        }
+                    }
+                    Ok(())
+                })();
+                // Only our initialized temporary namespace, never target tree cleanup.
+                let _ = fs::remove_file(&temporary);
+                let _ = fs::remove_dir(&temporary);
+                let _ = fs::remove_dir(&temporary_dir);
+                result?;
+            }
+        }
+        parent.sync_all()?;
+    }
+    // Finalize bottom-up only after every child is durable. Recovery first
+    // reopens final/working directories above, restores working access, replays
+    // children, then follows this same order (even after partial finalization).
+    for (path, directory) in new_directories.iter().rev() {
+        target.check_binding()?;
+        let reopened = target.directory(target.relative(path)?)?;
+        let held = directory.metadata()?;
+        let current = reopened.metadata()?;
+        if (held.dev(), held.ino()) != (current.dev(), current.ino()) {
+            return Err(OverlayError::Apply(
+                "project directory rebound before final metadata".into(),
+            ));
+        }
+        let desired = fingerprint_at(record.upper.path(), path)?;
+        if !project_desired_matches(
+            &fingerprint_at(&fd_directory(directory), Path::new(""))?,
+            &desired,
+            path,
+            &apply.changes,
+        ) {
+            return Err(OverlayError::Apply(
+                "project directory metadata changed before finalization".into(),
+            ));
+        }
+        let source = record.upper.path().join(path);
+        let identity = crate::logical_identity(&source, &fs::symlink_metadata(&source)?)?;
+        copy_metadata_with_mode(
+            &source,
+            &fd_directory(directory),
+            MetadataCopy::LogicalTarget,
+            Some(identity.mode | 0o700),
+        )?;
+        directory.set_permissions(fs::Permissions::from_mode(identity.mode & 0o7777))?;
+        directory.sync_all()?;
+    }
+    // Persist only in-scope directory observations in original root coordinates.
+    // Child publication may advance mtime, but never permission/owner/xattr fences.
+    for preimage in &apply.preimages {
+        let path = preimage.relative_path();
+        let current = target.fingerprint(&path)?;
+        let selected_directory = paths.contains(&path)
+            && apply.changes.iter().any(|change| {
+                change.relative_path() == path
+                    && change.new_type == Some(ChangeEntryType::Directory)
+            });
+        if selected_directory || matches!(preimage.state, PathFingerprint::Directory { .. }) {
+            if !selected_directory && !recovery_fingerprint_matches(&current, &preimage.state) {
+                return Err(OverlayError::Apply(
+                    "project parent metadata changed during publication".into(),
+                ));
+            }
+            crate::core::persist_directory_preimage(
+                &record.stage_dir.join("preimages"),
+                PathPreimage {
+                    path: preimage.path.clone(),
+                    state: current,
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApplyTargetKind {
+    Directory,
+    FilesystemRoot,
+}
+
+impl ApplyTargetKind {
+    // The caller supplies a canonical path; keeping classification pure also
+    // lets tests exercise root policy without applying to the real host root.
+    fn from_canonical_path(target: &Path) -> Self {
+        if target == Path::new("/") {
+            Self::FilesystemRoot
+        } else {
+            Self::Directory
+        }
+    }
+
+    fn resolve(record: &OverlayRecord) -> Result<Self, OverlayError> {
+        Ok(Self::from_canonical_path(&fs::canonicalize(
+            &record.target,
+        )?))
+    }
+
+    fn validate_changes(self, changes: &[ChangeEntry]) -> Result<(), OverlayError> {
+        if self == Self::FilesystemRoot
+            && let Some(change) = changes.iter().find(|change| {
+                replaces_directory(change)
+                    || change.relative_path().as_os_str().is_empty()
+                    || (change.kind == ChangeKind::TypeChanged
+                        && change.new_type == Some(ChangeEntryType::Directory))
+            })
+        {
+            return Err(OverlayError::Apply(format!(
+                "rootfs apply does not support directory deletion, whole-directory replacement, opaque replacement or root metadata changes at {}; select ordinary file changes instead",
+                change.relative_path().display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn backup_dir(
+        self,
+        record: &OverlayRecord,
+        apply_id: &str,
+    ) -> Result<Option<PathBuf>, OverlayError> {
+        match self {
+            Self::Directory => apply_backup_dir(record, apply_id).map(Some),
+            Self::FilesystemRoot => Ok(None),
+        }
+    }
+}
+
+struct ApplyTarget<'a> {
+    apply_id: &'a str,
+    kind: ApplyTargetKind,
 }
 
 // Private, same-filesystem backups belong to the durable apply_id. They survive
@@ -1105,8 +2080,14 @@ fn replacement_tree_matches(source: &Path, destination: &Path) -> io::Result<boo
     Ok(true)
 }
 
-fn cleanup_apply_backups(record: &OverlayRecord, apply_id: &str) -> Result<(), OverlayError> {
-    let backup = apply_backup_dir(record, apply_id)?;
+fn cleanup_apply_backups(
+    record: &OverlayRecord,
+    apply_id: &str,
+    target_kind: ApplyTargetKind,
+) -> Result<(), OverlayError> {
+    let Some(backup) = target_kind.backup_dir(record, apply_id)? else {
+        return Ok(());
+    };
     if path_exists(&backup) {
         let _directory = open_backup_dir(&backup)?;
         fs::remove_dir_all(&backup)?;
@@ -1143,25 +2124,34 @@ fn apply_prepared_target(
     changes: &[ChangeEntry],
     selection: &ApplySelection,
     recovering: bool,
-    apply_id: &str,
+    target: ApplyTarget<'_>,
 ) -> Result<(), OverlayError> {
+    let ApplyTarget {
+        apply_id,
+        kind: target_kind,
+    } = target;
+    target_kind.validate_changes(changes)?;
+    // Prepared records can predate logical identity support. Validate every
+    // publishable upper identity before restoring backups or writing any target.
+    validate_upper_logical_identities(record)?;
+    let backup = target_kind.backup_dir(record, apply_id)?;
     // Recovery can consume a plan made by an older writer. Recheck before
     // restoring backups or publishing any target mutation.
     let selection = CompiledApplySelection::compile(selection)?;
     validate_protected_effects(record, changes, &selection)?;
-    if recovering {
+    if recovering && backup.is_some() {
         restore_interrupted_replacements(record, apply_id, preimages, changes)?;
         validate_protected_effects(record, changes, &selection)?;
     }
-    validate_target_preimages(record, preimages, changes, recovering).map_err(|error| {
-        match apply_backup_dir(record, apply_id) {
-            Ok(backup) if path_exists(&backup) => OverlayError::Apply(format!(
+    validate_target_preimages(record, preimages, changes, recovering).map_err(
+        |error| match &backup {
+            Some(backup) if path_exists(backup) => OverlayError::Apply(format!(
                 "{error}; original replacement data retained at {}",
                 backup.display()
             )),
             _ => error,
-        }
-    })?;
+        },
+    )?;
     let indexed_preimages = preimages
         .iter()
         .map(|preimage| (preimage.relative_path(), preimage))
@@ -1176,10 +2166,13 @@ fn apply_prepared_target(
             recursive,
         )
     })?;
-    let backup = apply_backup_dir(record, apply_id)?;
     let backed_up = replacement_paths(changes)?
         .into_iter()
-        .filter(|path| path_exists(&backup.join(path_digest(path))))
+        .filter(|path| {
+            backup
+                .as_ref()
+                .is_some_and(|backup| path_exists(&backup.join(path_digest(path))))
+        })
         .collect::<BTreeSet<_>>();
     let upper_dir = record.upper.path();
     if upper_dir.is_dir() && !selected_paths.is_empty() {
@@ -1242,6 +2235,58 @@ fn apply_prepared_target(
             }
         }
     }
+    // Child publication changes existing parents' mtimes without selecting
+    // their staged metadata. Advance only those timestamps, never their
+    // mode/owner/xattrs, so a later explicit parent apply retains its fences.
+    for preimage in preimages {
+        let path = preimage.relative_path();
+        if !selected_paths.contains(&path)
+            && matches!(preimage.state, PathFingerprint::Directory { .. })
+            && selected_paths
+                .iter()
+                .any(|child| child != &path && child.starts_with(&path))
+        {
+            let current = fingerprint_at(&record.target, &path)?;
+            if !recovery_fingerprint_matches(&current, &preimage.state) {
+                return Err(OverlayError::Apply(format!(
+                    "target changed after staging at {}; refusing to rebase parent metadata",
+                    record.target.join(&path).display()
+                )));
+            }
+            let mut retained = preimage.clone();
+            if let (
+                PathFingerprint::Directory {
+                    mtime_seconds,
+                    mtime_nanoseconds,
+                    ..
+                },
+                PathFingerprint::Directory {
+                    mtime_seconds: seconds,
+                    mtime_nanoseconds: nanoseconds,
+                    ..
+                },
+            ) = (&mut retained.state, current)
+            {
+                *mtime_seconds = seconds;
+                *mtime_nanoseconds = nanoseconds;
+            }
+            crate::core::persist_directory_preimage(&record.stage_dir.join("preimages"), retained)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_upper_logical_identities(record: &OverlayRecord) -> Result<(), OverlayError> {
+    let upper = record.upper.path();
+    if !upper.is_dir() {
+        return Ok(());
+    }
+    crate::logical_identity(upper, &fs::symlink_metadata(upper)?)?;
+    for entry in upper_inventory(upper)? {
+        if !entry.whiteout {
+            crate::logical_identity(&upper.join(entry.relative), &entry.metadata)?;
+        }
+    }
     Ok(())
 }
 
@@ -1275,13 +2320,21 @@ fn prepare_apply_preimages(
             });
         }
     }
+    // Existing parents are not publication dependencies, but their recorded
+    // metadata remains a conflict fence. Keep these as read-only preimages:
+    // never add them to selected paths, consume them, or rebase their identity.
+    let ancestors = selected_paths
+        .iter()
+        .flat_map(|path| path.ancestors().skip(1).map(Path::to_path_buf))
+        .collect::<BTreeSet<_>>();
     // Whiteouts collapse a removed tree to one change, but every recorded
     // descendant still needs validation before recursive deletion/replacement.
     preimages.extend(journal.into_values().filter(|preimage| {
-        changes.iter().any(|change| {
-            replaces_directory(change)
-                && preimage.relative_path().starts_with(change.relative_path())
-        })
+        let path = preimage.relative_path();
+        (ancestors.contains(&path) && matches!(preimage.state, PathFingerprint::Directory { .. }))
+            || changes.iter().any(|change| {
+                replaces_directory(change) && path.starts_with(change.relative_path())
+            })
     }));
     preimages.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(preimages)
@@ -1417,6 +2470,19 @@ fn validate_target_preimages(
         let path = preimage.relative_path();
         let current = fingerprint_at(&record.target, &path)?;
         if preimage.state.matches(&current) {
+            continue;
+        }
+        // An interrupted child publication may have changed its parent's
+        // timestamp before the timestamp-only journal update. Recovery may
+        // tolerate that, but never a parent mode/ownership/xattr change.
+        if recovering
+            && changes.iter().any(|change| {
+                let child = change.relative_path();
+                child != path && child.starts_with(&path)
+            })
+            && matches!(preimage.state, PathFingerprint::Directory { .. })
+            && recovery_fingerprint_matches(&current, &preimage.state)
+        {
             continue;
         }
         if recovering
@@ -1782,15 +2848,19 @@ fn apply_ledger_path(stage_dir: &Path) -> PathBuf {
 }
 
 pub fn load_apply_records(stage_dir: &Path) -> Result<Vec<ApplyRecord>, OverlayError> {
+    Ok(load_apply_ledger(stage_dir)?.records)
+}
+
+fn load_apply_ledger(stage_dir: &Path) -> Result<ApplyLedger, OverlayError> {
     let path = apply_ledger_path(stage_dir);
     let raw = match fs::read(&path) {
         Ok(raw) => raw,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ApplyLedger::default()),
         Err(error) => return Err(error.into()),
     };
     let ledger = serde_json::from_slice::<ApplyLedger>(&raw)
         .map_err(|error| OverlayError::Meta(format!("{}: {error}", path.display())))?;
-    if !matches!(ledger.schema_version, 1 | APPLY_LEDGER_SCHEMA_VERSION) {
+    if !matches!(ledger.schema_version, 1..=3) {
         return Err(OverlayError::Meta(format!(
             "{}: unsupported apply ledger schema {}",
             path.display(),
@@ -1798,11 +2868,18 @@ pub fn load_apply_records(stage_dir: &Path) -> Result<Vec<ApplyRecord>, OverlayE
         )));
     }
     for record in &ledger.records {
-        if !matches!(record.schema_version, 1 | APPLY_LEDGER_SCHEMA_VERSION) {
+        if !matches!(record.schema_version, 1..=3) {
             return Err(OverlayError::Meta(format!(
                 "unsupported apply record schema {}",
                 record.schema_version
             )));
+        }
+        if (record.schema_version == PROJECT_APPLY_SCHEMA_VERSION)
+            != ledger.project_boundaries.contains_key(&record.apply_id)
+        {
+            return Err(OverlayError::Meta(
+                "project intent requires its durable boundary".into(),
+            ));
         }
         for path in &record.planned_paths {
             OverlayCore::validate_rel(path)?;
@@ -1814,16 +2891,41 @@ pub fn load_apply_records(stage_dir: &Path) -> Result<Vec<ApplyRecord>, OverlayE
             OverlayCore::validate_rel(&preimage.relative_path())?;
         }
     }
-    Ok(ledger.records)
+    if !ledger.project_boundaries.is_empty() && ledger.schema_version != 3 {
+        return Err(OverlayError::Meta(
+            "project boundaries require ledger schema 3".into(),
+        ));
+    }
+    for id in ledger.project_boundaries.keys() {
+        if !ledger.records.iter().any(|record| &record.apply_id == id) {
+            return Err(OverlayError::Meta("orphan project apply boundary".into()));
+        }
+    }
+    Ok(ledger)
 }
 
 fn append_apply_record(
     overlay: &OverlayRecord,
     apply_record: ApplyRecord,
 ) -> Result<(), OverlayError> {
-    let mut ledger = ApplyLedger {
-        schema_version: APPLY_LEDGER_SCHEMA_VERSION,
-        records: load_apply_records(&overlay.stage_dir)?,
+    append_apply_record_scoped(overlay, apply_record, None)
+}
+
+fn append_apply_record_scoped(
+    overlay: &OverlayRecord,
+    apply_record: ApplyRecord,
+    boundary: Option<&ProjectApplyBoundary>,
+) -> Result<(), OverlayError> {
+    let mut ledger = load_apply_ledger(&overlay.stage_dir)?;
+    if let Some(boundary) = boundary {
+        ledger
+            .project_boundaries
+            .insert(apply_record.apply_id.clone(), boundary.clone());
+    }
+    ledger.schema_version = if ledger.project_boundaries.is_empty() {
+        2
+    } else {
+        3
     };
     ledger.records.push(apply_record);
     let path = apply_ledger_path(&overlay.stage_dir);
@@ -1856,10 +2958,7 @@ fn update_apply_state(
     state: ApplyRecordState,
     remaining_changes: Option<usize>,
 ) -> Result<(), OverlayError> {
-    let mut ledger = ApplyLedger {
-        schema_version: APPLY_LEDGER_SCHEMA_VERSION,
-        records: load_apply_records(&overlay.stage_dir)?,
-    };
+    let mut ledger = load_apply_ledger(&overlay.stage_dir)?;
     let record = ledger
         .records
         .iter_mut()
@@ -2107,8 +3206,10 @@ fn snapshot_entry_raw(
     Ok(())
 }
 
+/// Copy physical identity and raw control attributes for reopening an upper.
+/// Unlike target publication, this does not interpret logical identity controls.
 pub fn copy_snapshot_metadata(source: &Path, destination: &Path) -> io::Result<()> {
-    copy_host_metadata(source, destination)?;
+    copy_metadata(source, destination, MetadataCopy::RawSnapshot)?;
     let source_c = c_path(source)?;
     let destination_c = c_path(destination)?;
     for name in OPAQUE_XATTRS {
@@ -2131,8 +3232,38 @@ fn c_path(path: &Path) -> io::Result<CString> {
         .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
 }
 
+/// Publish logical ownership/mode and ordinary xattrs, never private controls.
+/// Logical identity errors are returned before any destination metadata mutation.
+/// Native symlink/special-file and unprivileged ownership limitations still apply.
 pub fn copy_host_metadata(source: &Path, destination: &Path) -> io::Result<()> {
+    copy_metadata(source, destination, MetadataCopy::LogicalTarget)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MetadataCopy {
+    LogicalTarget,
+    RawSnapshot,
+}
+
+fn copy_metadata(source: &Path, destination: &Path, copy: MetadataCopy) -> io::Result<()> {
+    copy_metadata_with_mode(source, destination, copy, None)
+}
+
+fn copy_metadata_with_mode(
+    source: &Path,
+    destination: &Path,
+    copy: MetadataCopy,
+    mode: Option<u32>,
+) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
+    let identity = match copy {
+        MetadataCopy::LogicalTarget => crate::logical_identity(source, &metadata)?,
+        MetadataCopy::RawSnapshot => crate::backend::UnixIdentity {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.mode(),
+        },
+    };
     let nofollow = metadata.file_type().is_symlink();
     let source = c_path(source)?;
     let destination_c = c_path(destination)?;
@@ -2149,8 +3280,8 @@ pub fn copy_host_metadata(source: &Path, destination: &Path) -> io::Result<()> {
         libc::fchownat(
             libc::AT_FDCWD,
             destination_c.as_ptr(),
-            metadata.uid(),
-            metadata.gid(),
+            identity.uid,
+            identity.gid,
             flags,
         )
     };
@@ -2163,10 +3294,10 @@ pub fn copy_host_metadata(source: &Path, destination: &Path) -> io::Result<()> {
     if !nofollow {
         fs::set_permissions(
             destination,
-            fs::Permissions::from_mode(metadata.mode() & 0o7777),
+            fs::Permissions::from_mode(mode.unwrap_or(identity.mode) & 0o7777),
         )?;
     }
-    copy_host_xattrs(&source, &destination_c)?;
+    copy_host_xattrs(&source, &destination_c, copy)?;
 
     let times = [
         libc::timespec {
@@ -2204,14 +3335,16 @@ pub fn copy_host_metadata(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
-fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
+fn copy_host_xattrs(source: &CString, destination: &CString, copy: MetadataCopy) -> io::Result<()> {
     let names = list_host_xattrs(source)?;
     let destination_names = list_host_xattrs(destination)?;
     for name in destination_names
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
     {
-        if OPAQUE_XATTRS.iter().any(|marker| marker.as_bytes() == name)
+        let private_control = crate::is_private_metadata_xattr(std::ffi::OsStr::from_bytes(name));
+        if (copy == MetadataCopy::LogicalTarget && private_control)
+            || OPAQUE_XATTRS.iter().any(|marker| marker.as_bytes() == name)
             || !names
                 .split(|byte| *byte == 0)
                 .any(|source_name| source_name == name)
@@ -2219,10 +3352,11 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
             let name =
                 CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
             if let Err(error) = remove_host_xattr(destination, &name)
-                && !matches!(
-                    error.raw_os_error(),
-                    Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
-                )
+                && ((copy == MetadataCopy::LogicalTarget && private_control)
+                    || !matches!(
+                        error.raw_os_error(),
+                        Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
+                    ))
             {
                 return Err(error);
             }
@@ -2230,6 +3364,8 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
     }
     for name in names.split(|byte| *byte == 0).filter(|name| {
         !name.is_empty()
+            && (copy == MetadataCopy::RawSnapshot
+                || !crate::is_private_metadata_xattr(std::ffi::OsStr::from_bytes(name)))
             && !OPAQUE_XATTRS
                 .iter()
                 .any(|marker| marker.as_bytes() == *name)
@@ -2237,10 +3373,11 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
         let name = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
         let value = get_host_xattr(source, &name)?;
         if let Err(error) = set_host_xattr(destination, &name, &value)
-            && !matches!(
-                error.raw_os_error(),
-                Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
-            )
+            && (crate::is_private_metadata_xattr(std::ffi::OsStr::from_bytes(name.as_bytes()))
+                || !matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
+                ))
         {
             return Err(error);
         }
@@ -2406,6 +3543,1495 @@ fn walk_upper_metadata(
 
 #[cfg(test)]
 mod tests {
+    // All scoped tests use a temporary root mimic, bypassing only the public
+    // target='/' admission check. No test applies to the actual host root.
+    #[cfg(target_os = "linux")]
+    fn project_fixture(root: &Path) -> (OverlayRecord, Vec<PathBuf>, ProjectApplyBoundary) {
+        let target = root.join("target");
+        let upper = root.join("upper");
+        fs::create_dir_all(target.join("project")).unwrap();
+        for name in ["project/a", "project/b", "outside"] {
+            fs::write(target.join(name), b"old").unwrap();
+        }
+        let record = late_conflict_record(&target, &upper);
+        let lowers = vec![target.clone()];
+        crate::stage::begin(
+            &record.stage_dir.join("preimages"),
+            pvisor_core::overlay::StageDurability::Strict,
+        )
+        .unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            lowers.clone(),
+            upper.clone(),
+            Some(record.upper.work_dir.clone()),
+            vec![],
+            Some(record.stage_dir.join("preimages")),
+        )
+        .unwrap();
+        for name in ["project/a", "project/b", "outside"] {
+            fs::write(core.copy_up(Path::new(name)).unwrap(), b"new").unwrap();
+        }
+        core.create_dir(Path::new("project/new"), 0o755).unwrap();
+        let mut file = core
+            .create_file(Path::new("project/new/file"), 0o644, libc::O_WRONLY)
+            .unwrap();
+        io::Write::write_all(&mut file, b"created").unwrap();
+        drop(file);
+        drop(core);
+        crate::stage::seal(&upper, &record.stage_dir.join("preimages")).unwrap();
+        let identity = fs::metadata(target.join("project")).unwrap();
+        let boundary = ProjectApplyBoundary {
+            target: target.join("project"),
+            overlay_prefix: "project".into(),
+            device: identity.dev(),
+            inode: identity.ino(),
+        };
+        (record, lowers, boundary)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn project_private_permission_fixture(
+        root: &Path,
+        file_mode: u32,
+    ) -> (
+        OverlayRecord,
+        Vec<PathBuf>,
+        ProjectApplyBoundary,
+        ApplySelection,
+    ) {
+        let (record, lowers, boundary) = project_fixture(root);
+        let upper = record.upper.path();
+        let owner = fs::metadata(upper).unwrap();
+        crate::sys::set_xattr(upper, OsStr::new(crate::PRIVATE_BACKING_XATTR), b"1", 0).unwrap();
+        set_test_logical_identity(upper, owner.uid(), owner.gid(), owner.mode());
+        let directory = upper.join("project/new");
+        let file = directory.join("file");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        set_test_logical_identity(&directory, owner.uid(), owner.gid(), libc::S_IFDIR | 0o555);
+        set_test_logical_identity(&file, owner.uid(), owner.gid(), libc::S_IFREG | file_mode);
+        crate::sys::set_xattr(
+            &directory,
+            OsStr::new("user.permission-test"),
+            b"directory",
+            0,
+        )
+        .unwrap();
+        crate::sys::set_xattr(&file, OsStr::new("user.permission-test"), b"file", 0).unwrap();
+        crate::stage::seal(upper, &record.stage_dir.join("preimages")).unwrap();
+        let selection = ApplySelection {
+            paths: vec!["project/new/file".into()],
+            ..Default::default()
+        };
+        (record, lowers, boundary, selection)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn project_test_intent(
+        record: &OverlayRecord,
+        plan: ApplyPlan,
+        preimages: Vec<PathPreimage>,
+    ) -> ApplyRecord {
+        ApplyRecord {
+            schema_version: PROJECT_APPLY_SCHEMA_VERSION,
+            apply_id: "permissions-recovery".into(),
+            created_at_unix_ms: 1,
+            overlay_id: record.id.clone(),
+            overlay_generation: record.generation,
+            target: record.target.clone(),
+            selection: ApplySelection {
+                paths: vec!["project/new/file".into()],
+                ..Default::default()
+            },
+            changes: plan.selected,
+            planned_paths: plan.selected_paths.into_iter().collect(),
+            preimages,
+            state: ApplyRecordState::Prepared,
+            remaining_changes: 0,
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_nonroot_private_writeonly_preflight_and_recovery_fail_before_writes() {
+        // SAFETY: geteuid has no preconditions. Run this test as the real caller,
+        // not via sudo or simulated root; root cannot exercise DAC failures.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary, selection) =
+            project_private_permission_fixture(tmp.path(), 0o200);
+        let before = tree_observation(tmp.path());
+        let error = preview_project_apply(&record, &lowers, &selection, &boundary).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot safely recover permissions"),
+            "{error}"
+        );
+        let error =
+            apply_project_selected(&mut record, &lowers, &selection, &boundary).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot safely recover permissions"),
+            "{error}"
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+        assert!(!has_pending_applies(&record).unwrap());
+        assert!(!boundary.target.join("new").exists());
+        // An older writer may already have persisted this unsupported intent.
+        // Recovery must reject it before creating even the supporting directory.
+        let plan = plan_overlay_apply_in_scope(
+            &record,
+            &lowers,
+            &selection,
+            ApplyTargetKind::FilesystemRoot,
+            Some(&boundary.overlay_prefix),
+        )
+        .unwrap();
+        let preimages = prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected)
+            .unwrap()
+            .into_iter()
+            .filter(|preimage| {
+                preimage
+                    .relative_path()
+                    .starts_with(&boundary.overlay_prefix)
+            })
+            .collect();
+        let apply = project_test_intent(&record, plan, preimages);
+        append_apply_record_scoped(&record, apply, Some(&boundary)).unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(
+            recover_pending_applies(&mut record, &lowers)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot safely recover permissions")
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_nonroot_private_readonly_directory_finalizes_after_children_and_recovers() {
+        // SAFETY: geteuid has no preconditions; a root run does not test DAC.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        // Cover empty working/final directories and interruption after the
+        // readonly child and final directory metadata are both durable.
+        for interrupted_mode in [
+            None,
+            Some((0o755, false)),
+            Some((0o555, false)),
+            Some((0o555, true)),
+        ] {
+            let tmp = tempdir().unwrap();
+            let (mut record, lowers, boundary, selection) =
+                project_private_permission_fixture(tmp.path(), 0o444);
+            let before = tree_observation(tmp.path());
+            let preview = preview_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+            assert_eq!(
+                preview.required[0].relative_path(),
+                Path::new("project/new")
+            );
+            assert_eq!(tree_observation(tmp.path()), before);
+            if let Some((mode, published)) = interrupted_mode {
+                let (target, plan, preimages) =
+                    prepare_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+                let apply = project_test_intent(&record, plan, preimages);
+                append_apply_record_scoped(&record, apply.clone(), Some(&boundary)).unwrap();
+                if published {
+                    publish_project_apply(&record, &apply, &target, false).unwrap();
+                } else {
+                    let (parent, destination) = target.parent(Path::new("project/new")).unwrap();
+                    fs::create_dir(&destination).unwrap();
+                    copy_metadata_with_mode(
+                        &record.upper.path().join("project/new"),
+                        &destination,
+                        MetadataCopy::LogicalTarget,
+                        Some(mode | 0o700),
+                    )
+                    .unwrap();
+                    fs::set_permissions(&destination, fs::Permissions::from_mode(mode)).unwrap();
+                    parent.sync_all().unwrap();
+                }
+                let current = target.fingerprint(Path::new("project/new")).unwrap();
+                let desired =
+                    fingerprint_at(record.upper.path(), Path::new("project/new")).unwrap();
+                let pending = load_apply_records(&record.stage_dir).unwrap();
+                assert!(
+                    project_desired_matches(
+                        &current,
+                        &desired,
+                        Path::new("project/new"),
+                        &pending[0].changes
+                    ),
+                    "mode {mode:o}: current {current:?}, desired {desired:?}"
+                );
+                recover_pending_applies(&mut record, &lowers).unwrap();
+            } else {
+                apply_project_selected(&mut record, &lowers, &selection, &boundary).unwrap();
+            }
+            let directory = boundary.target.join("new");
+            let file = directory.join("file");
+            assert_eq!(fs::read(&file).unwrap(), b"created");
+            assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o7777, 0o555);
+            assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o444);
+            assert_eq!(
+                get_host_xattr(
+                    &c_path(&directory).unwrap(),
+                    &CString::new("user.permission-test").unwrap()
+                )
+                .unwrap(),
+                b"directory"
+            );
+            assert_eq!(
+                get_host_xattr(
+                    &c_path(&file).unwrap(),
+                    &CString::new("user.permission-test").unwrap()
+                )
+                .unwrap(),
+                b"file"
+            );
+            assert_no_private_controls(&directory);
+            assert_no_private_controls(&file);
+            assert!(!has_pending_applies(&record).unwrap());
+            assert_eq!(fs::read(record.target.join("outside")).unwrap(), b"old");
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn tree_observation(root: &Path) -> BTreeMap<PathBuf, (u32, i64, i64, Vec<u8>)> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            result: &mut BTreeMap<PathBuf, (u32, i64, i64, Vec<u8>)>,
+        ) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            let bytes = if metadata.is_file() {
+                fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            };
+            result.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (
+                    metadata.mode(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    bytes,
+                ),
+            );
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path).unwrap() {
+                    visit(root, &entry.unwrap().path(), result);
+                }
+            }
+        }
+        let mut result = BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_preview_is_readonly_and_separates_requested_dependencies() {
+        let tmp = tempdir().unwrap();
+        let (record, lowers, boundary) = project_fixture(tmp.path());
+        let selection = ApplySelection {
+            paths: vec!["project/new/file".into()],
+            ..Default::default()
+        };
+        let before = tree_observation(tmp.path());
+        let preview = preview_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        assert_eq!(
+            preview
+                .selected
+                .iter()
+                .map(ChangeEntry::relative_path)
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("project/new/file")]
+        );
+        assert_eq!(
+            preview
+                .required
+                .iter()
+                .map(ChangeEntry::relative_path)
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("project/new")]
+        );
+        assert!(
+            preview
+                .candidates
+                .iter()
+                .all(|change| change.relative_path().starts_with("project"))
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+        let excluded = ApplySelection {
+            excludes: vec!["project/new".into()],
+            ..selection.clone()
+        };
+        assert!(preview_project_apply(&record, &lowers, &excluded, &boundary).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+        // Public entry points never permit a directory-target override.
+        assert!(preview_overlay_apply_scoped(&record, &lowers, &selection, &boundary).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_preview_conflict_pending_and_dirty_stage_never_write() {
+        let tmp = tempdir().unwrap();
+        let (record, lowers, boundary) = project_fixture(tmp.path());
+        let selection = ApplySelection {
+            paths: vec!["project/a".into()],
+            ..Default::default()
+        };
+        fs::write(boundary.target.join("a"), b"concurrent").unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(
+            preview_project_apply(&record, &lowers, &selection, &boundary)
+                .unwrap_err()
+                .to_string()
+                .contains("target changed")
+        );
+        assert!(preview_overlay_apply(&record, &lowers, &selection).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+        fs::write(boundary.target.join("a"), b"old").unwrap();
+        let (_, plan, preimages) =
+            prepare_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        append_test_prepared(&record, &plan, preimages);
+        for state in [ApplyRecordState::Prepared, ApplyRecordState::TargetApplied] {
+            update_apply_state(&record, "rootfs-simulation", state, None).unwrap();
+            let before = tree_observation(tmp.path());
+            assert!(preview_project_apply(&record, &lowers, &selection, &boundary).is_err());
+            assert!(preview_overlay_apply(&record, &lowers, &selection).is_err());
+            assert_eq!(tree_observation(tmp.path()), before);
+        }
+        fs::remove_file(apply_ledger_path(&record.stage_dir)).unwrap();
+        crate::stage::begin(
+            &record.stage_dir.join("preimages"),
+            pvisor_core::overlay::StageDurability::Strict,
+        )
+        .unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(preview_project_apply(&record, &lowers, &selection, &boundary).is_err());
+        assert!(preview_overlay_apply(&record, &lowers, &selection).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_hardlink_closure_cannot_cross_scope_or_exclusions() {
+        let tmp = tempdir().unwrap();
+        let (record, lowers, boundary) = project_fixture(tmp.path());
+        fs::remove_file(record.upper.path().join("outside")).unwrap();
+        fs::hard_link(
+            record.upper.path().join("project/a"),
+            record.upper.path().join("outside"),
+        )
+        .unwrap();
+        let selection = ApplySelection {
+            paths: vec!["project/a".into()],
+            ..Default::default()
+        };
+        let before = tree_observation(tmp.path());
+        assert!(
+            preview_project_apply(&record, &lowers, &selection, &boundary)
+                .unwrap_err()
+                .to_string()
+                .contains("crosses project boundary")
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+        let excluded = ApplySelection {
+            excludes: vec!["outside".into()],
+            ..selection.clone()
+        };
+        assert!(preview_project_apply(&record, &lowers, &excluded, &boundary).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+        fs::remove_file(record.upper.path().join("outside")).unwrap();
+        fs::hard_link(
+            record.upper.path().join("project/a"),
+            tmp.path().join("unrecorded-alias"),
+        )
+        .unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(
+            preview_project_apply(&record, &lowers, &selection, &boundary)
+                .unwrap_err()
+                .to_string()
+                .contains("unrecorded aliases")
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_partial_multiapply_and_global_recovery_keep_root_coordinates() {
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary) = project_fixture(tmp.path());
+        let first = ApplySelection {
+            paths: vec!["project/new/file".into()],
+            ..Default::default()
+        };
+        let outcome = apply_project_selected(&mut record, &lowers, &first, &boundary).unwrap();
+        assert_eq!(
+            fs::read(boundary.target.join("new/file")).unwrap(),
+            b"created"
+        );
+        assert!(!outcome.remaining.is_empty());
+        assert_eq!(fs::read(record.target.join("outside")).unwrap(), b"old");
+        let selection = ApplySelection {
+            paths: vec!["project/a".into(), "project/b".into()],
+            ..Default::default()
+        };
+        let (target, plan, preimages) =
+            prepare_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        let apply = ApplyRecord {
+            schema_version: PROJECT_APPLY_SCHEMA_VERSION,
+            apply_id: "project-interrupted".into(),
+            created_at_unix_ms: 1,
+            overlay_id: record.id.clone(),
+            overlay_generation: record.generation,
+            target: record.target.clone(),
+            selection,
+            changes: plan.selected,
+            planned_paths: plan.selected_paths.into_iter().collect(),
+            preimages,
+            state: ApplyRecordState::Prepared,
+            remaining_changes: 0,
+        };
+        append_apply_record_scoped(&record, apply.clone(), Some(&boundary)).unwrap();
+        // Model interruption after publishing only one of the two file changes.
+        let (parent, path) = target.parent(Path::new("project/a")).unwrap();
+        copy_upper_entry(
+            &record.upper.path().join("project/a"),
+            &path,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        drop(parent);
+        assert_eq!(
+            recover_pending_applies(&mut record, &lowers).unwrap(),
+            vec!["project-interrupted"]
+        );
+        assert_eq!(fs::read(boundary.target.join("a")).unwrap(), b"new");
+        assert_eq!(fs::read(boundary.target.join("b")).unwrap(), b"new");
+        assert_eq!(fs::read(record.target.join("outside")).unwrap(), b"old");
+        let ledger = load_apply_ledger(&record.stage_dir).unwrap();
+        assert_eq!(ledger.schema_version, 3);
+        assert_eq!(ledger.project_boundaries.len(), 2);
+        assert!(ledger.records.iter().all(|apply| {
+            apply.target == record.target
+                && apply
+                    .planned_paths
+                    .iter()
+                    .all(|path| path.starts_with("project"))
+                && apply.state == ApplyRecordState::Committed
+        }));
+        // Exclude-only selection is still all eligible changes minus exclusions.
+        // Only outside remains here, so no project changes match.
+        let all = ApplySelection {
+            excludes: vec!["project/b".into()],
+            ..Default::default()
+        };
+        assert!(preview_project_apply(&record, &lowers, &all, &boundary).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_all_exclusions_hardlinks_deletes_and_unsupported_changes() {
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary) = project_fixture(tmp.path());
+        let all = ApplySelection {
+            excludes: vec!["project/b".into(), "project/new".into()],
+            ..Default::default()
+        };
+        let before = tree_observation(tmp.path());
+        let preview = preview_project_apply(&record, &lowers, &all, &boundary).unwrap();
+        assert_eq!(
+            preview
+                .selected
+                .iter()
+                .map(ChangeEntry::relative_path)
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("project/a")]
+        );
+        assert!(preview.required.is_empty());
+        assert_eq!(tree_observation(tmp.path()), before);
+        fs::remove_file(record.upper.path().join("project/b")).unwrap();
+        fs::hard_link(
+            record.upper.path().join("project/a"),
+            record.upper.path().join("project/b"),
+        )
+        .unwrap();
+        let selection = ApplySelection {
+            paths: vec!["project/a".into()],
+            ..Default::default()
+        };
+        let preview = preview_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        assert_eq!(preview.required[0].relative_path(), Path::new("project/b"));
+        apply_project_selected(&mut record, &lowers, &selection, &boundary).unwrap();
+        let a = fs::metadata(boundary.target.join("a")).unwrap();
+        let b = fs::metadata(boundary.target.join("b")).unwrap();
+        assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()));
+
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary) = project_fixture(tmp.path());
+        fs::remove_file(record.upper.path().join("project/b")).unwrap();
+        fs::write(record.upper.path().join("project/.wh.b"), b"").unwrap();
+        let selection = ApplySelection {
+            paths: vec!["project/b".into()],
+            ..Default::default()
+        };
+        apply_project_selected(&mut record, &lowers, &selection, &boundary).unwrap();
+        assert!(!boundary.target.join("b").exists());
+        assert_eq!(fs::read(record.target.join("outside")).unwrap(), b"old");
+
+        for kind in ["opaque", "directory-delete", "symlink", "special"] {
+            let tmp = tempdir().unwrap();
+            let (record, lowers, boundary) = project_fixture(tmp.path());
+            let path = if kind == "opaque" || kind == "directory-delete" {
+                "project/new"
+            } else {
+                "project/a"
+            };
+            match kind {
+                "opaque" => {
+                    fs::write(record.upper.path().join("project/new/.wh..wh..opq"), b"").unwrap()
+                }
+                "directory-delete" => {
+                    fs::create_dir(boundary.target.join("new")).unwrap();
+                    fs::remove_dir_all(record.upper.path().join("project/new")).unwrap();
+                    fs::write(record.upper.path().join("project/.wh.new"), b"").unwrap();
+                }
+                "symlink" => {
+                    fs::remove_file(record.upper.path().join(path)).unwrap();
+                    std::os::unix::fs::symlink("/tmp", record.upper.path().join(path)).unwrap();
+                }
+                _ => {
+                    fs::remove_file(record.upper.path().join(path)).unwrap();
+                    let cpath = c_path(&record.upper.path().join(path)).unwrap();
+                    // SAFETY: the temporary-directory path is valid and NUL terminated.
+                    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+                }
+            }
+            let selection = ApplySelection {
+                paths: vec![path.into()],
+                ..Default::default()
+            };
+            // FIFO contents are never read by this no-write observation.
+            let target_before = tree_observation(&record.target);
+            assert!(
+                preview_project_apply(&record, &lowers, &selection, &boundary).is_err(),
+                "{kind}"
+            );
+            assert_eq!(tree_observation(&record.target), target_before);
+            assert!(!apply_ledger_path(&record.stage_dir).exists());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_target_applied_recovery_prunes_without_replay_and_requires_boundary() {
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary) = project_fixture(tmp.path());
+        let selection = ApplySelection {
+            paths: vec!["project/a".into(), "project/b".into()],
+            ..Default::default()
+        };
+        let (target, plan, preimages) =
+            prepare_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        let apply = ApplyRecord {
+            schema_version: PROJECT_APPLY_SCHEMA_VERSION,
+            apply_id: "target-applied".into(),
+            created_at_unix_ms: 1,
+            overlay_id: record.id.clone(),
+            overlay_generation: record.generation,
+            target: record.target.clone(),
+            selection,
+            changes: plan.selected,
+            planned_paths: plan.selected_paths.into_iter().collect(),
+            preimages,
+            state: ApplyRecordState::Prepared,
+            remaining_changes: 0,
+        };
+        append_apply_record_scoped(&record, apply.clone(), Some(&boundary)).unwrap();
+        publish_project_apply(&record, &apply, &target, false).unwrap();
+        mark_apply_target_applied(&record, &apply.apply_id).unwrap();
+        fs::remove_file(record.upper.path().join("project/a")).unwrap();
+        fs::write(boundary.target.join("a"), b"post-publication edit").unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(
+            preview_project_apply(&record, &lowers, &ApplySelection::default(), &boundary).is_err()
+        );
+        assert_eq!(tree_observation(tmp.path()), before);
+        recover_pending_applies(&mut record, &lowers).unwrap();
+        assert_eq!(
+            fs::read(boundary.target.join("a")).unwrap(),
+            b"post-publication edit"
+        );
+        assert_eq!(fs::read(boundary.target.join("b")).unwrap(), b"new");
+        let mut ledger = load_apply_ledger(&record.stage_dir).unwrap();
+        ledger.project_boundaries.clear();
+        fs::write(
+            apply_ledger_path(&record.stage_dir),
+            serde_json::to_vec(&ledger).unwrap(),
+        )
+        .unwrap();
+        assert!(load_apply_records(&record.stage_dir).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_root_rebinding_and_symlink_parents_fail_closed() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir().unwrap();
+        let (mut record, lowers, boundary) = project_fixture(tmp.path());
+        let selection = ApplySelection {
+            paths: vec!["project/a".into()],
+            ..Default::default()
+        };
+        let (_, plan, preimages) =
+            prepare_project_apply(&record, &lowers, &selection, &boundary).unwrap();
+        let apply = ApplyRecord {
+            schema_version: PROJECT_APPLY_SCHEMA_VERSION,
+            apply_id: "rebound".into(),
+            created_at_unix_ms: 1,
+            overlay_id: record.id.clone(),
+            overlay_generation: record.generation,
+            target: record.target.clone(),
+            selection: selection.clone(),
+            changes: plan.selected,
+            planned_paths: plan.selected_paths.into_iter().collect(),
+            preimages,
+            state: ApplyRecordState::Prepared,
+            remaining_changes: 0,
+        };
+        append_apply_record_scoped(&record, apply, Some(&boundary)).unwrap();
+        fs::rename(&boundary.target, record.target.join("original-project")).unwrap();
+        fs::create_dir(&boundary.target).unwrap();
+        fs::write(boundary.target.join("a"), b"replacement").unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(recover_pending_applies(&mut record, &lowers).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+        fs::remove_dir_all(&boundary.target).unwrap();
+        symlink(record.target.join("original-project"), &boundary.target).unwrap();
+        let before = tree_observation(tmp.path());
+        assert!(recover_pending_applies(&mut record, &lowers).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+        fs::remove_file(&boundary.target).unwrap();
+        fs::rename(record.target.join("original-project"), &boundary.target).unwrap();
+        recover_pending_applies(&mut record, &lowers).unwrap();
+        fs::create_dir_all(record.target.join("escape")).unwrap();
+        fs::write(record.target.join("escape/file"), b"outside").unwrap();
+        symlink(record.target.join("escape"), boundary.target.join("new")).unwrap();
+        let selection = ApplySelection {
+            paths: vec!["project/new/file".into()],
+            ..Default::default()
+        };
+        let before = tree_observation(tmp.path());
+        assert!(preview_project_apply(&record, &lowers, &selection, &boundary).is_err());
+        assert!(apply_project_selected(&mut record, &lowers, &selection, &boundary).is_err());
+        assert_eq!(tree_observation(tmp.path()), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_test_logical_identity(path: &Path, uid: u32, gid: u32, mode: u32) {
+        crate::sys::set_xattr(
+            path,
+            OsStr::new(crate::OVERRIDE_STAT_XATTR),
+            format!("{uid}:{gid}:{mode:o}").as_bytes(),
+            0,
+        )
+        .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_no_private_controls(path: &Path) {
+        let names = list_host_xattrs(&c_path(path).unwrap()).unwrap();
+        assert!(
+            names
+                .split(|byte| *byte == 0)
+                .all(|name| !crate::is_private_metadata_xattr(OsStr::from_bytes(name))),
+            "{}",
+            path.display()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apply_private_backing_publishes_logical_metadata_without_controls() {
+        for root_policy in [false, true] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let upper = tmp.path().join("upper");
+            fs::create_dir(&target).unwrap();
+            fs::create_dir_all(upper.join("directory")).unwrap();
+            fs::write(upper.join("directory/file"), b"staged").unwrap();
+            let uid = if unsafe { libc::geteuid() } == 0 {
+                123
+            } else {
+                unsafe { libc::geteuid() }
+            };
+            let gid = if unsafe { libc::geteuid() } == 0 {
+                456
+            } else {
+                unsafe { libc::getegid() }
+            };
+            for (path, physical, logical) in [
+                (upper.clone(), 0o700, 0o40755),
+                (upper.join("directory"), 0o700, 0o40751),
+                // Permission-only overrides must also work through apply.
+                (upper.join("directory/file"), 0o600, 0o754),
+            ] {
+                fs::set_permissions(&path, fs::Permissions::from_mode(physical)).unwrap();
+                set_test_logical_identity(&path, uid, gid, logical);
+                crate::sys::set_xattr(&path, OsStr::new(crate::PRIVATE_BACKING_XATTR), b"1", 0)
+                    .unwrap();
+                crate::sys::set_xattr(&path, OsStr::new("user.application"), b"keep", 0).unwrap();
+            }
+            if !root_policy {
+                fs::write(upper.join(crate::ROOT_METADATA_NAME), b"").unwrap();
+            }
+            let mut record = late_conflict_record(&target, &upper);
+            let lower = vec![target.clone()];
+            let review = overlay_changes(&record, &lower).unwrap();
+            for (path, mode) in [("directory", 0o751), ("directory/file", 0o754)] {
+                assert_eq!(
+                    review
+                        .iter()
+                        .find(|change| change.relative_path() == Path::new(path))
+                        .unwrap()
+                        .mode,
+                    Some(mode)
+                );
+            }
+            if !root_policy {
+                assert_eq!(
+                    review
+                        .iter()
+                        .find(|change| change.relative_path().as_os_str().is_empty())
+                        .unwrap()
+                        .mode,
+                    Some(0o755)
+                );
+            }
+            apply_overlay_selected_for_target(
+                &mut record,
+                &lower,
+                &ApplySelection::default(),
+                Some(if root_policy {
+                    ApplyTargetKind::FilesystemRoot
+                } else {
+                    ApplyTargetKind::Directory
+                }),
+            )
+            .unwrap();
+            for (relative, mode) in [("directory", 0o751), ("directory/file", 0o754)] {
+                let path = target.join(relative);
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                assert_eq!(
+                    (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+                    (uid, gid, mode)
+                );
+                assert_no_private_controls(&path);
+                assert_eq!(
+                    crate::sys::get_xattr(&path, OsStr::new("user.application")).unwrap(),
+                    b"keep"
+                );
+            }
+            assert_no_private_controls(&target);
+            if !root_policy {
+                let metadata = fs::metadata(&target).unwrap();
+                assert_eq!(
+                    (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+                    (uid, gid, 0o755)
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn target_metadata_copy_removes_existing_private_controls() {
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let target = tmp.path().join("target");
+        fs::write(&source, b"source").unwrap();
+        fs::write(&target, b"target").unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        for path in [&source, &target] {
+            set_test_logical_identity(path, uid, gid, 0o100640);
+            crate::sys::set_xattr(path, OsStr::new(crate::PRIVATE_BACKING_XATTR), b"1", 0).unwrap();
+        }
+        copy_host_metadata(&source, &target).unwrap();
+        assert_no_private_controls(&target);
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o640);
+        assert_eq!(fs::read(&target).unwrap(), b"target");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_snapshot_metadata_preserves_physical_identity_and_private_controls() {
+        let tmp = tempdir().unwrap();
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(upper.join("directory")).unwrap();
+        fs::write(upper.join("directory/file"), b"raw").unwrap();
+        for (path, physical, logical) in [
+            (upper.clone(), 0o700, 0o40555),
+            (upper.join("directory"), 0o700, 0o40550),
+            (upper.join("directory/file"), 0o600, 0o100444),
+        ] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(physical)).unwrap();
+            set_test_logical_identity(&path, 123, 456, logical);
+            crate::sys::set_xattr(&path, OsStr::new(crate::PRIVATE_BACKING_XATTR), b"1", 0)
+                .unwrap();
+        }
+        let record = late_conflict_record(&tmp.path().join("unused-target"), &upper);
+        let snapshot = tmp.path().join("snapshot");
+        let restored = tmp.path().join("restored");
+        snapshot_overlay_upper(&record, &snapshot).unwrap();
+        restore_overlay_upper(&snapshot, &restored).unwrap();
+        for root in [&snapshot, &restored] {
+            for relative in ["", "directory", "directory/file"] {
+                let source = upper.join(relative);
+                let path = root.join(relative);
+                let original = fs::symlink_metadata(&source).unwrap();
+                let actual = fs::symlink_metadata(&path).unwrap();
+                assert_eq!(
+                    (actual.uid(), actual.gid(), actual.mode()),
+                    (original.uid(), original.gid(), original.mode())
+                );
+                let logical = crate::logical_identity(&path, &actual).unwrap();
+                let expected = crate::logical_identity(&source, &original).unwrap();
+                assert_eq!(
+                    (logical.uid, logical.gid, logical.mode),
+                    (expected.uid, expected.gid, expected.mode)
+                );
+                for name in [crate::PRIVATE_BACKING_XATTR, crate::OVERRIDE_STAT_XATTR] {
+                    assert_eq!(
+                        crate::sys::get_xattr(&path, OsStr::new(name)).unwrap(),
+                        crate::sys::get_xattr(&source, OsStr::new(name)).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn corrupt_logical_identity_fails_review_and_apply_before_any_target_write() {
+        for relative in ["", "directory", "directory/z-bad"] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let upper = tmp.path().join("upper");
+            fs::create_dir(&target).unwrap();
+            fs::create_dir_all(upper.join("directory")).unwrap();
+            fs::write(upper.join("a-valid"), b"must not apply").unwrap();
+            fs::write(upper.join("directory/z-bad"), b"bad").unwrap();
+            let corrupt = upper.join(relative);
+            crate::sys::set_xattr(
+                &corrupt,
+                OsStr::new(crate::OVERRIDE_STAT_XATTR),
+                b"invalid",
+                0,
+            )
+            .unwrap();
+            let mut record = late_conflict_record(&target, &upper);
+            let lower = vec![target.clone()];
+            assert!(overlay_changes(&record, &lower).is_err());
+            assert!(
+                apply_overlay_selected(&mut record, &lower, &ApplySelection::default()).is_err()
+            );
+            assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+            assert!(!record.stage_dir.join(APPLY_LEDGER_FILENAME).exists());
+            // The public metadata helper must fail before chown/chmod/xattrs too.
+            let before = fs::metadata(&target).unwrap();
+            assert!(copy_host_metadata(&corrupt, &target).is_err());
+            let after = fs::metadata(&target).unwrap();
+            assert_eq!(
+                (
+                    before.uid(),
+                    before.gid(),
+                    before.mode(),
+                    before.mtime(),
+                    before.mtime_nsec()
+                ),
+                (
+                    after.uid(),
+                    after.gid(),
+                    after.mode(),
+                    after.mtime(),
+                    after.mtime_nsec()
+                )
+            );
+            assert_no_private_controls(&target);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepared_recovery_rejects_corrupt_identity_before_publishing_valid_siblings() {
+        let tmp = tempdir().unwrap();
+        let mut record = rootfs_file_fixture(tmp.path());
+        let lower = vec![record.target.clone()];
+        let plan = plan_overlay_apply(&record, &lower, &ApplySelection::default()).unwrap();
+        let preimages =
+            prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+        append_test_prepared(&record, &plan, preimages);
+        let ledger = fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap();
+        crate::sys::set_xattr(
+            &record.upper.path().join("modified"),
+            OsStr::new(crate::OVERRIDE_STAT_XATTR),
+            b"invalid",
+            0,
+        )
+        .unwrap();
+        assert!(recover_pending_applies(&mut record, &lower).is_err());
+        assert_eq!(fs::read(record.target.join("modified")).unwrap(), b"old");
+        assert_eq!(fs::read(record.target.join("deleted")).unwrap(), b"old");
+        assert!(!record.target.join("added").exists());
+        assert_eq!(
+            fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap(),
+            ledger
+        );
+    }
+
+    #[test]
+    fn rootfs_target_classification_and_no_backup_are_pure() {
+        assert_eq!(
+            ApplyTargetKind::from_canonical_path(Path::new("/")),
+            ApplyTargetKind::FilesystemRoot
+        );
+        assert_eq!(
+            ApplyTargetKind::from_canonical_path(Path::new("/workspace")),
+            ApplyTargetKind::Directory
+        );
+        // No filesystem access: even the backing paths need not exist.
+        let record =
+            late_conflict_record(Path::new("/"), Path::new("/nonexistent-pvisor-test/upper"));
+        assert!(
+            ApplyTargetKind::FilesystemRoot
+                .backup_dir(&record, "pure-test")
+                .unwrap()
+                .is_none()
+        );
+        cleanup_apply_backups(&record, "pure-test", ApplyTargetKind::FilesystemRoot).unwrap();
+    }
+
+    fn rootfs_file_fixture(root: &Path) -> OverlayRecord {
+        let target = root.join("target");
+        let upper = root.join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("modified"), b"old").unwrap();
+        fs::write(target.join("deleted"), b"old").unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target],
+            upper.clone(),
+            Some(record.upper.work_dir.clone()),
+            vec![],
+            Some(record.stage_dir.join("preimages")),
+        )
+        .unwrap();
+        fs::write(core.copy_up(Path::new("modified")).unwrap(), b"new").unwrap();
+        core.remove(Path::new("deleted"), false).unwrap();
+        let mut added = core
+            .create_file(Path::new("added"), 0o644, libc::O_WRONLY)
+            .unwrap();
+        io::Write::write_all(&mut added, b"added").unwrap();
+        record
+    }
+
+    fn append_test_prepared(
+        record: &OverlayRecord,
+        plan: &ApplyPlan,
+        preimages: Vec<PathPreimage>,
+    ) {
+        append_apply_record(
+            record,
+            ApplyRecord {
+                schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                apply_id: "rootfs-simulation".into(),
+                created_at_unix_ms: 1,
+                overlay_id: record.id.clone(),
+                overlay_generation: record.generation,
+                target: record.target.clone(),
+                selection: ApplySelection::default(),
+                changes: plan.selected.clone(),
+                planned_paths: plan.selected_paths.iter().cloned().collect(),
+                preimages,
+                state: ApplyRecordState::Prepared,
+                remaining_changes: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rootfs_file_selection_leaves_root_metadata_staged_but_all_and_root_fail() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(&upper, fs::Permissions::from_mode(0o701)).unwrap();
+        fs::write(target.join("file"), b"old").unwrap();
+        fs::write(upper.join("file"), b"new").unwrap();
+        let marker = upper.join(crate::ROOT_METADATA_NAME);
+        fs::write(&marker, b"root metadata remains staged").unwrap();
+        let mut record = late_conflict_record(&target, &upper);
+        let lower = vec![target.clone()];
+        let kind = ApplyTargetKind::FilesystemRoot;
+        let root_before = fs::metadata(&target).unwrap();
+        for selection in [
+            ApplySelection::default(),
+            ApplySelection {
+                paths: vec![PathBuf::from(".")],
+                ..Default::default()
+            },
+        ] {
+            let error =
+                apply_overlay_selected_for_target(&mut record, &lower, &selection, Some(kind))
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains("root metadata changes"),
+                "{error}"
+            );
+            assert_eq!(fs::read(target.join("file")).unwrap(), b"old");
+            assert_eq!(fs::read(upper.join("file")).unwrap(), b"new");
+            assert!(!record.stage_dir.join(APPLY_LEDGER_FILENAME).exists());
+        }
+        let selection = ApplySelection {
+            paths: vec!["file".into()],
+            ..Default::default()
+        };
+        let plan = plan_overlay_apply_for_target(&record, &lower, &selection, kind).unwrap();
+        assert_eq!(plan.selected_paths, BTreeSet::from([PathBuf::from("file")]));
+        let outcome =
+            apply_overlay_selected_for_target(&mut record, &lower, &selection, Some(kind)).unwrap();
+        assert_eq!(outcome.applied.len(), 1);
+        assert_eq!(outcome.remaining.len(), 1);
+        assert!(outcome.remaining[0].relative_path().as_os_str().is_empty());
+        assert_eq!(fs::read(target.join("file")).unwrap(), b"new");
+        assert_eq!(fs::read(&marker).unwrap(), b"root metadata remains staged");
+        assert_eq!(record.state, OverlayState::Staged);
+        let root_after = fs::metadata(&target).unwrap();
+        assert_eq!(
+            (root_before.mode(), root_before.uid(), root_before.gid()),
+            (root_after.mode(), root_after.uid(), root_after.gid())
+        );
+        assert!(
+            load_apply_records(&record.stage_dir)
+                .unwrap()
+                .iter()
+                .all(|apply| apply.state == ApplyRecordState::Committed
+                    && apply.planned_paths == [PathBuf::from("file")])
+        );
+    }
+
+    #[test]
+    fn selected_file_requires_new_ancestors_but_not_existing_directory_metadata() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(target.join("existing")).unwrap();
+        fs::set_permissions(target.join("existing"), fs::Permissions::from_mode(0o750)).unwrap();
+        fs::create_dir_all(upper.join("existing/new/deep")).unwrap();
+        fs::set_permissions(upper.join("existing"), fs::Permissions::from_mode(0o701)).unwrap();
+        fs::set_permissions(
+            upper.join("existing/new"),
+            fs::Permissions::from_mode(0o751),
+        )
+        .unwrap();
+        fs::set_permissions(
+            upper.join("existing/new/deep"),
+            fs::Permissions::from_mode(0o753),
+        )
+        .unwrap();
+        fs::write(upper.join("existing/new/deep/file"), b"staged").unwrap();
+        let mut record = late_conflict_record(&target, &upper);
+        let lower = vec![target.clone()];
+        let selection = ApplySelection {
+            paths: vec!["existing/new/deep/file".into()],
+            ..Default::default()
+        };
+        let plan = plan_overlay_apply(&record, &lower, &selection).unwrap();
+        assert_eq!(
+            plan.selected_paths,
+            BTreeSet::from([
+                PathBuf::from("existing/new"),
+                PathBuf::from("existing/new/deep"),
+                PathBuf::from("existing/new/deep/file")
+            ])
+        );
+        let outcome = apply_overlay_selected(&mut record, &lower, &selection).unwrap();
+        assert_eq!(
+            fs::read(target.join("existing/new/deep/file")).unwrap(),
+            b"staged"
+        );
+        for (relative, mode) in [
+            ("existing", 0o750),
+            ("existing/new", 0o751),
+            ("existing/new/deep", 0o753),
+        ] {
+            assert_eq!(
+                fs::metadata(target.join(relative)).unwrap().mode() & 0o7777,
+                mode
+            );
+        }
+        assert_eq!(outcome.remaining.len(), 1);
+        assert_eq!(outcome.remaining[0].relative_path(), Path::new("existing"));
+        assert!(upper.join("existing").is_dir());
+    }
+
+    #[test]
+    fn existing_parent_recovery_tolerates_child_mtime_but_not_permission_changes() {
+        for compact in [false, true] {
+            for conflict in [false, true] {
+                let tmp = tempdir().unwrap();
+                let target = tmp.path().join("target");
+                let upper = tmp.path().join("upper");
+                fs::create_dir_all(target.join("directory")).unwrap();
+                fs::write(target.join("directory/file"), b"old").unwrap();
+                let mut record = late_conflict_record(&target, &upper);
+                let core = OverlayCore::new_with_exclusions_and_preimages(
+                    vec![target.clone()],
+                    upper.clone(),
+                    Some(record.upper.work_dir.clone()),
+                    vec![],
+                    Some(record.stage_dir.join("preimages")),
+                )
+                .unwrap();
+                let core = if compact {
+                    core.with_compact_preimages().unwrap()
+                } else {
+                    core
+                };
+                fs::write(core.copy_up(Path::new("directory/file")).unwrap(), b"new").unwrap();
+                drop(core);
+                let lower = vec![target.clone()];
+                let selection = ApplySelection {
+                    paths: vec!["directory/file".into()],
+                    ..Default::default()
+                };
+                let kind = ApplyTargetKind::FilesystemRoot;
+                let plan =
+                    plan_overlay_apply_for_target(&record, &lower, &selection, kind).unwrap();
+                let preimages =
+                    prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+                assert!(
+                    preimages
+                        .iter()
+                        .any(|preimage| preimage.relative_path() == Path::new("directory"))
+                );
+                append_test_prepared(&record, &plan, preimages);
+                let ledger = fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap();
+                // Crash after publishing a child, before updating parent journal
+                // timestamps or marking TargetApplied. Force a distinct mtime.
+                copy_upper_entry(
+                    &upper.join("directory/file"),
+                    &target.join("directory/file"),
+                    &mut HashMap::new(),
+                )
+                .unwrap();
+                let directory = target.join("directory");
+                let metadata = fs::metadata(&directory).unwrap();
+                let times = [
+                    libc::timespec {
+                        tv_sec: metadata.atime(),
+                        tv_nsec: metadata.atime_nsec(),
+                    },
+                    libc::timespec {
+                        tv_sec: metadata.mtime() + 10,
+                        tv_nsec: metadata.mtime_nsec(),
+                    },
+                ];
+                assert_eq!(
+                    unsafe {
+                        libc::utimensat(
+                            libc::AT_FDCWD,
+                            c_path(&directory).unwrap().as_ptr(),
+                            times.as_ptr(),
+                            0,
+                        )
+                    },
+                    0
+                );
+                if conflict {
+                    fs::set_permissions(
+                        &directory,
+                        fs::Permissions::from_mode((metadata.mode() & 0o7777) ^ 0o020),
+                    )
+                    .unwrap();
+                }
+                let _lock = TargetApplyLock::acquire(&target).unwrap();
+                let result = recover_pending_applies_for_target(&mut record, &lower, kind);
+                if conflict {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("target changed after staging")
+                    );
+                    assert_eq!(
+                        fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap(),
+                        ledger
+                    );
+                    assert!(upper.join("directory/file").exists());
+                } else {
+                    result.unwrap();
+                    assert!(!upper.join("directory/file").exists());
+                    assert!(upper.join("directory").is_dir());
+                    assert_eq!(record.state, OverlayState::Staged);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rootfs_prepared_recovery_rechecks_exclusions_and_denials_before_any_write() {
+        for protection in ["excluded", "denied", "selection-excluded"] {
+            let tmp = tempdir().unwrap();
+            let mut record = rootfs_file_fixture(tmp.path());
+            let lower = vec![record.target.clone()];
+            let kind = ApplyTargetKind::FilesystemRoot;
+            // A previously admitted plan is not authority to bypass current
+            // policy or exclusions stored by an older Prepared writer.
+            let plan =
+                plan_overlay_apply_for_target(&record, &lower, &ApplySelection::default(), kind)
+                    .unwrap();
+            let preimages =
+                prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+            append_test_prepared(&record, &plan, preimages);
+            let ledger_path = record.stage_dir.join(APPLY_LEDGER_FILENAME);
+            match protection {
+                "excluded" => record.excluded_paths.push("modified".into()),
+                "denied" => {
+                    record.access_policy =
+                        crate::FileAccessPolicy::new(vec!["modified".into()], vec![]).unwrap()
+                }
+                "selection-excluded" => {
+                    let mut ledger: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
+                    ledger["records"][0]["selection"]["excludes"] = serde_json::json!(["modified"]);
+                    fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = fs::read(&ledger_path).unwrap();
+            let _lock = TargetApplyLock::acquire(&record.target).unwrap();
+            let error = recover_pending_applies_for_target(&mut record, &lower, kind).unwrap_err();
+            assert!(
+                error.to_string().contains(if protection == "excluded" {
+                    "excluded path modified"
+                } else {
+                    "protected path modified"
+                }),
+                "{protection}: {error}"
+            );
+            assert_eq!(fs::read(&ledger_path).unwrap(), before);
+            assert!(!record.target.join("added").exists());
+            assert_eq!(fs::read(record.target.join("modified")).unwrap(), b"old");
+            assert_eq!(fs::read(record.target.join("deleted")).unwrap(), b"old");
+            assert_eq!(
+                fs::read(record.upper.path().join("added")).unwrap(),
+                b"added"
+            );
+            assert_eq!(
+                fs::read(record.upper.path().join("modified")).unwrap(),
+                b"new"
+            );
+            assert!(record.upper.path().join(".wh.deleted").exists());
+            assert!(has_pending_applies(&record).unwrap());
+        }
+    }
+
+    #[test]
+    fn rootfs_files_apply_and_recover_without_a_backup_directory() {
+        for pending in [
+            None,
+            Some(ApplyRecordState::Prepared),
+            Some(ApplyRecordState::TargetApplied),
+        ] {
+            let tmp = tempdir().unwrap();
+            let mut record = rootfs_file_fixture(tmp.path());
+            let lower = vec![record.target.clone()];
+            // Force only the private target policy, never a real `/` target.
+            let kind = ApplyTargetKind::FilesystemRoot;
+            // A foreign sibling backup proves root policy neither opens nor
+            // removes a directory reserved for ordinary-target transactions.
+            let backup = apply_backup_dir(&record, "rootfs-simulation").unwrap();
+            fs::create_dir(&backup).unwrap();
+            fs::write(backup.join("keep"), b"foreign").unwrap();
+            if let Some(state) = pending {
+                let plan = plan_overlay_apply_for_target(
+                    &record,
+                    &lower,
+                    &ApplySelection::default(),
+                    kind,
+                )
+                .unwrap();
+                let preimages =
+                    prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+                append_test_prepared(&record, &plan, preimages.clone());
+                if state == ApplyRecordState::TargetApplied {
+                    apply_prepared_target(
+                        &record,
+                        &plan.selected_paths,
+                        &preimages,
+                        &plan.selected,
+                        &ApplySelection::default(),
+                        false,
+                        ApplyTarget {
+                            apply_id: "rootfs-simulation",
+                            kind,
+                        },
+                    )
+                    .unwrap();
+                    mark_apply_target_applied(&record, "rootfs-simulation").unwrap();
+                }
+                let _lock = TargetApplyLock::acquire(&record.target).unwrap();
+                assert_eq!(
+                    recover_pending_applies_for_target(&mut record, &lower, kind).unwrap(),
+                    ["rootfs-simulation"]
+                );
+                assert!(
+                    recover_pending_applies_for_target(&mut record, &lower, kind)
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                let outcome = apply_overlay_selected_for_target(
+                    &mut record,
+                    &lower,
+                    &ApplySelection::default(),
+                    Some(kind),
+                )
+                .unwrap();
+                assert_eq!(outcome.applied.len(), 3);
+            }
+            assert_eq!(fs::read(record.target.join("modified")).unwrap(), b"new");
+            assert_eq!(fs::read(record.target.join("added")).unwrap(), b"added");
+            assert!(!record.target.join("deleted").exists());
+            assert_eq!(record.state, OverlayState::Applied);
+            assert!(
+                load_apply_records(&record.stage_dir)
+                    .unwrap()
+                    .iter()
+                    .all(|apply| apply.state == ApplyRecordState::Committed)
+            );
+            assert_eq!(fs::read(backup.join("keep")).unwrap(), b"foreign");
+        }
+    }
+
+    #[test]
+    fn rootfs_conflicts_and_protected_paths_still_block_file_writes() {
+        for failure in ["conflict", "excluded", "denied", "immutable"] {
+            let tmp = tempdir().unwrap();
+            let mut record = rootfs_file_fixture(tmp.path());
+            match failure {
+                "conflict" => fs::write(record.target.join("modified"), b"host edit").unwrap(),
+                "excluded" => record.excluded_paths.push("modified".into()),
+                "denied" => {
+                    record.access_policy =
+                        crate::FileAccessPolicy::new(vec!["modified".into()], vec![]).unwrap()
+                }
+                "immutable" => record.protect_target = true,
+                _ => unreachable!(),
+            }
+            let lower = vec![record.target.clone()];
+            assert!(
+                apply_overlay_selected_for_target(
+                    &mut record,
+                    &lower,
+                    &ApplySelection::default(),
+                    Some(ApplyTargetKind::FilesystemRoot)
+                )
+                .is_err()
+            );
+            assert!(!record.target.join("added").exists());
+            assert_eq!(fs::read(record.target.join("deleted")).unwrap(), b"old");
+            assert!(!record.stage_dir.join("apply-ledger.json").exists());
+        }
+    }
+
+    #[test]
+    fn rootfs_replacements_are_rejected_before_prepared_or_target_writes_and_on_recovery() {
+        for operation in [
+            "delete",
+            "opaque",
+            "directory-to-file",
+            "file-to-directory",
+            "root-metadata",
+        ] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let upper = tmp.path().join("upper");
+            fs::create_dir_all(target.join("dir")).unwrap();
+            fs::write(target.join("dir/keep"), b"host").unwrap();
+            fs::write(target.join("file"), b"host-file").unwrap();
+            fs::create_dir(&upper).unwrap();
+            match operation {
+                "delete" => fs::write(upper.join(".wh.dir"), b"").unwrap(),
+                "opaque" => {
+                    fs::create_dir(upper.join("dir")).unwrap();
+                    fs::write(upper.join("dir").join(OPAQUE_WHITEOUT), b"").unwrap();
+                }
+                "directory-to-file" => fs::write(upper.join("dir"), b"replacement").unwrap(),
+                "file-to-directory" => fs::create_dir(upper.join("file")).unwrap(),
+                "root-metadata" => fs::write(upper.join(crate::ROOT_METADATA_NAME), b"").unwrap(),
+                _ => unreachable!(),
+            }
+            fs::write(upper.join("added"), b"must not apply").unwrap();
+            let mut record = late_conflict_record(&target, &upper);
+            let lower = vec![target.clone()];
+            let error = apply_overlay_selected_for_target(
+                &mut record,
+                &lower,
+                &ApplySelection::default(),
+                Some(ApplyTargetKind::FilesystemRoot),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("rootfs apply does not support"),
+                "{operation}: {error}"
+            );
+            assert!(!record.stage_dir.join("apply-ledger.json").exists());
+            // Model a record written by an older implementation. Recovery must
+            // reject both Prepared and TargetApplied before touching the upper.
+            let plan = plan_overlay_apply(&record, &lower, &ApplySelection::default()).unwrap();
+            append_test_prepared(&record, &plan, vec![]);
+            for state in [ApplyRecordState::Prepared, ApplyRecordState::TargetApplied] {
+                if state == ApplyRecordState::TargetApplied {
+                    mark_apply_target_applied(&record, "rootfs-simulation").unwrap();
+                }
+                let ledger = fs::read(record.stage_dir.join("apply-ledger.json")).unwrap();
+                let error = recover_pending_applies_for_target(
+                    &mut record,
+                    &lower,
+                    ApplyTargetKind::FilesystemRoot,
+                )
+                .unwrap_err();
+                assert!(
+                    error.to_string().contains("rootfs apply does not support"),
+                    "{error}"
+                );
+                assert_eq!(
+                    fs::read(record.stage_dir.join("apply-ledger.json")).unwrap(),
+                    ledger
+                );
+                assert_eq!(fs::read(target.join("dir/keep")).unwrap(), b"host");
+                assert_eq!(fs::read(target.join("file")).unwrap(), b"host-file");
+                assert!(!target.join("added").exists());
+                assert_eq!(fs::read(upper.join("added")).unwrap(), b"must not apply");
+            }
+        }
+    }
 
     #[test]
     fn target_lock_coordinates_processes_with_different_tmpdirs() {
@@ -2628,7 +5254,7 @@ mod tests {
         let backup = apply_backup_dir(&record, "apply-id").unwrap();
         fs::DirBuilder::new().mode(0o700).create(&backup).unwrap();
         fs::write(backup.join("keep"), b"host").unwrap();
-        assert!(cleanup_apply_backups(&record, "apply-id").is_err());
+        assert!(cleanup_apply_backups(&record, "apply-id", ApplyTargetKind::Directory).is_err());
         assert_eq!(fs::read(backup.join("keep")).unwrap(), b"host");
         assert!(!backup.join(".pvisor-owner").exists());
     }
@@ -2915,7 +5541,7 @@ mod tests {
             fs::read(target.join("replaced/external")).unwrap(),
             b"do not overwrite"
         );
-        cleanup_apply_backups(&record, "interrupted").unwrap();
+        cleanup_apply_backups(&record, "interrupted", ApplyTargetKind::Directory).unwrap();
     }
     use super::*;
     use tempfile::tempdir;
@@ -3456,7 +6082,10 @@ mod tests {
                 &plan.selected,
                 &ApplySelection::default(),
                 false,
-                apply_id,
+                ApplyTarget {
+                    apply_id,
+                    kind: ApplyTargetKind::Directory,
+                },
             )
             .unwrap();
             mark_apply_target_applied(&record, apply_id).unwrap();
@@ -3739,7 +6368,10 @@ mod tests {
             &plan.selected,
             &ApplySelection::default(),
             false,
-            &apply_id,
+            ApplyTarget {
+                apply_id: &apply_id,
+                kind: ApplyTargetKind::Directory,
+            },
         )
         .unwrap();
         mark_apply_target_applied(&record, &apply_id).unwrap();

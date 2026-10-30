@@ -219,9 +219,16 @@ pub(super) fn spawn_error(error: &io::Error) -> Option<i32> {
 }
 
 pub(super) fn read_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
-    match reader.read(buffer) {
-        Err(e) if e.raw_os_error() == Some(libc::EIO) => Ok(0),
-        result => result,
+    loop {
+        match reader.read(buffer) {
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => return Ok(0),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            // Attached PTY input and output share a nonblocking master.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -290,11 +297,9 @@ fn command(config: &GuestConfig) -> io::Result<Command> {
     let mut command = config.command()?;
     let options = config.process.clone().unwrap_or_default();
     let identity = options.user.as_deref().map(identity).transpose()?;
-    if !config.env.contains_key("HOME") {
-        // Docker-equivalent defaulting: derive HOME from the guest passwd
-        // entry of the effective uid — an unset OCI user means root here,
-        // matching the default identity — and fall back to the filesystem
-        // root when the image ships no matching entry.
+    if (config.process.is_none() || options.user.is_some()) && !config.env.contains_key("HOME") {
+        // Only explicit identity selection requests passwd defaults. Native
+        // stage launches preserve missing HOME as an environment tombstone.
         let uid = identity.as_ref().map(|(uid, _, _)| *uid).unwrap_or(0);
         let passwd = fs::read_to_string("/etc/passwd").unwrap_or_default();
         command.env("HOME", default_home(uid, &passwd));
@@ -356,6 +361,13 @@ pub(super) struct Spawned {
     pub(super) outputs: ProcessOutput,
 }
 
+fn nonblocking(fd: &impl AsRawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    check(flags)?;
+    check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
+    Ok(())
+}
+
 impl Processes {
     pub(super) fn spawn(&self, config: &GuestConfig, capture: bool) -> io::Result<Spawned> {
         let mut command = command(config)?;
@@ -368,6 +380,8 @@ impl Processes {
             return Err(io::Error::other("guest is stopping"));
         }
         let interactive = matches!(options.stdin, StdinMode::Pipe);
+        let capture = capture || options.attached;
+        let cancellable_input = options.attached && !config.control;
         if let Some([rows, columns]) = options.tty {
             let mut master = -1;
             let mut slave = -1;
@@ -388,12 +402,21 @@ impl Processes {
             })?;
             let master = unsafe { File::from_raw_fd(master) };
             let slave = unsafe { File::from_raw_fd(slave) };
+            for file in [&master, &slave] {
+                check(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+            }
+            if cancellable_input && interactive {
+                nonblocking(&master)?;
+            }
             let fd = slave.as_raw_fd();
             unsafe { command.pre_exec(move || check(libc::ioctl(fd, libc::TIOCSCTTY, 0))) };
             command
                 .stdin(slave.try_clone()?)
                 .stdout(slave.try_clone()?)
                 .stderr(slave);
+            if options.attached && matches!(options.stdin, StdinMode::Closed) {
+                command.stdin(Stdio::null());
+            }
             // Acquire every fallible descriptor before spawning: a successful
             // child must always enter the PID-1 registry, including EMFILE paths.
             let terminal = master.try_clone()?;
@@ -414,14 +437,27 @@ impl Processes {
                 StdinMode::Closed => Stdio::null(),
                 StdinMode::Pipe => Stdio::piped(),
             });
+            let attached_input = if cancellable_input && interactive {
+                let mut fds = [-1; 2];
+                check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })?;
+                let reader = unsafe { File::from_raw_fd(fds[0]) };
+                let writer = unsafe { File::from_raw_fd(fds[1]) };
+                nonblocking(&writer)?;
+                command.stdin(reader);
+                Some(Box::new(writer) as Box<dyn Write + Send>)
+            } else {
+                None
+            };
             if capture {
                 command.stdout(Stdio::piped()).stderr(Stdio::piped());
             }
             let mut child = command.spawn()?;
-            let input = child
-                .stdin
-                .take()
-                .map(|s| Box::new(s) as Box<dyn Write + Send>);
+            let input = attached_input.or_else(|| {
+                child
+                    .stdin
+                    .take()
+                    .map(|s| Box::new(s) as Box<dyn Write + Send>)
+            });
             let output = if capture {
                 vec![
                     (
@@ -448,6 +484,123 @@ impl Processes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_launch_preserves_absent_home_but_legacy_launch_defaults_it() {
+        let mut config = GuestConfig {
+            argv: vec!["/bin/true".into()],
+            cwd: "/".into(),
+            process: Some(pvisor_guest::ProcessConfig {
+                attached: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            !command(&config)
+                .unwrap()
+                .get_envs()
+                .any(|(key, _)| key == "HOME")
+        );
+        config.process = None;
+        assert!(
+            command(&config)
+                .unwrap()
+                .get_envs()
+                .any(|(key, _)| key == "HOME")
+        );
+    }
+
+    fn attached_config(script: &str, tty: Option<[u16; 2]>, interactive: bool) -> GuestConfig {
+        GuestConfig {
+            argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            cwd: "/".into(),
+            process: Some(pvisor_guest::ProcessConfig {
+                attached: true,
+                new_session: true,
+                stdin: if interactive {
+                    StdinMode::Pipe
+                } else {
+                    StdinMode::Closed
+                },
+                tty,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn attached_pipes_keep_streams_separate_and_stdin_reaches_eof() {
+        let processes = Processes::default();
+        let config = attached_config(
+            "test ! -t 0 && test ! -t 1 && test ! -t 2 || exit 1; cat; printf err >&2",
+            None,
+            true,
+        );
+        let Spawned {
+            process,
+            mut input,
+            outputs,
+        } = processes.spawn(&config, false).unwrap();
+        input.as_mut().unwrap().write_all(b"input").unwrap();
+        drop(input);
+        assert_eq!(processes.supervise(process).unwrap(), 0);
+        let mut data = BTreeMap::new();
+        for (mut output, fd) in outputs {
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).unwrap();
+            data.insert(fd, bytes);
+        }
+        assert_eq!(data[&1], b"input");
+        assert_eq!(data[&2], b"err");
+    }
+
+    #[test]
+    fn attached_pty_has_dimensions_combined_output_and_closed_stdin_eof() {
+        let processes = Processes::default();
+        let config = attached_config(
+            "test -t 1 && test -t 2 || exit 1; read line && exit 2; stty size <&1; printf err >&2",
+            Some([31, 97]),
+            false,
+        );
+        let Spawned {
+            process,
+            input,
+            mut outputs,
+        } = processes.spawn(&config, false).unwrap();
+        assert!(input.is_none());
+        assert_eq!(processes.supervise(process).unwrap(), 0);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].1, 1);
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 1024];
+        loop {
+            let count = read_chunk(&mut outputs[0].0, &mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        assert_eq!(bytes, b"31 97\r\nerr");
+    }
+
+    #[test]
+    fn attached_interactive_pty_accepts_input() {
+        let processes = Processes::default();
+        let config = attached_config(
+            "test -t 0 || exit 1; read line; test \"$line\" = hello",
+            Some([24, 80]),
+            true,
+        );
+        let Spawned {
+            process,
+            mut input,
+            outputs: _outputs,
+        } = processes.spawn(&config, false).unwrap();
+        input.as_mut().unwrap().write_all(b"hello\n").unwrap();
+        assert_eq!(processes.supervise(process).unwrap(), 0);
+    }
 
     #[test]
     fn default_home_follows_the_effective_uid_and_falls_back_to_root_dir() {

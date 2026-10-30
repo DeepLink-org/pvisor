@@ -32,7 +32,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 ## Command help and live VM controls
 
 Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
-`exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`,
+`exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
 `resume`, `fork`) and **Tools** (installed `daemon`/`replay`/`tui` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
@@ -44,9 +44,13 @@ pvisor review last
 pvisor apply last --path src
 ```
 
-`apply` requires `--all` or an explicit `--path`, `--include` or `--exclude`
-selection. An empty selection is rejected before changing the target. `--all`
-cannot be combined with filters.
+`apply SOURCE` defaults to the recorded project. SOURCE is required. With no
+selection, it opens a picker only when both stdin and stdout are terminals;
+explicit `--path`, `--include` or `--all` executes without prompting unless
+`--interactive` is requested. `--all --exclude GLOB` is allowed; `--all` cannot
+combine with `--path` or `--include`. Exclusions alone require `--interactive`.
+See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
+argument, JSON and exit-code contracts.
 
 TOML `[run] profile = "safe"` selects the same preset as `--safe`. Explicit
 `--filesystem host` conflicts with the safe profile and fails before workload
@@ -112,6 +116,151 @@ The frontend verifies and pins its own executable before launching its owner;
 there is no user-wide digest admission or generation socket. For upgrade, drain
 old Jobs and stop the old `--pvisor-internal-host` with the old binary first.
 New CLIs read old records without live control as disk state only.
+
+## Staged system experiments (Linux preview)
+
+`stage` creates an ordinary Job in a native VM with the host `/` as a live,
+read-only lower. Unlike `spawn --rootfs host`, it retains the **whole rootfs**
+upper and preimages after exit, not just workspace edits. No image is needed.
+The lower is not a frozen system snapshot; concurrent host changes remain visible.
+
+```bash
+pvisor stage -it                         # shell; omission of COMMAND selects $SHELL or /bin/sh
+pvisor stage --network none --stage ./experiment /bin/sh -c 'echo changed > example.txt'
+pvisor review ./experiment --diff
+pvisor apply ./experiment                # choose project changes in a terminal
+pvisor drop ./experiment
+```
+
+The interface follows the container CLI's option spelling and argument boundary:
+`-i/--interactive`, `-t/--tty`, repeated `-e/--env` and `--env-file`,
+`-w/--workdir`, `--name`, `--cpus`, `-m/--memory`, and `--network bridge|none`.
+There is no positional image. Options after COMMAND (or `--`) belong literally
+to the workload. `--name` is the Job label, not a new name-based selector;
+use the printed Job ID, stage path, or `last` in the launching workspace.
+
+Defaults are 2 vCPUs, 512 MiB RAM, current host working directory, and controlled
+IPv4 TCP/DNS egress (`bridge` uses the Job's existing VM data plane, not membership
+in the Docker container bridge). `none` omits guest networking. A command's stdin
+is closed unless `-i` is supplied; no COMMAND selects a shell with stdin attached
+and uses a PTY when launched from a terminal. `-t` requires a host terminal and
+allocates a guest PTY, combining stdout/stderr; without `-i`, stdin remains
+`/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY streams. Stage uses the ordinary Job owner, cancellation,
+completion receipt, review, and drop; it does not appear in container `ps`.
+There is no detach, `--rm`, writable bind mount, image selection or host fallback.
+Personal Agent defaults are not loaded. Existing workspace/network policy defaults
+still apply. `PVISOR_STAGE=1` identifies the environment to scripts.
+
+`--stage PATH` selects fresh persistent storage; omitted storage is
+`PVISOR_RUN_HOME/JOB_ID` or `$HOME/.pvisor/runs/JOB_ID`. Existing Job storage is
+never silently reused. Exit, including a nonzero workload exit, retains reviewable
+changes. `drop` discards only pending changes, not already applied paths or external
+side effects. HOME and other readable host files, including credentials, remain
+visible: this is write staging, not a confidentiality boundary. Cache management
+credentials and implicit loader paths retain the VM's existing environment scrub;
+explicit `-e` values have Docker precedence. Unset entries remain absent, including
+HOME, PATH and TMPDIR.
+
+### Applying project changes
+
+For new `stage` Jobs, ordinary `apply` selects only changes beneath the recorded
+launch-time project, even though the stage retains the whole rootfs. Paths and
+globs are project-relative; outside-project changes remain staged. Non-root
+project apply is supported within this restricted contract:
+
+```bash
+pvisor apply ./experiment
+pvisor apply ./experiment --path src --dry-run --diff
+pvisor apply ./experiment --all --exclude 'build/**'
+pvisor apply ./experiment --path src --dry-run --json
+```
+
+The picker starts with nothing checked when no positive selection was supplied.
+Use ↑/↓ to move, Space to toggle, `a` for all eligible paths, `n` for none,
+`d` for a diff, Enter for preview, and `q` to cancel. Preview offers `a` to apply,
+`b` to go back, `d` for a diff, and `q` to quit. Explicit selection with
+`--interactive` preselects matching paths. Execution checks the preview's
+expected-plan token; a changed plan requires a fresh preview and confirmation.
+
+`--dry-run` does not write the target, journals, ledger or recovery state and
+does not consume staged changes. Preview locks open only existing lock files
+and leases: missing `job.lock` or required lease files fail closed, without
+creating them. New `stage` startup precreates these observation locks. Apply
+still requires a stopped Job and valid completion evidence.
+
+New rootstage Jobs capture `ProjectApplyScope` version 1: a canonical project
+root other than `/`, with its device/inode identity. The scope is bound into the
+RunRecord and Run Bundle by the completion receipt and revalidated before
+writeback. A changed directory identity or missing/mismatched binding blocks
+apply. Older rootstages without that launch contract cannot gain project
+authority from the current directory or `--target`; recreate the stage for
+project apply. Ordinary workspace stages keep their existing interface and
+legacy explicit `--target` compatibility, limited to an existing workspace
+directory; this does not grant rootstage project or system-root authority.
+New rootstage project apply does not accept a target override.
+
+The restricted rootstage project path supports regular file additions, edits
+and deletions, plus required new directories. It rejects symlinks, special
+files, opaque changes, directory deletion/replacement, existing-directory
+metadata changes and project-root changes. Non-root callers also need
+owner-readable logical file modes: a logical `0200` write-only file is rejected
+before writes because crash recovery could not safely reread it. New directories
+must be caller-owned and owner-readable/searchable. Private backing permissions
+do not relax these logical-mode checks.
+
+No matching changes is a successful no-op: execution prints
+`No matching staged changes`. A pending apply instead returns `blocked` without
+implicit recovery. Keep the stage, apply ledger and recovery evidence for
+inspection and explicit reconciliation; retrying is not an automatic recovery
+procedure, and no new recovery CLI is provided. An execution error can leave
+partial target writes. Apply does not run tests automatically or provide a
+multi-file transaction; validate the result separately and stop concurrent
+writers. Exit codes are `0` success/no changes, `2` argument errors, `3` blocked,
+`1` execution/service errors and `130` cancellation.
+
+### Applying system changes
+
+Advanced `apply --rootfs` explicitly selects the recorded system `/` target instead of
+the project. It requires a positive selection (`--path`, `--include` or `--all`)
+or terminal interaction. Paths are relative to `/`:
+
+```bash
+# Initial privileged workflow: create and review as root, in root-controlled storage.
+sudo -H pvisor stage -it --stage /root/pvisor-stages/config-edit
+sudo -H pvisor review /root/pvisor-stages/config-edit --diff
+sudo -H pvisor apply /root/pvisor-stages/config-edit --rootfs --path etc/example.conf
+sudo -H pvisor drop /root/pvisor-stages/config-edit
+```
+
+This preview **does not elevate or import an ordinary user's stage**. Same-UID
+Job locks are preserved; rootfs apply requires effective UID 0 and a root-created
+stage whose canonical directory and ancestors are root-owned and not group/world
+writable. `/tmp` storage is therefore not eligible. `--rootfs` conflicts with
+`--target`, and ordinary apply cannot redirect a workspace stage to `/`.
+
+Rootfs apply supports ordinary file changes and required new ancestor directories.
+Directory deletion/replacement, opaque replacements and root metadata changes
+are rejected before preparing a new apply. Select supported file paths or drop
+unsupported changes. Private backing preserves logical guest ownership/modes;
+its physical owner-access permissions and private control xattrs are not published
+to the host. Importing source objects with POSIX ACLs is currently unsupported and
+fails closed rather than changing ACL semantics. Other special-file and
+unprivileged ownership limitations remain those of the VM/OverlayCore adapter.
+
+**This is not an atomic system upgrade or rollback mechanism.** Package files,
+configuration and package databases can be interdependent; arbitrary path selection
+may leave them inconsistent. Native VM success does not validate host services,
+devices, the bootloader, initramfs or the next boot. Review and back up the system
+before any privileged apply; stop concurrent target writers. Network API calls,
+database writes and sent messages cannot be undone by drop. Linux x86_64/KVM is
+the initial supported target; macOS host-root staging is rejected explicitly.
+
+Validation: `mise run test -- pvisor-cli -- -E 'binary(stage_cli)'` checks ordinary
+CLI contracts. With KVM and matching GNU firmware available, set
+`PVISOR_TEST_LIBRARY_DIR=/absolute/firmware/directory` and run
+`mise run test -- pvisor-cli -- -E 'binary(stage_cli)' --run-ignored only` for the
+native host-root workflow. It writes only isolated temporary fixtures and never
+applies to the real host root.
 
 ## Docker command profile (experimental)
 

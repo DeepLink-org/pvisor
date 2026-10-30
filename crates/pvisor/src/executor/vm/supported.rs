@@ -1140,36 +1140,33 @@ impl RunExecutor for VmExecutor {
             )
         };
         let workspace_target = workspace.as_ref().and(overlay_target.clone());
+        let env_unset = match spec.metadata.get("pvisor.vm.env_unset") {
+            Some(value) => match serde_json::from_value::<Vec<String>>(value.clone()) {
+                Ok(names)
+                    if names
+                        .iter()
+                        .all(|name| !name.is_empty() && !name.contains(['=', '\0'])) =>
+                {
+                    names
+                }
+                Ok(_) => return failed_to_start("invalid VM env_unset name".into()),
+                Err(error) => return failed_to_start(format!("invalid VM env_unset: {error}")),
+            },
+            None => Vec::new(),
+        };
+        let stage_stdio = match spec.metadata.get("pvisor.vm.stage_stdio") {
+            Some(value) => match serde_json::from_value::<StageStdio>(value.clone()) {
+                Ok(options) => Some(options),
+                Err(error) => return failed_to_start(format!("invalid VM stage_stdio: {error}")),
+            },
+            None => None,
+        };
         let mut env = if invocation.inherit_env {
             std::env::vars().collect::<BTreeMap<_, _>>()
         } else {
             BTreeMap::new()
         };
-        crate::image::cache::scrub_guest_environment(&mut env);
-        for key in [
-            "DYLD_LIBRARY_PATH",
-            "DYLD_FALLBACK_LIBRARY_PATH",
-            "LD_LIBRARY_PATH",
-        ] {
-            env.remove(key);
-        }
-        if !invocation.env.contains_key("PATH")
-            && (root != Path::new("/") || !env.contains_key("PATH"))
-        {
-            env.insert(
-                "PATH".into(),
-                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
-            );
-        }
-        if !invocation.env.contains_key("HOME")
-            && (root != Path::new("/") || !env.contains_key("HOME"))
-        {
-            env.insert("HOME".into(), "/root".into());
-        }
-        if !invocation.env.contains_key("TMPDIR") {
-            env.insert("TMPDIR".into(), "/tmp".into());
-        }
-        env.extend(invocation.env.clone());
+        prepare_guest_environment(&mut env, root.as_path(), &invocation.env, &env_unset);
         let mut authority_paths = match host_authority_paths(&spec.metadata, &env) {
             Ok(paths) => paths,
             Err(error) => {
@@ -1341,6 +1338,13 @@ impl RunExecutor for VmExecutor {
                 ..Default::default()
             });
         }
+        if let Some(options) = stage_stdio {
+            guest.process = Some(options.process_config());
+        } else if env_unset.iter().any(|name| name == "HOME") {
+            // An explicit process contract preserves an absent HOME even when
+            // callers request environment removal without stage attachment.
+            guest.process.get_or_insert_with(Default::default);
+        }
         if let Some(network) = guest.network.as_mut()
             && let Some(value) = spec.metadata.get("pvisor.network.guest_ipv4")
         {
@@ -1381,7 +1385,7 @@ impl RunExecutor for VmExecutor {
             all(target_os = "macos", target_arch = "aarch64")
         )))]
         let scratch = Some(scratch);
-        if !invocation.env.contains_key("TMPDIR")
+        if scratch_environment_allowed(&invocation.env, &env_unset)
             && let Some(scratch) = scratch
             && guest.workspace.as_ref().is_none_or(|workspace| {
                 !scratch.path.starts_with(workspace) && !workspace.starts_with(&scratch.path)
@@ -1803,21 +1807,38 @@ impl RunExecutor for VmExecutor {
         drop(ram_runner);
         drop(network_runner);
         let process_group = child.id();
-        let _foreground =
-            match crate::executor::process::ForegroundProcessGroup::give_to(&child, invocation) {
-                Ok(foreground) => foreground,
-                Err(error) => {
-                    crate::session::lifecycle::terminate_process_tree(
-                        &mut child,
-                        process_group,
-                        spec.runtime.termination_grace_ms,
-                    )
-                    .await;
-                    return failed_to_start(format!(
-                        "failed to give terminal to VM runner: {error}"
-                    ));
-                }
-            };
+        // VMM setup configures a terminal inherited on stdout/stderr even with
+        // closed stdin. Give its process group the terminal independently of
+        // guest input ownership; otherwise tcsetattr can stop it with SIGTTOU.
+        // This copy is only a handoff request: command stdin stays unchanged.
+        let mut terminal_invocation = invocation.clone();
+        if spec.metadata.contains_key("pvisor.vm.stage_stdio")
+            && [
+                (invocation.stdout, libc::STDOUT_FILENO),
+                (invocation.stderr, libc::STDERR_FILENO),
+            ]
+            .into_iter()
+            .any(|(mode, fd)| {
+                mode == pvisor_core::StdioMode::Inherit && unsafe { libc::isatty(fd) } == 1
+            })
+        {
+            terminal_invocation.stdin = pvisor_core::StdioMode::Inherit;
+        }
+        let _foreground = match crate::executor::process::ForegroundProcessGroup::give_to(
+            &child,
+            &terminal_invocation,
+        ) {
+            Ok(foreground) => foreground,
+            Err(error) => {
+                crate::session::lifecycle::terminate_process_tree(
+                    &mut child,
+                    process_group,
+                    spec.runtime.termination_grace_ms,
+                )
+                .await;
+                return failed_to_start(format!("failed to give terminal to VM runner: {error}"));
+            }
+        };
         let stdout_task = child.stdout.take().map(|stdout| {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stdout, limit).await })
@@ -3053,6 +3074,67 @@ fn add_vm_overlay(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageStdio {
+    interactive: bool,
+    tty: Option<[u16; 2]>,
+}
+
+impl StageStdio {
+    fn process_config(self) -> pvisor_guest::ProcessConfig {
+        pvisor_guest::ProcessConfig {
+            attached: true,
+            new_session: true,
+            stdin: if self.interactive {
+                pvisor_guest::StdinMode::Pipe
+            } else {
+                pvisor_guest::StdinMode::Closed
+            },
+            tty: self.tty,
+            ..Default::default()
+        }
+    }
+}
+
+fn prepare_guest_environment(
+    env: &mut BTreeMap<String, String>,
+    root: &Path,
+    explicit: &BTreeMap<String, String>,
+    unset: &[String],
+) {
+    crate::image::cache::scrub_guest_environment(env);
+    for name in [
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "LD_LIBRARY_PATH",
+    ] {
+        env.remove(name);
+    }
+    for (name, value) in [
+        (
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ),
+        ("HOME", "/root"),
+        ("TMPDIR", "/tmp"),
+    ] {
+        if !explicit.contains_key(name)
+            && (name == "TMPDIR" || root != Path::new("/") || !env.contains_key(name))
+        {
+            env.insert(name.into(), value.into());
+        }
+    }
+    env.extend(explicit.clone());
+    for name in unset {
+        env.remove(name);
+    }
+}
+
+fn scratch_environment_allowed(explicit: &BTreeMap<String, String>, unset: &[String]) -> bool {
+    !explicit.contains_key("TMPDIR") && !unset.iter().any(|name| name == "TMPDIR")
+}
+
 fn guest_config(
     program: &str,
     args: &[String],
@@ -3159,6 +3241,74 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guest_environment_scrubs_before_explicit_overlay_and_unsets_last() {
+        use super::*;
+        let inherited = BTreeMap::from([
+            (crate::image::cache::BACKEND_ENV.into(), "s3".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "host-secret".into()),
+            ("LD_LIBRARY_PATH".into(), "/host/lib".into()),
+            ("DYLD_LIBRARY_PATH".into(), "/host/dyld".into()),
+            ("DYLD_FALLBACK_LIBRARY_PATH".into(), "/host/fallback".into()),
+            ("KEEP".into(), "inherited".into()),
+        ]);
+        let explicit = BTreeMap::from([
+            ("AWS_SECRET_ACCESS_KEY".into(), "explicit-secret".into()),
+            ("LD_LIBRARY_PATH".into(), "/guest/lib".into()),
+            ("HOME".into(), "/explicit".into()),
+        ]);
+        let mut env = inherited.clone();
+        prepare_guest_environment(&mut env, Path::new("/image"), &explicit, &[]);
+        assert_eq!(env["AWS_SECRET_ACCESS_KEY"], "explicit-secret");
+        assert_eq!(env["LD_LIBRARY_PATH"], "/guest/lib");
+        assert_eq!(env["HOME"], "/explicit");
+        assert_eq!(env["TMPDIR"], "/tmp");
+        assert!(env.contains_key("PATH"));
+        assert!(!env.contains_key(crate::image::cache::BACKEND_ENV));
+        assert!(!env.contains_key("DYLD_LIBRARY_PATH"));
+        assert!(!env.contains_key("DYLD_FALLBACK_LIBRARY_PATH"));
+        let unset = ["PATH", "HOME", "TMPDIR", "AWS_SECRET_ACCESS_KEY"].map(String::from);
+        let mut env = inherited;
+        prepare_guest_environment(&mut env, Path::new("/"), &explicit, &unset);
+        for key in &unset {
+            assert!(!env.contains_key(key));
+        }
+        assert_eq!(env["KEEP"], "inherited");
+        assert!(!scratch_environment_allowed(&BTreeMap::new(), &unset));
+        assert!(!scratch_environment_allowed(
+            &BTreeMap::from([("TMPDIR".into(), "/explicit".into())]),
+            &[]
+        ));
+        assert!(scratch_environment_allowed(&BTreeMap::new(), &[]));
+    }
+
+    #[test]
+    fn stage_stdio_metadata_preserves_interactive_and_real_terminal_request() {
+        use super::*;
+        for interactive in [false, true] {
+            for tty in [None, Some([31u16, 97])] {
+                let options: StageStdio = serde_json::from_value(serde_json::json!({
+                    "interactive": interactive, "tty": tty,
+                }))
+                .unwrap();
+                let process = options.process_config();
+                assert!(process.attached && process.new_session);
+                assert_eq!(process.tty, tty);
+                assert_eq!(
+                    matches!(process.stdin, pvisor_guest::StdinMode::Pipe),
+                    interactive
+                );
+            }
+        }
+        for value in [
+            serde_json::json!({"interactive": "yes"}),
+            serde_json::json!({"interactive": false, "tty": [65536, 80]}),
+            serde_json::json!({"interactive": false, "extra": true}),
+        ] {
+            assert!(serde_json::from_value::<StageStdio>(value).is_err());
+        }
+    }
+
     mod network_resolver {
         use super::super::{OverlayDeviceSpec, add_vm_overlay, prepare_network_resolver};
         use pvisor_overlay_core::LayerMutability::{self, Immutable, Mutable};

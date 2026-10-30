@@ -129,6 +129,7 @@ impl Fixture {
                     storage: self.root.clone(),
                 },
                 target,
+                rootfs: false,
                 selection: Default::default(),
                 all: true,
             },

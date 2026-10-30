@@ -76,7 +76,9 @@ pub struct GuestConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ProcessConfig {
     /// Guest UID/name and optional group. None preserves the bootstrap identity;
-    /// Some(empty) selects root. Missing HOME is resolved from guest passwd only.
+    /// Some(empty) selects root and defaults missing HOME from guest passwd.
+    /// None preserves the launch environment, including absent HOME. Omitting
+    /// ProcessConfig entirely retains the legacy root HOME default.
     pub user: Option<String>,
     /// Linux capability bounding set to retain. None leaves it unchanged.
     /// Values must be in 0..64; dropping capabilities precedes changing identity.
@@ -85,6 +87,13 @@ pub struct ProcessConfig {
     pub new_session: bool,
     /// Initial stdin ownership; omission retains the bootstrap descriptor.
     pub stdin: StdinMode,
+    /// Capture workload output for bootstrap attachment even without a control
+    /// adapter. Without a PTY stdout/stderr are separate pipes (not terminals).
+    /// With no control adapter, Pipe stdin is pumped from bootstrap stdin and
+    /// cancelled on workload completion. Defaults to false for ordinary Jobs.
+    /// With a PTY and Closed stdin, input is /dev/null so reads observe EOF;
+    /// stdout/stderr still share the terminal and its configured dimensions.
+    pub attached: bool,
     /// Optional PTY dimensions, rows then columns, both nonzero. A PTY combines
     /// output streams and requires a new session.
     pub tty: Option<[u16; 2]>,
@@ -365,6 +374,12 @@ mod tests {
         let mut config: GuestConfig =
             serde_json::from_str(r#"{"argv":["/bin/true"],"env":{},"cwd":"/"}"#).unwrap();
         assert!(config.process.is_none());
+        assert!(!ProcessConfig::default().attached);
+        assert!(
+            !serde_json::from_str::<ProcessConfig>("{}")
+                .unwrap()
+                .attached
+        );
         assert!(!config.control);
         assert!(config.mounts.is_empty());
         assert!(config.command().is_ok());
