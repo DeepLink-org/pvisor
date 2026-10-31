@@ -30,6 +30,11 @@ chmod/chown 不提供完整语义。共享树由调用方管理，不要允许�
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
 Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
 
+退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
+后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
+FUSE server 构造的 CRT errno 在回复前转换成 Linux wire 编号；例如 Windows
+`ENOSYS=40` 必须回复 Linux `ENOSYS=38`，不能被 guest 误认为 `ELOOP`。
+
 Windows 构建与不依赖 WHP 的原生验证（Git Bash）：
 
 ```bash
@@ -48,25 +53,25 @@ Windows 上的 C 交叉编译器。固件从本仓库 `fw/` 在 Linux 构建，�
 
 ### Windows CI 和真实 WHP 验收
 
-[windows-vm.yml](../../.github/workflows/windows-vm.yml) 在相关 PR/push 上使用
-`windows-2025` 做 MSVC 编译、原生 Win32/文件系统单测、公共契约和 rustdoc 检查。
-普通 GitHub 托管 runner 的嵌套虚拟化不是受支持保证，因此真正启动 VM 的任务
-使用独立的 `[self-hosted, Windows, X64, pvisor-whp]` runner。
+[windows-vm.yml](../../.github/workflows/windows-vm.yml) 由主 CI 在每次 PR/push
+调用，使用 `windows-2025` 做 MSVC 编译、Core/guest 单测、原生 Win32/文件系统
+单测、默认与无 `init-blob` 两种配置的 VM 公共契约和 rustdoc 检查。
+Windows 原生检查失败会使主 CI 门禁失败，不再依赖单独 workflow 的路径过滤。
+真实 WHP 验收同样随 PR/push 自动运行，也可手动启动整个 workflow，
+不需要仓库变量或自托管 runner。
 
-接入方法：
+Linux 托管 runner 构建本仓库固件 DLL 和静态 Linux probe，Windows 原生构建
+上传 `whp_smoke.exe`，独立的临时 `windows-2025` runner 下载同次运行的制品。
+测试记录镜像版本、hypervisor 状态和 HypervisorPlatform 功能状态，必要时
+尝试启用功能（不重启），然后实际启动 guest。托管镜像能否提供所需 WHP
+能力由运行结果确认；缺少能力、需要重启、固件错误、错误结果和超时均不会
+被当作通过或静默跳过。即使原生契约测试失败，也继续尝试已有制品的 WHP 验收。
+固件构建失败时下游作业跳过，但 Windows workflow 和主 CI 仍失败。
 
-1. 准备隔离的 Windows x86_64 runner，启用硬件虚拟化与 HypervisorPlatform，
-   重启，安装 PowerShell 7，并添加 `pvisor-whp` 标签。
-2. 在仓库 Actions variables 中设置 `PVISOR_WINDOWS_WHP=true`，使可信分支 push
-   自动执行真实验收；或手动运行 Windows VM workflow，勾选 `run_whp`。
-3. WHP 任务下载同次 workflow 在托管机器构建的 runner、仓库固件和静态 Linux
-   probe。它不在持久化自托管机器上执行 PR/fork 代码。runner 账户需能查询
-   `Get-WindowsOptionalFeature -Online`；推荐专用测试机器上的管理员服务账户。
-
-未配置 runner 时，CI 只覆盖构建和无 hypervisor 测试，WHP job 明确为 skipped；
-不能将此状态作为虚机功能验收通过。启用 WHP job 后，缺少 WHP/固件、启动错误、
-错误结果和超时都会失败，不会自动跳过。建议在接入 runner 后将真实 WHP 检查
-纳入受保护分支的发布要求。
+这里的门禁不是完整产品的 Windows 支持声明。上层 `pvisor` 仍依赖 Unix/FUSE
+运行时，不能以 VM crate 的通过替代 executor、CLI、OverlayFS、网络或
+stage/review/apply 的验收。Windows 构建仅选择 `--lib --tests` 和 `whp_smoke`；
+其他平台专用的 probe examples 不属于 Windows 构建集合。
 
 `whp_smoke` 为每个场景启动独立 runner，每次限时 60 秒：回调拒绝后的资源回收、
 单/双 vCPU 在线状态、100 ms guest 定时器、文件读取与写回、只读 share、暂停/恢复、

@@ -35,7 +35,45 @@ pub mod linux_errno {
     pub const LINUX_ERANGE: i32 = 34;
 
     pub fn linux_error(error: std::io::Error) -> std::io::Error {
-        std::io::Error::from_raw_os_error(error.raw_os_error().unwrap_or(5))
+        // These callers construct CRT errno values, not Win32 GetLastError codes.
+        // In particular Windows ENOSYS is 40, which means ELOOP to Linux.
+        let errno = match error.raw_os_error() {
+            Some(libc::ENOMEM) => 12,
+            Some(libc::EBADF) => 9,
+            Some(libc::EINVAL) => 22,
+            Some(libc::ENOSYS) => 38,
+            Some(libc::EPROTO) => 71,
+            Some(libc::EOVERFLOW) => 75,
+            _ => 5,
+        };
+        std::io::Error::from_raw_os_error(errno)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn server_crt_errors_use_linux_wire_numbers() {
+            for (host, guest) in [
+                (libc::ENOMEM, 12),
+                (libc::EBADF, 9),
+                (libc::EINVAL, 22),
+                (libc::ENOSYS, 38),
+                (libc::EPROTO, 71),
+                (libc::EOVERFLOW, 75),
+                (libc::EIO, 5),
+            ] {
+                assert_eq!(
+                    linux_error(std::io::Error::from_raw_os_error(host)).raw_os_error(),
+                    Some(guest)
+                );
+            }
+            assert_eq!(
+                linux_error(std::io::Error::other("no errno")).raw_os_error(),
+                Some(5)
+            );
+        }
     }
 }
 // The CPU capacity module is compiled under every feature: TEE builds never

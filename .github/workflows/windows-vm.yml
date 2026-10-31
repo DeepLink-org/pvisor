@@ -1,23 +1,14 @@
 name: Windows VM
 
 on:
-  pull_request:
-    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
-  push:
-    branches: [main, develop, next]
-    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
+  workflow_call:
   workflow_dispatch:
-    inputs:
-      run_whp:
-        description: Run real VM tests on the pvisor-whp self-hosted runner
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-vm-${{ github.ref }}
+  group: windows-vm-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -46,20 +37,22 @@ jobs:
         run: |
           mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
           mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
-      - name: Native unit tests and public contracts (no WHP required)
-        run: mise run test -- pvisor-vm -- --lib --tests --no-fail-fast
-      - name: API documentation
-        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
+      # Publish before unit tests so WHP can run even when a contract test fails.
       - uses: actions/upload-artifact@v4
         with:
           name: windows-vm-runner
           path: target/debug/examples/whp_smoke.exe
           if-no-files-found: error
           retention-days: 7
+      - name: Native unit tests and public contracts (no WHP required)
+        run: mise run test -- pvisor-core pvisor-guest pvisor-vm -- --lib --tests --no-fail-fast
+      - name: VM contracts without the embedded guest supervisor
+        run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --no-fail-fast
+      - name: API documentation
+        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
 
   firmware:
     name: Build repository firmware for WHP
-    if: github.event_name != 'pull_request' && (vars.PVISOR_WINDOWS_WHP == 'true' || inputs.run_whp == true)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -92,12 +85,11 @@ jobs:
 
   whp:
     name: WHP boot, SMP, filesystem, lifecycle and exit
-    # Never execute fork/PR code on a persistent self-hosted Windows machine.
-    # Set the repository variable only after registering the runner; workflow_dispatch
-    # can also request this job explicitly. Missing WHP is a hard test failure.
-    if: github.event_name != 'pull_request' && (vars.PVISOR_WINDOWS_WHP == 'true' || inputs.run_whp == true)
+    # Disposable hosted runner: PR code never executes on a persistent machine.
+    # Keep this independent of contract-test failures; missing artifacts fail too.
+    if: ${{ !cancelled() && needs.firmware.result == 'success' }}
     needs: [native, firmware]
-    runs-on: [self-hosted, Windows, X64, pvisor-whp]
+    runs-on: windows-2025
     timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
@@ -108,11 +100,22 @@ jobs:
         with:
           name: windows-vm-firmware
           path: whp-run
-      - name: Require enabled Windows Hypervisor Platform
+      - name: Record runner and enable Windows Hypervisor Platform
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Tee-Object whp-environment.log
+          Get-CimInstance Win32_ComputerSystem |
+            Format-List Manufacturer, Model, HypervisorPresent |
+            Out-String | Tee-Object -Append whp-environment.log
           $feature = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
-          if ($feature.State -ne 'Enabled') { throw 'Enable HypervisorPlatform and reboot this runner.' }
+          $feature | Format-List | Out-String | Tee-Object -Append whp-environment.log
+          if ($feature.State -ne 'Enabled') {
+            Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart |
+              Format-List | Out-String | Tee-Object -Append whp-environment.log
+          }
+          # Do not skip based on feature/CPU heuristics. The real VM run below
+          # must establish whether WHP works on this image without a reboot.
       - name: Run actual Linux guests with bounded timeouts
         shell: pwsh
         run: |
@@ -122,6 +125,8 @@ jobs:
         if: always()
         with:
           name: windows-vm-whp-log
-          path: whp-smoke.log
+          path: |
+            whp-smoke.log
+            whp-environment.log
           if-no-files-found: warn
           retention-days: 7
