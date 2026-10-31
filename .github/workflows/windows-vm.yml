@@ -47,7 +47,7 @@ jobs:
           mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
           mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
       - name: Native unit tests and public contracts (no WHP required)
-        run: mise run test -- pvisor-vm -- --lib --tests
+        run: mise run test -- pvisor-vm -- --lib --tests --no-fail-fast
       - name: API documentation
         run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
       - uses: actions/upload-artifact@v4
