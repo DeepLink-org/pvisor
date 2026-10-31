@@ -77,6 +77,16 @@ This read-only diagnostic exits successfully; it does not authorize apply/drop.
 `status <selector> --json` reconciles available receipts under the existing locks;
 a missing receipt keeps the outcome unknown. Corrupt evidence remains an error.
 
+`review --diff` and apply preview read regular files through component-wise
+no-follow descriptors, including ancestors of the recorded roots. Symlinks,
+special/unreadable files and files exceeding the per-file budget are skipped
+explicitly. Binary detection checks the entire bounded input, including UTF-8
+validity. The external diff renderer receives private copies of those checked
+bytes, never the original paths. Review reads the currently available lower
+files; it does not reconstruct a historical baseline or certify that apply will
+succeed. Concurrent content writes can still change those lower files; use apply
+preview for conflict checks. JSON retains the existing changeset contract.
+
 The seven live VM flags are command-local, under **Live VM** in command help:
 
 | Command | Accepted live VM flags |

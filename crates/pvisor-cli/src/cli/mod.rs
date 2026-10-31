@@ -3,6 +3,7 @@ mod apply;
 mod cache;
 mod checkpoint;
 mod daemon;
+mod diff;
 mod docker;
 mod features;
 mod handoff;
