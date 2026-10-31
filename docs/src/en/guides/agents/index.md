@@ -4,13 +4,48 @@ description: Run Claude Code, Codex CLI, or any script as a pVisor Job with work
 
 # Connect your agent
 
-Run existing Agent CLIs, scripts, and automation through one entry point, without changing the agent. Install the command in the selected executor and configure the provider in the agent itself first. An agent installed on the host does not automatically appear in an image. Replace `<agent-command>` below with the actual command:
+After the [offline staging demo](../../start/first-run.md#agent-style), connect an agent installed on your machine or in your image. The [Claude Code repair task](claude-code.md#repair-task) covers project setup through accepting the results.
 
-```bash
-pvisor spawn --safe -- <agent-command>
-pvisor status --review last
-pvisor apply last --path src
-```
+<div class="pv-guide-steps" markdown="1">
+
+1. ### Check the agent and authentication {#prepare-agent}
+
+    Check the command in the terminal where you will launch the Job, for example Claude Code:
+
+    ```bash title="Shell"
+    command -v claude
+    ```
+
+    Expect an executable path. Host execution needs the command installed locally. VM or OCI execution needs it installed in the image; the host installation does not automatically carry over.
+
+    Choose model authentication with the [Claude Code](claude-code.md) or [Codex CLI](codex.md) guide. For API keys, set the variable in the current terminal using your existing credential manager and pass it explicitly. Keep real keys out of project files and example commands. HOME isolation may hide host login state; check that the agent can authenticate inside stagebox mode.
+
+1. ### Launch from the project directory {#launch-agent}
+
+    Run at the root of the project to modify, for example with `ANTHROPIC_API_KEY` already set:
+
+    ```bash title="Shell"
+    pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
+    ```
+
+    Specify the goal, allowed file scope, and required tests. Wait for the agent to finish and exit back to the launching terminal. For model connectivity or dependency-download failures, check destinations and credentials against the network table below. Retain errors and Job records before changing configuration and retrying.
+
+1. ### Review and accept results {#accept-results}
+
+    ```bash title="Shell"
+    pvisor status last
+    pvisor review last --diff
+    ```
+
+    Inspect task status, candidate files, and test output before accepting actual paths. Run key tests again in the original project. See [Agent style stagebox handoff](../index.md#handoff) for commands and remaining-change cleanup. Failed or cancelled tasks may still have candidate files; inspect status before deciding rather than deleting the stage directly.
+
+</div>
+
+## Approval settings and verification scope {#approval-scope}
+
+Retain the agent's own approval settings and decide from actual tool prompts. pVisor does not automatically disable agent or IDE approvals; authentication, deployment, pushes, and paid operations retain their own controls. See [Claude Code verification scope](claude-code.md#verification) for recorded client-version evidence, cloud-tutorial acceptance gaps, and prompts to record.
+
+## Files, credentials, and networking {#controls}
 
 `--safe` keeps workspace changes staged for review before apply and denies access to `.ssh`, `.gnupg` and private-key files within the view. HOME uses a separate private stage; writes are discarded after execution and do not enter the workspace Run Bundle, so do not depend on them to persist login state. See [credentials and environment](../policies/credentials.md) for platform-specific HOME and credential handling.
 
@@ -32,7 +67,7 @@ Unknown commands deny outbound access. `--overlaynet-allow HOST:PORT` grants it 
 
 Take aider as the example: install it in the selected executor, pick the provider in the agent's own configuration, then explicitly allow its API destination and pass the credential variable (variable names come from the agent's own documentation, such as `OPENAI_API_KEY` or `GEMINI_API_KEY`):
 
-```bash
+```bash title="Shell"
 pvisor spawn --safe --overlaynet-allow api.openai.com:443 \
   --pass-env OPENAI_API_KEY -- aider
 pvisor status --review last

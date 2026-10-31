@@ -43,3 +43,36 @@ daemon interoperability cases are disabled with reasons. See
 and coverage limits. The external-runtime suites are opt-in locally and required
 in the Linux CLI CI shard; normal Python regressions verify source integrity and
 adapter behavior without a daemon.
+
+## Network CLI chaos
+
+`python3 tests/network_cli_chaos.py --binary target/debug/pvisor --seconds 10800`
+exercises the real `network create/ls/inspect/rm` entrypoints against a new private
+store without KVM or FUSE. It checks IPAM, name/ID selection, explicit rejection
+without state changes, concurrent duplicate operations and SIGKILL recovery.
+`--seed` replays scenario choices; process scheduling and crash timing still vary.
+`--output` retains command JSONL, status and failure evidence (defaults to `/tmp`).
+This covers catalog management only, not attached containers or packet delivery.
+Command deadlines remain 15 seconds. Timeouts fail the campaign and retain
+`timeout-PID.json` with available Linux process/thread wait and host-pressure
+diagnostics, plus captured stdout/stderr. Permission-denied diagnostics are
+recorded without hiding the original failure. Campaign metadata pins the initial
+binary SHA256; each command also records its elapsed wall time.
+
+For low-load runs, add `--interval 15 --workers 2`: scenarios have a 15-second
+idle gap and conflict tests use two concurrent CLI processes. Input, timeout,
+state-consistency and crash-recovery assertions are unchanged. A stopped run is
+not a pass; SIGTERM records its interruption in the retained failure evidence.
+
+The default `--workload generated` maintains an independent expected catalog
+across a newly generated sequence of commands, rather than repeating complete
+create/delete cases. It generates different names (including 1/127/128-byte
+boundaries), subnets, gateways, automatic allocations, names/full IDs/short or
+ambiguous ID prefixes, repeated batch selectors, partial batch failures,
+force/removal aliases and list formats. Each action checks CLI output, exit
+status and the resulting public catalog against the model. At most 32 user
+networks remain live; create/remove/query order changes with the evolving state.
+`workloads.jsonl` records each generated operation and its expected starting
+state; `commands.jsonl` records the actual commands and results. Existing fixed
+fault regressions remain available with `--workload regression` and are also
+mixed into generated sequences without discarding the surrounding model.

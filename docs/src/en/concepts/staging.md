@@ -12,7 +12,7 @@ Staging isolates candidate changes; it does not replace access control. See [Fil
 
 ## From staging to accepting changes {#candidate-changes}
 
-File changes follow **Stage → Review → Apply / Drop**. Stage is a mechanism enabled with `--safe` or `--stage`, not a separate `stage` subcommand.
+File changes follow **Stage → Review → Apply / Drop**. Workspace staging is enabled with `--safe` or `--stage`. The separate Linux-preview `pvisor stage` command retains a host-root VM stage with its own apply scope; see the [CLI contract](../reference/cli.md#apply-scope).
 
 | Operation | Purpose |
 | --- | --- |

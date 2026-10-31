@@ -1,12 +1,50 @@
 # 任意脚本与自动化命令
 
-脚本和自动化命令也可以用 pVisor 运行，使用同样的执行边界、文件暂存、审查和记录。
+运行一个离线脚本，检查它生成的报告，再只接收报告、丢弃临时笔记。不需要模型账号或第三方依赖；先完成[Host 暂存准备](../../start/installation.md#local-prerequisites)。
 
-```bash
-pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
-pvisor status --review last
-pvisor apply last --path src
-```
+## 运行脚本 {#run-script}
+
+<div class="pv-guide-steps" markdown="1">
+
+1. ### 准备脚本 {#prepare-script}
+
+    在新目录中创建脚本。若目录已存在，换个名字再继续；后续步骤在同一终端和目录执行。
+
+    ```bash title="Shell"
+    mkdir pvisor-script-demo
+    cd pvisor-script-demo
+    cat > agent.sh <<'SCRIPT'
+    #!/bin/sh
+    set -eu
+    mkdir -p output
+    echo 'Report generated' > output/report.txt
+    echo 'Temporary notes' > scratch.txt
+    SCRIPT
+    chmod +x agent.sh
+    ```
+
+1. ### 运行并检查报告 {#inspect-script}
+
+    ```bash title="Shell"
+    pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
+    pvisor status --review last
+    pvisor inspect last -- cat output/report.txt
+    ```
+
+    最后一条命令应输出 `Report generated`。审查记录应列出 `output/report.txt` 和 `scratch.txt`；原目录此时尚无报告或笔记。命令失败也可能留下候选文件，先检查记录再决定。
+
+1. ### 接收报告并清理 {#accept-report}
+
+    ```bash title="Shell"
+    pvisor apply last --path output
+    pvisor drop last
+    cat output/report.txt
+    test ! -e scratch.txt && echo 'scratch.txt: absent'
+    ```
+
+    应输出报告内容和 `scratch.txt: absent`。报告已进入原目录，临时笔记已丢弃，原脚本保留。
+
+</div>
 
 ## 行为
 
@@ -33,4 +71,4 @@ pvisor apply last --path src
 
 ## 完整示例
 
-[第一次运行](../../start/first-run.md)用一个"假 Agent"脚本演示了修改、删除、敏感路径被拒和网络被拦截的完整过程；[`examples/pvisor/`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor) 下有文件隔离、改动集管理和网络隔离的可运行示例。
+[第一次运行](../../start/first-run.md)提供离线文件暂存与选择性接收的演示；[`examples/pvisor/`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor) 下有文件隔离、改动集管理和网络隔离的可运行示例。

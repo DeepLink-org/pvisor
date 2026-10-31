@@ -876,3 +876,37 @@ fn docker_network_cli_create_list_inspect_remove_and_reject_unsupported_modes() 
             .success()
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn network_closed_output_reports_io_error_without_panicking() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for args in [
+        vec!["network", "create", "closed-output"],
+        vec!["network", "ls"],
+        vec!["network", "ls", "-q"],
+        vec!["network", "inspect", "closed-output"],
+        vec!["network", "rm", "closed-output"],
+    ] {
+        // Close the consumer before spawn so failure does not depend on scheduling.
+        let (writer, reader) = UnixStream::pair().unwrap();
+        drop(reader);
+        let output = command(&home)
+            .args(&args)
+            .stdout(Stdio::from(OwnedFd::from(writer)))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Broken pipe"), "{args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+    }
+    // Output failure does not roll back an already committed catalog mutation.
+    let output = command(&home).args(["network", "ls"]).output().unwrap();
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("closed-output"));
+}

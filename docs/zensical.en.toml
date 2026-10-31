@@ -17,7 +17,7 @@ nav = [
   { "Home" = "index.md" },
   { "Quick start" = [
     { "Installation" = "start/installation.md" },
-    { "Run and review" = "start/first-run.md" },
+    { "Try either mode" = "start/first-run.md" },
     { "Run tools in a VM" = "start/infrastructure.md" },
   ] },
   { "User guide" = [

@@ -1,16 +1,27 @@
 ---
-description: pVisor 是什么、在 Agent 系统中的位置、支持的本地与基础设施两类工作流，以及当前可用的监督层级。
+description: pVisor 沙箱框架的两种模式、隔离机制与成果接收边界。
 ---
 
 # 简介 {#overview}
 
 <span id="policyvisor"></span>
 
-pVisor 为单机上的 Agent 提供受控执行、文件改动交付和可查记录。你可以用原生 Job 跑完任务再审查，用 Docker 风格命令运行独立 Linux VM，或用 OpenSandbox/E2B SDK 驱动本地 daemon。共享镜像与可选内存机制减少重复资源；实际收益按工作负载和平台测量。
+PolicyVisor（pVisor）是一个 sandbox（沙箱）框架，有两种模式。Docker style sandbox 在独立 VM 中运行熟悉的容器命令。Agent style stagebox 是 pVisor 独创的 Agent 模式，文件改动先暂存，由你审查后选择接收。
 
-**PolicyVisor（pVisor）是一个 Agent 原生沙箱框架，提供文件级的访问与修改监管、沙箱执行生命周期管理，以及镜像与内存资源优化，共同支持安全、可控、高密度的 Agent 执行。**
+## 两种模式 {#modes}
 
-**Agent-Native：** pVisor 将文件级监管、沙箱生命周期管理和资源复用贯穿 Agent 执行过程。以文件为管理粒度，限定访问与修改范围，隔离候选改动并支持审查；通过 Host 侧 I/O 管理协调沙箱暂停、内存卸载与恢复，在模型等待期间主动回收空闲沙箱的驻留内存；通过镜像按需加载、内存共享与压缩，减少分支探索和回退中的重复资源占用。这些机制共同支持安全、可控、高密度的 Agent 执行。
+| 模式 | 操作入口 | 隔离与结果管理 |
+| --- | --- | --- |
+| Docker style sandbox | `pvisor run`、`exec`、`stop`、`rm` 等容器命令 | 每个容器对应独立 Linux VM；管理容器生命周期；Linux 暂存挂载另有 review/apply/drop 契约。 |
+| Agent style stagebox（沙盘模式） | `pvisor spawn --safe` 启动原生 Job，再 review、apply/drop | 先保存候选文件，再选择性接收；隔离强度取决于 Host、OCI 或 VM 执行器及实际控制。 |
+
+Sandbox 是框架与执行隔离的总称；stagebox 专指 Agent style 模式；stage（暂存区）是保存未接收文件变化的存储。Stagebox 不对应一种新的 VM 或隔离级别，也不自动关闭 Agent 的审批。
+
+Docker style sandbox 当前提供实验性 Docker 兼容命令子集，不支持 Docker Engine API 或 Compose，详见[容器命令](../reference/cli.md#container-commands)。Agent style stagebox 从[离线首跑](../start/first-run.md)开始，之后按 [Agent 指南](../guides/agents/index.md)配置认证和网络。普通 Host Job 默认直写，需要显式启用暂存才能进行文件审查与接收。
+
+“沉浸式氛围编程，无需反复权限确认”描述沙箱框架中 Agent style stagebox 的一项特性。免审批体验的 Agent 版本与配置验证矩阵尚未发布；初次认证、外部写入控制和最终成果检查仍需明确安排。
+
+框架还管理 VM 生命周期、镜像和内存资源，可接入推理、评测与 RL 后训练流程。具体能力取决于接口、执行器和平台；容量收益以对应工作负载的测量为准。
 
 <span id="_3"></span>
 
@@ -28,7 +39,7 @@ pVisor 将面向 Agent 的管理能力接入沙箱执行体系，在 Host 侧监
 
 原生 Job 的执行器通过宿主 namespace/Seatbelt、OCI runtime 或 VM 安装控制，由运行时管理生命周期、暂存与记录。另有两个面向环境的入口：Docker 风格 CLI 管理逐容器 VM；daemon 为已测试的 OpenSandbox/E2B 协议子集提供本机 VM 生命周期、命令和文件接口。
 
-Job 的 stage/apply、checkpoint 与 Gateway 捕获有各自合同，不能由 sandbox ID 调用。选择入口和平台见[CLI](../reference/cli.md)与[平台矩阵](../reference/platforms.md)。跨节点放置、业务重试和工作流由外部编排器负责。
+原生 Job 操作和 daemon sandbox ID 使用独立契约。容器暂存挂载通过自己的来源与挂载选择器提供部分 review/apply/drop 操作。选择入口和平台见[CLI](../reference/cli.md)与[平台矩阵](../reference/platforms.md)。跨节点放置、业务重试和工作流由外部编排器负责。
 
 <span id="task-flow"></span>
 <span id="when-to-use"></span>

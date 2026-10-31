@@ -1,20 +1,39 @@
 # PolicyVisor Documentation
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
-`pvisor` for the CLI. The homepage positioning is **an agent-native sandbox framework**;
-in Chinese, **Agent 原生沙箱框架**. Introduce local isolation, access controls,
-task management and file review in one paragraph, and execution environments for
-large-scale agentic inference, evaluation and RL post-training in a second.
-Do not use execution density or supervision-cost goals as the homepage subtitle.
-Describe the two supporting paths: resource sharing and idle-memory reclamation
-for machine capacity; staged file changes, execution records and review for
-supervision efficiency. Quantified gains require workload-specific evidence.
-The product covers Agent CLIs, scripts, and automation commands. Distinguish
-three current interfaces: native Jobs with stage/review/apply, Docker-style
-per-container VMs, and local daemon OpenSandbox/E2B SDK profiles. The shared
-runtime does not make their controls, records, defaults or lifecycle APIs
-interchangeable. Describe Agent-specific integrations as such; keep supervision
-levels independent of concurrency and deployment scale.
+`pvisor` for the CLI. Lead the homepage and README with **PolicyVisor** and
+**An agent-native sandbox framework** (Chinese: **Agent 原生沙箱框架**).
+The homepage title, metadata and hero describe the whole framework.
+**Hands-off vibe coding. / Coding without sandbox approvals.** and
+**沉浸式氛围编程 / 无需反复权限确认** describe a feature of Agent style stagebox;
+keep that message with the stagebox feature, alongside its verification scope.
+Follow it with the product hierarchy: **pVisor is a sandbox framework** with
+**Docker style sandbox** and **Agent style stagebox** modes. Introduce them in
+that order. Docker style sandbox uses familiar container commands with one VM
+per container. Agent style stagebox is pVisor's original mode for autonomous
+experimentation within configured boundaries, staged file review and selective
+result acceptance. Describe originality as the project's mode and product design;
+do not turn it into an unsupported claim that no other project has related features.
+
+Use 沙箱 / sandbox for the framework and execution isolation. Use 沙盘模式 /
+stagebox mode only for Agent style stagebox, not as a synonym for the whole
+product or every sandbox. Use 暂存区 / stage for stored candidate file changes.
+Stagebox names a workflow, not an executor or a stronger isolation guarantee:
+its native Jobs can select Host, OCI or VM execution. Container staged binds have a separate review/apply/drop contract, including
+mount selection; daemon identities do not inherit Job apply semantics. Keep package and CLI names.
+
+Within the Agent style stagebox tutorial, present a complete local experiment
+and selective result handoff. Move
+inference, evaluation, RL post-training and resource optimization to supporting
+sections. Describe interface-specific controls and lifecycle contracts separately.
+The stagebox feature message describes the intended experience; approval-free
+operation requires evidence for each agent and configuration. Publish verified agent versions, launch settings, remaining prompts
+and unsupported cases before claiming approval-free operation for a configuration.
+Never invent a bypass flag, agent certification, benchmark, or release capability.
+Current Linux preview interfaces include `pvisor stage` and container `:stage`
+binds. Keep their host-read visibility, recorded-project apply scope, explicit
+system-writeback restrictions and platform limits. `--stage PATH` selects storage;
+it is distinct from the `stage` command. The CLI reference owns these contracts.
 
 Use `pvisor-sandbox` for the Python distribution and `pvisor_sandbox` for the wheel
 filename prefix. Keep `pvisor` for the Python import package and CLI. Use current
@@ -233,7 +252,7 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 Keep exactly seven top-level tabs in this order: Home → Quick start → User guide
 → Basic concepts → Benchmarks → System design → Contributing
 (首页 → 快速开始 → 用户指南 → 基本概念 → 基准测试 → 系统设计 → 参与开发).
-Quick start owns installation, the local run-and-review example and the infrastructure tool-execution example. User guide owns
+Quick start owns shared CLI installation, complete Docker style sandbox and Agent style stagebox walkthroughs in `start/first-run.md`, and the infrastructure tool-execution example. User guide owns
 local workflows, Agent integration, executors, policies, task operations, platform
 integration, daemon setup, trajectories and command/configuration reference.
 Basic concepts owns the product overview, core concepts, the four core capabilities,
@@ -382,9 +401,15 @@ the seven-tab order defined above.
 ### Writing style
 
 Write for a developer who is deciding whether to adopt pVisor and then how to use
-it. The models are the uv, Ruff and Ray docs.
+it. Model README and Getting Started on [microsandbox](https://github.com/superradcompany/microsandbox): a clear purpose, an executable example, observable results, and useful next steps. Keep uv, Ruff and Ray as additional references.
 
 - Lead with the outcome or the command, then explain. Short paragraphs, one idea each.
+- Getting Started is a sequential tutorial: state the outcome and prerequisites,
+  say where each command runs, show expected output or file state, and give the
+  next action after failure. End with validation, result handoff and cleanup.
+  Keep platform setup in installation, first-use explanations in the tutorial,
+  repeat-task decisions in guides and full parameter contracts in reference.
+  Use explicit anchors and preserve existing incoming links when rewriting.
 - Lead with what pVisor does and why it is useful. Use concrete verbs and short
   claims, supported by examples or measurements. Put comparison details in the
   experiment and data sections. State applicable conditions once; preserve
@@ -410,6 +435,15 @@ it. The models are the uv, Ruff and Ray docs.
   pages own protocol fields, algorithms and platform constraints. Link to a topic
   where its detail becomes relevant instead of duplicating its sections.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
+
+Task guides use the shared guide layout in `overrides/main.html`; it keeps the
+native navigation, search and table of contents. For sequential instructions,
+wrap a Markdown ordered list in `<div class="pv-guide-steps" markdown="1">`.
+Each list item starts with an H3 carrying an explicit anchor, followed by its
+instructions, code and expected result. Use native fence titles such as
+`bash title="Shell"`, and place native tips or notes beside the step they qualify.
+Keep platform tabs for commands that actually differ between supported platforms.
+Reference sections remain ordinary headings outside the step list.
 
 ### Page count, placement and conclusions
 

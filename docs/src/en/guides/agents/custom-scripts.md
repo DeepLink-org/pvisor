@@ -1,12 +1,50 @@
 # Scripts and automation commands
 
-Scripts and automation commands can use pVisor's execution boundaries, staging, review and records too.
+Run an offline script, inspect its report, then accept the report and discard temporary notes. No model account or third-party dependencies are needed. Complete [Host staging setup](../../start/installation.md#local-prerequisites) first.
 
-```bash
-pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
-pvisor status --review last
-pvisor apply last --path src
-```
+## Run a script {#run-script}
+
+<div class="pv-guide-steps" markdown="1">
+
+1. ### Prepare the script {#prepare-script}
+
+    Create the script in a new directory. Choose another name if it already exists, and run the remaining steps in this terminal and directory.
+
+    ```bash title="Shell"
+    mkdir pvisor-script-demo
+    cd pvisor-script-demo
+    cat > agent.sh <<'SCRIPT'
+    #!/bin/sh
+    set -eu
+    mkdir -p output
+    echo 'Report generated' > output/report.txt
+    echo 'Temporary notes' > scratch.txt
+    SCRIPT
+    chmod +x agent.sh
+    ```
+
+1. ### Run and inspect the report {#inspect-script}
+
+    ```bash title="Shell"
+    pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
+    pvisor status --review last
+    pvisor inspect last -- cat output/report.txt
+    ```
+
+    The last command should print `Report generated`. Review should list `output/report.txt` and `scratch.txt`; neither report nor notes should exist in the original directory yet. Failed commands can also leave candidates, so inspect records before deciding.
+
+1. ### Accept the report and clean up {#accept-report}
+
+    ```bash title="Shell"
+    pvisor apply last --path output
+    pvisor drop last
+    cat output/report.txt
+    test ! -e scratch.txt && echo 'scratch.txt: absent'
+    ```
+
+    Expect the report contents and `scratch.txt: absent`. The report is now in the original directory, the notes are discarded, and the original script remains.
+
+</div>
 
 ## Behavior
 
@@ -33,4 +71,4 @@ When used as command names, `bash`, `sh`, `zsh`, and `fish` reuse the Codex pres
 
 ## Complete example
 
-[Your first run](../../start/first-run.md) uses a "fake agent" script to demonstrate modifications, deletion, a denied sensitive read, and blocked networking. The runnable examples under [`examples/pvisor/`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor) cover file isolation, changeset management, and network isolation.
+[Your first run](../../start/first-run.md) demonstrates offline file staging and selective acceptance. The runnable examples under [`examples/pvisor/`](https://github.com/DeepLink-org/pvisor/tree/main/examples/pvisor) cover file isolation, changeset management, and network isolation.

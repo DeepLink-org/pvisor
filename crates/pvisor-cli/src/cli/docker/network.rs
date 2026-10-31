@@ -1,6 +1,7 @@
 //! Docker network command syntax and rendering.
 use super::*;
 use clap::{Args, Subcommand};
+use std::io::Write;
 
 #[derive(Debug, Args)]
 pub(in crate::cli) struct NetworkArgs {
@@ -46,6 +47,7 @@ enum NetworkCommand {
 
 pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
     let store = Store::discover()?;
+    let mut output = std::io::stdout().lock();
     match args.command {
         NetworkCommand::Create {
             driver: _,
@@ -53,7 +55,8 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
             gateway,
             name,
         } => {
-            println!(
+            writeln!(
+                output,
                 "{}",
                 store
                     .create_network(docker::NetworkCreate {
@@ -62,11 +65,11 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
                         gateway
                     })?
                     .id
-            );
+            )?;
         }
         NetworkCommand::Ls { quiet, no_trunc } => {
             if !quiet {
-                println!("NETWORK ID\tNAME\tDRIVER\tSCOPE");
+                writeln!(output, "NETWORK ID\tNAME\tDRIVER\tSCOPE")?;
             }
             for network in store.networks()? {
                 let id = if no_trunc {
@@ -75,9 +78,10 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
                     &network.id[..12]
                 };
                 if quiet {
-                    println!("{id}");
+                    writeln!(output, "{id}")?;
                 } else {
-                    println!(
+                    writeln!(
+                        output,
                         "{id}\t{}\t{}\tlocal",
                         network.name,
                         if network.subnet.is_some() {
@@ -85,7 +89,7 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
                         } else {
                             "null"
                         }
-                    );
+                    )?;
                 }
             }
         }
@@ -130,12 +134,12 @@ pub(super) fn run(args: NetworkArgs) -> anyhow::Result<i32> {
                     "EnableIPv4":network.subnet.is_some(),"EnableIPv6":false,"Internal":false,
                     "IPAM":{"Driver":"default","Config":ipam},"Containers":containers,"Options":{},"Labels":{}}));
             }
-            println!("{}", serde_json::to_string_pretty(&inspected)?);
+            writeln!(output, "{}", serde_json::to_string_pretty(&inspected)?)?;
         }
         NetworkCommand::Rm { force, networks } => {
             return batch(&networks, |selector| {
                 store.remove_network(selector, force)?;
-                println!("{selector}");
+                writeln!(output, "{selector}")?;
                 Ok(())
             });
         }
