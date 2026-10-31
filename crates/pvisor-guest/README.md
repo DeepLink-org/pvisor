@@ -8,10 +8,14 @@ ships no `/etc/hosts`, the supervisor writes the conventional loopback
 entries (`127.0.0.1 localhost` and the IPv6 forms); without them `localhost`
 falls through to the synthetic DNS resolver, which answers every name from
 its egress range and turns loopback binds into `EADDRNOTAVAIL`. When the
-launch environment omits `HOME`, the supervisor defaults it from the guest
+launch environment omits `HOME`, the supervisor normally defaults it from the guest
 `/etc/passwd` entry of the effective uid — an unset OCI user means root,
 matching Docker's defaulting — for the workload and for sidecars (and the
 command shells they spawn), falling back to `/` when no entry matches.
+An explicit process contract with `process.user = None` instead preserves an
+absent `HOME`: the host has already selected its defaults and applied environment
+removals. Explicit identity selection and launches that omit the process contract
+retain the passwd default; container launches explicitly select their identity.
 
 Before reading launch configuration or starting any child, PID 1 disables normal
 dump access and claims a host-generated 128-bit exit token on the root virtio-fs
@@ -61,7 +65,7 @@ The path must be absolute, have an existing parent, and identify a fresh directo
 
 Capacity is charged inside guest RAM; it does not allocate a second VM memory budget. A full filesystem reports normal write errors such as ENOSPC. tmpfs is ephemeral across cold launches. Its pages and kernel state are part of a whole-VM RAM snapshot; callers must preserve the existing RAM snapshot contract when restoring it. It is outside the host workspace review/apply stage.
 
-The pVisor VM executor selects a unique directory and sets default TMPDIR to it. Capacity is one quarter of effective guest RAM, capped at 64 MiB. An explicit invocation TMPDIR disables this default, as does overlap with the workspace. The original image `/tmp` remains available. Other GuestConfig consumers that omit the optional field retain their existing behavior; JSON serialization omits it when absent.
+The pVisor VM executor selects a unique directory and sets default TMPDIR to it. Capacity is one quarter of effective guest RAM, capped at 64 MiB. An explicit invocation TMPDIR or a `pvisor.vm.env_unset` TMPDIR tombstone disables this default, as does overlap with the workspace. The original image `/tmp` remains available. Other GuestConfig consumers that omit the optional field retain their existing behavior; JSON serialization omits it when absent.
 
 The CLI snapshot launcher and container shim omit this option. Launch-message unit tests do not establish RAM snapshot/fork behavior with the executor-selected tmpfs.
 
@@ -99,6 +103,27 @@ generic launch options, including its capability bounding set.
 `GuestConfig.process` optionally supplies guest identity, capability bounds,
 session creation, stdin ownership, PTY dimensions and working-directory creation.
 Omission retains bootstrap identity/session and inherited console descriptors.
+`process.attached` defaults to false. When true, stdout/stderr are separate pipes
+unless `tty` requests a real PTY, in which case output is combined on stdout with
+the requested initial dimensions. `stdin = pipe` is interactive; `closed` gives
+EOF via `/dev/null`, including with a PTY (only output remains terminal-backed).
+Without a control adapter the supervisor pumps bootstrap stdin into interactive
+input, routes pipe output by descriptor, and cancels/joins the input worker after
+reaping, including on supervision failure. The writer is nonblocking so neither
+idle host input nor a full child input buffer retains a completed workload. Pump
+errors fail completion instead of silently publishing success. Control-enabled
+launches keep their existing attachment ownership.
+
+The VM executor privately deserializes `pvisor.vm.stage_stdio` as
+`{"interactive":bool,"tty":[rows,cols]|null}` and translates it to these options;
+zero dimensions fail launch validation. No metadata means ordinary Job behavior.
+The host must hand foreground ownership through both CLI → owner and owner → VM
+runner when stage output inherits a controlling terminal, even with closed stdin:
+the VMM configures that terminal via `tcsetattr`, which can otherwise stop its
+background process group with SIGTTOU. This handoff does not reopen guest stdin.
+It builds env in order: inherit, scrub host cache credentials, remove inherited
+loader paths, apply defaults, overlay explicit env, then remove the names in
+`pvisor.vm.env_unset`. Removed PATH/HOME/TMPDIR are not recreated by stage launch.
 `GuestConfig.mounts` declares additional shares, optionally populating an empty
 share from its image destination. Shares carry VMM tags, never host source paths.
 

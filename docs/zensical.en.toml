@@ -17,8 +17,8 @@ nav = [
   { "Home" = "index.md" },
   { "Quick start" = [
     { "Installation" = "start/installation.md" },
-    { "Run your first Job" = "start/first-run.md" },
-    { "Execution infrastructure: tool execution integration example" = "start/infrastructure.md" },
+    { "Run and review" = "start/first-run.md" },
+    { "Run tools in a VM" = "start/infrastructure.md" },
   ] },
   { "User guide" = [
     { "Local workflow overview" = "guides/index.md" },

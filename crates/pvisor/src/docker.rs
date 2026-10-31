@@ -24,6 +24,8 @@ pub use crate::image::oci::PullProgress;
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
 mod images;
+mod staging;
+pub use staging::StagedMount;
 /// Persistent Docker-style network management and IPAM.
 pub mod network;
 pub use network::{Network, NetworkCreate};
@@ -143,6 +145,10 @@ pub struct Mount {
     pub target: PathBuf,
     /// Whether guest writes must fail at the mount boundary.
     pub read_only: bool,
+    /// Explicit copy-on-write bind stage. Defaults to false for existing records.
+    /// Linux only; incompatible with read-only, managed volumes and auto-remove.
+    #[serde(default)]
+    pub staged: bool,
     /// Named or anonymous managed volume; bind mounts use `None`.
     pub volume: Option<String>,
 }
@@ -713,6 +719,7 @@ impl Store {
         mut config: Create,
         progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<Instance> {
+        staging::validate_mounts(&mut config)?;
         if let Some(platform) = &config.platform {
             require_native_platform(platform)?;
         }
@@ -892,9 +899,11 @@ impl Store {
                     target: target.clone(),
                     read_only: false,
                     volume: Some(format!("anonymous:{name}")),
+                    staged: false,
                 });
             }
         }
+        staging::validate_mounts(&mut config)?;
         config
             .mounts
             .sort_by_key(|mount| mount.target.components().count());
@@ -962,6 +971,7 @@ impl Store {
         {
             let _guard = self.lock()?;
             instance = self.resolve(selector)?;
+            staging::validate_mounts(&mut instance.config)?;
             require_native_platform(&instance.image.platform)?;
             self.validate_network_attachment(&instance)?;
             if self.active(&instance)? && instance.state == "running" {
@@ -972,6 +982,7 @@ impl Store {
                     !self.active(&instance)?,
                     "container is already running or starting"
                 );
+                let _stages = staging::lock_previous(self, &instance, false)?;
                 // Claim admission while the catalog excludes another start or
                 // removal. Observation briefly locks this same file; wait for
                 // those probes rather than making the detached owner race them.
@@ -983,28 +994,36 @@ impl Store {
                 instance.state = "starting".into();
                 instance.exit_code = None;
                 self.save(&instance)?;
-                let mut command = Command::new(std::env::current_exe()?);
-                command
-                    .arg("--pvisor-internal-docker-owner")
-                    .arg(&self.root)
-                    .arg(&instance.id)
-                    .arg(&instance.generation)
-                    .stdin(Stdio::from(owner_lease))
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::from(self.diagnostic(&instance)?));
-                unsafe {
-                    command.pre_exec(|| {
-                        if libc::setsid() < 0 {
-                            return Err(io::Error::last_os_error());
+                let spawn = (|| -> anyhow::Result<()> {
+                    let mut command = Command::new(std::env::current_exe()?);
+                    command
+                        .arg("--pvisor-internal-docker-owner")
+                        .arg(&self.root)
+                        .arg(&instance.id)
+                        .arg(&instance.generation)
+                        .stdin(Stdio::from(owner_lease))
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::from(self.diagnostic(&instance)?));
+                    unsafe {
+                        command.pre_exec(|| {
+                            if libc::setsid() < 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            Ok(())
+                        });
+                    }
+                    command.spawn()?;
+                    Ok(())
+                })();
+                if let Err(error) = spawn {
+                    let error = match staging::failed_admission(self, &instance) {
+                        Ok(()) => error,
+                        Err(marker) => {
+                            error.context(format!("failed to record admission failure: {marker:#}"))
                         }
-                        Ok(())
-                    });
-                }
-                if let Err(error) = command.spawn() {
-                    instance.state = "exited".into();
-                    instance.exit_code = Some(125);
-                    self.save(&instance)?;
-                    return Err(error.into());
+                    };
+                    finish_instance(self, &mut instance, 125, Some(format!("{error:#}")))?;
+                    return Err(error);
                 }
             }
         }
@@ -1128,6 +1147,7 @@ impl Store {
             !self.active(&instance)? && instance.state != "starting",
             "cannot remove a running container"
         );
+        let _stages = staging::lock_previous(self, &instance, true)?;
         self.remove_instance_files(&instance, volumes)
     }
     // Caller holds the catalog lock and has fenced the workload. A completing
@@ -1522,7 +1542,18 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             "stale owner admission"
         );
     }
+    run_owner_generation(store, &mut instance)?;
+    drop(lock);
+    // Detached owners have no frontend to reap them; the OS adopts them.
+    std::process::exit(0)
+}
+
+fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Result<()> {
+    let directory = store.directory(&instance.id);
+    let mut stages = Vec::new();
+    let mut spawned = false;
     let result = (|| -> anyhow::Result<i32> {
+        stages = staging::prepare(store, instance)?;
         let mut listeners = Vec::new();
         for port in &mut instance.config.ports {
             let listener = bind_published_port(port)?;
@@ -1531,7 +1562,7 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
         }
         {
             let _guard = store.lock()?;
-            store.save(&instance)?;
+            store.save(instance)?;
         }
         let stdout = OpenOptions::new()
             .append(true)
@@ -1553,7 +1584,8 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             .stderr(stderr)
             .spawn()?;
         let mut child = ChildGuard(child);
-        let endpoint = socket(&instance)?;
+        spawned = true;
+        let endpoint = socket(instance)?;
         // Close and join listeners before committing completion/releasing the
         // owner lease. Stop must not acknowledge while a listener is still live.
         let mut publications = PublishedListeners::start(listeners, &endpoint)?;
@@ -1571,11 +1603,11 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             }
             if instance.state == "starting"
                 && endpoint.exists()
-                && let Ok(Reply::Ready) = store.request(&instance, &Request::Ping {})
+                && let Ok(Reply::Ready) = store.request(instance, &Request::Ping {})
             {
                 instance.state = "running".into();
                 let _guard = store.lock()?;
-                store.save(&instance)?;
+                store.save(instance)?;
                 fs::write(
                     directory.join(format!("ready-{}", instance.generation)),
                     b"ready",
@@ -1595,14 +1627,55 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
+    settle_owner_generation(store, instance, &mut stages, result, spawned)
+}
+
+fn settle_owner_generation(
+    store: &Store,
+    instance: &mut Instance,
+    stages: &mut [staging::Stage],
+    result: anyhow::Result<i32>,
+    spawned: bool,
+) -> anyhow::Result<()> {
+    // ChildGuard has reaped the VMM before sealing any Job. A seal failure is
+    // an instance failure, not permission to invent an uncommitted Job receipt.
+    let result = if spawned {
+        result.and_then(|code| {
+            staging::complete(stages, code)?;
+            Ok(code)
+        })
+    } else {
+        result.map_err(|error| match staging::failed_admission(store, instance) {
+            Ok(()) => error,
+            Err(marker) => error.context(format!("failed to record admission failure: {marker:#}")),
+        })
+    };
     let (code, error) = match result {
         Ok(code) => (code, None),
         Err(error) => {
-            writeln!(store.diagnostic(&instance)?, "{error:#}")?;
+            if let Ok(mut diagnostic) = store.diagnostic(instance) {
+                let _ = writeln!(diagnostic, "{error:#}");
+            }
             (125, Some(format!("{error:#}")))
         }
     };
     let _guard = store.lock()?;
+    finish_instance(store, instance, code, error)?;
+    let _ = fs::remove_file(socket(instance)?);
+    if instance.config.auto_remove {
+        store.remove_instance_files(instance, true)?;
+    }
+    Ok(())
+}
+
+// Caller holds the catalog lock. This receipt describes the instance only;
+// stopped Job authorization still requires each stage's own sealed receipt.
+fn finish_instance(
+    store: &Store,
+    instance: &mut Instance,
+    code: i32,
+    error: Option<String>,
+) -> anyhow::Result<()> {
     crate::util::write_private_json(
         &store
             .root
@@ -1616,17 +1689,7 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
     )?;
     instance.state = "exited".into();
     instance.exit_code = Some(code);
-    store.save(&instance)?;
-    let _ = fs::remove_file(socket(&instance)?);
-    if instance.config.auto_remove {
-        // Do not release/re-probe our own lease: another client's liveness
-        // probe can briefly acquire it and make ordinary remove report busy.
-        store.remove_instance_files(&instance, true)?;
-    }
-    drop(_guard);
-    drop(lock);
-    // Detached owners have no frontend to reap them; the OS adopts them.
-    std::process::exit(0)
+    store.save(instance)
 }
 
 fn validate_owner_lease(file: &File, path: &Path) -> anyhow::Result<()> {
@@ -1842,13 +1905,24 @@ fn run_vm<Backing>(
             },
             tty: instance.config.tty,
             create_workdir: true,
+            attached: false,
         }),
         control: true,
         ..Default::default()
     };
     for (index, mount) in instance.config.mounts.iter().enumerate() {
         let tag = format!("pvisor-volume-{index}");
-        if mount.volume.is_some() && cfg!(target_os = "linux") {
+        if mount.staged {
+            staging::attach(
+                &mut vm,
+                store,
+                &instance.id,
+                &instance.generation,
+                index,
+                mount,
+                &tag,
+            )?;
+        } else if mount.volume.is_some() && cfg!(target_os = "linux") {
             vm.managed_filesystem(&tag, &mount.source, mount.read_only)?;
         } else if mount.read_only {
             vm.read_only_filesystem(&tag, &mount.source)?;
@@ -2187,6 +2261,701 @@ mod tests {
         .unwrap();
         (directory, store, image)
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_validation_is_explicit_and_precedes_pull() {
+        let (_tmp, store, _) = fixture();
+        let source = tempfile::tempdir().unwrap();
+        let mut config = request();
+        config.image = "must-not-pull.invalid/no-image".into();
+        config.mounts.push(Mount {
+            source: source.path().canonicalize().unwrap(),
+            target: "/workspace".into(),
+            read_only: false,
+            staged: true,
+            volume: None,
+        });
+        config.auto_remove = true;
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("--rm")
+        );
+        config.auto_remove = false;
+        config.mounts[0].volume = Some("named".into());
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("explicit bind")
+        );
+        config.mounts[0].volume = None;
+        config.mounts[0].read_only = true;
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("explicit bind")
+        );
+        config.mounts[0].read_only = false;
+        config.mounts[0].source = "/".into();
+        assert!(
+            store
+                .create(config)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot be '/'")
+        );
+        let old: Mount = serde_json::from_value(serde_json::json!({"source":source.path(),"target":"/workspace","read_only":false,"volume":null})).unwrap();
+        assert!(!old.staged);
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_overlap_blocks_rw_bypass_and_guest_ancestors() {
+        let (_tmp, store, _) = fixture();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fs::create_dir(a.path().join("child")).unwrap();
+        let mut config = request();
+        config.mounts = vec![
+            Mount {
+                source: a.path().canonicalize().unwrap(),
+                target: "/workspace".into(),
+                read_only: false,
+                staged: true,
+                volume: None,
+            },
+            Mount {
+                source: a.path().join("child"),
+                target: "/other".into(),
+                read_only: false,
+                staged: false,
+                volume: None,
+            },
+        ];
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("overlap")
+        );
+        config.mounts[1].source = b.path().canonicalize().unwrap();
+        config.mounts[1].target = "/workspace/child".into();
+        assert!(
+            store
+                .create(config.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("overlap")
+        );
+        config.mounts[1].target = "/other".into();
+        config.mounts[1].staged = true;
+        let instance = store.create(config).unwrap();
+        assert_eq!(store.staged_mounts(&instance.name).unwrap().len(), 2);
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        assert!(
+            store
+                .staged_mount_stage(&instance.id, Some(Path::new("/other")))
+                .is_err()
+        );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_hardlink_alias_and_disjoint_direct_writes_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a");
+        let b = root.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        fs::write(a.join("original"), b"host").unwrap();
+        fs::hard_link(a.join("original"), b.join("alias")).unwrap();
+        let mut config = request();
+        config.mounts = vec![
+            Mount {
+                source: a,
+                target: "/workspace".into(),
+                read_only: false,
+                staged: true,
+                volume: None,
+            },
+            Mount {
+                source: b,
+                target: "/other".into(),
+                read_only: false,
+                staged: false,
+                volume: None,
+            },
+        ];
+        for hardlink in [true, false] {
+            if !hardlink {
+                fs::remove_file(config.mounts[1].source.join("alias")).unwrap();
+            }
+            assert!(
+                staging::validate_mounts(&mut config)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("independence")
+            );
+        }
+        config.mounts[1].read_only = true;
+        staging::validate_mounts(&mut config).unwrap();
+        config.mounts[0].staged = false;
+        config.mounts[1].read_only = false;
+        staging::validate_mounts(&mut config).unwrap();
+    }
+
+    fn staged_fixture() -> (tempfile::TempDir, Store, Instance, tempfile::TempDir) {
+        let (tmp, store, _) = fixture();
+        let source = tempfile::tempdir().unwrap();
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: source.path().canonicalize().unwrap(),
+            target: "/workspace".into(),
+            read_only: false,
+            staged: true,
+            volume: None,
+        });
+        let mut instance = store.create(config).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+        (tmp, store, instance, source)
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_failed_prepare_and_selfexec_admission_can_retry_or_remove() {
+        for partial in [false, true] {
+            let (_tmp, store, mut instance, source) = staged_fixture();
+            let stage = store.staged_mounts(&instance.id).unwrap()[0]
+                .stage
+                .clone()
+                .unwrap();
+            if partial {
+                // Scope capture fails after the owner created the stage and lease.
+                fs::remove_dir(source.path()).unwrap();
+                run_owner_generation(&store, &mut instance).unwrap();
+                fs::create_dir(source.path()).unwrap();
+            } else {
+                // Same finalization used when the parent cannot self-exec.
+                staging::failed_admission(&store, &instance).unwrap();
+                finish_instance(&store, &mut instance, 125, Some("spawn failed".into())).unwrap();
+            }
+            assert_eq!(store.resolve(&instance.id).unwrap().state, "exited");
+            assert!(store.staged_mount_stage(&instance.id, None).is_err());
+            assert!(staging::lock_previous(&store, &instance, false).is_ok());
+            if partial {
+                fs::write(
+                    stage.join("apply-ledger.json"),
+                    b"unknown recovery evidence",
+                )
+                .unwrap();
+                assert!(store.remove(&instance.id, false).is_err());
+                fs::remove_file(stage.join("apply-ledger.json")).unwrap();
+                fs::create_dir(stage.join("upper")).unwrap();
+                fs::write(stage.join("upper/unknown"), b"retain").unwrap();
+                assert!(staging::lock_previous(&store, &instance, false).is_err());
+                assert!(store.remove(&instance.id, false).is_err());
+                fs::remove_file(stage.join("upper/unknown")).unwrap();
+            }
+            store.remove(&instance.id, false).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_pre_vm_failure_keeps_unsealed_job_unauthorized() {
+        let (_tmp, store, mut instance, _source) = staged_fixture();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        settle_owner_generation(
+            &store,
+            &mut instance,
+            &mut stages,
+            Err(anyhow::anyhow!("bind failed")),
+            false,
+        )
+        .unwrap();
+        drop(stages);
+        assert_eq!(instance.state, "exited");
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        assert!(staging::lock_previous(&store, &instance, false).is_ok());
+        store.remove(&instance.id, false).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_admission_marker_failure_still_finalizes_instance() {
+        let (_tmp, store, mut instance, _source) = staged_fixture();
+        fs::create_dir(store.directory(&instance.id).join("failed-admission.json")).unwrap();
+        settle_owner_generation(
+            &store,
+            &mut instance,
+            &mut [],
+            Err(anyhow::anyhow!("prepare failed")),
+            false,
+        )
+        .unwrap();
+        assert_eq!(store.resolve(&instance.id).unwrap().state, "exited");
+        assert_eq!(instance.exit_code, Some(125));
+        assert!(store.remove(&instance.id, false).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_seal_failure_finalizes_instance_but_retains_unknown_job() {
+        let (_tmp, store, mut instance, _source) = staged_fixture();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        let stage = store.staged_mounts(&instance.id).unwrap()[0]
+            .stage
+            .clone()
+            .unwrap();
+        // Force completion publication failure without a VMM or target writes.
+        fs::create_dir(stage.join("run-bundle.json")).unwrap();
+        settle_owner_generation(&store, &mut instance, &mut stages, Ok(0), true).unwrap();
+        drop(stages);
+        assert_eq!(store.resolve(&instance.id).unwrap().state, "exited");
+        assert_eq!(instance.exit_code, Some(125));
+        assert!(!stage.join("completion.json").exists());
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        assert!(staging::lock_previous(&store, &instance, false).is_err());
+        assert!(store.remove(&instance.id, false).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_deleted_or_replaced_source_allows_drop_and_remove_not_apply() {
+        use crate::job_service::{
+            ApplyCommandRequest, DropRequest, JobSelection, RuntimeJobService, ServiceContext,
+        };
+        for replaced in [false, true] {
+            for remove_directly in [false, true] {
+                let (_tmp, store, mut instance, source) = staged_fixture();
+                let mut stages = staging::prepare(&store, &instance).unwrap();
+                let stage = store.staged_mounts(&instance.id).unwrap()[0]
+                    .stage
+                    .clone()
+                    .unwrap();
+                fs::write(stage.join("upper/change"), b"staged").unwrap();
+                staging::complete(&mut stages, 0).unwrap();
+                drop(stages);
+                finish_instance(&store, &mut instance, 0, None).unwrap();
+                let moved = source.path().with_extension(uuid());
+                fs::rename(source.path(), &moved).unwrap();
+                if replaced {
+                    fs::create_dir(source.path()).unwrap();
+                    fs::write(source.path().join("sentinel"), b"untouched").unwrap();
+                }
+                let selected = store.staged_mount_stage(&instance.id, None).unwrap();
+                assert_eq!(selected, stage);
+                let job = || JobSelection {
+                    selector: Some(stage.clone()),
+                    storage: stage.clone(),
+                };
+                for dry_run in [false, true] {
+                    let response = RuntimeJobService::apply_command(
+                        &ServiceContext::default(),
+                        ApplyCommandRequest {
+                            job: job(),
+                            rootfs: false,
+                            selection: Default::default(),
+                            all: true,
+                            dry_run,
+                            expected_plan: None,
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(response.status, "blocked", "{:?}", response.blockers);
+                }
+                if !remove_directly {
+                    RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job: job() })
+                        .unwrap();
+                }
+                store.remove(&instance.id, false).unwrap();
+                if replaced {
+                    assert_eq!(
+                        fs::read(source.path().join("sentinel")).unwrap(),
+                        b"untouched"
+                    );
+                    assert!(!source.path().join("change").exists());
+                } else {
+                    assert!(!source.path().exists());
+                }
+                fs::remove_dir_all(moved).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_deleted_source_with_pending_ledger_blocks_drop_and_remove() {
+        use crate::job_service::{DropRequest, JobSelection, RuntimeJobService, ServiceContext};
+        let (_tmp, store, mut instance, source) = staged_fixture();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        let stage = store.staged_mounts(&instance.id).unwrap()[0]
+            .stage
+            .clone()
+            .unwrap();
+        {
+            let core = pvisor_overlay_core::OverlayCore::open_existing_for_layout(
+                pvisor_overlay_core::OverlayLayout::with_baseline(
+                    vec![source.path().into()],
+                    source.path().into(),
+                    None,
+                )
+                .unwrap(),
+                stage.join("upper"),
+                Some(stage.join("work")),
+                vec![],
+                Some(stage.join("preimages")),
+            )
+            .unwrap();
+            core.create_file(Path::new("change"), 0o644, libc::O_WRONLY)
+                .unwrap()
+                .write_all(b"staged")
+                .unwrap();
+        }
+        staging::complete(&mut stages, 0).unwrap();
+        drop(stages);
+        finish_instance(&store, &mut instance, 0, None).unwrap();
+        let record = crate::RunRecord::read(&stage).unwrap();
+        let mut overlay = record.overlay.clone().unwrap();
+        pvisor_overlay_core::apply::apply_overlay_selected(
+            &mut overlay,
+            &record.overlay_lowers,
+            &Default::default(),
+        )
+        .unwrap();
+        let ledger_path = stage.join("apply-ledger.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
+        ledger["records"][0]["state"] = serde_json::json!("target_applied");
+        fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(pvisor_overlay_core::apply::has_pending_applies(&overlay).unwrap());
+        fs::remove_dir_all(source.path()).unwrap();
+        let before = fs::read(&ledger_path).unwrap();
+        let error = RuntimeJobService::drop(
+            &ServiceContext::default(),
+            DropRequest {
+                job: JobSelection {
+                    selector: Some(stage.clone()),
+                    storage: stage.clone(),
+                },
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("pending apply"), "{error:#}");
+        assert!(
+            store
+                .remove(&instance.id, false)
+                .unwrap_err()
+                .to_string()
+                .contains("pending apply")
+        );
+        assert_eq!(before, fs::read(ledger_path).unwrap());
+        assert!(!source.path().exists());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_unknown_missing_job_and_active_failed_admission_are_retained() {
+        let (_tmp, store, mut instance, _source) = staged_fixture();
+        finish_instance(&store, &mut instance, 125, Some("unknown".into())).unwrap();
+        assert!(staging::lock_previous(&store, &instance, false).is_err());
+        assert!(store.remove(&instance.id, false).is_err());
+        staging::failed_admission(&store, &instance).unwrap();
+        let vm = acquire_lease(&store.directory(&instance.id).join("vm.lock")).unwrap();
+        assert!(staging::lock_previous(&store, &instance, false).is_err());
+        assert!(store.remove(&instance.id, false).is_err());
+        drop(vm);
+        store.remove(&instance.id, false).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_selector_and_apply_preview_preserve_lock_metadata() {
+        use crate::job_service::{
+            ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+        };
+        use crate::runtime::JobDirectoryLock;
+
+        let (_tmp, store, mut instance, _source) = staged_fixture();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        let stage = store.staged_mounts(&instance.id).unwrap()[0]
+            .stage
+            .clone()
+            .unwrap();
+        staging::complete(&mut stages, 0).unwrap();
+        drop(stages);
+        finish_instance(&store, &mut instance, 0, None).unwrap();
+        let snapshot = || {
+            ["job.lock", "lease.lock", "run.json"].map(|name| {
+                let path = stage.join(name);
+                let metadata = fs::metadata(&path).unwrap();
+                (
+                    fs::read(path).unwrap(),
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.mtime(),
+                    metadata.mtime_nsec(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
+            })
+        };
+        let before = snapshot();
+        std::thread::sleep(Duration::from_millis(10));
+        for mount in [None, Some(Path::new("/workspace"))] {
+            assert_eq!(
+                store.staged_mount_stage(&instance.id, mount).unwrap(),
+                stage
+            );
+            let response = RuntimeJobService::apply_command(
+                &ServiceContext::default(),
+                ApplyCommandRequest {
+                    job: JobSelection {
+                        selector: Some(stage.clone()),
+                        storage: stage.clone(),
+                    },
+                    rootfs: false,
+                    selection: Default::default(),
+                    all: true,
+                    dry_run: true,
+                    expected_plan: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(response.status, "ready", "{:?}", response.blockers);
+            assert_eq!(snapshot(), before);
+        }
+
+        let record = crate::RunRecord::read(&stage).unwrap();
+        let directory = JobDirectoryLock::observe_existing(&record).unwrap();
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        drop(directory);
+        let (_record, lease) = record.observe_current().unwrap();
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        drop(lease);
+        assert_eq!(snapshot(), before);
+
+        // Selector resolution must not repair either missing lock inode.
+        for name in ["job.lock", "lease.lock"] {
+            let path = stage.join(name);
+            let saved = stage.join(format!("{name}.saved"));
+            fs::rename(&path, &saved).unwrap();
+            assert!(store.staged_mount_stage(&instance.id, None).is_err());
+            assert!(!path.exists());
+            fs::rename(saved, path).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_owner_receipt_and_generation_locks_are_real() {
+        use crate::job_service::{DropRequest, JobSelection, RuntimeJobService, ServiceContext};
+        let (_tmp, store, _) = fixture();
+        let source = tempfile::tempdir().unwrap();
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: source.path().canonicalize().unwrap(),
+            target: "/workspace".into(),
+            read_only: false,
+            staged: true,
+            volume: None,
+        });
+        let mut instance = store.create(config).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        let stage = store.staged_mounts(&instance.id).unwrap()[0]
+            .stage
+            .clone()
+            .unwrap();
+        let record = crate::RunRecord::read(&stage).unwrap();
+        assert_eq!(record.workspace.as_deref(), Some(source.path()));
+        assert!(record.lock_current().is_err());
+        assert!(Store::check_bound_staged_record(&record).is_err());
+        staging::complete(&mut stages, 0).unwrap();
+        instance.state = "exited".into();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        assert!(store.staged_mount_stage(&instance.id, None).is_err());
+        drop(stages);
+        assert_eq!(
+            store.staged_mount_stage(&instance.name, None).unwrap(),
+            stage
+        );
+        let record = crate::RunRecord::read(&stage).unwrap();
+        let (record, lease) = record.lock_current().unwrap();
+        record.require_stopped().unwrap();
+        Store::check_bound_staged_record(&record).unwrap();
+        assert!(staging::lock_previous(&store, &instance, false).is_err());
+        assert!(store.remove(&instance.id, false).is_err());
+        drop(lease);
+        let bundle = crate::RunBundle::read(&stage).unwrap();
+        assert!(!bundle.safety.filesystem_non_bypassable);
+        assert!(staging::lock_previous(&store, &instance, false).is_ok());
+        let job = JobSelection {
+            selector: Some(stage.clone()),
+            storage: stage.clone(),
+        };
+        RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job }).unwrap();
+        assert!(staging::lock_previous(&store, &instance, false).is_ok());
+        let mut successor = instance.clone();
+        successor.generation = uuid();
+        store.save(&successor).unwrap();
+        assert!(
+            Store::check_bound_staged_record(&record)
+                .unwrap_err()
+                .to_string()
+                .contains("generation")
+        );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_changes_require_acceptance_and_apply_uses_recorded_source() {
+        use crate::job_service::{
+            ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+        };
+        let (_tmp, store, _) = fixture();
+        let source = tempfile::tempdir().unwrap();
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: source.path().canonicalize().unwrap(),
+            target: "/workspace".into(),
+            read_only: false,
+            staged: true,
+            volume: None,
+        });
+        let mut instance = store.create(config).unwrap();
+        instance.generation = uuid();
+        instance.state = "starting".into();
+        store.save(&instance).unwrap();
+        let mut stages = staging::prepare(&store, &instance).unwrap();
+        let stage = store.staged_mounts(&instance.id).unwrap()[0]
+            .stage
+            .clone()
+            .unwrap();
+        let record = crate::RunRecord::read(&stage).unwrap();
+        let overlay = record.overlay.as_ref().unwrap();
+        {
+            let core = pvisor_overlay_core::OverlayCore::open_existing_for_layout(
+                pvisor_overlay_core::OverlayLayout::with_baseline(
+                    vec![source.path().into()],
+                    source.path().into(),
+                    None,
+                )
+                .unwrap(),
+                overlay.upper.upper_dir.clone(),
+                Some(overlay.upper.work_dir.clone()),
+                vec![],
+                Some(stage.join("preimages")),
+            )
+            .unwrap();
+            core.create_file(Path::new("accepted"), 0o644, libc::O_WRONLY)
+                .unwrap()
+                .write_all(b"guest edit")
+                .unwrap();
+        }
+        assert!(!source.path().join("accepted").exists());
+        staging::complete(&mut stages, 0).unwrap();
+        drop(stages);
+        instance.state = "exited".into();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            staging::lock_previous(&store, &instance, false)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unaccepted")
+        );
+        let request = |rootfs| ApplyCommandRequest {
+            job: JobSelection {
+                selector: Some(stage.clone()),
+                storage: stage.clone(),
+            },
+            rootfs,
+            selection: Default::default(),
+            all: true,
+            dry_run: false,
+            expected_plan: None,
+        };
+        assert_eq!(
+            RuntimeJobService::apply_command(&ServiceContext::default(), request(true))
+                .unwrap()
+                .status,
+            "blocked"
+        );
+        assert!(!source.path().join("accepted").exists());
+        let response =
+            RuntimeJobService::apply_command(&ServiceContext::default(), request(false)).unwrap();
+        assert_eq!(response.status, "applied", "{:?}", response.blockers);
+        assert_eq!(
+            fs::read(source.path().join("accepted")).unwrap(),
+            b"guest edit"
+        );
+        assert!(staging::lock_previous(&store, &instance, false).is_ok());
+        assert!(
+            !store
+                .directory(&instance.id)
+                .join("upper/accepted")
+                .exists()
+        );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn docker_staged_missing_receipt_is_unknown_and_not_restartable() {
+        let (_tmp, store, _) = fixture();
+        let source = tempfile::tempdir().unwrap();
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: source.path().canonicalize().unwrap(),
+            target: "/workspace".into(),
+            read_only: false,
+            staged: true,
+            volume: None,
+        });
+        let mut instance = store.create(config).unwrap();
+        instance.generation = uuid();
+        instance.state = "exited".into();
+        store.save(&instance).unwrap();
+        let stages = staging::prepare(&store, &instance).unwrap();
+        drop(stages);
+        assert!(staging::lock_previous(&store, &instance, false).is_err());
+        assert!(store.start(&instance.id).is_err());
+        assert_eq!(
+            store.resolve(&instance.id).unwrap().generation,
+            instance.generation
+        );
+    }
     fn request() -> Create {
         Create {
             name: Some("test".into()),
@@ -2305,6 +3074,7 @@ mod tests {
             source: directory.path().canonicalize().unwrap(),
             target: "/host".into(),
             read_only: false,
+            staged: false,
             volume: None,
         });
         assert!(
@@ -2352,6 +3122,7 @@ mod tests {
             source: directory.path().canonicalize().unwrap(),
             target: "/host".into(),
             read_only: false,
+            staged: false,
             volume: None,
         });
         assert!(
@@ -2641,6 +3412,7 @@ mod tests {
             target: "/data".into(),
             read_only: false,
             volume: Some("data".into()),
+            staged: false,
         });
         let instance = store.create(config).unwrap();
         let vm = acquire_lease(&store.directory(&instance.id).join("vm.lock")).unwrap();
@@ -2753,12 +3525,14 @@ mod tests {
                 target: "/named".into(),
                 read_only: false,
                 volume: Some("named-keep".into()),
+                staged: false,
             },
             Mount {
                 source: anonymous.clone(),
                 target: "/anonymous".into(),
                 read_only: false,
                 volume: Some("anonymous:anonymous-drop".into()),
+                staged: false,
             },
         ];
         let instance = store.create(config).unwrap();
@@ -2784,6 +3558,7 @@ mod tests {
             target: "/data".into(),
             read_only: false,
             volume: Some("anonymous:anonymous-shared".into()),
+            staged: false,
         }];
         let first = store.create(config.clone()).unwrap();
         config.name = Some("other".into());
@@ -2830,6 +3605,7 @@ mod tests {
             source: store.root.clone(),
             target: "/host".into(),
             read_only: false,
+            staged: false,
             volume: None,
         });
         assert!(store.create(config).is_err());

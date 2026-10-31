@@ -12,28 +12,33 @@ description: Run a command, review its file changes, and keep only the files you
 <a id="6-use-your-own-command"></a>
 <a id="7-after-switching-to-a-real-task"></a>
 
-# Run your first Job {#local-workflow}
+# Run and review {#local-workflow}
 
-Let a command create two files, then keep only one. You do not need an Agent, model account, or VM image.
+Create two staged files, preview the changes, and keep only one. No Agent, model account, or VM image is needed.
 
-Before starting, [install pVisor and prepare your platform](installation.md#local-prerequisites): Linux needs FUSE and user namespaces; Apple Silicon macOS needs macFUSE 5.4.0+ with FSKit enabled. Run the commands below in the same terminal.
+**Before you start:** [install pVisor and prepare your platform](installation.md#local-prerequisites). Linux needs FUSE and user namespaces; Apple Silicon macOS needs macFUSE 5.4.0+ with FSKit enabled. Use the same terminal throughout.
 
 <a id="prepare-demo"></a>
 
-
 ## 1. Run a command {#run-and-stage}
 
-Create a new directory and run a command:
+Create a fresh demo directory:
 
 ```bash
-mkdir pvisor-demo && cd pvisor-demo
+mkdir pvisor-demo
+cd pvisor-demo
+```
+
+Run a command with file staging and outbound network access denied:
+
+```bash
 pvisor spawn --safe --overlaynet-deny-all -- sh -c '
   echo "Hello from pVisor" > hello.txt
   echo "Temporary notes" > scratch.txt
 '
 ```
 
-The command has finished, but both files are still staged. Check that the original directory is unchanged:
+Both files are staged. Check that the original directory is unchanged:
 
 ```bash
 test ! -e hello.txt && test ! -e scratch.txt && echo 'Workspace unchanged'
@@ -45,24 +50,32 @@ Workspace unchanged
 
 ## 2. Review the changes {#review-changes}
 
-Review the changes from this run:
-
 ```bash
 pvisor review last --diff
 ```
 
-You should see additions for `hello.txt` and `scratch.txt`, along with their text diffs. `last` selects the most recently registered Job for this workspace.
+You should see additions for `hello.txt` and `scratch.txt`, with their text diffs. `last` selects the most recently registered Job for this workspace.
 
-## 3. Keep the file you want {#apply-changes}
-
-Accept only `hello.txt` and discard the remaining staged changes:
+Preview accepting only `hello.txt`, without writing to the workspace:
 
 ```bash
-pvisor apply last --path hello.txt
-pvisor drop last
+pvisor apply last --path hello.txt --dry-run --diff
+```
+
+Check that the preview includes `hello.txt`, not `scratch.txt`.
+
+## 3. Keep one file {#apply-changes}
+
+Apply your selection, discard the rest, and check the result:
+
+```bash
+pvisor apply last --path hello.txt  # Keep only hello.txt
+pvisor drop last                   # Discard remaining staged changes
 cat hello.txt
 test ! -e scratch.txt && echo 'scratch.txt: absent'
 ```
+
+The final two commands print:
 
 ```text
 Hello from pVisor
@@ -71,26 +84,23 @@ scratch.txt: absent
 
 ## What happened? {#what-happened}
 
-`spawn --safe` runs the command in a copy-on-write workspace and records a Job. Both files stay staged. `review` lets you inspect them, `apply --path` writes the selected file into the original directory, and `drop` discards the rest.
+`spawn --safe` ran the command in a copy-on-write workspace and recorded a Job. `review` showed the staged edits; `apply --path` wrote only your selection to the original directory. `drop` discarded the rest.
 
-`drop` does not undo accepted files or external API calls. Stop concurrent writers before applying; `apply` refuses to overwrite conflicting original files. See [review and apply](../guides/review-apply.md) for details.
+Stop concurrent writers before applying; `apply` refuses to overwrite conflicting original files. File review and `drop` cannot undo external API calls, and `drop` leaves accepted files in place. See [review and apply](../guides/review-apply.md).
 
 !!! note "If startup fails"
     `--safe` refuses to start when the required isolation or staging is unavailable. Check [platform prerequisites](installation.md#local-prerequisites) and keep the flag; removing it makes ordinary Host Jobs write directly to the original workspace.
 
 ## Next steps {#next-steps}
 
-### Use your own Agent
-
-In your project, replace `sh -c '…'` with an installed Agent CLI:
+To use an installed Agent CLI in your project, replace the demo command:
 
 ```bash
 pvisor spawn --safe -- claude
-pvisor review last --diff
+pvisor review last --diff  # Review before applying
 ```
 
-See [Agent integration](../guides/agents/index.md) for tools and model credentials.
-
+- [Agent integration](../guides/agents/index.md): configure tools and model credentials.
 - [Review and apply](../guides/review-apply.md): accept directories and handle conflicts.
 - [VM tool execution](infrastructure.md): run tools in a Linux VM and collect feedback.
 - [CLI reference](../reference/cli.md): look up commands and flags.

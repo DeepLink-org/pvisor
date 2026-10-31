@@ -169,6 +169,9 @@ pub struct RunRecord {
     /// Reusable project workspace associated with this Run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PathBuf>,
+    /// Explicit launch-time project writeback authority, bound to the completion Bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_apply_scope: Option<super::job_service::ProjectApplyScope>,
     #[serde(default)]
     pub overlaynet_listen: Option<String>,
     #[serde(default)]
@@ -198,9 +201,11 @@ pub struct RunRecord {
 
 /// Exclusive caller-side ownership of a durable Job operation. The root's
 /// `job.lock` is never unlinked, so concurrent binaries lock the same inode.
-/// Drop clears the diagnostic owner while still holding flock, then releases it.
+/// Mutation ownership clears its diagnostic record on drop while holding flock.
+/// Observation only releases flock by closing its read-only descriptor.
 pub struct JobDirectoryLock {
     file: File,
+    clear_owner: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -215,6 +220,17 @@ impl JobDirectoryLock {
     /// links/foreign ownership. Refuses a live owner, busy lock, unknown schema,
     /// or residual diagnostic owner whose process has not died. No retries.
     pub fn acquire(record: &RunRecord, operation: &str) -> anyhow::Result<Self> {
+        Self::lock(record, operation, false)
+    }
+
+    /// Exclusively observe an existing Job lock without creating it, updating its
+    /// owner record, syncing or truncating it on release. Missing locks fail closed.
+    /// Uses the same inode, validation and lock order as mutation ownership.
+    pub fn observe_existing(record: &RunRecord) -> anyhow::Result<Self> {
+        Self::lock(record, "apply-preview", true)
+    }
+
+    fn lock(record: &RunRecord, operation: &str, observe: bool) -> anyhow::Result<Self> {
         use std::io::{Read, Seek, Write};
         use std::os::unix::fs::OpenOptionsExt;
         const PROTOCOL: &str = "pvisor-job-lock-1";
@@ -233,12 +249,18 @@ impl JobDirectoryLock {
         let path = root.join("job.lock");
         let mut file = OpenOptions::new()
             .read(true)
-            .write(true)
-            .create(true)
+            .write(!observe)
+            .create(!observe)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&path)?;
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(&path)
+            .with_context(|| {
+                format!(
+                    "open existing Job operation lock {} (preview never initializes locks)",
+                    path.display()
+                )
+            })?;
         let metadata = file.metadata()?;
         anyhow::ensure!(
             metadata.is_file()
@@ -283,21 +305,28 @@ impl JobDirectoryLock {
                 .is_some_and(|endpoint| endpoint.is_available()),
             "Job owner still holds stage"
         );
-        file.rewind()?;
-        file.set_len(0)?;
-        file.write_all(&serde_json::to_vec(&JobLockOwner {
-            protocol: PROTOCOL.into(),
-            pid: std::process::id(),
-            operation: operation.into(),
-        })?)?;
-        file.sync_all()?;
-        Ok(Self { file })
+        if !observe {
+            file.rewind()?;
+            file.set_len(0)?;
+            file.write_all(&serde_json::to_vec(&JobLockOwner {
+                protocol: PROTOCOL.into(),
+                pid: std::process::id(),
+                operation: operation.into(),
+            })?)?;
+            file.sync_all()?;
+        }
+        Ok(Self {
+            file,
+            clear_owner: !observe,
+        })
     }
 }
 impl Drop for JobDirectoryLock {
     fn drop(&mut self) {
-        let _ = self.file.set_len(0);
-        let _ = self.file.sync_all();
+        if self.clear_owner {
+            let _ = self.file.set_len(0);
+            let _ = self.file.sync_all();
+        }
     }
 }
 
@@ -328,8 +357,20 @@ impl RunRecord {
     /// Read the authoritative record only after obtaining mutation ownership.
     /// A selector's earlier snapshot is not safe input to apply/drop/recovery.
     pub fn lock_current(&self) -> anyhow::Result<(Self, RunLease)> {
+        self.lock_current_mode(false)
+    }
+    /// Observe the current Attempt under its existing exclusive lease, without
+    /// creating directories or lease files. Completion validation remains mandatory.
+    pub fn observe_current(&self) -> anyhow::Result<(Self, RunLease)> {
+        self.lock_current_mode(true)
+    }
+    fn lock_current_mode(&self, observe: bool) -> anyhow::Result<(Self, RunLease)> {
         let stage = self.stage_dir();
-        let lease = RunLease::acquire(&stage)?;
+        let lease = if observe {
+            RunLease::observe_existing(&stage)?
+        } else {
+            RunLease::acquire(&stage)?
+        };
         let mut current = Self::read(&stage)?;
         // Our own exclusive lease makes is_live true. It must not suppress the
         // completion gate for a stopped Attempt about to be reviewed or mutated.
@@ -349,6 +390,38 @@ impl RunRecord {
             .as_ref()
             .map(|record| record.stage_dir.clone())
             .unwrap_or_else(|| self.storage.clone())
+    }
+
+    /// Initialize preview lock inodes during explicit project-scope launch only.
+    /// The caller owns the new Attempt lease; previews must never call this method.
+    pub(crate) fn initialize_apply_observation_locks(&self) -> anyhow::Result<()> {
+        if self.project_apply_scope.is_none() {
+            return Ok(());
+        }
+        use std::os::unix::fs::OpenOptionsExt;
+        let stage = self.stage_dir();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(stage.join("job.lock"))?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o7777 == 0o600
+                && metadata.nlink() == 1,
+            "job.lock must be an owned 0600 file with one link"
+        );
+        file.sync_all()?;
+        // All native ExecutionJob mutators use this same RunLease inode. Initialize
+        // it before Job publication, not on the first read-only command.
+        drop(RunLease::acquire(&stage.join("execution-operation"))?);
+        Persistence::sync_directory(&stage)?;
+        Ok(())
     }
 
     pub fn write(&self) -> anyhow::Result<()> {
@@ -492,6 +565,42 @@ impl RunLease {
         }
         Ok(lease)
     }
+    /// Exclusively lock an already initialized lease using a read-only descriptor.
+    /// Never mkdir/create/truncate/sync. Validates inode ownership, mode and binding;
+    /// missing or unsafe leases fail closed rather than initializing a preview.
+    pub fn observe_existing(stage_dir: &Path) -> anyhow::Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = stage_dir.join(LEASE_FILENAME);
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(&path)
+            .with_context(|| {
+                format!(
+                    "open existing observation lease {} (preview never initializes locks)",
+                    path.display()
+                )
+            })?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 == 0
+                && metadata.nlink() == 1,
+            "observation lease must be an owned regular file without shared write access or hard links"
+        );
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("acquire existing observation lease");
+        }
+        let checked = fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            checked.dev() == metadata.dev() && checked.ino() == metadata.ino(),
+            "observation lease changed while locking"
+        );
+        Ok(Self { file })
+    }
+
     pub fn acquire(stage_dir: &Path) -> anyhow::Result<Self> {
         Persistence::create_dir_all_durable(stage_dir)?;
         let file = OpenOptions::new()
@@ -1111,6 +1220,7 @@ mod tests {
             finished_at_unix_ms: Some(2),
             storage: storage.to_path_buf(),
             workspace: None,
+            project_apply_scope: None,
             overlaynet_listen: None,
             network_interception: None,
             network_interception_metrics: None,
@@ -1218,6 +1328,70 @@ mod tests {
         )
         .unwrap();
         assert!(JobDirectoryLock::acquire(&run, "apply").is_err());
+    }
+
+    #[test]
+    fn observation_preserves_residual_owner_and_lease_identity_without_initialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let run = record(temp.path(), &stage, &stage.join("upper"));
+        run.write().unwrap();
+        assert!(JobDirectoryLock::observe_existing(&run).is_err());
+        assert!(!stage.join("job.lock").exists());
+        assert!(RunLease::observe_existing(&stage.join("missing")).is_err());
+        assert!(!stage.join("missing").exists());
+        drop(JobDirectoryLock::acquire(&run, "seed").unwrap());
+        drop(RunLease::acquire(&stage).unwrap());
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        let path = stage.join("job.lock");
+        fs::write(
+            &path,
+            serde_json::to_vec(&JobLockOwner {
+                protocol: "pvisor-job-lock-1".into(),
+                pid: dead_pid,
+                operation: "interrupted".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fn snapshot(path: &Path) -> (Vec<u8>, u64, u64, i64, i64, i64, i64) {
+            let m = fs::symlink_metadata(path).unwrap();
+            (
+                fs::read(path).unwrap(),
+                m.dev(),
+                m.ino(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            )
+        }
+        let lease_path = stage.join(LEASE_FILENAME);
+        let owner_before = snapshot(&path);
+        let lease_before = snapshot(&lease_path);
+        {
+            let _owner = JobDirectoryLock::observe_existing(&run).unwrap();
+            let _lease = RunLease::observe_existing(&stage).unwrap();
+            assert!(JobDirectoryLock::acquire(&run, "contender").is_err());
+            assert!(RunLease::acquire(&stage).is_err());
+        }
+        assert_eq!(owner_before, snapshot(&path));
+        assert_eq!(lease_before, snapshot(&lease_path));
+        // Observation retains legacy owner validation, without clearing bad bytes.
+        fs::write(&path, b"unknown-owner").unwrap();
+        assert!(JobDirectoryLock::observe_existing(&run).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"unknown-owner");
+        fs::remove_file(&lease_path).unwrap();
+        std::os::unix::fs::symlink(&path, &lease_path).unwrap();
+        assert!(RunLease::observe_existing(&stage).is_err());
+        fs::remove_file(&lease_path).unwrap();
+        fs::hard_link(&path, &lease_path).unwrap();
+        assert!(RunLease::observe_existing(&stage).is_err());
     }
 
     #[test]

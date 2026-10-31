@@ -117,20 +117,19 @@ impl Fixture {
         (core, record)
     }
 
-    fn apply(
-        &self,
-        target: Option<PathBuf>,
-    ) -> anyhow::Result<pvisor::job_service::MutationResponse> {
-        pvisor::job_service::RuntimeJobService::apply(
+    fn apply(&self) -> anyhow::Result<pvisor::job_service::ApplyCommandResponse> {
+        pvisor::job_service::RuntimeJobService::apply_command(
             &pvisor::job_service::ServiceContext::default(),
-            pvisor::job_service::ApplyRequest {
+            pvisor::job_service::ApplyCommandRequest {
                 job: pvisor::job_service::JobSelection {
                     selector: Some(self.stage.clone()),
                     storage: self.root.clone(),
                 },
-                target,
+                rootfs: false,
                 selection: Default::default(),
                 all: true,
+                dry_run: false,
+                expected_plan: None,
             },
         )
     }
@@ -342,22 +341,25 @@ fn owned_workspace_public_apply_keeps_snapshot_baseline_and_host_conflicts() {
         pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &f.stage.join("preimages"))
             .unwrap();
         record.write().unwrap();
-        let result = f.apply(None);
+        let result = f.apply().unwrap();
         if host_edit {
-            let error = result.expect_err("apply must preserve an intervening Host edit");
+            assert_eq!(result.status, "blocked");
+            assert!(result.execution.is_none());
             assert!(
-                error.to_string().contains("target changed after staging"),
-                "{error:#}"
+                result
+                    .blockers
+                    .join(" ")
+                    .contains("target changed after staging"),
+                "{:?}",
+                result.blockers
             );
             assert_eq!(
                 fs::read(f.target.join("file")).unwrap(),
                 b"host edit before copyup"
             );
         } else {
-            assert!(matches!(
-                result.unwrap().outcome,
-                pvisor::job_service::MutationOutcome::Applied { .. }
-            ));
+            assert_eq!(result.status, "applied", "{:?}", result.blockers);
+            assert_eq!(result.execution.unwrap().applied, Some(1));
             assert_eq!(fs::read(f.target.join("file")).unwrap(), b"agent change");
         }
         assert_eq!(fs::read(f.base.root().join("file")).unwrap(), b"baseline");
@@ -366,7 +368,7 @@ fn owned_workspace_public_apply_keeps_snapshot_baseline_and_host_conflicts() {
 }
 
 #[test]
-fn owned_workspace_apply_reauthenticates_receipt_and_rejects_target_override_before_mkdir() {
+fn owned_workspace_apply_reauthenticates_receipt_and_rejects_recorded_target_tampering() {
     let f = Fixture::new();
     let (core, record) = f.stopped_stage();
     fs::write(
@@ -381,15 +383,24 @@ fn owned_workspace_apply_reauthenticates_receipt_and_rejects_target_override_bef
         f.base.root().join("forbidden"),
         f.root.join("rootfs-store/forbidden"),
     ] {
-        assert!(f.apply(Some(path.clone())).is_err());
+        let mut rebound = record.clone();
+        rebound.overlay.as_mut().unwrap().target = path.clone();
+        rebound.write().unwrap();
+        let response = f.apply().unwrap();
+        assert_eq!(response.status, "blocked", "{:?}", response.blockers);
+        assert!(response.execution.is_none());
         assert!(!path.exists());
+        assert_eq!(fs::read(f.target.join("file")).unwrap(), b"baseline");
     }
+    record.write().unwrap();
     let receipt = f.stage.join("workspace-baseline.json");
     let bytes = fs::read(&receipt).unwrap();
     let mut changed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     changed["workspace"]["base"]["id"] = serde_json::json!("f".repeat(64));
     fs::write(&receipt, serde_json::to_vec(&changed).unwrap()).unwrap();
-    assert!(f.apply(None).is_err());
+    let response = f.apply().unwrap();
+    assert_eq!(response.status, "blocked");
+    assert!(response.execution.is_none());
     assert_eq!(fs::read(f.target.join("file")).unwrap(), b"baseline");
     fs::write(&receipt, &bytes).unwrap();
     fs::remove_file(
@@ -399,7 +410,9 @@ fn owned_workspace_apply_reauthenticates_receipt_and_rejects_target_override_bef
             .join("reference"),
     )
     .unwrap();
-    assert!(f.apply(None).is_err());
+    let response = f.apply().unwrap();
+    assert_eq!(response.status, "blocked");
+    assert!(response.execution.is_none());
     assert_eq!(fs::read(f.target.join("file")).unwrap(), b"baseline");
 }
 

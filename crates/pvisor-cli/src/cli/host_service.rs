@@ -799,6 +799,23 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         .set(tokio_util::sync::CancellationToken::new())
         .map_err(|_| anyhow::anyhow!("duplicate frontend cancellation"))?;
     let signal = signals(&rt)?;
+    if let JobCommand::Review(args) = &mut command {
+        args.selector = super::stage_source::resolve(
+            args.selector.as_deref(),
+            &args.output_dir,
+            args.mount.as_deref(),
+        )?;
+        args.mount = None;
+    }
+    if let JobCommand::Drop(args) = &mut command {
+        args.selector = super::stage_source::resolve(
+            Some(&args.selector),
+            &args.output_dir,
+            args.mount.as_deref(),
+        )?
+        .expect("explicit drop source");
+        args.mount = None;
+    }
     let target = command.pin_target()?;
     REQUEST_TARGET
         .set(target.clone())
@@ -837,8 +854,8 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
     ) {
         return launch(signal, command, target);
     }
-    if live && matches!(&command, JobCommand::Apply(_) | JobCommand::Drop(_)) {
-        anyhow::bail!("Job owner still holds stage; apply/drop refused while it is running");
+    if live && matches!(&command, JobCommand::Drop(_)) {
+        anyhow::bail!("Job owner still holds stage; drop refused while it is running");
     }
     let _lock = if !live {
         record

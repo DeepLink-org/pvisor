@@ -1344,12 +1344,19 @@ impl OverlayFs {
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| lowers.last().unwrap().clone());
+        let private_host_root =
+            cfg!(target_os = "linux") && target == Path::new("/") && lowers == [PathBuf::from("/")];
         let layout = pvisor_overlay_core::OverlayLayout::with_baseline(
             lowers.clone(),
             target,
             cfg.baseline_lower.as_deref().map(Path::new),
         )?
         .with_lower_mutability(cfg.lower_mutability.clone())?;
+        let layout = if private_host_root {
+            layout.with_private_backing()
+        } else {
+            layout
+        };
         let open = if restoring {
             OverlayCore::open_existing_for_layout
         } else {
@@ -1392,7 +1399,7 @@ impl OverlayFs {
             .collect::<io::Result<Vec<_>>>()?;
         let mut nodes = Nodes::default();
         nodes.insert_path(PathBuf::new(), fuse::ROOT_ID);
-        let virtual_metadata = roots.iter().try_fold(false, |found, root| {
+        let virtual_metadata = roots.iter().try_fold(private_host_root, |found, root| {
             backend::attributes(root).map(|attr| {
                 found
                     || attr.is_some()
@@ -1722,7 +1729,12 @@ impl OverlayFs {
     }
 
     fn layer(&self, path: &Path) -> io::Result<Layer> {
-        Ok(Layer(self.core.metadata_resolved(path).map_err(linux_error)?.layer))
+        Ok(Layer(
+            self.core
+                .metadata_resolved(path)
+                .map_err(linux_error)?
+                .layer,
+        ))
     }
 
     fn inner_entry(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<Entry> {
@@ -3314,10 +3326,10 @@ impl FileSystem for OverlayFs {
         if let Some(previous) = previous {
             if valid.intersects(SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID)
                 || pvisor_overlay_core::sys::get_xattr(
-                &self.core.upper_path(&path),
-                OsStr::new("user.containers.override_stat"),
-            )
-            .is_ok()
+                    &self.core.upper_path(&path),
+                    OsStr::new("user.containers.override_stat"),
+                )
+                .is_ok()
             {
                 if valid.contains(SetattrValid::MODE) {
                     attr.st_mode = (attr.st_mode & libc::S_IFMT) | (requested.st_mode & 0o7777);
@@ -3970,6 +3982,11 @@ impl FileSystem for OverlayFs {
         flags: u32,
     ) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        if self.virtual_metadata
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+        {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
             .map_err(linux_error)?;
         let path = self.path(inode)?;
@@ -3991,6 +4008,11 @@ impl FileSystem for OverlayFs {
         size: u32,
     ) -> io::Result<GetxattrReply> {
         let _operation = self.write_operation()?;
+        if self.virtual_metadata
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+        {
+            return Err(super::super::linux_errno::enodata());
+        }
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
@@ -4002,13 +4024,50 @@ impl FileSystem for OverlayFs {
         let _operation = self.write_operation()?;
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
-        let result = self.layers[layer.0].listxattr(ctx, inner, size);
+        let result = (|| {
+            if !self.virtual_metadata {
+                return self.layers[layer.0].listxattr(ctx, inner, size);
+            }
+            let ListxattrReply::Count(count) = self.layers[layer.0].listxattr(ctx, inner, 0)?
+            else {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            };
+            let mut filtered = Vec::new();
+            if count != 0 {
+                let ListxattrReply::Names(names) =
+                    self.layers[layer.0].listxattr(ctx, inner, count)?
+                else {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                };
+                for name in names
+                    .split(|byte| *byte == 0)
+                    .filter(|name| !name.is_empty())
+                {
+                    if !pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name)) {
+                        filtered.extend_from_slice(name);
+                        filtered.push(0);
+                    }
+                }
+            }
+            if size == 0 {
+                Ok(ListxattrReply::Count(filtered.len() as u32))
+            } else if (size as usize) < filtered.len() {
+                Err(io::Error::from_raw_os_error(libc::ERANGE))
+            } else {
+                Ok(ListxattrReply::Names(filtered))
+            }
+        })();
         self.layers[layer.0].forget(ctx, inner, 1);
         result
     }
 
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        if self.virtual_metadata
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+        {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
         pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
             .map_err(linux_error)?;
         let path = self.path(inode)?;
@@ -4292,11 +4351,117 @@ mod tests {
                 .unwrap();
             }
             let fs = parent_cache_fixture(temp.path());
-            (
-                temp,
-                fs,
-                root_context(),
+            (temp, fs, root_context())
+        }
+
+        #[test]
+        fn private_native_backing_preserves_directory_modes_and_guest_access() {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let (temp, fs, ctx) = fixture(None);
+            drop(fs);
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            std::fs::create_dir(lower.join("readonly")).unwrap();
+            std::fs::set_permissions(
+                lower.join("readonly"),
+                std::fs::Permissions::from_mode(0o555),
             )
+            .unwrap();
+            std::fs::set_permissions(&lower, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let layout =
+                pvisor_overlay_core::OverlayLayout::new(vec![lower.clone()], lower.clone())
+                    .unwrap()
+                    .with_private_backing();
+            drop(OverlayCore::new_for_layout(layout, upper.clone(), None, vec![], None).unwrap());
+            let fs = parent_cache_fixture(temp.path());
+            assert!(fs.virtual_metadata);
+            let root = fs.getattr(ctx, fuse::ROOT_ID, None).unwrap().0;
+            assert_eq!(root.st_mode & 0o7777, 0o555);
+            assert_eq!(std::fs::metadata(&upper).unwrap().mode() & 0o7777, 0o700);
+            let directory = fs.lookup(ctx, fuse::ROOT_ID, c"readonly").unwrap();
+            let child = fs
+                .mkdir(
+                    ctx,
+                    directory.inode,
+                    c"child",
+                    0o000,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            assert_eq!(child.attr.st_mode & 0o7777, 0);
+            let native = upper.join("readonly/child");
+            assert_eq!(std::fs::metadata(&native).unwrap().mode() & 0o7777, 0o700);
+            let stranger = Context {
+                uid: 12345,
+                gid: 12345,
+                ..ctx
+            };
+            assert_eq!(
+                fs.access(stranger, child.inode, libc::W_OK as u32)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES)
+            );
+            let mut requested = child.attr;
+            requested.st_mode = libc::S_IFDIR | 0o555;
+            let updated = fs
+                .setattr(ctx, child.inode, requested, None, SetattrValid::MODE)
+                .unwrap()
+                .0;
+            assert_eq!(updated.st_mode & 0o7777, 0o555);
+            assert_eq!(
+                fs.getattr(ctx, child.inode, None).unwrap().0.st_mode & 0o7777,
+                0o555
+            );
+            assert_eq!(std::fs::metadata(&native).unwrap().mode() & 0o7777, 0o700);
+            fs.mkdir(
+                ctx,
+                child.inode,
+                c"grandchild",
+                0o755,
+                0,
+                Extensions::default(),
+            )
+            .unwrap();
+            for key in [
+                c"user.pvisor.private_backing",
+                c"user.containers.override_stat",
+            ] {
+                assert_eq!(
+                    fs.setxattr(ctx, fuse::ROOT_ID, key, b"forged", 0)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EPERM)
+                );
+                assert_eq!(
+                    fs.removexattr(ctx, fuse::ROOT_ID, key)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EPERM)
+                );
+                assert_eq!(
+                    fs.getxattr(ctx, fuse::ROOT_ID, key, 128)
+                        .err()
+                        .expect("private xattr must be hidden")
+                        .raw_os_error(),
+                    Some(libc::ENODATA)
+                );
+            }
+            let ListxattrReply::Count(count) = fs.listxattr(ctx, fuse::ROOT_ID, 0).unwrap() else {
+                panic!("expected count")
+            };
+            assert_eq!(count, 0);
+            assert_eq!(
+                std::fs::metadata(lower.join("readonly")).unwrap().mode() & 0o7777,
+                0o555
+            );
+            std::fs::set_permissions(&lower, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(
+                lower.join("readonly"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
         }
 
         fn truncate_detached(replace: bool) {
@@ -5128,19 +5293,42 @@ mod tests {
             let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
             fs.init(FsOptions::empty()).unwrap();
             let file = temp.path().join("upper/file");
-            let (entry, handle, _) = fs.create(
-                ctx, fuse::ROOT_ID, c"file", libc::S_IFREG | 0o600,
-                false, libc::O_RDWR as u32, 0, Extensions::default(),
-            ).unwrap();
-            fs.release(ctx, entry.inode, libc::O_RDWR as u32, handle.unwrap(), false, false, None).unwrap();
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"file",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
             let native = std::fs::metadata(&file).unwrap();
             fs.link(ctx, entry.inode, fuse::ROOT_ID, c"alias").unwrap();
             let mut requested = entry.attr;
             requested.st_uid = 123;
             requested.st_gid = 456;
-            let (updated, _) = fs.setattr(
-                ctx, entry.inode, requested, None, SetattrValid::UID | SetattrValid::GID,
-            ).unwrap();
+            let (updated, _) = fs
+                .setattr(
+                    ctx,
+                    entry.inode,
+                    requested,
+                    None,
+                    SetattrValid::UID | SetattrValid::GID,
+                )
+                .unwrap();
             assert_eq!((updated.st_uid, updated.st_gid), (123, 456));
             let alias = fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap();
             assert_eq!((alias.attr.st_uid, alias.attr.st_gid), (123, 456));
@@ -5148,12 +5336,25 @@ mod tests {
             assert_eq!((after.uid(), after.gid()), (native.uid(), native.gid()));
             assert_eq!(std::fs::read(&file).unwrap(), b"");
 
-            let unprivileged = Context { uid: 123, gid: 456, ..ctx };
+            let unprivileged = Context {
+                uid: 123,
+                gid: 456,
+                ..ctx
+            };
             requested = updated;
             requested.st_uid = 789;
-            assert_eq!(fs.setattr(
-                unprivileged, entry.inode, requested, None, SetattrValid::UID,
-            ).unwrap_err().raw_os_error(), Some(libc::EPERM));
+            assert_eq!(
+                fs.setattr(
+                    unprivileged,
+                    entry.inode,
+                    requested,
+                    None,
+                    SetattrValid::UID,
+                )
+                .unwrap_err()
+                .raw_os_error(),
+                Some(libc::EPERM)
+            );
             assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_uid, 123);
         }
 
@@ -5163,22 +5364,47 @@ mod tests {
             let lower = temp.path().join("lower/file");
             std::fs::write(&lower, b"immutable lower").unwrap();
             pvisor_overlay_core::sys::set_xattr(
-                &lower, OsStr::new("user.containers.override_stat"), b"123:456:106750", 0,
-            ).unwrap();
+                &lower,
+                OsStr::new("user.containers.override_stat"),
+                b"123:456:106750",
+                0,
+            )
+            .unwrap();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
             let mut requested = entry.attr;
             requested.st_uid = 789;
-            let kernel_authorized = Context { uid: u32::MAX, gid: u32::MAX, ..ctx };
-            let (updated, _) = fs.setattr(
-                kernel_authorized, entry.inode, requested, None, SetattrValid::UID,
-            ).unwrap();
+            let kernel_authorized = Context {
+                uid: u32::MAX,
+                gid: u32::MAX,
+                ..ctx
+            };
+            let (updated, _) = fs
+                .setattr(
+                    kernel_authorized,
+                    entry.inode,
+                    requested,
+                    None,
+                    SetattrValid::UID,
+                )
+                .unwrap();
             assert_eq!((updated.st_uid, updated.st_gid), (789, 456));
             assert_eq!(updated.st_mode & 0o7777, 0o750);
-            assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777, 0o750);
-            assert_eq!(pvisor_overlay_core::sys::get_xattr(
-                &lower, OsStr::new("user.containers.override_stat"),
-            ).unwrap(), b"123:456:106750");
-            assert_eq!(std::fs::read(temp.path().join("upper/file")).unwrap(), b"immutable lower");
+            assert_eq!(
+                fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777,
+                0o750
+            );
+            assert_eq!(
+                pvisor_overlay_core::sys::get_xattr(
+                    &lower,
+                    OsStr::new("user.containers.override_stat"),
+                )
+                .unwrap(),
+                b"123:456:106750"
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/file")).unwrap(),
+                b"immutable lower"
+            );
         }
 
         #[test]
@@ -5200,8 +5426,8 @@ mod tests {
                 (host.uid(), host.gid())
             );
             assert_eq!(entry.attr.st_mode & 0o7777, 0o755);
-            assert!(
-                fs.mkdir(
+            assert!(fs
+                .mkdir(
                     ctx,
                     fuse::ROOT_ID,
                     c"private",
@@ -5209,8 +5435,7 @@ mod tests {
                     0,
                     Extensions::default()
                 )
-                .is_err()
-            );
+                .is_err());
             assert!(!temp.path().join("upper/private").exists());
         }
     }
@@ -5598,16 +5823,10 @@ mod tests {
             .unwrap()
             .contains("negative_entry_cache"));
         fs.restore_state(&before).unwrap();
-        fs.lookup(
-            root_context(),
-            fuse::ROOT_ID,
-            c"missing",
-        )
-        .unwrap();
+        fs.lookup(root_context(), fuse::ROOT_ID, c"missing")
+            .unwrap();
         assert_eq!(
-            fs.capture_state()
-                .expect_err("operation must fail")
-                .kind(),
+            fs.capture_state().expect_err("operation must fail").kind(),
             io::ErrorKind::Unsupported
         );
         assert_eq!(
@@ -5619,9 +5838,7 @@ mod tests {
         fs.destroy();
         fs.init(FsOptions::empty()).unwrap();
         assert_eq!(
-            fs.capture_state()
-                .expect_err("operation must fail")
-                .kind(),
+            fs.capture_state().expect_err("operation must fail").kind(),
             io::ErrorKind::Unsupported
         );
         assert_eq!(
@@ -6434,10 +6651,9 @@ mod tests {
             std::fs::read(temp.path().join("lower/file")).unwrap(),
             b"original"
         );
-        assert!(
-            fs.setattr(ctx, inode, attrs, replacement_handle, SetattrValid::MTIME)
-                .is_err()
-        );
+        assert!(fs
+            .setattr(ctx, inode, attrs, replacement_handle, SetattrValid::MTIME)
+            .is_err());
         fs.release(ctx, inode, 0, handle, false, false, None)
             .unwrap();
         fs.release(
@@ -7384,12 +7600,22 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("file"), b"nested layer").unwrap();
         let mut config = parent_cache_fixture(temp.path()).snapshot_config.clone();
-        config.lower_dirs.push(nested.to_string_lossy().into_owned());
+        config
+            .lower_dirs
+            .push(nested.to_string_lossy().into_owned());
         let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
         assert_eq!(fs.layer(Path::new("file")).unwrap().0, 2);
         assert_eq!(fs.layer(Path::new("nested/file")).unwrap().0, 1);
-        assert_eq!(fs.layer(Path::new("private/secret")).unwrap_err().raw_os_error(), Some(libc::EACCES));
-        assert_eq!(fs.layer(Path::new("missing")).unwrap_err().raw_os_error(), Some(libc::ENOENT));
+        assert_eq!(
+            fs.layer(Path::new("private/secret"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
+        assert_eq!(
+            fs.layer(Path::new("missing")).unwrap_err().raw_os_error(),
+            Some(libc::ENOENT)
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -8526,7 +8752,8 @@ mod tests {
         let mut plain = Vec::new();
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
             assert_eq!(
-                entry.ino, u32::MAX as u64,
+                entry.ino,
+                u32::MAX as u64,
                 "plain READDIR must not register unknown children"
             );
             plain.push((entry.name.to_vec(), entry.type_));
@@ -8544,7 +8771,8 @@ mod tests {
         assert_ne!(fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode, 0);
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
             assert_eq!(
-                entry.ino, u32::MAX as u64,
+                entry.ino,
+                u32::MAX as u64,
                 "later LOOKUP must not change the saved directory reply"
             );
             Ok(1)
@@ -9871,13 +10099,7 @@ mod tests {
         // filesystem. Simulate that allocation and verify the first real
         // lookup cannot reuse the virtual inode number.
         let virtual_inode = inode_alloc.next();
-        let entry = fs
-            .lookup(
-                root_context(),
-                fuse::ROOT_ID,
-                c"real",
-            )
-            .unwrap();
+        let entry = fs.lookup(root_context(), fuse::ROOT_ID, c"real").unwrap();
         assert_ne!(entry.inode, virtual_inode);
     }
     #[test]

@@ -27,6 +27,30 @@ English article at the same relative path under `docs/src/en/`. Chinese defines
 the canonical information architecture; both languages describe the same
 behavior, examples, evidence and known limitations.
 
+## README and getting-started style
+
+Lead with what the reader can do, then show a runnable example. Use short,
+action-oriented headings and concrete verbs; do not make readers learn the
+runtime architecture before their first command.
+
+- Keep the README a product entry point: a short introduction, scannable
+  capabilities, installation, a few complete workflows, and links to guides.
+  Put migration rules, full option semantics and recovery details in reference
+  documentation, not between the install command and the first result.
+- Give each quick start one outcome. State prerequisites before execution,
+  group commands by task, show observable results, briefly explain what happened,
+  then offer a few next steps. Use an example that needs no model credentials
+  when introducing the local workflow.
+- Keep essential safety conditions beside the commands they affect. Fold
+  optional installation methods and uncommon troubleshooting into native
+  collapsible notes; do not hide required platform setup or remove safety flags
+  to make an example look simpler.
+- Use only supported commands and verified examples. Distinguish host Jobs,
+  container instances and daemon SDK access; avoid invented APIs, universal
+  isolation claims or performance promises without workload-specific evidence.
+- Preserve published anchors when shortening headings. Keep Chinese and English
+  examples, results and limitations equivalent, including navigation labels.
+
 ## Benchmark pages {#benchmark-pages}
 
 Benchmark articles under `docs/src/{zh,en}/benchmarks/` are user decisions, not

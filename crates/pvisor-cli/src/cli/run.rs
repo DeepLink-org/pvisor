@@ -156,9 +156,12 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress. VM `auto` enforces this
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain outside the cooperative host/container proxy rule";
 
-#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunArgs {
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage_launch: Option<StageLaunch>,
     /// Explicit runtime enables, also parsed by companions reusing RunArgs.
     #[arg(long = "feature", value_name = "NAME", value_delimiter = ',')]
     #[serde(default)]
@@ -208,7 +211,84 @@ pub struct RunArgs {
     command: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageLaunch {
+    cwd: PathBuf,
+    interactive: bool,
+    tty: Option<[u16; 2]>,
+    env: std::collections::BTreeMap<String, String>,
+    unset_env: Vec<String>,
+}
+
 impl RunArgs {
+    pub(super) fn for_stage(args: super::stage::StageArgs) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            cfg!(target_os = "linux"),
+            "stage requires Linux host-root VM support"
+        );
+        anyhow::ensure!(
+            !args.tty || super::terminal::available(),
+            "stage -t requires an interactive terminal"
+        );
+        let cwd = args.cwd.unwrap_or(std::env::current_dir()?);
+        anyhow::ensure!(cwd.is_absolute(), "--workdir must be an absolute path");
+        let (env, unset_env) = super::docker::environment(&args.env, &args.env_files)?;
+        let interactive = args.interactive || args.command.is_empty();
+        let tty = if args.tty || (args.command.is_empty() && super::terminal::available()) {
+            let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+            let dimensions =
+                if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) }
+                    == 0
+                {
+                    let size = unsafe { size.assume_init() };
+                    [size.ws_row.max(1), size.ws_col.max(1)]
+                } else {
+                    [24, 80]
+                };
+            Some(dimensions)
+        } else {
+            None
+        };
+        let command = if args.command.is_empty() {
+            vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())]
+        } else {
+            args.command
+        };
+        Ok(Self {
+            stage_launch: Some(StageLaunch {
+                cwd,
+                interactive,
+                tty,
+                env,
+                unset_env,
+            }),
+            no_agent_defaults: true,
+            stage: args.stage,
+            run: RunOverrides {
+                name: args.name,
+                executor: Some(RunExecutorKind::Vm),
+                memory: Some(ByteSize(u64::from(args.memory) * 1024 * 1024)),
+                cpu: Some(u16::from(args.cpus)),
+                ..Default::default()
+            },
+            vm: VmOverrides {
+                rootfs: Some("host".into()),
+                ..Default::default()
+            },
+            overlaynet: OverlayNetOverrides {
+                overlaynet: Some(if args.network == "none" {
+                    OverlayNetMode::Off
+                } else {
+                    OverlayNetMode::Auto
+                }),
+                ..Default::default()
+            },
+            command,
+            ..Default::default()
+        })
+    }
+
     fn cli_asks(&self) -> bool {
         self.overlayfs
             .access
@@ -878,7 +958,49 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     }
     pvisor::startup_mark_run("cli.config_ready", &run_id);
     let safe = config.run.profile == pvisor_core::RunProfile::Safe;
-    execute_config(config, run_id, safe, None, PolicySource::CurrentDefaults).await
+    if args.stage_launch.is_some() {
+        config.overlayfs = Some(OverlayFsSettings {
+            base: Some(PathBuf::from("/")),
+            stage: Some(
+                args.stage
+                    .clone()
+                    .unwrap_or_else(|| default_run_home().join(&run_id)),
+            ),
+            commit: OverlayFsCommit::Manual,
+            ..Default::default()
+        });
+        run_log!(
+            "pVisor stagebox — {run_id}: file changes stay staged; choose project results after review."
+        );
+        run_log!(
+            "Read boundary: the live host-root view uses your host permissions and path exclusions; readable files may include HOME, credentials and project .env files. It is not a frozen system snapshot."
+        );
+        run_log!(
+            "Credentials: inherited environment uses VM credential scrubbing; explicit -e values and readable credential files can still reach the agent/model."
+        );
+        run_log!(
+            "Network: {}; resources: {} vCPUs / {} MiB guest RAM.",
+            if config.overlaynet.mode == OverlayNetMode::Off {
+                "offline (no guest NIC)"
+            } else {
+                "controlled IPv4 TCP/DNS egress; external effects cannot be undone by drop"
+            },
+            config.vm.cpus,
+            config.vm.memory_mib
+        );
+        run_log!(
+            "Agent approvals remain the agent's own configuration; stage does not disable them."
+        );
+    }
+    execute_config(
+        config,
+        run_id,
+        safe,
+        None,
+        PolicySource::CurrentDefaults,
+        args.stage_launch,
+    )
+    .await
 }
 
 fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
@@ -1142,8 +1264,11 @@ impl Drop for TemporaryStageGuard {
 impl RunArgs {
     pub(super) fn inherits_terminal_input(&self) -> anyhow::Result<bool> {
         let Some(path) = &self.spec else {
-            // The normal CLI config path always constructs inherited stdin.
-            return Ok(true);
+            return Ok(self.stage_launch.as_ref().is_none_or(|stage| {
+                // The VMM also puts terminal outputs in raw mode. Transfer the
+                // foreground group even when the workload's stdin is closed.
+                stage.interactive || super::terminal::available()
+            }));
         };
         let spec: RunSpec = serde_json::from_slice(&std::fs::read(path)?)?;
         let RunInvocation::Process(process) = &spec.invocation;
@@ -1257,6 +1382,7 @@ async fn execute_config(
     safe: bool,
     lineage: Option<RunLineage>,
     policy_source: PolicySource,
+    stage_launch: Option<StageLaunch>,
 ) -> anyhow::Result<i32> {
     let safe = safe || config.run.profile == pvisor_core::RunProfile::Safe;
     if safe {
@@ -1317,6 +1443,11 @@ async fn execute_config(
         #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
         {
             let (rootfs, workspace) = resolve_vm_layout(&config)?;
+            let workspace = if stage_launch.is_some() {
+                resolve_workspace(&std::env::current_dir()?)?
+            } else {
+                workspace
+            };
             config.vm.rootfs = Some(rootfs.clone());
             config.run.workspace = Some(workspace.clone());
             let has_guest_overlay = config
@@ -1324,7 +1455,7 @@ async fn execute_config(
                 .as_ref()
                 .and_then(|overlay| overlay.target.as_ref())
                 .is_some();
-            if !has_guest_overlay {
+            if !has_guest_overlay && stage_launch.is_none() {
                 let overlay = config
                     .overlayfs
                     .get_or_insert_with(OverlayFsSettings::default);
@@ -1669,7 +1800,11 @@ async fn execute_config(
     }
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = program_args.to_vec();
-    process.stdin = StdioMode::Inherit;
+    process.stdin = if stage_launch.as_ref().is_none_or(|stage| stage.interactive) {
+        StdioMode::Inherit
+    } else {
+        StdioMode::Null
+    };
     process.stdout = match config.run.stdio {
         RunStdio::Inherit => StdioMode::Inherit,
         RunStdio::Capture => StdioMode::Capture,
@@ -1692,7 +1827,13 @@ async fn execute_config(
             process.env.insert(key.clone(), value);
         }
     }
-    if !overlay_enabled {
+    if let Some(stage) = &stage_launch {
+        process.env.extend(stage.env.clone());
+        // Keep inherited and explicit values distinct so the VM can scrub host
+        // cache credentials before applying the user's explicit overrides.
+        process.env.insert("PVISOR_STAGE".into(), "1".into());
+        process.cwd = Some(stage.cwd.display().to_string());
+    } else if !overlay_enabled {
         process.cwd = Some(workspace.display().to_string());
     }
     if safe {
@@ -1722,6 +1863,26 @@ async fn execute_config(
         }),
     );
     if config.run.executor == RunExecutorKind::Vm {
+        if let Some(stage) = &stage_launch {
+            if workspace != Path::new("/") {
+                let scope = pvisor::job_service::ProjectApplyScope::capture(&workspace)?;
+                spec.metadata.insert(
+                    pvisor::job_service::PROJECT_APPLY_SCOPE_KEY.into(),
+                    serde_json::to_value(scope)?,
+                );
+            }
+            spec.metadata.insert(
+                "pvisor.vm.env_unset".into(),
+                serde_json::to_value(&stage.unset_env)?,
+            );
+            spec.metadata.insert(
+                "pvisor.vm.stage_stdio".into(),
+                serde_json::json!({
+                    "interactive": stage.interactive,
+                    "tty": stage.tty,
+                }),
+            );
+        }
         if let Some(target) = config
             .overlayfs
             .as_ref()
@@ -1738,7 +1899,12 @@ async fn execute_config(
         } else {
             spec.metadata.insert(
                 "pvisor.vm.guest_cwd".into(),
-                serde_json::Value::String("/".into()),
+                serde_json::to_value(
+                    stage_launch
+                        .as_ref()
+                        .map(|stage| stage.cwd.as_path())
+                        .unwrap_or(Path::new("/")),
+                )?,
             );
         }
         if let Some(image) = &prepared_image {
@@ -1895,11 +2061,40 @@ async fn execute_config(
         record.stage_dir().display()
     );
     if bundle.filesystem.is_some() {
-        run_log!(
-            "Decide: pvisor apply {} --path <relative-path> (or --all) | pvisor drop {}",
-            record.stage_dir().display(),
-            record.stage_dir().display()
-        );
+        if stage_launch.is_some() {
+            run_log!(
+                "Stage retained: {} (Job {})",
+                record.stage_dir().display(),
+                record.run_id
+            );
+            run_log!(
+                "Results: pvisor review {} --diff",
+                record.stage_dir().display()
+            );
+            run_log!(
+                "Accept: pvisor apply {} — choose project results interactively; scripts use --path <project-relative-path> or --all",
+                record.stage_dir().display()
+            );
+            run_log!(
+                "Preview: add --path <project-relative-path> --dry-run --diff. Unselected project and environment changes stay staged; apply does not run tests or restart services."
+            );
+            run_log!(
+                "Cleanup: pvisor drop {} — discards pending files, not already applied files or remote effects.",
+                record.stage_dir().display()
+            );
+            if result.state != RunState::Completed || result.exit_code.is_some_and(|code| code != 0)
+            {
+                run_log!(
+                    "Partial results: this command did not finish successfully; inspect the retained stage before any handoff."
+                );
+            }
+        } else {
+            run_log!(
+                "Decide: pvisor apply {} --path <relative-path> (or --all) | pvisor drop {}",
+                record.stage_dir().display(),
+                record.stage_dir().display()
+            );
+        }
     }
 
     if result.state != RunState::Completed {

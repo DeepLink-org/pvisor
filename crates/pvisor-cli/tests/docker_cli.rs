@@ -152,13 +152,13 @@ fn pull_and_implicit_run_report_waiting_before_network_or_vm_start() {
     }
 }
 
-struct Native {
-    _temporary: tempfile::TempDir,
-    home: PathBuf,
-    binary: PathBuf,
+pub(crate) struct Native {
+    pub(crate) _temporary: tempfile::TempDir,
+    pub(crate) home: PathBuf,
+    pub(crate) binary: PathBuf,
 }
 impl Native {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let binary = temporary.path().join("pvisor");
         let source_binary = std::env::var_os("PVISOR_DOCKER_TEST_BINARY")
@@ -167,7 +167,15 @@ impl Native {
         fs::copy(&source_binary, &binary).unwrap();
         #[cfg(target_os = "linux")]
         {
-            let firmware = source_binary.parent().unwrap().join("libkrunfw.so.5");
+            let firmware = std::env::var_os("PVISOR_TEST_LIBRARY_DIR")
+                .map(PathBuf::from)
+                .and_then(|directory| {
+                    ["libkrunfw.so.5", "libkrunfw.so.5.6.2"]
+                        .into_iter()
+                        .map(|name| directory.join(name))
+                        .find(|path| path.is_file())
+                })
+                .unwrap_or_else(|| source_binary.parent().unwrap().join("libkrunfw.so.5"));
             if firmware.is_file() {
                 std::os::unix::fs::symlink(
                     firmware.canonicalize().unwrap(),

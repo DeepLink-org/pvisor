@@ -501,6 +501,7 @@ mod tests {
             finished_at_unix_ms: Some(2),
             storage: root.to_path_buf(),
             workspace: None,
+            project_apply_scope: None,
             overlaynet_listen: None,
             network_interception: None,
             network_interception_metrics: None,

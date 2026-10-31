@@ -25,6 +25,16 @@ fn selection(record: &RunRecord) -> JobSelection {
         storage: record.storage.clone(),
     }
 }
+fn apply_request(record: &RunRecord) -> ApplyCommandRequest {
+    ApplyCommandRequest {
+        job: selection(record),
+        rootfs: false,
+        selection: Default::default(),
+        all: true,
+        dry_run: false,
+        expected_plan: None,
+    }
+}
 fn conflict(error: anyhow::Error) {
     assert_eq!(
         error.downcast_ref::<AgentCtlHostError>().unwrap().code,
@@ -168,19 +178,22 @@ fn empty_apply_selection_is_rejected_before_target_or_stage_mutation() {
     let record = fixture(root.path());
     std::fs::write(root.path().join("upper/change"), "staged").unwrap();
     let before = std::fs::read(root.path().join("run.json")).unwrap();
-    let target = root.path().join("missing/target");
-    let error = RuntimeJobService::apply(
+    let response = RuntimeJobService::apply_command(
         &ServiceContext::default(),
-        ApplyRequest {
-            job: selection(&record),
-            target: Some(target.clone()),
+        ApplyCommandRequest {
             all: false,
-            selection: Default::default(),
+            ..apply_request(&record)
         },
     )
-    .unwrap_err();
-    assert!(error.to_string().contains("requires --all"), "{error}");
-    assert!(!target.exists());
+    .unwrap();
+    assert_eq!(response.status, "blocked");
+    assert!(
+        response
+            .blockers
+            .join(" ")
+            .contains("requires all or explicit positive selection")
+    );
+    assert!(response.execution.is_none());
     assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
     assert_eq!(
         std::fs::read_to_string(root.path().join("upper/change")).unwrap(),
@@ -196,28 +209,21 @@ fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() 
     std::fs::write(root.path().join("upper/one"), "first").unwrap();
     std::fs::write(root.path().join("upper/two"), "second").unwrap();
     let context = ServiceContext::default();
-    let first = RuntimeJobService::apply(
+    let first = RuntimeJobService::apply_command(
         &context,
-        ApplyRequest {
-            job: selection(&record),
-            target: None,
+        ApplyCommandRequest {
             all: false,
             selection: super::super::ApplySelection {
                 paths: vec!["one".into()],
-                includes: vec![],
-                excludes: vec![],
+                ..Default::default()
             },
+            ..apply_request(&record)
         },
     )
     .unwrap();
-    assert!(matches!(
-        first.outcome,
-        MutationOutcome::Applied {
-            applied: 1,
-            remaining: 1,
-            ..
-        }
-    ));
+    assert_eq!(first.status, "applied", "{:?}", first.blockers);
+    assert_eq!(first.execution.unwrap().applied, Some(1));
+    assert_eq!(first.remaining.in_scope, Some(1));
     assert_eq!(
         std::fs::read_to_string(root.path().join("target/one")).unwrap(),
         "first"
@@ -225,24 +231,32 @@ fn embedded_selective_apply_retains_remaining_effects_and_advances_generation() 
     assert!(!root.path().join("target/two").exists());
     let current = RunRecord::read(root.path()).unwrap();
     assert_eq!(current.overlay.as_ref().unwrap().generation, 8);
-    let second = RuntimeJobService::apply(
+    let repeated = RuntimeJobService::apply_command(
         &context,
-        ApplyRequest {
-            job: selection(&current),
-            target: None,
-            all: true,
-            selection: super::super::ApplySelection::default(),
+        ApplyCommandRequest {
+            all: false,
+            selection: super::super::ApplySelection {
+                paths: vec!["one".into()],
+                ..Default::default()
+            },
+            ..apply_request(&current)
         },
     )
     .unwrap();
-    assert!(matches!(
-        second.outcome,
-        MutationOutcome::Applied {
-            applied: 1,
-            remaining: 0,
-            ..
-        }
-    ));
+    assert_eq!(repeated.status, "no_changes");
+    assert!(repeated.execution.is_none());
+    assert_eq!(
+        RunRecord::read(root.path())
+            .unwrap()
+            .overlay
+            .unwrap()
+            .generation,
+        8
+    );
+    let second = RuntimeJobService::apply_command(&context, apply_request(&current)).unwrap();
+    assert_eq!(second.status, "applied", "{:?}", second.blockers);
+    assert_eq!(second.execution.unwrap().applied, Some(1));
+    assert_eq!(second.remaining.in_scope, Some(0));
     assert_eq!(
         std::fs::read_to_string(root.path().join("target/two")).unwrap(),
         "second"
@@ -267,17 +281,14 @@ fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion(
     // before status has had any opportunity to reconcile it to Unknown.
     for apply in [true, false] {
         let error = if apply {
-            RuntimeJobService::apply(
+            let response = RuntimeJobService::apply_command(
                 &ServiceContext::default(),
-                ApplyRequest {
-                    job: selection(&record),
-                    target: None,
-                    all: true,
-                    selection: Default::default(),
-                },
+                apply_request(&record),
             )
-            .err()
-            .unwrap()
+            .unwrap();
+            assert_eq!(response.status, "blocked");
+            assert!(response.execution.is_none());
+            response.blockers.join(" ")
         } else {
             RuntimeJobService::drop(
                 &ServiceContext::default(),
@@ -287,8 +298,9 @@ fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion(
             )
             .err()
             .unwrap()
+            .to_string()
         };
-        assert!(error.to_string().contains("EXECUTION_UNKNOWN"));
+        assert!(error.contains("EXECUTION_UNKNOWN"));
         assert_eq!(
             std::fs::read(root.path().join("upper/change")).unwrap(),
             b"retained"
@@ -485,22 +497,15 @@ fn apply_rechecks_a_generation_change_after_resolution() {
         check_record: Some(&on_check),
         ..Default::default()
     };
-    conflict(
-        RuntimeJobService::apply(
-            &context,
-            ApplyRequest {
-                job: selection(&record),
-                target: None,
-                selection: super::super::ApplySelection {
-                    paths: vec![],
-                    includes: vec![],
-                    excludes: vec![],
-                },
-                all: true,
-            },
-        )
-        .unwrap_err(),
+    let response = RuntimeJobService::apply_command(&context, apply_request(&record)).unwrap();
+    assert_eq!(response.status, "blocked");
+    assert!(
+        response
+            .blockers
+            .join(" ")
+            .contains("stale Job, Attempt, or workspace generation")
     );
+    assert!(response.execution.is_none());
     assert_eq!(
         RunRecord::read(root.path())
             .unwrap()

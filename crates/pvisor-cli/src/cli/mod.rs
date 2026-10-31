@@ -1,9 +1,11 @@
 //! Job lifecycle commands and dispatch to first-party companions.
+mod apply;
 mod cache;
 mod checkpoint;
 mod daemon;
 mod docker;
 mod features;
+mod handoff;
 #[cfg(unix)]
 pub(crate) mod host;
 #[cfg(any(target_os = "macos", test))]
@@ -17,6 +19,8 @@ use crate::companions;
 mod product;
 mod run;
 pub mod runtime;
+mod stage;
+mod stage_source;
 #[cfg(unix)]
 pub mod terminal;
 mod trajectory;
@@ -56,8 +60,14 @@ enum Command {
     Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Spawn(Box<run::RunArgs>),
+    /// Run a command with all host-root filesystem changes staged for review (Linux only).
+    #[command(long_about = stage::STAGE_LONG_ABOUT)]
+    Stage(stage::StageArgs),
 
-    /// Apply reviewed changes.
+    /// Apply selected changes, preview them, or pick paths in a terminal.
+    #[command(
+        long_about = "Apply selected staged changes. SOURCE is required: a Job id, stage directory, or workspace selector (including last). Upper directories and internal stage paths are not apply sources.\n\nExplicit --path, --include or --all executes without prompting. --all permits --exclude, but not --path or --include. Exclusions alone require --interactive. With no selection, a picker opens only when both stdin and stdout are terminals; otherwise selection is required.\n\nUse --dry-run for a read-only plan, optionally with --diff for bounded text diffs. --json requires an explicit positive selection and never opens a picker. --interactive conflicts with --dry-run and --json.\n\nOrdinary apply is project-scoped. --rootfs explicitly requests privileged system changes; it is not an atomic system upgrade. Exit codes: 0 success, 1 execution/service error, 2 arguments, 3 blocked, 130 quit."
+    )]
     Apply(runtime::ApplyArgs),
     /// Discard staged changes.
     Drop(runtime::SelectArgs),
@@ -65,6 +75,9 @@ enum Command {
     Status(runtime::StatusCommandArgs),
     /// Review staged changes and execution evidence.
     Review(product::ReviewArgs),
+    /// Export selected project results without applying them (Linux only).
+    #[command(long_about = handoff::EXPORT_LONG_ABOUT)]
+    Export(handoff::ExportArgs),
     /// Manage Job checkpoints.
     Checkpoint(checkpoint::CheckpointArgs),
     /// Suspend a Job or pause a live VM.
@@ -90,7 +103,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Job execution (spawn).\nUse pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Job execution (spawn).\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -109,9 +122,11 @@ fn grouped_commands(command: &clap::Command) -> String {
             "Agent Commands",
             &[
                 "spawn",
+                "stage",
                 "status",
                 "kill",
                 "review",
+                "export",
                 "apply",
                 "drop",
                 "inspect",
@@ -304,6 +319,18 @@ pub fn main() -> anyhow::Result<()> {
         Ok(matches) => matches,
         Err(error) => {
             let offset = command_offset(&args);
+            if error.use_stderr()
+                && args.get(offset).is_some_and(|arg| arg == "apply")
+                && args[offset + 1..].iter().any(|arg| arg == "--json")
+            {
+                apply::render_error(
+                    true,
+                    args[offset + 1..].iter().any(|arg| arg == "--dry-run"),
+                    &error.to_string(),
+                );
+                finish(2);
+                return Ok(());
+            }
             if error.use_stderr() && args.get(offset).is_some_and(|arg| arg == "run") {
                 error.print()?;
                 finish(125);
@@ -313,13 +340,17 @@ pub fn main() -> anyhow::Result<()> {
         }
     };
     let mut parsed = Cli::from_arg_matches(&matches)?;
+    parsed.command = match parsed.command {
+        Command::Stage(args) => Command::Spawn(Box::new(args.into_run()?)),
+        command => command,
+    };
     if let Command::Feature(query) = &parsed.command {
         return query.print(&parsed.features);
     }
     if let Command::Container(command) = parsed.command {
         anyhow::ensure!(
             parsed.features.is_empty(),
-            "--feature enables apply only to spawn or feature queries"
+            "--feature enables apply only to spawn, stage or feature queries"
         );
         let failure_code = command.failure_exit_code();
         match docker::run(command) {
@@ -349,7 +380,7 @@ pub fn main() -> anyhow::Result<()> {
     } else {
         anyhow::ensure!(
             parsed.features.is_empty(),
-            "--feature enables apply only to spawn or feature queries"
+            "--feature enables apply only to spawn, stage or feature queries"
         );
     }
     if let Some(command) = host::vm_request(&parsed.command)? {
@@ -361,6 +392,9 @@ pub fn main() -> anyhow::Result<()> {
             unreachable!("container commands dispatch before Job startup")
         }
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
+        Command::Stage(_) => {
+            unreachable!("stage converts to spawn before feature and owner dispatch")
+        }
         Command::Cache(args) => cache::run(args)?,
         Command::Spawn(run) => {
             if !terminal::is_child() {
@@ -380,10 +414,11 @@ pub fn main() -> anyhow::Result<()> {
             finish(host_service::call(host::JobCommand::Run(run))?);
         }
         Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
-        Command::Apply(args) => finish(host_service::call(host::JobCommand::Apply(args))?),
+        Command::Apply(args) => finish(apply::run(args)),
         Command::Drop(args) => finish(host_service::call(host::JobCommand::Drop(args))?),
         Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args.args))?),
         Command::Review(args) => finish(host_service::call(host::JobCommand::Review(args))?),
+        Command::Export(args) => handoff::export(args)?,
         Command::Checkpoint(args) => {
             finish(host_service::call(host::JobCommand::Checkpoint(args))?)
         }
@@ -498,6 +533,112 @@ mod feature_parser_tests {
             );
         }
     }
+    #[test]
+    fn stage_is_an_agent_command_immediately_after_spawn() {
+        let mut command = Cli::command();
+        command.build();
+        let groups = grouped_commands(&command);
+        let agents = groups.split("Agent Commands:\n").nth(1).unwrap();
+        let names: Vec<_> = agents
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .map(|line| line.split_whitespace().next().unwrap())
+            .collect();
+        assert_eq!(&names[..3], &["spawn", "stage", "status"]);
+        let containers = groups.split("Agent Commands:\n").next().unwrap();
+        assert!(
+            !containers
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some("stage"))
+        );
+        let help = root_command().unwrap().render_help().to_string();
+        assert!(help.contains("pvisor stage -it -- claude"));
+    }
+
+    #[test]
+    fn stage_is_recognized_without_changing_default_spawn() {
+        for args in [
+            vec!["pvisor", "stage"],
+            vec!["pvisor", "stage", "-it", "sh", "-c", "true"],
+        ] {
+            assert!(
+                matches!(parse(&args).command, Command::Stage(_)),
+                "{args:?}"
+            );
+        }
+        for args in [
+            vec!["pvisor", "--", "stage", "--rm"],
+            vec!["pvisor", "spawn", "--", "stage"],
+            vec!["pvisor", "echo", "stage"],
+        ] {
+            assert!(
+                matches!(parse(&args).command, Command::Spawn(_)),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_features_stop_at_the_workload_boundary() {
+        for args in [
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "stage",
+                "echo",
+                "--feature",
+                "guest-only",
+            ],
+            vec![
+                "pvisor",
+                "stage",
+                "--feature=workload-aware-memory-offloading",
+                "echo",
+                "--feature",
+                "guest-only",
+            ],
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "stage",
+                "--",
+                "echo",
+                "--feature",
+                "guest-only",
+            ],
+        ] {
+            let parsed = parse(&args);
+            assert_eq!(
+                parsed.features,
+                [pvisor::features::Feature::WorkloadAwareMemoryOffloading]
+            );
+            let Command::Stage(stage) = parsed.command else {
+                panic!("stage")
+            };
+            assert_eq!(stage.command, ["echo", "--feature", "guest-only"]);
+        }
+        let parsed = parse(&["pvisor", "stage", "echo", "--feature", "guest-only"]);
+        assert!(parsed.features.is_empty());
+        let Command::Stage(stage) = parsed.command else {
+            panic!("stage")
+        };
+        assert_eq!(stage.command, ["echo", "--feature", "guest-only"]);
+        let parsed = parse(&[
+            "pvisor",
+            "--feature",
+            "workload-aware-memory-offloading",
+            "stage",
+            "--feature",
+            "workload-aware-memory-offloading",
+            "--",
+            "true",
+        ]);
+        assert_eq!(parsed.features.len(), 2);
+        assert!(matches!(parsed.command, Command::Stage(_)));
+    }
+
     #[test]
     fn root_enables_work_before_after_and_with_implicit_spawn() {
         for args in [

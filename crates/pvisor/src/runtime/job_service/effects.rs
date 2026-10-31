@@ -1,16 +1,11 @@
+//! Drop orchestration and recorded-target authorization shared with apply_command.
 use super::{
     JobSelection, RuntimeJobService, ServiceContext, check_selected_record, lock_selected_job,
 };
-use crate::runtime::{ApplySelection, OverlayState, apply_overlay_selected, discard_overlay};
+use crate::runtime::{OverlayState, discard_overlay};
 use anyhow::{Context, bail};
 use std::path::{Path, PathBuf};
 
-pub struct ApplyRequest {
-    pub job: JobSelection,
-    pub target: Option<PathBuf>,
-    pub selection: ApplySelection,
-    pub all: bool,
-}
 pub struct DropRequest {
     pub job: JobSelection,
 }
@@ -22,218 +17,124 @@ pub struct MutationResponse {
 }
 #[derive(Debug, serde::Serialize)]
 pub enum MutationOutcome {
-    AlreadyApplied,
     AlreadyDropped,
     Dropped,
-    Applied {
-        applied: usize,
-        apply_id: String,
-        remaining: usize,
-    },
 }
 impl RuntimeJobService {
-    pub fn apply(
-        context: &ServiceContext<'_>,
-        request: ApplyRequest,
-    ) -> anyhow::Result<MutationResponse> {
-        if !request.all && request.selection.is_all() {
-            bail!("apply requires --all or an explicit --path, --include, or --exclude selection");
-        }
-        if request.all
-            && (!request.selection.paths.is_empty()
-                || !request.selection.includes.is_empty()
-                || !request.selection.excludes.is_empty())
-        {
-            bail!("--all cannot be combined with --path, --include, or --exclude");
-        }
-        mutate(
-            context,
-            request.job,
-            true,
-            request.target.as_deref(),
-            Some(&request.selection),
-        )
-    }
     pub fn drop(
         context: &ServiceContext<'_>,
         request: DropRequest,
     ) -> anyhow::Result<MutationResponse> {
-        mutate(context, request.job, false, None, None)
-    }
-}
-fn mutate(
-    context: &ServiceContext<'_>,
-    job: JobSelection,
-    apply: bool,
-    target: Option<&Path>,
-    selection: Option<&ApplySelection>,
-) -> anyhow::Result<MutationResponse> {
-    let selected = RuntimeJobService::resolve(context, &job)?;
-    let _job = lock_selected_job(context, &selected)?;
-    let (mut record, _lease) = selected.lock_current()?;
-    check_selected_record(&selected, &record)?;
-    context.check(&record)?;
-    record.require_stopped()?;
-    let next_generation = record
-        .overlay
-        .as_ref()
-        .context("this Job has no OverlayFS workspace")?
-        .generation
-        .checked_add(1)
-        .context("workspace generation exhausted")?;
-    let mut overlay = record
-        .overlay
-        .take()
-        .context("this Job has no OverlayFS workspace")?;
-    let _workspace_owner = if apply {
-        super::super::owned_workspace::apply_owner(&record, &overlay)?
-    } else {
-        None
-    };
-    if _workspace_owner.is_some() && target.is_some() {
-        bail!("owned workspace apply does not support overriding its live target");
-    }
-    // The final lower may be the Run-owned snapshot of the target. It is
-    // still the base workspace, whereas any preceding lower is a composed
-    // read-only layer whose changes cannot be applied to that workspace.
-    let base_snapshot = record.storage.join(".overlay-lowers");
-    if apply
-        && _workspace_owner.is_none()
-        && (record.overlay_lowers.len() > 1
-            || record.overlay_lowers.first().is_some_and(|lower| {
-                lower != &overlay.target && !lower.starts_with(&base_snapshot)
-            }))
-    {
-        bail!(
-            "Job {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",
-            record.run_id
-        );
-    }
-    if overlay.state == OverlayState::Applied
-        && pvisor_overlay_core::apply::has_pending_applies(&overlay)?
-    {
-        if !apply {
+        let selected = Self::resolve(context, &request.job)?;
+        let _job = lock_selected_job(context, &selected)?;
+        let (mut record, _lease) = selected.lock_current()?;
+        check_selected_record(&selected, &record)?;
+        context.check(&record)?;
+        record.require_stopped()?;
+        let mut overlay = record
+            .overlay
+            .take()
+            .context("this Job has no OverlayFS workspace")?;
+        if pvisor_overlay_core::apply::has_pending_applies(&overlay)? {
             bail!(
-                "Job {} has a pending apply; retry apply to reconcile it before any drop",
+                "Job {} has a pending apply; explicit reconciliation is required before drop",
                 record.run_id
             );
         }
-        let lower_dirs = if record.overlay_lowers.is_empty() {
-            vec![overlay.target.clone()]
-        } else {
-            record.overlay_lowers.clone()
-        };
-        pvisor_overlay_core::apply::recover_pending_applies(&mut overlay, &lower_dirs)
-            .context("reconcile pending apply before reporting AlreadyApplied")?;
-        anyhow::ensure!(
-            overlay.state == OverlayState::Applied,
-            "pending apply reconciliation retained staged changes; review and retry apply"
-        );
-        // The Job mutation lock and Run lease are held. Only publish a new
-        // runtime fence after target-locked recovery has committed the ledger.
-        overlay.generation = next_generation;
-        record.overlay = Some(overlay.clone());
-        record.write()?;
-    }
-    match (apply, overlay.state) {
-        (true, OverlayState::Applied) => {
-            return Ok(MutationResponse {
-                job_id: record.run_id,
-                target: overlay.target,
-                outcome: MutationOutcome::AlreadyApplied,
-            });
-        }
-        (false, OverlayState::Discarded) => {
-            return Ok(MutationResponse {
-                job_id: record.run_id,
-                target: overlay.target,
-                outcome: MutationOutcome::AlreadyDropped,
-            });
-        }
-        (false, OverlayState::Applied) => {
-            bail!(
+        match overlay.state {
+            OverlayState::Discarded => {
+                return Ok(MutationResponse {
+                    job_id: record.run_id,
+                    target: overlay.target,
+                    outcome: MutationOutcome::AlreadyDropped,
+                });
+            }
+            OverlayState::Applied => bail!(
                 "Job {} was already applied; drop cannot undo changes written to {}",
                 record.run_id,
                 overlay.target.display()
-            );
+            ),
+            _ => {}
         }
-        (true, OverlayState::Discarded) => {
-            bail!(
-                "Job {} was already dropped; apply cannot recover discarded changes",
-                record.run_id
-            );
-        }
-        _ => {}
-    }
-    let outcome = if apply {
-        if overlay.target == Path::new("/") {
-            bail!(
-                "Job {} is a full-root libkrun changeset; fork it or drop it instead of applying it to the host root",
-                record.run_id
-            );
-        }
-        if let Some(target) = target {
-            let target = resolve_apply_target(target, &record.stage_dir())?;
-            overlay.target = target.clone();
-            overlay.baseline_lower = None;
-            if let Some(primary_lower) = record.overlay_lowers.last_mut() {
-                *primary_lower = target;
-            } else {
-                record.overlay_lowers.push(target);
-            }
-        }
-        let lower_dirs = if record.overlay_lowers.is_empty() {
-            vec![overlay.target.clone()]
-        } else {
-            record.overlay_lowers.clone()
-        };
-        let outcome = apply_overlay_selected(
-            &mut overlay,
-            &lower_dirs,
-            selection.expect("apply always supplies a selection"),
-        )?;
-        MutationOutcome::Applied {
-            applied: outcome.applied.len(),
-            apply_id: outcome.apply_id,
-            remaining: outcome.remaining.len(),
-        }
-    } else {
+        let generation = overlay
+            .generation
+            .checked_add(1)
+            .context("workspace generation exhausted")?;
         discard_overlay(&mut overlay)?;
-        MutationOutcome::Dropped
-    };
-    let target = overlay.target.clone();
-    record.overlay = Some(overlay);
-    let overlay = record.overlay.as_mut().expect("restored above");
-    overlay.generation = next_generation;
-    record.write()?;
-    Ok(MutationResponse {
-        job_id: record.run_id,
-        target,
-        outcome,
-    })
+        overlay.generation = generation;
+        let target = overlay.target.clone();
+        record.overlay = Some(overlay);
+        record.write()?;
+        Ok(MutationResponse {
+            job_id: record.run_id,
+            target,
+            outcome: MutationOutcome::Dropped,
+        })
+    }
 }
 
-fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(target)
-        .with_context(|| format!("create apply target {}", target.display()))?;
-    let target = target
-        .canonicalize()
-        .with_context(|| format!("resolve apply target {}", target.display()))?;
-    let stage = stage.canonicalize().unwrap_or_else(|_| stage.to_path_buf());
-    if target.starts_with(&stage) || stage.starts_with(&target) {
-        bail!(
-            "apply target must not overlap the pVisor stage: target={}, stage={}",
-            target.display(),
-            stage.display()
+fn is_system_root(target: &Path) -> anyhow::Result<bool> {
+    match target.canonicalize() {
+        Ok(path) => Ok(path == Path::new("/")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::ensure!(
+                !target
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir),
+                "recorded apply target containing '..' must already exist"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("resolve recorded apply target {}", target.display())),
+    }
+}
+
+pub(super) fn validate_recorded_apply_target(
+    recorded: &Path,
+    rootfs: bool,
+    effective_uid: libc::uid_t,
+) -> anyhow::Result<()> {
+    if is_system_root(recorded)? {
+        anyhow::ensure!(
+            rootfs,
+            "applying the system root '/' requires explicit --rootfs; review the stage first, or drop it"
+        );
+        anyhow::ensure!(
+            effective_uid == 0,
+            "--rootfs requires effective UID 0 and a root-created stage; sudo apply of another user's stage is unsupported by same-UID Job locks; recreate and review the stage as root in root-controlled storage"
+        );
+    } else {
+        anyhow::ensure!(
+            !rootfs,
+            "--rootfs is only valid for a Job whose recorded target is '/'; it cannot turn a workspace stage into a system-root stage"
         );
     }
-    Ok(target)
+    Ok(())
+}
+
+pub(super) fn validate_rootfs_storage(stage: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let stage = stage
+        .canonicalize()
+        .context("resolve rootfs stage storage")?;
+    for directory in stage.ancestors() {
+        let metadata = std::fs::metadata(directory)?;
+        anyhow::ensure!(
+            metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0,
+            "--rootfs requires a root-created stage in root-controlled storage: {} must be root-owned and not group/world writable; sudo apply of a user stage is unsupported; recreate and review the stage as root in private storage",
+            directory.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::RunRecord;
+    use crate::runtime::job_service::{ApplyCommandRequest, ApplyCommandResponse};
+    use crate::runtime::{ApplySelection, RunRecord};
+    use pvisor_overlay_core::apply::apply_overlay_selected;
 
     fn fixture(root: &Path) -> RunRecord {
         for dir in ["target", "upper", "work", "merged"] {
@@ -246,26 +147,137 @@ mod tests {
             "storage":root,"network":{},"gateway_listen":null,
             "overlay":{"id":"effects-gap","generation":7,"target":root.join("target"),
                 "upper":{"upper_dir":root.join("upper"),"work_dir":root.join("work")},
-                "merged_dir":root.join("merged"),"stage_dir":root,
-                "auto_apply":false,"state":"staged"}
-        }))
-        .unwrap();
+                "merged_dir":root.join("merged"),"stage_dir":root,"auto_apply":false,"state":"staged"}
+        })).unwrap();
         record.write().unwrap();
         record
     }
+    fn job(record: &RunRecord) -> JobSelection {
+        JobSelection {
+            selector: Some(record.stage_dir()),
+            storage: record.storage.clone(),
+        }
+    }
+    fn apply(record: &RunRecord, rootfs: bool) -> ApplyCommandResponse {
+        RuntimeJobService::apply_command(
+            &ServiceContext::default(),
+            ApplyCommandRequest {
+                job: job(record),
+                rootfs,
+                all: true,
+                selection: Default::default(),
+                dry_run: false,
+                expected_plan: None,
+            },
+        )
+        .unwrap()
+    }
 
     #[test]
-    fn pending_terminal_apply_is_recovered_before_success_and_new_fence() {
+    fn system_root_requires_opt_in_and_effective_root() {
+        // Authorization only: no test writes to real '/'.
+        for uid in [0, 1000] {
+            assert!(
+                validate_recorded_apply_target(Path::new("/"), false, uid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("explicit --rootfs")
+            );
+        }
+        let error = validate_recorded_apply_target(Path::new("/"), true, 1000).unwrap_err();
+        assert!(error.to_string().contains("effective UID 0"));
+        assert!(error.to_string().contains("same-UID Job locks"));
+        validate_recorded_apply_target(Path::new("/"), true, 0).unwrap();
+    }
+
+    #[test]
+    fn recorded_root_aliases_require_rootfs_and_missing_targets_are_never_created() {
+        let root = tempfile::tempdir().unwrap();
+        let alias = root.path().join("root-alias");
+        std::os::unix::fs::symlink("/", &alias).unwrap();
+        for path in [Path::new("/"), Path::new("/.."), alias.as_path()] {
+            assert!(
+                validate_recorded_apply_target(path, false, 0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("explicit --rootfs")
+            );
+        }
+        let target = root.path().join("missing/..");
+        assert!(validate_recorded_apply_target(&target, false, 0).is_err());
+        assert!(!root.path().join("missing").exists());
+        assert!(
+            validate_recorded_apply_target(root.path(), true, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("only valid")
+        );
+    }
+
+    #[test]
+    fn unauthorized_apply_leaves_stage_and_targets_unchanged() {
+        for (recorded_root, rootfs, terminal) in [
+            (true, false, false),
+            (true, false, true),
+            (true, true, false),
+            (false, true, false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut record = fixture(root.path());
+            let overlay = record.overlay.as_mut().unwrap();
+            if recorded_root {
+                overlay.target = "/".into();
+            }
+            if terminal {
+                overlay.state = OverlayState::Applied;
+            }
+            record.write().unwrap();
+            std::fs::write(root.path().join("upper/change"), b"staged").unwrap();
+            let before = std::fs::read(root.path().join("run.json")).unwrap();
+            let response = apply(&record, rootfs);
+            assert_eq!(response.status, "blocked", "{:?}", response.blockers);
+            assert!(response.execution.is_none());
+            let reason = response.blockers.join(" ");
+            assert!(
+                reason.contains(if recorded_root && !rootfs {
+                    "completion-bound launch contract"
+                } else if recorded_root && unsafe { libc::geteuid() } != 0 {
+                    "effective UID 0"
+                } else if recorded_root {
+                    "root-controlled storage"
+                } else {
+                    "only valid"
+                }),
+                "{reason}"
+            );
+            assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
+            assert_eq!(
+                std::fs::read(root.path().join("upper/change")).unwrap(),
+                b"staged"
+            );
+            assert!(!root.path().join("target/change").exists());
+            assert!(!root.path().join("apply-ledger.json").exists());
+        }
+    }
+
+    #[test]
+    fn rootfs_storage_rejects_user_or_shared_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(validate_rootfs_storage(root.path()).is_err());
+    }
+
+    #[test]
+    fn pending_terminal_apply_blocks_runtime_and_core_recovery_keeps_original_fence() {
         use pvisor_core::overlay::ApplyRecordState;
-        use pvisor_overlay_core::apply::{has_pending_applies, load_apply_records};
+        use pvisor_overlay_core::apply::{
+            has_pending_applies, load_apply_records, recover_pending_applies,
+        };
         let root = tempfile::tempdir().unwrap();
         let record = fixture(root.path());
         std::fs::write(root.path().join("upper/change"), b"staged").unwrap();
         let mut overlay = record.overlay.clone().unwrap();
         let lowers = vec![overlay.target.clone()];
         apply_overlay_selected(&mut overlay, &lowers, &ApplySelection::default()).unwrap();
-        // Model terminal publication preceding ledger commit: the target is
-        // already applied, but the ledger still requires recovery.
         let ledger_path = root.path().join("apply-ledger.json");
         let mut ledger: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
@@ -278,35 +290,22 @@ mod tests {
             OverlayState::Applied
         );
         assert_eq!(current.overlay.as_ref().unwrap().generation, 7);
-        let job = || JobSelection {
-            selector: Some(root.path().to_path_buf()),
-            storage: root.path().to_path_buf(),
-        };
-        let context = ServiceContext::default();
-        let error = RuntimeJobService::drop(&context, DropRequest { job: job() }).unwrap_err();
+        let error = RuntimeJobService::drop(
+            &ServiceContext::default(),
+            DropRequest { job: job(&record) },
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("pending apply"));
-        assert!(has_pending_applies(&overlay).unwrap());
-        assert_eq!(
-            RunRecord::read(root.path())
-                .unwrap()
-                .overlay
-                .unwrap()
-                .generation,
-            7
-        );
-        // Recovery failure must not return AlreadyApplied or advance the fence.
         let entries = root.path().join("preimages/entries");
         std::fs::create_dir_all(&entries).unwrap();
         let corrupt = entries.join("invalid.json");
         std::fs::write(&corrupt, b"invalid").unwrap();
-        let request = || ApplyRequest {
-            job: job(),
-            target: None,
-            selection: ApplySelection::default(),
-            all: true,
-        };
-        let error = RuntimeJobService::apply(&context, request()).unwrap_err();
-        assert!(error.to_string().contains("reconcile pending apply"));
+        let before = std::fs::read(&ledger_path).unwrap();
+        let blocked = apply(&record, false);
+        assert_eq!(blocked.status, "blocked");
+        assert!(blocked.blockers.join(" ").contains("pending apply"));
+        assert_eq!(before, std::fs::read(&ledger_path).unwrap());
+        assert!(recover_pending_applies(&mut overlay, &lowers).is_err());
         assert!(has_pending_applies(&overlay).unwrap());
         assert_eq!(
             RunRecord::read(root.path())
@@ -317,19 +316,13 @@ mod tests {
             7
         );
         std::fs::remove_file(corrupt).unwrap();
-        let response = RuntimeJobService::apply(&context, request()).unwrap();
-        assert!(matches!(response.outcome, MutationOutcome::AlreadyApplied));
+        // Removing corruption is not authorization for runtime to recover implicitly.
+        assert_eq!(apply(&record, false).status, "blocked");
+        recover_pending_applies(&mut overlay, &lowers).unwrap();
         assert!(!has_pending_applies(&overlay).unwrap());
         let committed = load_apply_records(root.path()).unwrap();
         assert_eq!(committed[0].state, ApplyRecordState::Committed);
         assert_eq!(committed[0].overlay_generation, 7);
-        // Read raw run.json too: mutation, not read projection, publishes g+1.
-        let raw: RunRecord =
-            serde_json::from_slice(&std::fs::read(root.path().join("run.json")).unwrap()).unwrap();
-        assert_eq!(raw.overlay.as_ref().unwrap().state, OverlayState::Applied);
-        assert_eq!(raw.overlay.as_ref().unwrap().generation, 8);
-        let repeated = RuntimeJobService::apply(&context, request()).unwrap();
-        assert!(matches!(repeated.outcome, MutationOutcome::AlreadyApplied));
         assert_eq!(
             RunRecord::read(root.path())
                 .unwrap()
@@ -337,6 +330,21 @@ mod tests {
                 .unwrap()
                 .generation,
             8
+        );
+        for _ in 0..2 {
+            assert_eq!(apply(&record, false).status, "no_changes");
+        }
+        assert_eq!(
+            RunRecord::read(root.path())
+                .unwrap()
+                .overlay
+                .unwrap()
+                .generation,
+            8
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("target/change")).unwrap(),
+            b"staged"
         );
     }
 
@@ -348,31 +356,21 @@ mod tests {
         let mut overlay = record.overlay.clone().unwrap();
         let lowers = vec![overlay.target.clone()];
         apply_overlay_selected(&mut overlay, &lowers, &ApplySelection::default()).unwrap();
-        // Deliberately leave run.json unchanged, as on failure/exit after core commit.
         let current = RunRecord::read(root.path()).unwrap();
         assert_eq!(
             current.overlay.as_ref().unwrap().state,
             OverlayState::Applied
         );
         assert_eq!(current.overlay.as_ref().unwrap().generation, 8);
-        let job = || JobSelection {
-            selector: Some(root.path().to_path_buf()),
-            storage: root.path().to_path_buf(),
-        };
-        let error = RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job: job() })
-            .unwrap_err();
-        assert!(error.to_string().contains("already applied"));
-        let response = RuntimeJobService::apply(
+        let error = RuntimeJobService::drop(
             &ServiceContext::default(),
-            ApplyRequest {
-                job: job(),
-                target: None,
-                selection: ApplySelection::default(),
-                all: true,
-            },
+            DropRequest { job: job(&record) },
         )
-        .unwrap();
-        assert!(matches!(response.outcome, MutationOutcome::AlreadyApplied));
+        .unwrap_err();
+        assert!(error.to_string().contains("already applied"));
+        let response = apply(&record, false);
+        assert_eq!(response.status, "no_changes");
+        assert!(response.execution.is_none());
         assert_eq!(
             std::fs::read(root.path().join("target/change")).unwrap(),
             b"staged"

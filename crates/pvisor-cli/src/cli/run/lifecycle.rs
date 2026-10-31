@@ -211,6 +211,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             checkpoint_id: checkpoint.checkpoint_id,
         }),
         pvisor::job_service::policy::PolicySource::Inherited(parent_isolation),
+        None,
     )
     .await
 }

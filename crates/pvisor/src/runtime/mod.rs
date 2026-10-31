@@ -34,6 +34,10 @@ pub(crate) mod zcode;
 
 pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use attempt::{AttemptSession, AttemptTeardown};
+pub(crate) use overlay::{
+    prepare_overlay_record_mountless, save_lower_mutability, stage_overlay_record,
+};
+pub(crate) use registry::RunLease as StagedRunLease;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
 
@@ -56,8 +60,8 @@ pub use implant::{ExecutionOverlayHint, ImplantPlan, OverlayHint};
 pub use overlay::apply_overlay;
 pub use overlay::{
     ApplySelection, ChangeEntry, ChangeEntryType, ChangeKind, OverlayState, ReadOnlyOverlayMount,
-    apply_overlay_selected, discard_overlay, load_apply_records, mount_overlay_record_read_only,
-    overlay_changes, overlay_status, restore_overlay_upper, snapshot_overlay_upper,
+    discard_overlay, load_apply_records, mount_overlay_record_read_only, overlay_changes,
+    overlay_status, restore_overlay_upper, snapshot_overlay_upper,
 };
 #[cfg(test)]
 pub use overlay::{OverlayRecord, OverlayUpper};

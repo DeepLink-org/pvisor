@@ -4,9 +4,7 @@ use std::process::Command;
 use anyhow::Context;
 use clap::Args;
 
-use pvisor::{
-    ApplySelection, ReadOnlyOverlayMount, RunRecord, mount_overlay_record_read_only, resolve_run,
-};
+use pvisor::{ReadOnlyOverlayMount, RunRecord, mount_overlay_record_read_only, resolve_run};
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
 
@@ -68,8 +66,12 @@ pub struct InspectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectArgs {
-    /// Job id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, workspace path, or container name/id.
     pub selector: PathBuf,
+    /// Select a container's exact staged bind guest path (never a Job selector).
+    #[arg(long, value_name = "GUEST_PATH")]
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
 }
@@ -77,25 +79,61 @@ pub struct SelectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyArgs {
-    /// Job id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, workspace selector, or container name/id; internal stage paths are refused.
+    #[arg(value_name = "SOURCE")]
     pub selector: PathBuf,
-    #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
-    pub output_dir: PathBuf,
-    /// Apply staged changes here instead of the target recorded by the Job.
-    #[arg(long, value_name = "PATH")]
-    pub target: Option<PathBuf>,
+    /// Select a container's exact staged bind guest path (never a Job selector).
+    #[arg(long, value_name = "GUEST_PATH")]
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
+    /// Apply recorded system-root changes as root instead of the project scope.
+    /// Requires a root-created stage in root-controlled storage; sudo apply of
+    /// another user's stage is unsupported by same-UID Job locks. This is not an
+    /// atomic system upgrade: filtering package files separately from package
+    /// metadata can leave the system/package database inconsistent.
+    #[arg(long, help_heading = "Scope")]
+    #[serde(default)]
+    pub rootfs: bool,
     /// Apply this relative path and its descendants. Repeatable.
-    #[arg(long = "path", value_name = "RELATIVE_PATH")]
+    #[arg(
+        long = "path",
+        value_name = "RELATIVE_PATH",
+        help_heading = "Selection"
+    )]
     pub paths: Vec<PathBuf>,
     /// Include staged paths matching this glob. Repeatable.
-    #[arg(long, value_name = "GLOB")]
+    #[arg(long, value_name = "GLOB", help_heading = "Selection")]
     pub include: Vec<String>,
     /// Exclude staged paths matching this glob. Repeatable.
-    #[arg(long, value_name = "GLOB")]
+    #[arg(long, value_name = "GLOB", help_heading = "Selection")]
     pub exclude: Vec<String>,
-    /// Explicitly apply every remaining staged change.
-    #[arg(long)]
+    /// Select every change in scope; exclusions remain effective.
+    #[arg(long, conflicts_with_all = ["paths", "include"], help_heading = "Selection")]
     pub all: bool,
+    /// Choose paths with an interactive terminal picker.
+    #[arg(long, short = 'i', conflicts_with_all = ["dry_run", "json"], help_heading = "Selection")]
+    #[serde(default)]
+    pub interactive: bool,
+    /// Preview without writing the target or publishing an apply ledger.
+    #[arg(long, help_heading = "Preview")]
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Show bounded text diffs for the preview; binary content is skipped.
+    #[arg(
+        long,
+        requires = "dry_run",
+        conflicts_with = "json",
+        help_heading = "Preview"
+    )]
+    #[serde(default)]
+    pub diff: bool,
+    /// Emit one JSON object; requires --all, --path or --include.
+    #[arg(long, conflicts_with = "interactive", help_heading = "Output")]
+    #[serde(default)]
+    pub json: bool,
+    /// Job lookup storage.
+    #[arg(long, value_name = "DIR", default_value = DEFAULT_STORAGE, help_heading = "Storage")]
+    pub store: PathBuf,
 }
 
 pub fn status(args: StatusArgs) -> anyhow::Result<()> {
@@ -108,6 +146,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             max_diff_bytes: args.max_diff_bytes,
             max_diff_file_bytes: args.max_diff_file_bytes,
             checkpoint: None,
+            mount: None,
         });
     }
     let response = pvisor::job_service::RuntimeJobService::status(
@@ -500,29 +539,15 @@ impl InspectMount {
     }
 }
 
-pub fn apply(args: ApplyArgs) -> anyhow::Result<()> {
-    use pvisor::job_service::{ApplyRequest, RuntimeJobService};
-    let response = RuntimeJobService::apply(
-        &super::host::service_context(),
-        ApplyRequest {
-            job: pvisor::job_service::JobSelection {
-                selector: Some(args.selector),
-                storage: args.output_dir,
-            },
-            target: args.target,
-            selection: ApplySelection {
-                paths: args.paths,
-                includes: args.include,
-                excludes: args.exclude,
-            },
-            all: args.all,
-        },
-    )?;
-    render_mutation(response);
-    Ok(())
-}
-pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
+pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
     use pvisor::job_service::{DropRequest, RuntimeJobService};
+    args.selector = super::stage_source::resolve(
+        Some(&args.selector),
+        &args.output_dir,
+        args.mount.as_deref(),
+    )?
+    .expect("explicit drop source");
+    args.mount = None;
     let response = RuntimeJobService::drop(
         &super::host::service_context(),
         DropRequest {
@@ -532,17 +557,12 @@ pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
             },
         },
     )?;
-    render_mutation(response);
+    render_drop(response);
     Ok(())
 }
-fn render_mutation(response: pvisor::job_service::MutationResponse) {
+fn render_drop(response: pvisor::job_service::MutationResponse) {
     use pvisor::job_service::MutationOutcome;
     match response.outcome {
-        MutationOutcome::AlreadyApplied => println!(
-            "already applied {} → {}",
-            response.job_id,
-            response.target.display()
-        ),
         MutationOutcome::AlreadyDropped => println!(
             "remaining staged changes already dropped for {}",
             response.job_id
@@ -550,18 +570,6 @@ fn render_mutation(response: pvisor::job_service::MutationResponse) {
         MutationOutcome::Dropped => {
             println!("dropped remaining staged changes for {}", response.job_id)
         }
-        MutationOutcome::Applied {
-            applied,
-            apply_id,
-            remaining,
-        } => println!(
-            "applied {} changes from {} → {} (apply_id={}, remaining={})",
-            applied,
-            response.job_id,
-            response.target.display(),
-            apply_id,
-            remaining
-        ),
     }
 }
 
@@ -594,6 +602,41 @@ fn shell_join(parts: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, clap::Parser)]
+    struct ApplyParser {
+        #[command(flatten)]
+        args: ApplyArgs,
+    }
+
+    #[test]
+    fn rootfs_apply_is_explicit_and_target_override_is_removed() {
+        use clap::Parser;
+        let ordinary = ApplyParser::try_parse_from(["apply", "stage", "--all"]).unwrap();
+        assert!(!ordinary.args.rootfs);
+        let rootfs = ApplyParser::try_parse_from(["apply", "stage", "--all", "--rootfs"]).unwrap();
+        assert!(rootfs.args.rootfs);
+        for target in ["/", "/tmp/workspace"] {
+            let error = ApplyParser::try_parse_from([
+                "apply", "stage", "--all", "--rootfs", "--target", target,
+            ])
+            .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn rootfs_help_explains_upgrade_and_ownership_limits() {
+        use clap::CommandFactory;
+        let help = ApplyParser::command().render_long_help().to_string();
+        for warning in [
+            "not an atomic system upgrade",
+            "package metadata",
+            "same-UID Job locks",
+        ] {
+            assert!(help.contains(warning), "{help}");
+        }
+    }
 
     #[test]
     fn shell_join_quotes_only_when_needed() {

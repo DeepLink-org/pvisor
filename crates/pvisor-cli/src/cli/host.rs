@@ -28,7 +28,7 @@ pub(crate) enum JobCommand {
     Checkpoint(checkpoint::CheckpointArgs),
     Inspect(runtime::InspectArgs),
     Review(product::ReviewArgs),
-    Apply(runtime::ApplyArgs),
+
     Drop(runtime::SelectArgs),
     Vm(VmRequest),
 }
@@ -225,7 +225,7 @@ impl JobCommand {
             Self::Checkpoint(_) => "checkpoint",
             Self::Inspect(_) => "inspect",
             Self::Review(_) => "review",
-            Self::Apply(_) => "apply",
+
             Self::Drop(_) => "drop",
             Self::Vm(_) => "vm",
         }
@@ -249,7 +249,7 @@ impl JobCommand {
             Self::Inspect(a) => Some((a.selector.as_deref(), &a.output_dir)),
             Self::Review(a) => Some((a.selector.as_deref(), &a.output_dir)),
             Self::Kill(a) => Some((Some(&a.selector), &a.output_dir)),
-            Self::Apply(a) => Some((Some(&a.selector), &a.output_dir)),
+
             Self::Drop(a) => Some((Some(&a.selector), &a.output_dir)),
             Self::Fork(a) => {
                 let (selector, output) = a.selection();
@@ -303,7 +303,7 @@ impl JobCommand {
             Self::Inspect(a) => a.selector = Some(root),
             Self::Review(a) => a.selector = Some(root),
             Self::Kill(a) => a.selector = root,
-            Self::Apply(a) => a.selector = root,
+
             Self::Drop(a) => a.selector = root,
             Self::Fork(a) => a.pin_selection(root),
             Self::Suspend(a) => a.selection_mut().job = root,
@@ -378,7 +378,7 @@ pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyh
         JobCommand::Inspect(args) => return runtime::inspect(args),
         JobCommand::Status(args) => runtime::status(args)?,
         JobCommand::Kill(args) => runtime::kill(args)?,
-        JobCommand::Apply(args) => runtime::apply(args)?,
+
         JobCommand::Drop(args) => runtime::drop_overlay(args)?,
         JobCommand::Review(args) => product::review(args)?,
         JobCommand::Suspend(args) => rt.block_on(checkpoint::suspend(args))?,

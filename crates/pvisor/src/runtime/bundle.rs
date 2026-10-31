@@ -23,6 +23,9 @@ pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 pub struct RunBundle {
     pub schema_version: u32,
     pub generated_at_unix_ms: u64,
+    /// Launch-time project authority; immutable once the completion receipt commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_apply_scope: Option<super::job_service::ProjectApplyScope>,
     pub run: BundleRun,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<RunLineage>,
@@ -285,6 +288,7 @@ impl RunBundle {
                 LEGACY_RUN_BUNDLE_SCHEMA_VERSION
             },
             generated_at_unix_ms: unix_now_ms(),
+            project_apply_scope: record.project_apply_scope.clone(),
             executor_observations: result.executor_observations.clone(),
             executor_plan: record.executor_plan.clone(),
             run: BundleRun {
@@ -379,6 +383,16 @@ impl RunBundle {
             let record: RunRecord =
                 serde_json::from_slice(&super::completion::read_file(&record_path)?)?;
             record.validate_schema()?;
+            let scope = value
+                .get("project_apply_scope")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value::<super::job_service::ProjectApplyScope>)
+                .transpose()?;
+            anyhow::ensure!(
+                record.project_apply_scope == scope,
+                "project apply scope contradicts Run Bundle"
+            );
             if value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION {
                 anyhow::ensure!(
                     record.completion_protocol == Some(super::completion::VERSION),
@@ -662,6 +676,7 @@ mod tests {
             finished_at_unix_ms: Some(20),
             storage: temp.path().to_path_buf(),
             workspace: None,
+            project_apply_scope: None,
             overlaynet_listen: None,
             network_interception: Some(InterceptionProfile::explicit_proxy()),
             network_interception_metrics: None,

@@ -458,6 +458,14 @@ fn prepare_overlay_record_mountless_inner(
         record.baseline_lower.as_deref(),
     )
     .map_err(OverlayError::Prepare)?;
+    // Mountless host-root stages are served by the native VM, whose VFS owns
+    // guest DAC. Opt in before Core imports a potentially read-only host root.
+    #[cfg(target_os = "linux")]
+    let layout = if record.target == Path::new("/") && lower_dirs == [PathBuf::from("/")] {
+        layout.with_private_backing()
+    } else {
+        layout
+    };
     pvisor_overlay_core::stage::begin_with_recording(
         &record.stage_dir.join("preimages"),
         durability,
@@ -845,6 +853,78 @@ mod tests {
             assert!(!stage.join("preimages/sealed-v1").exists());
             assert!(pvisor_overlay_core::stage::require_sealed(&stage.join("preimages")).is_err());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountless_host_root_opts_in_before_metadata_import_and_reopens_without_reset() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        let record = OverlayRecord {
+            id: "private-root".into(),
+            generation: 0,
+            target: PathBuf::from("/"),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: stage.join("upper"),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: vec![tmp.path().strip_prefix("/").unwrap().to_owned()],
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Active,
+        };
+        let host = fs::metadata("/").unwrap();
+        let prepared = prepare_overlay_record_mountless(
+            &record,
+            &[PathBuf::from("/")],
+            "private-root-test",
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let upper = prepared.upper.path();
+        let native = fs::metadata(upper).unwrap();
+        assert_eq!(native.permissions().mode() & 0o7777, 0o700);
+        let logical = pvisor_overlay_core::logical_identity(upper, &native).unwrap();
+        assert_eq!(
+            (logical.uid, logical.gid, logical.mode),
+            (host.uid(), host.gid(), host.mode())
+        );
+        pvisor_overlay_core::sys::set_xattr(
+            upper,
+            std::ffi::OsStr::new(pvisor_overlay_core::OVERRIDE_STAT_XATTR),
+            b"123:456:40555",
+            0,
+        )
+        .unwrap();
+        complete_overlay_record(&prepared).unwrap();
+        prepare_overlay_record_mountless(
+            &prepared,
+            &[PathBuf::from("/")],
+            "private-root-reopen",
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let logical =
+            pvisor_overlay_core::logical_identity(upper, &fs::metadata(upper).unwrap()).unwrap();
+        assert_eq!(
+            (logical.uid, logical.gid, logical.mode),
+            (123, 456, 0o40555)
+        );
+        fs::create_dir(upper.join("scratch")).unwrap();
+        assert!(!prepared.merged_dir.exists());
+        let current = fs::metadata("/").unwrap();
+        assert_eq!(
+            (current.uid(), current.gid(), current.mode()),
+            (host.uid(), host.gid(), host.mode())
+        );
     }
 
     #[test]

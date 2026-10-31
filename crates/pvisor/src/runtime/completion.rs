@@ -14,7 +14,13 @@ pub(crate) const VERSION: u16 = 1;
 const FILENAME: &str = "completion.json";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 // Reuse only pure semantic validation of exact bytes, never file or record checks.
-static VALIDATED_COMPLETION: Mutex<Option<(blake3::Hash, blake3::Hash)>> = Mutex::new(None);
+static VALIDATED_COMPLETION: Mutex<Option<ValidatedCompletion>> = Mutex::new(None);
+
+#[derive(Clone)]
+struct ValidatedCompletion {
+    key: (blake3::Hash, blake3::Hash),
+    project_apply_scope: Option<super::job_service::ProjectApplyScope>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,16 +99,31 @@ impl Completion {
             "completion Bundle digest mismatch"
         );
         let key = (blake3::hash(&bytes), bundle_hash);
-        let validated = *VALIDATED_COMPLETION
+        let validated = VALIDATED_COMPLETION
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if validated != Some(key) {
-            let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle)?;
-            receipt.validate_bundle(&bundle)?;
-            *VALIDATED_COMPLETION
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(key);
-        }
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let scope = match validated {
+            Some(validated) if validated.key == key => validated.project_apply_scope,
+            _ => {
+                let bundle: super::bundle::RunBundle = serde_json::from_slice(&bundle)?;
+                receipt.validate_bundle(&bundle)?;
+                let scope = bundle.project_apply_scope;
+                *VALIDATED_COMPLETION
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ValidatedCompletion {
+                    key,
+                    project_apply_scope: scope.clone(),
+                });
+                scope
+            }
+        };
+        // Only the exact Bundle bytes' scope is memoized. Compare the current
+        // record on every load, including removal or insertion of authority.
+        ensure!(
+            record.project_apply_scope == scope,
+            "project apply scope contradicts completion Bundle"
+        );
         validation.success(None);
         profile.success(None);
         Ok(Some(receipt))
@@ -410,6 +431,51 @@ mod tests {
         std::fs::write(&bundle_path, &bundle_bytes).unwrap();
         std::fs::write(&receipt_path, &receipt_bytes).unwrap();
         Completion::load(&record).unwrap().unwrap();
+    }
+
+    #[test]
+    fn repeated_reads_recheck_current_project_scope_against_bound_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut record, result) = fixture(root.path());
+        let scope = super::super::job_service::ProjectApplyScope::capture(root.path()).unwrap();
+        for bound_scope in [None, Some(scope.clone())] {
+            record.project_apply_scope = bound_scope.clone();
+            record.write().unwrap();
+            let path = RunBundle::path(root.path());
+            let mut bundle: RunBundle =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            bundle.project_apply_scope = bound_scope.clone();
+            let bytes = serde_json::to_vec(&bundle).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let receipt = Completion {
+                version: VERSION,
+                result: result.clone(),
+                bundle_blake3: blake3::hash(&bytes).to_hex().to_string(),
+            };
+            crate::util::write_private_json(&root.path().join(FILENAME), &receipt).unwrap();
+            Completion::load(&record).unwrap().unwrap();
+            let mut changed = scope.clone();
+            changed.inode += 1;
+            for current_scope in [None, Some(scope.clone()), Some(changed)] {
+                record.project_apply_scope = current_scope.clone();
+                record.write().unwrap();
+                for _ in 0..2 {
+                    let loaded = Completion::load(&record);
+                    if current_scope == bound_scope {
+                        loaded.unwrap().unwrap();
+                        RunRecord::read(root.path()).unwrap();
+                    } else {
+                        assert!(
+                            loaded
+                                .unwrap_err()
+                                .to_string()
+                                .contains("project apply scope")
+                        );
+                        assert!(RunRecord::read(root.path()).is_err());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
