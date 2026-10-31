@@ -48,8 +48,10 @@ Windows 上的 C 交叉编译器。固件从本仓库 `fw/` 在 Linux 构建，�
 
 ### Windows CI 和真实 WHP 验收
 
-[windows-vm.yml](../../.github/workflows/windows-vm.yml) 在相关 PR/push 上使用
-`windows-2025` 做 MSVC 编译、原生 Win32/文件系统单测、公共契约和 rustdoc 检查。
+[windows-vm.yml](../../.github/workflows/windows-vm.yml) 由主 CI 在每次 PR/push
+调用，使用 `windows-2025` 做 MSVC 编译、Core/guest 单测、原生 Win32/文件系统
+单测、默认与无 `init-blob` 两种配置的 VM 公共契约和 rustdoc 检查。
+Windows 原生检查失败会使主 CI 门禁失败，不再依赖单独 workflow 的路径过滤。
 普通 GitHub 托管 runner 的嵌套虚拟化不是受支持保证，因此真正启动 VM 的任务
 使用独立的 `[self-hosted, Windows, X64, pvisor-whp]` runner。
 
@@ -67,6 +69,11 @@ Windows 上的 C 交叉编译器。固件从本仓库 `fw/` 在 Linux 构建，�
 不能将此状态作为虚机功能验收通过。启用 WHP job 后，缺少 WHP/固件、启动错误、
 错误结果和超时都会失败，不会自动跳过。建议在接入 runner 后将真实 WHP 检查
 纳入受保护分支的发布要求。
+
+这里的门禁不是完整产品的 Windows 支持声明。上层 `pvisor` 仍依赖 Unix/FUSE
+运行时，不能以 VM crate 的通过替代 executor、CLI、OverlayFS、网络或
+stage/review/apply 的验收。Windows 构建仅选择 `--lib --tests` 和 `whp_smoke`；
+其他平台专用的 probe examples 不属于 Windows 构建集合。
 
 `whp_smoke` 为每个场景启动独立 runner，每次限时 60 秒：回调拒绝后的资源回收、
 单/双 vCPU 在线状态、100 ms guest 定时器、文件读取与写回、只读 share、暂停/恢复、

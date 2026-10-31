@@ -1,11 +1,7 @@
 name: Windows VM
 
 on:
-  pull_request:
-    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
-  push:
-    branches: [main, develop, next]
-    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
+  workflow_call:
   workflow_dispatch:
     inputs:
       run_whp:
@@ -17,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-vm-${{ github.ref }}
+  group: windows-vm-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -47,7 +43,9 @@ jobs:
           mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
           mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
       - name: Native unit tests and public contracts (no WHP required)
-        run: mise run test -- pvisor-vm -- --lib --tests --no-fail-fast
+        run: mise run test -- pvisor-core pvisor-guest pvisor-vm -- --lib --tests --no-fail-fast
+      - name: VM contracts without the embedded guest supervisor
+        run: mise run test -- pvisor-vm -- --no-default-features --lib --tests --no-fail-fast
       - name: API documentation
         run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
       - uses: actions/upload-artifact@v4
