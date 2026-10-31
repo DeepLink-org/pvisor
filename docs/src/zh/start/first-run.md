@@ -1,107 +1,96 @@
 ---
-description: 在暂存工作区中运行演示脚本，审查它产生的文件改动，并只合入你接受的部分；不需要 VM 镜像或模型 API。
+description: 运行一条命令，审查文件改动，只合入你想保留的文件。
 ---
 
 <a id="_1"></a>
-
-# 本地工作流：运行与审查 {#local-workflow}
-
-使用本机工具和工作区运行演示脚本，再审查并选择性合入文件改动，无需 VM 镜像或模型 API。请先完成[本地工作流环境准备](installation.md#local-prerequisites)。
-
 <a id="1"></a>
-
-## 1. 准备演示项目与脚本 {#prepare-demo}
-
-```bash
-mkdir -p pvisor-demo/project/src
-cd pvisor-demo/project
-printf 'print("v1")\n' > src/app.py
-printf 'legacy\n' > src/legacy.txt
-git init -q
-git add src
-git -c user.name='pVisor Demo' -c user.email='demo@example.invalid' -c commit.gpgsign=false commit -qm init
-```
-
-演示目录应是新目录。Git 身份仅用于这次基线提交，不修改你的全局配置。
-
 <a id="2-agent"></a>
-
 <a id="demo-script"></a>
-
-脚本会修改 `src/app.py`、删除 `src/legacy.txt`，并创建不准备合入的 `scratch.txt`：
-
-```bash
-cat > ../agent.sh <<'SH'
-#!/usr/bin/env bash
-set -eu
-printf 'print("patched")\n' >> src/app.py
-rm src/legacy.txt
-printf 'scratch\n' > scratch.txt
-SH
-chmod +x ../agent.sh
-```
-
 <a id="3"></a>
-
-## 2. 运行并暂存改动 {#run-and-stage}
-
-```bash
-pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
-```
-
-`--safe` 要求文件与网络隔离，无法落实时拒绝启动；`--overlaynet-deny-all` 强制阻断外部网络访问。`--stage` 指定候选改动的存储位置，应放在项目外，每次运行使用新目录。
-
-**预期结果：**脚本正常退出，三项改动留在暂存目录，原项目尚未变化。在当前终端检查：
-
-```bash
-cat src/app.py
-cat src/legacy.txt
-test ! -e scratch.txt && echo 'scratch.txt: absent'
-```
-
-应输出：
-
-```text
-print("v1")
-legacy
-scratch.txt: absent
-```
-
 <a id="4"></a>
-
-## 3. 审查候选改动 {#review-changes}
-
-用暂存路径定位这次 Job：
-
-```bash
-pvisor status --review ../stage-001
-```
-
-**预期结果：**记录中包含 `src/app.py` 的修改、`src/legacy.txt` 的删除和 `scratch.txt` 的新增。核对退出码、实际生效的控制与警告，再决定接受哪些改动；运行结束不代表改动已合入。
-
 <a id="5"></a>
-
-## 4. 只合入你要的部分 {#apply-changes}
-
-```bash
-pvisor apply ../stage-001 --path src
-pvisor drop ../stage-001
-git diff -- src
-```
-
-**预期结果：**
-
-| 文件 | 合入前 | 合入并丢弃剩余改动后 |
-| --- | --- | --- |
-| `src/app.py` | 只有 `print("v1")` | 新增一行 `print("patched")` |
-| `src/legacy.txt` | 仍然存在 | 已删除 |
-| `scratch.txt` | 项目中不存在，仅在 stage 中 | 项目中仍不存在，候选已丢弃 |
-
-`apply --path src` 只接受 `src` 下的改动；`drop` 丢弃剩余候选，不会撤销已经接受的修改。`git diff -- src` 应显示源码新增行和文件删除。若你在运行期间修改了同一文件，`apply` 会拒绝覆盖；处理方式见[审查并应用改动](../guides/review-apply.md)。
-
 <a id="6"></a>
 <a id="7"></a>
 
+# 运行第一个 Job {#local-workflow}
+
+让一条命令创建两个文件，再只留下其中一个。这个例子不需要 Agent、模型账号或 VM 镜像。
+
+开始前，请[安装 pVisor 并完成平台准备](installation.md#local-prerequisites)：Linux 需要 FUSE 和 user namespace；Apple Silicon macOS 需要启用 FSKit 的 macFUSE 5.4.0+。以下命令在同一个终端执行。
+
+<a id="prepare-demo"></a>
+
+
+## 1. 运行命令 {#run-and-stage}
+
+创建一个新目录，运行命令：
+
+```bash
+mkdir pvisor-demo && cd pvisor-demo
+pvisor spawn --safe --overlaynet-deny-all -- sh -c '
+  echo "Hello from pVisor" > hello.txt
+  echo "Temporary notes" > scratch.txt
+'
+```
+
+命令已结束，但两个文件仍在暂存区。确认原目录没有变化：
+
+```bash
+test ! -e hello.txt && test ! -e scratch.txt && echo 'Workspace unchanged'
+```
+
+```text
+Workspace unchanged
+```
+
+## 2. 审查改动 {#review-changes}
+
+查看这次运行产生的改动：
+
+```bash
+pvisor review last --diff
+```
+
+应看到 `hello.txt` 和 `scratch.txt` 两项新增，以及它们的文本差异。`last` 表示当前工作区最近一次登记的 Job。
+
+## 3. 只留下需要的文件 {#apply-changes}
+
+只接受 `hello.txt`，丢弃剩余候选改动：
+
+```bash
+pvisor apply last --path hello.txt
+pvisor drop last
+cat hello.txt
+test ! -e scratch.txt && echo 'scratch.txt: absent'
+```
+
+```text
+Hello from pVisor
+scratch.txt: absent
+```
+
+## 刚才发生了什么？ {#what-happened}
+
+`spawn --safe` 在写时复制的工作区中运行命令，并记录一个 Job。命令写出的两个文件都留在暂存区；`review` 让你检查它们，`apply --path` 将选中的文件写入原目录，`drop` 丢弃其余候选内容。
+
+`drop` 不会撤销已合入的文件，也不会撤销外部 API 调用。合入前请停止并发写入；若原文件发生冲突，`apply` 会拒绝覆盖。更多规则见[审查并应用改动](../guides/review-apply.md)。
+
+!!! note "如果启动失败"
+    `--safe` 无法落实所需隔离或文件暂存时会拒绝启动。请检查[平台前置条件](installation.md#local-prerequisites)，并保留该参数；去掉它会让普通 Host Job 直接写入原工作区。
+
 ## 下一步 {#next-steps}
 
-将演示命令替换为自己的 Agent CLI，按 [Agent 接入](../guides/agents/index.md)准备所需工具、模型服务与凭据。需要 Linux 镜像或独立内核时，查阅[选择执行环境](../guides/executors/index.md)。
+### 换成你的 Agent
+
+在自己的项目中，将 `sh -c '…'` 换成已安装的 Agent CLI：
+
+```bash
+pvisor spawn --safe -- claude
+pvisor review last --diff
+```
+
+工具和模型凭据的配置见 [Agent 接入](../guides/agents/index.md)。
+
+- [审查并应用改动](../guides/review-apply.md)：接受目录、处理冲突。
+- [VM 工具执行](infrastructure.md)：在 Linux VM 中执行工具并收集反馈。
+- [CLI 参考](../reference/cli.md)：查看命令与参数。

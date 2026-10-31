@@ -4,7 +4,7 @@ description: Install the pvisor CLI from a Python wheel on Linux x86_64 or Apple
 
 # Installation
 
-Install pVisor on the machine that will execute tool commands: your computer for the local workflow, or a Linux/KVM node for the infrastructure example. Current release packages support Linux x86_64 and Apple Silicon macOS; installation requires neither Rust nor a kernel build toolchain.
+Install the CLI, prepare your platform, then run your first Job. Release packages support **Linux x86_64** and **Apple Silicon macOS**; you do not need Rust or a kernel build toolchain.
 
 <a id="1-install-the-tools"></a>
 
@@ -25,11 +25,11 @@ The command should print the pVisor version. Reactivate this environment in each
 
 ## 2. Prepare your chosen environment {#prepare-environment}
 
-Complete only the setup for your chosen path. Neither quick-start example requires a model account or API key.
+Start with the local workflow below. If you want to call tools in a VM, expand the VM setup instead. Neither example needs a model account or API key.
 
 ### Local workflow {#local-prerequisites}
 
-The example uses local tools and a workspace, with the Host executor staging file changes. No VM image, Docker or Podman is required. Prepare Git, Bash and the filesystem-mount support for your platform:
+The example uses local tools and a workspace, with the Host executor staging file changes. No VM image, Docker or Podman is required. Prepare a shell and the filesystem-mount support for your platform:
 
 - **Linux x86_64**: FUSE mounting support is required, with access to `/dev/fuse` and a usable `fusermount3` or `fusermount` command. The example's isolation mode also requires permission to create user namespaces; see the [Host executor](../guides/executors/host.md) for platform boundaries.
 - **Apple Silicon macOS**: install macFUSE 5.4.0 or newer, then enable macFUSE in System Settings → General → Login Items & Extensions → File System Extensions:
@@ -40,17 +40,19 @@ brew install --cask macfuse
 
 macOS uses macFUSE's FSKit backend without loading a kernel extension or reducing boot security. If FSKit is unavailable, execution fails instead of falling back to direct writes. Staging requires `--safe` or `--stage`; ordinary Host Jobs write directly to the workspace by default.
 
-<a id="4-enable-vm-or-oci-execution-when-needed"></a>
+??? note "VM tool execution setup"
 
-### Execution infrastructure {#vm-and-oci}
+    <a id="4-enable-vm-or-oci-execution-when-needed"></a>
 
-Prepare the **Linux x86_64 node** that will run the example:
+    ### Execution infrastructure {#vm-and-oci}
 
-- **KVM and isolation permissions**: the current account needs read/write access to `/dev/kvm` and permission to create user namespaces. For `setgroups` or `uid_map` errors, ask the administrator to check user namespace and AppArmor policies. KVM permissions do not replace these requirements; AppArmor rules must match the actual CLI path.
-- **Caller environment**: install Git and Bash, and run the caller script in the Python environment from the previous step. The task image supplies Python, project code and test dependencies inside the VM; it does not inherit the Host virtual environment.
-- **Image access**: first use requires access to Docker Hub and sufficient disk space to cache the image, but no Docker Daemon. See the [VM executor guide](../guides/executors/vm.md#prepare-a-rootfs) for offline preparation.
+    Prepare the **Linux x86_64 node** that will run the example:
 
-The example script creates the VM; you do not need to start one manually. See the [VM executor guide](../guides/executors/vm.md) for other VM platforms, rootfs and mount options.
+    - **KVM and isolation permissions**: the current account needs read/write access to `/dev/kvm` and permission to create user namespaces. For `setgroups` or `uid_map` errors, ask the administrator to check user namespace and AppArmor policies. KVM permissions do not replace these requirements; AppArmor rules must match the actual CLI path.
+    - **Caller environment**: install Git and Bash, and run the caller script in the Python environment from the previous step. The task image supplies Python, project code and test dependencies inside the VM; it does not inherit the Host virtual environment.
+    - **Image access**: first use requires access to Docker Hub and sufficient disk space to cache the image, but no Docker Daemon. See the [VM executor guide](../guides/executors/vm.md#prepare-a-rootfs) for offline preparation.
+
+    The example script creates the VM; you do not need to start one manually. See the [VM executor guide](../guides/executors/vm.md) for other VM platforms, rootfs and mount options.
 
 ## 3. Choose a quick start {#verify-installation}
 

@@ -17,7 +17,7 @@ nav = [
   { "首页" = "index.md" },
   { "快速开始" = [
     { "安装指南" = "start/installation.md" },
-    { "本地工作流：运行与审查" = "start/first-run.md" },
+    { "运行第一个 Job" = "start/first-run.md" },
     { "执行基础设施：工具执行接入示例" = "start/infrastructure.md" },
   ] },
   { "用户指南" = [
