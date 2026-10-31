@@ -13,6 +13,13 @@
 //! before mutating VM state. Architecture and hypervisor selection is internal.
 //! A capability describes implemented primitives, not evidence that a host has
 //! granted virtualization permissions or that a sandbox was installed.
+//! Windows x86-64 uses WHP with the default or no-default-features profile.
+//! It implements boot, ordinary directory shares, root-level synthetic files and
+//! vCPU pause/resume. Overlay, DAX, snapshots, cold RAM, vsock, Ethernet attachment,
+//! custom guest commands and task-stdio descriptors currently return Unsupported.
+//! Console output uses the runner's stdout; use the guest launch configuration
+//! with `stdio_ports: Some([false; 3])`. Windows filesystem permissions are
+//! synthesized; host ACLs apply and POSIX ownership/mode changes are unsupported.
 //!
 //! # Filesystems and networking
 //! Disable implicit init before attaching a native-init `/dev/root`. Filesystem
@@ -42,7 +49,6 @@
 use std::{
     fs::File,
     io,
-    os::fd::RawFd,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -119,6 +125,15 @@ pub struct GuestCommand {
 pub struct NetworkOptions {
     /// Request DHCP from a caller-supplied init that supports KRUN_DHCP.
     pub guest_dhcp: bool,
+}
+
+/// Owned framed Ethernet transport. Unix streams convert through `From` on Unix.
+/// A Windows `File` can transfer ownership into this type, but Windows Ethernet
+/// attachment currently returns Unsupported. Rejected attachments drop the
+/// supplied transport and preserve the current configuration. Successful Unix
+/// attachments retain it until teardown; framing uses four-byte big-endian lengths.
+pub struct NetworkStream {
+    pub(crate) inner: crate::transport::Stream,
 }
 
 /// Configure owned resources before boot. Each successful call transfers the
@@ -270,6 +285,7 @@ pub trait VmConfiguration: Sized {
     /// NUL components and duplicate names are rejected. Mode uses guest permission
     /// bits. A one-shot name is consumed by its first successful lookup (not listing);
     /// releasing its inode removes the remaining bytes. Validation failure preserves attachments.
+    /// Windows currently accepts only root-level names; nested paths return Unsupported.
     fn virtual_file(
         &mut self,
         tag: &str,
@@ -282,7 +298,7 @@ pub trait VmConfiguration: Sized {
     /// Backend startup enables nonblocking I/O while preserving other status
     /// flags; clones share those flags and must not reset them. Socket setup
     /// failure aborts startup rather than running a blocking device worker.
-    fn network(&mut self, stream: std::os::unix::net::UnixStream, mac: [u8; 6]) -> io::Result<()>;
+    fn network(&mut self, stream: impl Into<NetworkStream>, mac: [u8; 6]) -> io::Result<()>;
     /// Route the task-stdio console ports (`krun-stdin`/`krun-stdout`/
     /// `krun-stderr` plus the unnamed console) to these descriptors instead
     /// of this process's stdio. `-1` omits that stream's port. Descriptors
@@ -294,13 +310,13 @@ pub trait VmConfiguration: Sized {
     /// This separates workload stdio from process diagnostics: stderr
     /// logging (`init_logging`) can target the process's own stderr while
     /// guest output still reaches the caller's descriptors.
-    fn task_stdio(&mut self, stdin: RawFd, stdout: RawFd, stderr: RawFd) -> io::Result<()>;
+    fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()>;
     /// Transfer the framed Ethernet stream and explicit guest-init options.
     /// Has network() ownership/nonblocking requirements; unavailable networking
     /// returns Unsupported, and no implicit TSI path is installed.
     fn network_with_options(
         &mut self,
-        stream: std::os::unix::net::UnixStream,
+        stream: impl Into<NetworkStream>,
         mac: [u8; 6],
         options: NetworkOptions,
     ) -> io::Result<()>;
@@ -586,7 +602,7 @@ pub trait SnapshotState {
     fn rebind_filesystem_policy(
         &mut self,
         tag: &str,
-        policy: &pvisor_overlay_core::FileAccessPolicy,
+        policy: &pvisor_core::overlay::FileAccessPolicy,
     ) -> io::Result<usize>;
     /// Add current Attempt host-authority exclusions to a restored overlay.
     /// Existing exclusions must remain; absolute/escaping paths and additions
@@ -686,6 +702,8 @@ pub enum Hypervisor {
     Kvm,
     /// Apple Hypervisor.framework backend.
     Hvf,
+    /// Windows Hypervisor Platform backend. Requires the WHP optional feature.
+    Whp,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Implemented runtime primitives; host permission and installed sandbox evidence are separate.
@@ -910,7 +928,7 @@ pub struct OverlayConfig {
     /// with long metadata validity. Mutable lowers use ordinary
     /// FUSE metadata timeouts and lookup. Upper files do not use the data-cache
     /// optimization.
-    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
+    pub lower_mutability: Vec<pvisor_core::overlay::LayerMutability>,
     /// Writable stage, exclusively owned by this VM's filesystem connection.
     /// Read-only observers may coexist without a freshness guarantee; concurrent
     /// external writers are unsupported regardless of lower declarations.
@@ -928,7 +946,7 @@ pub struct OverlayConfig {
     /// Relative paths excluded from the merged view and protected against recursive effects.
     pub excluded_paths: Vec<PathBuf>,
     /// Shared path access policy checked on each serving operation.
-    pub access_policy: pvisor_overlay_core::FileAccessPolicy,
+    pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Host/guest ownership, permissions and xattr translation model.
     pub semantics: PermissionSemantics,
 }

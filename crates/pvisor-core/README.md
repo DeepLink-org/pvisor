@@ -73,3 +73,6 @@ This setting is not a global switch for all runtime or audit persistence.
 `On`. `OverlayConfig.recording = Off` requires `StageDurability::Ephemeral`.
 It disables only per-file observations for apply/recovery. Normal file I/O,
 access checks, explicit fsync, execution results and audit records remain.
+
+`overlay::LayerMutability` owns the portable lower stability record shared by VM
+and Overlay; it does not depend on a host filesystem implementation.

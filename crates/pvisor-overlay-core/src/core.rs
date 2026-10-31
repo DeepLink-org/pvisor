@@ -202,18 +202,7 @@ pub struct DirectoryEntry {
     pub backing: ResolvedMetadata,
 }
 
-/// Caller-owned stability promise for one physical lower, not a read-only mount proof.
-/// The promise covers contents, metadata, namespace, ancestors and mount identity
-/// for the entire overlay lifetime. It is independent of baseline observation semantics.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LayerMutability {
-    /// External modifications must remain visible; no cross-request caching.
-    #[default]
-    Mutable,
-    /// Caller guarantees lifetime stability, including all hardlink aliases.
-    Immutable,
-}
+pub use pvisor_core::overlay::LayerMutability;
 
 /// Validated lower ordering and its explicit apply baseline.
 #[derive(Debug)]
