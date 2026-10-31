@@ -56,3 +56,15 @@
   </script>
   {% endif %}
 {% endblock %}
+
+{# Guide pages share the native navigation and TOC with a task-focused reading area. #}
+{% block content %}
+  {% if page and page.url and page.url[:7] == 'guides/' %}
+    <div class="pv-guide">
+      <p class="pv-guide-section">{% if page.url[:14] == 'guides/agents/' %}{% if config.theme.language == 'zh' %}Agent 接入{% else %}Agents{% endif %}{% else %}{% if config.theme.language == 'zh' %}用户指南{% else %}User guide{% endif %}{% endif %}</p>
+      {{ super() }}
+    </div>
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}

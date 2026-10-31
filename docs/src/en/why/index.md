@@ -1,16 +1,27 @@
 ---
-description: What pVisor is, where it sits in an agent system, the local and infrastructure workflows it supports, and the supervision levels available today.
+description: The two modes of the pVisor sandbox framework, their isolation mechanisms and result-acceptance boundaries.
 ---
 
 # Introduction {#overview}
 
 <span id="what-is-policyvisor"></span>
 
-pVisor provides controlled execution, file-change delivery and checkable records for agents on one machine. Use native Jobs to run and review tasks, Docker-style commands for independent Linux VMs, or OpenSandbox/E2B SDKs against a local daemon. Shared images and optional memory mechanisms reduce duplicate resources; measure the benefit for each workload and platform.
+PolicyVisor (pVisor) is a sandbox framework with two modes. Docker style sandbox runs familiar container commands in isolated VMs. Agent style stagebox is pVisor's original mode for coding agents, with staged file changes that you review before accepting.
 
-**PolicyVisor (pVisor) is an agent-native sandbox framework that provides file-level oversight of access and modifications, sandbox execution lifecycle management, and image and memory resource optimizations. Together, these capabilities support secure, controlled, high-density agent execution.**
+## Two modes {#modes}
 
-**Agent-Native:** pVisor integrates file-level oversight, sandbox lifecycle management, and resource reuse throughout agent execution. It uses files as the unit of management to bound access and modifications, isolate candidate changes, and support review; coordinates sandbox pause, memory offload, and resume through Host-side I/O management to actively reclaim resident memory from idle sandboxes during model waits; and uses on-demand image loading, memory sharing, and compression to reduce redundant resource use during branching exploration and rollback. Together, these mechanisms support secure, controlled, high-density agent execution.
+| Mode | Entry points | Isolation and result management |
+| --- | --- | --- |
+| Docker style sandbox | Container commands such as `pvisor run`, `exec`, `stop`, and `rm` | A separate Linux VM for each container; container lifecycle, with a separate staged-bind review/apply/drop contract on Linux. |
+| Agent style stagebox | Start a native Job with `pvisor spawn --safe`, then review and apply/drop | Retain candidate files before selective acceptance; isolation depends on the Host, OCI, or VM executor and installed controls. |
+
+Sandbox names the framework and execution isolation. Stagebox refers specifically to the Agent style mode. A stage stores file changes awaiting acceptance. Stagebox does not name a new VM or isolation level, and does not automatically disable agent approvals.
+
+Docker style sandbox currently provides an experimental Docker-compatible command subset, without Docker Engine API or Compose; see [container commands](../reference/cli.md#container-commands). Start Agent style stagebox with the [offline tutorial](../start/first-run.md), then configure authentication and networking using the [agent guides](../guides/agents/index.md). Ordinary Host Jobs write through by default; file review and acceptance require explicit staging.
+
+“Hands-off vibe coding. Coding without sandbox approvals.” describes one feature of Agent style stagebox within the sandbox framework. A verified agent/version/configuration matrix for approval-free operation is not yet published. Initial authentication, external-write controls, and final result review still need explicit handling.
+
+The framework also manages VM lifecycles, images, and memory for inference, evaluation, and RL post-training integrations. Capabilities depend on the interface, executor, and platform; capacity benefits require workload-specific measurements.
 
 <span id="responsibilities-of-the-execution-layer"></span>
 
@@ -28,7 +39,7 @@ The sandbox runtime / VMM runs the VM and its devices. pVisor coordinates the ru
 
 Native Job executors install controls through host namespaces/Seatbelt, an OCI runtime or a VM; the runtime owns lifecycle, staging and records. Two environment-oriented entry points complement Jobs: the Docker-style CLI manages per-container VMs, and the daemon provides local VM lifecycle, command and file interfaces for tested OpenSandbox/E2B protocol subsets.
 
-Job stage/apply, checkpoints and Gateway capture have separate contracts and cannot be invoked with sandbox IDs. Choose an interface and platform using the [CLI](../reference/cli.md) and [platform matrix](../reference/platforms.md). External orchestrators own cross-node placement, business retries and workflows.
+Native Job operations and daemon sandbox IDs use separate contracts. Container staged binds expose selected review/apply/drop operations with their own source and mount selectors. Choose an interface and platform using the [CLI](../reference/cli.md) and [platform matrix](../reference/platforms.md). External orchestrators own cross-node placement, business retries and workflows.
 
 <span id="task-flow"></span>
 <span id="when-to-use"></span>

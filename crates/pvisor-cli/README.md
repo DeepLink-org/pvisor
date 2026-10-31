@@ -839,3 +839,7 @@ checks, execution results or audit logs. Outputs remain inspectable, but cannot
 be applied, checkpointed or reused. Existing ephemeral behavior is unchanged
 without this additional option. No performance benefit has yet been measured
 for recording-off mode.
+
+Network catalog commands report closed-output errors through the normal CLI
+error path instead of panicking. A create/remove may already have committed
+before its output fails; inspect the catalog before retrying a mutation.
