@@ -28,8 +28,9 @@ CARGO_TARGET_DIR = "{{ [config_root, vars.target_dir] | join_path | absolute }}"
 # Task inspection must also work before the project tools are installed.
 UV_PYTHON = { value = "{% if tools.python is defined %}{{ tools.python.path }}/bin/python3{% else %}python3{% endif %}", tools = true }
 UV_PYTHON_DOWNLOADS = "never"
-# Keep evidence paths canonical on macOS (/var is a symlink to /private/var).
-TMPDIR = "{{ get_env(name='TMPDIR', default='/tmp') | canonicalize }}"
+# Windows supplies TEMP; Unix defaults to /tmp. Canonicalize macOS evidence paths
+# too (/var is a symlink to /private/var), while preserving an explicit TMPDIR.
+TMPDIR = "{{ get_env(name='TMPDIR', default=get_env(name='TEMP', default='/tmp')) | canonicalize }}"
 
 [tasks.benchmark]
 description = "不传参数运行 smoke；其他参数指定 benchmark 中的 Markdown 规格或 JSON 表格。"
