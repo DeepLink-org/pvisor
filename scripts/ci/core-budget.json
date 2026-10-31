@@ -1,6 +1,6 @@
 {
   "dependencies": 236,
-  "workspace_source_lines": 251083,
+  "workspace_source_lines": 251139,
   "core_public_declarations": 305,
   "note": "Regenerate with `mise run update-core-budget` in a change that intentionally grows the budget; CI fails whenever a metric exceeds the recorded value."
 }

@@ -470,17 +470,7 @@ impl RunRecord {
     fn project_completion(&mut self) -> anyhow::Result<()> {
         if self.completion_protocol.is_some() {
             match super::completion::Completion::load(self)? {
-                Some(receipt) => {
-                    let bundle: super::bundle::RunBundle =
-                        serde_json::from_slice(&super::completion::read_file(
-                            &super::bundle::RunBundle::path(&self.stage_dir()),
-                        )?)?;
-                    anyhow::ensure!(
-                        self.project_apply_scope == bundle.project_apply_scope,
-                        "project apply scope contradicts completion Bundle"
-                    );
-                    receipt.project(self)?;
-                }
+                Some(receipt) => receipt.project(self)?,
                 None => {
                     self.state = RunRecordState::Unknown;
                     self.finished_at_unix_ms = None;

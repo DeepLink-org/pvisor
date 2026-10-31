@@ -94,8 +94,11 @@ small reads and buffer growth. That size is only an allocation hint; a bounded
 read and final length check still reject growth beyond the limit.
 Each load, including after locking, opens current files and verifies the receipt's
 protocol, record identity and Bundle digest. A process retains at most one pair of
-receipt/Bundle BLAKE3 hashes to reuse successful, deterministic Bundle semantic
-validation for identical bytes. Changed bytes require full validation; file metadata,
+receipt/Bundle BLAKE3 hashes and the validated Bundle's optional project scope to
+reuse successful, deterministic Bundle semantic validation for identical bytes.
+Every load compares the current record's scope against that exact-byte binding,
+including absent scopes, without reopening or reparsing the Bundle. Changed bytes
+require full validation; file metadata,
 record projections, leases and authorization are never cached. This memo is neither
 persisted nor shared between processes.
 
