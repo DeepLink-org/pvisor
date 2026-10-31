@@ -14,6 +14,18 @@ use std::{
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 
+/// A definite admission rejection: no disk mutation has been attempted.
+#[derive(Debug)]
+pub(super) struct BudgetRejected;
+
+impl std::fmt::Display for BudgetRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("registry size limit exceeded")
+    }
+}
+
+impl std::error::Error for BudgetRejected {}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Metadata {
@@ -303,13 +315,78 @@ fn validate_record(id: &str, record: &Record) -> anyhow::Result<()> {
             && record.endpoint_token.len() >= 32,
         "invalid sandbox reservation or credential"
     );
+    if let Some(claim) = &record.claim {
+        super::claims::validate_identity(&claim.identity)?;
+        ensure!(
+            id == format!("sb-{}", claim.identity.claim_id)
+                && claim.request_digest.len() == 64
+                && claim.request_digest.bytes().all(|b| b.is_ascii_hexdigit())
+                && claim
+                    .timeout
+                    .is_none_or(|t| ((if record.e2b.is_some() { 1 } else { 60 })
+                        ..=365 * 24 * 60 * 60)
+                        .contains(&t)),
+            "invalid durable claim binding"
+        );
+        ensure!(claim.storage_charge > 0, "invalid claim storage charge");
+        // Fixed headroom covers two serialized errors and two status objects.
+        // Bound serialized size, not character count (JSON escaping can expand it).
+        for error in claim.error.iter().chain(
+            claim
+                .creation_result
+                .as_ref()
+                .and_then(|r| r.as_ref().err()),
+        ) {
+            ensure!(
+                serde_json::to_vec(error)?.len() <= 1024,
+                "claim error exceeds reserved envelope"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(&record.sandbox.status)?.len() <= 1024,
+            "claim status exceeds reserved envelope"
+        );
+        if let Some(Ok(sandbox)) = &claim.creation_result {
+            ensure!(
+                sandbox.id == id && serde_json::to_vec(&sandbox.status)?.len() <= 1024,
+                "invalid claim creation snapshot"
+            );
+        }
+        match claim.phase {
+            super::models::ClaimPhase::Reserved => ensure!(
+                record.sandbox.status.state == "Reserved" && record.sandbox.expires_at.is_none(),
+                "invalid reserved claim"
+            ),
+            super::models::ClaimPhase::Released => ensure!(
+                record.sandbox.status.state == "Failed"
+                    && record.sandbox.expires_at.is_none()
+                    && claim.error.is_some(),
+                "invalid released claim"
+            ),
+            _ => ensure!(
+                record.sandbox.status.state != "Reserved",
+                "invalid launched claim"
+            ),
+        }
+    }
     if let Some(profile) = &record.e2b {
         profile.validate()?;
+        let reserved = record
+            .claim
+            .as_ref()
+            .is_some_and(|c| c.phase == super::models::ClaimPhase::Reserved);
+        let released = record
+            .claim
+            .as_ref()
+            .is_some_and(|c| c.phase == super::models::ClaimPhase::Released);
         ensure!(
             profile.cpu_millis == record.cpu_millis
                 && profile.memory_bytes == record.memory_bytes
-                && record.env.get(crate::runtime::ENVD_TOKEN_ENV) == Some(&record.endpoint_token)
-                && record.sandbox.expires_at.is_some(),
+                && (released
+                    || record.env.get(crate::runtime::ENVD_TOKEN_ENV)
+                        == Some(&record.endpoint_token))
+                && (reserved || released || record.sandbox.expires_at.is_some())
+                && record.claim.as_ref().is_none_or(|c| c.timeout.is_some()),
             "invalid E2B reservation, credential or deadline"
         );
     }
@@ -375,8 +452,30 @@ fn load_records(path: &Path, owner: &str) -> anyhow::Result<(BTreeMap<String, Re
 
 // Account the logical snapshot, not repeated per-file owner envelopes, so a
 // valid v1 snapshot at the existing limit remains migratable and manageable.
-fn record_weight(id: &str, record: &Record) -> anyhow::Result<usize> {
-    Ok(serde_json::to_vec(record)?.len() + id.len() + 4)
+pub(super) fn record_weight(id: &str, record: &Record) -> anyhow::Result<usize> {
+    let actual = serde_json::to_vec(record)?.len() + id.len() + 4;
+    if let Some(claim) = &record.claim {
+        // No budget bypass: every byte must fit the admission-time reservation.
+        if actual > claim.storage_charge {
+            return Err(BudgetRejected.into());
+        }
+        Ok(claim.storage_charge)
+    } else {
+        Ok(actual)
+    }
+}
+
+/// Admission-only ceiling: one full record plus a full-record-sized result copy,
+/// plus 8 KiB for phase/status/deadline/error fields, JSON tags and charge digits.
+/// Errors/status objects are each bounded to 1 KiB; public lifecycle operations
+/// never grow env/image/argv/metadata. Persist this charge unchanged in all phases.
+/// Ordinary records retain their original v1-equivalent accounting.
+pub(super) fn claim_storage_charge(record: &Record) -> anyhow::Result<usize> {
+    serde_json::to_vec(record)?
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(record.sandbox.id.len() + 4 + 8192))
+        .context("claim storage charge overflow")
 }
 
 fn check_budget(owner: &str, total: usize, count: usize) -> anyhow::Result<()> {
@@ -389,7 +488,9 @@ fn check_budget(owner: &str, total: usize, count: usize) -> anyhow::Result<()> {
         .checked_add(serde_json::to_vec(&header)?.len())
         .and_then(|n| n.checked_sub(usize::from(count != 0)))
         .context("registry size overflow")?;
-    ensure!(size <= MAX_BYTES, "registry size limit exceeded");
+    if size > MAX_BYTES {
+        return Err(BudgetRejected.into());
+    }
     Ok(())
 }
 
@@ -560,6 +661,7 @@ mod tests {
             memory_bytes: 64 * 1024 * 1024,
             endpoint_token: "fixture-endpoint-token-at-least-32-bytes".into(),
             e2b: None,
+            claim: None,
         }
     }
 
