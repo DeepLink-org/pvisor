@@ -1,0 +1,466 @@
+//! Explicit staged-bind routing through the CLI; persisted fixtures need no VM.
+#![cfg(target_os = "linux")]
+use pvisor::{RunBundle, RunRecord};
+use serde_json::{Value, json};
+use std::{
+    fs,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
+
+struct Fixture {
+    root: tempfile::TempDir,
+    store: PathBuf,
+    instance: Value,
+    stages: Vec<PathBuf>,
+    sources: Vec<PathBuf>,
+}
+impl Fixture {
+    fn new(count: usize) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("docker");
+        pvisor::docker::Store::open(store.clone()).unwrap();
+        let id = "a".repeat(64);
+        let directory = store.join("instances").join(&id);
+        fs::create_dir_all(&directory).unwrap();
+        let mut mounts = Vec::new();
+        let mut stages = Vec::new();
+        let mut sources = Vec::new();
+        for index in 0..count {
+            let source = root.path().join(format!("project-{index}"));
+            fs::create_dir(&source).unwrap();
+            let stage = directory.join("stages/generation").join(index.to_string());
+            for dir in ["upper", "work", "merged"] {
+                fs::create_dir_all(stage.join(dir)).unwrap();
+            }
+            let target = format!("/workspace-{index}");
+            let binding = json!({"version":1,"store":store,"instance_id":id,"generation":"generation",
+                "mount_index":index,"guest_target":target,"source":source});
+            let record: RunRecord = serde_json::from_value(json!({
+                "schema_version":2,"completion_protocol":1,"run_id":format!("bind-{index}"),
+                "session_id":id,"attempt_id":format!("attempt-{index}"),"agent":"fixture","pid":0,
+                "command":["/bin/true"],"state":"completed","started_at_unix_ms":10,"finished_at_unix_ms":20,
+                "storage":stage,"workspace":source,"network":{},"overlay_lowers":[source],
+                "project_apply_scope":pvisor::job_service::ProjectApplyScope::capture(&source).unwrap(),
+                "orchestration":{"pvisor.docker_staged_bind":binding},
+                "overlay":{"id":format!("bind-{index}"),"generation":0,"target":source,
+                    "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
+                    "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
+            })).unwrap();
+            record.write().unwrap();
+            for name in ["job.lock", "lease.lock"] {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(stage.join(name))
+                    .unwrap();
+            }
+            let journal = stage.join("preimages");
+            pvisor_overlay_core::stage::begin(
+                &journal,
+                pvisor_core::overlay::StageDurability::Strict,
+            )
+            .unwrap();
+            let core = pvisor_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+                vec![source.clone()],
+                stage.join("upper"),
+                Some(stage.join("work")),
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            core.observe_read(Path::new("result")).unwrap();
+            drop(core);
+            fs::write(stage.join("upper/result"), format!("result-{index}")).unwrap();
+            pvisor_overlay_core::stage::seal(&stage.join("upper"), &journal).unwrap();
+            let result = json!({"run_id":record.run_id,"attempt_id":record.attempt_id,"state":"completed",
+                "started_at_unix_ms":10,"finished_at_unix_ms":20,"exit_code":0});
+            let snapshot = serde_json::from_value(
+                json!({"run_id":record.run_id,"attempt_id":record.attempt_id,
+                "directive":{"kind":"continue"},"clients":[]}),
+            )
+            .unwrap();
+            RunBundle::capture(
+                &record,
+                &serde_json::from_value(result.clone()).unwrap(),
+                snapshot,
+                false,
+            )
+            .unwrap()
+            .write(&stage)
+            .unwrap();
+            fs::write(stage.join("completion.json"), serde_json::to_vec(&json!({"version":1,"result":result,
+                "bundle_blake3":blake3::hash(&fs::read(RunBundle::path(&stage)).unwrap()).to_hex().to_string()})).unwrap()).unwrap();
+            mounts.push(json!({"source":source,"target":target,"read_only":false,"staged":true,"volume":null}));
+            sources.push(source);
+            stages.push(stage);
+        }
+        let instance = json!({"schema":1,"id":id,"name":"staged","generation":"generation","state":"exited",
+            "exit_code":0,"created_ms":10,"argv":["/bin/true"],"env":{},"cwd":"/","user":"",
+            "image":{"reference":"fixture","id":"fixture","digest":"fixture","platform":"linux/amd64",
+                "cache":{"location":store.join("images"),"handle":"fixture"},"env":{},"entrypoint":[],
+                "cmd":["/bin/true"],"cwd":"/","user":"","stop_signal":15,"volumes":[],"created_ms":10},
+            "config":{"name":"staged","image":"fixture","command":[],"entrypoint":null,"env":{},"cwd":null,
+                "user":null,"mounts":mounts,"ports":[],"cpus":1,"memory_mib":128,"auto_remove":false,
+                "interactive":false,"tty":null,"network":false}});
+        fs::write(
+            store.join("results").join(format!("{id}.json")),
+            serde_json::to_vec(&json!({"generation":"generation","code":0})).unwrap(),
+        )
+        .unwrap();
+        let fixture = Self {
+            root,
+            store,
+            instance,
+            stages,
+            sources,
+        };
+        fixture.save();
+        fixture
+    }
+    fn save(&self) {
+        fs::write(
+            self.store
+                .join("instances")
+                .join(self.instance["id"].as_str().unwrap())
+                .join("instance.json"),
+            serde_json::to_vec(&self.instance).unwrap(),
+        )
+        .unwrap();
+    }
+    fn call(&self, operation: &str, selector: &Path, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .arg(operation)
+            .arg(selector)
+            .args(args)
+            .current_dir(self.root.path())
+            .env("HOME", self.root.path())
+            .env("PVISOR_RUN_HOME", self.root.path().join("runs"))
+            .env("PVISOR_DOCKER_HOME", &self.store)
+            .env_remove("PVISOR_STARTUP_TIMING")
+            .env_remove("PVISOR_STARTUP_PROFILE")
+            .output()
+            .unwrap()
+    }
+    fn named(&self, operation: &str, args: &[&str]) -> Output {
+        self.call(operation, Path::new("staged"), args)
+    }
+}
+fn object(output: &Output, code: i32) -> Value {
+    assert_eq!(output.status.code(), Some(code), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("{e}: {output:?}"))
+}
+fn success(output: &Output) {
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn single_bind_auto_selects_for_review_apply_and_drop() {
+    let f = Fixture::new(1);
+    let review = object(&f.named("review", &["--json"]), 0);
+    assert_eq!(review["run"]["run_id"], "bind-0");
+    let preview = object(&f.named("apply", &["--all", "--dry-run", "--json"]), 0);
+    assert_eq!(preview["source"]["stage"], json!(f.stages[0]));
+    assert!(!f.sources[0].join("result").exists());
+    object(&f.named("apply", &["--all", "--json"]), 0);
+    assert_eq!(
+        fs::read_to_string(f.sources[0].join("result")).unwrap(),
+        "result-0"
+    );
+    assert!(
+        !f.named("drop", &[]).status.success(),
+        "drop must not undo an applied stage"
+    );
+    assert_eq!(
+        fs::read_to_string(f.sources[0].join("result")).unwrap(),
+        "result-0"
+    );
+    let pending = Fixture::new(1);
+    success(&pending.named("drop", &[]));
+    assert!(!pending.stages[0].join("upper/result").exists());
+    assert!(!pending.sources[0].join("result").exists());
+}
+
+#[test]
+fn multiple_binds_require_exact_guest_selector_and_mutate_only_selected_stage() {
+    let f = Fixture::new(2);
+    for operation in ["review", "apply", "drop"] {
+        let options = if operation == "apply" {
+            vec!["--all", "--json"]
+        } else {
+            vec![]
+        };
+        let output = f.named(operation, &options);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("exactly one staged bind"),
+            "{output:?}"
+        );
+        if operation == "apply" {
+            object(&output, 1);
+        }
+        for selector in [
+            "/workspace",
+            "/workspace-1/child",
+            "/missing",
+            "workspace-1",
+        ] {
+            let mut options = options.clone();
+            options.extend(["--mount", selector]);
+            let output = f.named(operation, &options);
+            assert!(!output.status.success(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("exactly name"),
+                "{output:?}"
+            );
+            if operation == "apply" {
+                object(&output, 1);
+            }
+        }
+    }
+    object(
+        &f.named("review", &["--mount", "/workspace-1", "--json"]),
+        0,
+    );
+    object(
+        &f.named("apply", &["--mount", "/workspace-1", "--all", "--json"]),
+        0,
+    );
+    assert!(!f.sources[0].join("result").exists());
+    assert_eq!(
+        fs::read_to_string(f.sources[1].join("result")).unwrap(),
+        "result-1"
+    );
+    success(&f.named("drop", &["--mount", "/workspace-0"]));
+    assert!(!f.stages[0].join("upper/result").exists());
+    assert_eq!(
+        fs::read_to_string(f.sources[1].join("result")).unwrap(),
+        "result-1"
+    );
+}
+
+#[test]
+fn container_rootfs_is_rejected_by_name_and_direct_stage_path() {
+    let f = Fixture::new(1);
+    for source in [Path::new("staged"), f.stages[0].as_path()] {
+        let output = f.call("apply", source, &["--rootfs", "--all", "--json"]);
+        let response = object(&output, 3);
+        assert!(
+            response["blockers"].to_string().contains("--rootfs"),
+            "{response}"
+        );
+        assert!(!f.sources[0].join("result").exists());
+    }
+}
+
+#[test]
+fn active_or_uncommitted_container_selection_fails_closed() {
+    use fs2::FileExt;
+    let mut f = Fixture::new(1);
+    let owner = fs::File::create(
+        f.store
+            .join("instances")
+            .join(f.instance["id"].as_str().unwrap())
+            .join("owner.lock"),
+    )
+    .unwrap();
+    owner.lock_exclusive().unwrap();
+    for state in ["running", "created"] {
+        f.instance["state"] = json!(state);
+        f.save();
+        for operation in ["review", "apply", "drop"] {
+            let args = if operation == "apply" {
+                vec!["--all", "--json"]
+            } else {
+                vec![]
+            };
+            let output = f.named(operation, &args);
+            assert!(!output.status.success(), "{output:?}");
+            if operation == "apply" {
+                object(&output, 1);
+            }
+        }
+    }
+    drop(owner);
+    f.instance["state"] = json!("exited");
+    f.save();
+    fs::remove_file(f.stages[0].join("completion.json")).unwrap();
+    object(&f.named("apply", &["--all", "--json"]), 1);
+    assert!(f.stages[0].join("upper/result").exists());
+    assert!(!f.sources[0].join("result").exists());
+}
+
+#[test]
+fn job_sources_are_preserved_and_mount_explicitly_selects_container() {
+    let f = Fixture::new(1);
+    // A corrupt same-named Job path must not be reinterpreted as a container.
+    let job = f.root.path().join("staged");
+    fs::create_dir(&job).unwrap();
+    fs::write(job.join("run.json"), b"corrupt").unwrap();
+    for operation in ["review", "apply", "drop"] {
+        let args = if operation == "apply" {
+            vec!["--all", "--json"]
+        } else {
+            vec![]
+        };
+        let output = f.named(operation, &args);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("No such container"));
+        if operation == "apply" {
+            object(&output, 1);
+        }
+        let mut explicit = args.clone();
+        if operation == "apply" {
+            explicit.push("--dry-run");
+        }
+        explicit.extend(["--mount", "/workspace-0"]);
+        success(&f.named(operation, &explicit));
+    }
+}
+
+#[test]
+fn default_job_corruption_and_ambiguity_never_fall_back() {
+    for corrupt in [true, false] {
+        let f = Fixture::new(1);
+        for name in ["one", "two"] {
+            let storage = f.root.path().join("runs").join(name);
+            fs::create_dir_all(&storage).unwrap();
+            if corrupt {
+                fs::write(storage.join("run.json"), "corrupt").unwrap();
+            } else {
+                let record: RunRecord = serde_json::from_value(json!({
+                    "schema_version":1,"run_id":"staged","session_id":name,"agent":"fixture",
+                    "pid":0,"command":[],"state":"completed","started_at_unix_ms":10,
+                    "storage":storage,"network":{}
+                }))
+                .unwrap();
+                record.write().unwrap();
+            }
+        }
+        let output = f.named("apply", &["--all", "--json"]);
+        object(&output, 1);
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(if corrupt {
+                "corrupt default Job"
+            } else {
+                "ambiguous existing Job"
+            }),
+            "{output:?}"
+        );
+        object(
+            &f.named(
+                "apply",
+                &["--mount", "/workspace-0", "--all", "--dry-run", "--json"],
+            ),
+            0,
+        );
+        assert!(!f.sources[0].join("result").exists());
+    }
+}
+
+#[test]
+fn ordinary_mounts_and_unstarted_containers_are_not_stages() {
+    for ordinary in [true, false] {
+        let mut f = Fixture::new(1);
+        if ordinary {
+            f.instance["config"]["mounts"][0]["staged"] = json!(false);
+        } else {
+            f.instance["generation"] = json!("");
+        }
+        f.save();
+        for mount in [None, Some("/workspace-0")] {
+            let mut args = vec!["--all", "--json"];
+            if let Some(mount) = mount {
+                args.extend(["--mount", mount]);
+            }
+            object(&f.named("apply", &args), 1);
+            assert!(f.stages[0].join("upper/result").exists());
+            assert!(!f.sources[0].join("result").exists());
+        }
+    }
+}
+
+#[test]
+fn interactive_container_apply_can_go_back_and_accept_the_selected_mount() {
+    let f = Fixture::new(2);
+    let script = r#"
+import os, pty, select, signal, sys, time
+binary, root, store = sys.argv[1:]
+pid, master = pty.fork()
+if pid == 0:
+    os.chdir(root)
+    os.environ.update(HOME=root, PVISOR_RUN_HOME=root+'/runs', PVISOR_DOCKER_HOME=store)
+    os.execv(binary, [binary, 'apply', 'staged', '--mount', '/workspace-1'])
+output = bytearray()
+state = 0
+try:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not select.select([master], [], [], .1)[0]: continue
+        try: chunk = os.read(master, 65536)
+        except OSError: break
+        if not chunk: break
+        output.extend(chunk)
+        assert len(output) < 200000, output
+        if state in (0, 2) and b'Enter preview, q quit' in output:
+            assert b'result' in output, output
+            os.write(master, b'a\r')
+            output.clear()
+            state += 1
+        elif state in (1, 3) and b'[a] apply' in output:
+            os.write(master, b'b' if state == 1 else b'a')
+            output.clear()
+            state += 1
+    else: raise AssertionError('picker timed out: '+repr(output))
+    _, status = os.waitpid(pid, 0)
+    assert status == 0 and state == 4, (status, state, output)
+except BaseException:
+    try: os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    raise
+finally: os.close(master)
+"#;
+    let output = Command::new("python3")
+        .args(["-c", script, env!("CARGO_BIN_EXE_pvisor")])
+        .arg(f.root.path())
+        .arg(&f.store)
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(
+        fs::read_to_string(f.sources[1].join("result")).unwrap(),
+        "result-1"
+    );
+    assert!(!f.sources[0].join("result").exists());
+    assert!(f.stages[0].join("upper/result").exists());
+}
+
+#[test]
+fn corrupt_job_index_never_falls_back_to_container() {
+    let f = Fixture::new(1);
+    let storage = f.root.path().join("jobs");
+    let index = storage.join(".pvisor/runs");
+    fs::create_dir_all(&index).unwrap();
+    fs::write(index.join("737461676564.json"), "corrupt").unwrap();
+    for operation in ["review", "apply", "drop"] {
+        let option = if operation == "apply" {
+            "--store"
+        } else {
+            "--output-dir"
+        };
+        let mut args = vec![option, storage.to_str().unwrap()];
+        if operation == "apply" {
+            args.extend(["--all", "--json"]);
+        }
+        let output = f.named(operation, &args);
+        assert!(!output.status.success(), "{output:?}");
+        if operation == "apply" {
+            object(&output, 1);
+        }
+        assert!(f.stages[0].join("upper/result").exists());
+        assert!(!f.sources[0].join("result").exists());
+    }
+}

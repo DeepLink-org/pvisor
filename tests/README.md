@@ -22,6 +22,10 @@ SDK file/command traffic, cancellation and API/lifecycle faults against real VMs
 Its ordinary safety tests run without an SDK, KVM or a daemon. Application/CLI
 chaos remains in `podman/`; both are correctness experiments, not benchmarks.
 
+The opt-in [native stage chaos driver](STAGE_CHAOS.md) runs bounded, seeded
+real-KVM stage/apply/drop oracles with frozen inputs and private evidence.
+Its ownership, cleanup, deadline and JSON-oracle unit tests require no VM.
+
 Use `tests.fixtures.workspace()` for an isolated canonical temporary path and an
 `ExitStack` for mocks and other cleanup. Each use owns its resources; cleanup runs
 before removing the directory, including when an assertion fails.

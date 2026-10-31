@@ -381,6 +381,20 @@ hardlink dependency closure share that inventory. Ancestor closure includes dire
 that must be created or converted from a non-directory, not independent metadata
 changes on directories that already exist. Select an existing directory explicitly
 to apply its staged metadata; selecting only a child leaves that metadata staged.
+Existing upper directories are independent `Modified` candidates only when
+logical mode/UID/GID or ordinary xattrs differ from the recorded first-touch
+preimage (the highest visible lower is the fallback for unjournaled overlays),
+or when an explicit metadata-intent marker exists. Private backing controls and
+opaque control xattrs are not ordinary metadata differences. Incidental copy-up
+and child-publication directory timestamps are not independent changes; review,
+selection, preview candidates and post-apply remaining counts share this rule.
+`prepare_metadata_change` records the reserved `ROOT_METADATA_NAME` marker for
+all directories, not just the root, so explicit directory time operations remain
+staged and restricted project apply still rejects them. Preparation can retain
+intent even when the subsequent syscall fails. Historical non-root directory
+mtime-only operations without a marker cannot be distinguished from incidental
+timestamps and are not independent candidates; no operation history is inferred
+from mtime/ctime. Raw snapshots retain both timestamps and intent markers.
 Recorded existing-parent preimages remain conflict checks without becoming
 publication dependencies. Child publication advances only their journaled mtime,
 not mode/owner/xattrs; interrupted-child recovery tolerates that timestamp change

@@ -3201,10 +3201,12 @@ impl OverlayCore {
         Ok(entries)
     }
 
-    /// Record an explicit metadata mutation separately from incidental root mtime.
+    /// Record explicit directory metadata intent separately from copy-up/child
+    /// timestamps. The reserved marker survives snapshots and partial child apply;
+    /// preparation may leave intent recorded even if the subsequent mutation fails.
     pub fn prepare_metadata_change(&self, rel: &Path) -> io::Result<PathBuf> {
         let upper = self.copy_up(rel)?;
-        if rel.as_os_str().is_empty() {
+        if fs::symlink_metadata(&upper)?.is_dir() {
             OpenOptions::new()
                 .write(true)
                 .create(true)

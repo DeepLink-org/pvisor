@@ -284,10 +284,12 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
         true
     );
     for operation in ["apply", "drop"] {
-        let refused = command(root.path())
-            .args([operation, "last"])
-            .output()
-            .unwrap();
+        let mut request = command(root.path());
+        request.args([operation, "last"]);
+        if operation == "apply" {
+            request.arg("--all");
+        }
+        let refused = request.output().unwrap();
         assert!(!refused.status.success());
         assert!(String::from_utf8_lossy(&refused.stderr).contains("owner still holds stage"));
     }

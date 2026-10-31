@@ -20,6 +20,7 @@ mod product;
 mod run;
 pub mod runtime;
 mod stage;
+mod stage_source;
 #[cfg(unix)]
 pub mod terminal;
 mod trajectory;
@@ -65,7 +66,7 @@ enum Command {
 
     /// Apply selected changes, preview them, or pick paths in a terminal.
     #[command(
-        long_about = "Apply selected staged changes. SOURCE is required: a Job id, stage directory, legacy upper directory, or workspace selector (including last).\n\nExplicit --path, --include or --all executes without prompting. --all permits --exclude, but not --path or --include. Exclusions alone require --interactive. With no selection, a picker opens only when both stdin and stdout are terminals; otherwise selection is required.\n\nUse --dry-run for a read-only plan, optionally with --diff for bounded text diffs. --json requires an explicit positive selection and never opens a picker. --interactive conflicts with --dry-run and --json.\n\nOrdinary apply is project-scoped. --rootfs explicitly requests privileged system changes; it is not an atomic system upgrade. Exit codes: 0 success, 1 execution/service error, 2 arguments, 3 blocked, 130 quit."
+        long_about = "Apply selected staged changes. SOURCE is required: a Job id, stage directory, or workspace selector (including last). Upper directories and internal stage paths are not apply sources.\n\nExplicit --path, --include or --all executes without prompting. --all permits --exclude, but not --path or --include. Exclusions alone require --interactive. With no selection, a picker opens only when both stdin and stdout are terminals; otherwise selection is required.\n\nUse --dry-run for a read-only plan, optionally with --diff for bounded text diffs. --json requires an explicit positive selection and never opens a picker. --interactive conflicts with --dry-run and --json.\n\nOrdinary apply is project-scoped. --rootfs explicitly requests privileged system changes; it is not an atomic system upgrade. Exit codes: 0 success, 1 execution/service error, 2 arguments, 3 blocked, 130 quit."
     )]
     Apply(runtime::ApplyArgs),
     /// Discard staged changes.

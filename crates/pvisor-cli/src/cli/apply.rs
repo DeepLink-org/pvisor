@@ -45,17 +45,23 @@ pub(super) fn run(mut args: ApplyArgs) -> i32 {
         render_error(args.json, args.dry_run, message);
         return 2;
     }
-    let result = if picker {
-        interactive(&mut args)
-    } else {
-        request(&args, args.dry_run, None).and_then(|response| {
-            render(&response, args.json);
-            if args.diff && exit_code(&response) == 0 {
-                print_diff(&response)?;
-            }
-            Ok(exit_code(&response))
-        })
-    };
+    let result = (|| {
+        args.selector =
+            super::stage_source::resolve(Some(&args.selector), &args.store, args.mount.as_deref())?
+                .expect("explicit apply source");
+        args.mount = None;
+        if picker {
+            interactive(&mut args)
+        } else {
+            request(&args, args.dry_run, None).and_then(|response| {
+                render(&response, args.json);
+                if args.diff && exit_code(&response) == 0 {
+                    print_diff(&response)?;
+                }
+                Ok(exit_code(&response))
+            })
+        }
+    })();
     match result {
         Ok(code) => code,
         Err(error) => {
@@ -91,9 +97,9 @@ fn request(
         ApplyCommandRequest {
             job: JobSelection {
                 selector: Some(args.selector.clone()),
-                storage: args.output_dir.clone(),
+                storage: args.store.clone(),
             },
-            target: args.target.clone(),
+
             rootfs: args.rootfs,
             selection: ApplySelection {
                 paths: args.paths.clone(),

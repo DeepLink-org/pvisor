@@ -110,14 +110,17 @@ proxy may still be cooperative. `PolicyMode::Enforce` independently requires
 non-bypassable controls. Bundle `safe_profile_requested` comes from this typed
 request. `RunConfig.run.profile = "safe"` selects the CLI preset.
 
-Legacy `RuntimeJobService::apply` retains its existing selection, target and
-recovery API. The command-oriented `RuntimeJobService::apply_command(context,
-request)` separates read-only planning from execution; terminal interaction and
-picker policy belong to the frontend, not the runtime.
+`RuntimeJobService::apply_command(context, request)` is the only runtime Job
+apply service. It separates read-only planning from execution; terminal interaction
+and picker policy belong to the frontend, not the runtime. There is no compatibility
+apply adapter or target-override execution path. The effects mutation response is
+used only by drop (`Dropped` / `AlreadyDropped`).
 
-`ApplyCommandRequest` contains `job: JobSelection`, `target: Option<PathBuf>`
-(legacy normal-workspace override), `rootfs: bool`, `selection: ApplySelection`,
-`all: bool`, `dry_run: bool`, and `expected_plan: Option<String>`. Paths and globs
+`ApplyCommandRequest` contains `job: JobSelection`, `rootfs: bool`,
+`selection: ApplySelection`, `all: bool`, `dry_run: bool`, and
+`expected_plan: Option<String>`. There is no `target` request field: destinations
+come exclusively from the recorded project/system-root scope or the ordinary
+workspace's existing owning overlay-target contract. Paths and globs
 must be scope-relative without absolute paths or `..`. Execution needs `all` or a
 positive path/include; `all` permits exclusions but not paths/includes. Empty and
 exclude-only selections are permitted for picker preview, not implicit interactive
@@ -125,6 +128,15 @@ execution. Without `all` or positive paths/includes, preview only inventories
 candidates: it never interprets an empty selection as an all-changes plan. Glob matching uses scope-relative coordinates before mapping to exact
 root-overlay paths, retaining exclusions through dependency closure. Hardlink or
 other dependencies cannot enlarge project authority or revive excluded paths.
+
+Apply sources are Job IDs, stage directories or registered workspaces (including
+the normal-workspace owning target). `last` and omitted selectors keep their
+workspace-local resolution. An upper directory, any path inside it, or a symlink
+alias into it is not an apply source, even if review/status can resolve that path.
+Internal record files and merged/workspace child paths are not explicit apply
+sources either. This admission check runs after resolution to form a structured
+blocked response, but before mutation locks or target writes. The shared resolver
+retains its wider compatibility for other commands.
 
 The schema-1 `ApplyCommandResponse` is serializable JSON:
 
@@ -163,8 +175,10 @@ never adds this contract. A replaced root or symlink ancestor fails closed.
 Only rootstage project apply uses OverlayCore's scoped boundary API: the original
 `/` overlay, upper, preimages and schema-3 root-coordinate ledger remain in place;
 no subtree is copied into a synthetic stage. Normal workspaces retain the existing
-core apply target contract. `target` overrides cannot grant rootstage authority;
-the command planner requires an existing override directory and never creates it.
+core apply target contract; they do not require a new launch scope. No caller can
+redirect writeback to an override path, and rootstage records without a
+completion-bound project contract do not gain authority from cwd or workspace
+inference.
 System-root apply still needs explicit `rootfs`, effective UID 0, same-UID Job
 ownership and root-controlled storage; sudo of user stages is not authorized.
 
@@ -183,16 +197,17 @@ publishing the Run record. The Attempt lease is already created by launch.
 Ordinary spawn without that explicit scope does not gain lock-initialization side
 effects. Legacy stages missing any required lock fail preview closed with an
 existing-lock error; preview never repairs or upgrades them. Recreate such a stage
-with the explicit launch contract, or reconcile it through the existing legacy
-mutation workflow before retrying preview. This limitation is not treated as a
-successful empty preview.
+with the explicit launch contract. Ordinary older workspace records keep their
+recorded target contract for execution, but preview still requires existing lock
+inodes. This limitation is not treated as a successful empty preview.
 
 Dry-run does not recover pending intent, create ledgers, consume upper/preimages
 or create scope/target directories. Reads can update atime; file/directory contents,
 mtime and lock owner records remain unchanged. This entry point conservatively
 blocks **both** preview and execution while any pending
 intent exists; it never uses project authority to recover unrelated system-root
-work. Existing legacy recovery remains separate. Failures retain staged intent
+work. Recovery is an explicit lower-level core operation, not an implicit runtime
+Job apply or drop action. Failures retain staged intent
 and expose execution uncertainty instead of inventing “no changes”. Completion
 receipts are still required for new stopped Attempts, including failed/cancelled
 ones; missing, unknown or contradictory completion is not review approval.
@@ -865,7 +880,8 @@ The experimental `docker` module owns the user-private image catalog, pinned
 container configuration, writable uppers, managed volumes and launch generation
 records used by the top-level container commands. The CLI owns Docker argument parsing, rendering
 and terminal adapters. This profile does not convert ordinary Jobs or alter
-stage/apply, capture or existing daemon APIs.
+`spawn`, native Job staging, capture or existing daemon APIs. Linux containers
+can opt into generation-scoped staged binds through the extension below.
 `Store::pull_with_progress` and `create_with_progress` emit synchronous OCI
 preparation observations for frontend rendering; existing `pull`/`create` callers
 remain silent. Download counts use received compressed bytes, and layer readiness
@@ -1061,6 +1077,42 @@ hosts that cannot represent it; this is not full guest symlink-owner support.
 Failure never publishes a partial stage. Unsupported special files
 and file capabilities fail explicitly. See the CLI README for the Dockerfile
 subset, lack of instruction caching and platform validation limits.
+
+### Generation-scoped staged binds (Linux only)
+
+The pVisor extension `run -v HOST:GUEST:stage` stages an existing explicit host
+directory independently of the container image rootfs. `docker::Mount.staged`
+selects this path; ordinary `ro`/`rw` binds and named/anonymous volumes keep their
+existing behavior. Managed volumes cannot opt into `stage`.
+
+Each staged bind gets its own Job stage and completion-bound project scope,
+recording the canonical source, instance identity, guest target, mount index and
+launch generation. The container owner holds the stage leases while the VMM is
+live, then seals the stages and publishes completion evidence. Apply writes only
+to the recorded host source; relative selections are scoped to that directory.
+Neither guest rootfs writes nor bind staging authorizes writeback to host `/`;
+`--rootfs` is refused for staged-bind apply.
+
+`Store::staged_mount_stage` resolves an instance name/ID and an optional exact
+absolute guest target (`--mount` in the CLI). Omission requires exactly one
+staged bind; direct binds and managed volumes are not review/apply/drop sources.
+Resolution and shared Job operations recheck the generation binding, leases and
+completion evidence; a live instance refuses review/apply/drop.
+
+Admission rejects `--rm` with staging, any mixture of staged and direct-writable
+mounts, and overlapping host sources or guest targets involving staged mounts.
+Apparently disjoint writable paths do not establish source independence;
+disjoint read-only mounts are permitted. Host `/` and aliases with its filesystem
+identity cannot be staged sources. `stop` neither applies nor drops changes.
+Restart requires every staged bind's changes resolved and starts a new generation.
+Pending apply or unknown completion/recovery evidence blocks cleanup, including
+force removal; retain records for explicit reconciliation rather than deleting
+them. Partial apply keeps remaining candidates; drop does not undo applied files.
+
+This is a scoped review/writeback mechanism with no automatic test execution,
+atomic multi-file transaction or rollback of network/service effects. For
+preview, partial apply/drop and multiple-mount workflows, see the
+[staged-bind CLI contract](../../docs/src/en/reference/cli.md#container-staged-binds).
 
 The supported CLI profile and its explicit differences from Docker are in the
 [application README](../pvisor-cli/README.md#docker-command-profile-experimental).
@@ -1356,8 +1408,9 @@ selected changes rejects conflicting target edits. This is not whole-read-set
 transaction isolation. A private `workspace-baseline.json` records the exact
 workspace/rootfs selectors and live target. Stopped-Job apply reauthenticates both
 catalogs and their relationship to the record under the existing lease, retaining
-both owners through commit; a receipt path alone is no proof. The initial version
-rejects apply-target overrides before creating directories. General compose
+both owners through commit; a receipt path alone is no proof. Apply uses only the
+recorded live target, and target-contract tampering is rejected against that
+receipt. The runtime request has no target-override field. General compose
 restrictions remain. Workspace logical checkpoints remain distinct from native
 execution capture/restore, which the required prepared-rootfs executor rejects;
 workspace checkpoint creation/read-only review remain available, while logical

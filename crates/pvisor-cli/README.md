@@ -44,13 +44,24 @@ pvisor review last
 pvisor apply last --path src
 ```
 
-`apply SOURCE` defaults to the recorded project. SOURCE is required. With no
-selection, it opens a picker only when both stdin and stdout are terminals;
-explicit `--path`, `--include` or `--all` executes without prompting unless
+`apply SOURCE` defaults to the recorded project. SOURCE is required: a Job ID,
+stage directory, workspace selector (including `last`), or staged-bind instance
+name/ID (with `--mount` when needed; see the container profile below).
+Upper directories and internal stage paths are refused as apply sources; shared status/inspect
+selectors are unchanged. With no selection, it opens a picker only when both
+stdin and stdout are terminals; explicit `--path`, `--include` or `--all`
+executes without prompting unless
 `--interactive` is requested. `--all --exclude GLOB` is allowed; `--all` cannot
 combine with `--path` or `--include`. Exclusions alone require `--interactive`.
 See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
 argument, JSON and exit-code contracts.
+
+**Breaking change:** apply no longer accepts `--target`, `-o` or
+`--output-dir`, including as hidden aliases. Use `--store DIR` for Job lookup;
+the writeback target cannot be redirected. The runtime entry point is
+`RuntimeJobService::apply_command` with `ApplyCommandRequest` and a schema-1
+result. The old `ApplyRequest` and `RuntimeJobService::apply` are removed,
+without a compatibility adapter.
 
 TOML `[run] profile = "safe"` selects the same preset as `--safe`. Explicit
 `--filesystem host` conflicts with the safe profile and fails before workload
@@ -185,19 +196,20 @@ expected-plan token; a changed plan requires a fresh preview and confirmation.
 `--dry-run` does not write the target, journals, ledger or recovery state and
 does not consume staged changes. Preview locks open only existing lock files
 and leases: missing `job.lock` or required lease files fail closed, without
-creating them. New `stage` startup precreates these observation locks. Apply
-still requires a stopped Job and valid completion evidence.
+creating them. New `stage` startup precreates these observation locks. Old
+stages missing them remain blocked; preview does not install a compatibility
+adapter or repair storage. Apply still requires a stopped Job and valid
+completion evidence.
 
 New rootstage Jobs capture `ProjectApplyScope` version 1: a canonical project
 root other than `/`, with its device/inode identity. The scope is bound into the
 RunRecord and Run Bundle by the completion receipt and revalidated before
 writeback. A changed directory identity or missing/mismatched binding blocks
 apply. Older rootstages without that launch contract cannot gain project
-authority from the current directory or `--target`; recreate the stage for
-project apply. Ordinary workspace stages keep their existing interface and
-legacy explicit `--target` compatibility, limited to an existing workspace
-directory; this does not grant rootstage project or system-root authority.
-New rootstage project apply does not accept a target override.
+authority from the current directory; recreate the stage for project apply.
+Ordinary workspace stages apply only to their owning overlay's recorded target.
+Neither that target nor a rootstage's bound project root can be overridden;
+there is no fallback that infers or expands writeback authority.
 
 The restricted rootstage project path supports regular file additions, edits
 and deletions, plus required new directories. It rejects symlinks, special
@@ -235,8 +247,8 @@ sudo -H pvisor drop /root/pvisor-stages/config-edit
 This preview **does not elevate or import an ordinary user's stage**. Same-UID
 Job locks are preserved; rootfs apply requires effective UID 0 and a root-created
 stage whose canonical directory and ancestors are root-owned and not group/world
-writable. `/tmp` storage is therefore not eligible. `--rootfs` conflicts with
-`--target`, and ordinary apply cannot redirect a workspace stage to `/`.
+writable. `/tmp` storage is therefore not eligible. `--rootfs` applies only to
+the recorded `/` target; ordinary apply cannot redirect a workspace stage to `/`.
 
 Rootfs apply supports ordinary file changes and required new ancestor directories.
 Directory deletion/replacement, opaque replacements and root metadata changes
@@ -264,8 +276,9 @@ applies to the real host root.
 
 ## Docker command profile (experimental)
 
-`pvisor run` creates a container; `spawn` creates a Job with stage/review/apply
-semantics. Unknown command names and leading Job options default to `spawn`;
+`pvisor run` creates a container, optionally with Linux staged binds as described
+below; `spawn` retains its existing Job stage/review/apply semantics.
+Unknown command names and leading Job options default to `spawn`;
 `pvisor -- COMMAND` explicitly selects default Job execution. The former Job
 `run` syntax must now use `spawn`. Each container
 uses its own Linux VM and supervisor, started as the current host user. No
@@ -417,6 +430,69 @@ mutation requests in the host adapter as well as in the guest mount. `stop`/`sta
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
 There is not yet a volume-management CLI or image-blob garbage collector;
 `rmi` removes local references while retaining shared pool objects and legacy OCI data.
+
+### Staged container binds (Linux only)
+
+`run -v HOST:GUEST:stage` is a pVisor extension to the limited Docker-style
+profile. It requires an existing explicit host directory (`./project` or an
+absolute path), with a copy-on-write view mounted at the absolute guest target.
+It does not stage the image rootfs. Existing `:ro`, `:rw`, named-volume and
+anonymous-volume behavior remains unchanged; `stage` cannot be used on managed
+volumes or combined with `ro`/`rw`. `spawn` is unchanged.
+
+For an existing `./project`, run to completion, preview, keep one subtree and
+then discard the rest:
+
+```bash
+pvisor run --name edit -v ./project:/workspace:stage alpine:3.20 \
+  sh -c 'mkdir -p /workspace/src; echo kept > /workspace/src/staged.txt; echo discarded > /workspace/scratch.txt'
+pvisor review edit --diff
+pvisor apply edit --path src --dry-run --diff
+pvisor apply edit --path src
+pvisor drop edit
+pvisor rm edit
+```
+
+`review`, `apply` and `drop` accept the instance name or ID. `--mount` is an
+exact absolute guest-target selector, not a host path or prefix. Omit it only
+when the instance has exactly one staged bind. With existing, disjoint
+`./project` and `./notes` directories:
+
+```bash
+pvisor run --name edits \
+  -v ./project:/workspace:stage -v ./notes:/notes:stage alpine:3.20 \
+  sh -c 'echo kept > /workspace/result.txt; echo discarded > /notes/result.txt'
+pvisor review edits --mount /workspace --diff
+pvisor apply edits --mount /workspace --all --dry-run --diff
+pvisor apply edits --mount /workspace --all
+pvisor review edits --mount /notes --diff
+pvisor drop edits --mount /notes
+pvisor rm edits
+```
+
+Apply paths/globs are relative to the selected host source: `--path src` means
+`HOST/src`, not `/workspace/src`. Authority is bound to that source and launch
+generation; container rootfs writes are never applied to host `/`, and
+`apply --rootfs` is refused for staged binds. Ordinary binds and volumes cannot
+be selected with `--mount` for review/apply/drop.
+
+Admission is conservative: any staged bind forbids direct-writable mounts,
+even with apparently disjoint paths; disjoint read-only mounts are allowed.
+Overlapping guest targets or canonical host sources involving a staged bind are
+rejected. A staged host source of `/`, including an alias with the same filesystem
+identity, is rejected. `--rm` conflicts with staged binds.
+
+Live instances refuse review/apply/drop. `stop` retains stages without accepting
+or discarding them. Before `start` can create a new generation, resolve all
+remaining changes on every staged bind by apply/drop. Removal is explicit;
+pending apply ledgers or unknown completion/recovery evidence block cleanup,
+including force removal. Preserve evidence and reconcile failures first.
+Partial apply leaves the unselected changes staged; drop never undoes accepted
+host writes. There is no automatic test run, atomic multi-file writeback or
+external-side-effect rollback. The full command contract is in the
+[CLI reference](../../docs/src/en/reference/cli.md#container-staged-binds).
+
+### Container terminals and storage
 
 TTY allocation defaults `TERM` to `xterm` when no image/container or explicit
 value is present; explicit values, empty values and unsets retain precedence.

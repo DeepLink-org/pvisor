@@ -48,8 +48,85 @@ pvisor rm redis
 `linux/arm64/v8` is an alias. Omission uses the native platform. Foreign-image
 downloads are supported, but `run` and `start` require native images because CPU
 emulation is not implemented. This profile does not implement Docker Engine API,
-Compose or credential helpers. Containers use their own image store;
-Job review/apply/drop and checkpoints continue to address Jobs.
+Compose or credential helpers. Container records use their own store;
+review/apply/drop also accept staged-bind instance names/IDs as described below.
+Job selectors and checkpoints retain their existing behavior; `spawn` is unchanged.
+
+### Staged container binds (Linux only) {#container-staged-binds}
+
+Use the pVisor extension `-v HOST:GUEST:stage` to review bind-mount changes before
+writing them back to an existing host directory. The guest sees a copy-on-write
+view; the host source remains unchanged until apply. Use an explicit bind source
+such as `./project` or an absolute directory path and an absolute guest target.
+Existing `:ro`/`:rw` binds and named/anonymous volumes are unchanged. `stage`
+does not apply to managed volumes, cannot be combined with `ro`/`rw`, and is not
+a claim of complete Docker compatibility.
+
+For an existing `./project`, this foreground command exits before review. Preview
+without writing, apply only `src`, then drop the remaining candidates:
+
+```bash
+pvisor run --name edit -v ./project:/workspace:stage alpine:3.20 \
+  sh -c 'mkdir -p /workspace/src; echo kept > /workspace/src/staged.txt; echo discarded > /workspace/scratch.txt'
+pvisor review edit --diff
+pvisor apply edit --path src --dry-run --diff
+pvisor apply edit --path src
+pvisor drop edit
+pvisor rm edit
+```
+
+`review`, `apply` and `drop` accept the instance name or ID in the current
+container store (`PVISOR_DOCKER_HOME` selects it). `--mount GUEST` must exactly
+match a staged bind's absolute guest target; it is not a prefix or host path.
+It is optional for exactly one staged bind and required with multiple staged
+binds, even if only one still has changes. Ordinary binds and volumes cannot be
+selected for these operations.
+
+With existing, disjoint `./project` and `./notes` directories, select each mount
+explicitly:
+
+```bash
+pvisor run --name edits \
+  -v ./project:/workspace:stage -v ./notes:/notes:stage alpine:3.20 \
+  sh -c 'echo kept > /workspace/result.txt; echo discarded > /notes/result.txt'
+pvisor review edits --mount /workspace --diff
+pvisor apply edits --mount /workspace --all --dry-run --diff
+pvisor apply edits --mount /workspace --all
+pvisor review edits --mount /notes --diff
+pvisor drop edits --mount /notes
+pvisor rm edits
+```
+
+Paths and globs select relative to the chosen host source: `--path src` targets
+`HOST/src`, not the guest `/workspace/src`. Apply uses the recorded source scope
+and directory identity, with preimage conflict checks; it cannot be redirected.
+The image rootfs is separate and is never written back to host `/`.
+`apply --rootfs` is refused for staged binds. The [apply options](#apply-options)
+also govern preview, explicit selection and partial writeback.
+
+Admission rejects these configurations before launch:
+
+- Staged binds combined with `--rm`; remove the instance explicitly after review.
+- Any staged bind combined with a direct-writable mount, including apparently
+  disjoint writable binds or volumes. Disjoint read-only mounts are permitted.
+- Overlapping guest targets or canonical host sources where a staged bind is
+  involved, including equal or ancestor/descendant paths.
+- Host `/` as a staged source, including an alias with the same filesystem identity.
+
+Review/apply/drop require a stopped instance with confirmed completion evidence;
+live instances refuse all three, including preview. `stop` retains the stages
+and neither applies nor drops them. Partial apply leaves unselected changes
+staged; drop discards the remaining candidates without undoing already-applied
+host files. Before `start` can restart an instance, every staged bind must have
+its changes resolved by apply/drop (or have no changes). Restart creates a new
+generation and fresh bind stages; old stages cannot authorize operations on it.
+
+Pending apply ledgers or unknown completion/recovery state block cleanup,
+including `rm -f`; force removal is not a recovery bypass. Preserve the stage,
+ledger and completion evidence for explicit reconciliation. Missing evidence is
+not proof that no changes occurred. Apply does not run tests automatically or
+provide atomic multi-file writeback; validate accepted changes separately.
+Remote API calls and other external side effects are outside apply/drop.
 
 ### Same-host container networks {#container-networks}
 
@@ -402,10 +479,20 @@ pvisor apply last --all --exclude 'build/**'
 pvisor apply last --include 'src/**' --dry-run --json
 ```
 
-`SOURCE` is required: a Job ID, stage directory, legacy upper directory, or
-workspace selector such as `last`. Apply requires a stopped Job, valid completion
-evidence and an apply-capable stage. The default scope is the recorded project;
-paths and globs are relative to that scope. Outside-project changes remain staged.
+`SOURCE` is required: a Job ID, stage directory, workspace selector such as
+`last`, or a [staged-bind instance name/ID](#container-staged-binds) (with
+`--mount` when needed). Upper directories and internal stage paths, including paths inside the
+upper, are refused as apply sources. Shared status/inspect upper selectors are
+unchanged. Apply requires a stopped Job, valid completion evidence and an
+apply-capable stage. The default scope is the recorded project; paths and globs
+are relative to that scope. Outside-project changes remain staged.
+
+**Breaking change:** `apply --target` is removed; writeback cannot be redirected
+to an arbitrary directory. Apply also rejects `-o` and `--output-dir`; use only
+`--store` for Job lookup. No hidden aliases or compatibility adapter are provided.
+The runtime uses `RuntimeJobService::apply_command` with `ApplyCommandRequest`
+and a schema-1 result; the old `ApplyRequest` and `RuntimeJobService::apply`
+entry point are removed.
 
 ### Selection and output {#apply-options}
 
@@ -419,9 +506,9 @@ paths and globs are relative to that scope. Outside-project changes remain stage
 | `--dry-run` | Read-only preflight: selected changes, required dependencies, blockers and remaining counts. Does not consume staged changes. |
 | `--diff` | Bounded text diffs, skipping binary content. Requires `--dry-run`; conflicts with `--json`. |
 | `--json` | One schema-version-1 result object on stdout; requires `--path`, `--include` or `--all`, and never opens a picker. Diagnostics go to stderr. |
-| `--store DIR` | Job lookup storage, default `.pvisor/capture`. Legacy `-o DIR` and `--output-dir DIR` remain accepted aliases. |
-| `--target PATH` | Legacy override for an ordinary workspace stage, naming an existing workspace directory. Not a rootstage project override; cannot authorize `/`. |
-| `--rootfs` | Advanced, privileged writeback to the recorded `/` target; conflicts with `--target`. |
+| `--store DIR` | Job lookup storage, default `.pvisor/capture`; no short or legacy aliases. |
+| `--mount GUEST` | Select the exact staged-bind guest target for a container name/ID; optional for one staged bind, required for multiple. |
+| `--rootfs` | Advanced, privileged writeback to the recorded `/` target; refused for container staged binds. |
 
 Without a selection, the picker opens automatically only when **both stdin and
 stdout are terminals**. It starts with nothing checked. Non-interactive use must
@@ -449,20 +536,22 @@ and requires confirmation again.
 state. It performs no implicit recovery and creates no target directory or
 missing lock files. Preview uses strict read-only observation locks and leases;
 missing existing `job.lock` or required lease files fail closed. New `stage`
-startup precreates these locks so its first preview can use them.
+startup precreates these locks so its first preview can use them. Old stages
+missing these locks remain blocked; preview does not repair them or adapt legacy
+storage.
 
-### Project authority and compatibility {#apply-scope}
+### Project authority and recorded targets {#apply-scope}
 
 New Linux root-filesystem stages record `ProjectApplyScope` version 1 at launch:
 a canonical project `root` other than `/`, plus `device` and `inode` identity.
 The RunRecord and Run Bundle carry this scope, bound by the completion receipt.
 Apply revalidates that binding and directory identity; replacing the project
 directory, changing the contract, or omitting the binding blocks writeback.
-Neither the current directory nor `--target` can supply missing authority.
-Older rootstages without this contract are refused for project apply; recreate
-the stage to use that path. Ordinary workspace stages retain their existing
-explicit-target compatibility without expanding its scope. A new rootstage's
-project root cannot be overridden.
+The current directory cannot supply missing authority. Older rootstages without
+this contract are refused for project apply; recreate the stage to use that
+path. Ordinary workspace stages use only their owning overlay's recorded target.
+Neither that target nor a rootstage's bound project root can be overridden;
+apply never guesses a replacement scope.
 
 This restricted rootstage project path supports regular file additions,
 modifications and deletions, plus required new directories. Symlinks, special
@@ -1200,8 +1289,9 @@ Reads use the selected fixed generation; subsequent host project edits do not
 enter the current Run's snapshot read view. Writes enter a fresh stage. Ordinary
 `pvisor apply` still targets the original live project, checking the snapshot
 baseline for selected written paths and retaining conflicts. This does not
-provide serializable transaction checks over every read path. Redirecting with
-`apply --target` is unsupported.
+provide serializable transaction checks over every read path. `apply --target`
+is removed globally, including for prepared workspaces; writeback uses the
+recorded target.
 
 Supply both workspace arguments together. They require prepared rootfs, a
 native VM, a fresh stage and one workspace lower. TOML uses
@@ -1242,8 +1332,12 @@ project/                         # reusable workspace / default base
     └── events.trace.jsonl       # when --record-destination is set
 ```
 
-Lifecycle commands accept a Run id, Run directory, project workspace,
-`run.json`, upper, or merged path. A project workspace selects its latest Run:
+Shared lifecycle selectors used by `status` and `inspect` accept a Run id,
+Run directory, project workspace, `run.json`, upper, or merged path. `apply`
+accepts only a Job ID, stage directory or workspace selector (including `last`),
+not upper or internal stage paths. A project workspace selects its latest Run;
+apply writes to that Run's recorded target or bound project scope, never an
+override. `--store` selects lookup storage, not the writeback destination:
 
 ```bash
 pvisor status /path/to/project
@@ -1251,7 +1345,7 @@ pvisor inspect /path/to/project -- rg TODO .
 pvisor apply /path/to/project --all
 pvisor apply /path/to/project --path src --path tests/unit
 pvisor apply /path/to/project --include 'docs/**' --exclude 'docs/generated/**'
-pvisor apply /path/to/project --target /path/to/another-target --all
+pvisor apply /path/to/project --store /path/to/run-store --all --exclude 'build/**'
 pvisor drop /path/to/project
 ```
 

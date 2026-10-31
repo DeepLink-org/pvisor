@@ -81,6 +81,7 @@ pub(super) struct Run {
     user: Option<String>,
     #[arg(long)]
     entrypoint: Option<String>,
+    /// Bind or volume: HOST:GUEST[:ro|rw]; HOST:GUEST:stage explicitly stages a Linux bind.
     #[arg(short = 'v', long = "volume")]
     volumes: Vec<String>,
     #[arg(short = 'p', long = "publish")]
@@ -244,6 +245,10 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
         (1..=3).contains(&parts.len()),
         "invalid volume specification"
     );
+    ensure!(
+        !(parts.len() == 2 && parts[1] == "stage"),
+        "stage requires HOST:GUEST:stage, not an anonymous volume"
+    );
     let (source, target, mode) = if parts.len() == 1 {
         (None, parts[0], "rw")
     } else {
@@ -254,8 +259,13 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
         )
     };
     ensure!(
-        matches!(mode, "ro" | "rw"),
+        matches!(mode, "ro" | "rw" | "stage"),
         "unsupported volume mode: {mode}"
+    );
+    let staged = mode == "stage";
+    ensure!(
+        !staged || source.is_some_and(|s| s.starts_with('/') || s.starts_with('.')),
+        "stage requires an explicit bind source, not a named or anonymous volume"
     );
     let (source, managed) = match source {
         Some(source) if source.starts_with('/') || source.starts_with('.') => {
@@ -274,6 +284,7 @@ fn volume(value: &str, store: &Store) -> anyhow::Result<docker::Mount> {
         source,
         target: target.into(),
         read_only: mode == "ro",
+        staged,
         volume: managed,
     })
 }
@@ -887,6 +898,43 @@ mod tests {
         assert_eq!(env.get("VALUE").unwrap(), "cli value");
         assert!(!env.contains_key(&missing));
         assert_eq!(unset, [missing]);
+    }
+
+    #[test]
+    fn staged_volumes_are_explicit_binds_and_never_allocate_managed_volumes() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("store")).unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        for mode in ["stage", "ro", "rw"] {
+            let mount = volume(&format!("{}:/workspace:{mode}", source.display()), &store).unwrap();
+            assert_eq!(mount.source, source.canonicalize().unwrap());
+            assert_eq!(mount.target, PathBuf::from("/workspace"));
+            assert_eq!(mount.read_only, mode == "ro");
+            assert_eq!(mount.staged, mode == "stage");
+            assert!(mount.volume.is_none());
+        }
+        for value in [
+            "named:/workspace:stage",
+            ":/workspace:stage",
+            "/workspace:stage",
+            "named:/workspace:ro,stage",
+            "named:/workspace:stage,rw",
+        ] {
+            assert!(volume(value, &store).is_err(), "{value}");
+        }
+        assert_eq!(
+            std::fs::read_dir(root.path().join("store/volumes"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let named = volume("named:/workspace:ro", &store).unwrap();
+        assert_eq!(named.volume.as_deref(), Some("named"));
+        assert!(named.read_only && !named.staged);
+        let anonymous = volume("/workspace", &store).unwrap();
+        assert!(anonymous.volume.unwrap().starts_with("anonymous:"));
+        assert!(!anonymous.staged);
     }
 
     #[test]

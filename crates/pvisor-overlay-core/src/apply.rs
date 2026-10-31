@@ -383,6 +383,10 @@ fn overlay_changes_from_inventory(
             mode: Some(root_identity.mode & 0o7777),
         });
     }
+    let preimages = load_preimages(&record.stage_dir.join("preimages"))?
+        .into_iter()
+        .map(|entry| (entry.relative_path(), entry.state))
+        .collect::<BTreeMap<_, _>>();
     for entry in inventory {
         let rel = &entry.relative;
         let upper_path = upper_dir.join(rel);
@@ -416,15 +420,24 @@ fn overlay_changes_from_inventory(
             Some(old_type) if old_type != new_type => ChangeKind::TypeChanged,
             Some(_) => ChangeKind::Modified,
         };
-        changes.push(ChangeEntry {
-            path: rel.display().to_string(),
-            path_bytes: raw_change_path(rel),
-            kind,
-            old_type,
-            new_type: Some(new_type),
-            size_bytes: new.is_file().then_some(new.len()),
-            mode: Some(crate::logical_identity(&upper_path, new)?.mode & 0o7777),
-        });
+        // Copy-up parents are structural, not independent metadata intent.
+        // Compare against first touch, not a possibly concurrently changed lower.
+        // Timestamp-only intent is retained by prepare_metadata_change's marker.
+        let incidental_directory = new.is_dir()
+            && old_type == Some(ChangeEntryType::Directory)
+            && !path_exists(&upper_path.join(crate::ROOT_METADATA_NAME))
+            && directory_metadata_unchanged(record, lower_dirs, rel, &preimages)?;
+        if !incidental_directory {
+            changes.push(ChangeEntry {
+                path: rel.display().to_string(),
+                path_bytes: raw_change_path(rel),
+                kind,
+                old_type,
+                new_type: Some(new_type),
+                size_bytes: new.is_file().then_some(new.len()),
+                mode: Some(crate::logical_identity(&upper_path, new)?.mode & 0o7777),
+            });
+        }
         if new.is_dir() && crate::is_opaque_directory(&upper_path) {
             changes.push(opaque_change(rel));
         }
@@ -435,6 +448,38 @@ fn overlay_changes_from_inventory(
             .then(left.kind.cmp(&right.kind))
     });
     Ok(changes)
+}
+
+fn directory_metadata_unchanged(
+    record: &OverlayRecord,
+    lowers: &[PathBuf],
+    relative: &Path,
+    preimages: &BTreeMap<PathBuf, PathFingerprint>,
+) -> Result<bool, OverlayError> {
+    let current = fingerprint_at(record.upper.path(), relative)?;
+    let baseline = if let Some(saved) = preimages.get(relative) {
+        saved.clone()
+    } else {
+        // Legacy, unjournaled overlays still use the highest visible lower.
+        let mut baseline = PathFingerprint::Absent;
+        for lower in lowers {
+            if crate::core::layer_path(lower, relative)?.is_some() {
+                baseline = fingerprint_at(lower, relative)?;
+                break;
+            }
+        }
+        baseline
+    };
+    Ok(matches!(
+        (&current, &baseline),
+        (
+            PathFingerprint::Directory { mode, uid, gid, xattrs: Some(xattrs), .. },
+            PathFingerprint::Directory {
+                mode: old_mode, uid: old_uid, gid: old_gid,
+                xattrs: Some(old_xattrs), ..
+            }
+        ) if (mode, uid, gid, xattrs) == (old_mode, old_uid, old_gid, old_xattrs)
+    ))
 }
 
 fn raw_change_path(path: &Path) -> Option<Vec<u8>> {
@@ -1655,13 +1700,14 @@ fn publish_project_apply(
                         #[cfg(target_os = "linux")]
                         // SAFETY: both C paths are live; flags prohibit destination replacement.
                         let rc = unsafe {
-                            libc::renameat2(
+                            libc::syscall(
+                                libc::SYS_renameat2,
                                 libc::AT_FDCWD,
                                 from.as_ptr(),
                                 libc::AT_FDCWD,
                                 to.as_ptr(),
                                 libc::RENAME_NOREPLACE,
-                            )
+                            ) as libc::c_int
                         };
                         #[cfg(not(target_os = "linux"))]
                         let rc = -1;
@@ -2801,6 +2847,17 @@ fn prune_selected_directory(
     relative: &Path,
     selected: &BTreeSet<PathBuf>,
 ) -> Result<(), OverlayError> {
+    // Removing a selected child changes its upper parent's mtime too. Preserve
+    // unselected metadata intent, including explicit directory timestamps.
+    let retained_directory = if !selected.contains(relative)
+        && path_exists(&directory.join(crate::ROOT_METADATA_NAME))
+    {
+        let file = File::open(directory)?;
+        let modified = file.metadata()?.modified()?;
+        Some((file, modified))
+    } else {
+        None
+    };
     if selected.contains(relative) {
         clear_opaque_xattrs(directory)?;
     }
@@ -2839,6 +2896,10 @@ fn prune_selected_directory(
         } else if selected.contains(&logical) {
             remove_path(&path)?;
         }
+    }
+    if let Some((file, modified)) = retained_directory {
+        file.set_times(fs::FileTimes::new().set_modified(modified))?;
+        file.sync_all()?;
     }
     Ok(())
 }
@@ -3587,6 +3648,269 @@ mod tests {
             inode: identity.ino(),
         };
         (record, lowers, boundary)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn nested_project_fixture_with_backing(
+        root: &Path,
+        private: bool,
+    ) -> (OverlayRecord, Vec<PathBuf>, ProjectApplyBoundary) {
+        let target = root.join("target");
+        let upper = root.join("upper");
+        fs::create_dir_all(target.join("project/nested")).unwrap();
+        fs::write(target.join("project/nested/file"), b"old").unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let lowers = vec![target.clone()];
+        crate::stage::begin(
+            &record.stage_dir.join("preimages"),
+            pvisor_core::overlay::StageDurability::Strict,
+        )
+        .unwrap();
+        let layout = crate::OverlayLayout::new(lowers.clone(), target.clone()).unwrap();
+        let layout = if private {
+            layout.with_private_backing()
+        } else {
+            layout
+        };
+        let core = OverlayCore::new_for_layout(
+            layout,
+            upper.clone(),
+            Some(record.upper.work_dir.clone()),
+            vec![],
+            Some(record.stage_dir.join("preimages")),
+        )
+        .unwrap();
+        fs::write(
+            core.copy_up(Path::new("project/nested/file")).unwrap(),
+            b"new",
+        )
+        .unwrap();
+        drop(core);
+        crate::stage::seal(&upper, &record.stage_dir.join("preimages")).unwrap();
+        let identity = fs::metadata(target.join("project")).unwrap();
+        let boundary = ProjectApplyBoundary {
+            target: target.join("project"),
+            overlay_prefix: "project".into(),
+            device: identity.dev(),
+            inode: identity.ino(),
+        };
+        (record, lowers, boundary)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn nested_project_fixture(root: &Path) -> (OverlayRecord, Vec<PathBuf>, ProjectApplyBoundary) {
+        nested_project_fixture_with_backing(root, true)
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_nested_copyup_timestamps_are_not_candidates_and_all_completes() {
+        for private in [false, true] {
+            let tmp = tempdir().unwrap();
+            let (mut record, lowers, boundary) =
+                nested_project_fixture_with_backing(tmp.path(), private);
+            let nested = record.upper.path().join("project/nested");
+            File::open(&nested)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(123)),
+                )
+                .unwrap();
+            let all = ApplySelection::default();
+            let before = tree_observation(tmp.path());
+            let preview = preview_project_apply(&record, &lowers, &all, &boundary).unwrap();
+            assert_eq!(tree_observation(tmp.path()), before);
+            assert_eq!(preview.candidates.len(), 1);
+            assert_eq!(preview.selected.len(), 1);
+            assert!(preview.required.is_empty());
+            assert_eq!(
+                preview.selected[0].relative_path(),
+                Path::new("project/nested/file")
+            );
+            let outcome = apply_project_selected(&mut record, &lowers, &all, &boundary).unwrap();
+            assert!(outcome.remaining.is_empty(), "{:?}", outcome.remaining);
+            assert!(overlay_changes(&record, &lowers).unwrap().is_empty());
+            assert_eq!(record.state, OverlayState::Applied);
+            assert_eq!(
+                fs::read(boundary.target.join("nested/file")).unwrap(),
+                b"new"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_nested_real_metadata_blocks_all_and_survives_partial_child_apply() {
+        for operation in ["chmod", "chown", "chgrp", "xattr", "explicit-mtime"] {
+            let tmp = tempdir().unwrap();
+            let (mut record, lowers, boundary) = nested_project_fixture(tmp.path());
+            let nested = record.upper.path().join("project/nested");
+            let identity =
+                crate::logical_identity(&nested, &fs::metadata(&nested).unwrap()).unwrap();
+            match operation {
+                "chmod" => set_test_logical_identity(
+                    &nested,
+                    identity.uid,
+                    identity.gid,
+                    libc::S_IFDIR | 0o711,
+                ),
+                "chown" => set_test_logical_identity(
+                    &nested,
+                    identity.uid + 1,
+                    identity.gid,
+                    identity.mode,
+                ),
+                "chgrp" => set_test_logical_identity(
+                    &nested,
+                    identity.uid,
+                    identity.gid + 1,
+                    identity.mode,
+                ),
+                "xattr" => {
+                    crate::sys::set_xattr(&nested, OsStr::new("user.intent"), b"staged", 0).unwrap()
+                }
+                "explicit-mtime" => {
+                    crate::stage::begin(
+                        &record.stage_dir.join("preimages"),
+                        pvisor_core::overlay::StageDurability::Strict,
+                    )
+                    .unwrap();
+                    let core = OverlayCore::new_with_exclusions_and_preimages(
+                        lowers.clone(),
+                        record.upper.path().to_path_buf(),
+                        Some(record.upper.work_dir.clone()),
+                        vec![],
+                        Some(record.stage_dir.join("preimages")),
+                    )
+                    .unwrap();
+                    core.prepare_metadata_change(Path::new("project/nested"))
+                        .unwrap();
+                    File::open(&nested)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(123),
+                        ))
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            crate::stage::seal(record.upper.path(), &record.stage_dir.join("preimages")).unwrap();
+            let before = tree_observation(tmp.path());
+            let all = ApplySelection::default();
+            assert!(
+                preview_project_apply(&record, &lowers, &all, &boundary)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("regular files and new directories only"),
+                "{operation}"
+            );
+            assert!(apply_project_selected(&mut record, &lowers, &all, &boundary).is_err());
+            assert_eq!(tree_observation(tmp.path()), before);
+            assert!(!has_pending_applies(&record).unwrap());
+            let parent_before =
+                fingerprint_at(&record.target, Path::new("project/nested")).unwrap();
+            let staged_before =
+                fingerprint_at(record.upper.path(), Path::new("project/nested")).unwrap();
+            let staged_mtime = fs::metadata(&nested).unwrap().modified().unwrap();
+            let child = ApplySelection {
+                paths: vec!["project/nested/file".into()],
+                ..Default::default()
+            };
+            let outcome = apply_project_selected(&mut record, &lowers, &child, &boundary).unwrap();
+            assert_eq!(outcome.remaining.len(), 1, "{operation}");
+            assert_eq!(
+                outcome.remaining[0].relative_path(),
+                Path::new("project/nested")
+            );
+            assert!(recovery_fingerprint_matches(
+                &fingerprint_at(&record.target, Path::new("project/nested")).unwrap(),
+                &parent_before
+            ));
+            assert!(recovery_fingerprint_matches(
+                &fingerprint_at(record.upper.path(), Path::new("project/nested")).unwrap(),
+                &staged_before
+            ));
+            if operation == "explicit-mtime" {
+                assert_eq!(
+                    fs::metadata(&nested).unwrap().modified().unwrap(),
+                    staged_mtime
+                );
+                let snapshot = tmp.path().join("raw-snapshot");
+                snapshot_overlay_upper(&record, &snapshot).unwrap();
+                assert!(
+                    snapshot
+                        .join("project/nested")
+                        .join(crate::ROOT_METADATA_NAME)
+                        .is_file()
+                );
+                assert_eq!(
+                    fs::metadata(snapshot.join("project/nested"))
+                        .unwrap()
+                        .modified()
+                        .unwrap(),
+                    staged_mtime
+                );
+            }
+            assert!(preview_project_apply(&record, &lowers, &all, &boundary).is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_nested_parent_conflict_is_checked_before_any_write() {
+        for operation in ["mode", "xattr", "mtime", "matches-upper"] {
+            let tmp = tempdir().unwrap();
+            let (mut record, lowers, boundary) = nested_project_fixture(tmp.path());
+            let parent = boundary.target.join("nested");
+            match operation {
+                "mode" => fs::set_permissions(&parent, fs::Permissions::from_mode(0o711)).unwrap(),
+                "xattr" => {
+                    crate::sys::set_xattr(&parent, OsStr::new("user.concurrent"), b"host", 0)
+                        .unwrap()
+                }
+                "mtime" => {
+                    File::open(&parent)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(123),
+                        ))
+                        .unwrap()
+                }
+                "matches-upper" => {
+                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o711)).unwrap();
+                    let identity = fs::metadata(&parent).unwrap();
+                    set_test_logical_identity(
+                        &record.upper.path().join("project/nested"),
+                        identity.uid(),
+                        identity.gid(),
+                        identity.mode(),
+                    );
+                    // Comparing only to the live lower would incorrectly hide intent.
+                    assert!(
+                        overlay_changes(&record, &lowers)
+                            .unwrap()
+                            .iter()
+                            .any(|change| change.relative_path() == Path::new("project/nested"))
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let before = tree_observation(tmp.path());
+            let child = ApplySelection {
+                paths: vec!["project/nested/file".into()],
+                ..Default::default()
+            };
+            assert!(
+                preview_project_apply(&record, &lowers, &child, &boundary)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("target changed")
+            );
+            assert!(apply_project_selected(&mut record, &lowers, &child, &boundary).is_err());
+            assert_eq!(tree_observation(tmp.path()), before);
+            assert!(!has_pending_applies(&record).unwrap());
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -4713,6 +5037,9 @@ mod tests {
                     core
                 };
                 fs::write(core.copy_up(Path::new("directory/file")).unwrap(), b"new").unwrap();
+                // Retain explicit, unselected parent intent across child recovery.
+                core.prepare_metadata_change(Path::new("directory"))
+                    .unwrap();
                 drop(core);
                 let lower = vec![target.clone()];
                 let selection = ApplySelection {

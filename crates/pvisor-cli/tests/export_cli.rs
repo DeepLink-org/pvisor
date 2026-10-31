@@ -103,13 +103,13 @@ fn clap_requires_destination_and_exclusive_explicit_selection_before_io() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn run_and_spawn_help_remain_byte_identical_to_pre_handoff_baseline() {
+fn run_and_spawn_help_match_their_pinned_baselines() {
     let root = tempfile::tempdir().unwrap();
     use sha2::{Digest, Sha256};
     for (command, digest) in [
         (
             "run",
-            "adcaad687de5ad492bbdaecc1dabc7024c77a379a20762ef543c51f8d487cc32",
+            "b73cc4d8465e0148f14c6bc9c3453bab35604792260826480e3715d128c71f6e",
         ),
         (
             "spawn",

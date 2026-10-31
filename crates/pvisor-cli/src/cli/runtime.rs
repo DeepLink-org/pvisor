@@ -66,8 +66,12 @@ pub struct InspectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectArgs {
-    /// Job id, stage directory, upper directory, or workspace path.
+    /// Job id, stage directory, workspace path, or container name/id.
     pub selector: PathBuf,
+    /// Select a container's exact staged bind guest path (never a Job selector).
+    #[arg(long, value_name = "GUEST_PATH")]
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
 }
@@ -75,18 +79,19 @@ pub struct SelectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyArgs {
-    /// Job id, stage directory, upper directory (legacy), or workspace selector.
+    /// Job id, stage directory, workspace selector, or container name/id; internal stage paths are refused.
     #[arg(value_name = "SOURCE")]
     pub selector: PathBuf,
-    /// Apply staged changes here instead of the target recorded by the Job.
-    #[arg(long, value_name = "PATH", help_heading = "Scope")]
-    pub target: Option<PathBuf>,
-    /// Apply a recorded '/' target as root (no --target override).
+    /// Select a container's exact staged bind guest path (never a Job selector).
+    #[arg(long, value_name = "GUEST_PATH")]
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
+    /// Apply recorded system-root changes as root instead of the project scope.
     /// Requires a root-created stage in root-controlled storage; sudo apply of
     /// another user's stage is unsupported by same-UID Job locks. This is not an
     /// atomic system upgrade: filtering package files separately from package
     /// metadata can leave the system/package database inconsistent.
-    #[arg(long, conflicts_with = "target", help_heading = "Scope")]
+    #[arg(long, help_heading = "Scope")]
     #[serde(default)]
     pub rootfs: bool,
     /// Apply this relative path and its descendants. Repeatable.
@@ -126,9 +131,9 @@ pub struct ApplyArgs {
     #[arg(long, conflicts_with = "interactive", help_heading = "Output")]
     #[serde(default)]
     pub json: bool,
-    /// Job lookup storage (legacy -o/--output-dir aliases are accepted).
-    #[arg(long = "store", alias = "output-dir", short = 'o', value_name = "DIR", default_value = DEFAULT_STORAGE, help_heading = "Storage")]
-    pub output_dir: PathBuf,
+    /// Job lookup storage.
+    #[arg(long, value_name = "DIR", default_value = DEFAULT_STORAGE, help_heading = "Storage")]
+    pub store: PathBuf,
 }
 
 pub fn status(args: StatusArgs) -> anyhow::Result<()> {
@@ -141,6 +146,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             max_diff_bytes: args.max_diff_bytes,
             max_diff_file_bytes: args.max_diff_file_bytes,
             checkpoint: None,
+            mount: None,
         });
     }
     let response = pvisor::job_service::RuntimeJobService::status(
@@ -533,23 +539,15 @@ impl InspectMount {
     }
 }
 
-pub fn apply(mut args: ApplyArgs) -> anyhow::Result<()> {
-    // User dispatch bypasses this legacy adapter. Refuse owner calls and an
-    // already-held outer directory lock before entering the new runtime path.
-    anyhow::ensure!(
-        !super::terminal::is_child(),
-        "apply must run directly, outside the Job owner"
-    );
-    let record = resolve_run(Some(&args.selector), &args.output_dir)?;
-    let unlocked = pvisor::JobDirectoryLock::acquire(&record, "legacy-apply-adapter")?;
-    args.selector = record.stage_dir();
-    drop(unlocked);
-    let code = super::apply::run(args);
-    anyhow::ensure!(code == 0, "apply exited with status {code}");
-    Ok(())
-}
-pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
+pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
     use pvisor::job_service::{DropRequest, RuntimeJobService};
+    args.selector = super::stage_source::resolve(
+        Some(&args.selector),
+        &args.output_dir,
+        args.mount.as_deref(),
+    )?
+    .expect("explicit drop source");
+    args.mount = None;
     let response = RuntimeJobService::drop(
         &super::host::service_context(),
         DropRequest {
@@ -559,17 +557,12 @@ pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
             },
         },
     )?;
-    render_mutation(response);
+    render_drop(response);
     Ok(())
 }
-fn render_mutation(response: pvisor::job_service::MutationResponse) {
+fn render_drop(response: pvisor::job_service::MutationResponse) {
     use pvisor::job_service::MutationOutcome;
     match response.outcome {
-        MutationOutcome::AlreadyApplied => println!(
-            "already applied {} → {}",
-            response.job_id,
-            response.target.display()
-        ),
         MutationOutcome::AlreadyDropped => println!(
             "remaining staged changes already dropped for {}",
             response.job_id
@@ -577,18 +570,6 @@ fn render_mutation(response: pvisor::job_service::MutationResponse) {
         MutationOutcome::Dropped => {
             println!("dropped remaining staged changes for {}", response.job_id)
         }
-        MutationOutcome::Applied {
-            applied,
-            apply_id,
-            remaining,
-        } => println!(
-            "applied {} changes from {} → {} (apply_id={}, remaining={})",
-            applied,
-            response.job_id,
-            response.target.display(),
-            apply_id,
-            remaining
-        ),
     }
 }
 
@@ -629,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_apply_is_explicit_and_conflicts_with_every_target_override() {
+    fn rootfs_apply_is_explicit_and_target_override_is_removed() {
         use clap::Parser;
         let ordinary = ApplyParser::try_parse_from(["apply", "stage", "--all"]).unwrap();
         assert!(!ordinary.args.rootfs);
@@ -640,7 +621,7 @@ mod tests {
                 "apply", "stage", "--all", "--rootfs", "--target", target,
             ])
             .unwrap_err();
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
     }
 

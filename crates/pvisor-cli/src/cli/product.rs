@@ -18,8 +18,17 @@ const REVIEW_PATH_LIMIT: usize = 200;
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewArgs {
-    /// Job id, project workspace, run.json, or a path inside the Job filesystem.
+    /// Job id, project workspace, run.json, a path inside the Job filesystem, or container name/id.
     pub selector: Option<PathBuf>,
+    /// Select a container's exact staged bind guest path (never a Job selector).
+    #[arg(
+        long,
+        value_name = "GUEST_PATH",
+        requires = "selector",
+        conflicts_with = "checkpoint"
+    )]
+    #[serde(default)]
+    pub mount: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
     /// Review the staged files saved in this workspace checkpoint.
@@ -40,11 +49,16 @@ pub struct ReviewArgs {
 }
 
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
+    let selector = super::stage_source::resolve(
+        args.selector.as_deref(),
+        &args.output_dir,
+        args.mount.as_deref(),
+    )?;
     let response = pvisor::job_service::RuntimeJobService::review(
         &super::host::service_context(),
         pvisor::job_service::ReviewRequest {
             job: pvisor::job_service::JobSelection {
-                selector: args.selector,
+                selector,
                 storage: args.output_dir,
             },
             checkpoint: args.checkpoint,

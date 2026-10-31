@@ -99,6 +99,12 @@ fn open_project(root: &Path) -> anyhow::Result<File> {
             directory = unsafe { File::from_raw_fd(fd) };
         }
     }
+    let metadata = directory.metadata()?;
+    let root_metadata = File::open("/")?.metadata()?;
+    ensure!(
+        metadata.dev() != root_metadata.dev() || metadata.ino() != root_metadata.ino(),
+        "project root cannot have filesystem root '/' identity"
+    );
     Ok(directory)
 }
 
@@ -107,8 +113,7 @@ fn open_project(root: &Path) -> anyhow::Result<File> {
 pub struct ApplyCommandRequest {
     /// Selector resolved once, then pinned under all mutation locks.
     pub job: JobSelection,
-    /// Legacy normal-workspace target override, never rootstage project authority.
-    pub target: Option<PathBuf>,
+
     /// Explicit privileged system-root mode with unchanged UID/storage checks.
     pub rootfs: bool,
     /// Strict scope-relative paths and existing git-style include/exclude globs.
@@ -225,6 +230,7 @@ fn command(
     request: &ApplyCommandRequest,
     response: &mut ApplyCommandResponse,
 ) -> anyhow::Result<()> {
+    validate_apply_source(selected, &request.job)?;
     context.check(selected)?;
     let _directory = if request.dry_run {
         crate::runtime::JobDirectoryLock::observe_existing(selected)?
@@ -249,12 +255,11 @@ fn command(
         .overlay
         .clone()
         .context("this Job has no OverlayFS workspace")?;
+    if let Some(scope) = &record.project_apply_scope {
+        scope.validate()?;
+    }
     let rootstage = overlay.target == Path::new("/");
     let boundary = if rootstage && !request.rootfs {
-        ensure!(
-            request.target.is_none(),
-            "rootstage project apply does not support --target"
-        );
         ensure!(
             record.completion_protocol.is_some(),
             "rootstage project apply requires a completion-bound launch contract"
@@ -266,22 +271,16 @@ fn command(
         );
         Some(scope.boundary()?)
     } else {
-        super::effects::validate_apply_target(
-            &overlay.target,
-            request.target.as_deref(),
-            request.rootfs,
-            unsafe { libc::geteuid() },
-        )?;
+        super::effects::validate_recorded_apply_target(&overlay.target, request.rootfs, unsafe {
+            libc::geteuid()
+        })?;
         if request.rootfs {
             super::effects::validate_rootfs_storage(&record.stage_dir())?;
         }
         None
     };
     let _owner = crate::runtime::owned_workspace::apply_owner(&record, &overlay)?;
-    ensure!(
-        _owner.is_none() || request.target.is_none(),
-        "owned workspace does not support target overrides"
-    );
+
     let base = record.storage.join(".overlay-lowers");
     ensure!(
         _owner.is_some()
@@ -292,27 +291,12 @@ fn command(
                     .is_none_or(|p| p == &overlay.target || p.starts_with(&base))),
         "composed read-only layers cannot be applied"
     );
-    let mut lowers = if record.overlay_lowers.is_empty() {
+    let lowers = if record.overlay_lowers.is_empty() {
         vec![overlay.target.clone()]
     } else {
         record.overlay_lowers.clone()
     };
-    if let Some(target) = &request.target {
-        // The new planner cannot create target directories, including on dry-run.
-        let target = target
-            .canonicalize()
-            .context("legacy override must name an existing target")?;
-        let stage = record.stage_dir().canonicalize()?;
-        ensure!(
-            !target.starts_with(&stage) && !stage.starts_with(&target),
-            "apply target overlaps stage"
-        );
-        overlay.target = target.clone();
-        overlay.baseline_lower = None;
-        if let Some(last) = lowers.last_mut() {
-            *last = target;
-        }
-    }
+
     let prefix = boundary.as_ref().map(|b| b.overlay_prefix.as_path());
     response.scope.target = Some(
         boundary
@@ -429,9 +413,7 @@ fn command(
     }
     context.check(&record)?;
     if let Some(scope) = &record.project_apply_scope {
-        if boundary.is_some() {
-            scope.validate()?;
-        }
+        scope.validate()?;
     }
     let current = RunRecord::read(&record.stage_dir())?;
     check_selected_record(&record, &current)?;
@@ -493,6 +475,49 @@ fn command(
     response.status = "applied".into();
     Ok(())
 }
+fn validate_apply_source(record: &RunRecord, selection: &JobSelection) -> anyhow::Result<()> {
+    let selector = selection.selector.as_deref();
+    let implicit = selector.is_none() || selector == Some(Path::new("last"));
+    if selector == Some(Path::new(&record.run_id)) && !selector.unwrap().exists() {
+        return Ok(());
+    }
+    let candidate = if implicit {
+        std::env::current_dir()?
+    } else {
+        selector.unwrap().to_path_buf()
+    };
+    let candidate = super::paths::fork_stage_candidate(&candidate)?;
+    if let Some(overlay) = &record.overlay {
+        let upper = super::paths::fork_stage_candidate(overlay.upper.path())?;
+        ensure!(
+            !candidate.starts_with(&upper),
+            "apply source cannot be an upper directory or a path inside it; select the Job id, stage directory or workspace"
+        );
+    }
+    if !implicit {
+        let mut allowed = vec![record.stage_dir()];
+        if let Some(workspace) = &record.workspace {
+            allowed.push(workspace.clone());
+        }
+        if let Some(overlay) = &record.overlay
+            && overlay.target != Path::new("/")
+        {
+            allowed.push(overlay.target.clone());
+        }
+        if let Some(job) = crate::runtime::job_execution::Job::read(record)? {
+            allowed.push(job.root);
+        }
+        ensure!(
+            allowed
+                .iter()
+                .any(|path| super::paths::fork_stage_candidate(path)
+                    .is_ok_and(|path| path == candidate)),
+            "apply source must be a Job id, stage directory or workspace, not an internal record or workspace child path"
+        );
+    }
+    Ok(())
+}
+
 fn in_scope(path: &Path, prefix: Option<&Path>) -> bool {
     prefix.is_none_or(|p| path != p && path.starts_with(p))
 }
@@ -818,7 +843,6 @@ mod tests {
                 selector: Some(record.stage_dir()),
                 storage: record.storage.clone(),
             },
-            target: None,
             rootfs: false,
             selection: Default::default(),
             all: true,
@@ -889,6 +913,108 @@ mod tests {
             "state":"terminal","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
         })).unwrap();
         job.write().unwrap();
+    }
+
+    #[test]
+    fn apply_sources_reject_upper_subpaths_and_aliases_without_lock_or_target_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let record = fixture_layout(root.path(), true);
+        let upper = record.overlay.as_ref().unwrap().upper.path();
+        let child = upper.join("selector-child");
+        fs::create_dir(&child).unwrap();
+        fs::write(child.join("file"), b"internal stage bytes").unwrap();
+        let alias = root.path().join("upper-alias");
+        std::os::unix::fs::symlink(upper, &alias).unwrap();
+        let child_alias = root.path().join("upper-file-alias");
+        std::os::unix::fs::symlink(child.join("file"), &child_alias).unwrap();
+        let before = tree_snapshot(root.path());
+        for selector in [
+            upper.to_path_buf(),
+            child.clone(),
+            child.join("file"),
+            child.join("not-yet-created/deep"),
+            alias.clone(),
+            alias.join("selector-child"),
+            child_alias,
+        ] {
+            // Shared resolution stays compatible for review/status; only apply rejects.
+            assert_eq!(
+                RuntimeJobService::resolve(
+                    &ServiceContext::default(),
+                    &JobSelection {
+                        selector: Some(selector.clone()),
+                        storage: record.storage.clone(),
+                    }
+                )
+                .unwrap()
+                .run_id,
+                record.run_id
+            );
+            for dry_run in [true, false] {
+                let mut req = request(&record, dry_run);
+                req.job.selector = Some(selector.clone());
+                let response = run(req);
+                assert_eq!(
+                    response.status,
+                    "blocked",
+                    "{}: {:?}",
+                    selector.display(),
+                    response.blockers
+                );
+                assert!(
+                    response
+                        .blockers
+                        .join(" ")
+                        .contains("upper directory or a path inside it")
+                );
+                assert!(response.execution.is_none());
+                assert_eq!(before, tree_snapshot(root.path()));
+            }
+        }
+    }
+
+    #[test]
+    fn apply_source_contract_accepts_job_stage_workspace_but_not_internal_record_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let record = fixture_layout(root.path(), true);
+        // Register the workspace selector exactly as a persisted Job index does.
+        let indexes = project(&record).join(".pvisor/runs");
+        fs::create_dir_all(&indexes).unwrap();
+        let index = fs::read_dir(record.storage.join(".pvisor/runs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::copy(&index, indexes.join(index.file_name().unwrap())).unwrap();
+        let before = tree_snapshot(root.path());
+        for selector in [
+            PathBuf::from(&record.run_id),
+            record.stage_dir(),
+            project(&record).to_path_buf(),
+        ] {
+            let mut req = request(&record, true);
+            req.job.selector = Some(selector);
+            let response = run(req);
+            assert_eq!(response.status, "ready", "{:?}", response.blockers);
+            assert_eq!(before, tree_snapshot(root.path()));
+        }
+        for selector in [
+            record.stage_dir().join("run.json"),
+            record.stage_dir().join("merged"),
+        ] {
+            let mut req = request(&record, false);
+            req.job.selector = Some(selector);
+            let response = run(req);
+            assert_eq!(response.status, "blocked");
+            assert!(
+                response
+                    .blockers
+                    .join(" ")
+                    .contains("source must be a Job id, stage directory or workspace")
+            );
+            assert_eq!(before, tree_snapshot(root.path()));
+        }
     }
 
     #[test]
@@ -1351,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_workspace_preview_and_execute_keep_legacy_target_contract() {
+    fn ordinary_workspace_preview_and_execute_use_recorded_target_contract() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("target");
         let stage = root.path().join("stage");
@@ -1389,10 +1515,15 @@ mod tests {
         // through its real mutating APIs before taking the read-only snapshot.
         drop(crate::runtime::JobDirectoryLock::acquire(&record, "legacy-fixture").unwrap());
         drop(crate::runtime::registry::RunLease::acquire(&stage).unwrap());
-        let mut dry = request(&record, true);
-        dry.target = Some(root.path().join("missing/nested"));
-        assert_eq!(run(dry).status, "blocked");
-        assert!(!root.path().join("missing").exists());
+        // The request contract has no target override; both phases use this owning target.
+        let declaration = include_str!("apply_command.rs")
+            .split("pub struct ApplyCommandRequest {")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        assert!(!declaration.contains("pub target:"));
         let preview = run(request(&record, true));
         assert_eq!(preview.status, "ready", "{:?}", preview.blockers);
         assert_eq!(preview.remaining.in_scope, Some(0));

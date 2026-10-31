@@ -193,6 +193,9 @@ fn parser_non_tty_and_json_errors_are_inert() {
         vec!["--all", "--export"],
         vec!["--path", "../escape"],
         vec!["--include", "/absolute/*"],
+        vec!["--all", "--target", "/tmp/removed-target"],
+        vec!["--all", "-o", "removed-store"],
+        vec!["--all", "--output-dir", "removed-store"],
     ] {
         let out = f.run(&options);
         assert_eq!(out.status.code(), Some(2), "{options:?}: {out:?}");
@@ -217,17 +220,17 @@ fn parser_non_tty_and_json_errors_are_inert() {
 }
 
 #[test]
-fn json_preview_all_exclude_aliases_and_direct_execution() {
+fn json_preview_all_exclude_store_and_direct_execution() {
     let f = Fixture::new();
     let before = tree_snapshot(f.root.path());
-    for alias in ["--store", "-o", "--output-dir"] {
+    for _ in 0..2 {
         let output = f.run(&[
             "--all",
             "--exclude",
             "skip.*",
             "--dry-run",
             "--json",
-            alias,
+            "--store",
             f.root.path().to_str().unwrap(),
         ]);
         let value = object(&output, 0);
@@ -250,30 +253,63 @@ fn json_preview_all_exclude_aliases_and_direct_execution() {
 }
 
 #[test]
-fn upper_selector_paths_includes_legacy_target_and_no_changes() {
+fn upper_and_internal_stage_sources_are_rejected_without_writes() {
     let f = Fixture::new();
-    let output = cli(
-        f.root.path(),
-        &f.stage.join("upper"),
-        &["--path", "keep.txt", "--dry-run", "--json"],
-    );
-    let preview = object(&output, 0);
+    let before = tree_snapshot(f.root.path());
+    for source in ["upper", "upper/keep.txt", "run.json", "merged", "work"] {
+        for dry_run in [true, false] {
+            let mut options = vec!["--all", "--json"];
+            if dry_run {
+                options.push("--dry-run");
+            }
+            let output = cli(f.root.path(), &f.stage.join(source), &options);
+            let value = object(&output, 3);
+            assert_eq!(value["status"], "blocked", "{source}: {value}");
+            assert!(value["execution"].is_null());
+            assert!(
+                value["blockers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|blocker| blocker
+                        .as_str()
+                        .is_some_and(|text| text.contains("apply source"))),
+                "{source}: {value}"
+            );
+            assert_eq!(tree_snapshot(f.root.path()), before, "{source}");
+            f.unchanged();
+        }
+    }
+}
+
+#[test]
+fn removed_target_and_storage_aliases_are_rejected_as_json_argument_errors() {
+    let f = Fixture::new();
+    let before = tree_snapshot(f.root.path());
+    for flag in ["--target", "-o", "--output-dir"] {
+        let output = f.run(&["--all", flag, f.target.to_str().unwrap(), "--json"]);
+        let value = object(&output, 2);
+        assert_eq!(value["status"], "error");
+        assert!(value["source"].is_null());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unexpected argument"),
+            "{output:?}"
+        );
+        assert_eq!(tree_snapshot(f.root.path()), before);
+    }
+}
+
+#[test]
+fn stage_source_paths_includes_and_no_changes() {
+    let f = Fixture::new();
+    let preview = object(&f.run(&["--path", "keep.txt", "--dry-run", "--json"]), 0);
     assert_eq!(preview["source"]["stage"], f.stage.to_str().unwrap());
     assert_eq!(preview["selected"][0]["path"], "keep.txt");
     f.unchanged();
-    let alternate = f.root.path().join("alternate");
-    fs::create_dir(&alternate).unwrap();
-    let output = f.run(&[
-        "--include",
-        "*.txt",
-        "--target",
-        alternate.to_str().unwrap(),
-        "--json",
-    ]);
+    let output = f.run(&["--include", "*.txt", "--json"]);
     assert_eq!(object(&output, 0)["status"], "applied");
-    assert_eq!(fs::read(alternate.join("keep.txt")).unwrap(), b"kept\n");
-    assert_eq!(fs::read(alternate.join("skip.txt")).unwrap(), b"skipped\n");
-    assert_eq!(fs::read_dir(&f.target).unwrap().count(), 0);
+    assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+    assert_eq!(fs::read(f.target.join("skip.txt")).unwrap(), b"skipped\n");
     assert_eq!(
         object(&f.run(&["--all", "--json"]), 0)["status"],
         "no_changes"

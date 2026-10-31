@@ -16,9 +16,9 @@ extra_javascript = ["assets/javascripts/alternate.js"]
 nav = [
   { "首页" = "index.md" },
   { "快速开始" = [
-    { "安装指南" = "start/installation.md" },
-    { "运行第一个 Job" = "start/first-run.md" },
-    { "执行基础设施：工具执行接入示例" = "start/infrastructure.md" },
+    { "安装" = "start/installation.md" },
+    { "运行并审查" = "start/first-run.md" },
+    { "在 VM 中运行工具" = "start/infrastructure.md" },
   ] },
   { "用户指南" = [
     { "本地工作流总览" = "guides/index.md" },

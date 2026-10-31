@@ -109,7 +109,7 @@
   "lab-notes/vm-startup-performance-analysis.md": "1704a9d69ec7f0f3cee7eb2e762ace4efdb938e24257f2e360df8aa7f13be513",
   "reference/cases-vm.md": "33587f74b1a660aae005f95e383aefff9b170a3d7661c417569e3d66ac9fdba0",
   "reference/cases.md": "4fb9f4505f2f498781746818a63840db1e874d07c620c0ba48a9a768786b575b",
-  "reference/cli.md": "ff82ca1898e87174bd5bdf43d4fa442150a2784b349ec2c3228d435b4b6572e4",
+  "reference/cli.md": "69a082af98b81e36bc582dcb0323b5e9a3ac0a1135f42eeeb93fdc23f5eb9da3",
   "reference/config.md": "3db91dd6e0032409376d943215c84e2375df85839e70e43c6290c6e2b781a959",
   "reference/env-vars.md": "97cf8ee4b52360fd92d594a501afd00407cf4bdc425587be5158bc74fa6074e0",
   "reference/exit-codes.md": "78729e9150f080345d98b6d23601ce96207d7ec9165ed2b68727b4f37adf0c4f",
@@ -128,9 +128,9 @@
   "security/index.md": "4c6c408fd942a56cc9ba2acd761b7d726033bb0f255b810afe65f3a10f10b81f",
   "security/known-limitations.md": "c59d8afb60f64d8f287a73fbf7a5512171fa70b326bf6e94b3cdaee9dd788013",
   "security/threat-model.md": "cc5658c6d7ef3ece723f66c816826743e742c36ec7559edc5e0166eb2f148196",
-  "start/first-run.md": "b659f944b3ae713fddef0bc7e992853253495a833c5d98c696bfdeda31400fe0",
-  "start/infrastructure.md": "02e1fd56d93956831044ed05d154fc8a354ae670e8a803f495455e8b4d1fc401",
-  "start/installation.md": "5d6a56d99fa43d3c32d5f83c608802619334a25c6e9fe0067c9287f94fde7b82",
+  "start/first-run.md": "5ce8ab625af19605d32171077c06f96164932ad6c3d4371d7b9ca88bca9ecf52",
+  "start/infrastructure.md": "35452125c6d86de7b8cc774f891bc5897786821392b38ec3e398ab30aa4eb74d",
+  "start/installation.md": "40a0c20288373424e1df2ce91a3748292f4d13c91bf6265fb58f6423391047ae",
   "why/comparisons.md": "b62bf3a7056f192e4fe715a86788172e52559b503e2fddce3ce1a98c5b4ce204",
   "why/index.md": "46a69f6fbbe2472fdf1cbd5cb7a839c9111df41a4922cc8ba0ebe0cec12a7acd"
 }

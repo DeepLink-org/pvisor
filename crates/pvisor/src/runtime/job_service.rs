@@ -34,7 +34,7 @@ pub use managed::ManagedJobRun;
 pub type ManagedRestoredRun = ManagedJobRun;
 mod restored;
 mod workspace;
-pub use effects::{ApplyRequest, DropRequest, MutationOutcome, MutationResponse};
+pub use effects::{DropRequest, MutationOutcome, MutationResponse};
 pub use views::{
     FilesystemSummary, ReviewContext, ReviewRequest, ReviewResponse, ReviewUnavailable,
     StatusRequest, StatusResponse,
@@ -57,6 +57,7 @@ pub struct ServiceContext<'a> {
 }
 impl ServiceContext<'_> {
     pub fn check(&self, record: &RunRecord) -> anyhow::Result<()> {
+        crate::docker::Store::check_bound_staged_record(record)?;
         if let Some(check) = self.check_cancelled {
             check()?;
         }
