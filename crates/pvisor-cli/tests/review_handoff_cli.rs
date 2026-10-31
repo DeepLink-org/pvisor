@@ -210,7 +210,7 @@ fn unsupported_entries_and_partial_outcomes_are_explicit() {
 }
 
 #[test]
-fn root_stage_diff_contains_only_project_content_and_next_step_is_export() {
+fn root_stage_diff_contains_only_project_content_and_handoff_matches_platform() {
     let mut fixture = Fixture::new(
         Some(Path::new("/pvisor-review-fixture-project")),
         Path::new("/"),
@@ -232,9 +232,24 @@ fn root_stage_diff_contains_only_project_content_and_next_step_is_export() {
     let text = fixture.review(&["--diff"]);
     assert!(text.contains("+PROJECT_RESULT_MARKER"), "{text}");
     assert!(!text.contains("ENVIRONMENT_MARKER"));
-    assert!(text.contains("--output NEWDIR --path src"));
-    assert!(!text.contains("pvisor apply"));
+    let export_available = cfg!(target_os = "linux");
+    assert_eq!(
+        text.contains("--output NEWDIR --path src"),
+        export_available,
+        "{text}"
+    );
+    assert_eq!(text.contains("pvisor export"), export_available, "{text}");
+    assert_eq!(
+        text.contains("Project handoff unavailable"),
+        !export_available,
+        "{text}"
+    );
+    assert!(!text.contains("pvisor apply"), "{text}");
     let reviewed = fixture.json();
+    assert_eq!(
+        reviewed["handoff"]["non_root_export_available"],
+        export_available
+    );
     assert!(
         reviewed["filesystem"]["changes"]
             .as_array()
@@ -242,6 +257,40 @@ fn root_stage_diff_contains_only_project_content_and_next_step_is_export() {
             .iter()
             .any(|entry| entry["path"] == "pvisor-review-fixture-environment/package")
     );
+}
+
+#[test]
+fn root_stage_recorded_apply_scope_does_not_override_platform_support() {
+    let mut fixture = Fixture::new(None, Path::new("/"));
+    let workspace = fixture.root.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    fixture.record.workspace = Some(workspace.clone());
+    fixture.record.project_apply_scope =
+        Some(pvisor::job_service::ProjectApplyScope::capture(&workspace).unwrap());
+    fixture.bundle["project_apply_scope"] =
+        serde_json::to_value(&fixture.record.project_apply_scope).unwrap();
+    let relative = workspace.strip_prefix("/").unwrap().join("result");
+    fixture.changes(&[relative.to_str().unwrap()]);
+
+    // This tests advisory guidance, not authorization: apply still revalidates
+    // the launch contract, completion binding and source before writeback.
+    let text = fixture.review(&[]);
+    let apply_available = cfg!(target_os = "linux");
+    assert_eq!(text.contains("pvisor apply"), apply_available, "{text}");
+    assert_eq!(
+        text.contains("--path <project-relative-path> --dry-run"),
+        apply_available,
+        "{text}"
+    );
+    assert_eq!(
+        text.contains("interactive project picker"),
+        apply_available,
+        "{text}"
+    );
+    assert!(!text.contains("pvisor export"), "{text}");
+    assert!(text.contains("pvisor inspect"), "{text}");
+    assert!(text.contains("pvisor drop"), "{text}");
 }
 
 #[test]
