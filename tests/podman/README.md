@@ -57,27 +57,34 @@ explicitly after diagnosis; they are excluded from successful suite counts.
 
 ## CI
 
-The required `rust-test` Linux `cli` shard in `.github/workflows/ci.yml` runs all
-active adapted Bats and Go contracts on every covered push/pull request. It
-reuses the product build and KVM permissions from that shard, installs Bats and
-Go 1.23.12, and runs the CLI as the ordinary runner user. The fixture is
+The required `podman-contracts` jobs in `.github/workflows/ci.yml` run all
+active adapted contracts on every covered push/pull request. The Linux CLI job
+builds and smoke-tests the product once, archives the original static musl CLI
+and adjacent daemon before native Cargo tests, and publishes that tarball.
+Three independent Linux/KVM runners reuse it: Bats, Go shard 0, and Go shard 1.
+Go discovers all active tests from all `e2e/*.go` files and assigns each name to
+exactly one shard using SHA-256 modulo two. New tests are included automatically;
+empty shards fail. Helpers compile with every shard and tests run sequentially
+within each runner, preserving existing resource limits and isolation.
+
+Each runner checks writable KVM and runs the CLI as the ordinary runner user.
+Go is pinned to 1.23.12. The fixture remains
 `mirror.gcr.io/library/alpine:3.20`; pull logs record the resolved digest.
 Unavailable KVM, registry failures and contract failures fail the gate, with no
-fallback to a skipped test. Hosted Apple Silicon macOS runners lack nested
-virtualization, so this runtime gate uses Linux/KVM.
-The selected executable is the original static musl product artifact under
-`target/x86_64-unknown-linux-musl/debug/`, whose firmware is embedded. Native
-Cargo tests can overwrite `target/debug/pvisor` with a dynamically linked test
-build, so that path must not be used for this external-runtime gate.
+fallback to a skipped test. Hosted Apple Silicon runners lack nested
+virtualization, so these runtime gates use Linux/KVM.
+The archived executable comes from `target/x86_64-unknown-linux-musl/debug/`
+and embeds its firmware. Native Cargo tests can overwrite `target/debug/pvisor`
+with a dynamically linked build, so that path is never used for these gates.
 
-Both suites are attempted even when one fails. The combined step is bounded by
-30 minutes; Go has a 20-minute suite timeout and `-count=1` disables cached test
-results. Per-command timeouts and test-owned cleanup remain in effect. The
-`podman-contracts-linux-amd64` artifact contains Bats TAP, Go JSON output and
-environment/version metadata, and is uploaded even on failure. The existing
-required `CI` aggregate includes this shard. A newly added gate still needs an
-actual hosted-runner pass; local macOS acceptance does not establish Linux/KVM
-acceptance.
+All shards are attempted even when another fails (`fail-fast: false`). Each job
+is bounded by 30 minutes; Go retains its 20-minute suite timeout and `-count=1`.
+Per-command timeouts and test-owned cleanup remain in effect. Artifacts named
+`podman-contracts-linux-amd64-<suite>` retain TAP or Go JSON, environment/version
+metadata, and the discovered/selected Go test lists, including on failure.
+The required `CI` aggregate depends on all shards and rejects failure,
+cancellation or skipped dependencies. Local macOS acceptance does not establish
+Linux/KVM acceptance.
 
 ## Coverage and limits
 
