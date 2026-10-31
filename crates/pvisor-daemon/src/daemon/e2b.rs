@@ -6,8 +6,8 @@ use super::{
 };
 use crate::runtime::{ENVD_PORT, RuntimeSpec};
 use axum::{
-    Json, Router,
-    body::{Body, to_bytes},
+    Extension, Json, Router,
+    body::Body,
     extract::{DefaultBodyLimit, Path, RawQuery, Request, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -48,7 +48,7 @@ pub(super) fn router(daemon: Arc<Daemon>) -> Router {
         .with_state(daemon)
 }
 
-struct Error(ApiError);
+pub(super) struct Error(pub(super) ApiError);
 impl From<ApiError> for Error {
     fn from(value: ApiError) -> Self {
         Self(value)
@@ -76,13 +76,18 @@ fn unsupported_error() -> Error {
 async fn unsupported() -> Error {
     unsupported_error()
 }
-fn one<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+pub(super) fn one<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
     if headers.get_all(name).iter().count() != 1 {
         return None;
     }
     headers.get(name)?.to_str().ok().filter(|s| !s.is_empty())
 }
-async fn policy(State(daemon): State<Arc<Daemon>>, request: Request, next: Next) -> Response {
+async fn policy(
+    State(daemon): State<Arc<Daemon>>,
+    Extension(bodies): Extension<super::api::ControlBodies>,
+    request: Request,
+    next: Next,
+) -> Response {
     let http1 = request.version() <= axum::http::Version::HTTP_11;
     let request_id = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).unwrap();
     let data_plane = request.uri().path() == "/e2b" || request.uri().path().starts_with("/e2b/");
@@ -99,9 +104,9 @@ async fn policy(State(daemon): State<Arc<Daemon>>, request: Request, next: Next)
         .into_response()
     } else {
         let (parts, body) = request.into_parts();
-        match to_bytes(body, 1024 * 1024).await {
+        match bodies.read(body).await {
             Ok(body) => next.run(Request::from_parts(parts, Body::from(body))).await,
-            Err(_) => bad("Control body is unreadable or exceeds 1 MiB").into_response(),
+            Err(error) => Error(error).into_response(),
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
@@ -121,11 +126,11 @@ fn body<T>(value: std::result::Result<Json<T>, JsonRejection>) -> Result<T> {
         .map_err(|_| bad("Invalid E2B JSON request"))
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Create {
+pub(super) struct Create {
     #[serde(rename = "templateID")]
-    template: String,
+    pub(super) template: String,
     timeout: Option<u64>,
     #[serde(rename = "envVars", default)]
     env: BTreeMap<String, String>,
@@ -156,36 +161,7 @@ async fn create(
     State(daemon): State<Arc<Daemon>>,
     request: std::result::Result<Json<Create>, JsonRejection>,
 ) -> Result<impl IntoResponse> {
-    let request = body(request)?;
-    if request.auto_pause == Some(true)
-        || request.auto_pause_memory == Some(false)
-        || request
-            .auto_resume
-            .as_ref()
-            .is_some_and(|value| *value != json!({"enabled":false}))
-        || request.secure == Some(false)
-        || request.allow_internet_access == Some(false)
-        || request.network.is_some()
-        || request.mcp.is_some()
-        || request.iam.is_some()
-        || request.volume_mounts.is_some()
-    {
-        return Err(unsupported_error());
-    }
-    let seconds = timeout(&daemon, request.timeout)?;
-    models::validate_map(&request.env, true)?;
-    models::validate_map(&request.metadata, false)?;
-    // Validate the local key before any manifest path construction or runtime call.
-    crate::runtime::validate_spec(&RuntimeSpec {
-        id: "sb-12345678-1234-4234-8234-123456789abc".into(),
-        image: request.template.clone(),
-        entrypoint: vec![],
-        env: request.env.clone(),
-        cpu_millis: 1000,
-        memory_bytes: 64 * 1024 * 1024,
-        e2b: None,
-    })
-    .map_err(|_| bad("Invalid template key or environment"))?;
+    let request = body(request)?.validate(daemon.config.max_timeout_seconds)?;
     let profile = daemon
         .runtime
         .e2b_template(&request.template)
@@ -197,22 +173,7 @@ async fn create(
                 "Prepared E2B template is unavailable",
             ))
         })?;
-    profile
-        .validate()
-        .map_err(|_| bad("Invalid prepared E2B profile"))?;
-    let validated = Validated {
-        image: models::Image {
-            uri: request.template,
-            auth: None,
-        },
-        entrypoint: vec![],
-        timeout: Some(seconds),
-        env: request.env,
-        metadata: request.metadata,
-        cpu_millis: profile.cpu_millis,
-        memory_bytes: profile.memory_bytes,
-        e2b: Some(profile),
-    };
+    let validated = request.translate(profile, daemon.config.max_timeout_seconds)?;
     // Accepted native creation persists even when the HTTP client disconnects.
     let created = tokio::spawn(async move {
         let sandbox = daemon.create_validated(validated).await?;
@@ -221,6 +182,69 @@ async fn create(
     .await
     .map_err(|_| ApiError::internal("E2B creation task failed"))??;
     Ok((StatusCode::CREATED, Json(wire(&created, true)?)))
+}
+impl Create {
+    pub(super) fn validate(self, maximum: u64) -> Result<Self> {
+        let request = self;
+        if request.auto_pause == Some(true)
+            || request.auto_pause_memory == Some(false)
+            || request
+                .auto_resume
+                .as_ref()
+                .is_some_and(|value| *value != json!({"enabled":false}))
+            || request.secure == Some(false)
+            || request.allow_internet_access == Some(false)
+            || request.network.is_some()
+            || request.mcp.is_some()
+            || request.iam.is_some()
+            || request.volume_mounts.is_some()
+        {
+            return Err(unsupported_error());
+        }
+        let seconds = request.timeout.unwrap_or(300);
+        if seconds == 0 || seconds > maximum {
+            return Err(bad("timeout must be positive and within the node limit"));
+        }
+        models::validate_map(&request.env, true)?;
+        models::validate_map(&request.metadata, false)?;
+        // Validate the local key before any manifest path construction or runtime call.
+        crate::runtime::validate_spec(&RuntimeSpec {
+            id: "sb-12345678-1234-4234-8234-123456789abc".into(),
+            image: request.template.clone(),
+            entrypoint: vec![],
+            env: request.env.clone(),
+            cpu_millis: 1000,
+            memory_bytes: 64 * 1024 * 1024,
+            e2b: None,
+        })
+        .map_err(|_| bad("Invalid template key or environment"))?;
+        Ok(request)
+    }
+    pub(super) fn translate(
+        self,
+        profile: crate::runtime::E2bTemplate,
+        maximum: u64,
+    ) -> Result<Validated> {
+        let request = self.validate(maximum)?;
+        let seconds = request.timeout.unwrap_or(300);
+        profile
+            .validate()
+            .map_err(|_| bad("Invalid prepared E2B profile"))?;
+        let validated = Validated {
+            image: models::Image {
+                uri: request.template,
+                auth: None,
+            },
+            entrypoint: vec![],
+            timeout: Some(seconds),
+            env: request.env,
+            metadata: request.metadata,
+            cpu_millis: profile.cpu_millis,
+            memory_bytes: profile.memory_bytes,
+            e2b: Some(profile),
+        };
+        Ok(validated)
+    }
 }
 fn wire(record: &Record, credentials: bool) -> Result<Value> {
     let template = record.e2b.as_ref().ok_or_else(|| {
@@ -258,6 +282,7 @@ fn wire(record: &Record, credentials: bool) -> Result<Value> {
 }
 async fn record(daemon: &Daemon, id: &str) -> Result<Record> {
     let record = daemon.record(id).await?;
+    super::claims::require_visible(&record)?;
     if record.e2b.is_none() {
         return Err(ApiError::new(404, "SANDBOX_NOT_FOUND", "E2B sandbox does not exist").into());
     }
@@ -535,6 +560,7 @@ fn decode_component(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::runtime::{E2bTemplate, Runtime, RuntimeState};
+    use axum::body::to_bytes;
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -656,6 +682,86 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{value}");
         value
     }
+    #[tokio::test]
+    async fn e2b_claims_preserve_short_ttl_credentials_budget_and_restart_fences() {
+        use super::super::{claims::QueuedCreate, models::ClaimIdentity};
+        let dir = TempDir::new().unwrap();
+        let runtime = Arc::new(Fake::default());
+        let daemon = open(&dir, &runtime).await;
+        let payload = || QueuedCreate::E2b {
+            e2b_request: serde_json::from_value(json!({"templateID":"base", "timeout":30}))
+                .unwrap(),
+            profile: E2bTemplate {
+                cpu_millis: 1000,
+                memory_bytes: 512 * 1024 * 1024,
+                envd_version: "0.10.2".into(),
+            },
+        };
+        let mut identities = Vec::new();
+        for _ in 0..4 {
+            let identity = ClaimIdentity {
+                claim_id: uuid::Uuid::new_v4().to_string(),
+                home: "home".into(),
+                task_id: uuid::Uuid::new_v4().to_string(),
+                generation: 1,
+            };
+            let sandbox = daemon
+                .reserve_queued_claim(identity.clone(), payload())
+                .await
+                .unwrap();
+            assert!(sandbox.expires_at.is_none());
+            assert_eq!(
+                record(&daemon, &sandbox.id).await.err().unwrap().0.status,
+                404
+            );
+            identities.push(identity);
+        }
+        assert_eq!(daemon.capacity_usage().await.unwrap().0, 4);
+        let validated = payload().validate(86400).unwrap();
+        assert_eq!(
+            daemon.create_validated(validated).await.unwrap_err().status,
+            429
+        );
+        drop(daemon);
+        let daemon = open(&dir, &runtime).await;
+        assert_eq!(daemon.capacity_usage().await.unwrap().0, 4);
+        let id = format!("sb-{}", identities[0].claim_id);
+        let token = daemon.record(&id).await.unwrap().endpoint_token;
+        daemon
+            .reserve_queued_claim(identities[0].clone(), payload())
+            .await
+            .unwrap();
+        assert_eq!(daemon.record(&id).await.unwrap().endpoint_token, token);
+        daemon.launch_claim(&identities[0]).await.unwrap();
+        assert_eq!(
+            record(&daemon, &id)
+                .await
+                .map_err(|e| e.0)
+                .unwrap()
+                .endpoint_token,
+            token
+        );
+        assert_eq!(runtime.specs.lock().unwrap().len(), 1);
+        for identity in &identities[1..] {
+            daemon.release_claim(identity).await.unwrap();
+        }
+        daemon.delete(&id).await.unwrap();
+        assert_eq!(daemon.capacity_usage().await.unwrap().0, 0);
+        drop(daemon);
+        let daemon = open(&dir, &runtime).await;
+        for identity in identities {
+            assert!(
+                daemon
+                    .reserve_queued_claim(identity.clone(), payload())
+                    .await
+                    .is_err()
+            );
+            assert!(daemon.launch_claim(&identity).await.is_err());
+        }
+        assert_eq!(runtime.specs.lock().unwrap().len(), 1);
+        assert_eq!(daemon.capacity_usage().await.unwrap().0, 0);
+    }
+
     #[tokio::test]
     async fn denied_data_plane_posts_close_http1_before_connection_reuse() {
         let dir = TempDir::new().unwrap();

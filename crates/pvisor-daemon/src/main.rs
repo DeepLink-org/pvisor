@@ -78,6 +78,19 @@ enum Command {
         /// Externally reachable host:port, without scheme/path. Required behind a proxy.
         #[arg(long, requires = "sandbox")]
         public_endpoint: Option<String>,
+        /// Enable trusted-peer clustering on a concrete gossip address; requires PVISOR_CLUSTER_SECRET.
+        #[cfg(feature = "cluster")]
+        #[arg(long, requires = "sandbox")]
+        cluster_listen: Option<SocketAddr>,
+        /// Trusted gossip seed address (repeat for multiple peers).
+        #[cfg(feature = "cluster")]
+        #[arg(long, requires = "cluster_listen")]
+        cluster_seed: Vec<SocketAddr>,
+
+        /// Permit plaintext peer HTTP outside literal loopback; use a protected network.
+        #[cfg(feature = "cluster")]
+        #[arg(long, requires = "cluster_listen")]
+        allow_insecure_peer_http: bool,
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
         #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
@@ -207,6 +220,13 @@ async fn run(command: Command) -> anyhow::Result<()> {
             listen,
             allow_insecure_listen,
             public_endpoint,
+            #[cfg(feature = "cluster")]
+            cluster_listen,
+            #[cfg(feature = "cluster")]
+            cluster_seed,
+
+            #[cfg(feature = "cluster")]
+            allow_insecure_peer_http,
             state,
             images_dir,
             cgroup_root,
@@ -221,6 +241,26 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 cache || sandbox || memory_pool,
                 "select at least one service: --cache, --memory-pool or --sandbox"
             );
+            #[cfg(feature = "cluster")]
+            let mut cluster_config = cluster_listen
+                .map(|bind| {
+                    let secret = std::env::var("PVISOR_CLUSTER_SECRET").map_err(|_| {
+                        anyhow::anyhow!("cluster requires PVISOR_CLUSTER_SECRET in the environment")
+                    })?;
+                    validate_cluster_secret(&secret)?;
+                    anyhow::ensure!(
+                        !bind.ip().is_unspecified(),
+                        "--cluster-listen requires a concrete gossip address"
+                    );
+                    Ok::<_, anyhow::Error>(daemon::cluster::ClusterConfig {
+                        bind,
+                        seeds: cluster_seed,
+                        secret,
+                        images: Vec::new(),
+                        allow_insecure_peer_http,
+                    })
+                })
+                .transpose()?;
             // Install handlers before publishing readiness or starting workers.
             // A manager stopped immediately after readiness must drain normally.
             let stop = shutdown()?;
@@ -273,6 +313,10 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 let images_dir = images_dir
                     .ok_or_else(|| anyhow::anyhow!("sandbox requires --images-dir"))?
                     .canonicalize()?;
+                #[cfg(feature = "cluster")]
+                if let Some(config) = &mut cluster_config {
+                    config.images = discover_cluster_images(&images_dir)?;
+                }
                 let cgroup_root = cgroup_root
                     .ok_or_else(|| anyhow::anyhow!("sandbox requires --cgroup-root"))?
                     .canonicalize()?;
@@ -331,8 +375,30 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 None
             };
+            #[cfg(feature = "cluster")]
+            let cluster = if let Some(config) = cluster_config {
+                let (daemon, _) = sandbox_service
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("cluster requires --sandbox"))?;
+                Some(daemon::cluster::Cluster::start(daemon.clone(), config).await?)
+            } else {
+                None
+            };
             let mut cache = if cache {
-                Some(cache_component::start(cache_listen, cache_image_store).await?)
+                match cache_component::start(cache_listen, cache_image_store).await {
+                    Ok(cache) => Some(cache),
+                    Err(error) => {
+                        #[cfg(feature = "cluster")]
+                        if let Some(cluster) = &cluster
+                            && let Err(shutdown_error) = cluster.shutdown().await
+                        {
+                            return Err(error.context(format!(
+                                "cluster shutdown also failed: {shutdown_error}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                }
             } else {
                 None
             };
@@ -347,11 +413,18 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         "pVisor sandbox service listening on {}",
                         listener.local_addr()?
                     );
+                    #[cfg(feature = "cluster")]
+                    let router = match &cluster {
+                        Some(cluster) => cluster.router(),
+                        None => daemon::api::router(daemon),
+                    };
+                    #[cfg(not(feature = "cluster"))]
+                    let router = daemon::api::router(daemon);
                     axum::serve(
                         listener.tap_io(|stream| {
                             let _ = stream.set_nodelay(true);
                         }),
-                        daemon::api::router(daemon),
+                        router,
                     )
                     .with_graceful_shutdown(async {
                         let _ = api_stopped.await;
@@ -380,14 +453,67 @@ async fn run(command: Command) -> anyhow::Result<()> {
             if let Some(task) = maintenance {
                 task.abort();
             }
-            if let Some(mut child) = cache {
-                cache_component::stop(&mut child).await?;
-            }
+            #[cfg(feature = "cluster")]
+            let cluster_stopped = if let Some(cluster) = &cluster {
+                cluster.shutdown().await
+            } else {
+                Ok(())
+            };
+            let cache_stopped = if let Some(mut child) = cache {
+                cache_component::stop(&mut child).await
+            } else {
+                Ok(())
+            };
             result?;
             drained?;
+            #[cfg(feature = "cluster")]
+            cluster_stopped?;
+            cache_stopped?;
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "cluster")]
+fn validate_cluster_secret(secret: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        secret.chars().count() >= 32,
+        "PVISOR_CLUSTER_SECRET must contain at least 32 characters"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "cluster")]
+fn discover_cluster_images(images_dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    let images_dir = images_dir.canonicalize()?;
+    let mut images = Vec::new();
+    for entry in std::fs::read_dir(&images_dir)? {
+        let entry = entry?;
+        // Like runtime's trusted_file, exclude symlinks and non-regular files.
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(image) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+            continue;
+        };
+        // Match runtime::validate_spec without manufacturing a workload spec.
+        if image.is_empty()
+            || image.len() > 128
+            || image.starts_with('.')
+            || !image
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            continue;
+        }
+        let manifest = entry.path().canonicalize()?;
+        if manifest.parent() == Some(images_dir.as_path()) && manifest.is_file() {
+            images.push(image.to_owned());
+        }
+    }
+    images.sort();
+    Ok(images)
 }
 
 fn validate_listen(listen: SocketAddr, allow_insecure: bool) -> anyhow::Result<()> {
@@ -450,6 +576,164 @@ fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
 mod tests {
     use super::*;
     use pvisor_daemon::memory_pool::PoolMode;
+
+    #[cfg(feature = "cluster")]
+    #[test]
+    fn cluster_flags_are_explicit_and_validate_dependencies() {
+        let base = [
+            "pvisor-daemon",
+            "serve",
+            "--sandbox",
+            "--images-dir",
+            "/images",
+            "--cgroup-root",
+            "/groups",
+        ];
+        let Command::Serve {
+            cluster_listen,
+            cluster_seed,
+            allow_insecure_peer_http,
+            ..
+        } = Args::try_parse_from(base).unwrap().command
+        else {
+            panic!()
+        };
+        assert!(cluster_listen.is_none());
+        assert!(cluster_seed.is_empty());
+
+        assert!(!allow_insecure_peer_http);
+        for options in [
+            vec!["--cluster-seed", "127.0.0.1:9001"],
+            vec!["--cluster-image", "ubuntu"],
+            vec!["--allow-insecure-peer-http"],
+            vec!["--cluster-listen", "not-an-address"],
+        ] {
+            let mut args = base.to_vec();
+            args.extend(options);
+            assert!(Args::try_parse_from(args).is_err());
+        }
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--cache",
+                "--cluster-listen",
+                "127.0.0.1:9000"
+            ])
+            .is_err()
+        );
+        let mut args = base.to_vec();
+        args.extend([
+            "--cluster-listen",
+            "127.0.0.1:9000",
+            "--cluster-seed",
+            "127.0.0.1:9001",
+            "--cluster-seed",
+            "127.0.0.1:9002",
+            "--allow-insecure-peer-http",
+        ]);
+        let Command::Serve {
+            cluster_listen,
+            cluster_seed,
+            allow_insecure_peer_http,
+            ..
+        } = Args::try_parse_from(args).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!(
+            cluster_listen.unwrap(),
+            "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(cluster_seed.len(), 2);
+
+        assert!(allow_insecure_peer_http);
+    }
+
+    #[test]
+    fn cluster_credentials_are_not_accepted_in_argv() {
+        for flag in ["--cluster-secret", "--cluster-key"] {
+            let error = Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--cache",
+                flag,
+                "canary-cluster-secret",
+            ])
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(error.contains(flag));
+            assert!(!error.contains("canary-cluster-secret"));
+        }
+        for command in ["start", "user-service"] {
+            assert!(
+                Args::try_parse_from([
+                    "pvisor-daemon",
+                    command,
+                    "--cluster-listen",
+                    "127.0.0.1:9000"
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[cfg(not(feature = "cluster"))]
+    #[test]
+    fn cluster_flags_require_the_feature() {
+        for flag in [
+            "--cluster-listen",
+            "--cluster-seed",
+            "--allow-insecure-peer-http",
+        ] {
+            assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--cache", flag]).is_err());
+        }
+    }
+
+    #[cfg(feature = "cluster")]
+    #[test]
+    fn cluster_preflight_validates_secret() {
+        for secret in [String::new(), "x".repeat(31), "é".repeat(16)] {
+            let error = validate_cluster_secret(&secret).unwrap_err().to_string();
+            assert!(!error.contains(&format!("{secret:?}")));
+        }
+        assert!(validate_cluster_secret(&"x".repeat(32)).is_ok());
+    }
+
+    #[cfg(feature = "cluster")]
+    #[test]
+    fn cluster_inventory_discovers_only_direct_safe_manifest_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        assert!(discover_cluster_images(&root).unwrap().is_empty());
+        for name in [
+            "ubuntu.json",
+            "Alpine-3_20.v1.json",
+            "notes.txt",
+            "image.JSON",
+            ".json",
+            ".hidden.json",
+            "ubuntu:latest.json",
+            "bad key.json",
+            "é.json",
+        ] {
+            std::fs::write(root.join(name), "{}").unwrap();
+        }
+        std::fs::write(root.join(format!("{}.json", "x".repeat(129))), "{}").unwrap();
+        std::fs::create_dir(root.join("directory.json")).unwrap();
+        std::fs::write(root.join("directory.json/nested.json"), "{}").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escape.json")).unwrap();
+        std::os::unix::fs::symlink(root.join("ubuntu.json"), root.join("alias.json")).unwrap();
+        std::os::unix::fs::symlink(root.join("missing"), root.join("broken.json")).unwrap();
+        assert_eq!(
+            discover_cluster_images(&root).unwrap(),
+            ["Alpine-3_20.v1", "ubuntu"]
+        );
+        assert!(discover_cluster_images(&root.join("missing")).is_err());
+        assert!(discover_cluster_images(&root.join("ubuntu.json")).is_err());
+    }
 
     #[test]
     fn non_loopback_plaintext_requires_explicit_opt_in() {

@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 #[cfg(test)]
 use axum::http::Uri;
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::{Body, to_bytes},
     extract::{
         DefaultBodyLimit, MatchedPath, Path, RawQuery, Request, State,
@@ -41,12 +41,46 @@ use url::{Host, Url};
 use super::{ApiError, CreateRequest, Daemon, EndpointResponse, RenewRequest, Sandbox};
 
 const CONTROL_BODY_LIMIT: usize = 1024 * 1024;
+const CONTROL_BODY_CAPACITY: usize = 32;
+const CONTROL_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+pub(super) struct ControlBodies {
+    slots: Arc<tokio::sync::Semaphore>,
+    timeout: Duration,
+}
+
+impl ControlBodies {
+    pub(super) async fn read(&self, body: Body) -> Result<axum::body::Bytes, ApiError> {
+        let _permit = self.slots.try_acquire().map_err(|_| {
+            ApiError::new(
+                429,
+                "CONTROL_BODY_CAPACITY_EXCEEDED",
+                "node control body capacity exhausted",
+            )
+        })?;
+        tokio::time::timeout(self.timeout, to_bytes(body, CONTROL_BODY_LIMIT))
+            .await
+            .map_err(|_| ApiError::new(408, "CONTROL_BODY_TIMEOUT", "Control body read timed out"))?
+            .map_err(|_| ApiError::bad_request("Control body is unreadable or exceeds 1 MiB"))
+    }
+}
 const PROXY_HEADERS_TIMEOUT: Duration = Duration::from_secs(120);
 const PROXY_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}";
 const PROXY_TRAILING_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}/";
 const PROXY_PATH_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}/{*path}";
 
 pub fn router(daemon: Arc<Daemon>) -> Router {
+    router_with_control_bodies(
+        daemon,
+        ControlBodies {
+            slots: Arc::new(tokio::sync::Semaphore::new(CONTROL_BODY_CAPACITY)),
+            timeout: CONTROL_BODY_TIMEOUT,
+        },
+    )
+}
+
+fn router_with_control_bodies(daemon: Arc<Daemon>, bodies: ControlBodies) -> Router {
     Router::new()
         .route("/v1/sandboxes", get(list).post(create))
         .route("/v1/sandboxes/{id}", get(get_sandbox).delete(delete))
@@ -83,6 +117,7 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         ))
         .with_state(daemon.clone())
         .merge(super::e2b::router(daemon))
+        .layer(Extension(bodies))
 }
 
 impl IntoResponse for ApiError {
@@ -101,6 +136,7 @@ impl IntoResponse for ApiError {
 
 async fn request_policy(
     State(daemon): State<Arc<Daemon>>,
+    Extension(bodies): Extension<ControlBodies>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -126,14 +162,12 @@ async fn request_policy(
     } else {
         // Buffer only bounded control bodies. Proxy requests never enter this branch.
         let (parts, body) = request.into_parts();
-        match to_bytes(body, CONTROL_BODY_LIMIT).await {
+        match bodies.read(body).await {
             Ok(bytes) => {
                 next.run(Request::from_parts(parts, Body::from(bytes)))
                     .await
             }
-            Err(_) => {
-                ApiError::bad_request("Control body is unreadable or exceeds 1 MiB").into_response()
-            }
+            Err(error) => error.into_response(),
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
@@ -276,7 +310,7 @@ async fn renew(
 }
 
 #[derive(Debug, PartialEq)]
-struct ListQuery {
+pub(super) struct ListQuery {
     states: Vec<String>,
     metadata: Vec<(String, String)>,
     page: usize,
@@ -297,7 +331,7 @@ fn positive_integer(value: &str, name: &str) -> Result<usize, ApiError> {
         .ok_or_else(|| ApiError::bad_request(format!("{name} is outside the supported range")))
 }
 
-fn parse_list_query(raw: Option<&str>) -> Result<ListQuery, ApiError> {
+pub(super) fn parse_list_query(raw: Option<&str>) -> Result<ListQuery, ApiError> {
     let mut query = ListQuery {
         states: Vec::new(),
         metadata: Vec::new(),
@@ -587,6 +621,17 @@ pub(super) async fn forward(
     request: Request,
     guest_path: String,
 ) -> Result<Response, ApiError> {
+    forward_with_timeout(daemon, id, port, request, guest_path, PROXY_HEADERS_TIMEOUT).await
+}
+
+async fn forward_with_timeout(
+    daemon: &Daemon,
+    id: &str,
+    port: u16,
+    request: Request,
+    guest_path: String,
+    timeout: Duration,
+) -> Result<Response, ApiError> {
     if request.method() == Method::CONNECT
         || request.headers().contains_key(header::UPGRADE)
         || request.headers().contains_key("sec-websocket-key")
@@ -615,8 +660,8 @@ pub(super) async fn forward(
                 "node proxy stream capacity exhausted",
             )
         })?;
-    let guard = daemon.proxy_guard(id).await?;
     let send = async {
+        let _guard = daemon.proxy_guard(id).await?;
         let upstream = daemon.upstream(id, port).await?;
         let url = upstream_url(&upstream, &guest_path, request.uri().query())?;
         let (mut parts, body) = request.into_parts();
@@ -662,13 +707,12 @@ pub(super) async fn forward(
     // Reqwest exposes no separate connection-established boundary. Bound the
     // entire admission (including resolution/upload/headers), rather than
     // releasing the reuse fence after URL lookup. SSE/body retain no admission.
-    let response = tokio::time::timeout(PROXY_HEADERS_TIMEOUT, send).await;
-    drop(guard);
+    let response = tokio::time::timeout(timeout, send).await;
     let response = response.map_err(|_| {
         ApiError::new(
             504,
             "UPSTREAM_TIMEOUT",
-            "Sandbox endpoint, upload or response headers timed out after 120 seconds",
+            "Sandbox admission, endpoint, upload or response headers timed out",
         )
     })??;
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -773,6 +817,7 @@ mod tests {
 
     struct RouteFixture {
         app: Router,
+        daemon: Arc<Daemon>,
         runtime: Arc<RouteRuntime>,
         // Keep private durable state alive until the router/daemon is dropped.
         _directory: TempDir,
@@ -798,11 +843,121 @@ mod tests {
             .await
             .expect("open HTTP route fixture");
             Self {
-                app: router(daemon),
+                app: router(daemon.clone()),
+                daemon,
                 runtime,
                 _directory: directory,
             }
         }
+    }
+
+    fn pending_body() -> Body {
+        Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >())
+    }
+
+    #[tokio::test]
+    async fn control_body_deadline_and_shared_capacity_preserve_auth_and_envelopes() {
+        let fixture = RouteFixture::open().await;
+        let bodies = ControlBodies {
+            slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            timeout: Duration::ZERO,
+        };
+        let app = router_with_control_bodies(fixture.daemon.clone(), bodies.clone());
+        for (path, key, code_field) in [
+            ("/v1/sandboxes", "open-sandbox-api-key", "code"),
+            ("/sandboxes", "x-api-key", "error_code"),
+        ] {
+            let (status, headers, value) = exchange(
+                &app,
+                Method::POST,
+                path,
+                &[(key, TEST_API_KEY)],
+                pending_body(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+            assert_eq!(headers[header::CONNECTION], "close");
+            assert_eq!(value[code_field], "CONTROL_BODY_TIMEOUT");
+            assert_eq!(bodies.slots.available_permits(), 1);
+
+            let permit = bodies.slots.try_acquire().unwrap();
+            let (status, headers, value) = exchange(
+                &app,
+                Method::POST,
+                path,
+                &[(key, TEST_API_KEY)],
+                pending_body(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(headers[header::CONNECTION], "close");
+            assert_eq!(value[code_field], "CONTROL_BODY_CAPACITY_EXCEEDED");
+            let (status, _, _) = exchange(&app, Method::POST, path, &[], pending_body()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            drop(permit);
+        }
+        assert_eq!(fixture.runtime.creates.load(Ordering::SeqCst), 0);
+        // The body deadline does not wrap dispatch of an accepted mutation.
+        create_over_http(&app, json!({})).await;
+        assert_eq!(fixture.runtime.creates.load(Ordering::SeqCst), 1);
+        assert_eq!(bodies.slots.available_permits(), 1);
+        let independent = RouteFixture::open().await;
+        let _full = bodies.slots.try_acquire().unwrap();
+        create_over_http(&independent.app, json!({})).await;
+    }
+
+    #[tokio::test]
+    async fn control_body_slots_release_on_read_failure_and_cancellation() {
+        let bodies = ControlBodies {
+            slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            timeout: CONTROL_BODY_TIMEOUT,
+        };
+        let mut read = Box::pin(bodies.read(pending_body()));
+        assert!(futures_util::poll!(&mut read).is_pending());
+        assert_eq!(bodies.slots.available_permits(), 0);
+        assert_eq!(bodies.read(Body::empty()).await.unwrap_err().status, 429);
+        drop(read);
+        assert_eq!(bodies.slots.available_permits(), 1);
+        assert_eq!(
+            bodies
+                .read(Body::from(vec![0; CONTROL_BODY_LIMIT + 1]))
+                .await
+                .unwrap_err()
+                .status,
+            400
+        );
+        assert_eq!(bodies.slots.available_permits(), 1);
+        bodies.read(Body::empty()).await.unwrap();
+        assert_eq!(bodies.slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_gate_wait_times_out_and_releases_stream_capacity() {
+        let fixture = RouteFixture::open().await;
+        let sandbox = create_over_http(&fixture.app, json!({})).await;
+        let id = sandbox["id"].as_str().unwrap();
+        let gate = fixture.daemon.operation(id).await.unwrap();
+        let writer = gate.clone().write_owned().await;
+        let capacity = fixture.daemon.proxy_slots.available_permits();
+        let error = forward_with_timeout(
+            &fixture.daemon,
+            id,
+            crate::runtime::EXECD_PORT,
+            Request::new(Body::empty()),
+            "/".to_owned(),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.status, 504);
+        assert_eq!(error.code, "UPSTREAM_TIMEOUT");
+        assert_eq!(fixture.runtime.endpoints.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.daemon.proxy_slots.available_permits(), capacity);
+        drop(writer);
+        // Cancellation removed the queued reader and left the reuse fence usable.
+        let _writer = gate.try_write().unwrap();
     }
 
     fn create_payload(metadata: Value) -> Value {

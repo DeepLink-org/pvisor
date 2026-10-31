@@ -10,6 +10,524 @@ use std::{future::Future, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::{Barrier, oneshot};
 
+fn claim_identity() -> super::models::ClaimIdentity {
+    super::models::ClaimIdentity {
+        claim_id: uuid::Uuid::new_v4().to_string(),
+        home: "home-a".into(),
+        task_id: "task-a".into(),
+        generation: 1,
+    }
+}
+
+#[tokio::test]
+async fn claim_reservation_races_ordinary_create_atomically() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let mut cfg = config(&directory);
+    cfg.max_sandboxes = 1;
+    let daemon = open(cfg, &runtime).await;
+    let identity = claim_identity();
+    let (claim, ordinary) = tokio::join!(
+        daemon.reserve_claim(identity.clone(), request()),
+        daemon.create(request())
+    );
+    assert_ne!(claim.is_ok(), ordinary.is_ok());
+    assert_eq!(daemon.capacity_usage().await.unwrap(), (1, 1000, 64 * MIB));
+    match claim {
+        Ok(_) => {
+            assert_eq!(ordinary.unwrap_err().status, 429);
+            assert!(daemon.list().await.unwrap().is_empty());
+            assert_eq!(runtime.state.lock().unwrap().creates, 0);
+        }
+        Err(error) => assert_eq!(error.status, 429),
+    }
+}
+
+#[tokio::test]
+async fn claim_release_is_durable_hidden_and_rejects_mismatched_replay() {
+    use super::models::ClaimPhase;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    let sandbox = daemon
+        .reserve_claim(identity.clone(), request())
+        .await
+        .unwrap();
+    assert_eq!(sandbox.id, format!("sb-{}", identity.claim_id));
+    assert!(sandbox.expires_at.is_none());
+    assert_eq!(daemon.get(&sandbox.id).await.unwrap_err().status, 404);
+    assert_eq!(daemon.delete(&sandbox.id).await.unwrap_err().status, 404);
+    assert!(
+        daemon
+            .renew(
+                &sandbox.id,
+                super::RenewRequest {
+                    expires_at: chrono::Utc::now() + chrono::Duration::seconds(700)
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        daemon
+            .reserve_claim(identity.clone(), request())
+            .await
+            .unwrap()
+            .id,
+        sandbox.id
+    );
+    let mut wrong = identity.clone();
+    wrong.generation += 1;
+    assert_eq!(
+        daemon
+            .reserve_claim(wrong.clone(), request())
+            .await
+            .unwrap_err()
+            .code,
+        "CLAIM_MISMATCH"
+    );
+    assert!(daemon.launch_claim(&wrong).await.is_err());
+    assert!(daemon.release_claim(&wrong).await.is_err());
+    assert!(daemon.inspect_claim(&wrong).await.is_err());
+    let mut changed = request();
+    changed.env.insert("CHANGED".into(), "yes".into());
+    assert_eq!(
+        daemon
+            .reserve_claim(identity.clone(), changed)
+            .await
+            .unwrap_err()
+            .code,
+        "CLAIM_MISMATCH"
+    );
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert_eq!(runtime.state.lock().unwrap().inspections, 0);
+    assert_eq!(daemon.pending_claims().await.len(), 1);
+    assert_eq!(
+        daemon.inspect_claim(&identity).await.unwrap().phase,
+        ClaimPhase::Reserved
+    );
+    daemon.release_claim(&identity).await.unwrap();
+    daemon.release_claim(&identity).await.unwrap();
+    assert_eq!(daemon.capacity_usage().await.unwrap(), (0, 0, 0));
+    assert!(daemon.pending_claims().await.is_empty());
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert_eq!(
+        daemon.inspect_claim(&identity).await.unwrap().phase,
+        ClaimPhase::Released
+    );
+    assert!(daemon.launch_claim(&identity).await.is_err());
+    assert!(
+        daemon
+            .reserve_claim(identity.clone(), request())
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+    assert_eq!(runtime.state.lock().unwrap().inspections, 0);
+    create(&daemon).await;
+    create(&daemon).await;
+}
+
+#[tokio::test]
+async fn claim_launch_replay_and_deletion_never_recreate() {
+    use super::models::ClaimPhase;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    daemon
+        .reserve_claim(identity.clone(), request())
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        daemon.launch_claim(&identity),
+        daemon.launch_claim(&identity)
+    );
+    let sandbox = a.unwrap();
+    assert_eq!(b.unwrap().id, sandbox.id);
+    assert!(sandbox.expires_at.is_some());
+    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+    assert_eq!(
+        daemon.inspect_claim(&identity).await.unwrap().phase,
+        ClaimPhase::Finished
+    );
+    assert!(daemon.release_claim(&identity).await.is_err());
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    daemon.launch_claim(&identity).await.unwrap();
+    daemon.delete(&sandbox.id).await.unwrap();
+    assert_eq!(daemon.capacity_usage().await.unwrap(), (0, 0, 0));
+    let record = daemon.record(&sandbox.id).await.unwrap();
+    assert!(record.env.is_empty());
+    assert!(record.sandbox.entrypoint.is_empty());
+    assert!(daemon.list().await.unwrap().is_empty());
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert!(daemon.launch_claim(&identity).await.is_err());
+    assert!(
+        daemon
+            .inspect_claim(&identity)
+            .await
+            .unwrap()
+            .error
+            .is_some()
+    );
+    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+}
+
+#[tokio::test]
+async fn claim_restart_launch_gap_never_reissues_runtime_create() {
+    use super::models::ClaimPhase;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    let sandbox = daemon
+        .reserve_claim(identity.clone(), request())
+        .await
+        .unwrap();
+    // Model the durable launch fence immediately before the process crashes.
+    daemon
+        .update(&sandbox.id, |registry| {
+            let mut record = registry.sandboxes[&sandbox.id].clone();
+            record.claim.as_mut().unwrap().phase = ClaimPhase::Launching;
+            record.sandbox.status.state = "Pending".into();
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap();
+    runtime.state.lock().unwrap().inspect_error = true;
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert_eq!(daemon.capacity_usage().await.unwrap().0, 1);
+    assert_eq!(
+        daemon.launch_claim(&identity).await.unwrap_err().code,
+        "CLAIM_LAUNCH_UNCERTAIN"
+    );
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+    runtime.state.lock().unwrap().inspect_error = false;
+    daemon.get(&sandbox.id).await.unwrap();
+    assert_eq!(
+        daemon.inspect_claim(&identity).await.unwrap().phase,
+        ClaimPhase::Released
+    );
+    assert!(daemon.launch_claim(&identity).await.is_err());
+    assert_eq!(daemon.capacity_usage().await.unwrap().0, 0);
+}
+
+#[tokio::test]
+async fn claim_cancelled_reservation_still_commits_before_launch() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    let (disk, entered) = block_disk(&daemon);
+    let task = {
+        let daemon = daemon.clone();
+        let identity = identity.clone();
+        tokio::spawn(async move { daemon.reserve_claim(identity, request()).await })
+    };
+    bounded(entered).await.unwrap();
+    task.abort();
+    disk.release();
+    bounded(async {
+        while daemon.inspect_claim(&identity).await.is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(daemon.capacity_usage().await.unwrap().0, 1);
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+    daemon.release_claim(&identity).await.unwrap();
+}
+
+#[tokio::test]
+async fn claim_uncertain_launch_commit_failstops_without_runtime_create() {
+    use super::models::ClaimPhase;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    daemon
+        .reserve_claim(identity.clone(), request())
+        .await
+        .unwrap();
+    daemon.store.set_commit_hook(|point| {
+        anyhow::ensure!(
+            point != CommitPoint::AfterRename,
+            "injected uncertain launch fence"
+        );
+        Ok(())
+    });
+    assert_eq!(
+        daemon.launch_claim(&identity).await.unwrap_err().code,
+        "STORAGE_UNAVAILABLE"
+    );
+    assert!(daemon.capacity_usage().await.is_err());
+    assert!(daemon.launch_claim(&identity).await.is_err());
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+    runtime.state.lock().unwrap().inspect_error = true;
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert_eq!(
+        daemon.inspect_claim(&identity).await.unwrap().phase,
+        ClaimPhase::Launching
+    );
+    assert!(daemon.launch_claim(&identity).await.is_err());
+    assert_eq!(daemon.capacity_usage().await.unwrap().0, 1);
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+}
+
+async fn claim_ledger_charge(daemon: &Daemon) -> usize {
+    let registry = daemon.registry.lock().await;
+    let header = super::models::Registry {
+        version: 1,
+        owner: registry.owner.clone(),
+        sandboxes: BTreeMap::new(),
+    };
+    registry
+        .sandboxes
+        .iter()
+        .map(|(id, record)| super::store::record_weight(id, record).unwrap())
+        .sum::<usize>()
+        + serde_json::to_vec(&header).unwrap().len()
+        - usize::from(!registry.sandboxes.is_empty())
+}
+
+#[tokio::test]
+async fn claim_full_ledger_preserves_lifecycle_headroom_and_immutable_result() {
+    use super::models::ClaimPhase;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let cfg = || {
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 5;
+        cfg.cpu_millis = 5000;
+        cfg.memory_bytes = 512 * MIB;
+        cfg
+    };
+    let daemon = open(cfg(), &runtime).await;
+    let filler = create(&daemon).await;
+    let launched = claim_identity();
+    let rejected = claim_identity();
+    let expired = claim_identity();
+    for identity in [&launched, &rejected, &expired] {
+        daemon
+            .reserve_claim(identity.clone(), request())
+            .await
+            .unwrap();
+    }
+    daemon
+        .update(&filler.id, |registry| {
+            let mut record = registry.sandboxes[&filler.id].clone();
+            record.env.insert("PADDING".into(), String::new());
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap();
+    let remaining = 16 * 1024 * 1024 - claim_ledger_charge(&daemon).await;
+    daemon
+        .update(&filler.id, |registry| {
+            let mut record = registry.sandboxes[&filler.id].clone();
+            record.env.insert("PADDING".into(), "x".repeat(remaining));
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(claim_ledger_charge(&daemon).await, 16 * 1024 * 1024);
+    assert_eq!(
+        daemon
+            .reserve_claim(claim_identity(), request())
+            .await
+            .unwrap_err()
+            .code,
+        "REGISTRY_CAPACITY_EXCEEDED"
+    );
+    // Reopen the full registry before exercising all growth transitions.
+    drop(daemon);
+    let daemon = open(cfg(), &runtime).await;
+    assert_eq!(claim_ledger_charge(&daemon).await, 16 * 1024 * 1024);
+    daemon.release_claim(&rejected).await.unwrap();
+    let snapshot = daemon.launch_claim(&launched).await.unwrap();
+    let expected = serde_json::to_value(&snapshot).unwrap();
+    daemon.pause(&snapshot.id).await.unwrap();
+    daemon
+        .renew(
+            &snapshot.id,
+            super::RenewRequest {
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(1200),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(daemon.launch_claim(&launched).await.unwrap()).unwrap(),
+        expected
+    );
+    daemon.delete(&snapshot.id).await.unwrap();
+    let ttl_snapshot = daemon.launch_claim(&expired).await.unwrap();
+    daemon
+        .update(&ttl_snapshot.id, |registry| {
+            let mut record = registry.sandboxes[&ttl_snapshot.id].clone();
+            record.sandbox.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap();
+    daemon
+        .delete_conditionally(&ttl_snapshot.id, true)
+        .await
+        .unwrap();
+    assert_eq!(claim_ledger_charge(&daemon).await, 16 * 1024 * 1024);
+    drop(daemon);
+    let daemon = open(cfg(), &runtime).await;
+    assert_eq!(claim_ledger_charge(&daemon).await, 16 * 1024 * 1024);
+    for (identity, snapshot) in [(&launched, snapshot), (&expired, ttl_snapshot)] {
+        let view = daemon.inspect_claim(identity).await.unwrap();
+        assert_eq!(view.phase, ClaimPhase::Released);
+        assert!(view.sandbox.metadata.is_empty());
+        let result = view.creation_result.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::to_value(snapshot).unwrap()
+        );
+    }
+    assert!(
+        daemon
+            .inspect_claim(&rejected)
+            .await
+            .unwrap()
+            .creation_result
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(runtime.state.lock().unwrap().creates, 3);
+}
+
+#[tokio::test]
+async fn claim_uncertainty_has_no_terminal_result_until_reconciled() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let identity = claim_identity();
+    let sandbox = daemon
+        .reserve_claim(identity.clone(), request())
+        .await
+        .unwrap();
+    assert!(
+        daemon
+            .inspect_claim(&identity)
+            .await
+            .unwrap()
+            .creation_result
+            .is_none()
+    );
+    daemon
+        .update(&sandbox.id, |registry| {
+            let mut record = registry.sandboxes[&sandbox.id].clone();
+            record.claim.as_mut().unwrap().phase = super::models::ClaimPhase::Launching;
+            record.sandbox.status.state = "Pending".into();
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap();
+    runtime.state.lock().unwrap().inspect_error = true;
+    drop(daemon);
+    let daemon = open(config(&directory), &runtime).await;
+    assert!(
+        daemon
+            .inspect_claim(&identity)
+            .await
+            .unwrap()
+            .creation_result
+            .is_none()
+    );
+    runtime.state.lock().unwrap().inspect_error = false;
+    runtime
+        .state
+        .lock()
+        .unwrap()
+        .sandboxes
+        .insert(sandbox.id.clone(), RuntimeState::Running);
+    daemon.get(&sandbox.id).await.unwrap();
+    let result = daemon
+        .inspect_claim(&identity)
+        .await
+        .unwrap()
+        .creation_result
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status.state, "Running");
+    daemon.delete(&sandbox.id).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            daemon
+                .inspect_claim(&identity)
+                .await
+                .unwrap()
+                .creation_result
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(result).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn claim_terminal_create_failure_is_immutable_but_uncertainty_is_not_terminal() {
+    for uncertain in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        runtime.state.lock().unwrap().create_failure = Some(uncertain);
+        let daemon = open(config(&directory), &runtime).await;
+        let identity = claim_identity();
+        let sandbox = daemon
+            .reserve_claim(identity.clone(), request())
+            .await
+            .unwrap();
+        let failure = daemon.launch_claim(&identity).await.unwrap_err();
+        let view = daemon.inspect_claim(&identity).await.unwrap();
+        if uncertain {
+            assert!(view.creation_result.is_none());
+            assert_eq!(daemon.capacity_usage().await.unwrap().0, 1);
+            daemon.delete(&sandbox.id).await.unwrap();
+        } else {
+            assert_eq!(
+                serde_json::to_value(view.creation_result.unwrap().unwrap_err()).unwrap(),
+                serde_json::to_value(failure).unwrap()
+            );
+        }
+        let expected = serde_json::to_value(
+            daemon
+                .inspect_claim(&identity)
+                .await
+                .unwrap()
+                .creation_result,
+        )
+        .unwrap();
+        drop(daemon);
+        let daemon = open(config(&directory), &runtime).await;
+        daemon.release_claim(&identity).await.unwrap();
+        assert!(daemon.launch_claim(&identity).await.is_err());
+        assert_eq!(
+            serde_json::to_value(
+                daemon
+                    .inspect_claim(&identity)
+                    .await
+                    .unwrap()
+                    .creation_result
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(runtime.state.lock().unwrap().creates, 1);
+    }
+}
+
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -78,6 +596,7 @@ struct FakeState {
     specs: Vec<RuntimeSpec>,
     owners: Vec<String>,
     creates: usize,
+    create_failure: Option<bool>,
     inspections: usize,
     pauses: usize,
     resumes: usize,
@@ -93,6 +612,8 @@ struct FakeState {
 struct FakeRuntime {
     state: Mutex<FakeState>,
     create_gate: Mutex<Option<NativeCreateGate>>,
+    inspect_delays: Mutex<BTreeMap<String, Duration>>,
+    delete_ids: Mutex<std::collections::BTreeSet<String>>,
 }
 
 #[async_trait::async_trait]
@@ -105,6 +626,11 @@ impl Runtime for FakeRuntime {
         }
         let mut state = self.state.lock().unwrap();
         state.creates += 1;
+        if let Some(uncertain) = state.create_failure {
+            return Err(
+                crate::runtime::CreateError::new("injected create failure", uncertain).into(),
+            );
+        }
         anyhow::ensure!(!state.sandboxes.contains_key(&spec.id), "duplicate sandbox");
         state.specs.push(spec.clone());
         state
@@ -114,6 +640,10 @@ impl Runtime for FakeRuntime {
     }
 
     async fn inspect(&self, id: &str) -> anyhow::Result<RuntimeState> {
+        let delay = self.inspect_delays.lock().unwrap().get(id).copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         let mut state = self.state.lock().unwrap();
         state.inspections += 1;
         anyhow::ensure!(!state.inspect_error, "inspection unavailable");
@@ -151,6 +681,7 @@ impl Runtime for FakeRuntime {
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.delete_ids.lock().unwrap().insert(id.to_owned());
         let mut state = self.state.lock().unwrap();
         state.deletes += 1;
         match state.delete_outcome {
@@ -191,6 +722,17 @@ fn config(directory: &TempDir) -> Config {
 }
 
 async fn open(config: Config, runtime: &Arc<FakeRuntime>) -> Arc<Daemon> {
+    let daemon = open_unreconciled(config, runtime).await;
+    bounded(async {
+        while !daemon.reconciled.load(std::sync::atomic::Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    daemon
+}
+
+async fn open_unreconciled(config: Config, runtime: &Arc<FakeRuntime>) -> Arc<Daemon> {
     let runtime = runtime.clone();
     Daemon::open(config, move |owner| {
         runtime.state.lock().unwrap().owners.push(owner);
@@ -219,6 +761,127 @@ async fn create(daemon: &Arc<Daemon>) -> super::Sandbox {
         .create(request())
         .await
         .unwrap_or_else(|error| panic!("create failed: {}", error.message))
+}
+
+#[tokio::test]
+async fn budget_rejection_does_not_poison_other_sandbox_operations() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let sandbox = create(&daemon).await;
+    let before = disk_inventory(&directory);
+    let error = daemon
+        .update(&sandbox.id, |registry| {
+            let mut record = registry.sandboxes[&sandbox.id].clone();
+            record
+                .sandbox
+                .metadata
+                .insert("oversized".into(), "x".repeat(16 * 1024 * 1024));
+            Ok((Some(record), ()))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "REGISTRY_CAPACITY_EXCEEDED");
+    assert_eq!(disk_inventory(&directory), before);
+    assert_eq!(daemon.list().await.unwrap().len(), 1);
+    let other = create(&daemon).await;
+    daemon.pause(&other.id).await.unwrap();
+    daemon.resume(&other.id).await.unwrap();
+    daemon.delete(&other.id).await.unwrap();
+    daemon.delete(&sandbox.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn maintenance_rotates_past_more_than_eight_persistent_failures() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let mut cfg = config(&directory);
+    cfg.max_sandboxes = 18;
+    cfg.cpu_millis = 18000;
+    cfg.memory_bytes = 2048 * MIB;
+    let daemon = open(cfg, &runtime).await;
+    for _ in 0..18 {
+        let sandbox = create(&daemon).await;
+        daemon
+            .transition(&sandbox.id, "Stopping", None)
+            .await
+            .unwrap();
+    }
+    runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Error;
+    let maintenance = daemon.start_maintenance();
+    bounded(async {
+        while runtime.delete_ids.lock().unwrap().len() != 18 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(daemon.list().await.unwrap().len(), 18);
+    maintenance.abort();
+    let _ = maintenance.await;
+}
+
+#[tokio::test]
+async fn startup_is_background_retains_capacity_and_recovers_healthy_items() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let slow = create(&daemon).await;
+    let healthy = create(&daemon).await;
+    runtime
+        .inspect_delays
+        .lock()
+        .unwrap()
+        .insert(slow.id.clone(), Duration::from_secs(1));
+    {
+        let mut state = runtime.state.lock().unwrap();
+        state
+            .sandboxes
+            .insert(healthy.id.clone(), RuntimeState::Paused);
+        state
+            .sandboxes
+            .insert(slow.id.clone(), RuntimeState::Paused);
+    }
+    drop(daemon);
+    let daemon = tokio::time::timeout(
+        Duration::from_millis(250),
+        open_unreconciled(config(&directory), &runtime),
+    )
+    .await
+    .expect("startup must not wait for the slow supervisor");
+    assert_eq!(daemon.list().await.unwrap().len(), 2);
+    assert_eq!(daemon.create(request()).await.unwrap_err().status, 429);
+    // The slow record still says Running, but endpoint resolution must use
+    // native state, not that stale durable observation.
+    assert!(daemon.upstream(&slow.id, 44772).await.is_err());
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if daemon
+                .list()
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == healthy.id && s.status.state == "Paused")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("healthy supervisor must recover independently");
+    assert!(!daemon.reconciled.load(std::sync::atomic::Ordering::Acquire));
+    assert!(daemon.upstream(&healthy.id, 44772).await.is_err());
+    let weak = Arc::downgrade(&daemon);
+    drop(daemon);
+    bounded(async {
+        while weak.upgrade().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Background completion releases the store lock, rather than retaining a
+    // strong Arc in an idle coordinator forever.
+    let _reopened = open(config(&directory), &runtime).await;
 }
 
 #[tokio::test]
@@ -736,7 +1399,7 @@ async fn restart_reconciles_stored_state_against_shared_runtime() {
     drop(daemon);
 
     let daemon = open(config(&directory), &runtime).await;
-    // list does not inspect: these states must have been reconciled by open.
+    // The helper waits for the background startup pass; list itself does not inspect.
     let sandboxes = daemon.list().await.unwrap();
     assert_eq!(sandboxes.len(), 2);
     assert_eq!(

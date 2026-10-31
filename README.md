@@ -146,15 +146,21 @@ The repository also provides these entry points, each with its own contract:
 | --- | --- |
 | `pvisor spawn` | Native Jobs: run, review, apply/drop, inspect, checkpoint and fork. |
 | `pvisor run`, `build`, `pull`, `exec` | Experimental Docker-style CLI subset, with one Linux VM per container and no central Docker daemon. This is separate from the OCI executor used by Jobs. |
-| `pvisor-daemon` | Single-node services for sandbox APIs, cache and optional memory pools. Sandbox serving implements partial OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles on Linux/KVM. |
+| `pvisor-daemon` | Node-local sandbox APIs, cache and optional memory pools; optional experimental Pulsing work-stealing queues and owner routing for both OpenSandbox and E2B. Sandbox serving implements partial OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles on Linux/KVM. |
 | `containerd-shim-pvisor-v2` | Linux containerd integration with its own lifecycle and platform requirements. |
 | Rust library `pvisor` | Embeddable execution runtime and durable Job service. |
 | `pvisor-tui`, `pvisor-replay` | Interactive Job frontend and replay/continuation tools. |
 
 The container CLI does not implement the Docker Engine API. The daemon's sandbox
 API does not expose native Job stage/apply or checkpoint/fork semantics. SDK
-support is limited to the partial profiles described above. External
-orchestrators handle cross-node placement, workflow scheduling and retries.
+support is limited to the partial profiles described above. Builds with the
+optional `cluster` feature support trusted-peer OpenSandbox and E2B requests at
+every entry, sharing pull/work-stealing queues, durable Home assignments and
+executor resource claims. Protocol choice is independent of cluster mode.
+E2B uses explicit API and `/e2b` sandbox URLs; both protocols still require
+operator-prepared templates, not automatic create-time registry downloads. They do not provide migration, replicated queue/VM state or automatic
+reassignment after an uncertain launch. External orchestrators still own workflow scheduling and
+failure reconciliation.
 
 Use the [container command profile](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/README.md#docker-command-profile-experimental),
 [daemon contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/README.md)
