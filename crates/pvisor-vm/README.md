@@ -30,6 +30,9 @@ chmod/chown 不提供完整语义。共享树由调用方管理，不要允许�
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
 Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
 
+退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
+后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
+
 Windows 构建与不依赖 WHP 的原生验证（Git Bash）：
 
 ```bash
