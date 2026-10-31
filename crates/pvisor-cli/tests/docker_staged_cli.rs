@@ -385,57 +385,94 @@ fn ordinary_mounts_and_unstarted_containers_are_not_stages() {
 
 #[test]
 fn interactive_container_apply_can_go_back_and_accept_the_selected_mount() {
-    let f = Fixture::new(2);
     let script = r#"
-import os, pty, select, signal, sys, time
-binary, root, store = sys.argv[1:]
+import errno, os, pty, signal, sys
+binary, root, store, read_size = sys.argv[1:]
+read_size = int(read_size)
 pid, master = pty.fork()
 if pid == 0:
     os.chdir(root)
     os.environ.update(HOME=root, PVISOR_RUN_HOME=root+'/runs', PVISOR_DOCKER_HOME=store)
     os.execv(binary, [binary, 'apply', 'staged', '--mount', '/workspace-1'])
-output = bytearray()
-state = 0
+pending = bytearray()
+transcript = bytearray()
+
+def timed_out(signum, frame):
+    raise AssertionError('picker timed out: '+repr(transcript))
+
+def read_chunk():
+    try:
+        chunk = os.read(master, read_size)
+    except OSError as error:
+        if error.errno != errno.EIO: raise
+        return b''  # Linux PTYs report slave closure as EIO.
+    transcript.extend(chunk)
+    assert len(transcript) < 200000, transcript
+    return chunk
+
+def read_until(marker):
+    # PTY reads can split any line or coalesce several screens. Consume only
+    # this frame, retaining every trailing byte for the next expectation.
+    while marker not in pending:
+        chunk = read_chunk()
+        assert chunk, ('terminal closed before', marker, transcript)
+        pending.extend(chunk)
+    end = pending.index(marker) + len(marker)
+    frame = bytes(pending[:end])
+    del pending[:end]
+    return frame
+
+def picker(checked):
+    read_until(b'Enter preview, q quit\r\n')
+    row = read_until(b'\r\n')
+    assert b'result' in row, (row, transcript)
+    assert (b'> [x]' if checked else b'> [ ]') in row, (row, transcript)
+
+signal.signal(signal.SIGALRM, timed_out)
+signal.setitimer(signal.ITIMER_REAL, 15)
+reaped = False
 try:
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        if not select.select([master], [], [], .1)[0]: continue
-        try: chunk = os.read(master, 65536)
-        except OSError: break
-        if not chunk: break
-        output.extend(chunk)
-        assert len(output) < 200000, output
-        if state in (0, 2) and b'Enter preview, q quit' in output:
-            assert b'result' in output, output
-            os.write(master, b'a\r')
-            output.clear()
-            state += 1
-        elif state in (1, 3) and b'[a] apply' in output:
-            os.write(master, b'b' if state == 1 else b'a')
-            output.clear()
-            state += 1
-    else: raise AssertionError('picker timed out: '+repr(output))
+    for attempt in range(2):
+        picker(checked=attempt != 0)
+        os.write(master, b'a')
+        # Selecting all redraws the picker; wait for its checked row before
+        # Enter, rather than treating the header as a complete screen.
+        picker(checked=True)
+        os.write(master, b'\r')
+        read_until(b'[a] apply  [b] back  [d] diff  [q] quit\r\n')
+        os.write(master, b'b' if attempt == 0 else b'a')
+    while read_chunk(): pass
     _, status = os.waitpid(pid, 0)
-    assert status == 0 and state == 4, (status, state, output)
+    reaped = True
+    assert status == 0, (status, transcript)
 except BaseException:
-    try: os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError: pass
+    if not reaped:
+        try: os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        os.waitpid(pid, 0)
     raise
-finally: os.close(master)
+finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    os.close(master)
 "#;
-    let output = Command::new("python3")
-        .args(["-c", script, env!("CARGO_BIN_EXE_pvisor")])
-        .arg(f.root.path())
-        .arg(&f.store)
-        .output()
-        .unwrap();
-    success(&output);
-    assert_eq!(
-        fs::read_to_string(f.sources[1].join("result")).unwrap(),
-        "result-1"
-    );
-    assert!(!f.sources[0].join("result").exists());
-    assert!(f.stages[0].join("upper/result").exists());
+    // Exercise bytewise and short reads as well as ordinary coalesced reads.
+    for read_size in [1, 7, 65536] {
+        let f = Fixture::new(2);
+        let output = Command::new("python3")
+            .args(["-c", script, env!("CARGO_BIN_EXE_pvisor")])
+            .arg(f.root.path())
+            .arg(&f.store)
+            .arg(read_size.to_string())
+            .output()
+            .unwrap();
+        success(&output);
+        assert_eq!(
+            fs::read_to_string(f.sources[1].join("result")).unwrap(),
+            "result-1"
+        );
+        assert!(!f.sources[0].join("result").exists());
+        assert!(f.stages[0].join("upper/result").exists());
+    }
 }
 
 #[test]
