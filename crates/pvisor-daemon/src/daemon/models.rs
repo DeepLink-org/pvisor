@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiError {
     pub status: u16,
     pub code: String,
@@ -38,7 +38,7 @@ pub struct Image {
     pub auth: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateRequest {
     pub image: Option<Image>,
@@ -305,7 +305,83 @@ pub(super) struct Record {
     pub endpoint_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2b: Option<crate::runtime::E2bTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<ClaimRecord>,
 }
+
+/// Durable Home OFFER identity; every operation checks all four fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClaimIdentity {
+    /// Canonical hyphenated UUID; local sandbox ID is `sb-<claim_id>`.
+    pub claim_id: String,
+    /// Stable Home node identity.
+    pub home: String,
+    /// Home task identity.
+    pub task_id: String,
+    /// Home assignment generation, compared exactly on retries.
+    pub generation: u64,
+}
+
+/// Executor-side durable launch fence, independent of runtime observations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) enum ClaimPhase {
+    /// Capacity held; no runtime operation is allowed before Home assignment.
+    Reserved,
+    /// Launch intent committed; create must never be issued again.
+    Launching,
+    /// Launch outcome observed; capacity stays held until confirmed cleanup.
+    Finished,
+    /// Permanent zero-capacity tombstone; this identity cannot launch again.
+    Released,
+}
+
+/// Last durable observation; inspection does not perform runtime I/O.
+#[cfg(any(test, feature = "cluster"))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ClaimView {
+    pub identity: ClaimIdentity,
+    pub sandbox: Sandbox,
+    pub phase: ClaimPhase,
+    /// Mutable lifecycle failure or launch uncertainty, not the create result.
+    pub error: Option<ApiError>,
+    /// Immutable terminal create outcome for Home reporting; None means unresolved.
+    /// Success retains the original public Sandbox (including metadata, which may
+    /// contain caller secrets) even after deletion. Environment is never included.
+    pub creation_result: Option<Result<Sandbox, ApiError>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClaimRecord {
+    pub identity: ClaimIdentity,
+    pub phase: ClaimPhase,
+    pub request_digest: String,
+    pub timeout: Option<u64>,
+    pub error: Option<ApiError>,
+    /// Written once on confirmed launch success/failure, never on uncertainty.
+    pub creation_result: Option<Result<Sandbox, ApiError>>,
+    /// Fixed logical byte reservation, including future result and lifecycle growth.
+    /// Retained on release: tombstones cannot consume another claim's headroom.
+    pub storage_charge: usize,
+}
+
+impl Record {
+    pub(super) fn holds_capacity(&self) -> bool {
+        !self
+            .claim
+            .as_ref()
+            .is_some_and(|c| c.phase == ClaimPhase::Released)
+    }
+
+    pub(super) fn publicly_visible(&self) -> bool {
+        !self
+            .claim
+            .as_ref()
+            .is_some_and(|c| matches!(c.phase, ClaimPhase::Reserved | ClaimPhase::Released))
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Registry {

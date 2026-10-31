@@ -1,6 +1,9 @@
 //! Single-node ownership: durable sandbox intentions, bounded admission and
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
 pub mod api;
+mod claims;
+#[cfg(feature = "cluster")]
+pub mod cluster;
 mod e2b;
 mod models;
 mod store;
@@ -20,6 +23,7 @@ use std::{
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 const MAX_PROXY_STREAMS: usize = 128;
+const BACKGROUND_CONCURRENCY: usize = 8;
 
 pub const OPENSANDBOX_VERSION: &str = "1.1.0";
 pub const OPENSANDBOX_COMMIT: &str = "b1a29cf93a823a95913f7943010febb3f29de05c";
@@ -45,6 +49,8 @@ pub struct Daemon {
     proxy: reqwest::Client,
     proxy_slots: Arc<Semaphore>,
     storage_failed: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    reconciled: std::sync::atomic::AtomicBool,
 }
 
 impl Daemon {
@@ -88,6 +94,8 @@ impl Daemon {
             commits: Mutex::new(()),
             operations: Mutex::new(BTreeMap::new()),
             storage_failed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            reconciled: std::sync::atomic::AtomicBool::new(false),
             runtime,
             proxy_slots: Arc::new(Semaphore::new(MAX_PROXY_STREAMS)),
             proxy: reqwest::Client::builder()
@@ -102,20 +110,52 @@ impl Daemon {
                 .pool_max_idle_per_host(0)
                 .build()?,
         });
-        // Never assume a stored Running state proves a native execution survived.
-        for sandbox in daemon.list().await? {
-            let outcome = if sandbox.status.state == "Stopping" {
-                daemon.delete(&sandbox.id).await.map(|_| ())
-            } else {
-                daemon.get(&sandbox.id).await.map(|_| ())
-            };
-            if let Err(error) = outcome {
-                eprintln!(
-                    "sandbox {} reconciliation deferred: {}",
-                    sandbox.id, error.message
-                );
+        let ids = daemon
+            .registry
+            .lock()
+            .await
+            .sandboxes
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let weak = Arc::downgrade(&daemon);
+        tokio::spawn(async move {
+            let mut ids = ids.into_iter();
+            let mut jobs = tokio::task::JoinSet::new();
+            loop {
+                while jobs.len() < BACKGROUND_CONCURRENCY {
+                    let Some(id) = ids.next() else {
+                        break;
+                    };
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    jobs.spawn(async move {
+                        // Public lifecycle entry points detach accepted work: cancelling
+                        // this coordinator must not interrupt a disk commit.
+                        let outcome = match this.record(&id).await {
+                            Ok(record) if !record.publicly_visible() => Ok(()),
+                            Ok(record) if record.sandbox.status.state == "Stopping" => {
+                                this.delete(&id).await
+                            }
+                            Ok(_) => this.get(&id).await.map(|_| ()),
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = outcome {
+                            eprintln!("sandbox {id} reconciliation deferred: {}", error.message);
+                        }
+                    });
+                }
+                if jobs.join_next().await.is_none() {
+                    break;
+                }
             }
-        }
+            #[cfg(test)]
+            if let Some(this) = weak.upgrade() {
+                this.reconciled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
         Ok(daemon)
     }
 
@@ -171,6 +211,13 @@ impl Daemon {
         .await;
         let record = match outcome {
             Ok(Ok(record)) => record,
+            Ok(Err(error)) if error.is::<store::BudgetRejected>() => {
+                return Err(ApiError::new(
+                    429,
+                    "REGISTRY_CAPACITY_EXCEEDED",
+                    error.to_string(),
+                ));
+            }
             _ => {
                 // Rename/unlink may have committed before directory sync failed.
                 // Never overwrite that unknown state from an older memory view.
@@ -249,12 +296,25 @@ impl Daemon {
                 registry.sandboxes.get(id).cloned().ok_or_else(|| {
                     ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist")
                 })?;
+            if let Some(claim) = record.claim.as_mut()
+                && claim.phase == models::ClaimPhase::Launching
+                && matches!(state, "Running" | "Paused" | "Terminated")
+            {
+                claim.phase = models::ClaimPhase::Finished;
+                claim.error = None;
+            }
             record.sandbox.status = SandboxStatus {
                 state: state.to_owned(),
                 message,
                 last_transition_at: Some(Utc::now()),
             };
             let sandbox = record.sandbox.clone();
+            if let Some(claim) = record.claim.as_mut()
+                && claim.phase == models::ClaimPhase::Finished
+                && claim.creation_result.is_none()
+            {
+                claim.creation_result = Some(Ok(sandbox.clone()));
+            }
             Ok((Some(record), sandbox))
         })
         .await
@@ -274,18 +334,31 @@ impl Daemon {
     }
 
     async fn create_validated(&self, validated: models::Validated) -> Result<Sandbox, ApiError> {
-        let id = format!("sb-{}", uuid::Uuid::new_v4());
+        self.create_admitted(validated, None).await
+    }
+
+    async fn create_admitted(
+        &self,
+        validated: models::Validated,
+        claim: Option<models::ClaimRecord>,
+    ) -> Result<Sandbox, ApiError> {
+        let id = claim
+            .as_ref()
+            .map(|c| format!("sb-{}", c.identity.claim_id))
+            .unwrap_or_else(|| format!("sb-{}", uuid::Uuid::new_v4()));
+        let reserved = claim.is_some();
         let now = Utc::now();
         let sandbox = Sandbox {
             id: id.clone(),
             status: SandboxStatus {
-                state: "Pending".into(),
+                state: if reserved { "Reserved" } else { "Pending" }.into(),
                 message: None,
                 last_transition_at: Some(now),
             },
             created_at: now,
             expires_at: validated
                 .timeout
+                .filter(|_| !reserved)
                 .map(|seconds| now + ChronoDuration::seconds(seconds as i64)),
             image: validated.image.clone(),
             entrypoint: validated.entrypoint.clone(),
@@ -302,6 +375,7 @@ impl Daemon {
                 uuid::Uuid::new_v4().simple()
             ),
             e2b: validated.e2b,
+            claim,
         };
         if record.e2b.is_some() {
             // Reserved bootstrap input overrides any client-supplied value.
@@ -319,6 +393,15 @@ impl Daemon {
                 ),
             );
         }
+        let charge = record
+            .claim
+            .as_ref()
+            .map(|_| store::claim_storage_charge(&record))
+            .transpose()
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if let Some((claim, charge)) = record.claim.as_mut().zip(charge) {
+            claim.storage_charge = charge;
+        }
         let spec = RuntimeSpec {
             id: id.clone(),
             image: record.sandbox.image.uri.clone(),
@@ -333,39 +416,59 @@ impl Daemon {
         })?;
         // Hold the lifecycle gate before exposing the Pending intention, so a
         // concurrent GET/DELETE cannot observe or remove a half-created runtime.
-        let gate = Arc::new(RwLock::new(()));
-        let _operation = gate.write().await;
-        {
+        let gate = {
             let mut operations = self.operations.lock().await;
             operations.retain(|_, lock| lock.strong_count() > 0);
+            let gate = operations
+                .get(&id)
+                .and_then(Weak::upgrade)
+                .unwrap_or_else(|| Arc::new(RwLock::new(())));
             operations.insert(id.clone(), Arc::downgrade(&gate));
+            gate
+        };
+        let _operation = gate.write().await;
+        let admitted = self
+            .update(&id, |registry| {
+                if let Some(existing) = registry.sandboxes.get(&id) {
+                    return claims::reserve_replay(existing, &record)
+                        .map(|sandbox| (Some(existing.clone()), sandbox));
+                }
+                let cpu = registry
+                    .sandboxes
+                    .values()
+                    .filter(|r| r.holds_capacity())
+                    .try_fold(0u64, |n, r| n.checked_add(r.cpu_millis));
+                let memory = registry
+                    .sandboxes
+                    .values()
+                    .filter(|r| r.holds_capacity())
+                    .try_fold(0u64, |n, r| n.checked_add(r.memory_bytes));
+                if registry
+                    .sandboxes
+                    .values()
+                    .filter(|r| r.holds_capacity())
+                    .count()
+                    >= self.config.max_sandboxes
+                    || cpu
+                        .and_then(|n| n.checked_add(record.cpu_millis))
+                        .is_none_or(|n| n > self.config.cpu_millis)
+                    || memory
+                        .and_then(|n| n.checked_add(record.memory_bytes))
+                        .is_none_or(|n| n > self.config.memory_bytes)
+                {
+                    return Err(ApiError::new(
+                        429,
+                        "CAPACITY_EXCEEDED",
+                        "node capacity exhausted",
+                    ));
+                }
+                let sandbox = record.sandbox.clone();
+                Ok((Some(record), sandbox))
+            })
+            .await?;
+        if reserved {
+            return Ok(admitted);
         }
-        self.update(&id, |registry| {
-            let cpu = registry
-                .sandboxes
-                .values()
-                .try_fold(0u64, |n, r| n.checked_add(r.cpu_millis));
-            let memory = registry
-                .sandboxes
-                .values()
-                .try_fold(0u64, |n, r| n.checked_add(r.memory_bytes));
-            if registry.sandboxes.len() >= self.config.max_sandboxes
-                || cpu
-                    .and_then(|n| n.checked_add(record.cpu_millis))
-                    .is_none_or(|n| n > self.config.cpu_millis)
-                || memory
-                    .and_then(|n| n.checked_add(record.memory_bytes))
-                    .is_none_or(|n| n > self.config.memory_bytes)
-            {
-                return Err(ApiError::new(
-                    429,
-                    "CAPACITY_EXCEEDED",
-                    "node capacity exhausted",
-                ));
-            }
-            Ok((Some(record), ()))
-        })
-        .await?;
         if let Err(error) = self.runtime.create(&spec).await {
             if error
                 .downcast_ref::<crate::runtime::CreateError>()
@@ -404,6 +507,7 @@ impl Daemon {
             .await
             .sandboxes
             .values()
+            .filter(|record| record.publicly_visible())
             .map(|record| record.sandbox.clone())
             .collect())
     }
@@ -420,6 +524,7 @@ impl Daemon {
         let gate = self.operation(id).await?;
         let _operation = gate.write().await;
         let record = self.record(id).await?;
+        claims::require_visible(&record)?;
         if record.sandbox.status.state == "Stopping" {
             return Ok(record.sandbox);
         }
@@ -563,6 +668,7 @@ impl Daemon {
             let gate = this.operation(&id).await?;
             let _operation = gate.write().await;
             let record = this.record(&id).await?;
+            claims::require_visible(&record)?;
             // Recheck under the same lock used by renew, not from a stale scan.
             if expired_only
                 && record.sandbox.status.state != "Stopping"
@@ -582,6 +688,8 @@ impl Daemon {
     // Caller holds the exclusive lifecycle gate.
     async fn delete_locked(&self, id: &str) -> Result<(), ApiError> {
         self.transition(id, "Stopping", None).await?;
+        // Native operations own their deadlines and multi-stage cleanup. An
+        // outer timeout can cancel the fallback after supervisor IPC times out.
         self.runtime.delete(id).await.map_err(|_| {
             ApiError::new(
                 503,
@@ -599,7 +707,16 @@ impl Daemon {
                 "native deletion not confirmed",
             ));
         }
-        self.update(id, |_| Ok((None, ()))).await?;
+        self.update(id, |registry| {
+            let mut record = registry.sandboxes.get(id).cloned().unwrap();
+            if record.claim.is_some() {
+                claims::tombstone(&mut record);
+                Ok((Some(record), ()))
+            } else {
+                Ok((None, ()))
+            }
+        })
+        .await?;
         Ok(())
     }
 
@@ -632,6 +749,7 @@ impl Daemon {
                 registry.sandboxes.get(id).cloned().ok_or_else(|| {
                     ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist")
                 })?;
+            claims::require_visible(&record)?;
             check_expiration(record.sandbox.expires_at)?;
             if matches!(
                 record.sandbox.status.state.as_str(),
@@ -706,6 +824,9 @@ impl Daemon {
                 "sandbox is not running",
             ));
         }
+        // Stored Running is only an admission hint, including during startup.
+        // Runtime endpoint resolution authenticates the live Running instance
+        // and its deletion fence; do not replace it with a cached publication.
         self.runtime
             .endpoint(id, port)
             .await
@@ -720,13 +841,17 @@ impl Daemon {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut jobs = tokio::task::JoinSet::new();
             let mut in_flight = std::collections::BTreeSet::new();
+            let mut cursor = String::new();
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         let Some(this) = weak.upgrade() else { return; };
-                        let sandboxes = match this.list().await { Ok(items) => items, Err(_) => continue };
+                        let mut sandboxes = match this.list().await { Ok(items) => items, Err(_) => continue };
+                        let start = sandboxes.partition_point(|sandbox| sandbox.id <= cursor);
+                        sandboxes.rotate_left(start);
                         for sandbox in sandboxes {
-                            if jobs.len() >= 8 { break; }
+                            if jobs.len() >= BACKGROUND_CONCURRENCY { break; }
+                            cursor = sandbox.id.clone();
                             if !in_flight.contains(&sandbox.id)
                                 && (sandbox.expires_at.is_some_and(|deadline| deadline <= Utc::now())
                                     || sandbox.status.state == "Stopping") {
