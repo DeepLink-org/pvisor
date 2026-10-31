@@ -1082,3 +1082,12 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 
 This isolated engineering cohort compares single-vCPU baseline, pause/resume and offload using the same VM-bound Gateway and event-driven worker. It retains task/verifier results, per-transition timing, cgroup and RAM residency; live model variation is not treated as causal latency overhead.
+
+### B-SWE-MEMORY-ENG：SWE admission and drain under a fixed RAM budget {#b-swe-memory-eng}
+
+- Role: engineering A/B; PR review only.
+- Motivation: Can idle memory offload reduce queueing and improve correct batch throughput under the same RAM budget?
+- Conclusion sought: Paired makespan, queue latency and total memory-time, with explicit limits.
+- Design: Two vCPUs, VM CPU250%, total CPU6000%, scoped32GiB including private caches. Disabled management versus50ms range-protected SSD offload. FIFO creation admission, unlimited queue wait, unchanged execution guards; existing VM resume is never gated.
+- Entry: swe_memory/run_pair.py; see swe_memory/README.md. Requires an explicit frozen SWE bridge, independent prepared images and verified traces. The registry measurement remains unprepared for current main.
+- Historical report: One sequential pair, descriptive ratios requested by the user, no randomized inference or sustainable capacity claim. Public engineering assets are SVG only; raw evidence stays in local .data.

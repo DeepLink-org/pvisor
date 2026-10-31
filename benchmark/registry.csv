@@ -60,3 +60,4 @@ B-SWE-RESIDENT-ENG,engineering A/B,agent/swe_resident.json,requires-single-condi
 B-IMAGE-STORAGE-ENG,engineering A/B,storage/image_storage.json,explicit-python-native-docker
 B-IMAGE-FORMAT-ENG,engineering A/B,storage/image_format.json,explicit-python-paired-storage
 B-NATIVE-DOCKER-ENG,engineering A/B,storage/native_runtime.json,explicit-python-native-docker
+B-SWE-MEMORY-ENG,engineering A/B,swe_memory/measurement.json,requires-single-condition-command
