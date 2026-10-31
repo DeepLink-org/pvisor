@@ -127,15 +127,13 @@ pub struct CgroupMemory {
 }
 impl CgroupMemory {
     pub fn validate(&self) -> anyhow::Result<()> {
-        let path = std::path::Path::new(&self.directory);
+        // This is a Linux reporting-namespace path, even on a Windows reader.
         ensure!(
             self.inode > 0
                 && self.directory.len() <= 4096
                 && !self.directory.contains('\0')
-                && path.is_absolute()
-                && !path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                && self.directory.starts_with('/')
+                && !self.directory.split('/').any(|c| c == ".."),
             "invalid cgroup memory scope"
         );
         let valid = |counters: &std::collections::BTreeMap<String, u64>, max| {
