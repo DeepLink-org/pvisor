@@ -32,6 +32,8 @@ Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
 
 退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
 后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
+FUSE server 构造的 CRT errno 在回复前转换成 Linux wire 编号；例如 Windows
+`ENOSYS=40` 必须回复 Linux `ENOSYS=38`，不能被 guest 误认为 `ELOOP`。
 
 Windows 构建与不依赖 WHP 的原生验证（Git Bash）：
 

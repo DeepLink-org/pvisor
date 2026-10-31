@@ -103,8 +103,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let expected = if code == "abort" { 0 } else { code.parse()? };
         if status.code() != Some(expected) {
-            let diagnostic = std::fs::read_to_string(root.path().join(".pvisor-guest-error"))
-                .unwrap_or_default();
+            let mut diagnostic = String::new();
+            for name in [".pvisor-guest-error", "probe-error", "result"] {
+                if let Ok(bytes) = std::fs::read(root.path().join(name)) {
+                    diagnostic.push_str(&format!("{name}: {}; ", String::from_utf8_lossy(&bytes)));
+                }
+            }
             return Err(format!("WHP cpus={cpus} exit={code}: {status}; {diagnostic}").into());
         }
         if code != "abort" {

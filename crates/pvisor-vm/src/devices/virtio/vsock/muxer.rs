@@ -94,7 +94,7 @@ pub fn push_packet(
             }
         }
     } else {
-        error!("couldn't push pkt to queue, adding it to rxq");
+        debug!("guest RX queue has no descriptors; deferring packet to rxq");
         drop(queue);
         rxq_mutex.lock().unwrap().push(rx);
     }
@@ -392,7 +392,7 @@ impl VsockMuxer {
                 }
             }
         } else {
-            error!("couldn't push pkt to queue, adding it to rxq");
+            debug!("guest RX queue has no descriptors; deferring packet to rxq");
             drop(queue);
             self.rxq.lock().unwrap().push(rx);
         }
