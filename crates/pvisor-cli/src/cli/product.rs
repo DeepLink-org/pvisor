@@ -6,9 +6,7 @@ use pvisor::RunRecord;
 use pvisor::{ChangeEntryType, ChangeKind, RunBundle};
 use pvisor_core::overlay::ChangeEntry;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
 const DEFAULT_DIFF_BYTES: usize = 256 * 1024;
@@ -618,11 +616,6 @@ fn print_diffs(
             break;
         }
         let relative = safe_change_path(&change.relative_path())?;
-        let old = lowers
-            .iter()
-            .map(|lower| lower.join(&relative))
-            .find(|path| fs::symlink_metadata(path).is_ok());
-        let new = overlay.upper.path().join(&relative);
         if change.kind == ChangeKind::Opaque {
             println!("opaque directory: {}", change.path);
             continue;
@@ -630,57 +623,46 @@ fn print_diffs(
         if change.old_type == Some(ChangeEntryType::Symlink)
             || change.new_type == Some(ChangeEntryType::Symlink)
         {
+            println!("symlink {:?}: content diff skipped", change.path);
+            continue;
+        }
+        let old = (|| {
+            for lower in &lowers {
+                match super::diff::read_regular(lower, &relative, max_file_bytes) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(Vec::new())
+        })();
+        let new = if change.new_type == Some(ChangeEntryType::File) {
+            super::diff::read_regular(overlay.upper.path(), &relative, max_file_bytes)
+        } else if change.kind == ChangeKind::Deleted {
+            Ok(Vec::new())
+        } else {
+            continue;
+        };
+        let (Ok(old), Ok(new)) = (old, new) else {
             println!(
-                "symlink {}: {} -> {}",
-                change.path,
-                old.as_deref()
-                    .and_then(read_link_label)
-                    .unwrap_or_else(|| "-".into()),
-                read_link_label(&new).unwrap_or_else(|| "-".into())
+                "{:?}: content diff skipped (unsafe, unreadable, special or large file)",
+                change.path
             );
             continue;
-        }
-        let old_file = old.as_deref().filter(|path| path.is_file());
-        let new_file = new.is_file().then_some(new.as_path());
-        if old_file.is_none() && new_file.is_none() {
+        };
+        if !super::diff::is_text(&old) || !super::diff::is_text(&new) {
+            println!("{:?}: binary (text diff unavailable)", change.path);
             continue;
         }
-        if [old_file, new_file]
-            .into_iter()
-            .flatten()
-            .any(|path| fs::metadata(path).is_ok_and(|metadata| metadata.len() > max_file_bytes))
-        {
-            println!("binary/large {} (content diff skipped)", change.path);
-            continue;
-        }
-        if [old_file, new_file]
-            .into_iter()
-            .flatten()
-            .any(is_binary_file)
-        {
-            println!("binary {} (content diff skipped)", change.path);
-            continue;
-        }
-        let old_arg = old_file.unwrap_or_else(|| Path::new("/dev/null"));
-        let new_arg = new_file.unwrap_or_else(|| Path::new("/dev/null"));
-        let output = Command::new("diff")
-            .args(["-u", "--label"])
-            .arg(format!("a/{}", change.path))
-            .arg("--label")
-            .arg(format!("b/{}", change.path))
-            .arg("--")
-            .arg(old_arg)
-            .arg(new_arg)
-            .output()
-            .with_context(|| format!("render diff for {}", change.path))?;
-        anyhow::ensure!(
-            matches!(output.status.code(), Some(0 | 1)),
-            "diff failed for {}: {}",
-            change.path,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        let keep = remaining.min(output.stdout.len());
-        print!("{}", String::from_utf8_lossy(&output.stdout[..keep]));
+        let output = super::diff::unified(&old, &new, &change.path)?;
+        let keep = remaining.min(output.len());
+        print!("{}", String::from_utf8_lossy(&output[..keep]));
         remaining -= keep;
     }
     Ok(())
@@ -697,22 +679,6 @@ fn safe_change_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn read_link_label(path: &Path) -> Option<String> {
-    fs::read_link(path)
-        .ok()
-        .map(|target| target.display().to_string())
-}
-
-fn is_binary_file(path: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = fs::File::open(path) else {
-        return true;
-    };
-    let mut prefix = [0_u8; 8192];
-    let read = file.read(&mut prefix).unwrap_or(0);
-    prefix[..read].contains(&0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,14 +688,5 @@ mod tests {
         assert!(safe_change_path(Path::new("src/lib.rs")).is_ok());
         assert!(safe_change_path(Path::new("../host-secret")).is_err());
         assert!(safe_change_path(Path::new("/etc/passwd")).is_err());
-    }
-
-    #[test]
-    fn binary_probe_detects_nul_bytes() {
-        let temp = tempfile::NamedTempFile::new().unwrap();
-        fs::write(temp.path(), b"text\0binary").unwrap();
-        assert!(is_binary_file(temp.path()));
-        fs::write(temp.path(), b"plain text\n").unwrap();
-        assert!(!is_binary_file(temp.path()));
     }
 }

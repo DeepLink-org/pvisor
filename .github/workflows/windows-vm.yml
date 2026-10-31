@@ -1,0 +1,127 @@
+name: Windows VM
+
+on:
+  pull_request:
+    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
+  push:
+    branches: [main, develop, next]
+    paths: ['crates/pvisor-vm/**', 'crates/pvisor-core/**', 'crates/pvisor-guest/**', 'fw/**', 'Cargo.*', 'mise.*', '.github/workflows/windows-vm.yml', '.github/actions/setup-build-env/**', 'scripts/tasks/test-rust.sh']
+  workflow_dispatch:
+    inputs:
+      run_whp:
+        description: Run real VM tests on the pvisor-whp self-hosted runner
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-vm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  native:
+    name: MSVC build and contracts
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: rust github:nextest-rs/nextest
+          setup: none
+      - run: mise exec -- rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-vm-msvc
+      - name: Build with and without the embedded guest supervisor
+        run: |
+          mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
+          mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
+      - name: Native unit tests and public contracts (no WHP required)
+        run: mise run test -- pvisor-vm -- --lib --tests --no-fail-fast
+      - name: API documentation
+        run: RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-vm-runner
+          path: target/debug/examples/whp_smoke.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  firmware:
+    name: Build repository firmware for WHP
+    if: github.event_name != 'pull_request' && (vars.PVISOR_WINDOWS_WHP == 'true' || inputs.run_whp == true)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: rust
+          setup: none
+      - name: Install kernel and DLL cross-compilers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc curl python3-pyelftools gcc-mingw-w64-x86-64
+      - name: Build pinned, checksum-verified Windows firmware
+        run: |
+          mkdir -p target/whp-firmware
+          cp -a fw/. target/whp-firmware/
+          make -C target/whp-firmware OS=Windows KERNEL_BUILD_TARGET=vmlinux -j2
+      - name: Build static Linux functional probe
+        run: |
+          mise exec -- rustup target add x86_64-unknown-linux-musl
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld crates/pvisor-vm/src/probes/whp_guest.rs -o target/whp-firmware/whp-guest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-vm-firmware
+          path: |
+            target/whp-firmware/libkrunfw.dll
+            target/whp-firmware/whp-guest
+          if-no-files-found: error
+          retention-days: 7
+
+  whp:
+    name: WHP boot, SMP, filesystem, lifecycle and exit
+    # Never execute fork/PR code on a persistent self-hosted Windows machine.
+    # Set the repository variable only after registering the runner; workflow_dispatch
+    # can also request this job explicitly. Missing WHP is a hard test failure.
+    if: github.event_name != 'pull_request' && (vars.PVISOR_WINDOWS_WHP == 'true' || inputs.run_whp == true)
+    needs: [native, firmware]
+    runs-on: [self-hosted, Windows, X64, pvisor-whp]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-vm-runner
+          path: whp-run
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-vm-firmware
+          path: whp-run
+      - name: Require enabled Windows Hypervisor Platform
+        shell: pwsh
+        run: |
+          $feature = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
+          if ($feature.State -ne 'Enabled') { throw 'Enable HypervisorPlatform and reboot this runner.' }
+      - name: Run actual Linux guests with bounded timeouts
+        shell: pwsh
+        run: |
+          & .\whp-run\whp_smoke.exe "$PWD\whp-run\libkrunfw.dll" "$PWD\whp-run\whp-guest" 2>&1 | Tee-Object whp-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw "WHP smoke failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-vm-whp-log
+          path: whp-smoke.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -16,7 +16,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let stage = root.path().join("stage");
         let target = root.path().join("project");
         fs::create_dir(&target).unwrap();
@@ -250,6 +250,86 @@ fn json_preview_all_exclude_store_and_direct_execution() {
     assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
     assert!(!f.target.join("skip.txt").exists());
     assert!(f.stage.join("upper/skip.txt").exists());
+}
+
+#[test]
+fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
+    let f = Fixture::new();
+    // A sealed, stopped stage exercises the CLI handoff without FUSE, KVM or a model.
+    let record = pvisor::RunRecord::read(&f.stage).unwrap();
+    let mut bundle: Value = serde_json::from_str(include_str!(
+        "../../pvisor/tests/fixtures/bundles/v1-minimal.json"
+    ))
+    .unwrap();
+    bundle["schema_version"] = json!(4);
+    bundle["run"]["run_id"] = json!(record.run_id);
+    bundle["run"]["session_id"] = json!(record.session_id);
+    bundle["run"]["attempt_id"] = json!(record.attempt_id);
+    bundle["agentctl"]["run_id"] = json!(record.run_id);
+    bundle["agentctl"]["attempt_id"] = json!(record.attempt_id);
+    bundle["executor_observations"] =
+        serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
+    bundle["safety"]["filesystem_changes_staged"] = json!(true);
+    bundle["filesystem"] = json!({
+        "state": "staged", "target": f.target, "upper": f.stage.join("upper"),
+        "changed_files": 2, "whiteouts": 0, "changes": [], "sample_paths": []
+    });
+    serde_json::from_value::<pvisor::RunBundle>(bundle)
+        .unwrap()
+        .write(&f.stage)
+        .unwrap();
+    let invoke = |command: &str, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .arg(command)
+            .arg(&f.stage)
+            .args(args)
+            .current_dir(f.root.path())
+            .env("HOME", f.root.path())
+            .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
+            .output()
+            .unwrap()
+    };
+
+    let review = invoke("review", &["--diff"]);
+    assert!(review.status.success(), "{review:?}");
+    let text = String::from_utf8(review.stdout).unwrap();
+    assert!(
+        text.contains("+kept") && text.contains("+skipped"),
+        "{text}"
+    );
+    f.unchanged();
+    assert_eq!(
+        object(&f.run(&["--path", "keep.txt", "--dry-run", "--json"]), 0)["status"],
+        "ready"
+    );
+    f.unchanged();
+    let applied = object(&f.run(&["--path", "keep.txt", "--json"]), 0);
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["remaining"]["in_scope"], 1);
+    let review = object(&invoke("review", &["--json"]), 0);
+    assert_eq!(review["filesystem"]["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(review["filesystem"]["changes"][0]["path"], "skip.txt");
+
+    fs::write(f.target.join("skip.txt"), b"host edit\n").unwrap();
+    let before = tree_snapshot(f.root.path());
+    let blocked = object(&f.run(&["--path", "skip.txt", "--dry-run", "--json"]), 3);
+    assert_eq!(blocked["status"], "blocked");
+    assert_eq!(tree_snapshot(f.root.path()), before);
+    for _ in 0..2 {
+        let dropped = invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert_eq!(fs::read(f.target.join("skip.txt")).unwrap(), b"host edit\n");
+    }
+    let review = object(&invoke("review", &["--json"]), 0);
+    assert!(
+        review["filesystem"]["changes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(review["filesystem"]["state"], "discarded");
+    assert_eq!(review["run"]["state"], "completed");
 }
 
 #[test]

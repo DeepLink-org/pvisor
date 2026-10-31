@@ -9,7 +9,11 @@ pub(super) fn firmware_name() -> &'static str {
     {
         "libkrunfw.5.dylib"
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        "libkrunfw.dll"
+    }
+    #[cfg(target_os = "linux")]
     {
         "libkrunfw.so.5"
     }
@@ -91,6 +95,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn firmware_symlink_is_canonicalized() {
         let directory = tempfile::tempdir().unwrap();

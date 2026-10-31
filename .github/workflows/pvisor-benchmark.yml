@@ -47,76 +47,127 @@ permissions:
   contents: read
 
 jobs:
-  compare:
-    name: Process and Run Bundle report
+  build:
+    name: Build benchmark / ${{ matrix.cohort }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [main, candidate]
     steps:
-      - name: Checkout candidate
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
+      - uses: ./.github/actions/setup-build-env
         with:
           native-firmware: "true"
           static-musl: "true"
-
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: pvisor-benchmark
-
-      - name: Resolve main baseline
-        id: baseline
+          workspaces: . -> target/pvisor-benchmark-build
+          shared-key: pvisor-benchmark-${{ matrix.cohort }}
+      - name: Resolve and build the selected revision
         env:
-          BASE_REF: ${{ github.base_ref }}
+          COHORT: ${{ matrix.cohort }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GNUMAKEFLAGS: --no-print-directory
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            baseline_ref="origin/$BASE_REF"
-          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            baseline_ref="HEAD^"
-          else
-            baseline_ref="HEAD"
+          artifact="$RUNNER_TEMP/benchmark-build"
+          mkdir -p "$artifact"
+          repo="$GITHUB_WORKSPACE"
+          if [[ "$COHORT" == main ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+              baseline_sha="$BASE_SHA"
+            elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+              baseline_sha="$(git rev-parse HEAD^)"
+            else
+              baseline_sha="$(git rev-parse HEAD)"
+            fi
+            repo="$RUNNER_TEMP/pvisor-main"
+            git worktree add --detach "$repo" "$baseline_sha"
           fi
-          baseline_sha="$(git rev-parse "$baseline_ref")"
-          baseline_repo="${RUNNER_TEMP}/pvisor-main"
-          git worktree add --detach "$baseline_repo" "$baseline_sha"
-          echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
-          echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
-          if [[ -f "$baseline_repo/scripts/packaging/stage_wheel_binaries.py" ]]; then
-            echo "supported=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "supported=false" >> "$GITHUB_OUTPUT"
+          git -C "$repo" rev-parse HEAD > "$artifact/source.sha"
+          if [[ ! -f "$repo/scripts/packaging/stage_wheel_binaries.py" ]]; then
+            [[ "$COHORT" == main ]]
+            echo false > "$artifact/supported"
+            exit 0
           fi
+          echo true > "$artifact/supported"
+          build="$GITHUB_WORKSPACE/target/pvisor-benchmark-build"
+          (
+            cd "$repo"
+            export CARGO_TARGET_DIR="$build"
+            python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$build" --all
+          )
+          # Preserve executable modes and any historical adjacent firmware.
+          (
+            cd "$build/release"
+            shopt -s nullglob
+            tar -chzf "$artifact/runtime.tgz" pvisor pvisor-tui pvisor-replay pvisor-daemon libkrunfw*
+          )
+          (cd "$artifact" && sha256sum runtime.tgz > runtime.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-build-${{ matrix.cohort }}
+          path: ${{ runner.temp }}/benchmark-build/
+          if-no-files-found: error
+          retention-days: 7
 
+  compare:
+    name: Process and Run Bundle report
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python rust
+          setup: none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/semspec -> ../../target/semspec
+          shared-key: pvisor-benchmark-harness
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-build-*
+          path: ${{ runner.temp }}/benchmark-builds
+      - name: Verify and unpack the measured binaries
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cohort in main candidate; do
+            artifact="$RUNNER_TEMP/benchmark-builds/benchmark-build-$cohort"
+            supported="$(cat "$artifact/supported")"
+            if [[ "$cohort" == main ]]; then echo "supported=$supported" >> "$GITHUB_OUTPUT"; fi
+            if [[ "$supported" == false && "$cohort" == main ]]; then continue; fi
+            [[ "$supported" == true ]]
+            (cd "$artifact" && sha256sum -c runtime.sha256)
+            mkdir -p "$RUNNER_TEMP/benchmark-runtimes/$cohort"
+            tar -xzf "$artifact/runtime.tgz" -C "$RUNNER_TEMP/benchmark-runtimes/$cohort"
+            test -x "$RUNNER_TEMP/benchmark-runtimes/$cohort/pvisor"
+          done
+
+      # Parallelize compilation, then measure both revisions sequentially on
+      # this same host with the same harness, sampling and regression threshold.
       - name: Benchmark main
         if: steps.baseline.outputs.supported == 'true'
         env:
-          # Older baseline firmware recipes expand MAKEFLAGS as command arguments.
-          GNUMAKEFLAGS: --no-print-directory
-          PVISOR_BENCHMARK_REPO: ${{ steps.baseline.outputs.repo }}
           PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/main
-          PVISOR_BENCHMARK_BUILD_DIR: ${{ github.workspace }}/target/pvisor-benchmark-main
-        shell: bash
-        run: |
-          set -euo pipefail
-          mise run benchmark -- smoke
-
+        run: mise run benchmark -- smoke --binary "$RUNNER_TEMP/benchmark-runtimes/main/pvisor"
       - name: Stop baseline Host listener before switching binaries
         if: steps.baseline.outputs.supported == 'true'
         shell: bash
         run: |
-          # The Host listener intentionally rejects a different executable digest.
-          pkill -f "^${GITHUB_WORKSPACE}/target/pvisor-benchmark-main/release/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
-
+          pkill -f "^${RUNNER_TEMP}/benchmark-runtimes/main/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
       - name: Benchmark candidate
         env:
           PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/candidate
-          PVISOR_BENCHMARK_BUILD_DIR: ${{ github.workspace }}/target/pvisor-benchmark-candidate
-        run: mise run benchmark -- smoke
+        run: mise run benchmark -- smoke --binary "$RUNNER_TEMP/benchmark-runtimes/candidate/pvisor"
 
       - name: Compare reports
         shell: bash
@@ -174,6 +225,19 @@ jobs:
                           stdout=stdout, stderr=stderr, timeout=30, check=True,
                       )
           PY
+
+      - name: Retain build provenance
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/.data/pvisor-benchmark/builds"
+          for cohort in main candidate; do
+            source="$RUNNER_TEMP/benchmark-builds/benchmark-build-$cohort"
+            destination="$RUNNER_TEMP/.data/pvisor-benchmark/builds/$cohort"
+            mkdir -p "$destination"
+            cp "$source/source.sha" "$source/supported" "$destination/"
+            if [[ -f "$source/runtime.sha256" ]]; then cp "$source/runtime.sha256" "$destination/"; fi
+          done
 
       - name: Upload benchmark data and report
         if: always()

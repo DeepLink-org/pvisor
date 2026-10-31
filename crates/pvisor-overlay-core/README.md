@@ -643,3 +643,6 @@ disable integrity hashes used by images or other unrelated subsystems.
 zero observation fingerprints/publications, concurrent copy-up, access denials,
 policy admission, corrupt/mixed state and read-only completion. Stage tests also
 exercise apply/reuse refusal with both ephemeral recording settings.
+
+`LayerMutability` is defined by `pvisor-core::overlay` and re-exported unchanged
+here, so portable VM configuration does not require the Unix filesystem driver.

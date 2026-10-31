@@ -42,6 +42,12 @@ url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/430505110"
 provenance = "github-attestations"
 
+[tools."github:nextest-rs/nextest"."platforms.windows-x64"]
+checksum = "sha256:88c746b41b1e96165028ef90b9dac5d37eb923e4e00aee6b9080a038f1ac2705"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.137/cargo-nextest-0.9.137-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/430505809"
+provenance = "github-attestations"
+
 [[tools.jq]]
 version = "1.8.1"
 backend = "aqua:jqlang/jq"

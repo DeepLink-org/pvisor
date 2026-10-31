@@ -13,7 +13,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(workspace: Option<&Path>, target: &Path) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let stage = root.path().join("stage");
         fs::create_dir_all(stage.join("upper")).unwrap();
         let record: RunRecord = serde_json::from_value(json!({
@@ -309,6 +309,55 @@ fn ordinary_workspace_keeps_all_changes_and_project_diff() {
     let text = fixture.review(&["--diff"]);
     assert!(text.contains("+ORDINARY_PROJECT"));
     assert!(text.contains("pvisor apply"));
+}
+
+#[test]
+fn review_diff_never_reads_through_a_replaced_lower_symlink() {
+    for ancestor in [true, false] {
+        let mut fixture = Fixture::new(None, Path::new("/unused"));
+        let workspace = fixture.root.path().join("workspace");
+        let outside = fixture.root.path().join("outside");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("result"), "OUTSIDE_SECRET_MARKER\n").unwrap();
+        let relative = if ancestor { "src/result" } else { "result" };
+        if ancestor {
+            std::os::unix::fs::symlink(&outside, workspace.join("src")).unwrap();
+        } else {
+            std::os::unix::fs::symlink(outside.join("result"), workspace.join("result")).unwrap();
+        }
+        fixture.record.workspace = Some(workspace.clone());
+        fixture.bundle["filesystem"]["target"] = json!(workspace);
+        let upper = fixture.record.stage_dir().join("upper");
+        fs::create_dir_all(upper.join(relative).parent().unwrap()).unwrap();
+        fs::write(upper.join(relative), "STAGED_RESULT_MARKER\n").unwrap();
+        fixture.enable_overlay();
+
+        let text = fixture.review(&["--diff"]);
+        assert!(!text.contains("OUTSIDE_SECRET_MARKER"), "{text}");
+        assert!(text.contains("content diff skipped"), "{text}");
+        assert_eq!(
+            fs::read_to_string(outside.join("result")).unwrap(),
+            "OUTSIDE_SECRET_MARKER\n"
+        );
+    }
+}
+
+#[test]
+fn review_diff_checks_the_entire_bounded_file_for_binary_contents() {
+    let mut fixture = Fixture::new(None, Path::new("/unused"));
+    let workspace = fixture.root.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fixture.record.workspace = Some(workspace.clone());
+    fixture.bundle["filesystem"]["target"] = json!(workspace);
+    let mut bytes = vec![b'x'; 8192];
+    bytes.extend_from_slice(b"\0BINARY_PAYLOAD_MARKER\n");
+    fs::write(fixture.record.stage_dir().join("upper/result"), bytes).unwrap();
+    fixture.enable_overlay();
+
+    let text = fixture.review(&["--diff"]);
+    assert!(!text.contains("BINARY_PAYLOAD_MARKER"), "{text}");
+    assert!(text.contains("binary (text diff unavailable)"), "{text}");
 }
 
 #[test]

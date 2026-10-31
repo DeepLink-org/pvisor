@@ -34,5 +34,5 @@ extern crate log;
 
 include!("runtime_modules.rs");
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod contract_tests;

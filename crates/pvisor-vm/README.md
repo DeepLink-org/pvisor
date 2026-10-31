@@ -2,6 +2,88 @@
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
+## Windows x86_64 / WHP
+
+Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在本 crate
+的私有 `src/windows/` 实现中，不依赖另一个公开 libkrun SDK。来源、固定提交、
+后续时钟修复与本地适配见 [Windows backport 记录](provenance/WINDOWS.md)。
+Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
+
+支持 `x86_64-pc-windows-msvc`、默认 `init-blob` 或 `--no-default-features`。
+需要启用固件中的硬件虚拟化以及 Windows **Windows Hypervisor Platform**
+可选功能，启用后重启；运行于虚拟机时还需要宿主允许嵌套虚拟化。
+`capabilities()` 返回 `Hypervisor::Whp`，仅描述已编译能力，不检测机器权限。
+本阶段不承诺 Windows ARM64、TEE、GPU、音频或 EFI profile。
+
+| 能力 | Windows 实现 |
+| --- | --- |
+| Linux 启动 | WHP 分区、x86 寄存器与 APIC、SMP、PIT/TSC 时钟；配置允许 1–64 vCPU、1–65536 MiB，实际在线 CPU 还受固件限制 |
+| 文件共享 | virtio-fs 普通目录与宿主侧只读检查，零 DAX；宿主目录必须是绝对 UTF-8 路径 |
+| 虚拟文件 | 根目录层级的只读字节、一次性启动配置、当前 pVisor Rust supervisor；嵌套路径返回 Unsupported |
+| 生命周期 | ready 回调前暂停，显式 pause/resume；失败清理先停止并回收 vCPU、设备和 PIT 线程，再释放 WHP 分区 |
+| 退出 | 与 Unix 相同的 root/PID 1 token 协议；旧退出/删除根目录 ioctl 被拒绝，缺少认证结果或 vCPU 异常退出 125 |
+| 控制台 | 输出到 runner stdout；guest 配置使用 `stdio_ports: Some([false; 3])`，不等待命名 task stdio 端口 |
+| 未支持 | Overlay/managed filesystem、DAX、快照/恢复、冷 RAM、idle handoff、网络/vsock、自定义 guest command、task stdio FD；配置返回 Unsupported 且不破坏已有附件 |
+
+Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生效，POSIX
+chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
+并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
+Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
+
+Windows 构建与不依赖 WHP 的原生验证（Git Bash）：
+
+```bash
+mise exec -- rustup target add x86_64-unknown-linux-musl
+mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
+mise run test -- pvisor-vm -- --lib --tests
+RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-vm --no-deps
+```
+
+内嵌 supervisor 通过 Rust 的 Linux musl target 和 `rust-lld` 交叉编译，不需要
+Windows 上的 C 交叉编译器。固件从本仓库 `fw/` 在 Linux 构建，见
+[固件 Windows 构建说明](../../fw/README.md#windows-cross-compilation-from-linux)。
+使用 `make OS=Windows KERNEL_BUILD_TARGET=vmlinux` 得到 `libkrunfw.dll`，
+通过 `set_firmware_path` 传入其绝对路径；也可通过 `embedded_kernel` 提供字节。
+固件发现不会搜索 PATH 或下载上游 DLL。
+
+### Windows CI 和真实 WHP 验收
+
+[windows-vm.yml](../../.github/workflows/windows-vm.yml) 在相关 PR/push 上使用
+`windows-2025` 做 MSVC 编译、原生 Win32/文件系统单测、公共契约和 rustdoc 检查。
+普通 GitHub 托管 runner 的嵌套虚拟化不是受支持保证，因此真正启动 VM 的任务
+使用独立的 `[self-hosted, Windows, X64, pvisor-whp]` runner。
+
+接入方法：
+
+1. 准备隔离的 Windows x86_64 runner，启用硬件虚拟化与 HypervisorPlatform，
+   重启，安装 PowerShell 7，并添加 `pvisor-whp` 标签。
+2. 在仓库 Actions variables 中设置 `PVISOR_WINDOWS_WHP=true`，使可信分支 push
+   自动执行真实验收；或手动运行 Windows VM workflow，勾选 `run_whp`。
+3. WHP 任务下载同次 workflow 在托管机器构建的 runner、仓库固件和静态 Linux
+   probe。它不在持久化自托管机器上执行 PR/fork 代码。runner 账户需能查询
+   `Get-WindowsOptionalFeature -Online`；推荐专用测试机器上的管理员服务账户。
+
+未配置 runner 时，CI 只覆盖构建和无 hypervisor 测试，WHP job 明确为 skipped；
+不能将此状态作为虚机功能验收通过。启用 WHP job 后，缺少 WHP/固件、启动错误、
+错误结果和超时都会失败，不会自动跳过。建议在接入 runner 后将真实 WHP 检查
+纳入受保护分支的发布要求。
+
+`whp_smoke` 为每个场景启动独立 runner，每次限时 60 秒：回调拒绝后的资源回收、
+单/双 vCPU 在线状态、100 ms guest 定时器、文件读取与写回、只读 share、暂停/恢复、
+旧退出 ioctl 拒绝及认证退出 0/7/255。CI 保存控制台日志。
+手动执行：
+
+```powershell
+.\target\debug\examples\whp_smoke.exe C:\firmware\libkrunfw.dll C:\probes\whp-guest
+```
+
+`whp-guest` 可在安装 Linux musl stdlib 的开发机上编译：
+
+```bash
+mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld \
+  crates/pvisor-vm/src/probes/whp_guest.rs -o whp-guest
+```
+
 ## 必须遵守的 API 边界
 
 1. **唯一对外入口是 `pvisor_vm::api`。** `lib.rs` 只公开 `api`；其他模块属于私有实现，不允许其他 crate 直接访问，也不通过另一个公开模块绕过这个边界。
