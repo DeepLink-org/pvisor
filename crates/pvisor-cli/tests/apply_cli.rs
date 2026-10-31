@@ -404,13 +404,32 @@ binary, root, stage, mode = sys.argv[1:]
 pid, master = pty.fork()
 if pid == 0:
     os.chdir(root)
-    saved = termios.tcgetattr(0)
+    initial = termios.tcgetattr(0)
+    initial[3] |= termios.ICANON | termios.ECHO | termios.ISIG
+    initial[0] |= termios.IXON | termios.ICRNL
+    # Non-default values catch restoration to defaults instead of the saved mode.
+    initial[6][termios.VMIN] = 7
+    initial[6][termios.VTIME] = 3
+    termios.tcsetattr(0, termios.TCSANOW, initial)
+    # Darwin sets PENDIN on a noncanonical -> canonical transition. A readiness
+    # check processes pending input without reading/flushing it or masking flags.
+    def terminal_state():
+        select.select([0], [], [], 0)
+        return termios.tcgetattr(0)
+    saved = terminal_state()
     args = [binary, 'apply', stage]
     if mode == 'exclude': args += ['-i', '--all', '--exclude', 'keep.*']
     if mode == 'exclude_conflict': args += ['-i', '--exclude', 'skip.*']
     child = subprocess.Popen(args)
     code = child.wait()
-    restored = termios.tcgetattr(0) == saved
+    actual = terminal_state()
+    restored = actual == saved
+    if not restored:
+        fields = ['iflag', 'oflag', 'cflag', 'lflag', 'ispeed', 'ospeed', 'cc']
+        differences = [(name, before, after)
+                       for name, before, after in zip(fields, saved, actual)
+                       if before != after]
+        os.write(1, ('TERMIOS DIFF (field, saved, actual): %r\n' % differences).encode())
     os.write(1, ('RESTORED:%s EXIT:%s\n' % (int(restored), code)).encode())
     os._exit(0 if restored and code == (0 if mode == 'apply' else 130) else 41)
 output = bytearray()
