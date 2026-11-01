@@ -81,3 +81,30 @@ networks remain live; create/remove/query order changes with the evolving state.
 state; `commands.jsonl` records the actual commands and results. Existing fixed
 fault regressions remain available with `--workload regression` and are also
 mixed into generated sequences without discarding the surrounding model.
+
+## Cross-platform VM CLI contracts
+
+`vm_cli_contract.py` drives `pvisor vm-run` on Linux/KVM, Apple Silicon/HVF and
+Windows/WHP with the same `vm_guest.rs` workload. Missing virtualization,
+firmware errors and incorrect guest results fail the run.
+
+Build the guest with `rustc --target <matching-linux-musl-target> -C linker=rust-lld --edition=2021`.
+Pass `--binary`, `--guest`, a new `--output` directory, and `--firmware` if the CLI
+has no embedded kernel (required on Windows). Defaults are 3 rounds, seed 1729
+and a 90-second command deadline; `--rounds 30` runs 120 VMs. Each round checks
+1/2 CPUs and exit codes 0/7/255. The guest runs eight file workers, touches
+memory, checks a timer/read-only share and renames a directory with cached children.
+
+The host checks exact result bytes, exit code, the immutable fixture and an empty
+work directory. Evidence retains stdout/stderr, commands, elapsed time, hashes
+and rootfs; `report.json` records failures. Timeouts terminate and reap the command
+tree. Existing output directories are refused. `test_vm_cli_contract.py` checks
+supervision and false-pass rejection without virtualization.
+
+The Linux pvisor CI shard and Windows WHP job run the driver. Hosted macOS CI
+keeps builds and conventional tests; real HVF execution remains a manual check
+on a capable Apple Silicon host. Ordinary unit tests do not start VMs.
+Linux CI writes evidence under `RUNNER_TEMP`,
+outside the cached Cargo target directory. Restored build caches must not supply
+a previous run's evidence directory. See [platform support](../docs/src/en/reference/platforms.md)
+and [the review record](PLATFORM_REVIEW.md).

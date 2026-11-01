@@ -16,6 +16,8 @@ impl Drop for Service {
 fn daemon() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor-daemon"));
     command.args(["serve", "--cache"]);
+    // Cold error-backtrace symbolization must not consume lifecycle deadlines.
+    command.env("RUST_LIB_BACKTRACE", "0");
     for key in [
         "PVISOR_CACHE_LOCATION",
         "PVISOR_CACHE_SERVER",
@@ -186,11 +188,13 @@ fn cache_worker_failure_stops_its_daemon() {
         .unwrap();
     let socket = root.path().join("cache.sock");
     let address = format!("unix://{}", socket.display());
+    let error_log = root.path().join("daemon.stderr");
     let mut service = Service(
         daemon()
             .args(["--cache-listen", &address, "--cache-image-store"])
             .arg(root.path().join("images"))
             .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&error_log).unwrap())
             .spawn()
             .unwrap(),
     );
@@ -243,7 +247,16 @@ fn cache_worker_failure_stops_its_daemon() {
             );
             break;
         }
-        assert!(Instant::now() < deadline, "daemon survived worker failure");
+        assert!(
+            Instant::now() < deadline,
+            "daemon survived worker failure: {}",
+            std::fs::read_to_string(&error_log).unwrap_or_default()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
+    let error = std::fs::read_to_string(error_log).unwrap();
+    assert!(
+        error.contains("cache component exited unexpectedly"),
+        "{error}"
+    );
 }

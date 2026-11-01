@@ -169,9 +169,10 @@ writes preserve partial prefixes/payloads without concatenating frame contents.
 Guest peer frames borrow the ingress parser buffer until routing completes,
 avoiding an intermediate frame allocation. Ordinary smoltcp work runs on its
 timer, control events and non-peer guest frames; peer-only traffic does not
-reset that timer. Event selection remains fair under peer floods, with shutdown
-also able to cancel a backpressured guest write. The peer transport still drops
-on congestion and retains per-destination isolation and all validation rules.
+reset that timer. Each backend turn consumes Tokio's cooperative budget so a
+continuously readable peer socket still yields to the I/O reactor. This lets new
+guest frames and timer wakes become visible during a flood. Shutdown can also
+cancel a backpressured guest write. The peer transport still drops on congestion and retains per-destination isolation and all validation rules.
 
 On Linux, peer packet I/O uses `sendmmsg`/`recvmmsg` with at most 32 messages per
 syscall. Outgoing frames are grouped by destination on its existing connected

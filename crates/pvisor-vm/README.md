@@ -28,7 +28,9 @@ Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
 Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生效，POSIX
 chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
-Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
+Core、OverlayFS 或完整 pVisor CLI 已能在 Windows 上构建和运行。
+限定的跨平台 CLI 入口是 `pvisor vm-run`，仅使用此处支持的普通 rootfs/只读共享
+与 supervisor 配置；见 [CLI README](../pvisor-cli/README.md#direct-vm-execution-on-linux-macos-and-windows)。
 
 退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
 后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
@@ -1749,3 +1751,17 @@ Local indexed Raw with a short block tail, no zero blocks, or more than 8192 run
 node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
+
+## Shared CLI VM contracts and Windows directory rename
+
+Windows directory rename now updates cached paths for the directory and all
+known descendants, retaining inode IDs and lookup counts. Previously, cached
+children kept obsolete paths and could fail getattr/open after a move. A native
+regression checks nested inodes and a no-op rename; the shared guest workload
+checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
+remain unverified.
+
+`tests/vm_cli_contract.py` drives `pvisor vm-run` with the same static Linux
+workload on KVM, HVF and WHP. Windows CI builds the CLI and retains the existing
+WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
+for supported features, inputs and results.

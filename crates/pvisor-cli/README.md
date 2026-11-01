@@ -866,3 +866,35 @@ for recording-off mode.
 Network catalog commands report closed-output errors through the normal CLI
 error path instead of panicking. A create/remove may already have committed
 before its output fails; inspect the catalog before retrying a mutation.
+
+## Direct VM execution on Linux, macOS and Windows
+
+`pvisor vm-run --rootfs ROOT --cpus 2 --memory 256 --readonly FIXTURES -- /probe`
+executes a Linux command through KVM (Linux x86_64), HVF (Apple Silicon) or WHP
+(Windows x86_64). Rootfs writes persist directly. It creates no Job, Bundle or
+stage and has no networking, interactive stdin, task stdio ports, live control
+or snapshots.
+
+Use an absolute guest executable. A static Linux program can run in an otherwise
+empty rootfs; dynamic programs need their guest loader and libraries. The caller
+prepares the rootfs, keeps exclusive ownership and enforces command deadlines.
+The command does not extract OCI images. `--firmware LIBRARY` selects trusted
+host-loadable firmware; omission requires an embedded kernel. Windows needs the
+explicit DLL. The optional read-only share mounts at `/readonly` and must not
+overlap rootfs.
+
+Output uses the VM console. Workload exit codes propagate; setup/runtime errors
+return 1, argument errors 2, and unauthenticated/abnormal guest termination 125.
+Windows builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tests
+use `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
+are excluded, and other Windows commands are rejected.
+
+Full Unix installations also include `pvisor-tui` for interaction,
+`pvisor-replay` for replay and `pvisor-daemon` for automatic pools/shared services.
+Companion dispatch checks trusted adjacent executables. These components,
+Job/container workflows and Windows packaging remain unported. `whp_smoke.exe`
+is a test probe; embedded `pvisor-guest` runs inside Linux guests.
+
+See the [platform matrix](../../docs/src/en/reference/platforms.md),
+[binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
+and [shared real-VM test driver](../../tests/vm_cli_contract.py).
