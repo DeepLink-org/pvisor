@@ -5,9 +5,10 @@ currently supports source-built `pvisor vm-run`; Jobs, TUI, replay and the local
 Daemon are not ported.
 
 One `pvisor.exe` covers this VM entry point, with `libkrunfw.dll`, a Linux rootfs
-and its workload still required. Three-platform acceptance is incomplete: at
-commit `5b320104`, Windows/WHP and Linux/KVM passed the workload; macOS CI failed
-to create an HVF VM.
+and its workload still required. CI runs the shared VM workload on Linux/KVM
+and Windows/WHP. Hosted macOS CI retains builds and conventional tests without
+running real HVF cases; the same workload remains available manually on an
+Apple Silicon Mac with working HVF.
 
 ## Installed components {#binaries}
 
@@ -142,10 +143,14 @@ production density remain untested.
 
 ### CI configuration and manual execution
 
+GitHub's arm64 macOS runners [do not support nested virtualization](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations-for-arm64-macos-runners).
+Real HVF cases are removed from hosted CI. macOS builds and conventional tests
+continue; their results do not establish real HVF acceptance.
+
 | CI path | Preparation and execution | Artifact |
 | --- | --- | --- |
 | `ci.yml` / Rust Test / Linux / pvisor | Build product and x86_64 musl guest, check `/dev/kvm`, execute shared driver | `vm-cli-Linux` |
-| `ci.yml` / Rust Test / macOS / pvisor | Build/sign product and aarch64 musl guest, execute same driver | `vm-cli-macOS` |
+| `ci.yml` / Rust Test / macOS / pvisor | Build/sign product and run conventional tests; no real HVF workload | No VM execution artifact |
 | `windows-vm.yml` / native + firmware + whp | MSVC builds `pvisor --bin` and tests parser; Linux builds DLL and x86_64 guest; Windows executes same driver | `windows-vm-whp-log` |
 
 Existing Windows `whp_smoke` still checks pause/resume, rejected-ready-callback

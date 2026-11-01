@@ -4,8 +4,9 @@ Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 �
 源码构建的 `pvisor vm-run`，还不能运行 Job、TUI、replay 或本地 Daemon。
 
 一个 `pvisor.exe` 足够运行这个 VM 入口，但仍需 `libkrunfw.dll`、Linux rootfs 和
-其中的工作负载。三平台验收尚未全部通过：提交 `5b320104` 的 Windows/WHP 和
-Linux/KVM 负载通过，macOS CI 在创建 HVF VM 时失败。
+其中的工作负载。CI 自动运行 Linux/KVM 和 Windows/WHP 的共同 VM 负载。
+macOS 托管 runner 保留构建和常规测试，暂不运行 HVF 实机用例；同一负载仍可在
+支持 HVF 的 Apple Silicon Mac 上手动执行。
 
 ## 安装组件 {#binaries}
 
@@ -123,10 +124,13 @@ CLI→replay→CLI、CLI→Daemon 的实际调用。测试须覆盖终端恢复�
 
 ### CI 配置和手动运行
 
+GitHub 的 arm64 macOS 托管 runner [不支持嵌套虚拟化](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations-for-arm64-macos-runners)。
+HVF 实机用例已从托管 CI 移除；macOS 构建和常规测试继续运行，结果不代表 HVF 实机验收。
+
 | CI 路径 | 准备与执行 | 制品 |
 | --- | --- | --- |
 | `ci.yml` / Rust Test / Linux / pvisor | 构建产品、x86_64 musl guest，检查 `/dev/kvm`，执行共同驱动 | `vm-cli-Linux` |
-| `ci.yml` / Rust Test / macOS / pvisor | 构建并签名产品、aarch64 musl guest，执行相同驱动 | `vm-cli-macOS` |
+| `ci.yml` / Rust Test / macOS / pvisor | 构建并签名产品，运行常规测试；不运行 HVF 实机负载 | 不生成 VM 运行制品 |
 | `windows-vm.yml` / native + firmware + whp | MSVC 构建 `pvisor --bin` 并测 parser；Linux 构建 DLL 和 x86_64 guest；Windows 执行相同驱动 | `windows-vm-whp-log` |
 
 Windows 原有 `whp_smoke` 继续检查 pause/resume、ready 回调失败清理和旧退出 ioctl
