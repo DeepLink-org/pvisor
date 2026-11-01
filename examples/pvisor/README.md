@@ -15,6 +15,7 @@
 | [04-gateway-llm-control](04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
 | [05-zcode-cli](05-zcode-cli)（可选） | 真实 ZCode CLI 的文件工具、SSE 捕获、选择性 apply/drop 与超时清理 |
 | [06-tui-interception](06-tui-interception)（交互式） | 在 TUI 中查看 `touch` 的文件操作与 `curl` 的目标拒绝证据 |
+| [08-stagebox-contract](08-stagebox-contract)（手动逐步执行） | 修复工时周报，亲眼看到沙盘已修好而原项目未变，再审查、带回或丢弃改动 |
 
 文件系统示例需要 macOS 的 macFUSE 或 Linux 的 FUSE3。这里的“轻量级隔离”特指
 事务工作区和示例中 cooperative public proxy 所覆盖的数据面；直接 socket 可绕过

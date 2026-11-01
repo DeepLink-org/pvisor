@@ -13,6 +13,7 @@
 | [1.2 changeset 管理](pvisor/02-changeset-management) | review/apply/drop 文件数 |
 | [1.3 pVisor 网络边界](pvisor/03-network-isolation) | allowlist、deny-all，以及 direct socket 可绕过 cooperative proxy 的边界 |
 | [1.4 Gateway 捕获与管控 LLM](pvisor/04-gateway-llm-control) | upstream POST、sink requests、LLM events |
+| [先在沙盘里修，再带回项目](pvisor/08-stagebox-contract)（手动逐步执行） | 亲自运行命令，比较沙盘与原项目的工时结果，审查后只带回修复 |
 
 ## Run
 
