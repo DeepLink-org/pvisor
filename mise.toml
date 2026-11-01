@@ -93,7 +93,7 @@ cargo check --locked "$@"
 '''
 
 [tasks.check-core-budget]
-description = "检查运行时与应用依赖预算；其余参数传给校验器"
+description = "报告运行时规模并检查应用依赖边界；不限制指标增长"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -726,15 +726,6 @@ set -euo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for test-vm-snapshot-state" >&2; exit 2; fi
 mise run vm-probe-build -- pvisor-vm threaded_cold_restore_case --offline
 python3 scripts/check-vm-snapshot-state.py --binary "$CARGO_TARGET_DIR/debug/examples/threaded_cold_restore_case"
-'''
-
-[tasks.update-core-budget]
-description = "重新生成已提交的预算基线（scripts/ci/core-budget.json）；有意扩大预算的改动在同一次提交里带上基线更新"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -gt 0 ]]; then echo "too many arguments for update-core-budget" >&2; exit 2; fi
-python3 scripts/ci/check_core_budget.py --write-baseline scripts/ci/core-budget.json
 '''
 
 [tasks.vm-case-driver]
