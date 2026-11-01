@@ -39,6 +39,30 @@ class VmCliContractTests(unittest.TestCase):
                     [sys.executable, "-c", "import time; time.sleep(60)"], directory, 0.1
                 )
 
+    def test_existing_evidence_is_preserved_and_workload_never_starts(self):
+        with workspace() as (directory, _):
+            guest = directory / "guest"
+            guest.write_bytes(b"fixture")
+            output = directory / "evidence"
+            output.mkdir()
+            receipt = output / "previous-result"
+            receipt.write_bytes(b"retained evidence")
+            arguments = [
+                "vm_cli_contract",
+                "--binary",
+                sys.executable,
+                "--guest",
+                str(guest),
+                "--output",
+                str(output),
+            ]
+            with patch.object(sys, "argv", arguments), patch.object(contracts, "invoke") as invoke:
+                with self.assertRaises(FileExistsError):
+                    contracts.main()
+            invoke.assert_not_called()
+            self.assertEqual(receipt.read_bytes(), b"retained evidence")
+            self.assertEqual(list(output.iterdir()), [receipt])
+
     def test_failure_retains_report_and_command(self):
         with workspace() as (directory, _):
             guest = directory / "guest"
