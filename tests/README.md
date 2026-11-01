@@ -30,6 +30,11 @@ Use `tests.fixtures.workspace()` for an isolated canonical temporary path and an
 `ExitStack` for mocks and other cleanup. Each use owns its resources; cleanup runs
 before removing the directory, including when an assertion fails.
 
+`node --test tests/home_demo.test.mjs` checks the homepage's explanatory browser
+model: private writes, observed-file conflicts, stopped file forks, selective
+acceptance and cleanup. It does not execute pVisor or validate runtime guarantees.
+Use the native bilingual docs previews for visual and interaction checks.
+
 Semantic specifications live in user Markdown under `docs/src/zh/cases/` and
 `docs/src/zh/reference/`, following `tools/semspec/DESIGN.md`. Moving conventional regression checks does not approve
 specifications or change their claims, vocabulary, review ledger or snapshots.

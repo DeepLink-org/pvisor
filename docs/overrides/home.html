@@ -1,5 +1,10 @@
 {% extends "main.html" %}
 {% set zh = config.theme.language == 'zh' %}
+{% block extrahead %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ 'assets/stylesheets/home-showcase.css' | url }}">
+  <script type="module" src="{{ 'assets/javascripts/home-demo.js' | url }}"></script>
+{% endblock %}
 {% block container %}
 <div class="pc-home-container" data-md-component="content" id="__skip">
   <article class="pc-home-article md-typeset">
@@ -11,14 +16,14 @@
         <p class="pc-home-eyebrow">{% if zh %}面向 Agent 的执行环境{% else %}Execution environments for agents{% endif %}</p>
         <h1>PolicyVisor</h1>
         <p class="pc-home-tagline">{% if zh %}Agent 原生沙箱框架{% else %}An agent-native sandbox framework{% endif %}</p>
-        <p class="pc-home-promise">{% if zh %}Docker style sandbox 使用 VM 隔离；Agent style stagebox 先暂存文件改动，审查后选择接收。{% else %}Run containers in isolated VMs. Use stagebox to review agent edits before applying them.{% endif %}</p>
+        <p class="pc-home-promise">{% if zh %}Docker style sandbox 让容器各自在 VM 中运行；Agent style stagebox 让 Agent 先尝试，你看过改动再接收。{% else %}Run containers in their own VMs with Docker style sandbox. In Agent style stagebox, let the agent try changes and review them before accepting.{% endif %}</p>
         <div class="pc-home-mode-summary" aria-label="{% if zh %}两种模式{% else %}Two modes{% endif %}">
           <a href="start/first-run/#docker-style"><strong>Docker style sandbox</strong><span>{% if zh %}每个容器一个 VM{% else %}One VM per container{% endif %}</span></a>
           <a href="start/first-run/#agent-style"><strong>Agent style stagebox</strong><span>{% if zh %}沉浸式氛围编程<br>无需反复权限确认{% else %}Hands-off vibe coding.<br>Coding without sandbox approvals.{% endif %}</span></a>
         </div>
         <div class="pc-home-actions">
           <a class="pc-home-btn primary" href="start/installation/"><span>{% if zh %}安装并开始{% else %}Get started{% endif %}</span><span aria-hidden="true">→</span></a>
-          <a class="pc-home-btn" href="start/first-run/">{% if zh %}了解两种模式{% else %}Explore both modes{% endif %}</a>
+          <a class="pc-home-btn" href="#stagebox-demo">{% if zh %}看看沙盘如何工作{% else %}See stagebox in action{% endif %}<span aria-hidden="true">↓</span></a>
         </div>
         <pre class="pc-home-install"><code>pip install pvisor-sandbox</code></pre>
         <details class="pc-home-brew">
@@ -69,6 +74,8 @@ pvisor rm demo</code></pre>
       </div>
     </div>
   </section>
+  {% include "home-mechanisms.html" %}
+  {% include "home-demo.html" %}
   <section class="pc-home-stats">
     <div class="pc-home-stats-grid">
       <a href="benchmarks/startup/">
@@ -88,32 +95,6 @@ pvisor rm demo</code></pre>
       </a>
     </div>
     <p class="pc-home-stats-source">{% if zh %}三组独立实验，各自固定配置与样本量。条件与完整表格见 <a href="benchmarks/">基准测试</a>。{% else %}Three separate experiments, each with its own configuration and sample size. Conditions and full tables are in <a href="benchmarks/">benchmarks</a>.{% endif %}</p>
-  </section>
-  <section class="pc-home-value">
-    <h2>{% if zh %}核心能力{% else %}Core capabilities{% endif %}</h2>
-    <div class="pc-home-cards pc-cols-2">
-      <article>
-        <h3>{% if zh %}文件级监管与隔离{% else %}File-level oversight and isolation{% endif %}</h3>
-        <p>{% if zh %}以文件为粒度限定访问与修改范围，结合网络策略约束 Agent 行为；启用暂存后隔离候选改动，支持审查与选择性接受。{% else %}Define access and modification boundaries at file level and constrain agent behavior with network policies. With staging enabled, isolate candidate changes for review and selective acceptance.{% endif %}</p>
-        <a href="security/executor-boundaries/">{% if zh %}执行器边界{% else %}Executor boundaries{% endif %}</a> · <a href="guides/review-apply/">{% if zh %}审查并应用改动{% else %}Review and apply changes{% endif %}</a>
-      </article>
-      <article>
-        <h3>{% if zh %}沙箱生命周期管理{% else %}Sandbox lifecycle management{% endif %}</h3>
-        <p>{% if zh %}管理沙箱的运行、暂停、内存卸载与恢复，在保留执行上下文的同时，按需释放和恢复运行资源。{% else %}Manage sandbox execution, pause, memory offload, and resume to release and restore runtime resources as needed while preserving execution context.{% endif %}</p>
-        <a href="design/memory-optimization/offload/">{% if zh %}VM 内存卸载与恢复{% else %}VM memory offload and resume{% endif %}</a>
-      </article>
-      <article>
-        <h3>{% if zh %}状态保存与分支复用{% else %}State preservation and branch reuse{% endif %}</h3>
-        <p>{% if zh %}通过工作区检查点、受支持的执行快照与分叉机制保存任务状态，为分支探索、回退重试与 rollout 复用执行起点。{% else %}Save task state through workspace checkpoints, supported execution snapshots, and forks. Reuse execution starting points for branch exploration, rollback and retry, and rollouts.{% endif %}</p>
-        <a href="guides/fork-checkpoint/">{% if zh %}工作区检查点{% else %}Workspace checkpoints{% endif %}</a> · <a href="reference/cli/#full-vm-execution-checkpoints">{% if zh %}执行快照{% else %}Execution snapshots{% endif %}</a>
-      </article>
-      <article>
-        <h3>{% if zh %}镜像与内存优化{% else %}Image and memory optimization{% endif %}</h3>
-        <p>{% if zh %}通过镜像按需加载、基础环境复用、内存共享与压缩，减少环境准备开销和重复资源占用，支持高密度并发。{% else %}Use on-demand image loading, base environment reuse, memory sharing, and compression to reduce setup overhead and redundant resource use, supporting high-density concurrency.{% endif %}</p>
-        <a href="reference/shared-image-cache/">{% if zh %}镜像按需加载{% else %}On-demand image loading{% endif %}</a> · <a href="design/memory-optimization/">{% if zh %}内存优化{% else %}Memory optimization{% endif %}</a>
-      </article>
-    </div>
-    <p>{% if zh %}具体能力与支持范围取决于接入方式、执行器和平台。{% else %}Capabilities and support depend on the integration interface, executor, and platform.{% endif %} <a href="why/">{% if zh %}查看 pVisor 概览{% else %}Explore the pVisor overview{% endif %}</a></p>
   </section>
   <section class="pc-home-modes">
     <h2>{% if zh %}一个沙箱框架，两种模式{% else %}One sandbox framework, two modes{% endif %}</h2>
