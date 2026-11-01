@@ -25,10 +25,9 @@ pvisor spawn --safe \
 | 级别 | 效果 |
 | --- | --- |
 | `deny` | 路径在目录枚举中隐藏，访问、创建和修改都被拒绝 |
-| `ask` | 访问时弹窗询问（自动启用审计 TUI 和 `--safe` 暂存视图） |
 | `warn` | 放行，并在监督进程 stderr 打印路径（不打印内容）；**不是只读** |
 
-多条规则命中时取最严格的：deny > ask > warn。`--access` 追加到配置和预设之后，不会替换默认保护；要清空默认保护必须显式使用 `--clear-access`。
+多条规则命中时取最严格的：deny > warn。`--access` 追加到配置和预设之后，不会替换默认保护；要清空默认保护必须显式使用 `--clear-access`。
 
 ## 匹配规则
 
@@ -45,11 +44,12 @@ pvisor spawn --safe \
 pvisor spawn --safe --mount /opt/tool:read -- agent-command
 ```
 
-`--mount SOURCE:read` 授予原绝对路径的只读访问，要求 host 执行器和 `--safe` 或 `--ask`；`SOURCE:write` 直接写宿主路径，不经过暂存和 apply。显式共享不经过工作区的 ask 规则，含秘密的目录不要共享。
+`--mount SOURCE:read` 授予原绝对路径的只读访问，要求 host 执行器和 `--safe`；`SOURCE:write` 直接写宿主路径，不经过暂存和 apply。含秘密的目录不要共享。
 
-## 审批弹窗
+## 静态边界与暂存审查
 
-`ask` 命中时，弹窗可以选择授权范围：仅此文件、同级目录或相同后缀；默认选中拒绝。选择写入当前 Job 目录的 `audit-policy.json`，之后命中相同范围时自动应用，每次决策记录在 `audit.jsonl`。已保存的决定只用于 ask，不能覆盖静态 deny 或外层沙箱。
+启动前设置静态边界；用 `--safe` 或
+`--stage PATH` 保留工作区改动，执行后通过 `review`、`apply`、`drop` 决定保留哪些文件。
 
 ## 分层策略
 

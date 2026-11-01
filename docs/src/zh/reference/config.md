@@ -132,7 +132,7 @@ workload-aware-memory-offloading = true
 
 ### 文件与网络
 
-`[overlayfs]` 的 `mount` 与 `access` 使用表数组。mount 提供 `source`、可选 `target` 与必需的 `access`；access 规则提供 `path` 与 `level`。等级取 `deny`、`ask`、`read`、`warn`、`stage`、`write`，使用方法见[文件策略](../guides/policies/files.md)。
+`[overlayfs]` 的 `mount` 与 `access` 使用表数组。mount 提供 `source`、可选 `target` 与必需的 `access`；access 规则提供 `path` 与 `level`。等级取 `deny`、`read`、`warn`、`stage`、`write`，使用方法见[文件策略](../guides/policies/files.md)。
 
 `[overlaynet]` 的 `mode` 取 `auto`、`off`、`proxy`，`policy` 取 `public`、`deny`、`allowlist`。`allow` 是目标字符串数组，`rules`、`deny`、`limits` 是结构化表数组。默认列表为空；端口、协议与地址规则见[策略字段](policy.md)。
 
@@ -359,9 +359,9 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `overlayfs.max_size` | `Option<u64>` | `未设置` | 暂存总字节额度；`--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `必需` | 宿主源路径 |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `未设置` | Agent 可见的挂载路径；省略时由规范化过程补充 |
-| `overlayfs.mount[].access` | `FilesystemAccessLevel` | `必需` | deny、ask、read、warn、stage、write |
+| `overlayfs.mount[].access` | `FilesystemAccessLevel` | `必需` | deny、read、warn、stage、write |
 | `overlayfs.access[].path` | `String` | `必需` | Agent 可见路径/规则；语法见文件策略指南 |
-| `overlayfs.access[].level` | `FilesystemAccessLevel` | `必需` | deny、ask、read、warn、stage、write |
+| `overlayfs.access[].level` | `FilesystemAccessLevel` | `必需` | deny、read、warn、stage、write |
 | `overlaynet.mode` | `OverlayNetMode` | `"auto"` | auto、off、proxy；`--overlaynet`；auto 在 VM 中使用 smoltcp |
 | `overlaynet.listen` | `String` | `"127.0.0.1:19081"` | 代理地址；CLI 将此默认值换成空闲端口；`--overlaynet-listen` |
 | `overlaynet.policy` | `OverlayNetPolicy` | `"public"` | public、deny、allowlist；`--overlaynet-policy` |
@@ -404,7 +404,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `policies.workspace` | `PolicyLayer` | `{}` | 显式策略或 .pvisor/policy.toml 默认值 |
 | `policies.user` | `PolicyLayer` | `{}` | 显式策略或用户配置默认值 |
 | `policy_layer.network` | `Option<NetworkPolicyLayer>` | `未设置` | 可选 network_layer 表；省略不增加该层约束 |
-| `policy_layer.filesystem` | `Option<FileAccessPolicy>` | `未设置` | 可选 deny/ask/warn/allow glob 数组；见策略参考 |
+| `policy_layer.filesystem` | `Option<FileAccessPolicy>` | `未设置` | 可选 deny/warn/allow glob 数组；见策略参考 |
 | `network_layer.default_action` | `Option<NetworkDefaultAction>` | `未设置` | allow 或 deny；存在此层时，省略会拒绝未匹配目标 |
 | `network_layer.allow` | `Vec<NetworkAccessRule>` | `[]` | network_rule 授权条目 |
 | `network_layer.deny` | `Vec<NetworkAccessRule>` | `[]` | network_rule 拒绝条目；拒绝优先 |

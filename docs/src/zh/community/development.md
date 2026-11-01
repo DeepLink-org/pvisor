@@ -28,7 +28,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | 目录 | 职责 |
 |---|---|
 | `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
-| `crates/pvisor-cli/` | 三个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
+| `crates/pvisor-cli/` | 两个应用二进制、CLI 命令、终端适配和 replay 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox API、原生 guest 协议适配，以及跨平台缓存/池组件 |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
@@ -70,7 +70,6 @@ core, guest ──> 不依赖其他 workspace crate
 
 `pvisor` 没有 CLI 或 Clap 普通依赖；Clap 仅作为示例使用的开发依赖。
 `pvisor-replay` 引擎没有对 `pvisor` 或 Clap 的普通依赖。
-`pvisor-tui` crate 已移除，其可执行文件名称不变。
 
 ### pVisor 源码模块
 
@@ -101,8 +100,8 @@ AgentCtl 与审批 socket 的实际 I/O 留在 pvisor。完整职责见[核心�
 ## 核心规模统计与依赖边界 {#core-reduction-budget}
 
 CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
-拒绝 CLI、Gateway、replay、Clap、TUI 和终端依赖进入 `pvisor` 的普通依赖闭包。
-默认 `pvisor-cli` 应用包含 replay 引擎和集成 TUI，Gateway 仍为可选。
+拒绝应用和终端界面依赖进入 `pvisor` 的普通依赖闭包，并拒绝终端界面依赖进入应用闭包。
+默认 `pvisor-cli` 应用包含 replay 引擎，Gateway 仍为可选。
 脚本记录工具链、运行时／应用依赖数、运行时闭包源码行数、Core 公开声明数和应用二进制字节数。
 这些指标只用于报告：增长不会导致 CI 失败，不再维护已提交的预算基线或规模、数量上限参数。
 禁止的依赖关系仍会导致架构检查失败。统计结果保存在 CI 报告中，比较时使用相同平台和工具链。
@@ -125,7 +124,7 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 | `mise run test -- pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
 | `mise run test-py -- -k packaging` | 在仓库及活动 benchmark 测试中筛选 unittest 检查 |
 | `mise run test-py -- discover -s benchmark/support` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | 启用真实 VM 的普通终端交互回归 |
 | `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `mise run test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
 | `mise run smoke` | 构建 debug CLI 并检查主要命令入口 |

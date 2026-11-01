@@ -26,7 +26,7 @@ When no Job belongs to the current workspace, pVisor fails instead of substituti
 
 | Invocation | Storage |
 | --- | --- |
-| Default, including `--safe` and `--ask` | `~/.pvisor/runs/run-<uuid>/`; override the root with `PVISOR_RUN_HOME` |
+| Default, including `--safe` | `~/.pvisor/runs/run-<uuid>/`; override the root with `PVISOR_RUN_HOME` |
 | Explicit `--stage PATH` | `PATH` itself |
 
 If the default root falls inside the workspace lower layer, pVisor uses a system-temporary Run root so writable staging does not appear inside its own lower layer. For the directory layout see [project discovery](../reference/cli.md#run-项目发现).

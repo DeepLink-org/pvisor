@@ -773,8 +773,6 @@ pub(crate) fn prepare_attempt(
             crate::util::startup_mark_run("storage.record_write_begin", spec.run_id.as_str());
             session.run_record.write()?;
             crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
-            #[cfg(unix)]
-            crate::runtime::audit::arm();
             // The Attempt listener is also the VM's explicit HTTP proxy endpoint.
             // Rewrite it for every VM OverlayNet run; gateway_enabled only controls
             // LLM capture, not proxy reachability. Without this, clients in the guest
@@ -913,8 +911,6 @@ pub(crate) fn prepare_overlay_attempt(
             session.fs_metrics.clone(),
             session.network_metrics.clone(),
         )?;
-        #[cfg(unix)]
-        crate::runtime::audit::arm();
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
         inject_krun_overlay_metadata(spec, preparation, &plan.overlay, Some(&overlay_record));
@@ -994,8 +990,6 @@ pub(crate) fn prepare_storage_attempt(
         session.run_record.write()?;
         crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
         session._control = RunControlServer::start(&session.run_record)?;
-        #[cfg(unix)]
-        crate::runtime::audit::arm();
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 

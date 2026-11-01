@@ -16,7 +16,7 @@ from unittest import mock
 from tests.fixtures import workspace
 
 ROOT = Path(__file__).resolve().parents[1]
-APPLICATION_BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay")
+APPLICATION_BINARIES = ("pvisor", "pvisor-replay")
 
 
 def _load_script(name: str):
@@ -1119,6 +1119,20 @@ class ReleasePackagingTests(unittest.TestCase):
                 )
                 assert "pvisor-memory-pool" not in command
 
+    def test_wheel_rejects_retired_tui_even_with_all_maintained_binaries(self):
+        for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
+            with self.subTest(platform=platform):
+                with workspace() as (tmp_path, resources):
+                    wheel = tmp_path / f"pvisor_sandbox-1.2.3-py3-none-{platform}.whl"
+                    _write_wheel(wheel, "1.2.3")
+                    with zipfile.ZipFile(wheel, "a") as archive:
+                        for name in (*wheel_verify.expected_binaries(wheel), "pvisor-tui"):
+                            binary = zipfile.ZipInfo(f"pvisor_sandbox-1.2.3.data/scripts/{name}")
+                            binary.external_attr = 0o100755 << 16
+                            archive.writestr(binary, b"native binary")
+                    with self.assertRaisesRegex(RuntimeError, "retired executable pvisor-tui"):
+                        wheel_verify._wheel_contents(wheel)
+
     def test_wheel_rejects_retired_pool_even_with_all_maintained_binaries(self):
         for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
             with self.subTest(platform=platform):
@@ -1173,7 +1187,7 @@ class ReleasePackagingTests(unittest.TestCase):
                         assert [name, "--help"] in commands
                     for command in ("prepare", "publish", "read"):
                         assert ["pvisor", "cache", command, "--help"] in commands
-                    for command in ("run", "spawn", "tui", "replay"):
+                    for command in ("run", "spawn", "replay"):
                         assert ["pvisor", command, "--help"] in commands
                     assert ["pvisor-daemon", "serve", "--help"] in commands
                     assert ["pvisor-daemon", "protocol"] in commands
@@ -1311,6 +1325,7 @@ class ReleasePackagingTests(unittest.TestCase):
                 "libkrunfw.5.dylib",
                 "pvisor-memory-pool",
                 "pvisor-cache",
+                "pvisor-tui",
                 "unrelated-binary",
             }:
                 (scripts / name).write_bytes(b"payload")

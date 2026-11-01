@@ -1,6 +1,6 @@
 # 5. 回放轨迹与选择恢复工具
 
-先判断要恢复的是文件提案、Agent 历史，还是完整机器执行状态。workspace checkpoint 用于文件提案；`pvisor-replay` 处理 Agent 原生轨迹；Job execution checkpoint 保存受支持 VM 的完整状态。TUI 用于交互审查，Gateway 用于模型路由和捕获，cache/memory-pool 用于执行基础设施，不是 Job checkpoint 的替代入口。
+先判断要恢复的是文件提案、Agent 历史，还是完整机器执行状态。workspace checkpoint 用于文件提案；`pvisor-replay` 处理 Agent 原生轨迹；Job execution checkpoint 保存受支持 VM 的完整状态。暂存文件通过 review/apply/drop 审查处理。Gateway 用于模型路由和捕获，cache/memory-pool 用于执行基础设施，不是 Job checkpoint 的替代入口。
 
 ### S-USE-015：离线准备轨迹，不重跑历史工具
 

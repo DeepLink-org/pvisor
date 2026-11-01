@@ -9,7 +9,7 @@ use std::path::Path;
 
 use super::{GatewayMode, RunConfig, RunExecutorKind};
 
-pub(super) fn patch(requested: &RunConfig, audit: bool) -> Vec<String> {
+pub(super) fn patch(requested: &RunConfig) -> Vec<String> {
     let program = requested
         .run
         .command
@@ -39,7 +39,7 @@ pub(super) fn patch(requested: &RunConfig, audit: bool) -> Vec<String> {
         .into(),
         "--clear-pass-env".into(),
     ]);
-    args.extend(files::patch(audit));
+    args.extend(files::patch());
     args
 }
 

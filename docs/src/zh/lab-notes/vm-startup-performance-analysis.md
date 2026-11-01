@@ -150,7 +150,7 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
     每轮随机排列所有案例；将同轮、同规格的官方值减去裁剪值，再对差值取中位数。置信区间使用固定 seed 的 5,000 次 bootstrap 重采样，它反映本批次样本变化，不能覆盖不同机器或负载条件的系统误差。
 
-    原完整矩阵关闭 `PVISOR_STARTUP_TIMING`，诊断矩阵单独开启；后文两轮 P0 复测开启常态日志。每次正式启动使用新工作目录，跳过个人 Agent 默认配置，关闭 OverlayNet，使用继承 stdio，没有 Gateway 或 TUI。原生 shell 和 host 执行器作为上下文对照；macOS 与 Alpine shell 实现不同，两者耗时相减不能精确代表虚拟化成本。
+    原完整矩阵关闭 `PVISOR_STARTUP_TIMING`，诊断矩阵单独开启；后文两轮 P0 复测开启常态日志。每次正式启动使用新工作目录，跳过个人 Agent 默认配置，关闭 OverlayNet，使用继承 stdio，没有 Gateway。原生 shell 和 host 执行器作为上下文对照；macOS 与 Alpine shell 实现不同，两者耗时相减不能精确代表虚拟化成本。
 
 ### 常态化启动诊断日志
 
@@ -160,7 +160,7 @@ Agent 执行器可能反复创建隔离环境，启动等待会直接影响首�
 
     设置 `PVISOR_STARTUP_TIMING=1` 后，当前实现输出 `pvisor-startup level=info` 阶段日志。字段包括 Unix 时间 `timestamp_ms`、`pid`/`ppid`、JSON 引号包裹的 `run_id`、`stage`、`monotonic_us` 和 `process_elapsed_us`。Run ID 生成前的进程事件使用 `"-"`；结合 PID 与后续带 Run ID 的事件关联，父进程和 runner 的同一 Run 使用相同 ID。时间差使用宿主单调时钟计算，不能使用可能调整的墙上时钟。
 
-    普通 CLI 输出到 stderr，可由生产日志采集器保留；TUI 沿用前端诊断日志文件，VM runner 通过预先打开的专用描述符写入同一通道，避免污染 Agent 终端。日志只包含阶段与身份计时字段，不含命令、环境变量或凭据。输出尽力而为，不增加 fsync，也不作为恢复元数据。
+    CLI 输出到 stderr，可由生产日志采集器保留。日志只包含阶段与身份计时字段，不含命令、环境变量或凭据。输出尽力而为，不增加 fsync，也不作为恢复元数据。
 
     不设置或设置 `PVISOR_STARTUP_TIMING=0` 都关闭计时日志，用于无埋点基准；只有 `1` 开启。历史测量使用默认开启日志的制品，归档结果不能据此证明日志没有开销。`cli.session_started` 和 `runner.vmm_built` 分别表示 Session 已启动和 VMM 已构造，不代表 guest 或业务服务就绪；还没有通用 guest-ready 通知。
 
@@ -453,4 +453,4 @@ python3 benchmark/pvisor/linux_vm_ready.py \
 
 ## 6. 尚未覆盖的场景
 
-Docker、Firecracker、QEMU 和受控 Agent 工具闭环已有同机数据；完整 Ubuntu 的初次启动与部分准备成本也已单列。a3s、真实模型推理、大型项目、公网依赖、磁盘冷缓存、TUI、Gateway、并发密度及应用服务健康检查，仍需要独立矩阵。
+Docker、Firecracker、QEMU 和受控 Agent 工具闭环已有同机数据；完整 Ubuntu 的初次启动与部分准备成本也已单列。a3s、真实模型推理、大型项目、公网依赖、磁盘冷缓存、Gateway、并发密度及应用服务健康检查，仍需要独立矩阵。

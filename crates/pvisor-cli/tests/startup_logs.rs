@@ -147,13 +147,13 @@ fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"WORKLOAD_READY\n");
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup "));
-    let log = std::fs::read_to_string(path).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().is_empty());
+    assert!(!temp.path().join("stage").exists());
+    let log = String::from_utf8(output.stderr).unwrap();
     assert!(log.contains("stage=process.entry"));
     assert!(log.contains("stage=cli.run_finished"));
     assert!(log.contains("pvisor-persistence "));
-    // Concurrent host processes share the same frontend append log too.
-    std::fs::write(temp.path().join("frontend.log"), "").unwrap();
+    // Each frontend retains its own ordinary stderr diagnostics.
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -162,6 +162,7 @@ fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
         .iter()
         .map(|child| child.id().to_string())
         .collect();
+    let mut log = String::new();
     for child in children {
         let output = child.wait_with_output().unwrap();
         assert!(
@@ -170,8 +171,8 @@ fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stdout, b"WORKLOAD_READY\n");
+        log.push_str(&String::from_utf8(output.stderr).unwrap());
     }
-    let log = std::fs::read_to_string(temp.path().join("frontend.log")).unwrap();
     // Parsing and execution have separate PIDs. Correlate each Job owner
     // with its originating frontend.
     let bindings: Vec<_> = log
@@ -336,8 +337,9 @@ fn opt_in_profiles_use_diagnostics_routing_and_leave_workload_stdout_clean() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"READY\n");
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup-profile "));
-    let text = std::fs::read_to_string(log).unwrap();
+    assert!(std::fs::read_to_string(log).unwrap().is_empty());
+    assert!(!temp.path().join("stage").exists());
+    let text = String::from_utf8(output.stderr).unwrap();
     assert!(!text.contains("pvisor-startup level="));
     let records: Vec<serde_json::Value> = text
         .lines()

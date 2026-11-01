@@ -9,7 +9,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（兼容 Docker 的容器命令）、
 **Agent Commands**（`spawn`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
-（已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
+（已安装的 `replay` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
@@ -237,21 +237,6 @@ pvisor apply last --path src
 
 `last` 只解析默认存储中属于当前工作区的 Job；用 `--stage PATH` 时，后续命令传入该路径或 Job ID，见 [Job 与存储](../concepts/jobs.md)。
 
-加上 `--tui` 可显示类似 Zellij 的终端边框、底部状态栏和浮动审查面板：
-
-```bash
-pvisor spawn --tui -- bash
-```
-
-默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。顶部显示工作目录及文件、网络边界；
-底栏显示运行状态、时间和非零的访问异常，授权等待会突出提示。详细计数保留在面板中。
-按 `Ctrl-]` 打开菜单，同一行切换为快捷键。
-pVisor 自身的启动信息显示在
-Log 面板，不混入 Agent 终端。按 `Ctrl-]` 进入命令模式，再按 `r`、`f`、`n`、
-`u`、`l`、`p` 打开概览、文件、网络、Job、Log 或 Permissions 面板，按 `?` 查看按键帮助。在面板中用
-Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返回 Agent。
-连续按两次 `Ctrl-]` 可将该按键原样发送给 Agent。
-
 ### 暂存与存储 {#暂存与存储}
 
 下表描述默认 CLI 行为。显式配置的提交方式、可写共享和应用兼容策略可能改变写入去向。
@@ -259,7 +244,7 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 | 运行方式或目录 | 写入去向 | 退出后的处理 |
 | --- | --- | --- |
 | 普通 host，未启用暂存 | 原工作区 | 已写入宿主；不能用 `drop` 撤销 |
-| `--safe` 或 `--ask` 的工作区 | Job 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
+| `--safe` 的工作区 | Job 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
 | 显式 `--stage PATH` 的工作区 | 指定 stage | 默认保留；该选项也启用暂存 |
 | VM 工作区 | 指定 stage 或默认 Job 存储 | 默认保留 |
 | VM 根目录的其他写入 | 私有临时 upper | VM 退出后丢弃 |
@@ -267,7 +252,7 @@ Tab 或 `1`–`6` 切换视图，用 `j`/`k` 滚动，按 Esc 或 `Ctrl-]` 返�
 | 显式 `--mount SOURCE:write` | 宿主 SOURCE | 直接持久写入，不经工作区 apply/drop |
 
 Job 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
-不是 `--safe/--ask` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
+不是 `--safe` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
 
 ### 文件系统参数 {#文件系统参数}
 
@@ -275,7 +260,7 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
 显式配置工作目录或 OverlayFS base 时，以显式配置为准。
 
-普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 和 `--ask` 默认将工作区
+普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 默认将工作区
 改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
 `--stage PATH` 仅用于指定存储位置，不是保留改动的前提。
 
@@ -283,26 +268,20 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 pvisor spawn --stage ../run-stage -- codex
 pvisor spawn --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
 pvisor spawn --access '**/.ssh:deny' -- zcode
-pvisor spawn --access '.env:ask' -- codex
+pvisor spawn --access '.env:deny' -- codex
 ```
 
-`--mount SOURCE:read` 向 host executor 授予原绝对路径的只读访问，要求 `--safe` 或 `--ask`；
+`--mount SOURCE:read` 向 host executor 授予原绝对路径的只读访问，要求 `--safe`；
 `SOURCE:write` 直接修改宿主机。两者不支持改写 TARGET，不能与工作区、Job 存储或可写运行时路径重叠；
-Linux 的私有 `/tmp` 内不能使用只读共享。显式共享不经过工作区 OverlayFS 的 ask 规则。
+Linux 的私有 `/tmp` 内不能使用只读共享。不要共享含秘密的目录。
 `--mount SOURCE[:TARGET]:stage` 则把 SOURCE 加入工作区写时复制视图的底层，并非独立目录挂载。
-`--access PATH-GLOB:deny|ask|warn` 默认累加配置、预设和 CLI 规则：deny 拒绝、ask 询问、warn 放行并警告。
-清空配置与默认文件保护必须显式使用 `--clear-access`；之后再加入 CLI 规则。deny > ask > warn。
+`--access PATH-GLOB:deny|warn` 默认累加配置、预设和 CLI 规则：deny 拒绝、warn 放行并警告。
+清空配置与默认文件保护必须显式使用 `--clear-access`；之后再加入 CLI 规则。deny > warn。
 原先表示警告的 `:read` 已拒绝，改用 `:warn`；真正只读请用 `--mount PATH:read`。
 
-使用 `pvisor --ask -- bash` 可在命中 `ask` 文件规则或访问未列入规则的代理网络目标时询问权限；`--ask` 同时启用 `--tui` 和 `--safe`。指定 `--access ...:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask` 或 `--tui`。
-
-弹窗用 Tab 或上下方向键切换范围、保存期限和按钮，左右方向键选择，Enter 在按钮上确认；默认选中拒绝按钮；可用 `s`、`w`、`u` 快速选择 session、workspace 或 user 范围。可按 `1` 选择仅此文件、`2` 允许同级目录、`3` 允许相同后缀；`d` 拒绝此次目标。对于未列入规则的代理网络目标，`--ask` 的弹窗可按 `1` 仅允许此目标，或按 `2` 允许当前域名及其子域名；两种选择都限定在当前端口和传输协议，IP 地址不能使用域名范围。明确的 `deny` 规则仍然直接拒绝，不进入询问弹窗。
-
-Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 user 决定写入 `~/.config/pvisor/config.toml`（`XDG_CONFIG_HOME` 为绝对路径时用其下的 `pvisor/config.toml`）的 `permissions` 部分。选择之后命中相同范围时自动应用，每次决策记录在 `audit.jsonl`。workspace 以规范化工作目录标识；新的 TUI Job 启动时按 session > workspace > user 的优先级加载，同层内以最后匹配的规则为准。持久化的文件规则使用原始绝对路径，user 级后缀规则可能覆盖其他工作区；保存时保留其他配置项与注释。已保存决定只用于命中 ask 的访问，不能覆盖静态 deny 或外层沙箱。
-
-在 Permissions 面板用 `j`/`k` 选择决定，按两次 `x` 移除；之后回到更宽范围规则或重新询问。移除不会关闭已经打开的文件句柄；其他已运行的 TUI 在下次启动时加载更新。这些记录默认在 Job 结束后保留，`--stage PATH` 可指定位置。
-
-代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
+启动前配置静态文件与网络边界。
+执行后用 `review` 审查暂存文件，用 `apply` 接受选定路径，再用 `drop` 丢弃剩余改动。
+代理网络属于协作式边界：直接连接可能绕过代理。
 
 ```text
 Commands:
@@ -333,7 +312,6 @@ Agent Commands:
 Tools:
   cache       构建、发布与查询缓存
   replay      回放 Agent 轨迹（安装后可见）
-  tui         交互式 Job 终端（安装后可见）
   feature     查询运行时实验特性
   help        查看命令详细选项
 ```
@@ -611,9 +589,9 @@ pvisor spawn --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/
 ```
 
 `--mount SOURCE:read|write` 是 host executor 的显式共享，分别授予只读或持久写入权限；
-只读共享要求 `--safe` 或 `--ask`。`--mount SOURCE[:TARGET]:stage` 是工作区视图的底层组合。
-`--access PATH-GLOB:deny|ask|warn` 追加文件规则，不会替换默认保护；`--clear-access` 才会显式清空。
-`warn` 仅告警，不是只读；文件询问授权包含视图内的检查、读取、修改和删除。
+只读共享要求 `--safe`。`--mount SOURCE[:TARGET]:stage` 是工作区视图的底层组合。
+`--access PATH-GLOB:deny|warn` 追加文件规则，不会替换默认保护；`--clear-access` 才会显式清空。
+`warn` 仅告警，不是只读；文件规则覆盖视图内的检查、读取、修改和删除。
 
 规则相对于挂载根目录匹配：`*` 不跨目录，`**` 可跨目录，匹配目录时覆盖全部后代。
 为防止大小写不敏感文件系统上的别名绕过，匹配不区分大小写；绝对路径、空规则及 `.`/`..`

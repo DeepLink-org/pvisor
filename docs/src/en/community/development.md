@@ -27,7 +27,7 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | Directory | Responsibility |
 | --- | --- |
 | `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
-| `crates/pvisor-cli/` | Three application binaries, CLI commands, terminal frontends and replay/TUI companion dispatch |
+| `crates/pvisor-cli/` | Two application binaries, CLI commands, terminal adapters and replay companion dispatch |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox API, native guest protocol adapters and cross-platform cache/pool components |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
@@ -67,7 +67,7 @@ journal ──> core
 core, guest ──> no other workspace crates
 ```
 
-`pvisor` has no CLI or Clap normal dependency; Clap is a development dependency for examples only. The `pvisor-replay` engine has no normal dependency on `pvisor` or Clap. The `pvisor-tui` crate has been removed; its executable name is unchanged.
+`pvisor` has no CLI or Clap normal dependency; Clap is a development dependency for examples only. The `pvisor-replay` engine has no normal dependency on `pvisor` or Clap.
 
 ### pVisor source modules
 
@@ -94,7 +94,7 @@ Core defines Operation, Event and shared policies; pvisor implements admission, 
 
 ## Core metrics and dependency boundaries {#core-reduction-budget}
 
-CI checks the default runtime and application dependency boundaries before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects the CLI, Gateway, replay, Clap, TUI and terminal dependencies in the normal `pvisor` closure. The default `pvisor-cli` application includes the replay engine and integrated TUI, while Gateway remains optional. It reports toolchain, runtime/application dependency counts, runtime-closure source lines, public Core declarations and application binary bytes. These metrics are informational: growth does not fail CI, and no committed baseline or maximum-size/count options are maintained. Forbidden dependency edges still fail the architecture check. Compare the reported metrics on the same platform/toolchain.
+CI checks the default runtime and application dependency boundaries before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects application and terminal UI dependencies in the normal `pvisor` closure, and terminal UI dependencies in the application closure. The default `pvisor-cli` application includes the replay engine, while Gateway remains optional. It reports toolchain, runtime/application dependency counts, runtime-closure source lines, public Core declarations and application binary bytes. These metrics are informational: growth does not fail CI, and no committed baseline or maximum-size/count options are maintained. Forbidden dependency edges still fail the architecture check. Compare the reported metrics on the same platform/toolchain.
 
 ## Contributor commands
 
@@ -114,7 +114,7 @@ CI checks the default runtime and application dependency boundaries before the c
 | `mise run test -- pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `mise run test-py -- -k packaging` | Filter Python unittest checks in both test directories |
 | `mise run test-py -- discover -s benchmark/support` | Benchmark tool unittest checks; also included in default Python tests |
-| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py` | Real VM terminal interaction regressions |
 | `PVISOR_TEST_ZCODE=1 mise run test-py -- tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
 | `mise run test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
 | `mise run smoke` | Build debug CLI and check main commands |

@@ -10,7 +10,7 @@ pvisor spawn --executor host --stage ../stage-host -- /bin/sh
 
 | Need | Option | Effect |
 | --- | --- | --- |
-| A reviewable copy-on-write workspace | `--stage PATH`, or `--safe`/`--ask` | Workspace changes go to the stage and do not touch the project before apply |
+| A reviewable copy-on-write workspace | `--stage PATH`, or `--safe` | Workspace changes go to the stage and do not touch the project before apply |
 | Path access restrictions | `--filesystem sandbox` | Enables the platform's filesystem access controls (below) |
 | Deny all ordinary network egress | `--overlaynet-deny-all` | Installs the platform's network boundary (below) |
 

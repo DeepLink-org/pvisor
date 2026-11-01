@@ -166,7 +166,7 @@ allow = [{ host = "api.example.com", ports = [443] }]
 deny = ["generated/private/**"]
 ```
 
-Every declared network layer and base network policy must allow the request. An omitted `default_action` denies unmatched targets; a deny-only or bandwidth-limiting policy must set `default_action = "allow"` explicitly. Any explicit deny in a layer, a port/transport restriction, or a failed resolved-address safety check rejects the request, and matching bandwidth limits from every layer all stack. Interactive approval cannot override an explicit deny or a base deny-all. File policies combine across layers as deny > ask > warn > allow; allow cannot override another layer's restrictions. File globs are relative to the staged workspace view. Policy is fixed for the Attempt; changing the file only affects later Sessions.
+Every declared network layer and base network policy must allow the request. An omitted `default_action` denies unmatched targets; a deny-only or bandwidth-limiting policy must set `default_action = "allow"` explicitly. Any explicit deny in a layer, a port/transport restriction, or a failed resolved-address safety check rejects the request, and matching bandwidth limits from every layer all stack. File policies combine across layers as deny > warn > allow; allow cannot override another layer's restrictions. File globs are relative to the staged workspace view. Policy is fixed for the Attempt; changing the file only affects later Sessions.
 
 Network layers enable an explicit cooperative proxy for host/container auto. File layers create staging if absent. VM auto stays mandatory; off stays offline.
 

@@ -125,5 +125,5 @@ pub use runtime::{
 };
 #[cfg(target_os = "linux")]
 pub use runtime::{LEASE_FILENAME, RunLease};
-pub use runtime::{audit, checkpoint, job_execution};
+pub use runtime::{checkpoint, job_execution};
 pub use util::{startup_mark, startup_mark_run, write_private_json};

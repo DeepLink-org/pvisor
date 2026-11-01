@@ -19,14 +19,14 @@ pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在�
 | `pvisor-guest` | VM 内 PID 1 与命令启动契约 |
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
 | `pvisor-daemon` | 单节点 sandbox API、持久归属、原生 VM supervisor 与 guest 协议适配 |
-| `pvisor-cli` | CLI、TUI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
+| `pvisor-cli` | CLI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
 | `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；OCI container 与可选 VM 两种执行层的生命周期、exec 与 FIFO/PTY IO |
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
 [Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `AttemptService` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
 
-core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
+core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端；嵌入调用方提供 Core 审批通道。驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway 或 replay，捕获通过 `gateway` feature 启用。
 
 ## 技术分层与资源归属 {#technical-layers}
 
@@ -121,7 +121,7 @@ stage 声明的 lower 可变性；声明缺失或 lower 已重绑定时使用 Mu
 
 | 通道 | 当前调用方与实现 | 后续收敛 |
 | --- | --- | --- |
-| Overlay 控制 | `registry.rs::RunControlServer` 使用 stage 中的 `control.sock` 链接发现私有端点；owner status 通过它查询自己，TUI 仍读取 observations，旧 inspect 挂载表与新 owner inspect 重复 | 先迁移 TUI 观测与 SDK 调用，再删除旧 inspect 分支、监听和链接发现 |
+| Overlay 控制 | `registry.rs::RunControlServer` 使用 stage 中的 `control.sock` 链接发现私有端点；owner status 通过它查询自己，旧 inspect 挂载表与新 owner inspect 重复 | 先迁移 SDK 调用，再删除旧 inspect 分支、监听和链接发现 |
 | 原生 execution capture | `job_execution.rs::Server` 保留 `execution.sock`；owner 接到 capture 后，runtime 仍通过此端点调用自己 | 改为 owner 内直接调用，保留请求回执、操作锁、冻结和 suspended head 的终态确认 |
 | 显式 VM 调试路径 | `--vm-socket` 与嵌入式 `host_vm_exchange` 使用另一套异步交换；记录发现路径使用 `LiveControlRecord::exchange_checked` | 共用有界、可取消的传输，保留 SDK 对外接口适配 |
 
@@ -158,7 +158,7 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 不自动重试。当前 `--vm-socket` 调试路径仍等待旧异步交换，Ctrl-C 不会中断
 响应等待，底层断线错误也可能缺少不确定性提示；这属于待统一的实现缺口。
 任一路径断线后都应先核对状态。检查点的局部回执不提供通用 exactly-once 交付。
-传输和进程测试不能证明 Guest 正确性或真实 VM TUI 已得到验证。
+传输和进程测试不能证明 Guest 正确性或真实 VM 终端已得到验证。
 
 ## 一条生产执行路径
 

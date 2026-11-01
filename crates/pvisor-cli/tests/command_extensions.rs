@@ -49,7 +49,7 @@ fn linked_frontend_dispatches_companions_from_the_real_installation() {
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), installation.join("pvisor")).unwrap();
     let kernel = links.join("pvisor");
     symlink(installation.join("pvisor"), &kernel).unwrap();
-    for name in ["daemon", "replay", "tui"] {
+    for name in ["daemon", "replay"] {
         let filename = format!("pvisor-{name}");
         let companion = installation.join(&filename);
         fs::write(&companion, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();
@@ -110,7 +110,7 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     let marker = temporary.path().join("executed");
-    let plugin = temporary.path().join("pvisor-tui");
+    let plugin = temporary.path().join("pvisor-replay");
     fs::write(
         &plugin,
         format!(
@@ -139,13 +139,13 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
         .next()
         .unwrap();
     assert!(
-        extensions.lines().any(|line| line.starts_with("  tui ")),
+        extensions.lines().any(|line| line.starts_with("  replay ")),
         "{help}"
     );
     assert!(!help.contains("\n  extensions "), "{help}");
     assert!(!marker.exists(), "discovery executed the extension");
     let output = Command::new(&kernel)
-        .args(["tui", "space argument", "--literal", ""])
+        .args(["replay", "space argument", "--literal", ""])
         .env("PATH", format!("{}:/bin", temporary.path().display()))
         .output()
         .unwrap();
@@ -577,7 +577,7 @@ fn explicit_default_execution_remains_available() {
 }
 
 #[test]
-fn cli_has_three_binaries_and_integrates_cache() {
+fn cli_has_two_binaries_and_integrates_cache() {
     let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
     let bins: Vec<_> = manifest["bin"]
         .as_array()
@@ -585,7 +585,7 @@ fn cli_has_three_binaries_and_integrates_cache() {
         .iter()
         .map(|bin| bin["name"].as_str().unwrap())
         .collect();
-    assert_eq!(bins, ["pvisor", "pvisor-tui", "pvisor-replay"]);
+    assert_eq!(bins, ["pvisor", "pvisor-replay"]);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .arg("cache")
         .arg("--help")
@@ -663,7 +663,7 @@ fn path_cannot_supply_companions_and_unknown_commands_are_not_discovered() {
             .unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        if name == "tui" || name == "daemon" {
+        if name == "daemon" {
             assert!(error.contains("companion is not installed"), "{error}");
         } else {
             assert!(!error.contains("was removed"), "{error}");

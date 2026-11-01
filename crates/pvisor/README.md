@@ -24,8 +24,8 @@ Cache storage and node resource protocols remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
 owns the server entry point.
 Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
-pool. TUI and replay are
-Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
+pool. Replay is a
+Job frontend, not a runtime dependency. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
 
@@ -51,8 +51,8 @@ flowchart TD
 
 With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
 RunResult + private Run Bundle + staged Effects → review/apply/drop`. Ordinary
-host Jobs without staging write through to the workspace. `--safe` and `--ask`
-retain the workspace stage in Job storage by default; `--stage PATH` selects
+host Jobs without staging write through to the workspace. `--safe`
+retains the workspace stage in Job storage by default; `--stage PATH` selects
 another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
@@ -395,8 +395,8 @@ The process-local endpoint table is only an owner cache.
 
 The runtime still retains `RunControlServer` for Overlay status/observations and
 legacy inspect, plus `execution.sock` for native capture. Owner requests can still
-call these internal sockets in their own process; the TUI uses Overlay
-observations. Consolidating them requires migrating callers and preserving
+call these internal sockets in their own process.
+Consolidating them requires migrating callers and preserving
 capture receipts/locks. See [existing channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
 
 Stopped status, review, apply, drop and inspect execute in the calling process.
@@ -1220,7 +1220,7 @@ barriers call `Persistence` through `DurableFiles` directly, while runtime JSON
 publication and Run persistence diagnostics retain their own helpers.
 
 Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
-`src/tui/`, and three entries in `src/bin/`: `pvisor`, `pvisor-tui`
+and two entries in `src/bin/`: `pvisor`
 and `pvisor-replay`. Daemon pool lifecycle belongs in
 `../pvisor-daemon/src/memory_pool.rs`; node protocols remain in `src/node.rs`
 and `src/node/`. Feature listing and cache argument

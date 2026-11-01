@@ -240,13 +240,7 @@ def collect(directory, command, runs, ready_line, timeout):
             "PVISOR_RUN_HOME": str(trial.resolve() / "runs"),
         }
         # Keep diagnostic routing and stdout under this collector's ownership.
-        for key in (
-            "PVISOR_DIAGNOSTICS_FD",
-            "PVISOR_UI_CHILD",
-            "PVISOR_UI_LOG_FILE",
-            "PVISOR_UI_STAGE_FILE",
-        ):
-            env.pop(key, None)
+        env.pop("PVISOR_DIAGNOSTICS_FD", None)
         count, ready, pending = 0, None, b""
         log = trial / "stderr.log"
         timed_out = False

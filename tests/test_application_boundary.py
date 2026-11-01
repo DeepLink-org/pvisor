@@ -56,7 +56,6 @@ class ApplicationBoundaryTests(unittest.TestCase):
         assert not {"pvisor", "pvisor-cli", "clap"} & replay["dependencies"].keys()
         assert {binary["name"] for binary in app["bin"]} == {
             "pvisor",
-            "pvisor-tui",
             "pvisor-replay",
         }
         overlay = tomllib.loads((ROOT / "crates/pvisor-overlayfs/Cargo.toml").read_text())
@@ -112,8 +111,8 @@ class ApplicationBoundaryTests(unittest.TestCase):
                         {"pvisor v0.3.0", f"{dependency} v1.0.0"}, {"pvisor-cli v0.3.0"}
                     )
 
-    def test_default_application_rejects_gateway_and_retired_tui_package(self):
-        for dependency in ["pvisor-gateway", "pvisor-tui"]:
+    def test_default_application_rejects_gateway_and_terminal_ui_dependencies(self):
+        for dependency in ["pvisor-gateway", "pvisor-tui", "ratatui", "crossterm", "vt100"]:
             with self.subTest(dependency=dependency):
                 budget = _make_budget()
                 with self.assertRaisesRegex(AssertionError, "default app closure"):
@@ -121,7 +120,7 @@ class ApplicationBoundaryTests(unittest.TestCase):
                         {"pvisor v0.3.0"}, {"pvisor-cli v0.3.0", f"{dependency} v1.0.0"}
                     )
 
-    def test_application_can_link_replay_engine_and_terminal_dependencies(self):
+    def test_application_can_link_replay_engine(self):
         budget = _make_budget()
         budget.check_boundaries(
             {"pvisor v0.3.0", "pvisor-core v0.3.0"},
@@ -129,8 +128,6 @@ class ApplicationBoundaryTests(unittest.TestCase):
                 "pvisor-cli v0.3.0",
                 "pvisor v0.3.0",
                 "pvisor-replay v0.3.0",
-                "ratatui v0.29.0",
-                "vt100 v0.15.0",
                 "unicode-width v0.2.0",
             },
         )

@@ -15,7 +15,6 @@ deny = [{ host = "169.254.0.0/16" }]
 
 [filesystem]
 deny = ["secrets/**"]
-ask = ["config/**"]
 warn = ["**/.env*"]
 ```
 
@@ -28,7 +27,7 @@ warn = ["**/.env*"]
 | Rule `transports` | `http`, `https`, `tcp_tunnel`; empty is unrestricted |
 | Rule `allow_private_ips` | Default false; hostname resolution to private/loopback addresses is denied; explicit IP/CIDR semantics in [network guide](../guides/policies/network.md) |
 | `network.limits` | `host` and `port` may be omitted; `bytes_per_second` is bytes per second; matching limits stack |
-| `filesystem.deny/ask/warn/allow` | Workspace-relative glob arrays; strictest decision; allow cannot override outer deny |
+| `filesystem.deny/warn/allow` | Workspace-relative glob arrays; strictest decision; allow cannot override outer deny |
 
 Policy files are not arbitrary trusted configuration: the directory and file must be owned by the current user, must not be group- or other-writable, and must be free of symlinks; the file must be a regular file no larger than 1 MiB. An unsafe policy blocks startup.
 
@@ -57,7 +56,6 @@ limits = [{ bytes_per_second = 1048576 }]
 
 [policies.session.filesystem]
 deny = ["secrets/**"]
-ask = ["config/**"]
 warn = ["**/.env*"]
 ```
 
@@ -69,17 +67,17 @@ The CLI reads workspace `.pvisor/policy.toml` and the user configuration directo
 
 An empty scoped `[network]` table is present and denies unmatched requests. An absent scoped network table adds no constraint for that scope. Do not interchange those two forms.
 
-For a request to pass, the base network policy and every present scoped layer must permit it. All matching bandwidth limits are applied. File decisions use the most restrictive matching outcome across scopes: deny, then ask, then warn, then allow. `filesystem.allow` can constrain the policy's ordinary matching behavior but cannot cancel an outer scope's denial. See [File policies](../guides/policies/files.md) for how `ask` is resolved by each executor.
+For a request to pass, the base network policy and every present scoped layer must permit it. All matching bandwidth limits are applied. File decisions use the most restrictive matching outcome across scopes: deny, then warn, then allow. `filesystem.allow` can constrain the policy's ordinary matching behavior but cannot cancel an outer scope's denial. See [File policies](../guides/policies/files.md).
 
 ## File rule grammar {#file-globs}
 
-The four user rule arrays are `deny`, `ask`, `warn`, and `allow`, all empty by default. Rules are case-insensitive, workspace-relative globs with literal path separators: `*` does not span a `/`; use `**` to span directories. An absolute path, NUL, empty path component, `.` component, or `..` component is invalid. Use `secrets/**`, not `/secrets/**` or `../secrets/**`.
+The supported CLI rule arrays are `deny`, `warn`, and `allow`, all empty by default. Rules are case-insensitive, workspace-relative globs with literal path separators: `*` does not span a `/`; use `**` to span directories. An absolute path, NUL, empty path component, `.` component, or `..` component is invalid. Use `secrets/**`, not `/secrets/**` or `../secrets/**`.
 
 Serialized filesystem policy records may also contain `context` and `layers`: these retain runtime binding and composed scope information. They are not additional grants to add to a normal policy file. The complete network entry fields and types are in [Configuration fields](config.md#all-fields).
 
-## Safe and audit presets {#presets}
+## Safe presets {#presets}
 
-`--safe` and `--audit` build presets after loading TOML and before applying explicit CLI overrides. Both request staging, clear configured `pass_env`, and deny these sensitive paths:
+`--safe` builds presets after loading TOML and before applying explicit CLI overrides. It requests staging, clears configured `pass_env`, and denies these sensitive paths:
 
 ```text
 **/.ssh
@@ -92,7 +90,7 @@ Serialized filesystem policy records may also contain `context` and `layers`: th
 **/id_ed25519_sk
 ```
 
-Safe warns on the following matches; audit asks instead:
+Safe warns on the following matches:
 
 ```text
 **/.env

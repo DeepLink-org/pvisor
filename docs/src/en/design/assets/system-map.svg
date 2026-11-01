@@ -7,7 +7,7 @@
 <rect x="20" y="594" width="920" height="116" fill="#12243b"/>
 <rect x="36" y="141" width="250" height="64" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
 <text x="161.0" y="167.0" font-size="17" font-weight="600" text-anchor="middle">pvisor-cli</text>
-<text x="161.0" y="191.0" font-size="14" text-anchor="middle">CLI / TUI / companions</text>
+<text x="161.0" y="191.0" font-size="14" text-anchor="middle">CLI / companions</text>
 <rect x="355" y="141" width="250" height="64" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
 <text x="480.0" y="167.0" font-size="17" font-weight="600" text-anchor="middle">Embedded application</text>
 <text x="480.0" y="191.0" font-size="14" text-anchor="middle">PVisor / Job service</text>
