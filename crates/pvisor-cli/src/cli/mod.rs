@@ -53,6 +53,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Execute a Linux command in a VM with a caller-owned rootfs (writes through).
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+    VmRun(crate::vm_run::Args),
     #[command(flatten)]
     Container(docker::DockerCommand),
     /// List runtime experiments.
@@ -139,7 +142,9 @@ fn grouped_commands(command: &clap::Command) -> String {
         ),
         (
             "Tools",
-            &["daemon", "cache", "replay", "tui", "feature", "help"],
+            &[
+                "daemon", "cache", "replay", "tui", "feature", "vm-run", "help",
+            ],
         ),
     ];
     let width = command
@@ -341,6 +346,14 @@ pub fn main() -> anyhow::Result<()> {
         }
     };
     let mut parsed = Cli::from_arg_matches(&matches)?;
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+    if let Command::VmRun(args) = parsed.command {
+        anyhow::ensure!(
+            parsed.features.is_empty(),
+            "vm-run does not accept runtime experiments"
+        );
+        return crate::vm_run::run(args);
+    }
     parsed.command = match parsed.command {
         Command::Stage(args) => Command::Spawn(Box::new(args.into_run()?)),
         command => command,
@@ -389,6 +402,8 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match parsed.command {
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        Command::VmRun(_) => unreachable!("direct VM dispatch precedes Job startup"),
         Command::Container(_) => {
             unreachable!("container commands dispatch before Job startup")
         }

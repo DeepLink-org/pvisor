@@ -1489,6 +1489,12 @@ performance, admission behavior or resource density.
 
 ## Validation
 
+`tests/cache.rs` runs the actual cache service without a VM. Its child daemons
+set `RUST_LIB_BACKTRACE=0` so cold error-backtrace symbolization does not consume
+lifecycle deadlines; panic backtraces still follow the test environment. Killing
+the cache worker must produce a nonzero daemon exit within five seconds and the
+expected worker-failure error. The test retains stderr for timeout diagnostics.
+
 `tests/user_service.rs` exercises real manager processes and authenticated Unix
 IPC without KVM or guest firmware: concurrent start convergence, read-only status,
 cross-directory discovery, explicit state precedence, immutable capabilities/modes,

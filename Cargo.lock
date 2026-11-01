@@ -3198,6 +3198,7 @@ dependencies = [
  "pvisor",
  "pvisor-core",
  "pvisor-gateway",
+ "pvisor-guest",
  "pvisor-journal",
  "pvisor-overlay-core",
  "pvisor-overlaynet",
