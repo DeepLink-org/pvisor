@@ -890,3 +890,12 @@ runtime dependencies are excluded there. Other Windows commands are rejected;
 TUI, replay, Job/container workflows and Windows packaging are not ported.
 See the [platform matrix](../../docs/src/en/reference/platforms.md) and
 [shared real-VM test driver](../../tests/vm_cli_contract.py).
+
+The Windows profile is not a replacement for the four-program Unix installation.
+Ordinary noninteractive Jobs need the full `pvisor` runtime; interactive Jobs add
+`pvisor-tui`, replay adds `pvisor-replay`, and automatic pools/shared services add
+`pvisor-daemon`. Unix companion dispatch resolves trusted adjacent executables;
+Windows currently provides no companion dispatch. `whp_smoke.exe` is a test probe,
+and the embedded `pvisor-guest` is a Linux payload, not a host companion.
+See the [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
+for exact component dependencies and the acceptance criteria for a full Windows port.

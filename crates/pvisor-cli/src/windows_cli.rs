@@ -20,3 +20,20 @@ pub fn main() -> anyhow::Result<()> {
         Command::VmRun(args) => crate::vm_run::run(args),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn direct_vm_profile_does_not_advertise_unported_workflows() {
+        assert!(
+            Cli::try_parse_from(["pvisor", "vm-run", "--rootfs", "root", "--", "/probe"]).is_ok()
+        );
+        for command in ["daemon", "tui", "replay", "spawn", "run"] {
+            let error = Cli::try_parse_from(["pvisor", command]).err().unwrap();
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand, "{command}");
+        }
+    }
+}

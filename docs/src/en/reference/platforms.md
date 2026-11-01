@@ -20,6 +20,67 @@ The `container` column describes the native Job OCI executor (`--executor contai
 
 Current wheels target Linux x86_64 and macOS arm64. Source branches do not establish released artifacts or maturity. Check `pvisor --version`, run a small task, and inspect its Bundle. See [installation](../start/installation.md).
 
+## Binary inventory: is one executable enough? {#binaries}
+
+**One `pvisor.exe` is enough as the host program for `vm-run`; it is insufficient
+for the full pVisor workflow.** Windows also needs matching `libkrunfw.dll`, a
+caller-prepared Linux rootfs and its workload. The full Linux/macOS product has
+not been merged into a single executable. Windows Daemon/TUI/replay are not
+ported. Complete Linux/macOS installations contain four host programs.
+
+| Program and owner | Responsibility and call chain | Linux x86_64 | Apple Silicon macOS | Windows x86_64 |
+| --- | --- | --- | --- | --- |
+| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Job owners; `vm-run` executes a VM directly in its process | Full CLI built and packaged | Full CLI built and packaged; VM executables need Hypervisor signing | Only `pvisor.exe` with `vm-run`, help/version is built |
+| `pvisor-tui` / `pvisor-cli` | `pvisor tui`, Job `--tui/--ask`, interactive resume; TUI launches adjacent `pvisor` and owns the PTY, terminal and review panels | Built and packaged | Built and packaged | Not ported or built; these options are absent from `vm-run` |
+| `pvisor-replay` / `pvisor-cli` | `pvisor replay` dispatch; managed replay invokes adjacent `pvisor` using existing Job/trajectory contracts | Built and packaged | Built and packaged | Not ported or built |
+| `pvisor-daemon` / separate crate | `pvisor daemon` dispatch; shared services and `--vm-memory-pool auto` discovery/startup; explicit cache/sandbox services | Built and packaged; sandbox API needs KVM/cgroup v2 | Built and packaged; cache/pool components, no sandbox API | Not ported or built; no Windows local-service contract |
+
+`pvisor-guest` is the Rust PID 1 supervisor inside Linux guests, normally embedded
+as a `pvisor-vm` payload. Cross-compiling it on Windows does not produce a host
+`pvisor-guest.exe` to install. `whp_smoke.exe` is a CI VM API probe, not a Daemon
+or product companion. `containerd-shim-pvisor-v2` serves Linux containerd
+integration, outside the common four-program installation. Firmware and Linux
+workloads cannot be replaced with Windows executables either.
+
+Choose components by the functions used:
+
+| Usage | Required host components | Current Windows conclusion |
+| --- | --- | --- |
+| Execute `vm-run` against a prepared rootfs; inspect exit status and files | `pvisor`; trusted firmware DLL on Windows | This PR's profile; no Daemon/TUI/replay required |
+| Noninteractive `spawn`, review/apply/drop | Full `pvisor` plus selected executor/drivers; ordinary Jobs need no resident Daemon | Unsupported; the runtime is absent from this executable, and companion stubs cannot supply it |
+| `spawn --tui/--ask`, `pvisor tui`, interactive resume | Full `pvisor` + `pvisor-tui` + working PTY | Unsupported |
+| `pvisor replay` | `pvisor-replay`; managed execution also needs full `pvisor` | Unsupported |
+| Automatic shared memory pool, local cache service or sandbox API | Corresponding CLI/client + `pvisor-daemon`; prerequisites vary by service | Unsupported; reaching a remote Linux daemon API does not establish a Windows local daemon port |
+
+Complete wheel/native archive builds select all four host programs. Wheel targets
+are Linux x86_64 musl and macOS arm64. Windows CI explicitly selects `--bin pvisor`
+to verify the VM CLI profile; it does not establish a complete Windows package
+or a successful all-target `cargo build -p pvisor-cli`. Keep Unix companions
+adjacent and from the same version; copying only the main binary leaves the
+corresponding commands unavailable. Source evidence:
+[binary inventory and build targets](https://github.com/DeepLink-org/pvisor/blob/main/scripts/packaging/stage_wheel_binaries.py),
+[companion discovery and trust checks](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/src/companions.rs),
+[automatic pool discovery](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/src/cli/daemon.rs).
+
+## Implementation differences and full-workflow acceptance {#implementation-parity}
+
+| Layer | Linux | macOS | Current Windows implementation/gap |
+| --- | --- | --- | --- |
+| CLI and process ownership | Full command tree, self-launched Job owners, signals and descendant cleanup | Same Job/companion structure, with macOS terminal/resource limits | Minimal command tree dispatches only into shared `vm-run`; no Job owner, control socket or Job state records |
+| Companion installation/dispatch | Adjacent discovery, Unix uid/mode checks and `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No discovery/dispatch; a full port needs `.exe` lookup, ACL trust, process startup and exit propagation contracts |
+| Terminal/interaction | PTY, terminal foreground ownership and signals | PTY and terminal restoration; separate TUI executable | Windows console/PTY lifecycle is not integrated; `vm-run` console output does not establish TUI compatibility |
+| Shared services and IPC | Unix sockets, same-user authentication, locks and readiness; sandbox also requires cgroup/KVM | Unix IPC for shared services; cache/pool supported, sandbox API unsupported | Equivalent IPC, endpoint ACLs, locks, cancellation and service cleanup are undefined; a bootable WHP guest does not validate them |
+| VM/filesystem | KVM + Unix virtio-fs; full runtime can also select overlay/network configurations | HVF + Unix virtio-fs; signing, page-size and host-permission differences | WHP + Win32 directory shares; Linux wire ABI conversion, synthetic metadata; overlay/network/snapshots remain Unsupported |
+| Delivery | Four-program product package and separate integration artifacts | Four-program product package with Hypervisor signing | Limited source/CI profile; no complete Windows wheel or four-program package |
+
+Full Windows pVisor support requires actual builds/installation of the programs,
+adjacent discovery and version/permission checks, real CLI→TUI→CLI,
+CLI→replay→CLI and CLI→Daemon calls, cancellation/deadlines/descendant cleanup,
+and readiness/failure-recovery tests for the services used. Validate Job
+JSON/Bundles, review/apply, terminal interaction and service protocols separately
+before extending the support matrix. Named stubs, `--help` checks alone, or this
+VM workload alone cannot establish those capabilities.
+
 ## Feature sets and critical paths across three platforms
 
 Windows x86_64 now has a limited source-built entry point: `pvisor vm-run`.
@@ -106,6 +167,19 @@ This is bounded correctness traffic, not long-running stability or production
 density certification. CI configuration is not a passing run: inspect actual
 results for the corresponding commit. See the [platform review record](https://github.com/DeepLink-org/pvisor/blob/main/tests/PLATFORM_REVIEW.md)
 for findings and remaining coverage.
+
+### Scope of recorded execution evidence
+
+[PR #92's first CI run](https://github.com/DeepLink-org/pvisor/actions/runs/41288456086)
+for commit `5b320104` passed Windows native MSVC builds/contracts, WHP API smoke
+and the shared CLI workload. Linux/KVM passed the shared CLI workload. macOS
+built all four product programs and passed its separate CLI tests, but the
+shared VM workload failed during HVF `VmCreate` before executing the guest.
+This is not a three-platform pass. Local Apple Silicon results (12 plus 120
+successful HVF boots) describe a different host and cannot replace that runner's
+result. That run's macOS core shard also had a replay-test timeout, so main CI
+cannot be reported green. This snapshot describes that commit only; subsequent
+commits require fresh checks.
 
 ## Single-node daemon {#daemon}
 

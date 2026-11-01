@@ -20,6 +20,62 @@
 
 发布 wheel 当前面向 Linux x86_64 与 macOS arm64；有源码分支不等于有该架构的发布 wheel 或成熟度保证。先运行 `pvisor --version` 和小任务，再核对 Bundle，安装步骤见[安装指南](../start/installation.md)。
 
+## 二进制组成：一个 exe 是否够用？ {#binaries}
+
+**只运行 `vm-run`，一个 `pvisor.exe` 足够承担宿主程序的职责；使用完整 pVisor
+工作流则不够。** Windows 还需要匹配的 `libkrunfw.dll`、调用方准备的 Linux
+rootfs 和其中的工作负载。当前没有把完整 Linux/macOS 产品合并成单 exe，也没有
+移植 Windows Daemon/TUI/replay。Linux/macOS 的完整安装包含下面四个宿主程序。
+
+| 程序与归属 | 实际职责及调用关系 | Linux x86_64 | macOS Apple Silicon | Windows x86_64 |
+| --- | --- | --- | --- | --- |
+| `pvisor` / `pvisor-cli` | 命令入口；普通 Job 拥有者由自身启动，`vm-run` 在当前进程直接运行 VM | 构建并打包完整 CLI | 构建并打包完整 CLI，VM 程序需 Hypervisor 签名 | 仅构建 `pvisor.exe` 的 `vm-run`、help/version |
+| `pvisor-tui` / `pvisor-cli` | `pvisor tui`、Job 的 `--tui/--ask` 和交互 resume；TUI 启动同目录 `pvisor`，持有 PTY、终端与审查面板 | 构建并打包 | 构建并打包 | 未移植，未构建；`vm-run` 不提供这些选项 |
+| `pvisor-replay` / `pvisor-cli` | `pvisor replay` 派发；managed replay 再调用同目录 `pvisor`，使用原有 Job/轨迹契约 | 构建并打包 | 构建并打包 | 未移植，未构建 |
+| `pvisor-daemon` / 独立 crate | `pvisor daemon` 派发；管理共享服务，`--vm-memory-pool auto` 通过它发现/启动内存池；也提供显式 cache/sandbox 服务 | 构建并打包；sandbox API 需要 KVM/cgroup v2 | 构建并打包；仅缓存/池等组件，sandbox API 不支持 | 未移植，未构建；没有 Windows 本地服务契约 |
+
+另外，`pvisor-guest` 是 Linux guest 内的 Rust PID 1 supervisor，通常作为
+`pvisor-vm` 的内嵌 payload；在 Windows 上交叉编译它，不会生成需要在宿主安装的
+`pvisor-guest.exe`。`whp_smoke.exe` 是 CI 的 VM API 探针，不是 Daemon 或产品
+companion。`containerd-shim-pvisor-v2` 属于 Linux containerd 集成，不属于共同
+四程序安装。固件和 Linux workload 也不能用 Windows 可执行文件替代。
+
+按所用功能选择组件，而不是按可执行文件数量判断支持：
+
+| 使用方式 | 所需宿主组件 | Windows 当前结论 |
+| --- | --- | --- |
+| 准备好 rootfs 后执行 `vm-run`，检查退出码与文件 | `pvisor`；Windows 另带可信固件 DLL | 本 PR 的范围；无需 Daemon/TUI/replay |
+| 非交互 `spawn`、review/apply/drop | 完整 `pvisor`、对应 executor/driver；普通 Job 不要求常驻 Daemon | 尚不支持；单 exe 中缺少该运行时，增加几个空壳 exe 不能补齐 |
+| `spawn --tui/--ask`、`pvisor tui`、交互 resume | 完整 `pvisor` + `pvisor-tui` + 可用 PTY | 尚不支持 |
+| `pvisor replay` | `pvisor-replay`；managed 路径还需要完整 `pvisor` | 尚不支持 |
+| 自动共享内存池、本地 cache 服务或 sandbox API | 对应 CLI/客户端 + `pvisor-daemon`；按服务分别满足平台条件 | 尚不支持；远端 Linux daemon 的 API 可达性不代表 Windows 本地 daemon 已移植 |
+
+当前 wheel/native archive 的完整产品构建会选择四个宿主程序，wheel 目标为 Linux
+x86_64 musl 和 macOS arm64。Windows CI 特意使用 `--bin pvisor`，验证的是 VM
+CLI profile；不能改成发布整个 Windows 安装包或声称 `cargo build -p pvisor-cli`
+全部目标通过。Unix 安装应保留四个程序的同版本、同目录关系；仅复制主程序会使
+相应 companion 命令不可用。源码依据：
+[程序清单与构建目标](https://github.com/DeepLink-org/pvisor/blob/main/scripts/packaging/stage_wheel_binaries.py)、
+[companion 查找与信任检查](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/src/companions.rs)、
+[自动池发现](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-cli/src/cli/daemon.rs)。
+
+## 实现差异与完整功能验收边界 {#implementation-parity}
+
+| 实现层 | Linux | macOS | Windows 当前实现/缺口 |
+| --- | --- | --- | --- |
+| CLI 与进程归属 | 完整命令树；Job 自身进程、信号与后代清理 | 相同 Job/companion 结构，终端和资源约束受 macOS 限制 | 独立的最小命令树，仅进入共享 `vm-run` 实现；没有 Job owner、控制 socket 或 Job 状态记录 |
+| companion 安装与调度 | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；先解析 Homebrew 入口的真实安装目录 | 没有 companion 发现/派发；为完整移植需要定义 `.exe` 查找、ACL 信任、进程启动与退出传播 |
+| 终端和交互 | PTY、终端前台归属、信号 | PTY 与终端恢复；TUI 为独立程序 | 未接入 Windows 控制台/PTY 生命周期；`vm-run` 控制台输出不是 TUI 兼容性证据 |
+| 共享服务与 IPC | Unix socket、同用户身份检查、锁与 readiness；sandbox 另有 cgroup/KVM 约束 | 共享服务仍用 Unix IPC；缓存/池可用，sandbox API 不支持 | 尚未定义等价 IPC、端点 ACL、锁、取消与服务回收语义；WHP 能启动 VM 不能证明这些已实现 |
+| VM/文件系统 | KVM + Unix virtio-fs；完整运行时还可选择 overlay/network 等配置 | HVF + Unix virtio-fs；有签名、页大小和宿主权限差异 | WHP + Win32 普通目录共享；Linux wire ABI 转换、合成元数据；overlay/network/快照等仍 Unsupported |
+| 交付 | 四程序产品包与独立集成制品 | 四程序产品包；Hypervisor 签名 | 源码/CI 的限定 profile，未提供完整 Windows wheel 或四程序产品包 |
+
+若后续要让 Windows 支撑完整 pVisor，完成标准必须包含：各程序真实构建与安装，
+同目录发现和版本/权限检查，CLI→TUI→CLI、CLI→replay→CLI、CLI→Daemon 的实际
+调用，取消/超时/子进程回收，以及所用服务的就绪/失败恢复测试。再分别验证 Job
+JSON/Bundle、review/apply、交互终端和服务协议，才可扩展支持矩阵。创建同名 stub、
+只检查 `--help`，或只通过这组 VM 负载，都不能作为上述功能通过的证据。
+
 ## 三平台的特性集合与关键路径
 
 Windows x86_64 现在有一个限定范围的源码构建入口：`pvisor vm-run`。
@@ -98,6 +154,16 @@ python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest /tmp/vm-gu
 调度/耗时。这是有界正确性负载，不是长时间稳定性或生产密度认证。CI 配置本身也
 不是通过记录，必须以对应提交的真实运行结果为准。代码审查和待补覆盖见
 [平台审查记录](https://github.com/DeepLink-org/pvisor/blob/main/tests/PLATFORM_REVIEW.md)。
+
+### 已有运行结果的范围
+
+[PR #92 的首轮 CI](https://github.com/DeepLink-org/pvisor/actions/runs/41288456086)
+对应提交 `5b320104`：Windows MSVC 原生构建/契约、WHP API smoke 和共同 CLI
+负载均通过；Linux/KVM 的共同 CLI 负载通过。macOS 的四程序产品构建和独立 CLI
+测试通过，但共同 VM 负载在 HVF `VmCreate` 阶段失败，尚未执行 guest；它不能被
+记录为三平台全部通过。本机 Apple Silicon 的 12 次加 120 次 HVF 启动通过，只是
+另一台宿主的证据，不能替代该 runner。该轮 macOS core shard 另有 replay 测试
+超时，主 CI 不能据此视为绿色。以上是该提交的结果快照，后续提交需重新检查。
 
 ## 单机 daemon {#daemon}
 
