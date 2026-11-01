@@ -220,3 +220,8 @@ python3 benchmark/docs.py publish "$batch"
 2026-10-18 撤下的无引用 SVG 原字节保存在 `.data/docs-assets-cleanup-20261018/`，
 可提交的路径、大小和 SHA-256 索引见 [清理清单](evidence/docs-assets-cleanup-20261018.json)。
 清单只覆盖这次公开图表清理，不表示其他历史原始批次已在当前 checkout 核验或完整保留。
+
+Model-free, single-task SWE command replay with optional AgentENV transport is
+documented in [replay/README.md](replay/README.md). It is engineering tooling
+under B-SWE-RESIDENT-ENG, separate from the B-REPLAY preparation benchmark;
+no historical measurement or publication binding is changed.
