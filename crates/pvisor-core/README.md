@@ -37,6 +37,12 @@ identifies local image revisions with `handle` / `manifest_digest`; node image/R
 ownership and snapshot implementation belong to `pvisor`. The separate
 `pvisor-daemon` owns node-local sandbox admission and lifecycle.
 
+Cgroup observation directories use Linux path syntax even when validated on a
+Windows host. Snapshot stores and live RAM backing files instead use the local
+host's absolute-path rules. Attempt-bound file-policy preparation is portable;
+after arming (or deserialization), Ask rules still fail closed without an
+available approval transport.
+
 ```sh
 mise run test -- core
 ```

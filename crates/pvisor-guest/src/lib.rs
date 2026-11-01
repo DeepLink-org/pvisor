@@ -5,10 +5,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const CONFIG_PATH: &str = "/.pvisor-guest.json";
+
+// Launch paths belong to the Linux guest, not the host validating the message.
+fn guest_absolute(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().starts_with(b"/")
+}
+
+fn guest_components(path: &Path) -> impl Iterator<Item = &[u8]> {
+    path.as_os_str()
+        .as_encoded_bytes()
+        .split(|byte| *byte == b'/')
+        .filter(|part| !part.is_empty() && *part != b".")
+}
+
+fn guest_mount_target(path: &Path) -> bool {
+    guest_absolute(path)
+        && guest_components(path).next().is_some()
+        && !guest_components(path).any(|part| part == b"..")
+}
+
+fn guest_path_starts_with(path: &Path, prefix: &Path) -> bool {
+    let mut parts = guest_components(path);
+    guest_components(prefix).all(|part| parts.next() == Some(part))
+}
 
 /// Private guest RAM filesystem created before launching the workload.
 /// The path must be a fresh absolute directory with an existing parent.
@@ -187,7 +210,8 @@ impl GuestConfig {
         if self.argv.first().is_none_or(|program| program.is_empty()) {
             return Err(invalid("guest argv needs a program"));
         }
-        if !self.cwd.is_absolute() || self.workspace.as_ref().is_some_and(|p| !p.is_absolute()) {
+        if !guest_absolute(&self.cwd) || self.workspace.as_ref().is_some_and(|p| !guest_absolute(p))
+        {
             return Err(invalid("guest paths must be absolute"));
         }
         for path in std::iter::once(&self.cwd).chain(self.workspace.iter()) {
@@ -205,7 +229,7 @@ impl GuestConfig {
             if sidecar.argv.first().is_none_or(|p| p.is_empty()) {
                 return Err(invalid("guest sidecar argv needs a program"));
             }
-            if !sidecar.log.is_absolute() {
+            if !guest_absolute(&sidecar.log) {
                 return Err(invalid("guest sidecar log must be absolute"));
             }
             CString::new(sidecar.log.as_os_str().as_encoded_bytes())
@@ -265,15 +289,7 @@ impl GuestConfig {
             ));
         }
         for mount in &self.mounts {
-            if !mount.target.is_absolute()
-                || mount.target.parent().is_none()
-                || mount.target.components().any(|component| {
-                    !matches!(
-                        component,
-                        std::path::Component::RootDir | std::path::Component::Normal(_)
-                    )
-                })
-            {
+            if !guest_mount_target(&mount.target) {
                 return Err(invalid("invalid guest mount target"));
             }
             CString::new(mount.target.as_os_str().as_encoded_bytes())
@@ -283,16 +299,10 @@ impl GuestConfig {
         }
         if let Some(scratch) = &self.temporary_filesystem {
             if scratch.size_bytes == 0
-                || !scratch.path.is_absolute()
-                || scratch.path.parent().is_none()
-                || scratch.path.components().any(|component| {
-                    !matches!(
-                        component,
-                        std::path::Component::RootDir | std::path::Component::Normal(_)
-                    )
-                })
+                || !guest_mount_target(&scratch.path)
                 || self.workspace.as_ref().is_some_and(|workspace| {
-                    scratch.path.starts_with(workspace) || workspace.starts_with(&scratch.path)
+                    guest_path_starts_with(&scratch.path, workspace)
+                        || guest_path_starts_with(workspace, &scratch.path)
                 })
             {
                 return Err(invalid("invalid guest temporary filesystem"));
@@ -317,15 +327,15 @@ impl GuestConfig {
         if self
             .payloads_dir
             .as_ref()
-            .is_some_and(|dir| !dir.is_absolute())
+            .is_some_and(|dir| !guest_absolute(dir))
         {
             return Err(invalid("guest payloads mount must be absolute"));
         }
         if self.shares.iter().any(|share| {
             share.tag.is_empty()
                 || share.tag.contains('\0')
-                || !share.path.is_absolute()
-                || share.path == std::path::Path::new("/")
+                || !guest_absolute(&share.path)
+                || guest_components(&share.path).next().is_none()
                 || CString::new(share.path.as_os_str().as_encoded_bytes()).is_err()
         }) || self
             .shares
@@ -368,6 +378,47 @@ impl GuestConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_paths_use_linux_syntax_on_every_host() {
+        let mut config: GuestConfig = serde_json::from_str(
+            r#"{"argv":["/bin/true"],"env":{},"cwd":"/work","workspace":"/work"}"#,
+        )
+        .unwrap();
+        assert!(config.command().is_ok());
+        for path in ["relative", r"C:\work", r"\\server\share", r"\work"] {
+            config.cwd = path.into();
+            assert!(config.command().is_err(), "accepted host cwd {path:?}");
+        }
+        config.cwd = "/work".into();
+        config.temporary_filesystem = Some(TemporaryFilesystem {
+            path: "/worker/tmp".into(),
+            size_bytes: 4096,
+        });
+        assert!(
+            config.command().is_ok(),
+            "component prefixes must not overlap"
+        );
+        for path in ["/work/tmp", "//work/./tmp", "/work/../tmp", "/"] {
+            config.temporary_filesystem.as_mut().unwrap().path = path.into();
+            assert!(config.command().is_err(), "accepted scratch {path:?}");
+        }
+        // A backslash is a normal Linux filename byte, not a path separator.
+        config.temporary_filesystem.as_mut().unwrap().path = r"/work\tmp".into();
+        assert!(config.command().is_ok());
+        config.payloads_dir = Some("/payloads".into());
+        config.shares.push(GuestShare {
+            tag: "data".into(),
+            path: "/data".into(),
+            read_only: true,
+        });
+        assert!(config.command().is_ok());
+        config.payloads_dir = Some(r"C:\payloads".into());
+        assert!(config.command().is_err());
+        config.payloads_dir = None;
+        config.shares[0].path = r"C:\data".into();
+        assert!(config.command().is_err());
+    }
 
     #[test]
     fn shared_process_options_preserve_old_defaults_and_validate_before_launch() {
@@ -517,17 +568,32 @@ mod tests {
                 "test -z \"${HOME+x}\" || exit 41; printf '%s' \"$COMPLEX\"; exit 7".into(),
             ],
             env: BTreeMap::from([("COMPLEX".into(), "space ' quote \"\nnewline".into())]),
-            cwd: std::env::temp_dir(),
+            cwd: "/".into(),
             ..Default::default()
         };
         let bytes = serde_json::to_vec(&config).unwrap();
         let mut decoded: GuestConfig = serde_json::from_slice(&bytes).unwrap();
-        let output = decoded.command().unwrap().output().unwrap();
-        assert_eq!(output.status.code(), Some(7));
+        let command = decoded.command().unwrap();
+        assert_eq!(command.get_current_dir(), Some(Path::new("/")));
+        assert_eq!(command.get_program(), "/bin/sh");
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            config.env["COMPLEX"]
+            command.get_args().collect::<Vec<_>>(),
+            config.argv[1..]
+                .iter()
+                .map(std::ffi::OsStr::new)
+                .collect::<Vec<_>>()
         );
+        // The wire contract is validated on every host; executing /bin/sh is Unix-only.
+        #[cfg(unix)]
+        {
+            let mut command = command;
+            let output = command.output().unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                config.env["COMPLEX"]
+            );
+        }
         decoded.argv.push("bad\0argument".into());
         assert!(decoded.command().is_err());
         decoded.argv.clear();

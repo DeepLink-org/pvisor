@@ -415,6 +415,10 @@ impl FileAccessPolicy {
                 Err(io::ErrorKind::PermissionDenied.into())
             }
             FileAccessDecision::Ask => {
+                if self.binding.context.is_some() && self.binding.preparing.load(Ordering::Acquire)
+                {
+                    return Ok(());
+                }
                 #[cfg(unix)]
                 {
                     let prompt = crate::audit::AuditRequest {
@@ -436,9 +440,6 @@ impl FileAccessPolicy {
                         transport: None,
                     };
                     let decision = if let Some(context) = &self.binding.context {
-                        if self.binding.preparing.load(Ordering::Acquire) {
-                            return Ok(());
-                        }
                         let Some(socket) = &context.audit_socket else {
                             return Err(io::ErrorKind::PermissionDenied.into());
                         };

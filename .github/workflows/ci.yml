@@ -19,6 +19,10 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  windows:
+    name: Windows
+    uses: ./.github/workflows/windows-vm.yml
+
   checks:
     name: Format, Clippy, and workflows
     runs-on: ubuntu-latest
@@ -511,7 +515,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, semspec]
+    needs: [checks, python, firmware, native-components, rust-test, cli-test, podman-contracts, gateway-features, pvisor-isolation-regression, examples, semspec, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

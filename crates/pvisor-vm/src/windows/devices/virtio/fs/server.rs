@@ -1203,6 +1203,29 @@ impl<F: FileSystem + Sync> Server<F> {
         Ok(0)
     }
 
+    fn request_guest_exit(
+        &self,
+        pid: u32,
+        uid: u32,
+        cmd: u32,
+        bytes: &[u8],
+        exit_code: &AtomicI32,
+    ) -> io::Result<Vec<u8>> {
+        // Match the Unix server: only negotiated idmap permits omitted UID.
+        // GuestExit still requires kernel PID 1 and a valid one-use token.
+        let uid = if uid == u32::MAX
+            && self.options.load(Ordering::Relaxed) & FsOptions::ALLOW_IDMAP.bits() != 0
+        {
+            0
+        } else {
+            uid
+        };
+        self.guest_exit
+            .lock()
+            .unwrap()
+            .request(pid, uid, cmd, bytes, exit_code)
+    }
+
     fn ioctl(
         &self,
         in_header: InHeader,
@@ -1237,10 +1260,9 @@ impl<F: FileSystem + Sync> Server<F> {
                 r.read_exact(&mut bytes[..in_size as usize])?;
                 // Negotiated idmapped FUSE omits credentials after guest VFS
                 // authorization. PID is still kernel-provided and must be 1.
-                let uid = in_header.uid;
-                self.guest_exit.lock().unwrap().request(
+                self.request_guest_exit(
                     in_header.pid,
-                    uid,
+                    in_header.uid,
                     cmd,
                     &bytes[..in_size as usize],
                     exit_code,
@@ -1720,4 +1742,42 @@ fn get_extensions(options: FsOptions, skip: usize, request_bytes: &[u8]) -> Resu
     }
 
     Ok(extensions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pvisor_guest::exit_status::{report, CLAIM_IOCTL, REPORT_IOCTL};
+
+    struct NullFs;
+    impl FileSystem for NullFs {
+        type Inode = u64;
+        type Handle = u64;
+    }
+
+    #[test]
+    fn omitted_exit_uid_requires_negotiated_idmap_and_pid1_token() {
+        let root = Server::new(NullFs, true);
+        let status = AtomicI32::new(i32::MAX);
+        let claim = |pid, uid| root.request_guest_exit(pid, uid, CLAIM_IOCTL, &[], &status);
+        assert!(claim(1, u32::MAX).is_err());
+        root.options
+            .store(FsOptions::ALLOW_IDMAP.bits(), Ordering::Relaxed);
+        assert!(claim(2, u32::MAX).is_err());
+        assert!(claim(1, 1000).is_err());
+        let token = claim(1, u32::MAX).unwrap().try_into().unwrap();
+        assert!(claim(1, u32::MAX).is_err());
+        let body = report(&token, 7).unwrap();
+        let submit = |pid, uid, body: &[u8]| {
+            root.request_guest_exit(pid, uid, REPORT_IOCTL, body, &status)
+        };
+        assert!(submit(2, u32::MAX, &body).is_err());
+        let mut forged = body;
+        forged[0] ^= 1;
+        assert!(submit(1, u32::MAX, &forged).is_err());
+        assert_eq!(status.load(Ordering::SeqCst), i32::MAX);
+        submit(1, u32::MAX, &body).unwrap();
+        assert_eq!(status.load(Ordering::SeqCst), 7);
+        assert!(submit(1, u32::MAX, &body).is_err());
+    }
 }
