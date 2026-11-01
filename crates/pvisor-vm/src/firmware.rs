@@ -6,8 +6,6 @@ use std::{io, path::Path};
 #[derive(Default)]
 pub(crate) struct KernelOwner {
     mapping: Option<Mapping>,
-    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
-    copy_source: Option<std::sync::Arc<[u8]>>,
     #[cfg(not(target_env = "musl"))]
     library: Option<libloading::Library>,
 }
@@ -32,20 +30,6 @@ impl Drop for Mapping {
 #[cfg(windows)]
 struct Mapping(vm_memory::MmapRegion<()>);
 impl KernelOwner {
-    /// Retain immutable bytes only for a loader that copies into separate RAM.
-    /// Unlike `embedded`, this allocation must never be mapped as writable guest RAM.
-    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
-    pub(crate) fn copy_source(&mut self, image: crate::api::KernelImage) -> KernelBundle {
-        let bundle = KernelBundle {
-            host_addr: image.bytes.as_ptr() as u64,
-            guest_addr: image.guest_address,
-            entry_addr: image.entry_address,
-            size: image.bytes.len(),
-        };
-        self.copy_source = Some(image.bytes);
-        bundle
-    }
-
     pub(crate) fn embedded(
         &mut self,
         bytes: &[u8],
