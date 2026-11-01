@@ -870,32 +870,31 @@ before its output fails; inspect the catalog before retrying a mutation.
 ## Direct VM execution on Linux, macOS and Windows
 
 `pvisor vm-run --rootfs ROOT --cpus 2 --memory 256 --readonly FIXTURES -- /probe`
-boots a caller-owned Linux rootfs using KVM (Linux x86_64), HVF (Apple Silicon)
-or WHP (Windows x86_64). Use an absolute guest executable. `--firmware LIBRARY`
-selects a trusted host-loadable firmware library; omission requires an embedded
-kernel. Windows currently requires the explicit DLL. A static Linux executable
-in an otherwise empty rootfs is sufficient; dynamic programs need their guest
-loader/libraries too. No OCI image extraction is performed by this command.
+executes a Linux command through KVM (Linux x86_64), HVF (Apple Silicon) or WHP
+(Windows x86_64). Rootfs writes persist directly. It creates no Job, Bundle or
+stage and has no networking, interactive stdin, task stdio ports, live control
+or snapshots.
 
-Rootfs writes persist directly. This profile creates no Job/Bundle/stage and
-provides no network, interactive stdin, task stdio ports, live control or snapshot
-options. The optional read-only directory mounts at `/readonly`; it must not
-overlap rootfs. Callers own rootfs exclusivity and external command deadlines.
-Output uses the VM console; guest exit codes propagate. Setup/runtime errors
-return 1, argument errors 2, unauthenticated/abnormal guest termination 125.
+Use an absolute guest executable. A static Linux program can run in an otherwise
+empty rootfs; dynamic programs need their guest loader and libraries. The caller
+prepares the rootfs, keeps exclusive ownership and enforces command deadlines.
+The command does not extract OCI images. `--firmware LIBRARY` selects trusted
+host-loadable firmware; omission requires an embedded kernel. Windows needs the
+explicit DLL. The optional read-only share mounts at `/readonly` and must not
+overlap rootfs.
 
-Windows source builds select `cargo build --locked -p pvisor-cli --bin pvisor`;
-parser tests select `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix-only
-runtime dependencies are excluded there. Other Windows commands are rejected;
-TUI, replay, Job/container workflows and Windows packaging are not ported.
-See the [platform matrix](../../docs/src/en/reference/platforms.md) and
-[shared real-VM test driver](../../tests/vm_cli_contract.py).
+Output uses the VM console. Workload exit codes propagate; setup/runtime errors
+return 1, argument errors 2, and unauthenticated/abnormal guest termination 125.
+Windows builds use `cargo build --locked -p pvisor-cli --bin pvisor`; parser tests
+use `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix runtime dependencies
+are excluded, and other Windows commands are rejected.
 
-The Windows profile is not a replacement for the four-program Unix installation.
-Ordinary noninteractive Jobs need the full `pvisor` runtime; interactive Jobs add
-`pvisor-tui`, replay adds `pvisor-replay`, and automatic pools/shared services add
-`pvisor-daemon`. Unix companion dispatch resolves trusted adjacent executables;
-Windows currently provides no companion dispatch. `whp_smoke.exe` is a test probe,
-and the embedded `pvisor-guest` is a Linux payload, not a host companion.
-See the [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
-for exact component dependencies and the acceptance criteria for a full Windows port.
+Full Unix installations also include `pvisor-tui` for interaction,
+`pvisor-replay` for replay and `pvisor-daemon` for automatic pools/shared services.
+Companion dispatch checks trusted adjacent executables. These components,
+Job/container workflows and Windows packaging remain unported. `whp_smoke.exe`
+is a test probe; embedded `pvisor-guest` runs inside Linux guests.
+
+See the [platform matrix](../../docs/src/en/reference/platforms.md),
+[binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
+and [shared real-VM test driver](../../tests/vm_cli_contract.py).

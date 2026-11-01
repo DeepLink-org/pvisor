@@ -1721,14 +1721,14 @@ FUSE and permitted user/mount namespaces; run it explicitly on a suitable host.
 
 ## Shared CLI VM contracts and Windows directory rename
 
-`tests/vm_cli_contract.py` drives `pvisor vm-run` through the same static Linux
-workload on KVM, HVF and WHP. Windows CI builds the actual CLI binary in addition
-to the existing WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
-for feature scope, inputs and evidence limits.
+Windows directory rename now updates cached paths for the directory and all
+known descendants, retaining inode IDs and lookup counts. Previously, cached
+children kept obsolete paths and could fail getattr/open after a move. A native
+regression checks nested inodes and a no-op rename; the shared guest workload
+checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
+remain unverified.
 
-Windows directory rename updates cached paths for the directory and all known
-descendants while retaining inode IDs and lookup counts. Previously only the
-directory moved, so getattr/open on cached descendants could use obsolete paths.
-A private native regression checks nested cached inodes and a no-op rename; the
-shared guest workload checks the externally visible directory move. This does
-not establish full POSIX rename/open-unlinked semantics on Windows.
+`tests/vm_cli_contract.py` drives `pvisor vm-run` with the same static Linux
+workload on KVM, HVF and WHP. Windows CI builds the CLI and retains the existing
+WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
+for supported features, inputs and results.
