@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 mod build;
+mod builder;
 mod network;
 mod progress;
 
@@ -27,6 +28,8 @@ impl DockerCommand {
 pub(super) enum DockerCommand {
     /// Build a local Dockerfile using VM-isolated RUN instructions.
     Build(build::Build),
+    /// Manage local build cache.
+    Builder(builder::BuilderArgs),
     /// Create and run a new container in its own VM.
     Run(Box<Run>),
     /// Manage container networks.
@@ -318,9 +321,14 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Network(args) = command {
         return network::run(args);
     }
+    if let DockerCommand::Builder(args) = command {
+        return builder::run(args);
+    }
     let store = Store::discover()?;
     match command {
-        DockerCommand::Build(_) | DockerCommand::Network(_) => unreachable!(),
+        DockerCommand::Build(_) | DockerCommand::Builder(_) | DockerCommand::Network(_) => {
+            unreachable!()
+        }
         DockerCommand::Pull { image, platform } => {
             let image = {
                 let mut display = progress::PullDisplay::new(&image);

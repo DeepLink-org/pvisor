@@ -23,6 +23,16 @@ bootstrap, terminal/rendering code and companion discovery.
 Cache storage and node resource protocols remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
 owns the server entry point.
+Dockerfile builds have a separate, user-private RUN checkpoint cache under
+`PVISOR_DOCKER_HOME/build-cache-v1`. Its identity includes the native base digest,
+instruction prefix, in-scope arguments, selected COPY inputs, execution settings,
+and preceding RUN output digests. Successful checkpoints are sealed OCI layers;
+metadata-only publication reuses the sealed filesystem. Build-wide shared leases
+and per-key exclusive locks coordinate concurrent builds with `builder prune`.
+Pruning takes an exclusive lease, waits for builds, and never removes published
+image pool data. This is not the distributed `pvisor cache` service. See the
+[build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
+for invalidation, cleanup controls and compatibility limits.
 Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Job frontend, not a runtime dependency. Cross-node placement and distributed scheduling

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func buildFile(t *testing.T, path, content string) {
@@ -27,6 +28,184 @@ func buildContext(t *testing.T, e *engine, body string) string {
 	dir := t.TempDir()
 	buildFile(t, filepath.Join(dir, "Dockerfile"), "FROM "+e.image+"\n"+body)
 	return dir
+}
+
+// Extends Podman's cache/no-cache scenarios with nondeterministic RUN output:
+// equal bytes prove reuse, rather than merely trusting the "Using cache" log.
+func TestBuildRunCacheLifecycle(t *testing.T) {
+	e := newEngine(t)
+	body := "RUN echo executed-first; cat /proc/sys/kernel/random/uuid > /first\nCOPY payload /payload\nRUN echo executed-second; cat /proc/sys/kernel/random/uuid > /second\nCMD [\"/bin/cat\",\"/first\",\"/second\",\"/payload\"]\n"
+	dir := buildContext(t, e, body)
+	buildFile(t, filepath.Join(dir, "payload"), "one\n")
+	build := func(hits int, flags ...string) string {
+		t.Helper()
+		args := append([]string{"build", "--network=none", "-t", e.name}, flags...)
+		start := time.Now()
+		out, logs := e.want(0, "", append(args, dir)...)
+		t.Logf("build hits=%d flags=%v elapsed=%s", hits, flags, time.Since(start))
+		if got := strings.Count(logs, "Using cache"); got != hits {
+			t.Fatalf("cache hits=%d, want %d\n%s%s", got, hits, out, logs)
+		}
+		result, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name)
+		return result
+	}
+	first := build(0)
+	if again := build(2); again != first {
+		t.Fatalf("warm build reran RUN: first=%q second=%q", first, again)
+	}
+	buildFile(t, filepath.Join(dir, "unrelated"), "does not affect COPY")
+	if again := build(2); again != first {
+		t.Fatalf("unrelated file invalidated RUN: %q", again)
+	}
+	buildFile(t, filepath.Join(dir, "payload"), "two\n")
+	changed := build(1)
+	a, b := strings.Split(first, "\n"), strings.Split(changed, "\n")
+	if a[0] != b[0] || a[1] == b[1] || b[2] != "two" {
+		t.Fatalf("COPY invalidation did not preserve prefix: %q -> %q", first, changed)
+	}
+	fresh := build(0, "--no-cache")
+	if fresh == changed {
+		t.Fatal("--no-cache did not execute RUN")
+	}
+	if again := build(2); again != fresh {
+		t.Fatalf("--no-cache did not refresh checkpoints: %q -> %q", fresh, again)
+	}
+	// Age/storage filters must leave this newly used cache intact.
+	e.want(0, "", "builder", "prune", "-af", "--filter", "until=24h")
+	if again := build(2); again != fresh {
+		t.Fatal("age-filtered prune removed fresh cache")
+	}
+	e.want(0, "", "builder", "prune", "-af", "--keep-storage", "100GB")
+	build(2)
+	e.want(1, "", "builder", "prune") // noninteractive requires explicit force
+	e.want(1, "", "builder", "prune", "-f", "--filter", "unsupported=true")
+	e.want(0, "", "builder", "prune", "-af")
+	retained, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name)
+	if retained != fresh {
+		t.Fatalf("cache GC damaged published image: %q", retained)
+	}
+	if afterGC := build(0); afterGC == fresh {
+		t.Fatal("prune did not force RUN execution")
+	}
+}
+
+// Default prune retains the final checkpoint but can remove its parent. The
+// freshly executed parent's *output* must participate in the downstream key.
+func TestBuildRunCacheMissingParentCheckpoint(t *testing.T) {
+	e := newEngine(t)
+	dir := buildContext(t, e, "RUN cat /proc/sys/kernel/random/uuid > /first\nRUN cp /first /second\n")
+	e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	before, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/first", "/second")
+	out, _ := e.want(0, "", "builder", "prune", "-f")
+	if !strings.Contains(out, "Deleted build cache records: 1\n") {
+		t.Fatalf("default prune did not retain published checkpoint: %s", out)
+	}
+	_, logs := e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	if strings.Contains(logs, "Using cache") {
+		t.Fatalf("new parent reused old downstream output: %s", logs)
+	}
+	after, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/first", "/second")
+	parts := strings.Split(strings.TrimSpace(after), "\n")
+	if before == after || len(parts) != 2 || parts[0] != parts[1] {
+		t.Fatalf("parent/output mismatch: before=%q after=%q", before, after)
+	}
+}
+
+func TestBuildRunCacheConcurrentBuilders(t *testing.T) {
+	e := newEngine(t)
+	dir := buildContext(t, e, "RUN cat /proc/sys/kernel/random/uuid > /token\n")
+	type result struct {
+		code      int
+		out, logs string
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			code, out, logs := e.call("", "build", "-q", "--network=none", "-t", e.name, dir)
+			results <- result{code, out, logs}
+		}()
+	}
+	a, b := <-results, <-results
+	if a.code != 0 || b.code != 0 || a.out != b.out {
+		t.Fatalf("identical concurrent builders did not share a RUN: %+v %+v", a, b)
+	}
+	out, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/token")
+	if len(strings.TrimSpace(out)) != 36 {
+		t.Fatalf("concurrent publication lost RUN output: %q", out)
+	}
+}
+
+func TestBuildRunCacheMultistageAndBaseReplacement(t *testing.T) {
+	e := newEngine(t)
+	dir := buildContext(t, e, "")
+	definition := "FROM " + e.image + " AS source\nRUN cat /proc/sys/kernel/random/uuid > /artifact\nFROM " + e.image + "\nCOPY --from=source /artifact /artifact\nRUN cp /artifact /copied\n"
+	buildFile(t, filepath.Join(dir, "Dockerfile"), definition)
+	e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	before, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/artifact", "/copied")
+	_, logs := e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	if strings.Count(logs, "Using cache") != 2 {
+		t.Fatalf("multistage cache not reused: %s", logs)
+	}
+	after, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/artifact", "/copied")
+	if before != after {
+		t.Fatalf("cached COPY --from changed: %q -> %q", before, after)
+	}
+	base := e.name + ":base"
+	_, logs = e.want(0, "", "build", "--network=none", "--target", "source", "-t", base, dir)
+	if strings.Count(logs, "Using cache") != 1 || strings.Contains(logs, "RUN cp") {
+		t.Fatalf("cached target executed later stage: %s", logs)
+	}
+	consumer := t.TempDir()
+	buildFile(t, filepath.Join(consumer, "Dockerfile"), "FROM "+base+"\nRUN cp /artifact /copied\n")
+	e.want(0, "", "build", "--network=none", "-t", e.name, consumer)
+	_, logs = e.want(0, "", "build", "--network=none", "-t", e.name, consumer)
+	if strings.Count(logs, "Using cache") != 1 {
+		t.Fatalf("local-base cache not reused: %s", logs)
+	}
+	e.want(0, "", "build", "--network=none", "--no-cache", "--target", "source", "-t", base, dir)
+	_, logs = e.want(0, "", "build", "--network=none", "-t", e.name, consumer)
+	if strings.Contains(logs, "Using cache") {
+		t.Fatalf("replaced base tag reused old RUN: %s", logs)
+	}
+	after, _ = e.want(0, "", "run", "--rm", "--name", e.name, e.name, "cat", "/artifact", "/copied")
+	parts := strings.Split(strings.TrimSpace(after), "\n")
+	if before == after || len(parts) != 2 || parts[0] != parts[1] {
+		t.Fatalf("base replacement not reflected in RUN: %q -> %q", before, after)
+	}
+}
+
+func TestBuildRunCacheArgumentsAndFailedSteps(t *testing.T) {
+	e := newEngine(t)
+	dir := buildContext(t, e, "ARG VERSION=one\nRUN echo executed; echo $VERSION > /version; cat /proc/sys/kernel/random/uuid > /token\nCMD [\"cat\",\"/version\",\"/token\"]\n")
+	_, logs := e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	if strings.Contains(logs, "Using cache") {
+		t.Fatal("first build unexpectedly cached")
+	}
+	_, logs = e.want(0, "", "build", "--network=none", "-t", e.name, dir)
+	if strings.Count(logs, "Using cache") != 1 {
+		t.Fatalf("unchanged ARG not cached: %s", logs)
+	}
+	_, logs = e.want(0, "", "build", "--network=none", "--build-arg", "VERSION=two", "-t", e.name, dir)
+	if strings.Contains(logs, "Using cache") {
+		t.Fatal("changed build argument reused stale RUN")
+	}
+	out, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name)
+	if !strings.HasPrefix(out, "two\n") {
+		t.Fatalf("argument result: %q", out)
+	}
+	// A later definition edit must preserve the successful prefix; failed RUNs
+	// must execute on each attempt and cannot replace the already published tag.
+	buildFile(t, filepath.Join(dir, "Dockerfile"), "FROM "+e.image+"\nARG VERSION=one\nRUN echo executed; echo $VERSION > /version; cat /proc/sys/kernel/random/uuid > /token\nRUN echo failed-step; exit 7\n")
+	for i := 0; i < 2; i++ {
+		_, logs = e.want(1, "", "build", "--network=none", "--build-arg", "VERSION=two", "-t", e.name, dir)
+		if strings.Count(logs, "Using cache") != 1 || !strings.Contains(logs, "failed-step\n") {
+			t.Fatalf("failure cache behavior: %s", logs)
+		}
+	}
+	retained, _ := e.want(0, "", "run", "--rm", "--name", e.name, e.name)
+	if retained != out {
+		t.Fatalf("failed build replaced prior tag: %q -> %q", out, retained)
+	}
 }
 
 // Source: build_test.go, basic alpine; 070-build.bats, basic build.
