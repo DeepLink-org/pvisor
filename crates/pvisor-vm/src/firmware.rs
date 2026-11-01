@@ -9,13 +9,16 @@ pub(crate) struct KernelOwner {
     #[cfg(not(target_env = "musl"))]
     library: Option<libloading::Library>,
 }
+#[cfg(unix)]
 struct Mapping {
     address: *mut libc::c_void,
     size: usize,
 }
 // SAFETY: only the owner releases this allocation; moving it cannot invalidate
 // the address, and writes occur solely through the running VM after installation.
+#[cfg(unix)]
 unsafe impl Send for Mapping {}
+#[cfg(unix)]
 impl Drop for Mapping {
     fn drop(&mut self) {
         // SAFETY: mmap allocated this exact address and length.
@@ -24,6 +27,8 @@ impl Drop for Mapping {
         }
     }
 }
+#[cfg(windows)]
+struct Mapping(vm_memory::MmapRegion<()>);
 impl KernelOwner {
     pub(crate) fn embedded(
         &mut self,
@@ -37,40 +42,60 @@ impl KernelOwner {
                 "empty guest kernel",
             ));
         }
-        // SAFETY: sysconf takes a constant selector and no pointers.
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        if page <= 0 || !(page as usize).is_power_of_two() {
-            return Err(io::Error::other("invalid host page size"));
-        }
-        let page = page as usize;
-        let size = bytes
-            .len()
-            .checked_add(page - 1)
-            .ok_or_else(|| io::Error::other("kernel size overflow"))?
-            & !(page - 1);
-        // SAFETY: new anonymous private allocation; no borrowed host pointer.
-        let address = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        if address == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        {
-            let mut span = crate::startup_profile::Span::new("kernel_owner_copy", "runner");
-            // SAFETY: the mapping is writable and at least bytes.len() bytes long.
+        #[cfg(windows)]
+        let address = {
+            let size = bytes
+                .len()
+                .checked_add(4095)
+                .ok_or_else(|| io::Error::other("kernel size overflow"))?
+                & !4095;
+            let mapping = vm_memory::MmapRegion::new(size)?;
+            let address = mapping.as_ptr();
+            // SAFETY: new private allocation, at least bytes.len() bytes long.
             unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast(), bytes.len());
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), address, bytes.len());
             }
-            span.complete(Some(bytes.len()));
-        }
-        self.mapping = Some(Mapping { address, size });
+            self.mapping = Some(Mapping(mapping));
+            address
+        };
+        #[cfg(unix)]
+        let address = {
+            // SAFETY: sysconf takes a constant selector and no pointers.
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            if page <= 0 || !(page as usize).is_power_of_two() {
+                return Err(io::Error::other("invalid host page size"));
+            }
+            let page = page as usize;
+            let size = bytes
+                .len()
+                .checked_add(page - 1)
+                .ok_or_else(|| io::Error::other("kernel size overflow"))?
+                & !(page - 1);
+            // SAFETY: new anonymous private allocation; no borrowed host pointer.
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if address == libc::MAP_FAILED {
+                return Err(io::Error::last_os_error());
+            }
+            {
+                let mut span = crate::startup_profile::Span::new("kernel_owner_copy", "runner");
+                // SAFETY: the mapping is writable and at least bytes.len() bytes long.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast(), bytes.len());
+                }
+                span.complete(Some(bytes.len()));
+            }
+            self.mapping = Some(Mapping { address, size });
+            address
+        };
         Ok(KernelBundle {
             host_addr: address as u64,
             guest_addr,

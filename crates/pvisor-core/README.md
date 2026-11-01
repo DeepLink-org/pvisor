@@ -37,6 +37,12 @@ identifies local image revisions with `handle` / `manifest_digest`; node image/R
 ownership and snapshot implementation belong to `pvisor`. The separate
 `pvisor-daemon` owns node-local sandbox admission and lifecycle.
 
+Cgroup observation directories use Linux path syntax even when validated on a
+Windows host. Snapshot stores and live RAM backing files instead use the local
+host's absolute-path rules. Attempt-bound file-policy preparation is portable;
+after arming (or deserialization), Ask rules still fail closed without an
+available approval transport.
+
 ```sh
 mise run test -- core
 ```
@@ -73,3 +79,6 @@ This setting is not a global switch for all runtime or audit persistence.
 `On`. `OverlayConfig.recording = Off` requires `StageDurability::Ephemeral`.
 It disables only per-file observations for apply/recovery. Normal file I/O,
 access checks, explicit fsync, execution results and audit records remain.
+
+`overlay::LayerMutability` owns the portable lower stability record shared by VM
+and Overlay; it does not depend on a host filesystem implementation.

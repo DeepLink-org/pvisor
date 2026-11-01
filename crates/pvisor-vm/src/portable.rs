@@ -289,7 +289,7 @@ impl VmConfiguration for VmBuilder {
     fn vsock_port(&mut self, guest_port: u32, host_path: PathBuf, listen: bool) -> io::Result<()> {
         self.inner.vsock_port(guest_port, host_path, listen)
     }
-    fn network(&mut self, stream: std::os::unix::net::UnixStream, mac: [u8; 6]) -> io::Result<()> {
+    fn network(&mut self, stream: impl Into<NetworkStream>, mac: [u8; 6]) -> io::Result<()> {
         self.network_with_options(stream, mac, NetworkOptions::default())
     }
     fn task_stdio(&mut self, stdin: RawFd, stdout: RawFd, stderr: RawFd) -> io::Result<()> {
@@ -297,13 +297,13 @@ impl VmConfiguration for VmBuilder {
     }
     fn network_with_options(
         &mut self,
-        stream: std::os::unix::net::UnixStream,
+        stream: impl Into<NetworkStream>,
         mac: [u8; 6],
         options: NetworkOptions,
     ) -> io::Result<()> {
         #[cfg(feature = "net")]
         {
-            self.inner.network(stream, mac, options)
+            self.inner.network(stream.into().inner, mac, options)
         }
         #[cfg(not(feature = "net"))]
         {
@@ -1008,50 +1008,5 @@ impl RamFileMapping for RamFileMount {
     ) -> io::Result<(Self, File)> {
         crate::ram_file::Mount::new(store, directory)
             .map(|(inner, file)| (Self { _inner: inner }, file))
-    }
-}
-
-impl RamDeltaState for RamDeltaSpec {
-    fn validate(&self) -> Result<(), String> {
-        if self.length == 0
-            || self.length > 64 * 1024 * 1024 * 1024
-            || !self.block_bytes.is_power_of_two()
-            || !(4096..=1024 * 1024).contains(&self.block_bytes)
-            || self.length.div_ceil(u64::from(self.block_bytes)) > 1 << 20
-            || self.base_sha256.len() != 64
-            || !self
-                .base_sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err("invalid incremental RAM baseline".into());
-        }
-        Ok(())
-    }
-}
-impl RamDeltaState for RamDeltaCapture {
-    fn validate(&self) -> Result<(), String> {
-        RamDeltaSpec {
-            device: 0,
-            inode: 0,
-            length: self.length,
-            block_bytes: self.block_bytes,
-            base_sha256: self.base_sha256.clone(),
-        }
-        .validate()?;
-        if self.version != 1
-            || self.changed_blocks.len() as u64 > self.length.div_ceil(u64::from(self.block_bytes))
-            || self
-                .changed_blocks
-                .iter()
-                .any(|index| *index >= self.length.div_ceil(u64::from(self.block_bytes)))
-            || self
-                .changed_blocks
-                .windows(2)
-                .any(|pair| pair[0] >= pair[1])
-        {
-            return Err("invalid incremental RAM capture inventory".into());
-        }
-        Ok(())
     }
 }

@@ -48,7 +48,7 @@ fn execution_checkpoint_is_bound_to_its_run_encoding_and_capture_operation() {
     operation.validate().unwrap();
     let checkpoint = ExecutionCheckpoint {
         snapshot_id: "a".repeat(64),
-        store: "/private/snapshots".into(),
+        store: std::env::temp_dir().join("private/snapshots"),
         source_run_id: operation.run_id.clone(),
         source_attempt_id: "attempt-1".into(),
         created_at_unix_ms: 1,
@@ -285,15 +285,16 @@ fn vm_control_primitives_round_trip_and_require_matching_results() {
         assert!(observation.validate(&operation).is_err());
     }
     let mut operation = plan();
+    let backing_file = std::env::temp_dir().join("guest.ram");
     operation.kind = OperationKind::RunOffload {
-        file: Some("/data/guest.ram".into()),
+        file: Some(backing_file.clone()),
     };
     operation.rules.clear();
     let observation = OperationObservation {
         outcome: Outcome::success(Value::Vm {
             state: VmState::Offloaded,
             memory: Some(VmMemory {
-                backing_file: "/data/guest.ram".into(),
+                backing_file,
                 backed_bytes: 4096,
                 resident_before_bytes: Some(4096),
                 resident_after_bytes: Some(0),

@@ -13,6 +13,9 @@ loading, Hypervisor FFI and its minimal SIMD shim are private runtime boundaries
 
 Source: https://github.com/containers/libkrun
 
+The Windows-only backend has its own fixed source baseline, selective fixes and
+validation scope in [WINDOWS.md](WINDOWS.md).
+
 Current first-party adapters: `api.rs`, `backend.rs`, `builder.rs`, `firmware.rs`,
 `handle.rs`, `memory.rs`, `portable.rs`, and the owned Rust guest build integration.
 Only `pvisor_vm::api` is public. Core runtime components compile inside this

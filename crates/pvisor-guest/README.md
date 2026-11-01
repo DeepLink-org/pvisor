@@ -2,6 +2,12 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Launch-message paths always use Linux guest syntax, including when a Windows
+host validates them. A leading `/` is absolute; drive letters and backslashes
+do not supply a guest root or separators. Mount/tmpfs traversal and workspace
+overlap checks use the same guest components on every host. Native execution
+of the resulting command still belongs to the Linux supervisor.
+
 Guest initialization also provides two environment defaults that container
 runtimes normally inject and container images routinely omit. When the image
 ships no `/etc/hosts`, the supervisor writes the conventional loopback

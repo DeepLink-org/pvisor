@@ -145,6 +145,9 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 
 `mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
+CI 将两个版本的构建拆到并行 runner，再把保留权限的二进制归档下载到同一台测量
+runner，依次执行基线与候选。采样数、校验和阈值不变；构建 SHA、归档校验和与
+逐次测量证据一起保留。测量阶段使用 `--binary`，不会再次编译产品。
 Linux CI 失败时，在比较之后按各批次冻结的 argv 额外执行 status/review，
 将 strace 与可用的 CLI 入口 profile 写到各批次 `diagnostics/`。
 同时单独保留无 strace 的 `*.profile.stderr`，用于区分读取与验证阶段；

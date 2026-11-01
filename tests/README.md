@@ -41,7 +41,7 @@ Bats/Go contracts that run the top-level pVisor container commands and check exp
 daemon interoperability cases are disabled with reasons. See
 [podman/README.md](podman/README.md) for explicit runtime commands, prerequisites
 and coverage limits. The external-runtime suites are opt-in locally and required
-in the Linux CLI CI shard; normal Python regressions verify source integrity and
+in the Linux CLI contract CI shards; normal Python regressions verify source integrity and
 adapter behavior without a daemon.
 
 ## Network CLI chaos

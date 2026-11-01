@@ -6,7 +6,7 @@ use pvisor::job_service::{
 };
 use pvisor::{ApplySelection, RunRecord};
 use pvisor_core::overlay::{ChangeEntry, ChangeEntryType};
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn run(mut args: ApplyArgs) -> i32 {
@@ -415,53 +415,6 @@ fn key_selection(args: &mut ApplyArgs, candidates: &[ChangeEntry], selected: &[b
     !args.paths.is_empty()
 }
 
-// Read via directory descriptors, never let an ancestor symlink or special file
-// redirect a preview to host secrets or block on a device/FIFO. Copy only bounded
-// bytes into private temporary files before invoking the external diff renderer.
-fn read_regular(root: &Path, relative: &Path) -> anyhow::Result<Vec<u8>> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-    let full = root.join(relative);
-    anyhow::ensure!(full.is_absolute(), "diff root must be absolute");
-    let mut directory = std::fs::File::open("/")?;
-    let components = full
-        .components()
-        .filter(|c| *c != Component::RootDir)
-        .collect::<Vec<_>>();
-    for (i, component) in components.iter().enumerate() {
-        let Component::Normal(name) = component else {
-            anyhow::bail!("unsafe diff path");
-        };
-        let name = std::ffi::CString::new(name.as_bytes())?;
-        let last = i + 1 == components.len();
-        let flags = libc::O_RDONLY
-            | libc::O_NOFOLLOW
-            | libc::O_CLOEXEC
-            | if last {
-                libc::O_NONBLOCK
-            } else {
-                libc::O_DIRECTORY
-            };
-        let raw = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        if raw < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        directory = std::fs::File::from(fd);
-        if last {
-            let metadata = directory.metadata()?;
-            anyhow::ensure!(
-                metadata.is_file() && metadata.len() <= 1024 * 1024,
-                "non-regular or large file"
-            );
-            let mut bytes = Vec::new();
-            directory.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-            anyhow::ensure!(bytes.len() <= 1024 * 1024, "large file");
-            return Ok(bytes);
-        }
-    }
-    anyhow::bail!("not a regular file")
-}
 fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
     let record = RunRecord::read(&response.source.stage)?;
     let overlay = record
@@ -478,7 +431,6 @@ fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
     } else {
         PathBuf::new()
     };
-    let temporary = tempfile::tempdir()?;
     let mut remaining = 256 * 1024;
     for change in &response.selected {
         if remaining == 0 {
@@ -493,12 +445,12 @@ fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
             "unsafe diff path"
         );
         let old = if change.old_type == Some(ChangeEntryType::File) {
-            read_regular(target, &relative)
+            super::diff::read_regular(target, &relative, 1024 * 1024)
         } else {
             Ok(vec![])
         };
         let new = if change.new_type == Some(ChangeEntryType::File) {
-            read_regular(overlay.upper.path(), &prefix.join(&relative))
+            super::diff::read_regular(overlay.upper.path(), &prefix.join(&relative), 1024 * 1024)
         } else {
             Ok(vec![])
         };
@@ -509,11 +461,7 @@ fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
             );
             continue;
         };
-        if old.contains(&0)
-            || new.contains(&0)
-            || std::str::from_utf8(&old).is_err()
-            || std::str::from_utf8(&new).is_err()
-        {
+        if !super::diff::is_text(&old) || !super::diff::is_text(&new) {
             println!("{:?}: binary (text diff unavailable)", change.path);
             continue;
         }
@@ -524,23 +472,9 @@ fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
             );
             continue;
         }
-        std::fs::write(temporary.path().join("old"), old)?;
-        std::fs::write(temporary.path().join("new"), new)?;
-        let output = std::process::Command::new("diff")
-            .args(["-u", "--label"])
-            .arg(format!("a/{}", change.path))
-            .arg("--label")
-            .arg(format!("b/{}", change.path))
-            .arg("--")
-            .arg(temporary.path().join("old"))
-            .arg(temporary.path().join("new"))
-            .output()?;
-        anyhow::ensure!(
-            matches!(output.status.code(), Some(0 | 1)),
-            "diff renderer failed"
-        );
-        let keep = remaining.min(output.stdout.len());
-        print!("{}", String::from_utf8_lossy(&output.stdout[..keep]));
+        let output = super::diff::unified(&old, &new, &change.path)?;
+        let keep = remaining.min(output.len());
+        print!("{}", String::from_utf8_lossy(&output[..keep]));
         remaining -= keep;
     }
     Ok(())
