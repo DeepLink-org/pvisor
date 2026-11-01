@@ -3550,14 +3550,12 @@ mod tests {
     ))]
     #[test]
     fn safe_patch_does_not_validate_features_before_explicit_vm_override() {
-        for option in ["--safe"] {
-            let mut config = RunConfig::default();
-            config.features.workload_aware_memory_offloading = true;
-            let args = preset_args(&[option, "--executor", "vm", "--", "true"]);
-            apply_run_options(&mut config, args).unwrap();
-            assert!(config.features.workload_aware_memory_offloading);
-            assert_eq!(config.run.executor, RunExecutorKind::Vm);
-        }
+        let mut config = RunConfig::default();
+        config.features.workload_aware_memory_offloading = true;
+        let args = preset_args(&["--safe", "--executor", "vm", "--", "true"]);
+        apply_run_options(&mut config, args).unwrap();
+        assert!(config.features.workload_aware_memory_offloading);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
     }
 
     #[test]
@@ -4212,23 +4210,21 @@ mod tests {
         let workspace = temporary.path().join("workspace");
         let storage = temporary.path().join("job");
         std::fs::create_dir(&workspace).unwrap();
-        for flag in ["--safe"] {
-            let mut config = RunConfig::default();
-            apply_run_options(&mut config, preset_args(&[flag, "--", "bash"])).unwrap();
-            normalize_filesystem_config(&mut config).unwrap();
-            let overlay = resolve_overlay(&config, &workspace, &storage)
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, preset_args(&["--safe", "--", "bash"])).unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        let overlay = resolve_overlay(&config, &workspace, &storage)
+            .unwrap()
+            .unwrap();
+        assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
+        assert!(!overlay.auto_discard);
+        assert!(
+            config
+                .overlayfs
                 .unwrap()
-                .unwrap();
-            assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
-            assert!(!overlay.auto_discard);
-            assert!(
-                config
-                    .overlayfs
-                    .unwrap()
-                    .access_policy
-                    .denied(Path::new(".ssh/key"))
-            );
-        }
+                .access_policy
+                .denied(Path::new(".ssh/key"))
+        );
     }
 
     #[test]
@@ -4302,16 +4298,18 @@ mod tests {
             );
         }
         // Embedded/recorded settings carry the compiled policy rather than TOML access rules.
-        let mut config = RunConfig::default();
-        config.overlayfs = Some(OverlayFsSettings {
-            access_policy: pvisor_core::FileAccessPolicy::new_with_ask(
-                vec![],
-                vec!["secret".into()],
-                vec![],
-            )
-            .unwrap(),
+        let mut config = RunConfig {
+            overlayfs: Some(OverlayFsSettings {
+                access_policy: pvisor_core::FileAccessPolicy::new_with_ask(
+                    vec![],
+                    vec!["secret".into()],
+                    vec![],
+                )
+                .unwrap(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         assert!(
             reject_ask_config(&config)
                 .unwrap_err()

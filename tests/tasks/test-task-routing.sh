@@ -294,8 +294,9 @@ test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 if [[ "$(uname -s)" == Linux ]]; then
   printf retained > "$CARGO_TARGET_DIR/release/pvisor-memory-pool"
   run install-cli
-  for binary in pvisor pvisor-replay pvisor-daemon; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
-  test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq 4
+  installed_binaries=(pvisor pvisor-replay pvisor-daemon)
+  for binary in "${installed_binaries[@]}"; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
+  test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq "${#installed_binaries[@]}"
   test ! -e "$CARGO_INSTALL_ROOT/bin/pvisor-memory-pool"
   test "$(cat "$CARGO_TARGET_DIR/release/pvisor-memory-pool")" == retained
 fi
