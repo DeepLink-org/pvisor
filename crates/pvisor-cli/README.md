@@ -676,6 +676,19 @@ only a static Ready executable ten times each with one and two vCPUs, checks
 unique Ready output and zero exit, and keeps every attempt's logs on failure.
 It covers PID 1's pre-Rust standard-stream repair when the image has no `/dev`.
 
+The ignored `native_stage_preserves_device_and_inode_across_ancestor_copy_up`
+stage CLI test requires Linux x86_64/KVM and `/usr/bin/python3`. It stages a
+write beneath the checkout's mount and checks pathname/open-FD device and inode
+identity across mutable-backing metadata expiry, as well as unchanged host files.
+Use `PVISOR_TEST_LIBRARY_DIR` for a GNU executable's local firmware;
+`PVISOR_TEST_STAGE_BINARY` optionally selects an independently built CLI, copied
+privately by the native stage fixture, for baseline/candidate comparisons:
+
+```bash
+PVISOR_TEST_LIBRARY_DIR=/absolute/firmware/directory mise run test -- pvisor-cli -- \
+  -E 'test(native_stage_preserves_device_and_inode_across_ancestor_copy_up)' --run-ignored only
+```
+
 The Docker native acceptance test uses an isolated store and a native Linux
 rootfs containing `sh`, `cat` and `sleep`. On macOS it signs a private binary
 copy with the existing Hypervisor entitlement. Run it with local socket and
