@@ -49,7 +49,7 @@ pvisor
 │   └── gc                 Collect unreferenced content and leftover staging in the store
 ```
 
-`tui/replay/cache/memory-pool` remain tools; they do not create product instance identities parallel to Jobs. The default execution shorthand `pvisor -- COMMAND` remains equivalent to `pvisor spawn -- COMMAND`.
+`replay/cache/memory-pool` remain tools; they do not create product instance identities parallel to Jobs. The default execution shorthand `pvisor -- COMMAND` remains equivalent to `pvisor spawn -- COMMAND`.
 
 The target public workflow does not add `job run`, `vm run` or `snapshot run`.
 
@@ -97,7 +97,7 @@ Keep existing `--vm/--executor`, `--rootfs`, `--safe`, `--mount`, networking and
 
 **No new mandatory startup flags; no requirement for `--checkpointable`.** Save capabilities derive from the selected executor, rootfs, filesystem, devices and network configuration and are recorded in Job metadata and status. Users still start Jobs as before, requesting suspend, checkpoint or execution fork when needed.
 
-Preserve run argument parsing, default executor, command and environment, CPU/memory, stdio, TUI, policy installation, stage selection and result acceptance semantics as far as possible. Potential future saving must not silently disable DAX, networking or devices, change the rootfs view, enable compression/paging by default or fully copy all inputs.
+Preserve run argument parsing, default executor, command and environment, CPU/memory, stdio, policy installation, stage selection and result acceptance semantics as far as possible. Potential future saving must not silently disable DAX, networking or devices, change the rootfs view, enable compression/paging by default or fully copy all inputs.
 
 The initial support matrix remains limited to validated configurations. Declare capabilities only after full snapshots, Run/Attempt/Bundle, stage, file versions and preimage ownership are connected. The historical standalone snapshot runner does not establish that ordinary Jobs are connected.
 
@@ -163,14 +163,14 @@ Repeated suspension of an already suspended Job returns the existing head withou
 ### 4.6 resume
 
 ```sh
-pvisor resume JOB [--tui] [--request-id ID]
+pvisor resume JOB [--request-id ID]
 ```
 
 Continue the same Job only from its suspended head. Retain JobId, create a new AttemptId and execution-ownership generation, validate compatibility and complete references, create a writable working view, and execute after installing state.
 
 Do not accept a new command, rootfs, CPU/memory or policy overrides. Configuration changes use workspace fork or a new run; the first version does not offer unreliable execution-state parameter changes.
 
-The command holds the terminal in the foreground, like run. `--tui` changes host presentation only; it cannot pretend to restore old host TTYs/pipes or external connections. Executor profiles must declare permitted console endpoint reconstruction.
+The command holds the terminal in the foreground, like run. It cannot restore old host TTYs/pipes or external connections. Executor profiles must declare permitted console endpoint reconstruction.
 
 On failure before execution starts, retain the suspended head for retry. Failure after execution starts must not automatically mark the head safe for retry without side effects. Record the new Attempt and actual state; returning to the old point requires explicit fork.
 
@@ -179,7 +179,7 @@ On failure before execution starts, retain the suspended head for retry. Failure
 ```sh
 pvisor fork JOB [--state workspace|execution] [--checkpoint ID] \
   [--stage NEW_PATH] [--name NAME] [--request-id ID] \
-  [--ram-storage raw|compressed] [--tui] [-- COMMAND...]
+  [--ram-storage raw|compressed] [-- COMMAND...]
 ```
 
 Default to `--state workspace`, retaining existing file fork behavior. Execution must be selected explicitly; finding a VM checkpoint must not switch modes automatically.
@@ -360,7 +360,6 @@ Ordinary Jobs now integrate native VM capture and restore. Run parsing, defaults
 | gc | Collects workspace transactions and pending objects, tombstones and unreferenced RAM in Job-owned native stores; no published object deletion or cross-Job/Cluster store-wide collection |
 | import-base/verify-base | Reuses immutable SnapshotStore rootfs import and auditing; ordinary run accepts the returned rootfs path |
 | apply/drop/kill | Refuses workspace mutation while suspended, handing off or uncertain; killing a suspended Job withdraws continuation rights but retains history before allowing workspace decisions |
-| TUI | Resume with --tui starts the restored Attempt through the existing terminal frontend |
 
 The current execution profile requires Linux x86_64 or macOS ARM64, no network devices, private RAM and an owned complete rootfs. Host root /, networking, writable RAM backing, memory pools and cold-page compression return capability errors without changing run configuration. Restore binds to the same host boot, binary and firmware. The captured guest environment is retained instead of being replaced by the resume/fork shell environment.
 

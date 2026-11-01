@@ -101,6 +101,19 @@ fn clap_requires_destination_and_exclusive_explicit_selection_before_io() {
     }
 }
 
+#[test]
+fn spawn_help_describes_static_policies_and_plain_stdio() {
+    let root = tempfile::tempdir().unwrap();
+    let text = help(root.path(), &["spawn", "--help"]);
+    for option in ["--safe", "--stdio", "PATH-GLOB:deny|warn"] {
+        assert!(text.contains(option), "missing {option}: {text}");
+    }
+    for option in ["--tui", "--ask", "deny|ask|warn"] {
+        assert!(!text.contains(option), "unexpected {option}: {text}");
+    }
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn run_and_spawn_help_match_their_pinned_baselines() {
@@ -113,7 +126,7 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            "06abd21de89c4a0ab939603e8b2a10ef0bbb56adcc53b203b090612928908659",
+            "c7d399c6e23dae1d7b78c7556b163514e38becb4d280cca9e605002716b75572",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);

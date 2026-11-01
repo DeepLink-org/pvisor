@@ -92,8 +92,6 @@ pub(crate) struct SuspendArgs {
 pub struct ResumeArgs {
     #[command(flatten)]
     selection: Selection,
-    #[arg(long)]
-    pub tui: bool,
     /// Read all captured RAM before starting the successor; default is lazy.
     #[arg(long)]
     eager_ram: bool,

@@ -12,7 +12,7 @@ esac
 component_args=()
 case "$2" in
   all|product)
-    names=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
+    names=(pvisor pvisor-replay pvisor-daemon)
     if [[ "$2" == all ]]; then
       component_args=(--all)
       if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(containerd-shim-pvisor-v2 pvisor-guest); fi

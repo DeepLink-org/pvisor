@@ -106,7 +106,7 @@ jobs:
           (
             cd "$build/release"
             shopt -s nullglob
-            tar -chzf "$artifact/runtime.tgz" pvisor pvisor-tui pvisor-replay pvisor-daemon libkrunfw*
+            tar -chzf "$artifact/runtime.tgz" pvisor pvisor-replay pvisor-daemon libkrunfw*
           )
           (cd "$artifact" && sha256sum runtime.tgz > runtime.sha256)
       - uses: actions/upload-artifact@v4

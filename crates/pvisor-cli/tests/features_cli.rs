@@ -128,7 +128,7 @@ fn companion_help_and_literal_args_keep_forwarding_semantics() {
     let temp = tempfile::tempdir().unwrap();
     let kernel = temp.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
-    let companion = temp.path().join("pvisor-tui");
+    let companion = temp.path().join("pvisor-replay");
     fs::write(&companion, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();
     fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
     for args in [
@@ -136,12 +136,12 @@ fn companion_help_and_literal_args_keep_forwarding_semantics() {
             "--feature",
             "workload-aware-memory-offloading",
             "help",
-            "tui",
+            "replay",
         ],
         vec![
             "--feature",
             "workload-aware-memory-offloading",
-            "tui",
+            "replay",
             "--help",
         ],
     ] {
@@ -150,13 +150,13 @@ fn companion_help_and_literal_args_keep_forwarding_semantics() {
         assert_eq!(output.stdout, b"--help\n");
     }
     let output = Command::new(&kernel)
-        .args(["tui", "--", "--feature", "guest-only"])
+        .args(["replay", "--", "--feature", "guest-only"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(42));
     assert_eq!(output.stdout, b"--\n--feature\nguest-only\n");
     let output = Command::new(&kernel)
-        .args(["--feature", "--feature", "help", "tui"])
+        .args(["--feature", "--feature", "help", "replay"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -166,7 +166,7 @@ fn companion_help_and_literal_args_keep_forwarding_semantics() {
     let output = Command::new(&kernel)
         .arg("--feature")
         .arg(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()))
-        .args(["help", "tui"])
+        .args(["help", "replay"])
         .output()
         .unwrap();
     assert!(!output.status.success());

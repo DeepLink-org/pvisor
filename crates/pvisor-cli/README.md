@@ -1,9 +1,8 @@
 # pVisor application frontends
 
-`pvisor-cli` owns three executables: `pvisor`, `pvisor-tui`, and
+`pvisor-cli` owns two executables: `pvisor` and
 `pvisor-replay`, with their argument parsing, terminal adapters, rendering and
 companion lookup.
-The TUI frontend lives here, not in the embeddable runtime.
 
 ## Boundary
 
@@ -17,7 +16,7 @@ run directly in the caller. Embedded execution publishes the same discovery reco
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
 Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
 to serve them. `pvisor daemon start/status/stop` dispatch to the same-installation
-daemon companion. Replay and TUI are also root companions. Use `pvisor -- COMMAND`
+daemon companion. Replay is also a root companion. Use `pvisor -- COMMAND`
 for explicit workload execution.
 
 Companion lookup resolves the running executable's real installation directory,
@@ -34,7 +33,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
 `exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
-`resume`, `fork`) and **Tools** (installed `daemon`/`replay`/`tui` companions, `cache`, `feature`,
+`resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
@@ -645,8 +644,6 @@ semantics. These interface changes do not establish a performance result.
 - `src/cli/cache.rs`: cache command parsing and rendering; cache storage,
   image preparation and authenticated server implementation remain in `pvisor`.
 - `src/companions.rs`: trusted same-installation companion discovery/dispatch.
-- `src/tui/`: native TUI PTY runtime, renderer, review panels and keymap,
-  including Zellij attribution and the adapted border-glyph license.
 - `src/bin/pvisor-replay.rs`: replay argument parsing and managed-run frontend;
   the independent replay engine remains in `pvisor-replay`.
 - `src/bin/`: executable entry points.

@@ -15,7 +15,6 @@ deny = [{ host = "169.254.0.0/16" }]
 
 [filesystem]
 deny = ["secrets/**"]
-ask = ["config/**"]
 warn = ["**/.env*"]
 ```
 
@@ -28,7 +27,7 @@ warn = ["**/.env*"]
 | 规则 `transports` | `http`、`https`、`tcp_tunnel`；空数组不限制协议 |
 | 规则 `allow_private_ips` | 默认 false；hostname 解析到私网/loopback 默认拒绝，显式 IP/CIDR 的语义另见[网络指南](../guides/policies/network.md) |
 | `network.limits` | `host`、`port` 可省略；`bytes_per_second` 为每秒字节数；匹配限制叠加 |
-| `filesystem.deny/ask/warn/allow` | 相对工作区的 glob 数组；取最严格结果；allow 不覆盖外层 deny |
+| `filesystem.deny/warn/allow` | 相对工作区的 glob 数组；取最严格结果；allow 不覆盖外层 deny |
 
 策略文件不是任意可信配置：目录和文件须归当前用户所有、不可由组或其他用户写入、无符号链接，文件须为不超过 1 MiB 的普通文件。不安全的策略会阻止启动。
 
@@ -57,7 +56,6 @@ limits = [{ bytes_per_second = 1048576 }]
 
 [policies.session.filesystem]
 deny = ["secrets/**"]
-ask = ["config/**"]
 warn = ["**/.env*"]
 ```
 
@@ -69,17 +67,17 @@ CLI 读取工作区的 `.pvisor/policy.toml` 和用户配置目录下的 `pvisor
 
 空的作用域 `[network]` 表表示该层存在，会拒绝未匹配请求；完全省略作用域 network 表则不增加这一层的网络约束。这两种写法含义不同。
 
-基础网络策略与每个存在的作用域层都允许，请求才能通过。所有匹配的带宽限制都会生效。文件策略跨作用域取最严格的匹配结果：deny、ask、warn、allow。`filesystem.allow` 可以约束策略的普通匹配行为，但不能撤销外层拒绝。各执行器如何处理 `ask`，见[文件策略](../guides/policies/files.md)。
+基础网络策略与每个存在的作用域层都允许，请求才能通过。所有匹配的带宽限制都会生效。文件策略跨作用域取最严格的匹配结果：deny、warn、allow。`filesystem.allow` 可以约束策略的普通匹配行为，但不能撤销外层拒绝。见[文件策略](../guides/policies/files.md)。
 
 ## 文件规则语法 {#file-globs}
 
-用户规则数组为 `deny`、`ask`、`warn`、`allow`，均默认空。规则是不区分大小写、相对工作区的 glob，路径分隔符按字面匹配：`*` 不跨越 `/`，跨目录使用 `**`。绝对路径、NUL、空路径分量、`.` 分量、`..` 分量均无效。使用 `secrets/**`，不要写 `/secrets/**` 或 `../secrets/**`。
+CLI 支持的规则数组为 `deny`、`warn`、`allow`，均默认空。规则是不区分大小写、相对工作区的 glob，路径分隔符按字面匹配：`*` 不跨越 `/`，跨目录使用 `**`。绝对路径、NUL、空路径分量、`.` 分量、`..` 分量均无效。使用 `secrets/**`，不要写 `/secrets/**` 或 `../secrets/**`。
 
 序列化的 filesystem 策略记录还可能包含 `context` 和 `layers`，用于保留运行时绑定与组合的作用域信息；普通策略文件无需用它们增加授权。完整的网络条目字段与类型见[配置字段](config.md#all-fields)。
 
-## Safe 与 audit 预设 {#presets}
+## Safe 预设 {#presets}
 
-`--safe`、`--audit` 在加载 TOML 之后、应用显式 CLI 参数之前构建预设。两者都请求暂存、清空配置中的 `pass_env`，并拒绝以下敏感路径：
+`--safe` 在加载 TOML 之后、应用显式 CLI 参数之前构建预设。它请求暂存、清空配置中的 `pass_env`，并拒绝以下敏感路径：
 
 ```text
 **/.ssh
@@ -92,7 +90,7 @@ CLI 读取工作区的 `.pvisor/policy.toml` 和用户配置目录下的 `pvisor
 **/id_ed25519_sk
 ```
 
-Safe 对以下匹配发出 warn，audit 改为 ask：
+Safe 对以下匹配发出 warn：
 
 ```text
 **/.env

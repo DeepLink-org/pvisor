@@ -3,7 +3,7 @@ name = "pvisor-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license = "Apache-2.0 AND MIT"
+license.workspace = true
 description = "pVisor command-line application frontends"
 readme = "README.md"
 default-run = "pvisor"
@@ -39,8 +39,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-mult
 tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true
 toml_edit.workspace = true
-unicode-width = "0.2.2"
-vt100 = "0.16.2"
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
@@ -65,10 +63,6 @@ vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
 [[bin]]
 name = "pvisor"
 path = "src/bin/pvisor.rs"
-
-[[bin]]
-name = "pvisor-tui"
-path = "src/bin/pvisor-tui.rs"
 
 [[bin]]
 name = "pvisor-replay"

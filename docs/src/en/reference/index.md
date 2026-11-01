@@ -1,6 +1,6 @@
 # Commands and scenarios
 
-When integrating a task into a script, handle launch arguments, execution results, and file acceptance separately. Ordinary host execution writes directly to the workspace; use `--safe`, `--ask`, or an explicit `--stage` to review files before accepting them.
+When integrating a task into a script, handle launch arguments, execution results, and file acceptance separately. Ordinary host execution writes directly to the workspace; use `--safe` or an explicit `--stage` to review files before accepting them.
 
 ## From execution to file acceptance
 

@@ -11,7 +11,7 @@ Start with a simple Job, add limits, staging, VM, container and networking, then
 | Run a command or verify default writes | A01–A03, A07 |
 | Timeout, memory or file limits | A04, B01–B04 |
 | Keep, discard or inspect file changes | C01–C06 |
-| Compose OverlayFS layers or grant path permissions | D01, D04–D06 |
+| Compose OverlayFS layers or grant path permissions | D01, D04–D05 |
 | Understand default host isolation | D02–D03 |
 | VM, host rootfs or OCI images | E01–E06 |
 | Native OCI containers | F01–F04 |
@@ -21,9 +21,8 @@ Start with a simple Job, add limits, staging, VM, container and networking, then
 | Combine capabilities | J01–J03 |
 | Review, selective apply, fork or terminate | K01–K04 |
 | Prepare trajectory replay | M01 |
-| Terminal UI and permission prompts | D06, M02 |
 
-This appendix is both user documentation and the DOC semspec source. Each scenario includes purpose, semantics, a violation example, commands and assertions. `mise run cases` executes the Bash checks below. Original A01–M02 labels remain in headings.
+This appendix is both user documentation and the DOC semspec source. Each scenario includes purpose, semantics, a violation example, commands and assertions. `mise run cases` executes the Bash checks below. Original A01–M01 labels remain in headings.
 
 ## How to use
 
@@ -44,7 +43,7 @@ mise run cases
 mise run semspec -- --spec-dir docs/src/zh/reference show S-DOC-001
 ```
 
-`mise run cases` builds release pVisor, discovers the 54 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `mise run semspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
+`mise run cases` builds release pVisor, discovers the 52 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `mise run semspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
 
 Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion functions come from preparation blocks in the sibling `index.md`, which reads this case's Bundle, run record and command logs. Configuration, Jobs and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
 
@@ -519,13 +518,12 @@ bundle_expect network.policy.mode allowlist "$PVISOR_CASE_ROOT/safe-home"
 
 ## D. OverlayFS and host security boundaries
 
-D01 covers layer composition; D02/D03 host execution; D04–D06 denial, direct writes and interactive permission. File rules `deny`, `ask`, `warn` mean reject, prompt, and allow with warning; they append by default. `--mount` mode `read` grants a read-only host share (host plus `--safe`/`--ask` required), `stage` composes copy-on-write lowers, and `write` writes directly to host lower. `--access PATH-GLOB:ask` automatically enables audit TUI and safe staging without another `--ask`.
-
-In file prompts, `1` grants this file, `2` grants sibling-directory files, `3` grants the same suffix, and `d` denies this target. Explicit deny rules reject without prompting. Scope defaults to session. Press `s`/`w`/`u` for session/workspace/user, then a number for permission range and Enter to confirm. Deny is selected by default; `d` rejects immediately.
-
-Session rules go to the Job's `audit-policy.json`. Workspace/user rules go to `permissions` in `~/.config/pvisor/config.toml`, or an absolute `XDG_CONFIG_HOME`. Workspace identity uses canonical working directories. Later TUI Jobs load them with session > workspace > user precedence and the last matching rule in each layer. Persisted file paths use original absolute paths; user suffix rules can cover other workspaces, so consider scope.
-
-In Permissions, select with j/k and press x twice to remove a decision; another rule or a prompt may then apply. `audit.jsonl` records manual/automatic decisions and saved scopes. Job records persist by default; `--stage PATH` chooses their location.
+D01 covers layer composition; D02/D03 host execution; D04–D05 denial and direct
+writes. File rules `deny` and `warn` mean reject and allow with warning; they
+append by default. `--mount` mode `read` grants a read-only host share (host
+plus `--safe` required), `stage` composes copy-on-write lowers, and `write`
+writes directly to host lower. Review staged changes with `review`, accept
+selected paths with `apply`, and discard remaining changes with `drop`.
 
 ### S-DOC-018: D01 Advanced OverlayFS composition
 
@@ -672,88 +670,6 @@ pvisor --mount "$CASE_ROOT/shared":write -- \
 CASE_COMMAND
 
 test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
-```
-
-### S-DOC-023: D06 Ask prompt and directory permission for this Job
-
-
-Preparation: Linux user/mount namespaces and Python 3. A pseudo-terminal sends 2/Enter automatically; manually choose and confirm with Enter.
-
-**Semantics**: Only one file prompt appears; both files are readable. audit-policy.json stores the directory rule and audit.jsonl records the second automatic allow. Stage retains this Job audit without turning it into global configuration.
-
-**Rationale**: Start audit TUI with `--access 'private/*.txt:ask'`; press 2/Enter on first read, then read a sibling to verify reuse.
-
-**Violation example**: Prompt again for the sibling or persist directory permission with the wrong scope.
-
-<!-- semspec: case id=S-DOC-023 -->
-```bash
-require_python3
-require_rootless
-case_setup
-case_run success <<'CASE_COMMAND'
-mkdir -p private
-printf ASK_ONE > private/one.txt
-printf ASK_TWO > private/two.txt
-python3 - <<'PY'
-import fcntl, os, pty, select, signal, struct, time
-
-pid, master = pty.fork()
-if pid == 0:
-    os.environ['TERM'] = 'xterm-256color'
-    os.execvp('pvisor', [
-        'pvisor', '--no-agent-defaults', '--stage', os.environ['CASE_ROOT'] + '/ask-stage',
-        '--access', 'private/*.txt:ask', '--', '/bin/sh', '-c',
-        'cat private/one.txt; sleep 1; cat private/two.txt',
-    ])
-fcntl.ioctl(master, 0x5414, struct.pack('HHHH', 24, 100, 0, 0))
-screen = bytearray()
-prompted = False
-status = None
-deadline = time.monotonic() + 25
-try:
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.1)
-        if ready:
-            try:
-                screen.extend(os.read(master, 65536))
-            except OSError:
-                pass
-        if not prompted and b'FILE ACCESS PAUSED' in screen:
-            os.write(master, b'2\r')
-            prompted = True
-        ended, result = os.waitpid(pid, os.WNOHANG)
-        if ended:
-            status = result
-            break
-    if status is None:
-        os.killpg(pid, signal.SIGTERM)
-        _, status = os.waitpid(pid, 0)
-        raise RuntimeError('timed out waiting for the Job')
-finally:
-    os.close(master)
-assert prompted and os.waitstatus_to_exitcode(status) == 0
-assert b'ASK_ONE' in screen and b'ASK_TWO' in screen
-print('ASK directory grant reused')
-PY
-CASE_COMMAND
-
-stdout_has 'ASK directory grant reused'
-python3 - <<'PY'
-import json, os
-from pathlib import Path
-
-stage = Path(os.environ['CASE_ROOT'] + '/ask-stage')
-policy = json.loads((stage / 'audit-policy.json').read_text())
-assert any(rule['kind'] == 'file' and rule['scope'] == 'directory'
-           and rule['value'] == 'private' and rule['decision'] == 'allow'
-           for rule in policy['rules'])
-decisions = [json.loads(line) for line in (stage / 'audit.jsonl').read_text().splitlines()]
-assert any(item['request']['target'] == 'private/two.txt'
-           and item['decision'] == 'allow' and item['automatic']
-           for item in decisions)
-PY
-test "$(cat private/one.txt)" = ASK_ONE
-test "$(cat private/two.txt)" = ASK_TWO
 ```
 
 ## E. VM and rootfs
@@ -1065,7 +981,9 @@ bundle_expect run.state completed
 
 ## G. OverlayNet
 
-These cases concern networking only. Proxy suits cooperative access needing host Gateway; VM auto and host deny-all suit stronger boundaries. With `--ask`, unmatched proxy targets pause for permission: `1` grants this target, `2` grants hostname/subdomains on the same port/transport. IPs have no domain option. `d` denies. As with files, choose saved scope with s/w/u. Explicit denials do not prompt; direct sockets bypassing the proxy do not trigger this audit.
+These cases concern networking only. Proxy suits cooperative access needing host
+Gateway; VM auto and host deny-all suit stronger boundaries. Configure static
+network rules before launch; direct sockets can bypass a cooperative proxy.
 
 ### S-DOC-034: G01 Enable default proxy
 
@@ -1663,64 +1581,4 @@ CASE_COMMAND
 
 test ! -e marker
 python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] == "prepared" and d["replayed_tool_calls"] == 0'
-```
-
-### S-DOC-056: M02 TUI preserves output and opens Log
-
-
-Preparation: Linux and Python 3.
-
-**Semantics**: Child exits normally; screen stream contains command output, footer guidance and Log panel.
-
-**Rationale**: Use a pseudo-terminal to run --tui and check output, footer keys and Ctrl-] then l to open floating Log. Test scripts provide the terminal.
-
-**Violation example**: Lose output or fail to show footer/Log after Ctrl-].
-
-<!-- semspec: case id=S-DOC-056 -->
-```bash
-require_python3
-require_linux
-case_setup
-case_run success <<'CASE_COMMAND'
-python3 - <<'PY'
-import fcntl, os, pty, select, struct, subprocess, termios, time
-
-master, slave = pty.openpty()
-fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
-env = os.environ.copy()
-env['TERM'] = 'xterm-256color'
-child = subprocess.Popen(
-    ['pvisor', '--tui', '--', '/bin/sh', '-c', 'printf TUI_READY; sleep 1.5'],
-    stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True,
-)
-os.close(slave)
-screen = bytearray()
-sent = False
-deadline = time.monotonic() + 8
-try:
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.1)
-        if ready:
-            try:
-                screen.extend(os.read(master, 65536))
-            except OSError:
-                break
-        if not sent and b'TUI_READY' in screen:
-            os.write(master, b'\x1dl')
-            sent = True
-        if child.poll() is not None and not ready:
-            break
-    if child.poll() is None:
-        child.kill()
-    child.wait(timeout=2)
-finally:
-    os.close(master)
-assert child.returncode == 0, child.returncode
-assert sent and b'TUI_READY' in screen
-assert b'Ctrl-]' in screen and b'pVisor Review' in screen
-print('TUI_READY status-bar log-panel')
-PY
-CASE_COMMAND
-
-stdout_has 'TUI_READY status-bar log-panel'
 ```

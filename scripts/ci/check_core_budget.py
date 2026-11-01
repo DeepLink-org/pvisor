@@ -24,8 +24,14 @@ RUNTIME_FORBIDDEN = {
     "unicode-width",
 }
 # The replay executable lives in the app and needs the replay engine. Gateway
-# remains opt-in; neither it nor a separate TUI package belongs in the default app.
-APP_FORBIDDEN = {"pvisor-gateway", "pvisor-tui"}
+# remains opt-in; terminal UI dependencies do not belong in the application.
+APP_FORBIDDEN = {
+    "pvisor-gateway",
+    "pvisor-tui",
+    "ratatui",
+    "crossterm",
+    "vt100",
+}
 
 
 def dependency_closure(package):
@@ -53,7 +59,7 @@ def check_boundaries(runtime_packages, app_packages):
     app_names = {package.split()[0] for package in app_packages}
     assert not RUNTIME_FORBIDDEN & runtime_names, "application tools entered the runtime closure"
     assert not APP_FORBIDDEN & app_names, (
-        "optional Gateway or retired TUI package entered the default app closure"
+        "optional Gateway or terminal UI dependency entered the default app closure"
     )
 
 

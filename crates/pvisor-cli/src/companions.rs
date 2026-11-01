@@ -18,10 +18,6 @@ const ROOT_COMMANDS: &[Companion] = &[
         name: "replay",
         description: "Replay an agent-native trajectory",
     },
-    Companion {
-        name: "tui",
-        description: "Run a Job in an interactive terminal",
-    },
 ];
 
 pub(crate) fn is_root_command(name: &str) -> bool {
@@ -116,7 +112,7 @@ mod tests {
     #[test]
     fn companions_require_trusted_regular_executables() {
         let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("pvisor-tui");
+        let path = temporary.path().join("pvisor-replay");
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         check_executable(&path).unwrap();

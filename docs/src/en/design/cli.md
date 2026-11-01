@@ -11,13 +11,13 @@ pvisor -- codex
 pvisor spawn -- codex
 ```
 
-`--stage PATH` retains the changeset in that directory. An ordinary host Job without staging writes directly to the workspace. `--safe` and `--ask` retain staged workspace changes by default; see [Staging and storage](../reference/cli.md#暂存与存储). The selected host, container or VM provider records actual capabilities and limits in the Run Bundle.
+`--stage PATH` retains the changeset in that directory. An ordinary host Job without staging writes directly to the workspace. `--safe` retains staged workspace changes by default; see [Staging and storage](../reference/cli.md#暂存与存储). The selected host, container or VM provider records actual capabilities and limits in the Run Bundle.
 
 Common controls grouped by purpose:
 
 | Purpose | Options | Result |
 | --- | --- | --- |
-| Filesystem | `--safe`, `--stage`, `--mount SOURCE[:TARGET]:read\|stage\|write`, `--access PATH-GLOB:deny\|ask\|warn` | Stage changes when requested and declare path permissions |
+| Filesystem | `--safe`, `--stage`, `--mount SOURCE[:TARGET]:read\|stage\|write`, `--access PATH-GLOB:deny\|warn` | Stage changes when requested and declare path permissions |
 | Runtime | `--executor host\|container\|vm`, `--rootfs`, `--container-image` | Select provider and rootfs |
 | Network | `--overlaynet-deny-all`, `--overlaynet-allow`, `--overlaynet-limit` | Request deny, allowlist or rate limits |
 | Gateway | `--gateway-mode`, `--gateway-route`, `--gateway-level` | Configure routes and optionally capture model traffic |
@@ -62,19 +62,19 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow their objects: container commands manage independent VMs, while Job/workspace operations remain flat. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Job execution, review and checkpoints, and Tools for cache, replay, TUI and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
+Top-level commands follow their objects: container commands manage independent VMs, while Job/workspace operations remain flat. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories. Root help has three groups: Commands for Docker-compatible container operations, Agent Commands for Job execution, review and checkpoints, and Tools for cache, replay and feature queries. See the [CLI reference](../reference/cli.md) for the command list and `pvisor help COMMAND` for options.
 
 | Responsibility | Entry |
 |---|---|
 | Job lifecycle and branches | `spawn`, `status`, `kill`, `suspend`, `resume`, `fork` |
 | Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
 | Immutable Job checkpoints | `checkpoint` |
-| Trajectory replay and interactive frontend | `replay`, `tui` |
+| Trajectory replay | `replay` |
 | Local sandbox lifecycle | `pvisor-daemon prepare-image` / `serve --sandbox` and partial OpenSandbox/E2B APIs |
 | Immutable image cache | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | Optional daemon-owned shared pages | `pvisor-daemon serve --sandbox --memory-pool`; detached `memory-pool --directory DIR` component |
 
-`status --review` is a shortcut; `review` is the detailed review entry. `spawn --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
+`status --review` is a shortcut; `review` is the detailed review entry. Job operations are top-level commands, without a `job` command layer.
 
 Resource tools use their own executables. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor spawn -- ctrl` remains explicit workload intent, not a control API alias.
 
@@ -85,7 +85,7 @@ pvisor cache --help
 pvisor-daemon memory-pool --help
 ```
 
-Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. The cache, replay and TUI remain separate from Job commands; replay/TUI companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols belong to the runtime and have no daemon acquire/release adapter. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
+Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. Cache and replay remain separate from Job commands; replay companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols belong to the runtime and have no daemon acquire/release adapter. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
 
 Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Job commands. See the [daemon architecture](daemon/index.md) and [operations](daemon/operations.md) for sandbox deployment and native resource budgets.
 

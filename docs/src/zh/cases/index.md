@@ -33,7 +33,6 @@ cat report.txt
 
 | 需求 | 工具与入口 | 下一步 |
 |---|---|---|
-| 在终端中审查、审批路径访问 | `pvisor spawn --tui` / `--ask`，派发到同目录的 `pvisor-tui` | [CLI 参考](../reference/cli.md) |
 | 为真实模型请求路由、捕获轨迹 | `pvisor spawn --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `mise run examples -- 04-gateway-llm-control` 的本地 mock 请求测试 |
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
 | 选择 OCI 容器或 VM 执行 | `pvisor spawn --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |

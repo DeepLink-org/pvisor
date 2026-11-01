@@ -249,7 +249,7 @@ order, both ownership assertions, explicit `StableView` observation semantics,
 `default_permissions`, owner-only FUSE access and the Linux HOST backend.
 Only MetadataAndData additionally requires `read_only`.
 They reject preimage journals, compact journal initialization, metrics sinks,
-all custom path policies (including allow/deny/ask/warn and bound contexts), and
+all custom path policies (including bound contexts), and
 exclusions before preparation I/O. Cached accesses cannot satisfy callback audits
 or first-content-observation promises; these are never silently skipped.
 A read-only view, advisory lock or image digest is not an ownership proof.

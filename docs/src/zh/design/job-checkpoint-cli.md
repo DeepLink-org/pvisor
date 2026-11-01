@@ -50,7 +50,7 @@ pvisor
 │   └── gc                 回收所在内容库的无引用对象与遗留暂存
 ```
 
-`tui/replay/cache/memory-pool` 保持其工具定位，不产生与 Job 并行的产品实例身份。默认执行短写 `pvisor -- COMMAND` 继续等价于 `pvisor spawn -- COMMAND`。
+`replay/cache/memory-pool` 保持其工具定位，不产生与 Job 并行的产品实例身份。默认执行短写 `pvisor -- COMMAND` 继续等价于 `pvisor spawn -- COMMAND`。
 
 不新增 `job run`、`vm run` 或 `snapshot run` 作为目标公共工作流。
 
@@ -98,7 +98,7 @@ pvisor spawn [现有运行、策略、记录与资源选项] \
 
 **不新增必需的启动标志，不要求 `--checkpointable`。** 保存能力由已经选择的 executor、rootfs、文件系统、设备和网络配置推导，在 Job 元数据与 status 中记录。用户仍通过原有方式启动 Job，在需要时请求 suspend、checkpoint 或 execution fork。
 
-run 的参数解析、默认 executor、命令与环境、CPU/内存、stdio、TUI、策略安装、stage 选择与结果接受语义尽可能保持。它不因“以后可能保存”而静默关闭 DAX、网络或设备，不把 rootfs 改成另一种视图，也不默认开启压缩/pager或完整复制所有输入。
+run 的参数解析、默认 executor、命令与环境、CPU/内存、stdio、策略安装、stage 选择与结果接受语义尽可能保持。它不因“以后可能保存”而静默关闭 DAX、网络或设备，不把 rootfs 改成另一种视图，也不默认开启压缩/pager或完整复制所有输入。
 
 首版支持矩阵仍限定经过验收的配置；完整快照、Run/Attempt/Bundle、stage、文件版本与前像归属接通后才声明对应能力。历史独立 snapshot runner 不构成普通 Job 已接通的依据。
 
@@ -165,14 +165,14 @@ pvisor suspend JOB [--ram-storage raw|compressed] \
 ### 4.6 resume
 
 ```sh
-pvisor resume JOB [--tui] [--request-id ID]
+pvisor resume JOB [--request-id ID]
 ```
 
 仅从 suspended head 继续同一 Job。保持 JobId，生成新 AttemptId 和执行权代际；验证兼容性与完整引用，创建可写工作视图，安装状态后执行。
 
 不接受新命令、rootfs、CPU/内存或策略覆盖。配置变化通过 fork workspace 或新 run 完成；首版不提供不可靠的执行态参数变更。
 
-命令前台持有终端，与 run 类似；`--tui` 仅改变宿主展示，不能假装恢复旧宿主 TTY/管道或外部连接。允许的 console endpoint 重建须由 executor profile 声明。
+命令前台持有终端，与 run 类似；不能假装恢复旧宿主 TTY/管道或外部连接。允许的 console endpoint 重建须由 executor profile 声明。
 
 运行失败：开始执行之前失败时保留 suspended head，可重试；开始执行之后失败不能自动把 head 标为仍可无副作用重试。记录新 Attempt 及实际状态，恢复到旧点需要显式 fork。
 
@@ -181,7 +181,7 @@ pvisor resume JOB [--tui] [--request-id ID]
 ```sh
 pvisor fork JOB [--state workspace|execution] [--checkpoint ID] \
   [--stage NEW_PATH] [--name NAME] [--request-id ID] \
-  [--ram-storage raw|compressed] [--tui] [-- COMMAND...]
+  [--ram-storage raw|compressed] [-- COMMAND...]
 ```
 
 默认 `--state workspace`，保留现有文件 fork 行为。选择 execution 必须显式给出；不能根据“找到了 VM 检查点”自动切换。
@@ -363,7 +363,6 @@ Job与Attempt记录可以增加版本化、兼容读取的能力和生命周期�
 | gc | 工作区事务与 Job 所属原生存储的 pending、tombstone、未引用 RAM 内容回收；不删除已发布对象，不是跨 Job/Cluster 的全库 GC |
 | import-base/verify-base | 复用 SnapshotStore 的不可变 rootfs 导入和审计；普通 run 可以使用导入返回的 rootfs 路径 |
 | apply/drop/kill | 暂停、交接或执行状态不明时拒绝文件修改；kill 暂停 Job 撤销恢复权并保留历史，然后允许普通工作区决策 |
-| TUI | `resume JOB --tui` 通过现有终端前端启动恢复后的 Attempt |
 
 当前 execution profile 要求 Linux x86_64 或 macOS ARM64、无网络设备、私有 RAM 和拥有完整 rootfs。宿主 `/`、联网、可写 RAM backing、共享内存池和冷页压缩明确返回能力拒绝；不会因此改变原来的 run 配置。恢复绑定相同宿主启动、binary 和固件。guest 的原始环境随检查点保存，发起 resume/fork 的 shell 环境不会替换它。
 

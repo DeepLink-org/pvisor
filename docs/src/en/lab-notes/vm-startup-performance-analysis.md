@@ -150,7 +150,7 @@ Every pVisor sample requires completed records and a zero exit code; VM samples 
 
     Case order is randomized each round. Subtract trimmed Ready from official Ready at the same shape and round, then take the median of differences. The 95% interval uses 5,000 fixed-seed bootstrap resamples. It describes this batch's variation, not systematic differences across machines or workloads.
 
-    The original full matrix disables `PVISOR_STARTUP_TIMING`, with diagnostics enabled in a separate batch; the later P0 remeasurement enables routine logging. Each main trial uses a new working directory, skips personal Agent defaults, disables OverlayNet and inherits stdio, without Gateway or TUI. Native shell and host execution provide context; macOS and Alpine use different shell builds, so subtracting their times does not precisely isolate virtualization overhead.
+    The original full matrix disables `PVISOR_STARTUP_TIMING`, with diagnostics enabled in a separate batch; the later P0 remeasurement enables routine logging. Each main trial uses a new working directory, skips personal Agent defaults, disables OverlayNet and inherits stdio, without Gateway. Native shell and host execution provide context; macOS and Alpine use different shell builds, so subtracting their times does not precisely isolate virtualization overhead.
 
 ### Routine startup diagnostics
 
@@ -160,7 +160,7 @@ Startup logs help identify which phase accounts for the wait. They are now disab
 
     With `PVISOR_STARTUP_TIMING=1`, the current implementation emits `pvisor-startup level=info` checkpoints. Fields include Unix `timestamp_ms`, `pid`/`ppid`, JSON-quoted `run_id`, `stage`, `monotonic_us` and `process_elapsed_us`. Early process events use `"-"` before Run identity exists; correlate them by PID with later identified events. Parent and runner share the same Run ID. Compute intervals using the host monotonic clock, not the adjustable wall clock.
 
-    Ordinary CLI diagnostics use stderr and can be retained by production collectors. TUI diagnostics use the existing frontend log; a pre-opened dedicated descriptor sends VM runner diagnostics to the same channel without polluting the Agent terminal. Records include no commands, environment variables or credentials. Output is best-effort, adds no fsync and is not recovery metadata.
+    CLI diagnostics use stderr and can be retained by production collectors. Records include no commands, environment variables or credentials. Output is best-effort, adds no fsync and is not recovery metadata.
 
     Unset or `PVISOR_STARTUP_TIMING=0` suppresses checkpoints for uninstrumented benchmarks; only `1` enables logging. Historical measurements used artifacts that enabled logging by default; their archived results do not establish zero logging overhead. `cli.session_started` and `runner.vmm_built` mean Session started and VMM constructed, respectively, not guest or application readiness. There is no generic guest-ready notification yet.
 
@@ -453,4 +453,4 @@ Local raw record `docs/src/assets/benchmarks/.data/startup-linux-20261003.tsv`. 
 
 ## 6. Unmeasured scenarios
 
-Docker, Firecracker, QEMU and controlled Agent tool loops now have same-host measurements; full Ubuntu first boot and part of preparation are reported separately. a3s, real model inference, large projects, public dependency downloads, cold disk caches, TUI, Gateway, concurrent density and application health checks still require separate matrices.
+Docker, Firecracker, QEMU and controlled Agent tool loops now have same-host measurements; full Ubuntu first boot and part of preparation are reported separately. a3s, real model inference, large projects, public dependency downloads, cold disk caches, Gateway, concurrent density and application health checks still require separate matrices.
