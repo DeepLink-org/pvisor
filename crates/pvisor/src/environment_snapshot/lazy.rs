@@ -42,20 +42,28 @@ pub struct RawRamIndex {
     pub sha256: Vec<String>,
 }
 impl RawRamIndex {
-    pub(super) fn capture(file: &File) -> anyhow::Result<Self> {
+    // One pass authenticates the whole sealed file and builds its block index.
+    // The caller must keep this inode private and stable until publication.
+    pub(super) fn capture(file: &File) -> anyhow::Result<(Self, String)> {
         let mut index = Self {
             length: file.metadata()?.len(),
             sha256: Vec::new(),
         };
+        let mut whole = Sha256::new();
         let mut offset = 0;
         while offset < index.length {
             let mut bytes = vec![0; (index.length - offset).min(BLOCK_BYTES as u64) as usize];
             file.read_exact_at(&mut bytes, offset)?;
+            whole.update(&bytes);
             index.sha256.push(hash(&bytes));
             offset += bytes.len() as u64;
         }
+        ensure!(
+            file.metadata()?.len() == index.length,
+            "RAM size changed while indexing"
+        );
         index.validate()?;
-        Ok(index)
+        Ok((index, crate::util::encode_hex(&whole.finalize())))
     }
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         ensure!(
@@ -83,6 +91,11 @@ pub struct SnapshotRamReader {
     backing: Backing,
     store_root: std::path::PathBuf,
     length: u64,
+    // Runtime-only compact view: entries are original authenticated block IDs.
+    // No zero block has an address in this FUSE inode.
+    compact: Option<Vec<usize>>,
+    #[cfg(target_os = "linux")]
+    direct: Option<File>,
     // Small bounded cache avoids repeatedly decoding a block for 4 KiB faults.
     // The kernel page cache is the primary decoded cache.
     cache: lru::LruCache<usize, (Vec<u8>, Option<crate::cache_budget::Charge>)>,
@@ -160,9 +173,102 @@ impl SnapshotRamReader {
                 .ok_or_else(|| anyhow::anyhow!("missing snapshot store"))?
                 .canonicalize()?,
             length,
+            compact: None,
+            #[cfg(target_os = "linux")]
+            direct: None,
             cache: lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap()),
         })
     }
+    /// Select a runtime-only nonzero view after the publication/index has been
+    /// authenticated by the host. Capture and durable file formats are unchanged.
+    pub(crate) fn compact_zero_restore(
+        &mut self,
+    ) -> anyhow::Result<Vec<pvisor_vm::api::RamRestoreExtent>> {
+        #[cfg(target_os = "linux")]
+        {
+            use pvisor_vm::api::RamRestoreExtent;
+            use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+            ensure!(self.compact.is_none(), "RAM view already selected");
+            let Backing::Raw {
+                file,
+                index: Some(index),
+            } = &self.backing
+            else {
+                return Ok(Vec::new());
+            };
+            // Restrict this first implementation to full authenticated blocks.
+            // A short tail retains the original view, never a guessed zero range.
+            if self.length % BLOCK_BYTES as u64 != 0 {
+                return Ok(Vec::new());
+            }
+            let zero = hash(&vec![0; BLOCK_BYTES]);
+            let mut extents: Vec<RamRestoreExtent> = Vec::new();
+            let mut blocks = Vec::new();
+            for (i, digest) in index.sha256.iter().enumerate() {
+                let backing_offset = if digest == &zero {
+                    None
+                } else {
+                    let offset = blocks.len() as u64 * BLOCK_BYTES as u64;
+                    blocks.push(i);
+                    Some(offset)
+                };
+                if let Some(last) =
+                    extents
+                        .last_mut()
+                        .filter(|last| match (last.backing_offset, backing_offset) {
+                            (None, None) => true,
+                            (Some(a), Some(b)) => a + last.length == b,
+                            _ => false,
+                        })
+                {
+                    last.length += BLOCK_BYTES as u64;
+                } else {
+                    extents.push(RamRestoreExtent {
+                        offset: i as u64 * BLOCK_BYTES as u64,
+                        length: BLOCK_BYTES as u64,
+                        backing_offset,
+                    });
+                }
+            }
+            if blocks.len() == index.sha256.len() || extents.len() > 8192 {
+                return Ok(Vec::new());
+            }
+            // Independent open description: never change the source/capture FD.
+            // Direct I/O prevents lower-file readahead from filling zero ranges
+            // adjacent to a requested nonzero block. Unsupported storage fails
+            // explicitly; it must not silently defeat the selected zero contract.
+            let direct = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+            let a = file.metadata()?;
+            let b = direct.metadata()?;
+            ensure!(
+                a.dev() == b.dev() && a.ino() == b.ino() && a.len() == b.len(),
+                "RAM direct reader identity mismatch"
+            );
+            self.direct = Some(direct);
+            self.compact = Some(blocks);
+            Ok(extents)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Retain the exact authenticated raw input inode, never the FUSE mapping.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn raw_preparation_cache(&self) -> io::Result<Option<File>> {
+        match &self.backing {
+            Backing::Raw {
+                file,
+                index: Some(_),
+            } => file.try_clone().map(Some),
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn compressed_base(&self) -> Option<std::sync::Arc<super::blocks::PinnedRamBlocks>> {
         match &self.backing {
             Backing::Compressed(base) => Some(base.clone()),
@@ -170,20 +276,26 @@ impl SnapshotRamReader {
         }
     }
     pub fn len(&self) -> u64 {
-        self.length
+        self.compact.as_ref().map_or(self.length, |blocks| {
+            blocks.len() as u64 * BLOCK_BYTES as u64
+        })
     }
     pub fn is_empty(&self) -> bool {
-        self.length == 0
+        self.len() == 0
     }
 
     /// Reads across block boundaries and short tails, checking complete blocks
     /// even for partial requests. A corrupt block never supplies unchecked bytes.
     pub fn read_at(&mut self, offset: u64, output: &mut [u8]) -> anyhow::Result<usize> {
-        let length = self.length.saturating_sub(offset).min(output.len() as u64) as usize;
+        let length = self.len().saturating_sub(offset).min(output.len() as u64) as usize;
         let mut copied = 0;
         while copied < length {
             let position = offset + copied as u64;
-            let index = (position / BLOCK_BYTES as u64) as usize;
+            let view_index = (position / BLOCK_BYTES as u64) as usize;
+            let index = self
+                .compact
+                .as_ref()
+                .map_or(view_index, |blocks| blocks[view_index]);
             let start = (position % BLOCK_BYTES as u64) as usize;
             let mut uncached = None;
             if !self.cache.contains(&index) {
@@ -195,6 +307,13 @@ impl SnapshotRamReader {
                         let block_offset = index as u64 * BLOCK_BYTES as u64;
                         let mut bytes =
                             vec![0; (self.length - block_offset).min(BLOCK_BYTES as u64) as usize];
+                        #[cfg(target_os = "linux")]
+                        if let Some(direct) = &self.direct {
+                            read_direct_block(direct, &mut bytes, block_offset)?;
+                        } else {
+                            file.read_exact_at(&mut bytes, block_offset)?;
+                        }
+                        #[cfg(not(target_os = "linux"))]
                         file.read_exact_at(&mut bytes, block_offset)?;
                         if let Some(seal) = seal {
                             ensure!(
@@ -226,6 +345,44 @@ impl SnapshotRamReader {
         }
         Ok(copied)
     }
+}
+
+// One aligned, bounded scratch buffer. It never becomes guest RAM or a
+// persistent second baseline. No buffered fallback after a direct-I/O failure.
+#[cfg(target_os = "linux")]
+fn read_direct_block(file: &File, output: &mut [u8], offset: u64) -> io::Result<()> {
+    let length = output.len();
+    if length != BLOCK_BYTES || offset % BLOCK_BYTES as u64 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unaligned direct RAM block",
+        ));
+    }
+    // SAFETY: a fresh anonymous mapping owns exactly length writable bytes.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the mapping is live and exclusively borrowed until munmap below.
+    let buffer = unsafe { std::slice::from_raw_parts_mut(ptr.cast::<u8>(), length) };
+    let result = file.read_exact_at(buffer, offset);
+    if result.is_ok() {
+        output.copy_from_slice(buffer);
+    }
+    // SAFETY: exact mapping allocated above, with no remaining borrowers.
+    unsafe {
+        libc::munmap(ptr, length);
+    }
+    result
 }
 
 /// Must outlive the VM and its RAM mappings. Dropping it unmounts the pager and
@@ -823,5 +980,140 @@ impl Filesystem for RamFs {
                 reply.error(libc::EIO);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_index_tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_advice_handle_keeps_index_verification_on_future_reads() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let object = dir.path().join("objects").join("test");
+        fs::create_dir_all(&object).unwrap();
+        let path = object.join("ram.bin");
+        fs::write(&path, vec![3u8; BLOCK_BYTES * 2]).unwrap();
+        let (index, digest) = RawRamIndex::capture(&File::open(&path).unwrap()).unwrap();
+        let mut reader =
+            SnapshotRamReader::from_parts(&object, None, Some(&index), &digest).unwrap();
+        let source = reader.raw_preparation_cache().unwrap().unwrap();
+        assert_eq!(
+            unsafe { libc::posix_fadvise(source.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) },
+            0
+        );
+        let mut byte = [0];
+        reader.read_at(0, &mut byte).unwrap();
+        assert_eq!(byte, [3]);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .write_all_at(&[9], BLOCK_BYTES as u64)
+            .unwrap();
+        assert!(reader.read_at(BLOCK_BYTES as u64, &mut byte).is_err());
+        let unindexed = SnapshotRamReader::from_parts(&object, None, None, &digest).unwrap();
+        assert!(unindexed.raw_preparation_cache().unwrap().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compact_zero_view_reads_only_authenticated_nonzero_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let object = dir.path().join("objects/test");
+        fs::create_dir_all(&object).unwrap();
+        let path = object.join("ram.bin");
+        let mut bytes = vec![0; BLOCK_BYTES * 5];
+        bytes[BLOCK_BYTES..BLOCK_BYTES * 2].fill(3);
+        bytes[BLOCK_BYTES * 4..].fill(7);
+        fs::write(&path, &bytes).unwrap();
+        let (index, digest) = RawRamIndex::capture(&File::open(&path).unwrap()).unwrap();
+        let mut reader =
+            SnapshotRamReader::from_parts(&object, None, Some(&index), &digest).unwrap();
+        let extents = reader.compact_zero_restore().unwrap();
+        assert_eq!(extents.len(), 4);
+        assert_eq!(reader.len(), (BLOCK_BYTES * 2) as u64);
+        assert_eq!(reader.compact.as_ref().unwrap(), &[1, 4]);
+        let mut output = vec![0; BLOCK_BYTES + 2];
+        reader
+            .read_at((BLOCK_BYTES - 1) as u64, &mut output)
+            .map(|n| assert_eq!(n, BLOCK_BYTES + 1))
+            .unwrap();
+        assert_eq!(output[0], 3);
+        assert!(output[1..BLOCK_BYTES + 1].iter().all(|b| *b == 7));
+        // Canonical zero authority comes from the authenticated index, not mutable
+        // source bytes. Nonzero corruption is still rejected on the next read.
+        let writable = OpenOptions::new().write(true).open(&path).unwrap();
+        writable.write_all_at(&[9], 0).unwrap();
+        writable
+            .write_all_at(&[9], (BLOCK_BYTES * 4) as u64)
+            .unwrap();
+        writable.sync_all().unwrap();
+        reader.cache.clear();
+        assert!(reader.read_at(BLOCK_BYTES as u64, &mut [0]).is_err());
+        assert!(reader.compact_zero_restore().is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compact_all_zero_and_unindexed_views_have_explicit_geometry() {
+        let dir = tempfile::tempdir().unwrap();
+        let object = dir.path().join("objects/test");
+        fs::create_dir_all(&object).unwrap();
+        let path = object.join("ram.bin");
+        fs::write(&path, vec![0; BLOCK_BYTES * 2]).unwrap();
+        let (index, digest) = RawRamIndex::capture(&File::open(&path).unwrap()).unwrap();
+        let mut reader =
+            SnapshotRamReader::from_parts(&object, None, Some(&index), &digest).unwrap();
+        let extents = reader.compact_zero_restore().unwrap();
+        assert_eq!(extents.len(), 1);
+        assert_eq!(extents[0].backing_offset, None);
+        assert!(reader.is_empty());
+        assert_eq!(reader.read_at(0, &mut [1]).unwrap(), 0);
+        let mut legacy = SnapshotRamReader::from_parts(&object, None, None, &digest).unwrap();
+        assert!(legacy.compact_zero_restore().unwrap().is_empty());
+        assert_eq!(legacy.len(), (BLOCK_BYTES * 2) as u64);
+    }
+
+    #[test]
+    fn fused_raw_digest_matches_logical_bytes_and_each_block() {
+        for length in [
+            1,
+            BLOCK_BYTES - 1,
+            BLOCK_BYTES,
+            BLOCK_BYTES + 1,
+            3 * BLOCK_BYTES + 17,
+        ] {
+            let file = tempfile::tempfile().unwrap();
+            file.set_len(length as u64).unwrap();
+            let mut expected = vec![0; length];
+            // Exercise holes, block boundaries and a short final block.
+            for offset in [0, length / 2, length - 1] {
+                file.write_all_at(&[0xa5], offset as u64).unwrap();
+                expected[offset] = 0xa5;
+            }
+            let (index, digest) = RawRamIndex::capture(&file).unwrap();
+            assert_eq!(index.length, length as u64);
+            assert_eq!(digest, hash(&expected));
+            assert_eq!(
+                index.sha256,
+                expected.chunks(BLOCK_BYTES).map(hash).collect::<Vec<_>>()
+            );
+            file.write_all_at(&[0x42], (length - 1) as u64).unwrap();
+            let (changed, digest_after) = RawRamIndex::capture(&file).unwrap();
+            assert_ne!(digest, digest_after);
+            assert_ne!(index.sha256.last(), changed.sha256.last());
+        }
+    }
+
+    #[test]
+    fn fused_raw_index_rejects_empty_or_unreadable_files() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        assert!(RawRamIndex::capture(file.as_file()).is_err());
+        file.as_file().set_len(64).unwrap();
+        let write_only = OpenOptions::new().write(true).open(file.path()).unwrap();
+        assert!(RawRamIndex::capture(&write_only).is_err());
     }
 }

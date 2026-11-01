@@ -1716,3 +1716,36 @@ unrelated mount namespaces do not extend the serving lifetime. Active-use
 writeback and generation publication are unchanged. macOS retains its existing
 shutdown path. The ignored namespace-retention regression test requires Linux
 FUSE and permitted user/mount namespaces; run it explicitly on a suitable host.
+
+### Protected workspace seed normalization
+
+`SnapshotState::prepare_protected_workspace_seed` removes only redundant
+single-lower target/baseline aliases in a private snapshot copy, preserving the
+effective audit baseline and observation behavior. Distinct targets, private-root
+overlap, copied hard-link topology and writable saved lower handles are refused.
+Failure leaves the original state unchanged. The coordinator must independently
+verify a clean captured upper, pin the complete immutable lower, enforce runner
+read-only access and retain apply protection for the restored stage lifetime.
+This method grants no apply authority; ordinary shared-lower validation is unchanged.
+The subsequent existing rebinding validates saved inode/content identities and
+keeps upper/work/journal private. No snapshot wire schema is changed.
+
+### Authenticated anonymous-zero snapshot RAM
+
+Linux local indexed Raw restore can derive full 64 KiB zero extents from the
+already authenticated block index. The runtime FUSE view contains only nonzero
+blocks; it is a virtual view, not another RAM file. Nonzero reads retain block
+SHA-256 verification and use an independent O_DIRECT descriptor to avoid source
+file readahead into zero ranges. Unsupported direct I/O fails explicitly. Capture,
+publication checks, durable Raw format, filesystem apply and isolation are unchanged.
+
+`MachineRestore.ram_extents` is caller-authenticated runtime geometry. Empty uses
+the original file. A nonempty plan covers logical RAM exactly with aligned zero
+and contiguous compact-file extents. The VM reserves the original memory regions,
+keeps zeros private anonymous, and maps nonzero runs MAP_PRIVATE inside them before
+exposing guest memory; KVM memory-slot topology is unchanged. Invalid plans fail
+before mapping. Nonzero COW writes and anonymous writes remain branch-private.
+Local indexed Raw with a short block tail, no zero blocks, or more than 8192 runs,
+node-owned views, compressed snapshots and other platforms retain their previous
+path. This optimization does not enable offload on restored COW memory and does
+not promise a measured total-memory saving before workload validation.

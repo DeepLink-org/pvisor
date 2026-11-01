@@ -215,6 +215,25 @@ fn copy_sparse_ram(source: &File, destination: &File) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Only call for a newly created, synced, verified inode before it is published.
+// This is advisory file-cache eviction, never MADV_DONTNEED on guest COW memory.
+// Failure must not change snapshot correctness or publication success.
+fn release_prepublication_ram_cache(file: &File) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the borrowed File keeps the descriptor live for this call.
+        let error =
+            unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if error != 0 {
+            tracing::warn!(error = %std::io::Error::from_raw_os_error(error),
+                "could not release unpublished RAM preparation cache");
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = file;
+}
+
 pub(super) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -1224,6 +1243,8 @@ impl PendingEnvironment {
         ensure!(capture.metadata()?.len() > 0, "empty captured RAM");
         let capture_hash = file_hash(&capture_path)?;
         let mut ram_hash = capture_hash.clone();
+        let mut ram_index = None;
+        let mut sealed_ram = None;
         let ram_blocks = if compressed {
             let _publishing = gate(&self.store, false)?;
             let references = self.staging.path().join("ram-blocks");
@@ -1243,15 +1264,22 @@ impl PendingEnvironment {
             let sealed_path = self.staging.path().join("ram.bin");
             let sealed = OpenOptions::new()
                 .create_new(true)
+                .read(true)
                 .write(true)
                 .mode(0o600)
                 .open(&sealed_path)?;
             copy_sparse_ram(&capture, &sealed)?;
             ensure!(
-                file_hash(&capture_path)? == capture_hash
-                    && file_hash(&sealed_path)? == capture_hash,
+                file_hash(&capture_path)? == capture_hash,
                 "captured RAM changed while sealing"
             );
+            let (index, sealed_hash) = RawRamIndex::capture(&sealed)?;
+            ensure!(
+                sealed_hash == capture_hash,
+                "captured RAM changed while sealing"
+            );
+            ram_index = Some(index);
+            sealed_ram = Some(File::open(&sealed_path)?);
             None
         };
         ensure!(
@@ -1261,13 +1289,6 @@ impl PendingEnvironment {
         if remove_capture {
             fs::remove_file(capture_path)?;
         }
-        let ram_index = if compressed {
-            None
-        } else {
-            Some(RawRamIndex::capture(&File::open(
-                self.staging.path().join("ram.bin"),
-            )?)?)
-        };
         let manifest = EnvironmentManifest {
             version: if stage_bases.is_some() {
                 if compressed { 5 } else { 4 }
@@ -1311,6 +1332,9 @@ impl PendingEnvironment {
         let id = digest(&bytes);
         write_synced(&self.staging.path().join("manifest.json"), &bytes)?;
         File::open(self.staging.path())?.sync_all()?;
+        if let Some(file) = &sealed_ram {
+            release_prepublication_ram_cache(file);
+        }
         #[cfg(target_os = "linux")]
         let private_files = if matches!(publication_source, PublicationSource::Native { .. }) {
             manifest
@@ -1763,6 +1787,20 @@ impl PublishedEnvironment {
         Ok(())
     }
 
+    /// Preflight representation limits without publishing a tree or granting
+    /// sharing authority. Integrity and ownership are still checked by share.
+    pub(crate) fn can_share_layer(&self, relative: &Path) -> anyhow::Result<bool> {
+        #[cfg(target_os = "linux")]
+        if self.manifest.filesystem_blocks.is_some() {
+            return Ok(false);
+        }
+        let (_, expected) = self.layer(relative)?;
+        Ok(
+            super::filesystems::shared_manifest(relative.as_os_str().as_bytes(), &expected)?
+                .is_some(),
+        )
+    }
+
     /// Share a fully verified tree through persistent per-Attempt marker links.
     /// The consumer MUST enforce read-only access. Writable backing must use
     /// materialize/materialize_layer instead. Dropping this owner preserves
@@ -1972,5 +2010,179 @@ mod owned_stage_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod preparation_cache_tests {
+    use super::*;
+
+    #[test]
+    fn releasing_preparation_cache_preserves_verified_bytes_and_index() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(3 * crate::ram_backing::BLOCK_BYTES as u64 + 13)
+            .unwrap();
+        file.write_all_at(b"first", 0).unwrap();
+        file.write_all_at(b"tail", file.metadata().unwrap().len() - 4)
+            .unwrap();
+        file.sync_all().unwrap();
+        let (before, digest) = RawRamIndex::capture(&file).unwrap();
+        release_prepublication_ram_cache(&file);
+        let (after, digest_after) = RawRamIndex::capture(&file).unwrap();
+        assert_eq!(digest, digest_after);
+        assert_eq!(before.length, after.length);
+        assert_eq!(before.sha256, after.sha256);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl PublishedEnvironment {
+    pub(super) fn source_cache_job(
+        &self,
+        layers: &[(PathBuf, std::sync::Arc<super::SharedFilesystemLayer>)],
+    ) -> anyhow::Result<Option<super::restore_cache::Job>> {
+        use super::TreeObject;
+        use super::restore_cache::{Job, MAX_FILES, MAX_PATH_BYTES, SourceLayer};
+        use std::os::unix::fs::MetadataExt;
+        if layers.is_empty() {
+            return Ok(None);
+        }
+        let mut result = Vec::new();
+        let mut new_pools = Vec::new();
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        for (relative, owner) in layers {
+            if let Some(job) = owner.take_preparation_cache()? {
+                new_pools.push(job);
+            }
+            // Already referenced pool layers must never have their hot cache evicted.
+            if self
+                .manifest
+                .filesystem_layers
+                .iter()
+                .any(|l| l.path == relative.as_os_str().as_bytes())
+            {
+                continue;
+            }
+            let (source, inventory) = self.layer(relative)?;
+            let open = |p: &Path| {
+                OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(p)
+            };
+            let source = open(&source)?;
+            let shared = open(owner.root())?;
+            let a = source.metadata()?;
+            let b = shared.metadata()?;
+            if (a.dev(), a.ino()) == (b.dev(), b.ino()) {
+                continue;
+            }
+            let mut paths = Vec::new();
+            for entry in inventory.entries {
+                if !matches!(entry.object, TreeObject::File { .. }) {
+                    continue;
+                }
+                count += 1;
+                bytes += entry.path.len();
+                if count > MAX_FILES || bytes > MAX_PATH_BYTES {
+                    return Ok(None);
+                }
+                paths.push(PathBuf::from(std::ffi::OsStr::from_bytes(&entry.path)));
+            }
+            result.push(SourceLayer {
+                source,
+                shared,
+                paths,
+                _owner: owner.clone(),
+            });
+        }
+        if result.is_empty() && new_pools.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Job {
+            layers: result,
+            new_pools,
+            _reference: self._reference.try_clone()?,
+        }))
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod source_cache_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    #[test]
+    fn cleanup_pins_original_and_preserves_shared_and_private_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("layer")).unwrap();
+        fs::write(source.join("layer/data"), vec![7; 8192]).unwrap();
+        fs::hard_link(source.join("layer/data"), source.join("layer/alias")).unwrap();
+        fs::write(source.join("layer/single"), b"single inode").unwrap();
+        let store = SnapshotStore::new(&temp.path().join("store")).unwrap();
+        let binding = Compatibility {
+            host_boot: "boot".into(),
+            build: "build".into(),
+            firmware: "firmware".into(),
+            profile: "test".into(),
+        };
+        let pending = store.begin().unwrap();
+        pending.create_ram().unwrap().write_all(b"ram").unwrap();
+        let id = pending
+            .publish(&source, b"machine", binding.clone())
+            .unwrap();
+        let snapshot = store.open_for_restore(&id, &binding).unwrap();
+        let references = temp.path().join("refs");
+        fs::create_dir(&references).unwrap();
+        let owner = std::sync::Arc::new(
+            snapshot
+                .share_readonly_layer(Path::new("layer"), &references)
+                .unwrap(),
+        );
+        let (original, inventory) = snapshot.layer(Path::new("layer")).unwrap();
+        let original_inode = fs::metadata(original.join("single")).unwrap().ino();
+        assert_ne!(
+            original_inode,
+            fs::metadata(owner.root().join("single")).unwrap().ino()
+        );
+        let job = snapshot
+            .source_cache_job(&[(PathBuf::from("layer"), owner.clone())])
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.new_pools.len(), 1);
+        // Later successful preparation replaces source jobs but must retain the
+        // first publication's one-shot pool capability.
+        let mut later = snapshot
+            .source_cache_job(&[(PathBuf::from("layer"), owner.clone())])
+            .unwrap()
+            .unwrap();
+        assert!(later.new_pools.is_empty());
+        let reused = std::sync::Arc::new(
+            snapshot
+                .share_readonly_layer(Path::new("layer"), &references)
+                .unwrap(),
+        );
+        assert!(reused.take_preparation_cache().unwrap().is_none());
+        later.absorb_new_pools(job);
+        assert_eq!(later.new_pools.len(), 1);
+        let job = later;
+        let private = temp.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("data"), b"private changes").unwrap();
+        drop(snapshot);
+        assert!(
+            store.delete(&id).is_err(),
+            "cleanup must pin the source object"
+        );
+        job.release();
+        verify_tree(&original, &inventory).unwrap();
+        verify_tree(owner.root(), &inventory).unwrap();
+        assert_eq!(
+            original_inode,
+            fs::metadata(original.join("single")).unwrap().ino()
+        );
+        assert_eq!(fs::read(private.join("data")).unwrap(), b"private changes");
+        store.open_for_restore(&id, &binding).unwrap();
     }
 }

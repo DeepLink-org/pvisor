@@ -84,6 +84,7 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
             parent
         };
         let restore = MachineRestore {
+            ram_extents: Vec::new(),
             ram_file: Arc::new(file),
             state: serde_json::from_value::<MachineSnapshot>(serde_json::json!({
                 "version": 1, "cpus": [], "devices": [],

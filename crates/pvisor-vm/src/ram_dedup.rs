@@ -352,9 +352,9 @@ mod tests {
                     file_offset: 0,
                 }];
                 let first =
-                    crate::memory::map_snapshot_ram(&mappings, file.clone(), &ranges).unwrap();
+                    crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
                 let second =
-                    crate::memory::map_snapshot_ram(&mappings, file.clone(), &ranges).unwrap();
+                    crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
                 for memory in [&first, &second] {
                     assert_eq!(
                         memory
@@ -429,7 +429,7 @@ mod tests {
                         .try_clone()
                         .unwrap(),
                 );
-                let third = crate::memory::map_snapshot_ram(&mappings, retained, &ranges).unwrap();
+                let third = crate::memory::map_snapshot_ram(&mappings, retained, &[], &ranges).unwrap();
                 verify(&third, &expected);
                 emit(
                     trial,
@@ -758,8 +758,8 @@ mod tests {
             file_offset: 0,
         }];
         let ranges = [(GuestAddress(0), page)];
-        let first = crate::memory::map_snapshot_ram(&mappings, file.clone(), &ranges).unwrap();
-        let second = crate::memory::map_snapshot_ram(&mappings, file.clone(), &ranges).unwrap();
+        let first = crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
+        let second = crate::memory::map_snapshot_ram(&mappings, file.clone(), &[], &ranges).unwrap();
         // Real advice is allowed to be unavailable on the test host; it must
         // never prevent private COW writes or require a running KSM scanner.
         for memory in [&first, &second] {
@@ -802,7 +802,7 @@ mod tests {
                 .try_clone()
                 .unwrap(),
         );
-        let third = crate::memory::map_snapshot_ram(&mappings, retained_file, &ranges).unwrap();
+        let third = crate::memory::map_snapshot_ram(&mappings, retained_file, &[], &ranges).unwrap();
         third.read_slice(&mut bytes, GuestAddress(0)).unwrap();
         assert_eq!(&bytes, b"baseline");
     }
