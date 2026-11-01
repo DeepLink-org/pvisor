@@ -1,0 +1,47 @@
+<section class="pv-demo-section" id="stagebox-demo" aria-labelledby="demo-title">
+  <header class="pv-section-heading">
+    <div><p class="pv-kicker">STAGEBOX IN MOTION</p><h2 id="demo-title">{% if zh %}让几个 Agent 一起做，最后把改动接回来。{% else %}Let agents work in parallel. Bring the changes home.{% endif %}</h2></div>
+    <a href="guides/review-apply/">{% if zh %}审查与接收指南 ↗{% else %}Review and apply guide ↗{% endif %}</a>
+  </header>
+  <p class="pv-demo-intro">{% if zh %}多个 Agent 分头修改、测试，你继续在原项目里工作。各自的尝试先留在沙盘里，等结果出来，再检查差异和冲突，接收需要的改动。{% else %}Agents edit and test in separate stages while you keep working in the original project. When their results are ready, review the diffs, check for conflicts, and accept the changes you need.{% endif %}</p>
+  <div class="pv-demo" data-pv-demo data-locale="{{ 'zh' if zh else 'en' }}">
+    <div class="pv-demo-toolbar">
+      <span class="pv-demo-label"><span class="pv-status-dot"></span> checkout / {% if zh %}协作演示{% else %}collaboration demo{% endif %}</span>
+      <div class="pv-demo-controls" hidden>
+        <button type="button" data-action="reset" aria-label="{% if zh %}从头重放{% else %}Restart{% endif %}">↺</button>
+        <button type="button" data-action="play">{% if zh %}播放{% else %}Play{% endif %}</button>
+        <button type="button" data-action="next" aria-label="{% if zh %}下一个事件{% else %}Next event{% endif %}">→</button>
+        <label><span class="pv-visually-hidden">{% if zh %}播放速度{% else %}Playback speed{% endif %}</span><select data-speed><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option></select></label>
+      </div>
+    </div>
+    <div class="pv-demo-fallback" data-fallback>
+      <p>{% if zh %}金额、库存、优惠券各自写入私有暂存区。用户修改了原项目，旧的金额修复因此遇到冲突。重新修复后，按文件审查和接收，再验证组合起来的结果。{% else %}Money, stock, and coupon fixes write to private stages. Your edit causes a conflict with the older money proposal. Retry from the current project, review and accept selected files, then test the combined result.{% endif %}</p>
+      <a href="guides/review-apply/">{% if zh %}查看完整流程{% else %}Read the workflow{% endif %} →</a>
+    </div>
+    <div class="pv-simulation" hidden>
+      <div class="pv-sim-metrics" data-metrics></div>
+      <div class="pv-sim-columns">
+        <section class="pv-sim-history" aria-labelledby="history-title">
+          <div class="pv-pane-heading"><h3 id="history-title">{% if zh %}尝试与接收{% else %}Attempts & acceptance{% endif %}</h3><button type="button" data-action="fit" aria-pressed="false">{% if zh %}全部历史{% else %}Fit history{% endif %}</button></div>
+          <div class="pv-history-canvas" data-history-canvas></div>
+          <div class="pv-history-navigation"><label for="pv-history-range">{% if zh %}浏览历史{% else %}Browse history{% endif %}</label><input id="pv-history-range" data-history-range type="range" min="0" max="0" value="0" step="1"><button type="button" data-action="follow">{% if zh %}回到现在{% else %}Follow{% endif %}</button></div>
+          <div class="pv-history-legend"><span>◇ {% if zh %}写入 / 测试{% else %}edit / test{% endif %}</span><span>× {% if zh %}失败 / 冲突{% else %}failure / conflict{% endif %}</span><span>┈ {% if zh %}接收{% else %}apply{% endif %}</span><span>○ {% if zh %}丢弃{% else %}drop{% endif %}</span></div>
+        </section>
+        <section class="pv-sim-workspace" aria-labelledby="jobs-title">
+          <div class="pv-pane-heading"><h3 id="jobs-title">{% if zh %}任务与暂存区{% else %}Jobs & stages{% endif %}</h3><button type="button" data-action="overview">{% if zh %}总览{% else %}Overview{% endif %}</button></div>
+          <div class="pv-sim-jobs" data-jobs></div>
+          <div class="pv-project-summary" data-project></div>
+        </section>
+        <section class="pv-sim-inspector" aria-labelledby="inspector-title">
+          <div class="pv-pane-heading"><h3 id="inspector-title" data-inspector-title>{% if zh %}协调记录{% else %}Coordination{% endif %}</h3><span data-inspector-code>checkout</span></div>
+          <div data-inspector></div>
+        </section>
+      </div>
+      <div class="pv-story-caption"><span data-chapter-number>01</span><p data-caption></p></div>
+      <div class="pv-story-chapters" data-chapters aria-label="{% if zh %}跳转到情节{% else %}Jump to a chapter{% endif %}"></div>
+      <div class="pv-playback-track"><label for="pv-time-range">{% if zh %}演示进度{% else %}Playback{% endif %}</label><input id="pv-time-range" data-time-range type="range" min="0" max="150" value="28" step="1"><output data-clock>0:28 / 2:30</output></div>
+      <div class="pv-visually-hidden" data-announcement aria-live="polite"></div>
+    </div>
+  </div>
+  <p class="pv-demo-footnote">{% if zh %}浏览器内的工作流示意，使用 Host Jobs 与文件暂存；任务调度和测试输出为示例。分叉从已停止任务的文件检查点开始，接收前先审查，网络访问另受策略约束。{% else %}A browser simulation of Host Jobs and staged files, with example coordination and test output. File forks start from stopped Jobs; acceptance follows review. Network access has separate policy controls.{% endif %} <a href="guides/fork-checkpoint/">{% if zh %}文件分叉的条件 ↗{% else %}File-fork requirements ↗{% endif %}</a></p>
+</section>

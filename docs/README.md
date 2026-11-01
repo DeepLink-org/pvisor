@@ -232,6 +232,29 @@ Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the 
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
+The homepage includes `home-mechanisms.html` for six illustrated mechanisms and
+four supporting capabilities, and `home-demo.html` for the stagebox walkthrough.
+Both templates carry paired locale text. `home-showcase.css` and `home-demo.js`
+load only on the homepage. Lead the mechanism cards with environment reuse,
+staging, and conflict checks; state reuse and resource management follow.
+The walkthrough is a deterministic browser simulation, not an executor connection.
+`home-scenario.js` owns the order-service story and the file state model: first
+observations, private proposals, stop/fork, conflict checks, selected apply, and
+drop. `home-history.js` lays out its event history; `home-demo.js` owns playback,
+selection, the task board, and the inspector. Counters derive from model state;
+test output is illustrative, not an executed benchmark. Keep Host file forks
+separate from VM execution snapshots, and show coordination as an example
+workflow rather than a pVisor scheduler. File acceptance follows review.
+
+Start playback when the demo enters the viewport and resume after an offscreen
+or background pause. Preserve manual pauses and timeline selections; do not
+autoplay with reduced motion enabled. Keep keyboard controls usable and the
+initial explanation readable without JavaScript. Mechanism SVGs use short CSS process loops with a
+pause control; pause motion offscreen and honor reduced-motion preferences.
+Dispose observers and listeners during native instant navigation. Check both
+locales at desktop and mobile widths after layout changes, and validate model
+invariants with `node --test tests/home_demo.test.mjs`.
+
 The Zensical version is declared in the `dev` group in `pyproject.toml` and resolved in `uv.lock`. CI runs the documentation
 regression tests and `mise run docs-build -- --require-recorded` before uploading
 `docs/site`; do not duplicate the build commands in the workflow.

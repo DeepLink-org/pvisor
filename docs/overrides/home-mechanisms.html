@@ -1,0 +1,90 @@
+{# Original SVG process diagrams. CSS motion is paused offscreen and can be disabled. #}
+{% macro diagram(kind, label) %}
+<svg class="pv-idea-diagram pv-process-{{ kind }}" viewBox="0 0 300 210" role="img" aria-label="{{ label }}">
+  {% if kind == 'transparent' %}
+  <rect class="pv-box" x="20" y="16" width="260" height="58" rx="6"/><text x="150" y="37">Guest · Linux kernel</text>
+  <text class="pv-muted" x="80" y="57">open / read</text><text class="pv-muted" x="220" y="57">connect</text>
+  <path class="pv-wire" d="M80 74V145M220 74V145"/>
+  <rect class="pv-fill" x="36" y="96" width="88" height="25" rx="4"/><text x="80" y="113">virtio-fs</text>
+  <rect class="pv-fill" x="176" y="96" width="88" height="25" rx="4"/><text x="220" y="113">virtio-net</text>
+  <rect class="pv-box" x="20" y="145" width="260" height="49" rx="6"/><text x="80" y="165">Host files</text><text class="pv-muted" x="80" y="183">Python · libc</text><text x="220" y="165">OverlayNet</text><text class="pv-muted" x="220" y="183">{% if zh %}检查出口{% else %}check egress{% endif %}</text>
+  <circle class="pv-flow-up" cx="80" cy="139" r="4" fill="#80dac0"/><circle class="pv-flow-down" cx="220" cy="80" r="4" fill="#81b8ff"/>
+  {% elif kind == 'stage' %}
+  <text class="pv-muted" x="65" y="25">lower · {% if zh %}原项目{% else %}project{% endif %}</text><text class="pv-muted" x="235" y="25">upper · {% if zh %}私有{% else %}private{% endif %}</text>
+  <rect class="pv-box" x="18" y="42" width="96" height="104" rx="5"/><rect class="pv-box" x="186" y="42" width="96" height="104" rx="5"/>
+  <rect class="pv-fill" x="36" y="61" width="60" height="25" rx="3"/><text x="66" y="78">app.py</text>
+  <path class="pv-wire" d="M116 73H184"/><text class="pv-muted" x="150" y="62">copy-up</text>
+  <g class="pv-stage-copy"><rect x="36" y="61" width="60" height="25" rx="3" fill="#80dac055" stroke="#80dac0"/></g>
+  <g class="pv-phase-b"><rect class="pv-private" x="204" y="61" width="60" height="25" rx="3"/><text x="234" y="78">+ fix</text><text class="pv-green" x="234" y="117">test ✓</text></g>
+  <text class="pv-muted" x="66" y="117">{% if zh %}原文件保留{% else %}unchanged{% endif %}</text>
+  <path class="pv-wire pv-green pv-phase-c" d="M235 148v18H66v-18"/>
+  <text class="pv-green pv-phase-c" x="150" y="193">{% if zh %}审查后接收选中的文件{% else %}Review → apply selected files{% endif %}</text>
+  {% elif kind == 'conflict' %}
+  <path class="pv-wire" d="M50 80H250M50 80C50 135 155 100 155 145"/>
+  <circle class="pv-node" cx="50" cy="80" r="8"/><text x="50" y="57">A</text><text class="pv-muted" x="50" y="30">{% if zh %}首次读取{% else %}first read{% endif %}</text>
+  <g class="pv-phase-b"><circle class="pv-node pv-amber-node" cx="250" cy="80" r="8"/><text x="250" y="57">B</text><text class="pv-muted" x="250" y="30">{% if zh %}你的修改{% else %}your edit{% endif %}</text></g>
+  <g class="pv-phase-b"><circle class="pv-node pv-teal-node" cx="155" cy="145" r="8"/><text x="155" y="170">C · {% if zh %}候选{% else %}proposal{% endif %}</text></g>
+  <g class="pv-phase-c"><path d="M167 142L230 95" fill="none" stroke="#ffaba5" stroke-dasharray="3 3"/><path d="M194 109l12 12m0-12-12 12" stroke="#ffaba5" stroke-width="2"/><text class="pv-amber" x="150" y="200">A ≠ B · {% if zh %}拒绝覆盖{% else %}apply refused{% endif %}</text></g>
+  {% elif kind == 'checkpoint' %}
+  <path class="pv-wire" d="M22 105H104"/><circle class="pv-node" cx="45" cy="105" r="5"/>
+  <rect class="pv-fill" x="91" y="92" width="26" height="26" rx="4"/><text x="104" y="110">▣</text><text class="pv-muted" x="81" y="140">{% if zh %}任务已停止{% else %}Job stopped{% endif %}</text>
+  <g class="pv-phase-b"><path class="pv-wire pv-green" d="M117 105C140 105 135 53 174 53H274"/><circle class="pv-node pv-teal-node" cx="196" cy="53" r="5"/><text class="pv-green" x="222" y="32">{% if zh %}新命令 A{% else %}new command A{% endif %}</text></g>
+  <g class="pv-phase-c"><path class="pv-wire pv-amber" d="M117 105C140 105 135 157 174 157H274"/><circle class="pv-node pv-amber-node" cx="232" cy="157" r="5"/><text class="pv-amber" x="222" y="181">{% if zh %}新命令 B{% else %}new command B{% endif %}</text></g>
+  <text class="pv-muted" x="150" y="205">{% if zh %}从文件检查点继续尝试{% else %}Try again from a file checkpoint{% endif %}</text>
+  {% elif kind == 'memory' %}
+  <text x="55" y="28">VM A</text><text x="245" y="28">VM B</text>
+  {% for x in [25, 215] %}<rect class="pv-fill" x="{{ x }}" y="45" width="60" height="27" rx="3"/><text x="{{ x + 30 }}" y="63">a7f…</text><rect class="pv-private" x="{{ x }}" y="83" width="60" height="27" rx="3"/>{% endfor %}
+  <g class="pv-phase-b"><path class="pv-wire pv-green" d="M85 59H111V147H133"/><path class="pv-wire pv-green pv-until-write" d="M215 59H189V147H167"/><rect class="pv-fill" x="129" y="131" width="42" height="32" rx="4"/><text x="150" y="151">a7f…</text><text class="pv-muted" x="150" y="183">{% if zh %}核验后共享{% else %}verify → share{% endif %}</text></g>
+  <g class="pv-phase-c"><rect class="pv-private" x="215" y="45" width="60" height="27" rx="3"/><text x="245" y="63">b2c…</text><text class="pv-amber" x="245" y="125">write → COW</text></g>
+  <text class="pv-muted" x="150" y="205">{% if zh %}内容相同才共享，写入时分离{% else %}Equal content shares; writes separate{% endif %}</text>
+  {% elif kind == 'offload' %}
+  <text class="pv-muted" x="150" y="25">{% if zh %}驻留内存 · 示意{% else %}Resident memory · schematic{% endif %}</text>
+  <path class="pv-wire" d="M25 44v115h255"/><path class="pv-area" d="M26 64H95V138H203V64H275V158H26Z"/><path class="pv-wire pv-green" d="M26 64H95V138H203V64H275"/>
+  <rect class="pv-box" x="122" y="66" width="55" height="36" rx="4"/><text class="pv-muted" x="150" y="88">state</text>
+  <circle class="pv-offload-cursor" cx="26" cy="64" r="5" fill="#80dac0"/>
+  <text x="57" y="183">{% if zh %}运行{% else %}Run{% endif %}</text><text x="150" y="183">offload</text><text x="245" y="183">{% if zh %}恢复{% else %}Resume{% endif %}</text>
+  <text class="pv-muted" x="150" y="205">{% if zh %}保存执行现场，再卸载内存{% else %}Save state before releasing memory{% endif %}</text>
+  {% endif %}
+</svg>
+{% endmacro %}
+
+{% set ideas = [
+  ('transparent', '用现有环境开始', 'Start where you work', '工具和项目已经在机器上，交给 Agent 就能接着用。', 'Your tools and project are already on the machine. Let the agent use them.', 'Linux 透明 VM 经 virtio-fs 读取宿主环境，保留独立 Guest 内核；需要固定环境时也能选镜像。', 'On Linux, a transparent VM reads the host environment through virtio-fs and keeps its own kernel. Images provide a fixed base when needed.', 'design/vm-runtime/'),
+  ('stage', '改动先留在沙盘', 'Keep edits in a stage', '改代码、跑测试、再修改，Agent 能连续得到真实反馈。', 'Edit, run tests, and adjust. The agent gets real feedback throughout.', '启用暂存后，文件写入私有 upper，后续程序立刻可见；原项目等你审查后再接收。', 'With staging enabled, programs immediately see edits in the private upper layer. You review them before applying them to the project.', 'guides/review-apply/'),
+  ('conflict', '接收前检查冲突', 'Check before applying', '你也在改项目，Agent 的旧方案就不能直接盖回来。', 'When you edit the project too, an older proposal must not overwrite your work.', '保留首次内容观察时的原像，apply 前比较目标；有冲突就停下，选中的文件接收后再复测。', 'Record a baseline when content is first observed and check the target before apply. Stop on conflict, then retest the files you accept.', 'design/overlayfs/#preimages'),
+  ('checkpoint', '留住一次尝试', 'Keep an attempt', '方案还没确定，可以保留当前文件，再分叉出另一种做法。', 'Keep the current file proposal while trying another approach.', 'Host 工作区分叉从已停止的 Job 启动新命令。需要恢复进程时，使用支持相应状态的 VM 执行快照。', 'Host workspace forks start a new command from a stopped Job. Resuming execution uses a VM checkpoint with the required state support.', 'guides/fork-checkpoint/'),
+  ('memory', '各自启动，也能共享', 'Share beyond templates', '独立启动的 VM，也可能读到同一份 Python 和系统库。', 'Independently started VMs may load the same Python runtime and libraries.', '共同快照复用已有内存；显式页池查找运行中相同的驻留页，复核后共享，写入时分离。', 'Shared snapshots reuse an existing baseline. An opt-in page pool finds and verifies equal resident pages at runtime; writes separate through COW.', 'design/memory-optimization/deduplication/'),
+  ('offload', '停下来时归还内存', 'Release memory while paused', '暂时不用的 VM，可以保存执行现场后卸载内存。', 'An idle VM can preserve its execution state and offload memory.', '恢复时重新载入状态。共享、压缩和 offload 各有适用的工作集与配置。', 'Reload state when resuming. Sharing, compression, and offload serve different working sets and configurations.', 'design/memory-optimization/offload/')
+] %}
+<section class="pv-mechanisms" id="mechanisms" aria-labelledby="mechanisms-title">
+  <header class="pv-section-heading">
+    <div><p class="pv-kicker">WHY PVISOR</p><h2 id="mechanisms-title">{% if zh %}先看具体改动，再决定接收。{% else %}Review the changes before you accept them.{% endif %}</h2></div>
+    <div class="pv-mechanism-actions"><button class="pv-motion-toggle" type="button" data-motion-toggle hidden>{% if zh %}暂停动画{% else %}Pause motion{% endif %}</button><a class="pv-section-meta" href="why/">{% if zh %}理解沙盘模式{% else %}Understand stagebox{% endif %} ↗</a></div>
+  </header>
+  <div class="pv-mechanisms-intro">
+    <p>{% if zh %}让 Agent 修复一个测试，目标通常说得清，要改哪些文件却得跑过才知道。每次权限确认，都要你停下手里的工作，重新理解它正在做什么。{% else %}You can describe a failing test before you know which files need changing. Every permission prompt asks you to stop your own work and reconstruct what the agent is doing.{% endif %}</p>
+    <p>{% if zh %}Stagebox 把文件修改先留下来：访问边界提前设定，Agent 在里面改代码、跑测试；任务停下后，你看具体差异，再把需要的文件接回项目。{% else %}Stagebox retains file changes for review. Set access boundaries up front, let the agent edit and test within them, then inspect the diff and bring selected files back into your project.{% endif %}</p>
+  </div>
+  <div class="pv-ideas-layout">
+    <div class="pv-ideas-main">
+      {% for kind, title_zh, title_en, lead_zh, lead_en, detail_zh, detail_en, href in ideas %}
+      <a class="pv-idea pv-idea-{{ kind }}" href="{{ href }}">
+        <div class="pv-idea-heading"><span class="pv-idea-mark" aria-hidden="true">{{ ['⇄', '±', '≠', '⑂', '▦', '◴'][loop.index0] }}</span><h3>{{ title_zh if zh else title_en }}</h3><span class="pv-idea-number">0{{ loop.index }} ↗</span></div>
+        <p class="pv-idea-lead">{{ lead_zh if zh else lead_en }}</p>
+        {{ diagram(kind, title_zh if zh else title_en) }}
+        <p class="pv-idea-detail">{{ detail_zh if zh else detail_en }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    <div class="pv-ideas-support">
+      {% for number, title_zh, title_en, text_zh, text_en, href in [
+        ('07', '独立内核执行', 'An independent kernel', 'Docker 风格的容器各有一个 Linux VM；KVM 与 Hypervisor.framework 提供硬件虚拟化。', 'Each Docker-style container gets a Linux VM, using KVM or Hypervisor.framework for hardware virtualization.', 'design/vm-runtime/'),
+        ('08', '连接之前检查出口', 'Check before connecting', 'VM 的外部连接经过 OverlayNet，获准后由宿主建立 socket。远端影响仍需执行前约束。', 'OverlayNet checks VM egress before the host opens a socket. Remote effects need controls before execution.', 'design/overlaynet/'),
+        ('09', '镜像按需读取', 'Read images on demand', '需要固定依赖时选择镜像，由共享缓存提供只读内容，按需读取文件。', 'Choose an image for fixed dependencies. A shared cache supplies read-only content as files are needed.', 'reference/shared-image-cache/'),
+        ('10', '带着记录交付', 'Review with the record', '把退出结果、访问记录与文件差异放在一起，核对任务有没有按要求完成。', 'Check the outcome, access records, and file diff together to assess whether the task meets your requirements.', 'concepts/capabilities-and-evidence/')
+      ] %}
+      <a class="pv-idea pv-idea-small" href="{{ href }}"><span class="pv-idea-number">{{ number }} ↗</span><h3>{{ title_zh if zh else title_en }}</h3><p>{{ text_zh if zh else text_en }}</p></a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
