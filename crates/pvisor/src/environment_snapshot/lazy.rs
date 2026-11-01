@@ -198,7 +198,7 @@ impl SnapshotRamReader {
             };
             // Restrict this first implementation to full authenticated blocks.
             // A short tail retains the original view, never a guessed zero range.
-            if self.length % BLOCK_BYTES as u64 != 0 {
+            if !self.length.is_multiple_of(BLOCK_BYTES as u64) {
                 return Ok(Vec::new());
             }
             let zero = hash(&vec![0; BLOCK_BYTES]);
@@ -352,7 +352,7 @@ impl SnapshotRamReader {
 #[cfg(target_os = "linux")]
 fn read_direct_block(file: &File, output: &mut [u8], offset: u64) -> io::Result<()> {
     let length = output.len();
-    if length != BLOCK_BYTES || offset % BLOCK_BYTES as u64 != 0 {
+    if length != BLOCK_BYTES || !offset.is_multiple_of(BLOCK_BYTES as u64) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unaligned direct RAM block",
