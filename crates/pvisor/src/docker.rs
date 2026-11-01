@@ -2297,6 +2297,7 @@ mod tests {
                 target: None,
                 platform: None,
                 pull: false,
+                no_cache: false,
                 cpus: 1,
                 memory_mib: 32,
                 network: false,

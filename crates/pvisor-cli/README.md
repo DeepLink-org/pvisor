@@ -720,6 +720,9 @@ pvisor build -t app:local --network=none .
 pvisor run --rm app:local
 pvisor build -f Dockerfile -t app:local --build-arg VERSION=1 \
   --output type=oci,dest=app.oci.tar .
+pvisor build --no-cache -t app:local .
+pvisor builder prune
+pvisor builder prune --all --force --filter until=24h --keep-storage 2GB
 ```
 
 `build` reuses the image catalog, OverlayCore and the container VM launch path.
@@ -741,8 +744,45 @@ explicit `--build-arg NAME` forwards only that host variable. Build arguments
 are not secret storage. Simple `$NAME`/`${NAME}` expansion is supported.
 
 Each finished stage becomes one flattened OCI layer with guest ownership/mode,
-symlinks, hardlinks and merged deletions preserved. No instruction cache is
-implemented (`--no-cache` is accepted); unchanged base images can be reused.
+symlinks, hardlinks and merged deletions preserved. Successful `RUN` instructions
+write persistent filesystem/configuration checkpoints. An unchanged build prints
+`Using cache` for each reused RUN and does not launch its VM. Keys include the
+native base manifest digest, instruction prefix, in-scope ARG values, selected
+COPY paths/content/modes/symlinks/hardlinks, resource/network/time settings, and
+the content digest of preceding RUN results. Unrelated context files and file
+mtime changes alone do not invalidate a selected COPY; copying `.` naturally
+includes the Dockerfile unless ignored. COPY and metadata instructions still
+execute locally; their effects participate in subsequent RUN keys.
+`--pull` resolves bases before checking RUN cache. `--no-cache` bypasses reads
+but still refreshes successful checkpoints. Failed RUNs never enter the cache;
+successful prefixes remain reusable. Cache blobs are verified before restoring.
+Network resources are not polled on a cache hit: use `--no-cache` when external
+dependencies must be refreshed. Build arguments are persisted in local cache
+records and must not contain secrets.
+
+Checkpoints live in `PVISOR_DOCKER_HOME/build-cache-v1`, independently of published
+image data. Identical concurrent RUNs share a per-key lock and result. A shared
+lease protects checkpoints through final publication. Sealed layers are reused
+when only image metadata changes, avoiding a second full filesystem export.
+Cache storage still uses flattened layers rather than incremental layers; cold
+builds pay checkpoint export/import and warm builds pay blob verification/import.
+No remote cache, cache mounts or automatic storage quota is implemented.
+
+`pvisor builder prune` follows Docker's builder command layout. It prompts unless
+`-f`/`--force` is supplied; noninteractive calls require that flag. By default it
+removes dangling checkpoints (configuration IDs absent from the image catalog);
+`-a`/`--all` also removes checkpoints matching published images, never the images
+themselves. It waits for active builds to finish, so live checkpoints are not
+deleted. `--filter until=24h` selects records unused for at least that duration;
+integer `ms`, `s`, `m`, and `h` durations are supported, not timestamps or compound
+durations. Repeated filters require all age conditions to hold. `--keep-storage`
+evicts least recently used eligible records until total logical cache bytes are
+at most the target (integer bytes or decimal KB/MB/GB); protected or age-filtered
+records can leave usage above it. The report counts logical file bytes, not
+guaranteed filesystem free space. Repeated prune is safe. This command does not
+prune containers, volumes, image pool content, abandoned build workspaces, or
+the separate `pvisor cache` service.
+
 Tags are published after the shared content and immutable index are committed. A failed
 step leaves existing tags unchanged. OCI output must name a new file and contains
 only the standard layout/config/manifest/layer blobs, not the private rootfs.
@@ -755,9 +795,9 @@ or stdin contexts, `ADD`, `ONBUILD`, heredocs, RUN mounts, secrets/SSH/cache mou
 external-image `COPY --from`, named COPY owners, extended variable substitutions,
 foreign architectures, device nodes and file capabilities are rejected. Source
 paths traversing a symlink are rejected; copied symlinks remain symlinks. There
-are no registry push, Docker archive output, instruction cache or multi-platform
-builds. Native acceptance is exercised on Apple Silicon/HVF; Linux/KVM requires
-separate acceptance. Rootless Linux preserves default guest-root symlink owners
+are no registry push, Docker archive output, remote cache or multi-platform
+builds. Native acceptance must be recorded separately for Apple Silicon/HVF and
+Linux/KVM. Rootless Linux preserves default guest-root symlink owners
 in OCI output without host chown; non-root symlink owners are rejected when the
 host cannot represent them. Guest-visible symlink-owner virtualization is not
 claimed by this build profile.

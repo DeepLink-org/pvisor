@@ -18,6 +18,7 @@ fn options(context: &Path) -> BuildOptions {
         target: None,
         platform: None,
         pull: false,
+        no_cache: false,
         cpus: 1,
         memory_mib: 256,
         network: false,
@@ -25,6 +26,254 @@ fn options(context: &Path) -> BuildOptions {
         quiet: true,
         output: None,
     }
+}
+
+fn checkpoint_fixture() -> (tempfile::TempDir, Store, Built) {
+    let work = tempfile::tempdir().unwrap();
+    let store = Store::open(work.path().join("store")).unwrap();
+    let context = work.path().join("context");
+    fs::create_dir(&context).unwrap();
+    fs::write(context.join("payload"), "cache contents").unwrap();
+    let mut stage = Stage::new(
+        store.clone(),
+        scratch(work.path()).unwrap(),
+        "test".into(),
+        &options(&context),
+    )
+    .unwrap();
+    stage
+        .copy("payload /payload", &BTreeMap::new(), &context, &[])
+        .unwrap();
+    let built = stage
+        .finish(
+            work.path(),
+            BTreeMap::from([("VERSION".into(), "1".into())]),
+        )
+        .unwrap();
+    (work, store, built)
+}
+
+#[test]
+fn run_checkpoint_survives_reopen_and_corruption_is_a_miss() {
+    let (work, store, built) = checkpoint_fixture();
+    let key = digest(b"checkpoint");
+    let cache = cache::Cache::open(&store).unwrap();
+    let _lease = cache.lease(false).unwrap();
+    let _key = cache.key_lock(&key).unwrap();
+    cache.save(&key, &built).unwrap();
+    let reopened = cache::Cache::open(&Store::open(store.root.clone()).unwrap()).unwrap();
+    let loaded = reopened.load(&key, work.path()).unwrap().unwrap();
+    assert_eq!(loaded.image.id, built.image.id);
+    assert_eq!(loaded.args["VERSION"], "1");
+    assert_eq!(
+        fs::read(loaded.image.cache.temporary_root().unwrap().join("payload")).unwrap(),
+        b"cache contents"
+    );
+    let blob = store
+        .root
+        .join("build-cache-v1/entries")
+        .join(&key[7..])
+        .join("blobs/sha256")
+        .join(&built.image.id[7..]);
+    fs::write(blob, "corrupt").unwrap();
+    assert!(reopened.load(&key, work.path()).unwrap().is_none());
+}
+
+#[test]
+fn copy_identity_tracks_only_selected_content_modes_and_links_not_mtime() {
+    let work = tempfile::tempdir().unwrap();
+    fs::write(work.path().join("selected"), "one").unwrap();
+    fs::write(work.path().join("unused"), "irrelevant").unwrap();
+    let sources = vec![PathBuf::from("selected")];
+    let first = cache::fingerprint(work.path(), &sources).unwrap();
+    fs::write(work.path().join("unused"), "changed").unwrap();
+    File::open(work.path().join("selected"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    assert_eq!(cache::fingerprint(work.path(), &sources).unwrap(), first);
+    fs::write(work.path().join("selected"), "two").unwrap();
+    let second = cache::fingerprint(work.path(), &sources).unwrap();
+    assert_ne!(second, first);
+    fs::set_permissions(
+        work.path().join("selected"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    assert_ne!(cache::fingerprint(work.path(), &sources).unwrap(), second);
+    symlink("selected", work.path().join("link")).unwrap();
+    let link = vec![PathBuf::from("link")];
+    let before = cache::fingerprint(work.path(), &link).unwrap();
+    fs::remove_file(work.path().join("link")).unwrap();
+    symlink("unused", work.path().join("link")).unwrap();
+    assert_ne!(cache::fingerprint(work.path(), &link).unwrap(), before);
+}
+
+#[test]
+fn copy_identity_cannot_follow_symlink_ancestors() {
+    let work = tempfile::tempdir().unwrap();
+    let context = work.path().join("context");
+    fs::create_dir(&context).unwrap();
+    symlink(work.path(), context.join("outside")).unwrap();
+    fs::write(work.path().join("secret"), "private").unwrap();
+    assert!(copy_sources("outside/secret /secret", &BTreeMap::new(), &context, &[]).is_err());
+}
+
+#[test]
+fn cache_prune_filters_retention_and_publication_are_independent() {
+    let (_work, store, built) = checkpoint_fixture();
+    let key = digest(b"checkpoint");
+    cache::Cache::open(&store)
+        .unwrap()
+        .save(&key, &built)
+        .unwrap();
+    assert_eq!(
+        prune(
+            &store,
+            &PruneOptions {
+                until: Some(Duration::from_secs(3600)),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .records,
+        0
+    );
+    assert_eq!(
+        prune(
+            &store,
+            &PruneOptions {
+                keep_storage: Some(u64::MAX),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .records,
+        0
+    );
+    let image = publish(&store, &built, &["cache:test".into()]).unwrap();
+    assert_eq!(prune(&store, &PruneOptions::default()).unwrap().records, 0);
+    let report = prune(
+        &store,
+        &PruneOptions {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.records, 1);
+    assert!(report.bytes > 0);
+    assert_eq!(
+        prune(
+            &store,
+            &PruneOptions {
+                all: true,
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .records,
+        0
+    );
+    let opened = store.open_image(&image).unwrap();
+    pvisor_overlay_core::backend::materialize_tree(opened.rootfs()).unwrap();
+    assert_eq!(
+        fs::read(opened.rootfs().join("payload")).unwrap(),
+        b"cache contents"
+    );
+}
+
+#[test]
+fn cache_lease_excludes_prune_until_build_exits() {
+    let (_work, store, _) = checkpoint_fixture();
+    let cache = cache::Cache::open(&store).unwrap();
+    let lease = cache.lease(false).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(store.root.join("build-cache-v1/lease"))
+        .unwrap();
+    assert!(file.try_lock_exclusive().is_err());
+    drop(lease);
+    file.try_lock_exclusive().unwrap();
+}
+
+#[test]
+fn cache_prune_evicts_oldest_entries_and_orphaned_locks() {
+    let (_work, store, built) = checkpoint_fixture();
+    let cache = cache::Cache::open(&store).unwrap();
+    let mut keys = Vec::new();
+    for i in 1..=3 {
+        let key = digest(format!("checkpoint-{i}").as_bytes());
+        let lock = cache.key_lock(&key).unwrap();
+        cache.save(&key, &built).unwrap();
+        fs::write(
+            store
+                .root
+                .join("build-cache-v1/entries")
+                .join(&key[7..])
+                .join("last-used"),
+            format!("{i}"),
+        )
+        .unwrap();
+        drop(lock);
+        keys.push(key);
+    }
+    let first = store
+        .root
+        .join("build-cache-v1/entries")
+        .join(&keys[0][7..]);
+    let mut bytes = fs::metadata(first.join("record.json")).unwrap().len()
+        + fs::metadata(first.join("last-used")).unwrap().len();
+    for blob in fs::read_dir(first.join("blobs/sha256")).unwrap() {
+        bytes += blob.unwrap().metadata().unwrap().len();
+    }
+    let report = prune(
+        &store,
+        &PruneOptions {
+            all: true,
+            keep_storage: Some(bytes * 2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((report.records, report.bytes), (1, bytes));
+    assert!(!first.exists());
+    assert!(
+        !store
+            .root
+            .join("build-cache-v1/locks")
+            .join(&keys[0][7..])
+            .exists()
+    );
+    for key in &keys[1..] {
+        assert!(
+            store
+                .root
+                .join("build-cache-v1/entries")
+                .join(&key[7..])
+                .exists()
+        );
+        assert!(
+            store
+                .root
+                .join("build-cache-v1/locks")
+                .join(&key[7..])
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn sealed_filesystem_is_reused_for_metadata_only_publication() {
+    let (work, store, built) = checkpoint_fixture();
+    let root = built.image.cache.temporary_root().unwrap().to_owned();
+    let original = built.image.id.clone();
+    let mut stage = Stage::new(store, built, "next".into(), &options(work.path())).unwrap();
+    stage.config["Labels"]["cache"] = "metadata".into();
+    let finished = stage.finish(work.path(), BTreeMap::new()).unwrap();
+    assert_ne!(finished.image.id, original);
+    assert_eq!(finished.image.cache.temporary_root().unwrap(), root);
 }
 
 #[test]

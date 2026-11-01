@@ -22,7 +22,7 @@ pub(crate) struct Build {
     /// Always attempt to pull registry base images.
     #[arg(long)]
     pull: bool,
-    /// Accepted for Docker compatibility; this builder always executes every step.
+    /// Do not reuse RUN checkpoints; successful steps still refresh the cache.
     #[arg(long)]
     no_cache: bool,
     /// Only print the resulting image ID.
@@ -82,6 +82,7 @@ pub(super) fn run(args: Build) -> anyhow::Result<i32> {
         target: args.target,
         platform: args.platform,
         pull: args.pull,
+        no_cache: args.no_cache,
         cpus: args.cpus,
         memory_mib: args.memory,
         network: args.network != "none",

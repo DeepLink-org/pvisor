@@ -119,7 +119,7 @@ fn grouped_commands(command: &clap::Command) -> String {
             "Commands",
             &[
                 "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
-                "logs", "network",
+                "logs", "network", "builder",
             ],
         ),
         (
