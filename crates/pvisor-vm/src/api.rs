@@ -725,6 +725,8 @@ pub struct Capabilities {
 pub struct VmBuilder {
     pub(crate) inner: crate::builder::Builder,
 }
+pub(crate) type SharedBackingReclaim = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 /// Weak live control reference; transitions are serialized internally.
 #[derive(Clone)]
 pub struct VmmHandle {
@@ -732,8 +734,7 @@ pub struct VmmHandle {
     pub(crate) vmm: std::sync::Weak<std::sync::Mutex<crate::vmm::Vmm>>,
     pub(crate) transition: Arc<std::sync::Mutex<()>>,
     pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) shared_backing_reclaim:
-        Arc<std::sync::Mutex<Option<Box<dyn Fn() -> Result<(), String> + Send + Sync>>>>,
+    pub(crate) shared_backing_reclaim: Arc<std::sync::Mutex<Option<SharedBackingReclaim>>>,
 }
 /// EXP-001 M0: diagnostic execution phase, not a Linux runqueue assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
