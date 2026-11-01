@@ -8726,7 +8726,7 @@ mod tests {
         state.validate_shared_readonly_layers(&[PathBuf::from(&baseline)]).unwrap();
         assert!(state.config.apply_target.is_none());
         assert!(state.config.baseline_lower.is_none());
-        assert_eq!(state.config.lower_dirs, [baseline.clone()]);
+        assert_eq!(state.config.lower_dirs.as_slice(), std::slice::from_ref(&baseline));
         state.config.apply_target = Some(temp.path().join("distinct").to_string_lossy().into_owned());
         let before = serde_json::to_value(&state).unwrap();
         assert!(state.prepare_protected_workspace_seed().is_err());
