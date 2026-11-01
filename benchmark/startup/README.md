@@ -232,3 +232,9 @@ rustc --edition=2024 -O benchmark/startup/fd_probe.rs -o /tmp/pvisor-fd-probe
 `first_ns` 是首次 `F_DUPFD_CLOEXEC >= 202`，`second_ns` 是已扩展表后的第二次复制；
 `preallocated` 在线程创建前先扩展并关闭该 FD。保留高 FD 的防 `dup2` 冲突约束，
 不得从诊断直接推导降低固定 FD 编号是安全优化；该微诊断不启动 VM，不是产品收益对照。
+
+## 工程复核记录
+
+[启动优化与预热可行性记录](STARTUP_EXPERIMENTS.md)保留独立批次的条件、
+结果、来源摘要与覆盖缺口，不更新用户启动水位。临时诊断开关、原型程序、
+测试和完整原始制品不随记录发布；历史原始证据保留在本地忽略的 `.data/`。
