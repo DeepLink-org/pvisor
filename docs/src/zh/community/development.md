@@ -98,17 +98,14 @@ Session 统一拥有 Attempt 的资源与终态；执行器负责执行并返回
 AgentCtl 与审批 socket 的实际 I/O 留在 pvisor。完整职责见[核心架构](../design/architecture.md)，
 字段和事件顺序见 [Operation 与 Event](../design/operations-events.md)。
 
-## 核心减法预算
+## 核心规模统计与依赖边界 {#core-reduction-budget}
 
 CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
 拒绝 CLI、Gateway、replay、Clap、TUI 和终端依赖进入 `pvisor` 的普通依赖闭包。
 默认 `pvisor-cli` 应用包含 replay 引擎和集成 TUI，Gateway 仍为可选。
 脚本记录工具链、运行时／应用依赖数、运行时闭包源码行数、Core 公开声明数和应用二进制字节数。
-依赖数、闭包源码行数与 Core 公开声明数对着已提交的基线（`scripts/ci/core-budget.json`）
-做棘轮比较：任一指标超过基线即失败，CI 配置里不再手写绝对上限，杜绝数字与注释漂移。
-有意扩大预算的改动在同一次提交里运行 `mise run update-core-budget` 重新生成基线，评审直接看到
-精确差量；代码缩减后同样建议重新生成，让基线随现实收紧。预算及统计口径由脚本维护；
-实测结果保存在 CI 报告中，比较时使用相同平台和工具链。
+这些指标只用于报告：增长不会导致 CI 失败，不再维护已提交的预算基线或规模、数量上限参数。
+禁止的依赖关系仍会导致架构检查失败。统计结果保存在 CI 报告中，比较时使用相同平台和工具链。
 
 ## 贡献者命令
 

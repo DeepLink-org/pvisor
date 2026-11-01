@@ -117,9 +117,54 @@ impl<Backing> Image<Backing> {
 #[serde(deny_unknown_fields)]
 pub struct CachedImage {
     /// Absolute local pool directory, shared by images in this Docker store.
+    /// For remote bindings this is a reserved local pool path, never a read fallback.
     pub location: PathBuf,
     /// Authenticated immutable `pvisor-v2` metadata revision handle.
     pub handle: String,
+    /// Optional immutable V2 repository root: `s3://BUCKET/PREFIX`, HTTP/HTTPS,
+    /// or `ipfs+http://LOOPBACK:PORT/ipfs/CID`. Credentials belong to the host
+    /// environment, never this record or the guest. HTTP is read-only and uses
+    /// exact Range responses. Remote failures never fall back to local content.
+    /// IPFS requires a trusted Kubo throughout VM reads and provides no anonymity.
+    #[serde(default, alias = "ipfs", skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// Ordered fallback roots for the same hash-named publication as `repository`.
+    /// Empty for local/single-source images. At most seven distinct S3/HTTP(S)
+    /// fallbacks are allowed. Every immutable object/frame is verified before
+    /// accepting a source; failover never resolves a different tag or revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<String>,
+}
+
+/// One explicitly trusted V2 registry, in caller-defined priority order.
+/// Authentication remains in host AWS configuration, never these records.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRegistry {
+    /// Unique safe local name, 1..=128 ASCII alphanumeric/`-_.`, not leading `.`.
+    pub name: String,
+    /// S3 or HTTP/HTTPS root containing `refs/` and immutable publication roots.
+    pub location: String,
+    /// Whether this registry may resolve mutable image names. Defaults to true.
+    /// False means download-only: supply verified bytes, never choose a version.
+    #[serde(default = "registry_resolve_default")]
+    pub resolve: bool,
+}
+
+fn registry_resolve_default() -> bool {
+    true
+}
+
+/// Resolved immutable publication with ordered sources; later name/configuration
+/// changes cannot retarget this result or its installed images.
+pub struct ResolvedImageRepository {
+    /// SHA-256 of the portable template, without a `sha256:` prefix.
+    pub publication: String,
+    /// Configured roots with that same publication appended, in download order.
+    pub repositories: Vec<String>,
+    /// Authenticated bounded portable launch JSON. The caller owns decoding and
+    /// admission checks; successful resolution does not imply VM support.
+    pub template: Vec<u8>,
 }
 
 /// Owns a usable root directory and its lazy backend through file/VM access.
@@ -576,6 +621,8 @@ impl Store {
                 }) if digest == resolved.prepared.digest => Some(CachedImage {
                     location: self.images.pool(),
                     handle: image_handle,
+                    repository: None,
+                    mirrors: vec![],
                 }),
                 _ => None,
             };

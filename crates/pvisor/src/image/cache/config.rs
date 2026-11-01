@@ -1,6 +1,6 @@
 //! Shared CLI and executor configuration for server and daemonless caches.
 use super::{SERVER_ENV, default_endpoint};
-use anyhow::{Context, ensure};
+use anyhow::ensure;
 use std::path::PathBuf;
 
 pub const BACKEND_ENV: &str = "PVISOR_CACHE_BACKEND";
@@ -12,6 +12,8 @@ pub enum CacheBackend {
     Server,
     Filesystem,
     S3,
+    /// Public static HTTP/HTTPS V2 repository; all mutations are forbidden.
+    Http,
 }
 impl std::str::FromStr for CacheBackend {
     type Err = String;
@@ -20,8 +22,9 @@ impl std::str::FromStr for CacheBackend {
             "server" => Ok(Self::Server),
             "filesystem" => Ok(Self::Filesystem),
             "s3" => Ok(Self::S3),
+            "http" | "https" => Ok(Self::Http),
             _ => Err(format!(
-                "invalid cache backend {value:?}; expected server, filesystem, s3"
+                "invalid cache backend {value:?}; expected server, filesystem, s3, http"
             )),
         }
     }
@@ -76,7 +79,7 @@ impl CacheConfig {
                     "0" | "false" => false,
                     _ => anyhow::bail!("{READ_ONLY_ENV} must be true/false or 1/0"),
                 },
-                Err(std::env::VarError::NotPresent) => false,
+                Err(std::env::VarError::NotPresent) => backend == CacheBackend::Http,
                 Err(error) => return Err(error.into()),
             },
         };
@@ -103,9 +106,16 @@ impl CacheConfig {
                 Ok(format!("file://{path}"))
             }
             CacheBackend::S3 => {
-                self.location
-                    .strip_prefix("s3://")
-                    .context("S3 cache requires s3://BUCKET/PREFIX")?;
+                super::storage::s3_location(&self.location)?;
+                Ok(self.location.clone())
+            }
+            CacheBackend::Http => {
+                ensure!(self.read_only, "HTTP repositories are read-only");
+                ensure!(
+                    self.location.starts_with("http://") || self.location.starts_with("https://"),
+                    "HTTP repository requires http:// or https://"
+                );
+                super::http::Http::validate(&self.location)?;
                 Ok(self.location.clone())
             }
         }
@@ -143,6 +153,39 @@ pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<Strin
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    #[test]
+    fn http_and_s3_repository_options_validate_without_io() {
+        for address in ["http://mirror.example/root", "https://mirror.example/root"] {
+            let config = CacheConfig::from_options(
+                Some(CacheBackend::Http),
+                Some(address.into()),
+                Some(true),
+                None,
+            )
+            .unwrap();
+            assert_eq!(config.address().unwrap(), address);
+            let writable = CacheConfig {
+                read_only: false,
+                ..config
+            };
+            assert!(writable.address().is_err());
+        }
+        for address in [
+            "s3://",
+            "s3://user:secret@bucket/root",
+            "s3://bucket/../escape",
+            "s3://bucket/root?token=x",
+        ] {
+            let config = CacheConfig {
+                backend: CacheBackend::S3,
+                location: address.into(),
+                read_only: true,
+                image_store: None,
+            };
+            assert!(config.address().is_err());
+        }
+        assert_eq!("https".parse::<CacheBackend>().unwrap(), CacheBackend::Http);
+    }
     #[test]
     fn all_s3_selection_forms_scrub_implicit_storage_credentials() {
         for (key, value) in [

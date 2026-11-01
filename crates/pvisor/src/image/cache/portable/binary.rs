@@ -348,11 +348,15 @@ impl LoadedImage {
         {
             bytes
         } else {
-            let bytes = self.storage.range(
+            let bytes = self.storage.verified(
                 &format!("{}/index.bin", self.handle.prefix()),
-                reference.offset..reference.offset + reference.encoded as u64,
+                Some(reference.offset..reference.offset + reference.encoded as u64),
+                reference.encoded as usize,
+                |bytes| {
+                    ensure!(valid(bytes), "cache metadata page digest mismatch");
+                    Ok(())
+                },
             )?;
-            ensure!(valid(&bytes), "cache metadata page digest mismatch");
             if let Some(path) = local {
                 cache_local(&path, &bytes);
             }

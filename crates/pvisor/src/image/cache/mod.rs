@@ -1,10 +1,12 @@
-//! Shared OCI cache with server, filesystem, and S3 storage backends.
+//! Shared OCI cache with server, filesystem, S3, static HTTP/HTTPS and IPFS storage.
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod backend;
 mod client;
 mod config;
 mod direct;
+mod http;
+mod mirrors;
 mod network;
 mod pool;
 mod portable;
@@ -46,6 +48,13 @@ pub use direct::DirectImage;
 pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 pub(crate) use pool::{open_local_image, publish_local_image, published_local_image};
+pub(crate) use portable::export_pool;
+pub(crate) use repository::{
+    publish_reference, resolve_repository, validate_name as validate_registry_name,
+    validate_registries,
+};
+pub(crate) use repository::{publish_repository, read_repository_template, validate_destination};
+mod repository;
 
 /// Serve until process termination, notifying the owner after binding and worker startup.
 /// The callback runs once before accepting connections. Its failure stops startup.

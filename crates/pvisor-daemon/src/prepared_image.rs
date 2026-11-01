@@ -36,7 +36,7 @@ pub struct PrepareImage {
     #[arg(long, default_value_t = 512)]
     memory_mib: u64,
     /// Directory containing prepared manifests and the shared compressed store.
-    #[arg(long)]
+    #[arg(long, default_value = crate::image_repository::DEFAULT_IMAGES)]
     images_dir: PathBuf,
     /// Dynamic host firmware directory; omitted for the packaged static daemon.
     #[arg(long)]
@@ -44,16 +44,7 @@ pub struct PrepareImage {
 }
 impl PrepareImage {
     pub fn run(self) -> anyhow::Result<()> {
-        ensure!(
-            !self.name.is_empty()
-                && self.name.len() <= 128
-                && self
-                    .name
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-                && !self.name.starts_with('.'),
-            "invalid local image key"
-        );
+        crate::image_repository::validate_name(&self.name)?;
         ensure!(
             !self.image.contains(['\n', '\r', '\0']) && !self.image.contains(char::is_whitespace),
             "invalid base image reference"
@@ -119,6 +110,7 @@ impl PrepareImage {
         }
         fs::create_dir_all(&self.images_dir)?;
         let images = self.images_dir.canonicalize()?;
+        let _image_lock = crate::image_repository::image_lock(&images, &self.name)?;
         let store_root = images.join("store");
         let store = pvisor::docker::Store::open(store_root.clone())?;
         let context = tempfile::tempdir()?;

@@ -945,6 +945,86 @@ fields and obsolete storage formats are rejected. Use a fresh store and re-pull
 or rebuild images; no compatibility reader or automatic migration is provided.
 Stop and clean up old containers through the old version before switching stores.
 
+Remote bindings set `CachedImage.repository` to an immutable
+`s3://BUCKET/PREFIX`, `http://`/`https://` static root, or
+`ipfs+http://127.0.0.1:PORT/ipfs/CID`. Old experimental `ipfs` JSON fields can
+still be read as this same repository field. The binding overrides the local pool for reads,
+without OCI-pull or local-pool fallback. Explicit pinned mirrors may serve the
+same publication. For IPFS, the gateway must be a trusted local Kubo:
+only literal-loopback HTTP is accepted, proxies and redirects are disabled,
+and range responses must match exactly. Kubo verifies the UnixFS DAG; V2 still
+authenticates revision metadata and content frames before decoding. Gateway
+failures, including missing dependencies, remain errors, not absent image files.
+The existing host network bridge keeps Kubo access outside the VM network
+namespace. Retain Kubo throughout VM access, including detached supervisors
+that survive daemon restart. The Kubo restriction applies only to IPFS:
+ordinary HTTP/HTTPS repositories can use public mirror/CDN hosts.
+
+`ImageRegistry` describes ordered, credential-free roots and whether each is
+authorized to resolve names. `Store::resolve_image_repository` chooses the first
+valid authorized `refs/NAME.json`, pins its publication SHA, and verifies the
+template against it. `CachedImage.mirrors` records up to seven ordered fallbacks
+for that same hash-named publication; configuration changes cannot retarget
+running images. `CacheClient::from_repositories` reconstructs the same read-only
+policy outside the daemon. Source failover occurs before accepting verified
+objects/frames, including corrupt-source recovery, with five seconds per source
+and thirty seconds per mirrored read. Local/single-source contracts remain intact.
+
+`Store::publish_registry_image` adds a conditional mutable name-index commit
+after a complete immutable bundle. Uncertain acknowledgements are reconciled,
+and conflicting writers cannot silently replace an unobserved winner.
+`Store::publish_image_repository` publishes a local image plus a caller-owned
+portable launch template to an S3 prefix or `file:///ABSOLUTE/PATH` mirror staging
+directory. Dependencies precede the hash-named `image.json` visibility point.
+Existing objects must match exactly, including after uncertain write responses;
+publication never overwrites immutable bytes. `Store::read_image_repository`
+fetches the bounded template without downloading image contents. Templates and
+repositories must be trusted by the caller; V2 handles authenticate subsequent
+metadata/content, not publisher identity. Failed uploads can leave unreachable
+objects and there is no automatic remote GC.
+
+Generic clients select `CacheBackend::Http` with a read-only HTTP/HTTPS location
+(`PVISOR_CACHE_BACKEND=http`, `PVISOR_CACHE_LOCATION=https://...`); HTTP defaults
+to read-only, and explicit writable mode is rejected. S3 uses the existing host
+AWS environment, including the selected bucket/prefix and optional endpoint.
+No credentials belong in image records or guest environments. Exact bounded
+Range reads, disabled redirects/transformations, TLS verification, finite
+admission/deadlines and bounded retries protect lazy reads. Host `SSL_CERT_FILE`
+can add a private CA. HTTP remains plaintext; use HTTPS for public distribution.
+See the daemon README's S3/HTTP section for publication, mirror synchronization,
+failure semantics, and the low-pressure loopback chaos/TLS test commands.
+
+`Store::export_image_pool` exports one local pinned revision and its encoded
+dependencies into a new directory. It omits other revisions, tags, credentials
+and projections, and rejects packs with slots unreachable from this revision
+before copying data. This prevents exposing removed files from a private
+predecessor; such images need rebuilding into a fresh pool before publication.
+Treat the exported image, including its config/environment, as public. The
+destination must not exist; failure can leave a partial export.
+IPFS does not supply anonymity, publisher authentication, access control or
+permanent retention. The daemon manages its node inside the local image
+repository: `serve --ipfs`, `image NAME --public/--private`, and
+`image NAME --from CID`. It selects ports and records publication CIDs without
+separate repository/output/gateway arguments. IPFS chunk boundaries need not match V2 frames;
+WAN performance and transfer amplification are not yet established.
+
+The explicit Kubo runner uses two temporary loopback-only peers, disables
+bootstrap/mDNS/routing, removes the original local pool, and checks actual
+Bitswap reception, bounded working-set delivery and unchanged receiver pins:
+
+```sh
+mise exec -- cargo build --locked -p pvisor-daemon
+PVISOR_TEST_IPFS=/absolute/path/to/ipfs \
+  PVISOR_TEST_DAEMON="$PWD/target/debug/pvisor-daemon" \
+  mise run test -- pvisor -- --lib --run-ignored ignored-only real_kubo
+```
+
+This runner has been exercised with Kubo 0.34.1. It validates real local P2P
+exchange, daemon publication/import, seed pinning and gateway range compatibility,
+not public DHT discovery, NAT traversal or VM boot performance. Set
+`PVISOR_TEST_DAEMON` to the actual build output when not using the default target
+directory.
+
 Filesystem/S3 publish and writable prepare import OCI sources under a scoped
 `staging/.import-*` directory, removed on success and error after publication
 finishes. They retain no raw OCI layers, extracted roots or prepared records.

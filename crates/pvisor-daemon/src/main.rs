@@ -1,5 +1,7 @@
 mod cache_component;
+mod image_repository;
 mod prepared_image;
+mod registries;
 mod user_service;
 use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
@@ -48,6 +50,10 @@ enum Command {
     },
     /// Prepare a pooled native template or an explicitly supplied upstream service.
     PrepareImage(prepared_image::PrepareImage),
+    /// Inspect an image, publish it, or install from a trusted CID/S3/HTTP repository.
+    Image(image_repository::Image),
+    /// Configure ordered V2 image registries (not OCI/Docker registry endpoints).
+    Registry(registries::Registry),
     #[command(hide = true)]
     CacheWorker {
         #[arg(long)]
@@ -57,7 +63,11 @@ enum Command {
     },
     /// Run the selected shared-service components under one daemon lifecycle.
     #[command(group(clap::ArgGroup::new("state_service").args(["sandbox", "memory_pool"]).multiple(true)))]
+    #[command(group(clap::ArgGroup::new("image_service").args(["sandbox", "ipfs"]).multiple(true)))]
     Serve {
+        /// Enable public IPFS distribution using daemon-managed repository state.
+        #[arg(long)]
+        ipfs: bool,
         /// Enable the cache component (disabled by default).
         #[arg(long)]
         cache: bool,
@@ -68,7 +78,7 @@ enum Command {
         #[arg(long, requires = "cache")]
         cache_image_store: Option<PathBuf>,
         /// Enable the sandbox lifecycle API.
-        #[arg(long, requires_all = ["images_dir", "cgroup_root"])]
+        #[arg(long, requires = "cgroup_root")]
         sandbox: bool,
         #[arg(long, default_value = "127.0.0.1:8080", requires = "sandbox")]
         listen: SocketAddr,
@@ -94,8 +104,8 @@ enum Command {
         /// Private persistent state. Keep the absolute path short for Unix control sockets.
         #[arg(long, default_value = ".pvisor/daemon", requires = "state_service")]
         state: PathBuf,
-        /// Trusted prepared-image manifests, shared pools or immutable root trees.
-        #[arg(long, requires = "sandbox")]
+        /// Image repository; defaults to .pvisor/images, as in prepare-image and image.
+        #[arg(long, requires = "image_service")]
         images_dir: Option<PathBuf>,
         /// Existing delegated cgroup v2 subtree for per-sandbox process-tree limits.
         #[arg(long, requires = "sandbox")]
@@ -160,6 +170,12 @@ fn main() -> anyhow::Result<()> {
     if let Command::PrepareImage(options) = args.command {
         return options.run();
     }
+    if let Command::Image(options) = args.command {
+        return options.run();
+    }
+    if let Command::Registry(options) = args.command {
+        return options.run();
+    }
     if let Command::CacheWorker {
         listen,
         image_store,
@@ -204,6 +220,8 @@ async fn run(command: Command) -> anyhow::Result<()> {
         | Command::Stop { .. }
         | Command::ResolveMemoryPool { .. } => unreachable!(),
         Command::PrepareImage(_)
+        | Command::Image(_)
+        | Command::Registry(_)
         | Command::Protocol
         | Command::MemoryPool { .. }
         | Command::CacheWorker { .. } => {
@@ -213,6 +231,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             run_native_supervisor(&sandbox_dir).await?;
         }
         Command::Serve {
+            ipfs,
             cache,
             cache_listen,
             cache_image_store,
@@ -238,8 +257,8 @@ async fn run(command: Command) -> anyhow::Result<()> {
             memory_pool_mode,
         } => {
             anyhow::ensure!(
-                cache || sandbox || memory_pool,
-                "select at least one service: --cache, --memory-pool or --sandbox"
+                cache || sandbox || memory_pool || ipfs,
+                "select at least one service: --cache, --memory-pool, --sandbox or --ipfs"
             );
             #[cfg(feature = "cluster")]
             let mut cluster_config = cluster_listen
@@ -296,6 +315,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 None
             };
             // Prepare sandbox resources before starting optional components.
+            let ipfs_images = images_dir
+                .clone()
+                .unwrap_or_else(|| image_repository::DEFAULT_IMAGES.into());
             let sandbox_service = if sandbox {
                 validate_listen(listen, allow_insecure_listen)?;
                 anyhow::ensure!(
@@ -310,9 +332,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     !listen.ip().is_unspecified() || public_endpoint.is_some(),
                     "wildcard listen requires an explicit public endpoint"
                 );
-                let images_dir = images_dir
-                    .ok_or_else(|| anyhow::anyhow!("sandbox requires --images-dir"))?
-                    .canonicalize()?;
+                let images_dir = ipfs_images.canonicalize()?;
                 #[cfg(feature = "cluster")]
                 if let Some(config) = &mut cluster_config {
                     config.images = discover_cluster_images(&images_dir)?;
@@ -402,6 +422,11 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 None
             };
+            let mut ipfs = if ipfs {
+                Some(image_repository::start(&ipfs_images).await?)
+            } else {
+                None
+            };
             let maintenance = sandbox_service
                 .as_ref()
                 .map(|(daemon, _)| daemon.start_maintenance());
@@ -439,6 +464,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 _ = &mut stop => (Ok(()), false),
                 result = &mut api => (result.and_then(|_| Err(anyhow::anyhow!("sandbox service exited unexpectedly"))), true),
                 result = cache_component::wait(&mut cache) => (result, false),
+                result = image_repository::wait(&mut ipfs) => (result, false),
                 result = wait_pool(standalone_pool) => (result, false),
             };
             let _ = api_stop.send(());
@@ -464,7 +490,13 @@ async fn run(command: Command) -> anyhow::Result<()> {
             } else {
                 Ok(())
             };
+            let ipfs_stopped = if let Some(mut service) = ipfs {
+                image_repository::stop(&mut service).await
+            } else {
+                Ok(())
+            };
             result?;
+            ipfs_stopped?;
             drained?;
             #[cfg(feature = "cluster")]
             cluster_stopped?;
@@ -784,6 +816,121 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(!help.contains("--api-key"));
+    }
+
+    #[test]
+    fn registries_and_explicit_pull_use_minimal_validated_operations() {
+        for args in [
+            vec!["registry"],
+            vec!["registry", "list"],
+            vec![
+                "registry",
+                "add",
+                "cdn",
+                "https://mirror.example/pvisor",
+                "--download-only",
+            ],
+            vec!["registry", "move", "cdn", "1"],
+            vec!["registry", "remove", "cdn"],
+            vec!["image", "python", "--pull"],
+            vec!["image", "python", "--public", "--to", "origin"],
+        ] {
+            let mut command = vec!["pvisor-daemon"];
+            command.extend(args);
+            assert!(Args::try_parse_from(command).is_ok());
+        }
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "image",
+                "python",
+                "--pull",
+                "--from",
+                "https://mirror.example/image"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from(["pvisor-daemon", "image", "python", "--pull", "--public"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn image_distribution_has_minimal_defaults_and_no_legacy_parameters() {
+        assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs"]).is_ok());
+        for args in [
+            vec!["image", "python"],
+            vec!["image", "python", "--public"],
+            vec!["image", "python", "--private"],
+            vec![
+                "image",
+                "python",
+                "--public",
+                "--to",
+                "s3://images/releases",
+            ],
+            vec![
+                "image",
+                "python",
+                "--from",
+                "https://mirror.example/releases/revision",
+            ],
+            vec!["image", "python", "--from", "s3://images/releases/revision"],
+            vec!["image", "python", "--from", &"b".repeat(59)],
+        ] {
+            let mut full = vec!["pvisor-daemon"];
+            full.extend(args);
+            assert!(Args::try_parse_from(full).is_ok());
+        }
+        for option in [
+            "--repo",
+            "--manifest",
+            "--output",
+            "--gateway-port",
+            "--library-dir",
+        ] {
+            assert!(
+                Args::try_parse_from(["pvisor-daemon", "image", "python", option, "value"])
+                    .is_err()
+            );
+        }
+        assert!(
+            Args::try_parse_from(["pvisor-daemon", "image", "python", "--public", "--private"])
+                .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "image",
+                "python",
+                "--to",
+                "s3://images/releases"
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "image",
+                "python",
+                "--public",
+                "--from",
+                "cid"
+            ])
+            .is_err()
+        );
+        assert!(Args::try_parse_from(["pvisor-daemon", "serve", "--ipfs-repo", "/repo"]).is_err());
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--sandbox",
+                "--cgroup-root",
+                "/groups"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

@@ -168,18 +168,7 @@ class ApplicationBoundaryTests(unittest.TestCase):
             resources.enter_context(
                 mock.patch(
                     "sys.argv",
-                    [
-                        "check_core_budget.py",
-                        str(binary),
-                        "--max-dependencies",
-                        "1",
-                        "--max-workspace-lines",
-                        "2",
-                        "--max-core-items",
-                        "1",
-                        "--max-bytes",
-                        "3",
-                    ],
+                    ["check_core_budget.py", str(binary)],
                 )
             )
             budget.main()
@@ -189,15 +178,9 @@ class ApplicationBoundaryTests(unittest.TestCase):
             assert metrics["workspace_source_lines"] == 2
             assert metrics["dependencies"] == 1
             assert metrics["binary_bytes"] == 3
-            resources.enter_context(
-                mock.patch(
-                    "sys.argv", ["check_core_budget.py", str(binary), "--max-dependencies", "0"]
-                )
-            )
-            with self.assertRaisesRegex(AssertionError, "core dependency budget exceeded"):
-                budget.main()
+            assert metrics["core_public_declarations"] == 1
 
-    def test_baseline_ratchet_fails_only_on_growth_and_names_the_update_command(self):
+    def test_code_dependency_and_binary_growth_are_reported_without_hard_limits(self):
         with ExitStack() as resources:
             budget = _make_budget()
             tmp_path = Path(
@@ -210,14 +193,14 @@ class ApplicationBoundaryTests(unittest.TestCase):
             (tmp_path / "crates" / "pvisor" / "src").mkdir(parents=True)
             (tmp_path / "crates" / "pvisor" / "src" / "lib.rs").write_text("pub struct Value;\n")
             (tmp_path / "crates" / "pvisor-core" / "src").mkdir(parents=True)
-            (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
-                "pub struct Core;\n"
-            )
             resources.enter_context(
                 mock.patch.object(
                     budget,
                     "dependency_closure",
-                    lambda package: {f"{package} v0.3.0", "pvisor-core v0.3.0"},
+                    lambda package: (
+                        {f"{package} v0.3.0", "pvisor-core v0.3.0"}
+                        | {f"helper-{i} v0.3.0" for i in range(size)}
+                    ),
                 )
             )
             resources.enter_context(
@@ -225,33 +208,30 @@ class ApplicationBoundaryTests(unittest.TestCase):
                     budget.subprocess, "check_output", lambda *args, **kwargs: "rustc test"
                 )
             )
-            baseline_path = tmp_path / "core-budget.json"
-            resources.enter_context(
-                mock.patch(
-                    "sys.argv",
-                    ["check_core_budget.py", "--write-baseline", str(baseline_path)],
+            # An obsolete, tiny baseline cannot reintroduce a default ratchet.
+            baseline_path = tmp_path / "scripts/ci/core-budget.json"
+            baseline_path.parent.mkdir(parents=True)
+            baseline_path.write_text(
+                json.dumps(
+                    {"dependencies": 0, "workspace_source_lines": 0, "core_public_declarations": 0}
                 )
             )
-            budget.main()
-            baseline = json.loads(baseline_path.read_text())
-            assert baseline["dependencies"] == 1
-            assert baseline["workspace_source_lines"] == 2
-            assert baseline["core_public_declarations"] == 1
-            assert "update-core-budget" in baseline["note"]
-            resources.enter_context(
-                mock.patch(
-                    "sys.argv",
-                    ["check_core_budget.py", "--baseline", str(baseline_path)],
+            binary = tmp_path / "pvisor"
+            binary.write_bytes(b"")
+            resources.enter_context(mock.patch("sys.argv", ["check_core_budget.py", str(binary)]))
+            for size in (1, 1000):
+                captured_stdout.seek(0)
+                captured_stdout.truncate()
+                (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
+                    "".join(f"pub struct Core{i};\n" for i in range(size))
                 )
-            )
-            budget.main()
-            (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
-                "pub struct Core;\npub enum Extra;\n"
-            )
-            with self.assertRaisesRegex(
-                AssertionError, "core_public_declarations 2 exceeds.*update-core-budget"
-            ):
+                binary.write_bytes(b"x" * size)
                 budget.main()
+                metrics = json.loads(captured_stdout.getvalue())
+                assert metrics["dependencies"] == size + 1
+                assert metrics["workspace_source_lines"] == size + 1
+                assert metrics["core_public_declarations"] == size
+                assert metrics["binary_bytes"] == size
 
     def test_documentation_json_provenance_tracks_moved_application_sources(self):
         tree = ast.parse((ROOT / "scripts/record-doc-json.py").read_text())

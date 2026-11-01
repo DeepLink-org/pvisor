@@ -127,7 +127,7 @@ signature_lines() {
 
 # Inspect the native task inventory, including the visibility contract.
 mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
-printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget update-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
+printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
 diff -u "$work/expected" "$work/public"
 
 run doctor dev

@@ -49,8 +49,11 @@ impl Remote {
                                 while !*open { open = release.1.wait(open).unwrap(); }
                                 drop(open);
                                 let body = b"network-value";
-                                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"fixed\"\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nConnection: close\r\n\r\n", body.len()).unwrap();
-                                stream.write_all(body).unwrap();
+                                // A deadline may cancel this socket while the
+                                // test deliberately holds its response.
+                                if write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"fixed\"\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nConnection: close\r\n\r\n", body.len()).is_ok() {
+                                    let _ = stream.write_all(body);
+                                }
                             }));
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -84,6 +87,45 @@ impl Drop for Remote {
         self.worker.take().unwrap().join().unwrap();
     }
 }
+#[test]
+fn per_source_deadline_cancels_io_and_releases_admission_for_recovery() {
+    let remote = Remote::start();
+    let runtime = Runtime::shared().unwrap();
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        object_store::aws::AmazonS3Builder::new()
+            .with_bucket_name("bounded")
+            .with_region("us-east-1")
+            .with_access_key_id("local-test-key")
+            .with_secret_access_key("local-test-secret")
+            .with_endpoint(&remote.url)
+            .with_allow_http(true)
+            .build()
+            .unwrap(),
+    );
+    let start = std::time::Instant::now();
+    let error = runtime
+        .request_timed(
+            store.clone(),
+            "stalled".into(),
+            Operation::Get(None),
+            Duration::from_millis(200),
+        )
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("timed out"), "{error:#}");
+    assert!(start.elapsed() < Duration::from_secs(2));
+    remote.arrived.recv_timeout(Duration::from_secs(1)).unwrap();
+    remote.open();
+    let object = runtime
+        .request(store, "recovered".into(), Operation::Get(None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(object.bytes, b"network-value");
+    let admission = runtime.admission.clone();
+    drop(runtime);
+    assert_eq!(*admission.active.lock().unwrap(), 0);
+}
+
 #[test]
 fn stalled_network_reads_run_concurrently_but_never_exceed_global_admission() {
     let remote = Remote::start();

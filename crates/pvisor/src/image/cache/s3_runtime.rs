@@ -13,16 +13,19 @@ struct Admission {
     available: Condvar,
 }
 impl Admission {
-    fn acquire(self: &Arc<Self>) -> anyhow::Result<Permit> {
+    fn acquire(self: &Arc<Self>, deadline: std::time::Instant) -> anyhow::Result<Permit> {
         let mut active = self
             .active
             .lock()
             .map_err(|_| anyhow::anyhow!("S3 cache admission unavailable"))?;
         while *active >= MAX_REQUESTS {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            ensure!(!remaining.is_zero(), "S3 cache admission timed out");
             active = self
                 .available
-                .wait(active)
-                .map_err(|_| anyhow::anyhow!("S3 cache admission unavailable"))?;
+                .wait_timeout(active, remaining)
+                .map_err(|_| anyhow::anyhow!("S3 cache admission unavailable"))?
+                .0;
         }
         *active += 1;
         Ok(Permit(self.clone()))
@@ -43,6 +46,7 @@ struct Job {
     operation: Operation,
     reply: mpsc::SyncSender<anyhow::Result<Option<StoredObject>>>,
     _permit: Permit,
+    deadline: std::time::Instant,
 }
 pub(super) struct Runtime {
     pid: u32,
@@ -70,19 +74,31 @@ impl Runtime {
         // itself never blocks or requires entering the caller's Tokio runtime.
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Job>();
         let (ready, initialized) = mpsc::sync_channel::<anyhow::Result<()>>(1);
-        let worker = std::thread::Builder::new().name("pvisor-cache-s3".into()).spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(runtime) => runtime,
-                Err(error) => { let _ = ready.send(Err(error.into())); return; }
-            };
-            let _ = ready.send(Ok(()));
-            runtime.block_on(async move {
+        let worker = std::thread::Builder::new()
+            .name("pvisor-cache-s3".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready.send(Err(error.into()));
+                        return;
+                    }
+                };
+                let _ = ready.send(Ok(()));
+                runtime.block_on(async move {
                 let mut operations = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         job = receive.recv() => match job {
                             Some(job) => { operations.spawn(async move {
-                                let result = s3_operation(job.store.as_ref(), &job.key, job.operation).await;
+                                let result = tokio::time::timeout_at(
+                                    tokio::time::Instant::from_std(job.deadline),
+                                    s3_operation(job.store.as_ref(), &job.key, job.operation),
+                                ).await.map_err(|_| anyhow::anyhow!("S3 image operation timed out"))
+                                    .and_then(|result| result);
                                 let _ = job.reply.send(result);
                                 // Keep admission charged until response publication.
                                 drop(job._permit);
@@ -96,7 +112,7 @@ impl Runtime {
                 // Join remaining completions before releasing the I/O runtime.
                 while operations.join_next().await.is_some() {}
             });
-        })?;
+            })?;
         match initialized
             .recv()
             .context("S3 cache runtime initialization failed")?
@@ -113,12 +129,24 @@ impl Runtime {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn request(
         &self,
         store: Arc<dyn ObjectStore>,
         key: String,
         operation: Operation,
     ) -> anyhow::Result<Option<StoredObject>> {
+        self.request_timed(store, key, operation, std::time::Duration::from_secs(35))
+    }
+
+    pub(super) fn request_timed(
+        &self,
+        store: Arc<dyn ObjectStore>,
+        key: String,
+        operation: Operation,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<Option<StoredObject>> {
+        let deadline = std::time::Instant::now() + budget;
         ensure!(
             self.pid == std::process::id(),
             "S3 cache client inherited across fork; reopen it in the child"
@@ -129,7 +157,9 @@ impl Runtime {
                 .is_none_or(|worker| worker.thread().id() != std::thread::current().id()),
             "recursive synchronous S3 cache request on the I/O loop"
         );
-        let permit = self.admission.acquire()?;
+        let permit = self
+            .admission
+            .acquire(deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(5)))?;
         let (reply, receive) = mpsc::sync_channel(1);
         self.send
             .as_ref()
@@ -140,6 +170,7 @@ impl Runtime {
                 operation,
                 reply,
                 _permit: permit,
+                deadline,
             })
             .map_err(|_| anyhow::anyhow!("S3 cache worker stopped"))?;
         receive.recv().context("S3 cache worker dropped response")?
