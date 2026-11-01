@@ -1232,6 +1232,7 @@ fn pooled_fixture(home: &std::path::Path, rootfs: &std::path::Path) -> pvisor::d
             target: None,
             platform: None,
             pull: false,
+            no_cache: false,
             cpus: 1,
             memory_mib: 32,
             network: false,

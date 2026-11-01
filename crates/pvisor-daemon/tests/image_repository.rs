@@ -49,6 +49,7 @@ impl Fixture {
                 target: None,
                 platform: Some("linux/amd64".into()),
                 pull: false,
+                no_cache: false,
                 cpus: 1,
                 memory_mib: 128,
                 network: false,
