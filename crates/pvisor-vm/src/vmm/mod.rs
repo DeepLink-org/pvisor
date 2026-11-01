@@ -566,18 +566,15 @@ impl Vmm {
         } else {
             VcpuResponse::Resumed
         };
-        for handle in &self.vcpus_handles {
-            match handle
-                .response_receiver()
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            {
-                Ok(response) if response == expected => (),
-                response => {
-                    return Err(Error::VcpuControl(format!(
-                        "unexpected response: {response:?}"
-                    )));
-                }
-            }
+        for (vcpu_index, handle) in self.vcpus_handles.iter().enumerate() {
+            await_control_ack(
+                handle.response_receiver(),
+                &expected,
+                vcpu_index,
+                self.vcpus_handles.len(),
+                timeout,
+                deadline,
+            )?;
         }
         self.paused = paused;
         self.control_failed = false;
@@ -864,5 +861,88 @@ mod guest_exit_tests {
         assert_eq!(super::shutdown_exit_code(7, 0), 7);
         assert_eq!(super::shutdown_exit_code(i32::MAX, 0), 125);
         assert_eq!(super::shutdown_exit_code(i32::MAX, 1), 1);
+    }
+}
+
+// A single absolute deadline covers all CPUs. Never skip an unexpected reply
+// or retry after timeout: the caller retains control_failed until every ack.
+fn await_control_ack(
+    receiver: &crossbeam_channel::Receiver<VcpuResponse>,
+    expected: &VcpuResponse,
+    vcpu_index: usize,
+    total: usize,
+    timeout: Duration,
+    deadline: Instant,
+) -> Result<()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match receiver.recv_timeout(remaining) {
+        Ok(response) if &response == expected => Ok(()),
+        response => Err(Error::VcpuControl(format!(
+            "control acknowledgement failed: expected={expected:?} vcpu_index={vcpu_index} acknowledged={vcpu_index}/{total} timeout_ms={} remaining_at_wait_ms={} elapsed_ms={} response={response:?}",
+            timeout.as_millis(),
+            remaining.as_millis(),
+            deadline
+                .checked_sub(timeout)
+                .map(|start| start.elapsed().as_millis())
+                .unwrap_or(0),
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod control_ack_tests {
+    use super::*;
+    #[test]
+    fn control_ack_timeout_identifies_phase_and_cpu() {
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        let error = await_control_ack(
+            &rx,
+            &VcpuResponse::Paused,
+            1,
+            2,
+            Duration::from_secs(30),
+            Instant::now(),
+        )
+        .unwrap_err()
+        .to_string();
+        for field in [
+            "expected=Paused",
+            "vcpu_index=1",
+            "acknowledged=1/2",
+            "timeout_ms=30000",
+            "Err(Timeout)",
+        ] {
+            assert!(error.contains(field), "{error}");
+        }
+    }
+    #[test]
+    fn control_ack_never_consumes_past_wrong_response() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tx.send(VcpuResponse::Resumed).unwrap();
+        tx.send(VcpuResponse::Paused).unwrap();
+        assert!(
+            await_control_ack(
+                &rx,
+                &VcpuResponse::Paused,
+                0,
+                2,
+                Duration::from_secs(3),
+                Instant::now() + Duration::from_secs(3)
+            )
+            .is_err()
+        );
+        assert_eq!(rx.try_recv().unwrap(), VcpuResponse::Paused);
+        drop(tx);
+        let error = await_control_ack(
+            &rx,
+            &VcpuResponse::Resumed,
+            0,
+            1,
+            Duration::ZERO,
+            Instant::now(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Disconnected"));
     }
 }

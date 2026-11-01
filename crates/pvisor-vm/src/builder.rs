@@ -430,6 +430,7 @@ impl<B: Backend> Builder<B> {
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shared_backing_reclaim: Default::default(),
         })?;
         startup = startup.next("vm.start_worker");
         B::start_worker(&self.resources, vm.clone(), receiver)?;

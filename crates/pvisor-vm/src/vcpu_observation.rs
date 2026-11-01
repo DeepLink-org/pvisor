@@ -387,6 +387,7 @@ mod tests {
             vmm: std::sync::Weak::new(),
             transition: std::sync::Arc::new(Mutex::new(())),
             cold_pager_started: std::sync::Arc::new(AtomicBool::new(false)),
+            shared_backing_reclaim: Default::default(),
         };
         assert!(handle.set_vcpu_observation(true).is_err());
         assert!(handle.vcpu_observation().is_err());

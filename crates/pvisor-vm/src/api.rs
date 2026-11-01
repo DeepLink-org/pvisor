@@ -175,7 +175,7 @@ pub trait VmConfiguration: Sized {
     /// Copy and validate a trusted kernel payload and guest load/entry addresses.
     /// Successful replacement retains its own bytes; invalid geometry preserves the prior kernel.
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
-        -> io::Result<()>;
+    -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
     /// x86-64 VM with one or two vCPUs and matching patched firmware. Other targets,
     /// snapshots and unguarded devices are rejected. Optional RAM offload uses
@@ -732,6 +732,8 @@ pub struct VmmHandle {
     pub(crate) vmm: std::sync::Weak<std::sync::Mutex<crate::vmm::Vmm>>,
     pub(crate) transition: Arc<std::sync::Mutex<()>>,
     pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) shared_backing_reclaim:
+        Arc<std::sync::Mutex<Option<Box<dyn Fn() -> Result<(), String> + Send + Sync>>>>,
 }
 /// EXP-001 M0: diagnostic execution phase, not a Linux runqueue assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1064,9 +1066,17 @@ pub struct ColdRamOptions {
     pub page_granular: bool,
     /// Linux/HVF pool pages remain shared on reads and use kernel COW on writes.
     /// Requires page_granular and a store providing pinned shared_mapping slots.
-    /// No UFFD permission is needed for this mode. Snapshots/offload remain
-    /// incompatible; remapping takes the CPU/device barrier and rechecks bytes.
+    /// No UFFD permission is needed for this mode. Snapshots remain unsupported;
+    /// offload requires shared_backing. Remapping takes the CPU/device barrier and rechecks bytes.
     pub share_resident: bool,
+    /// Linux x86_64 physical sharing over VM-owned live MAP_SHARED backing.
+    /// Requires page_granular and share_resident; rejects anonymous/restore RAM.
+    /// Offload reattaches every replaced page before ordinary backing reclaim.
+    /// Mapping/writeback failures require terminating the VM; default is false.
+    /// On Linux x86_64, permits guest-idle reclaim with the original claimed epoch
+    /// and device barrier. Optional scans yield during idle handoff; other cold
+    /// profiles remain incompatible. Requires page_granular and share_resident.
+    pub shared_backing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

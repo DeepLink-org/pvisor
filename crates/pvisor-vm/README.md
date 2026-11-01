@@ -1716,3 +1716,36 @@ unrelated mount namespaces do not extend the serving lifetime. Active-use
 writeback and generation publication are unchanged. macOS retains its existing
 shutdown path. The ignored namespace-retention regression test requires Linux
 FUSE and permitted user/mount namespaces; run it explicitly on a suitable host.
+
+## Experimental shared backing offload
+
+Linux x86_64 may opt in with `[vm].shared_backing = true` and an explicit
+physical `memory_pool`. The profile keeps the VM-owned live backing, including
+FUSE `ram_compression`. It does not enable KSM, UFFD compression, snapshot
+restoration or change scan/admission/reclaim policies. Default remains off.
+
+The sharing worker tracks replaced pages independently of pool references.
+Under the existing CPU/device transition barrier, offload invalidates old
+publication generations, copies each replaced page (including COW and zeroed
+pages) to its original backing offset, and remaps it MAP_SHARED before existing
+reclaim. The scratch copy is 4 KiB; per-page ownership metadata and deferred
+references are charged to the VM. Detached pins are released outside VM locks.
+The host still commits compressed generations before reporting success.
+Mapping, writeback or commit failure follows fail-stop; API deletion alone is
+not proof of physical cleanup. This is an experimental correctness path, not a
+claim of performance benefit or completed rollout qualification.
+
+Automatic guest-idle reclaim admits only the explicit Linux physical shared-backing
+profile. Other cold pagers remain rejected. Optional sharing maintenance yields
+during an idle offer/claim; mandatory reattachment still runs inside the original
+transition and CPU/device barrier before reclaim. Idle deadlines are unchanged.
+
+
+## vCPU control queue wake robustness
+
+The Linux running loop checks pending controls before every KVM entry, including
+re-entry after forced idle-PIO completion consumes a kick. The queue remains
+authoritative; this does not grant an idle lease or bypass CPU acknowledgements.
+Control failures report the expected acknowledgement, CPU vector index, completed
+ack count and original shared deadline. Unexpected replies are not skipped and
+failed transitions remain fail-stop. Existing 3s/30s deadlines are unchanged.
