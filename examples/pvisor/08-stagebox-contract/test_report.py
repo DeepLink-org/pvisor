@@ -1,9 +1,9 @@
 """Existing tests, including the user's report of lost fractional hours."""
 
-from decimal import Decimal
-from pathlib import Path
 import tempfile
 import unittest
+from decimal import Decimal
+from pathlib import Path
 
 from weekly_report import total_hours
 
