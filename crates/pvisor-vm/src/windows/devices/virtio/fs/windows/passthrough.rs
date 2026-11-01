@@ -1,5 +1,5 @@
-use std::collections::btree_map;
 use std::collections::BTreeMap;
+use std::collections::btree_map;
 use std::convert::TryInto;
 use std::ffi::{CStr, OsStr};
 use std::fs::{File, FileType, OpenOptions as StdOpenOptions};
@@ -11,20 +11,20 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{Sender, unbounded};
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_FILE_EXISTS,
     ERROR_FILE_NOT_FOUND, ERROR_INVALID_NAME, ERROR_PATH_NOT_FOUND, ERROR_PRIVILEGE_NOT_HELD,
     ERROR_SHARING_VIOLATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateSymbolicLinkW, GetDiskFreeSpaceExW, FILE_ATTRIBUTE_READONLY,
+    CreateSymbolicLinkW, FILE_ATTRIBUTE_READONLY, GetDiskFreeSpaceExW,
     SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE, SYMBOLIC_LINK_FLAG_DIRECTORY,
 };
 
 use crate::devices::windows::memory_mapping::{
-    discard_file_range, is_unsupported_discard_error, WindowsFileMappingAccess,
-    WindowsFileMappingView,
+    WindowsFileMappingAccess, WindowsFileMappingView, discard_file_range,
+    is_unsupported_discard_error,
 };
 
 use super::super::bindings;
@@ -421,28 +421,38 @@ impl PassthroughFs {
     }
 
     fn rename_inode_path(&self, old_path: &Path, new_path: &Path) {
-        let mut inodes = self.inodes.write().unwrap();
-        let Some(old_data) = inodes.by_path.remove(old_path) else {
-            if let Some(replaced) = inodes.by_path.remove(new_path) {
-                inodes.by_inode.remove(&replaced.inode);
-            }
+        if old_path == new_path {
             return;
-        };
-
+        }
+        let mut inodes = self.inodes.write().unwrap();
+        let moved: Vec<_> = inodes
+            .by_path
+            .keys()
+            .filter(|path| path.starts_with(old_path))
+            .cloned()
+            .collect();
         if let Some(replaced) = inodes.by_path.remove(new_path) {
             inodes.by_inode.remove(&replaced.inode);
         }
-
-        // Windows does not give this backend a cheap fd-like identity for every path. Preserve the
-        // guest-visible source inode across rename by moving its path entry, which matches the
-        // important POSIX behavior for atomic temp-file replacement patterns such as heartbeat files.
-        let data = Arc::new(InodeData {
-            inode: old_data.inode,
-            path: new_path.to_path_buf(),
-            refcount: AtomicU64::new(old_data.refcount.load(Ordering::Acquire)),
-        });
-        inodes.by_inode.insert(data.inode, data.clone());
-        inodes.by_path.insert(new_path.to_path_buf(), data);
+        // Cached descendants keep their inode identities after a directory move.
+        for path in moved {
+            let Some(old_data) = inodes.by_path.remove(&path) else {
+                continue;
+            };
+            let suffix = path.strip_prefix(old_path).expect("selected descendant");
+            let destination = if suffix.as_os_str().is_empty() {
+                new_path.to_path_buf()
+            } else {
+                new_path.join(suffix)
+            };
+            let data = Arc::new(InodeData {
+                inode: old_data.inode,
+                path: destination.clone(),
+                refcount: AtomicU64::new(old_data.refcount.load(Ordering::Acquire)),
+            });
+            inodes.by_inode.insert(data.inode, data.clone());
+            inodes.by_path.insert(destination, data);
+        }
     }
 
     fn do_symlink(&self, linkname: &CStr, parent: Inode, name: &CStr) -> io::Result<Entry> {
@@ -1969,10 +1979,12 @@ mod tests {
                 SetattrValid::MODE,
             )
             .unwrap();
-        assert!(fs::metadata(temp.path.join("created.txt"))
-            .unwrap()
-            .permissions()
-            .readonly());
+        assert!(
+            fs::metadata(temp.path.join("created.txt"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
 
         passthrough
             .setattr(
@@ -2112,6 +2124,61 @@ mod tests {
         passthrough
             .release(context(), source.inode, 0, handle, false, false, None)
             .unwrap();
+    }
+
+    #[test]
+    fn directory_rename_preserves_cached_descendant_paths() {
+        let temp = TempDir::new();
+        fs::create_dir_all(temp.path.join("before/nested")).unwrap();
+        fs::write(temp.path.join("before/nested/file"), b"data").unwrap();
+        let passthrough = PassthroughFs::new(Config {
+            root_dir: temp.path.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        passthrough.init(FsOptions::empty()).unwrap();
+        let directory = passthrough
+            .lookup(context(), fuse::ROOT_ID, c"before")
+            .unwrap();
+        let nested = passthrough
+            .lookup(context(), directory.inode, c"nested")
+            .unwrap();
+        let child = passthrough
+            .lookup(context(), nested.inode, c"file")
+            .unwrap();
+        passthrough
+            .rename(
+                context(),
+                fuse::ROOT_ID,
+                c"before",
+                fuse::ROOT_ID,
+                c"after",
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            passthrough
+                .getattr(context(), child.inode, None)
+                .unwrap()
+                .0
+                .st_size,
+            4
+        );
+        let found = passthrough
+            .lookup(context(), nested.inode, c"file")
+            .unwrap();
+        assert_eq!(found.inode, child.inode);
+        passthrough
+            .rename(
+                context(),
+                fuse::ROOT_ID,
+                c"after",
+                fuse::ROOT_ID,
+                c"after",
+                0,
+            )
+            .unwrap();
+        assert!(passthrough.getattr(context(), child.inode, None).is_ok());
     }
 
     #[test]
@@ -2328,7 +2395,9 @@ mod tests {
         ) {
             Ok(()) => {}
             Err(error) if error.raw_os_error() == Some(LINUX_EOPNOTSUPP) => {
-                eprintln!("skipping hole-punch assertion because this filesystem does not support sparse zero-data controls");
+                eprintln!(
+                    "skipping hole-punch assertion because this filesystem does not support sparse zero-data controls"
+                );
                 passthrough
                     .release(context(), entry.inode, 0, handle, false, false, None)
                     .unwrap();
@@ -2511,10 +2580,12 @@ mod tests {
         };
 
         assert_eq!(entry.attr.st_mode & S_IFMT, S_IFLNK);
-        assert!(fs::symlink_metadata(temp.path.join("link.txt"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            fs::symlink_metadata(temp.path.join("link.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             passthrough.readlink(context(), entry.inode).unwrap(),
             b"target.txt"

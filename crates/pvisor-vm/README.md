@@ -28,7 +28,9 @@ Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
 Windows 文件模式与 uid/gid 为合成的 Linux 元数据；宿主 ACL 仍生效，POSIX
 chmod/chown 不提供完整语义。共享树由调用方管理，不要允许其他不可信宿主进程
 并发改写它的目录结构。此支持范围是 `pvisor-vm`，不表示 executor、Gateway、
-Core、OverlayFS 或整个 pVisor CLI 已能在 Windows 上构建和运行。
+Core、OverlayFS 或完整 pVisor CLI 已能在 Windows 上构建和运行。
+限定的跨平台 CLI 入口是 `pvisor vm-run`，仅使用此处支持的普通 rootfs/只读共享
+与 supervisor 配置；见 [CLI README](../pvisor-cli/README.md#direct-vm-execution-on-linux-macos-and-windows)。
 
 退出认证仅在协商了 FUSE `ALLOW_IDMAP` 时接受内核省略的 UID，规则与 Unix
 后端一致；内核 PID 必须仍为 1，其他显式 UID、伪造 token 和重复报告均拒绝。
@@ -1716,3 +1718,17 @@ unrelated mount namespaces do not extend the serving lifetime. Active-use
 writeback and generation publication are unchanged. macOS retains its existing
 shutdown path. The ignored namespace-retention regression test requires Linux
 FUSE and permitted user/mount namespaces; run it explicitly on a suitable host.
+
+## Shared CLI VM contracts and Windows directory rename
+
+`tests/vm_cli_contract.py` drives `pvisor vm-run` through the same static Linux
+workload on KVM, HVF and WHP. Windows CI builds the actual CLI binary in addition
+to the existing WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
+for feature scope, inputs and evidence limits.
+
+Windows directory rename updates cached paths for the directory and all known
+descendants while retaining inode IDs and lookup counts. Previously only the
+directory moved, so getattr/open on cached descendants could use obsolete paths.
+A private native regression checks nested cached inodes and a no-op rename; the
+shared guest workload checks the externally visible directory move. This does
+not establish full POSIX rename/open-unlinked semantics on Windows.

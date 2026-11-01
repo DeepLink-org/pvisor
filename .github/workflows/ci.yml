@@ -211,6 +211,26 @@ jobs:
         if: matrix.prepare_pvisor
         run: mise run smoke
 
+      - name: Common CLI VM workload / KVM and HVF
+        if: matrix.shard == 'pvisor'
+        shell: bash
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) guest_target=x86_64-unknown-linux-musl ;;
+            Darwin-arm64) guest_target=aarch64-unknown-linux-musl ;;
+            *) echo "unsupported VM CI platform" >&2; exit 1 ;;
+          esac
+          mise exec -- rustup target add "$guest_target"
+          mise exec -- rustc --edition=2021 --target "$guest_target" -C linker=rust-lld tests/vm_guest.rs -o "$RUNNER_TEMP/vm-guest"
+          python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest "$RUNNER_TEMP/vm-guest" --output "target/vm-cli-${{ runner.os }}"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.shard == 'pvisor'
+        with:
+          name: vm-cli-${{ runner.os }}
+          path: target/vm-cli-${{ runner.os }}
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Test Journal without workspace feature unification
         if: matrix.shard == 'core'
         run: mise run test -- pvisor-journal

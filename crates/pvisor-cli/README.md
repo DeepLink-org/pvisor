@@ -866,3 +866,27 @@ for recording-off mode.
 Network catalog commands report closed-output errors through the normal CLI
 error path instead of panicking. A create/remove may already have committed
 before its output fails; inspect the catalog before retrying a mutation.
+
+## Direct VM execution on Linux, macOS and Windows
+
+`pvisor vm-run --rootfs ROOT --cpus 2 --memory 256 --readonly FIXTURES -- /probe`
+boots a caller-owned Linux rootfs using KVM (Linux x86_64), HVF (Apple Silicon)
+or WHP (Windows x86_64). Use an absolute guest executable. `--firmware LIBRARY`
+selects a trusted host-loadable firmware library; omission requires an embedded
+kernel. Windows currently requires the explicit DLL. A static Linux executable
+in an otherwise empty rootfs is sufficient; dynamic programs need their guest
+loader/libraries too. No OCI image extraction is performed by this command.
+
+Rootfs writes persist directly. This profile creates no Job/Bundle/stage and
+provides no network, interactive stdin, task stdio ports, live control or snapshot
+options. The optional read-only directory mounts at `/readonly`; it must not
+overlap rootfs. Callers own rootfs exclusivity and external command deadlines.
+Output uses the VM console; guest exit codes propagate. Setup/runtime errors
+return 1, argument errors 2, unauthenticated/abnormal guest termination 125.
+
+Windows source builds select `cargo build --locked -p pvisor-cli --bin pvisor`;
+parser tests select `mise run test -- pvisor-cli -- --lib --bin pvisor`. Unix-only
+runtime dependencies are excluded there. Other Windows commands are rejected;
+TUI, replay, Job/container workflows and Windows packaging are not ported.
+See the [platform matrix](../../docs/src/en/reference/platforms.md) and
+[shared real-VM test driver](../../tests/vm_cli_contract.py).

@@ -81,3 +81,26 @@ networks remain live; create/remove/query order changes with the evolving state.
 state; `commands.jsonl` records the actual commands and results. Existing fixed
 fault regressions remain available with `--workload regression` and are also
 mixed into generated sequences without discarding the surrounding model.
+
+## Cross-platform VM CLI contracts
+
+`vm_cli_contract.py` runs the real `pvisor vm-run` on Linux/KVM, Apple Silicon/HVF
+and Windows/WHP with the same static Linux source `vm_guest.rs`. It does not skip
+missing virtualization, firmware or incorrect guest results. Build the guest
+with `rustc --target <matching-linux-musl-target> -C linker=rust-lld --edition=2021`.
+Pass `--binary`, `--guest`, a new `--output` directory, and `--firmware` when the
+CLI has no embedded kernel (required for Windows). Defaults are 3 rounds, seed
+1729 and a 90-second command deadline. `--rounds 30` runs 120 VMs.
+
+Each round checks 1/2 CPUs and exit codes 0/7/255; each VM runs eight concurrent
+file workers, memory touches, a timer, read-only rejection and a cached directory
+rename. Host oracles check exact result bytes, exit code, immutable fixture and
+empty work directory. Per-case stdout/stderr, command, elapsed time, hashes and
+rootfs remain in the evidence directory; `report.json` marks failures explicitly.
+Timeouts terminate and reap the command tree. An existing output directory is
+refused. Tests in `test_vm_cli_contract.py` check supervision and false-pass
+rejection without virtualization.
+
+CI runs the driver in Linux/macOS pvisor shards and the Windows WHP job; normal
+unit tests do not silently start VMs. See [platform support](../docs/src/en/reference/platforms.md)
+and [the review record](PLATFORM_REVIEW.md).
