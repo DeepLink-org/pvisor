@@ -37,13 +37,19 @@ jobs:
         run: |
           mise exec -- cargo build --locked -p pvisor-vm --lib --no-default-features
           mise exec -- cargo build --locked -p pvisor-vm --lib --example whp_smoke
+      - name: Build Windows pvisor VM CLI
+        run: mise exec -- cargo build --locked -p pvisor-cli --bin pvisor
       # Publish before unit tests so WHP can run even when a contract test fails.
       - uses: actions/upload-artifact@v4
         with:
           name: windows-vm-runner
-          path: target/debug/examples/whp_smoke.exe
+          path: |
+            target/debug/examples/whp_smoke.exe
+            target/debug/pvisor.exe
           if-no-files-found: error
           retention-days: 7
+      - name: Test Windows CLI parser (no WHP required)
+        run: mise run test -- pvisor-cli -- --lib --bin pvisor
       - name: Native unit tests and public contracts (no WHP required)
         run: mise run test -- pvisor-core pvisor-guest pvisor-vm -- --lib --tests --no-fail-fast
       - name: VM contracts without the embedded guest supervisor
@@ -74,12 +80,15 @@ jobs:
         run: |
           mise exec -- rustup target add x86_64-unknown-linux-musl
           mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld crates/pvisor-vm/src/probes/whp_guest.rs -o target/whp-firmware/whp-guest
+      - name: Build common CLI guest workload
+        run: mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o target/whp-firmware/vm-guest
       - uses: actions/upload-artifact@v4
         with:
           name: windows-vm-firmware
           path: |
             target/whp-firmware/libkrunfw.dll
             target/whp-firmware/whp-guest
+            target/whp-firmware/vm-guest
           if-no-files-found: error
           retention-days: 7
 
@@ -92,6 +101,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: windows-vm-runner
@@ -119,8 +129,13 @@ jobs:
       - name: Run actual Linux guests with bounded timeouts
         shell: pwsh
         run: |
-          & .\whp-run\whp_smoke.exe "$PWD\whp-run\libkrunfw.dll" "$PWD\whp-run\whp-guest" 2>&1 | Tee-Object whp-smoke.log
+          & .\whp-run\examples\whp_smoke.exe "$PWD\whp-run\libkrunfw.dll" "$PWD\whp-run\whp-guest" 2>&1 | Tee-Object whp-smoke.log
           if ($LASTEXITCODE -ne 0) { throw "WHP smoke failed: $LASTEXITCODE" }
+      - name: Common CLI VM workload (same suite as KVM and HVF)
+        shell: pwsh
+        run: |
+          python tests/vm_cli_contract.py --binary whp-run/pvisor.exe --guest whp-run/vm-guest --firmware whp-run/libkrunfw.dll --output target/vm-cli-windows
+          if ($LASTEXITCODE -ne 0) { throw "Windows CLI VM contracts failed: $LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -128,5 +143,6 @@ jobs:
           path: |
             whp-smoke.log
             whp-environment.log
+            target/vm-cli-windows
           if-no-files-found: warn
           retention-days: 7

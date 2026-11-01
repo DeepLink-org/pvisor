@@ -211,6 +211,22 @@ jobs:
         if: matrix.prepare_pvisor
         run: mise run smoke
 
+      - name: Common CLI VM workload / KVM
+        # Hosted Apple Silicon runners cannot create nested HVF VMs.
+        if: runner.os == 'Linux' && matrix.shard == 'pvisor'
+        shell: bash
+        run: |
+          mise exec -- rustup target add x86_64-unknown-linux-musl
+          mise exec -- rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld tests/vm_guest.rs -o "$RUNNER_TEMP/vm-guest"
+          python3 tests/vm_cli_contract.py --binary target/debug/pvisor --guest "$RUNNER_TEMP/vm-guest" --output "$RUNNER_TEMP/vm-cli-${{ runner.os }}"
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux' && matrix.shard == 'pvisor'
+        with:
+          name: vm-cli-${{ runner.os }}
+          path: ${{ runner.temp }}/vm-cli-${{ runner.os }}
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Test Journal without workspace feature unification
         if: matrix.shard == 'core'
         run: mise run test -- pvisor-journal
