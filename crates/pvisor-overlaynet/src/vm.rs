@@ -325,6 +325,8 @@ async fn run_backend(
     let mut poll_delay = Box::pin(tokio::time::sleep(StdDuration::ZERO));
 
     'backend: loop {
+        // Readiness-based peer I/O does not consume Tokio's cooperative budget.
+        tokio::task::consume_budget().await;
         let mut service_stack = false;
         tokio::select! {
             _ = &mut shutdown => break,
