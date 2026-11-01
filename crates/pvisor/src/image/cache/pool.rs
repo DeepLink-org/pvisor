@@ -88,12 +88,25 @@ pub(crate) fn published_local_image(
 
 pub(crate) fn open_local_image(
     location: &Path,
+    repository: Option<&str>,
+    mirrors: &[String],
     handle: &str,
     architecture: &str,
     expected_digest: &str,
     scratch: &Path,
 ) -> anyhow::Result<DirectImage> {
-    let client = CacheClient::configured_pool(location, true)?;
+    let client = match repository {
+        Some(address) => {
+            CacheClient::from_binding(super::client::ClientBinding::repository(address, mirrors)?)?
+        }
+        None => {
+            ensure!(
+                mirrors.is_empty(),
+                "local images cannot have remote mirrors"
+            );
+            CacheClient::configured_pool(location, true)?
+        }
+    };
     let (response, _) = client.request(Request::Open {
         handle: handle.into(),
         architecture: architecture.into(),

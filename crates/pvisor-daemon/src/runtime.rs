@@ -2767,6 +2767,8 @@ mod tests {
                     digest: format!("sha256:{}", "2".repeat(64)),
                     platform: "linux/amd64".into(),
                     cache: pvisor::docker::CachedImage {
+                        repository: None,
+                        mirrors: vec![],
                         location: rootfs.join("images/pool-v2"),
                         handle: format!(
                             "pvisor-v2:{}:linux-amd64:{}",

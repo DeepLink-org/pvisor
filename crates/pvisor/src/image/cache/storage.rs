@@ -15,6 +15,8 @@ pub(crate) enum Storage {
     Filesystem(PathBuf),
     Pool(Arc<super::pool::PoolStorage>),
     S3(Arc<S3>),
+    Http(Arc<super::http::Http>),
+    Mirrors(Arc<super::mirrors::Mirrors>),
     Metadata(Arc<MetadataStorage>),
 }
 
@@ -94,6 +96,64 @@ impl MetadataStorage {
 }
 
 impl Storage {
+    pub(super) fn mirrors(locations: &[String]) -> anyhow::Result<Self> {
+        Ok(Self::Mirrors(Arc::new(super::mirrors::Mirrors::new(
+            locations,
+        )?)))
+    }
+
+    pub(super) fn verified(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+        mut valid: impl FnMut(&[u8]) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<u8>> {
+        validate_key(key)?;
+        if let Some(range) = &range {
+            ensure!(
+                range.end > range.start && range.end - range.start <= limit as u64,
+                "invalid verified range"
+            );
+        }
+        if let Self::Mirrors(mirrors) = self {
+            return Ok(mirrors.read(key, range, limit, valid)?.bytes);
+        }
+        let object = self
+            .read(key, range, limit)?
+            .context("missing verified repository object")?;
+        valid(&object.bytes)?;
+        Ok(object.bytes)
+    }
+
+    pub(super) fn read_timed(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<Option<StoredObject>> {
+        validate_key(key)?;
+        if let Some(range) = &range {
+            ensure!(
+                range.end > range.start && range.end - range.start <= limit as u64,
+                "invalid timed range"
+            );
+        }
+        match self {
+            Self::Http(http) => http.read_timed(key, range, limit, budget),
+            Self::S3(s3) => s3.request_timed(
+                key,
+                if range.is_none() && limit != MAX_OBJECT {
+                    Operation::GetBounded(limit)
+                } else {
+                    Operation::Get(range)
+                },
+                budget,
+            ),
+            _ => self.read(key, range, limit),
+        }
+    }
     /// Pin an immutable revision without I/O. Only whitelisted metadata reads
     /// are supported; valid writes and CAS fail with PermissionDenied.
     pub(super) fn metadata(
@@ -119,31 +179,25 @@ impl Storage {
         Ok(Self::Filesystem(root))
     }
     pub(crate) fn s3(location: &str) -> anyhow::Result<Self> {
-        let remainder = location
-            .strip_prefix("s3://")
-            .context("expected s3://BUCKET/PREFIX")?;
-        let (bucket, prefix) = remainder.split_once('/').unwrap_or((remainder, ""));
-        ensure!(
-            !bucket.is_empty() && !bucket.contains(['@', '?', '#', ':']),
-            "invalid S3 bucket"
-        );
-        let prefix = prefix.trim_end_matches('/');
-        if !prefix.is_empty() {
-            validate_key(prefix)?;
-        }
+        let (bucket, prefix) = s3_location(location)?;
         let store = object_store::aws::AmazonS3Builder::from_env()
             .with_bucket_name(bucket)
+            .with_retry(object_store::RetryConfig {
+                max_retries: 1,
+                retry_timeout: std::time::Duration::from_secs(30),
+                ..Default::default()
+            })
             .with_config(
                 object_store::aws::AmazonS3ConfigKey::Client(
                     object_store::ClientConfigKey::Timeout,
                 ),
-                "300s",
+                "30s",
             )
             .with_config(
                 object_store::aws::AmazonS3ConfigKey::Client(
                     object_store::ClientConfigKey::ConnectTimeout,
                 ),
-                "10s",
+                "5s",
             )
             .build()
             .context("configure S3 cache")?;
@@ -152,6 +206,33 @@ impl Storage {
 
     pub(super) fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Ok(self.get_versioned(key)?.map(|object| object.bytes))
+    }
+
+    /// Reuse only exact existing bytes. Read back create conflicts or a lost
+    /// acknowledgement; immutable repository data is never overwritten.
+    pub(super) fn put_verified(&self, key: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
+        if let Some(existing) = self.read(key, None, bytes.len())? {
+            ensure!(
+                existing.bytes == bytes,
+                "immutable repository object differs: {key}"
+            );
+            return Ok(());
+        }
+        match self.write(key, bytes.clone(), PutMode::Create) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if self
+                    .read(key, None, bytes.len())?
+                    .as_ref()
+                    .map(|v| v.bytes.as_slice())
+                    == Some(bytes.as_slice())
+                {
+                    Ok(())
+                } else {
+                    Err(error.context("immutable publication was not confirmed"))
+                }
+            }
+        }
     }
     pub(super) fn get_versioned(&self, key: &str) -> anyhow::Result<Option<StoredObject>> {
         self.read(key, None, MAX_OBJECT)
@@ -178,6 +259,8 @@ impl Storage {
         validate_key(key)?;
         match self {
             Self::Pool(pool) => pool.read(key, range, limit),
+            Self::Mirrors(mirrors) => Ok(Some(mirrors.read(key, range, limit, |_| Ok(()))?)),
+            Self::Http(http) => http.read(key, range, limit),
             Self::Metadata(metadata) => metadata.read(key, range, limit),
             Self::S3(s3) => s3.request(
                 key,
@@ -255,10 +338,10 @@ impl Storage {
         ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
         match self {
             Self::Pool(pool) => return pool.write(key, bytes, mode),
-            Self::Metadata(_) => {
+            Self::Metadata(_) | Self::Http(_) | Self::Mirrors(_) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
-                    "socket metadata storage is read-only",
+                    "immutable remote storage is read-only",
                 )
                 .into());
             }
@@ -324,6 +407,27 @@ impl Storage {
         }
         Ok(())
     }
+}
+
+pub(crate) fn s3_location(location: &str) -> anyhow::Result<(&str, &str)> {
+    let remainder = location
+        .strip_prefix("s3://")
+        .context("expected s3://BUCKET/PREFIX")?;
+    let (bucket, prefix) = remainder.split_once('/').unwrap_or((remainder, ""));
+    ensure!(
+        !bucket.is_empty()
+            && bucket
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".-".contains(&b))
+            && !bucket.starts_with('.')
+            && !bucket.ends_with('.'),
+        "invalid S3 bucket"
+    );
+    let prefix = prefix.trim_end_matches('/');
+    if !prefix.is_empty() {
+        validate_key(prefix)?;
+    }
+    Ok((bucket, prefix))
 }
 
 pub(crate) fn validate_key(key: &str) -> anyhow::Result<()> {
@@ -398,12 +502,21 @@ impl S3 {
         })
     }
     fn request(&self, key: &str, operation: Operation) -> anyhow::Result<Option<StoredObject>> {
+        self.request_timed(key, operation, std::time::Duration::from_secs(35))
+    }
+    fn request_timed(
+        &self,
+        key: &str,
+        operation: Operation,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<Option<StoredObject>> {
         let key = if self.prefix.is_empty() {
             key.into()
         } else {
             format!("{}/{key}", self.prefix)
         };
-        self.runtime.request(self.store.clone(), key, operation)
+        self.runtime
+            .request_timed(self.store.clone(), key, operation, budget)
     }
 }
 
@@ -435,6 +548,7 @@ pub(super) async fn s3_operation(
                 _ => unreachable!(),
             };
             let expected = range.as_ref().map(|r| (r.end - r.start) as usize);
+            let requested_range = range.clone();
             let options = GetOptions {
                 range: range.map(GetRange::Bounded),
                 ..Default::default()
@@ -449,15 +563,27 @@ pub(super) async fn s3_operation(
                         e_tag: result.meta.e_tag.clone(),
                         version: result.meta.version.clone(),
                     };
-                    let bytes = result.bytes().await?;
+                    if let Some(range) = requested_range {
+                        ensure!(result.range == range, "S3 returned an incorrect range");
+                    }
+                    let bound = expected.unwrap_or(limit).min(limit);
+                    let mut stream = result.into_stream();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) =
+                        std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await
+                    {
+                        let chunk = chunk?;
+                        ensure!(
+                            chunk.len() <= bound.saturating_sub(bytes.len()),
+                            "oversized S3 cache body"
+                        );
+                        bytes.extend_from_slice(&chunk);
+                    }
                     ensure!(
-                        bytes.len() <= limit && expected.is_none_or(|len| bytes.len() == len),
-                        "truncated or oversized cache range"
+                        expected.is_none_or(|len| bytes.len() == len),
+                        "truncated S3 cache range"
                     );
-                    Ok(Some(StoredObject {
-                        bytes: bytes.to_vec(),
-                        version,
-                    }))
+                    Ok(Some(StoredObject { bytes, version }))
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
                 Err(error) => Err(error.into()),
@@ -469,6 +595,23 @@ pub(super) async fn s3_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn immutable_publication_reuses_only_verified_identical_objects() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::filesystem(temp.path().join("pool"), true).unwrap();
+        storage
+            .put_verified("meta/object", b"original".to_vec())
+            .unwrap();
+        storage
+            .put_verified("meta/object", b"original".to_vec())
+            .unwrap();
+        assert!(
+            storage
+                .put_verified("meta/object", b"corrupt!".to_vec())
+                .is_err()
+        );
+        assert_eq!(storage.get("meta/object").unwrap().unwrap(), b"original");
+    }
     #[test]
     fn many_layer_clients_share_one_io_thread_without_merging_stores_or_namespaces() {
         let endpoints: [Arc<dyn ObjectStore>; 2] = [

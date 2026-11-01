@@ -6,6 +6,96 @@ use crate::image::{
 };
 
 impl Store {
+    /// Validate prepared-image/registry keys without filesystem or network I/O.
+    /// Accepts 1..=128 ASCII alphanumeric/`-_.` characters, not leading `.`.
+    pub fn validate_image_key(name: &str) -> anyhow::Result<()> {
+        cache::validate_registry_name(name)
+    }
+
+    /// Validate ordered registry configuration without network I/O. At most
+    /// eight entries, unique names/locations, S3 or credential-free HTTP(S).
+    pub fn validate_image_registries(registries: &[ImageRegistry]) -> anyhow::Result<()> {
+        cache::validate_registries(registries)
+    }
+
+    /// Resolve a mutable name in configured order, then fetch the authenticated
+    /// template only from mirrors of that exact publication. Download-only
+    /// entries cannot resolve names. No name fallback after selecting a version.
+    /// Each source gets at most five seconds, each resolution/read stage thirty
+    /// seconds total. Nothing is installed or downloaded in full by this call.
+    pub fn resolve_image_repository(
+        name: &str,
+        registries: &[ImageRegistry],
+    ) -> anyhow::Result<ResolvedImageRepository> {
+        cache::resolve_repository(name, registries)
+    }
+
+    /// Publish a complete immutable bundle, then conditionally update
+    /// `refs/NAME.json`. Concurrent different updates fail rather than overwrite
+    /// an unobserved winner; uncertain acknowledgements are read back. Failure
+    /// can leave an unreferenced bundle. Returns its immutable repository root.
+    pub fn publish_registry_image(
+        &self,
+        image: &Image,
+        name: &str,
+        destination: &str,
+        template: &[u8],
+    ) -> anyhow::Result<String> {
+        Self::validate_image_key(name)?;
+        let location = self.publish_image_repository(image, destination, template)?;
+        cache::publish_reference(destination, name, &location)?;
+        Ok(location)
+    }
+
+    /// Publish a local pinned image to S3 or a `file:///ABSOLUTE/PATH` static
+    /// mirror staging directory. `template`
+    /// is the caller's portable launch JSON, at most 1 MiB, and must not contain
+    /// credentials. Returns the immutable root named by its SHA-256. Uploads
+    /// dependencies sequentially, then writes `image.json` as the visibility
+    /// point. Existing objects must match exactly; no overwrites are allowed.
+    /// Retries reconcile uncertain writes. Failure may leave unreferenced objects
+    /// but never installs a partial local image. Credentials/endpoint/region are
+    /// taken only from host AWS environment configuration.
+    pub fn publish_image_repository(
+        &self,
+        image: &Image,
+        destination: &str,
+        template: &[u8],
+    ) -> anyhow::Result<String> {
+        cache::validate_destination(destination)?;
+        let staging = tempfile::tempdir()?;
+        let pool = staging.path().join("pool");
+        self.export_image_pool(image, &pool)?;
+        cache::publish_repository(&pool, destination, template)
+    }
+
+    /// Fetch a bounded portable `image.json` from an S3, HTTP/HTTPS, or local
+    /// IPFS repository. This does not fetch image contents or install a record.
+    /// The caller must trust the selected publisher, deserialize/validate its
+    /// launch contract, and pin its handle before VM access. Hash-named roots
+    /// authenticate the template identity; transport failures remain errors.
+    pub fn read_image_repository(location: &str) -> anyhow::Result<Vec<u8>> {
+        cache::read_repository_template(location)
+    }
+
+    /// Export a local pinned V2 image into a new directory for explicit public
+    /// distribution. Copies only revision metadata and its dependency inventory,
+    /// not other revisions, catalog tags, credentials or writable projections.
+    /// Rejects packs retaining slots not reachable from this revision, so a
+    /// public export cannot disclose files removed from a private predecessor.
+    /// The destination must not exist; failure may leave a partial export that
+    /// the caller must discard. Remote bindings cannot be re-exported.
+    pub fn export_image_pool(&self, image: &Image, destination: &Path) -> anyhow::Result<()> {
+        ensure!(
+            image.cache.repository.is_none(),
+            "export requires a local pool"
+        );
+        // Validate the DTO's platform/digest against its pinned revision before
+        // publishing a template that could not subsequently be opened.
+        let _owner = self.open_image(image)?;
+        crate::image::cache::export_pool(&image.cache.location, &image.cache.handle, destination)
+    }
+
     pub(super) fn image_pull_lock(
         &self,
         reference: &str,
@@ -31,6 +121,8 @@ impl Store {
         private_directory(&scratch)?;
         let owner = cache::open_local_image(
             &cached.location,
+            cached.repository.as_deref(),
+            &cached.mirrors,
             &cached.handle,
             canonical_platform(platform)?
                 .strip_prefix("linux/")
@@ -69,7 +161,12 @@ impl Store {
                 .strip_prefix("linux/")
                 .unwrap(),
         )?;
-        Ok(image.map_cache(|_| CachedImage { location, handle }))
+        Ok(image.map_cache(|_| CachedImage {
+            location,
+            handle,
+            repository: None,
+            mirrors: vec![],
+        }))
     }
 
     pub(super) fn image_config_path(&self, image: &Image) -> anyhow::Result<PathBuf> {

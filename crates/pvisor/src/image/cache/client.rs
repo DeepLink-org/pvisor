@@ -114,14 +114,41 @@ pub(super) struct ClientBinding {
     token: Option<String>,
     local_store: Option<std::path::PathBuf>,
     read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mirrors: Vec<String>,
     // Replay policy only, not authorization: private bridge confinement remains
     // mandatory. General clients and older runner descriptors have no policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pinned_read_retry: Option<String>,
 }
 impl ClientBinding {
+    pub(super) fn repository(address: &str, mirrors: &[String]) -> anyhow::Result<Self> {
+        if address.starts_with("s3://") {
+            super::storage::s3_location(address)?;
+        } else {
+            super::http::Http::validate(address)?;
+        }
+        if !mirrors.is_empty() {
+            let mut locations = vec![address.to_string()];
+            locations.extend_from_slice(mirrors);
+            super::mirrors::validate(&locations)?;
+        }
+        Ok(Self {
+            address: address.into(),
+            token: None,
+            local_store: None,
+            read_only: true,
+            mirrors: mirrors.to_vec(),
+            pinned_read_retry: None,
+        })
+    }
+
     pub(super) fn needs_host_network(&self) -> bool {
-        self.address.starts_with("s3://") || matches!(endpoint(&self.address), Ok(Endpoint::Tcp(_)))
+        self.address.starts_with("ipfs+http://")
+            || self.address.starts_with("s3://")
+            || self.address.starts_with("http://")
+            || self.address.starts_with("https://")
+            || matches!(endpoint(&self.address), Ok(Endpoint::Tcp(_)))
     }
     pub(super) fn unix(socket: &std::path::Path) -> Self {
         Self {
@@ -129,6 +156,7 @@ impl ClientBinding {
             token: None,
             local_store: None,
             read_only: false,
+            mirrors: vec![],
             pinned_read_retry: None,
         }
     }
@@ -185,17 +213,29 @@ impl CacheClient {
         if let Some(handle) = &binding.pinned_read_retry {
             super::portable::metadata_prefix(handle)?;
         }
-        let mut client = Self::configured(
+        let mut client = Self::configured_repositories(
             binding.address,
             binding.token,
             binding.local_store,
             binding.read_only,
+            binding.mirrors,
         )?;
         client.binding.pinned_read_retry = binding.pinned_read_retry;
         Ok(client)
     }
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_config(CacheConfig::from_env()?)
+    }
+    /// Open ordered, read-only roots of one pinned publication. A single root
+    /// may be S3, HTTP(S) or local IPFS; multiple roots must all end in the same
+    /// publication SHA-256 and contain no credentials. At most eight roots.
+    /// Verification happens per object/frame before failover is accepted; this
+    /// does not resolve names or change the caller's pinned image handle.
+    pub fn from_repositories(repositories: &[String]) -> anyhow::Result<Self> {
+        let (primary, mirrors) = repositories
+            .split_first()
+            .context("empty repository list")?;
+        Self::from_binding(ClientBinding::repository(primary, mirrors)?)
     }
     pub fn from_config(config: CacheConfig) -> anyhow::Result<Self> {
         let address = config.address()?;
@@ -215,15 +255,35 @@ impl CacheClient {
         local_store: Option<std::path::PathBuf>,
         read_only: bool,
     ) -> anyhow::Result<Self> {
+        Self::configured_repositories(address, token, local_store, read_only, vec![])
+    }
+
+    fn configured_repositories(
+        address: String,
+        token: Option<String>,
+        local_store: Option<std::path::PathBuf>,
+        read_only: bool,
+        mirrors: Vec<String>,
+    ) -> anyhow::Result<Self> {
         let binding = ClientBinding {
             address: address.clone(),
             token: token.clone(),
             local_store: local_store.clone(),
             read_only,
+            mirrors: mirrors.clone(),
             pinned_read_retry: None,
         };
         let pooled = address.starts_with("pool+file://");
-        let transport = if let Some(path) = address.strip_prefix("pool+file://") {
+        let transport = if !mirrors.is_empty() {
+            ensure!(read_only, "mirror repositories are read-only");
+            let mut locations = vec![address.clone()];
+            locations.extend(mirrors);
+            CacheTransport::Objects(PortableCache::new(
+                Storage::mirrors(&locations)?,
+                None,
+                true,
+            ))
+        } else if let Some(path) = address.strip_prefix("pool+file://") {
             CacheTransport::Objects(PortableCache::new(
                 Storage::Pool(std::sync::Arc::new(super::pool::PoolStorage::open(
                     path.into(),
@@ -237,6 +297,16 @@ impl CacheClient {
                 Storage::filesystem(path.into(), !read_only)?,
                 local_store,
                 read_only,
+            ))
+        } else if address.starts_with("ipfs+")
+            || address.starts_with("http://")
+            || address.starts_with("https://")
+        {
+            ensure!(read_only, "HTTP/IPFS cache must be read-only");
+            CacheTransport::Objects(PortableCache::new(
+                Storage::Http(std::sync::Arc::new(super::http::Http::new(&address)?)),
+                None,
+                true,
             ))
         } else if address.starts_with("s3://") {
             CacheTransport::Objects(PortableCache::new(
@@ -291,7 +361,11 @@ impl CacheClient {
         }
         let config = CacheConfig::from_env()?;
         let address = config.address()?;
-        if address.starts_with("file://") || address.starts_with("s3://") {
+        if address.starts_with("file://")
+            || address.starts_with("s3://")
+            || address.starts_with("http://")
+            || address.starts_with("https://")
+        {
             return Ok(Some(Self::from_config(config)?));
         }
         Self::probe(

@@ -45,6 +45,65 @@ pub(super) fn metadata_prefix(handle: &str) -> anyhow::Result<String> {
     Ok(Handle::parse(handle)?.prefix())
 }
 
+/// Export only the pinned revision and its declared encoded dependencies.
+pub(crate) fn export_pool(
+    location: &std::path::Path,
+    handle: &str,
+    destination: &std::path::Path,
+) -> anyhow::Result<()> {
+    let storage = Storage::Pool(Arc::new(super::pool::PoolStorage::open(
+        location.into(),
+        false,
+    )?));
+    let cache = PortableCache::new(storage.clone(), None, true);
+    let handle = Handle::parse(handle)?;
+    let loaded = cache.load(&handle)?;
+    content::validate_public_packs(&cache, loaded.packed_contents()?)?;
+    let prefix = handle.prefix();
+    let commit_bytes = cache.immutable(
+        &format!("{prefix}/COMMIT.json"),
+        &format!("sha256:{}", handle.revision),
+        None,
+        MAX_CONTROL,
+    )?;
+    let commit: Commit = serde_json::from_slice(&commit_bytes)?;
+    ensure!(!destination.exists(), "export destination already exists");
+    let target = Storage::filesystem(destination.into(), true)?;
+    target.put("format.json", FORMAT.to_vec(), true)?;
+    target.put(&format!("{prefix}/COMMIT.json"), commit_bytes, true)?;
+    for (name, descriptor) in &commit.metadata {
+        let key = format!("{prefix}/{name}");
+        let bytes =
+            cache.immutable(&key, &descriptor.sha256, Some(descriptor.bytes), MAX_OBJECT)?;
+        if name == "objects.bin" {
+            let (objects, used): (Vec<(String, u64)>, usize) = bincode::decode_from_slice(
+                &bytes,
+                bincode::config::standard().with_limit::<MAX_OBJECT>(),
+            )?;
+            ensure!(
+                used == bytes.len() && objects.len() <= MAX_SPANS,
+                "invalid object inventory"
+            );
+            for (object, length) in objects {
+                ensure!(
+                    object.starts_with("data/packs/") || object.starts_with("data/sha256/"),
+                    "invalid content dependency"
+                );
+                let data = storage
+                    .get(&object)?
+                    .context("missing content dependency")?;
+                ensure!(
+                    data.len() as u64 == length,
+                    "content dependency length mismatch"
+                );
+                target.put(&object, data, true)?;
+            }
+        }
+        target.put(&key, bytes, true)?;
+    }
+    Ok(())
+}
+
 /// A lazy socket metadata reader pinned to one immutable revision. Its client
 /// owns only the transport, never this reader, so retaining the client is acyclic.
 pub(super) struct MetadataReader {
@@ -617,14 +676,13 @@ impl PortableCache {
         {
             return Ok(bytes);
         }
-        let bytes = self
-            .storage
-            .get(key)?
-            .context("missing immutable cache object")?;
-        ensure!(
-            valid(&bytes),
-            "cache object digest mismatch or invalid length"
-        );
+        let bytes = self.storage.verified(key, None, limit, |bytes| {
+            ensure!(
+                valid(bytes),
+                "cache object digest mismatch or invalid length"
+            );
+            Ok(())
+        })?;
         if let Some(path) = local {
             cache_local(&path, &bytes);
         }

@@ -30,6 +30,42 @@ impl Packed {
         (pack_key(&self.blob), self.blob.bytes)
     }
 }
+
+/// A publication must not reveal slots retained from a different revision.
+pub(super) fn validate_public_packs(
+    cache: &PortableCache,
+    contents: BTreeMap<String, Packed>,
+) -> anyhow::Result<()> {
+    let mut packs = BTreeMap::<String, (Blob, BTreeSet<(u32, u32)>)>::new();
+    for packed in contents.into_values() {
+        let entry = packs
+            .entry(pack_key(&packed.blob))
+            .or_insert_with(|| (packed.blob.clone(), BTreeSet::new()));
+        entry.1.insert((packed.frame, packed.slot));
+    }
+    for (blob, slots) in packs.into_values() {
+        let layout = cache.data_frame(&blob, &blob.layout)?;
+        let Data::Directory(children) = &layout.value else {
+            bail!("invalid pack layout");
+        };
+        let mut count = 0;
+        for (frame, reference) in children.iter().enumerate() {
+            let data = cache.data_frame(&blob, reference)?;
+            let Data::Slots { offsets, .. } = &data.value else {
+                bail!("invalid pack slot frame");
+            };
+            for slot in 0..offsets.len().saturating_sub(1) {
+                ensure!(
+                    slots.contains(&(frame as u32, slot as u32)),
+                    "image retains content from another revision; rebuild into a fresh pool before public distribution"
+                );
+                count += 1;
+            }
+        }
+        ensure!(count == slots.len(), "invalid public pack references");
+    }
+    Ok(())
+}
 #[derive(Encode, Decode)]
 enum Data {
     Slots { offsets: Vec<u32>, bytes: Vec<u8> },
@@ -214,11 +250,15 @@ impl PortableCache {
         {
             bytes
         } else {
-            let bytes = self.storage.range(
+            let bytes = self.storage.verified(
                 &pack_key(blob),
-                reference.offset..reference.offset + reference.encoded as u64,
+                Some(reference.offset..reference.offset + reference.encoded as u64),
+                reference.encoded as usize,
+                |bytes| {
+                    ensure!(valid(bytes), "cache data digest mismatch");
+                    Ok(())
+                },
             )?;
-            ensure!(valid(&bytes), "cache data digest mismatch");
             if let Some(path) = local {
                 cache_local(&path, &bytes);
             }
@@ -307,11 +347,17 @@ impl PortableCache {
             let value = if let Some(value) = local_value {
                 value
             } else {
-                let encoded = self
-                    .storage
-                    .get(&data_key(&key)?)?
-                    .context("missing cache data object")?;
-                let value = decode_chunk(&encoded, digest, length)?;
+                let mut decoded = None;
+                let encoded = self.storage.verified(
+                    &data_key(&key)?,
+                    None,
+                    frames::MAX_FRAME_ENCODED + 25,
+                    |bytes| {
+                        decoded = Some(decode_chunk(bytes, digest, length)?);
+                        Ok(())
+                    },
+                )?;
+                let value = decoded.context("missing verified chunk")?;
                 if let Some(path) = local {
                     cache_local(&path, &encoded);
                 }
