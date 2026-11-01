@@ -90,7 +90,7 @@ See [Core architecture](../design/architecture.md#api-boundaries) for public int
 
 ### Core implementation boundaries
 
-Core defines Operation, Event and shared policies; pvisor implements admission, actual rewrites, Placement and scheduling. Session owns Attempt resources/terminal states; executors execute and return observations; OverlayCore owns file application/recovery. AgentCtl and approval socket I/O remain in pvisor. See [Core architecture](../design/architecture.md) for ownership and [Operation and Event](../design/operations-events.md) for fields/order.
+Core defines Operation, Event and shared policies; pvisor implements admission, actual rewrites, Placement and scheduling. Session owns Attempt resources/terminal states; executors execute and return observations; OverlayCore owns file application/recovery. AgentCtl I/O remains in pvisor; embedding callers supply Core approval channels. See [Core architecture](../design/architecture.md) for ownership and [Operation and Event](../design/operations-events.md) for fields/order.
 
 ## Core metrics and dependency boundaries {#core-reduction-budget}
 

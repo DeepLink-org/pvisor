@@ -1,11 +1,5 @@
 # pVisor Job scenarios and regression examples
 
-> Historical specification appendix: this page retains older executable claims,
-> including interactive permission and terminal UI cases for removed features.
-> They are not supported workflows in the current CLI. See the
-> [current scenarios](../cases/index.md) and [CLI reference](cli.md) instead.
-> The original claims and checks remain unchanged pending human specification review.
-
 Start with a simple Job, add limits, staging, VM, container and networking, then complete review, branching and trajectory replay. Each case explains purpose, preparation and expected results before executable commands. IDs allow individual regressions.
 
 `run` creates a Job; `status`, `inspect`, `apply`, `drop`, `fork` and `kill` operate on it directly. `replay` creates a Job from a trajectory. Labels such as A01 identify regressions and reports.

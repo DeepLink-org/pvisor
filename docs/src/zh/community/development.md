@@ -94,7 +94,7 @@ CLI 拥有参数和展示；runtime 拥有执行与持久 Job；VM、文件系�
 
 core 定义 Operation、Event 和共享策略；pvisor 实现准入、实际改写、Placement 和调度。
 Session 统一拥有 Attempt 的资源与终态；执行器负责执行并返回观察，OverlayCore 负责文件应用与恢复。
-AgentCtl 与审批 socket 的实际 I/O 留在 pvisor。完整职责见[核心架构](../design/architecture.md)，
+AgentCtl 的实际 I/O 留在 pvisor；嵌入调用方提供 Core 审批通道。完整职责见[核心架构](../design/architecture.md)，
 字段和事件顺序见 [Operation 与 Event](../design/operations-events.md)。
 
 ## 核心规模统计与依赖边界 {#core-reduction-budget}
