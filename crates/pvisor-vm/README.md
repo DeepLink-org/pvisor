@@ -476,6 +476,14 @@ identity, and rebuild native identity indexes, including not-yet-looked-up lower
 aliases from existing copy-up origins. Older records without the field remain
 readable.
 
+The merged Overlay owns one guest mount identity. It neither negotiates native
+`SUBMOUNTS` for its backing layers nor forwards `ATTR_SUBMOUNT` in projected
+entries, including entries from restored layers. A host mount boundary can
+disappear when its ancestor copies up; exposing that boundary would change
+guest `st_dev` between pathname `stat` and open-FD `fstat` for the same nodeid,
+causing ordinary tools such as GNU `cp` to report a replaced input. Ordinary
+passthrough shares retain their existing native submount behavior.
+
 ## Physical lower stability contract
 
 `api::OverlayConfig::lower_mutability` uses the shared

@@ -21,6 +21,10 @@ impl Fixture {
             .prefix("pvstage-")
             .tempdir()
             .unwrap();
+        Self::at(root)
+    }
+
+    fn at(root: tempfile::TempDir) -> Self {
         for directory in [
             "home",
             "config",
@@ -63,6 +67,10 @@ impl Fixture {
     }
 
     fn run(&self, command: &mut Command) -> Output {
+        self.run_with_timeout(command, Duration::from_secs(10))
+    }
+
+    fn run_with_timeout(&self, command: &mut Command, timeout: Duration) -> Output {
         // Files avoid pipe-buffer deadlock and inherited-pipe waits after a timeout.
         let stdout = tempfile::tempfile().unwrap();
         let stderr = tempfile::tempfile().unwrap();
@@ -71,7 +79,7 @@ impl Fixture {
             .stdout(stdout.try_clone().unwrap())
             .stderr(stderr.try_clone().unwrap());
         let mut child = command.spawn().expect("spawn CLI");
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + timeout;
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
@@ -84,7 +92,7 @@ impl Fixture {
                 child.kill().ok();
                 child.wait().unwrap();
                 panic!(
-                    "CLI exceeded 10s: {command:?}\nstdout: {}\nstderr: {}",
+                    "CLI exceeded {timeout:?}: {command:?}\nstdout: {}\nstderr: {}",
                     read_output(stdout),
                     read_output(stderr)
                 );
@@ -304,11 +312,18 @@ fn validation_and_literal_workload_options_do_not_start_a_job() {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_fixture() -> Fixture {
+    native_fixture_for(Fixture::new())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_fixture_for(mut fixture: Fixture) -> Fixture {
     assert!(Path::new("/dev/kvm").exists(), "requires /dev/kvm");
-    let mut fixture = Fixture::new();
     fs::create_dir(fixture.path("bin")).unwrap();
     fixture.binary = fixture.path("bin/pvisor");
-    fs::copy(env!("CARGO_BIN_EXE_pvisor"), &fixture.binary).unwrap();
+    let binary = std::env::var_os("PVISOR_TEST_STAGE_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pvisor")));
+    fs::copy(binary, &fixture.binary).unwrap();
     if let Some(directory) = std::env::var_os("PVISOR_TEST_LIBRARY_DIR") {
         let directory = PathBuf::from(directory);
         let firmware = ["libkrunfw.so.5", "libkrunfw.so.5.6.2"]
@@ -319,6 +334,75 @@ fn native_fixture() -> Fixture {
         fs::copy(firmware, fixture.path("bin/libkrunfw.so.5")).unwrap();
     }
     fixture
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+#[ignore = "real Linux KVM host-root VM and /usr/bin/python3; GNU builds need PVISOR_TEST_LIBRARY_DIR"]
+fn native_stage_preserves_device_and_inode_across_ancestor_copy_up() {
+    // Keep the input on the checkout's backing mount, not necessarily /tmp's.
+    // On a separate /home mount, old OverlayFs changed the guest device after
+    // copy-up and dentry expiry. The unit negotiation guard covers flat hosts too.
+    let root = tempfile::Builder::new()
+        .prefix(".stage-identity-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let fixture = native_fixture_for(Fixture::at(root));
+    let source = fixture.path("source");
+    let target = fixture.path("workspace/target");
+    fs::write(&source, b"immutable input\n").unwrap();
+    fs::write(&target, b"original target\n").unwrap();
+    let script = r#"
+import os, subprocess, sys, time
+source, target = sys.argv[1:]
+baseline = os.stat(source)
+for attempt in range(3):
+    before = os.stat(source)
+    time.sleep(1.2)  # Cross the ordinary mutable-backing metadata TTL.
+    fd = os.open(source, os.O_RDONLY)
+    try:
+        opened = os.fstat(fd)
+        assert (before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino), (
+            attempt, before, opened)
+        assert (baseline.st_dev, baseline.st_ino) == (opened.st_dev, opened.st_ino)
+        assert os.read(fd, 1024) == b"immutable input\n"
+    finally:
+        os.close(fd)
+    with open(target, "wb") as stream:
+        stream.write(b"staged target\n")  # Copies up the shared ancestors.
+    subprocess.run(["/bin/cp", source, target + ".copy"], check=True)
+    with open(target + ".copy", "rb") as stream:
+        assert stream.read() == b"immutable input\n"
+print("stage-identity-ok")
+"#;
+    let output = fixture.run_with_timeout(
+        fixture
+            .command()
+            .args([
+                "stage",
+                "--cpus",
+                "1",
+                "-m",
+                "256m",
+                "--network",
+                "none",
+                "--stage",
+            ])
+            .arg(fixture.path("stage"))
+            .args(["--", "/usr/bin/python3", "-I", "-S", "-c", script])
+            .arg(&source)
+            .arg(&target),
+        Duration::from_secs(30),
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"immutable input\n");
+    assert_eq!(fs::read(&target).unwrap(), b"original target\n");
+    assert!(!fixture.path("workspace/target.copy").exists());
+    success(&output);
+    assert_eq!(output.stdout, b"stage-identity-ok\n");
+    let upper = fixture
+        .path("stage/upper")
+        .join(target.strip_prefix("/").unwrap());
+    assert_eq!(fs::read(upper).unwrap(), b"staged target\n");
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
