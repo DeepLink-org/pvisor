@@ -2015,6 +2015,9 @@ impl OverlayFs {
             },
         };
         self.backing_attributes(&backing.entry.resolved.path, &mut entry.attr)?;
+        // Native mount boundaries belong to a backing layer, not this merged
+        // namespace. Copy-up may replace that layer without replacing the object.
+        entry.attr_flags &= !fuse::ATTR_SUBMOUNT;
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
         Ok(entry)
@@ -2032,6 +2035,7 @@ impl OverlayFs {
     // Preserve virtual ownership while reusing its native creation attributes.
     fn created_entry(&self, path: PathBuf, mut entry: Entry) -> io::Result<Entry> {
         self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)?;
+        entry.attr_flags &= !fuse::ATTR_SUBMOUNT;
         let inode = self.allocate_inode(path.clone());
         if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
             self.bind_upper(&path, inode, &entry.attr);
@@ -2943,6 +2947,9 @@ impl FileSystem for OverlayFs {
             }
         }
         let mut capable = capable;
+        // Exposing a native layer's submount would give the guest a new st_dev
+        // when an ancestor copies up. OverlayFs owns one stable merged mount.
+        capable.remove(FsOptions::SUBMOUNTS);
         if !self.new_session_writeback {
             capable.remove(FsOptions::WRITEBACK_CACHE);
         }
@@ -5441,6 +5448,39 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn overlay_does_not_negotiate_backing_submounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let fs = negative_entry_fixture(temp.path());
+        let options = fs.init(FsOptions::SUBMOUNTS | FsOptions::DO_READDIRPLUS).unwrap();
+        assert!(
+            !options.contains(FsOptions::SUBMOUNTS),
+            "copy-up must not turn a backing mount boundary into a new guest device"
+        );
+        assert!(options.contains(FsOptions::DO_READDIRPLUS));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn created_overlay_entry_drops_only_the_backing_submount_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let fs = negative_entry_fixture(temp.path());
+        std::fs::create_dir(temp.path().join("upper/created")).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let mut entry = fs.layers[0].lookup(ctx, fuse::ROOT_ID, c"created").unwrap();
+        // Native flags can survive a restored old layer even when new sessions
+        // no longer negotiate submounts. Preserve unrelated attribute flags.
+        entry.attr_flags = fuse::ATTR_SUBMOUNT | 2;
+        let projected = fs.created_entry(PathBuf::from("created"), entry).unwrap();
+        assert_eq!(projected.attr_flags, 2);
+        assert_eq!(projected.attr.st_ino, projected.inode);
+    }
 
     #[cfg(target_os = "linux")]
     mod host_writeback {
