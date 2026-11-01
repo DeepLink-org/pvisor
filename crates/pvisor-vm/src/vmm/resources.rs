@@ -37,6 +37,15 @@ use krun_display::DisplayBackend;
 
 type Result<E> = std::result::Result<(), E>;
 
+fn validate_kernel_guest_address(address: u64) -> Result<KernelBundleError> {
+    // SAFETY: sysconf only queries the host page size.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+    if address as usize & (page_size - 1) != 0 {
+        return Err(KernelBundleError::InvalidGuestAddress);
+    }
+    Ok(())
+}
+
 // Re-export TsiFlags from devices crate
 pub use crate::devices::virtio::TsiFlags;
 
@@ -279,6 +288,21 @@ impl VmResources {
         self.kernel_bundle.as_ref()
     }
 
+    /// An immutable source may be unaligned only when copied into owned RAM.
+    /// Keep ordinary `set_kernel_bundle`'s direct-mapping validation unchanged.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+    pub(crate) fn set_kernel_copy(&mut self, bundle: KernelBundle) -> Result<KernelBundleError> {
+        if self.ram_backing.is_none() || bundle.host_addr == 0 {
+            return Err(KernelBundleError::InvalidHostAddress);
+        }
+        if bundle.size == 0 {
+            return Err(KernelBundleError::InvalidSize);
+        }
+        validate_kernel_guest_address(bundle.guest_addr)?;
+        self.kernel_bundle = Some(bundle);
+        Ok(())
+    }
+
     pub fn set_kernel_bundle(&mut self, kernel_bundle: KernelBundle) -> Result<KernelBundleError> {
         // Safe because this call just returns the page size and doesn't have any side effects.
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
@@ -288,9 +312,7 @@ impl VmResources {
             return Err(KernelBundleError::InvalidHostAddress);
         }
 
-        if (kernel_bundle.guest_addr as usize) & (page_size - 1) != 0 {
-            return Err(KernelBundleError::InvalidGuestAddress);
-        }
+        validate_kernel_guest_address(kernel_bundle.guest_addr)?;
 
         self.kernel_bundle = Some(kernel_bundle);
         Ok(())

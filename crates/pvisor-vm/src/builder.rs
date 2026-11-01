@@ -123,6 +123,16 @@ impl<B: Backend> Builder<B> {
         embedded: Option<crate::api::KernelImage>,
     ) -> io::Result<()> {
         if let Some(image) = embedded {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "tee")))]
+            if self.resources.ram_backing.is_some() {
+                let mut owner = KernelOwner::default();
+                let bundle = owner.copy_source(image);
+                self.resources
+                    .set_kernel_copy(bundle)
+                    .map_err(io::Error::other)?;
+                self.kernel = owner;
+                return Ok(());
+            }
             return self.embedded_kernel(&image.bytes, image.guest_address, image.entry_address);
         }
         let path = match &self.firmware_path {
