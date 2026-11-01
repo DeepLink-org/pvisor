@@ -8,8 +8,8 @@ use crate::api::{
 use std::{
     io,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -407,7 +407,10 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     options: ColdRamOptions,
 ) -> io::Result<()> {
     if options.shared_backing {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, "shared backing requires Linux x86_64"));
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "shared backing requires Linux x86_64",
+        ));
     }
     if options.page_granular && options.share_resident {
         return crate::shared_ram_macos::start(handle, store, options.metrics);

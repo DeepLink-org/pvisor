@@ -4134,17 +4134,29 @@ mod tests {
     #[test]
     fn guest_idle_allows_only_explicit_shared_backing_pool() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join(pvisor_vm::api::VmPlatform::firmware_name()), b"test firmware").unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join(pvisor_vm::api::VmPlatform::firmware_name()),
+            b"test firmware",
+        )
+        .unwrap();
         let socket = directory.path().join("pool.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         for enabled in [false, true] {
             let vm = VmExecutor::new(VmSettings {
-                memory_pool: Some(socket.clone()), shared_backing: enabled,
+                memory_pool: Some(socket.clone()),
+                shared_backing: enabled,
                 rootfs: Some(directory.path().to_path_buf()),
                 library_dir: Some(directory.path().to_path_buf()),
                 ..Default::default()
-            }).unwrap();
-            assert_eq!(vm.with_guest_idle_handoff_policy(true, std::time::Duration::from_secs(1)).is_ok(), enabled);
+            })
+            .unwrap();
+            assert_eq!(
+                vm.with_guest_idle_handoff_policy(true, std::time::Duration::from_secs(1))
+                    .is_ok(),
+                enabled
+            );
         }
     }
 

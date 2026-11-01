@@ -1,0 +1,14 @@
+{
+  "base": "3d6fbc997d0cd1982a4e87507bd95e954398a432",
+  "rebase_conflicts": false,
+  "unit_tests": {
+    "passed": 36,
+    "skipped": 586,
+    "scope": "Related pvisor-vm tests in the existing minimal-dependency Linux/KVM validation workspace, overlaid with submitted Rust files. Not a full-workspace build or a replay.",
+    "command": "cargo nextest run --locked --offline -p pvisor-vm --lib -E \"test(shared_backing) or test(guest_idle) or test(pending_control_survives) or test(control_ack_)\"",
+    "log_sha256": "c5f4f7df0d3ca84fd09fd3a4adda21f7a1950d1e31b72245e76393d24f7ac37d"
+  },
+  "new_replay_experiments": false,
+  "formatting": "rustfmt edition 2024 on changed Rust files; git diff --check passed",
+  "data_check": "All three result sets contain the same four task IDs, four trajectories per task, and identical official outcomes."
+}

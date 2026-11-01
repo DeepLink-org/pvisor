@@ -95,8 +95,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct UnusedStore {
@@ -160,7 +160,7 @@ mod cold_ram_tests {
                         drops: drops.clone(),
                     },
                     ColdRamOptions {
-                    shared_backing: false,
+                        shared_backing: false,
                         metrics,
                         ..Default::default()
                     },
@@ -213,11 +213,25 @@ mod cold_ram_tests {
         for shared_backing in [false, true] {
             for share_resident in [false, true] {
                 for page_granular in [false, true] {
-                    let error = handle.start_cold_pager(UnusedStore {
-                        calls: calls.clone(), drops: drops.clone(),
-                    }, ColdRamOptions { shared_backing, share_resident, page_granular,
-                        ..Default::default() }).unwrap_err();
-                    if cfg!(target_arch = "x86_64") && shared_backing && share_resident && page_granular {
+                    let error = handle
+                        .start_cold_pager(
+                            UnusedStore {
+                                calls: calls.clone(),
+                                drops: drops.clone(),
+                            },
+                            ColdRamOptions {
+                                shared_backing,
+                                share_resident,
+                                page_granular,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap_err();
+                    if cfg!(target_arch = "x86_64")
+                        && shared_backing
+                        && share_resident
+                        && page_granular
+                    {
                         assert!(!error.to_string().contains("guest idle handoff"));
                     } else {
                         assert!(error.to_string().contains("guest idle handoff"));
@@ -579,7 +593,9 @@ impl ColdRamControl for VmmHandle {
     ) -> io::Result<()> {
         if self.idle.status().enabled
             && !(cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && options.shared_backing && options.share_resident && options.page_granular)
+                && options.shared_backing
+                && options.share_resident
+                && options.page_granular)
         {
             return Err(unsupported("cold RAM pager with guest idle handoff"));
         }

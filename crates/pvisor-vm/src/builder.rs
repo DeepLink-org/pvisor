@@ -6,7 +6,7 @@ use crate::{
     vmm::{
         resources::{TsiFlags, VmResources},
         vmm_config::{
-            kernel_cmdline::{KernelCmdlineConfig, DEFAULT_KERNEL_CMDLINE},
+            kernel_cmdline::{DEFAULT_KERNEL_CMDLINE, KernelCmdlineConfig},
             machine_config::VmConfig,
             vsock::VsockDeviceConfig,
         },
@@ -15,9 +15,9 @@ use crate::{
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use crate::{
     devices::virtio::fs::{
+        OverlayConfig,
         passthrough::PermissionSemantics,
         virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent},
-        OverlayConfig,
     },
     vmm::vmm_config::fs::FsDeviceConfig,
 };

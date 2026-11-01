@@ -1,0 +1,951 @@
+{
+  "labels_note": "UKSM means pVisor user-space UKSM-style physical page sharing, not kernel UKSM/KSM.",
+  "records": {
+    "pVisor offload": {
+      "run": "first16-offload-v1-20261030",
+      "n": 16,
+      "strict_completed": 16,
+      "official_passed": 3,
+      "controller_elapsed_s": 3569.715832358226,
+      "parent_peak_GiB": 20.448509216308594,
+      "parent_integral_GiB_s": 49037.89047921151,
+      "mean_queue_s": 35.876864857040346,
+      "without_s15": {
+        "mean_replay_s": 1424.1023377558838,
+        "mean_tool_s": 41.77887435133258,
+        "mean_queue_s": 33.98326304617027
+      },
+      "tasks": [
+        {
+          "sample": "ansible-11c1777d56-s12",
+          "strict_passed": true,
+          "replay_s": 561.9856677446514,
+          "tool_wall_s": 28.065087869763374,
+          "queue_s": 78.999735314399,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 2.2038084380328655,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s5",
+          "strict_passed": true,
+          "replay_s": 865.9543269202113,
+          "tool_wall_s": 60.25716375000775,
+          "queue_s": 2.0432394072413445,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 10.621719228103757,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s6",
+          "strict_passed": true,
+          "replay_s": 1148.322624463588,
+          "tool_wall_s": 46.98478323221207,
+          "queue_s": 33.78142820298672,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 12.899223266169429,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s4",
+          "strict_passed": true,
+          "replay_s": 1162.726378383115,
+          "tool_wall_s": 20.956007258966565,
+          "queue_s": 31.7368532307446,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 11.970678742974997,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s11",
+          "strict_passed": true,
+          "replay_s": 1294.2652482017875,
+          "tool_wall_s": 56.20156784914434,
+          "queue_s": 1.0414255391806364,
+          "official": {
+            "passed": true,
+            "required": 6,
+            "passed_count": 6,
+            "not_passed": [],
+            "duration_s": 1.0125208403915167,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s14",
+          "strict_passed": true,
+          "replay_s": 1226.7218928914517,
+          "tool_wall_s": 43.560017781332135,
+          "queue_s": 92.40400373190641,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 1.5810198187828064,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s10",
+          "strict_passed": true,
+          "replay_s": 1333.8769019283354,
+          "tool_wall_s": 52.039918007329106,
+          "queue_s": 65.29631571471691,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 1.2404874935746193,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s13",
+          "strict_passed": true,
+          "replay_s": 1507.3402493465692,
+          "tool_wall_s": 24.21259979531169,
+          "queue_s": 48.99207184277475,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 2.0017972625792027,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s3",
+          "strict_passed": true,
+          "replay_s": 1588.454094376415,
+          "tool_wall_s": 36.50926962867379,
+          "queue_s": 4.0503136571496725,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 14.91245629824698,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s7",
+          "strict_passed": true,
+          "replay_s": 1676.1439668610692,
+          "tool_wall_s": 39.48045418038964,
+          "queue_s": 0.038663195446133614,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 12.045360559597611,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s2",
+          "strict_passed": true,
+          "replay_s": 1747.9354823771864,
+          "tool_wall_s": 28.14809393696487,
+          "queue_s": 32.74852728843689,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 16.51769917830825,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s1",
+          "strict_passed": true,
+          "replay_s": 1772.7486021574587,
+          "tool_wall_s": 51.69637954980135,
+          "queue_s": 18.54980666935444,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 13.386538764461875,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s0",
+          "strict_passed": true,
+          "replay_s": 1801.8189014568925,
+          "tool_wall_s": 51.83372462913394,
+          "queue_s": 3.0465623065829277,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 13.986070223152637,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s8",
+          "strict_passed": true,
+          "replay_s": 1810.7804000917822,
+          "tool_wall_s": 36.0205061417073,
+          "queue_s": 62.22056723758578,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 1.1317862775176764,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s9",
+          "strict_passed": true,
+          "replay_s": 1862.4603291377425,
+          "tool_wall_s": 50.717541659250855,
+          "queue_s": 34.799432354047894,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 1.0516347661614418,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s15",
+          "strict_passed": true,
+          "replay_s": 3478.047808824107,
+          "tool_wall_s": 1807.5768680963665,
+          "queue_s": 64.28089202009141,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 1.9950409159064293,
+            "return_code": 0
+          }
+        }
+      ]
+    },
+    "pVisor offload + UKSM": {
+      "run": "first16-shared-offload-v5-20261101",
+      "n": 16,
+      "strict_completed": 16,
+      "official_passed": 3,
+      "controller_elapsed_s": 4673.125562530011,
+      "parent_peak_GiB": 31.999996185302734,
+      "parent_integral_GiB_s": 75486.61282444591,
+      "mean_queue_s": 106.62911205191631,
+      "without_s15": {
+        "mean_replay_s": 2768.1493498670557,
+        "mean_tool_s": 215.43633725307882,
+        "mean_queue_s": 101.9380672391504
+      },
+      "tasks": [
+        {
+          "sample": "ansible-11c1777d56-s12",
+          "strict_passed": true,
+          "replay_s": 1554.3941541668028,
+          "tool_wall_s": 158.96767591498792,
+          "queue_s": 261.863696558401,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 12.233570616692305,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s5",
+          "strict_passed": true,
+          "replay_s": 2079.7975981123745,
+          "tool_wall_s": 205.229532700032,
+          "queue_s": 2.0326599664986134,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 23.54087476991117,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s4",
+          "strict_passed": true,
+          "replay_s": 2235.971816567704,
+          "tool_wall_s": 153.71115507371724,
+          "queue_s": 33.26808207668364,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 22.751638557761908,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s14",
+          "strict_passed": true,
+          "replay_s": 2086.065154131502,
+          "tool_wall_s": 174.70528176613152,
+          "queue_s": 367.8373812865466,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 10.306532377377152,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s13",
+          "strict_passed": true,
+          "replay_s": 2505.247162926942,
+          "tool_wall_s": 156.68402890488505,
+          "queue_s": 148.95269432291389,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 9.97633857652545,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s6",
+          "strict_passed": true,
+          "replay_s": 2559.499584492296,
+          "tool_wall_s": 202.13504343293607,
+          "queue_s": 125.65131743811071,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 21.336435738950968,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s7",
+          "strict_passed": true,
+          "replay_s": 2782.671026468277,
+          "tool_wall_s": 239.91915065422654,
+          "queue_s": 0.028316490352153778,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 19.020219733938575,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s2",
+          "strict_passed": true,
+          "replay_s": 2753.5576942209154,
+          "tool_wall_s": 141.03040165640414,
+          "queue_s": 93.34906853735447,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 21.910393895581365,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s0",
+          "strict_passed": true,
+          "replay_s": 2961.6190236732364,
+          "tool_wall_s": 206.45515793934464,
+          "queue_s": 3.035443114116788,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 20.902925699949265,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s3",
+          "strict_passed": true,
+          "replay_s": 3013.818650489673,
+          "tool_wall_s": 201.03274579532444,
+          "queue_s": 4.038668205961585,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 22.950719887390733,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s10",
+          "strict_passed": true,
+          "replay_s": 3091.030115351081,
+          "tool_wall_s": 297.2348194979131,
+          "queue_s": 179.2123007029295,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 5.525383057072759,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s11",
+          "strict_passed": true,
+          "replay_s": 3493.93804432638,
+          "tool_wall_s": 330.22499400377274,
+          "queue_s": 1.0301837492734194,
+          "official": {
+            "passed": true,
+            "required": 6,
+            "passed_count": 6,
+            "not_passed": [],
+            "duration_s": 3.3308512028306723,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s8",
+          "strict_passed": true,
+          "replay_s": 3342.1794667523354,
+          "tool_wall_s": 255.49218301847577,
+          "queue_s": 156.8708585742861,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 3.3258717134594917,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s1",
+          "strict_passed": true,
+          "replay_s": 3489.995220610872,
+          "tool_wall_s": 236.61068044230342,
+          "queue_s": 18.71661634929478,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 18.118026493117213,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s9",
+          "strict_passed": true,
+          "replay_s": 3572.455535715446,
+          "tool_wall_s": 272.11220799572766,
+          "queue_s": 133.18372121453285,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 1.7505918871611357,
+            "return_code": 0
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s15",
+          "strict_passed": true,
+          "replay_s": 4429.881757648662,
+          "tool_wall_s": 1968.3254578337073,
+          "queue_s": 176.99478424340487,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 2.3855792935937643,
+            "return_code": 0
+          }
+        }
+      ]
+    },
+    "AgentENV": {
+      "run": "agentenv-e3-first16-localhost-v2-20261101",
+      "n": 16,
+      "strict_completed": 16,
+      "official_passed": 3,
+      "controller_elapsed_s": 8728.623841248453,
+      "parent_peak_GiB": 27.47164535522461,
+      "parent_integral_GiB_s": 213842.29002676276,
+      "mean_queue_s": 105.88014478224795,
+      "without_s15": {
+        "mean_replay_s": 1327.868467072025,
+        "mean_tool_s": 9.405592093368371,
+        "mean_queue_s": 100.89439560150107
+      },
+      "tasks": [
+        {
+          "sample": "ansible-11c1777d56-s12",
+          "strict_passed": true,
+          "replay_s": 503.28743582591414,
+          "tool_wall_s": 3.5267597027122974,
+          "queue_s": 210.78473661653697,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 0.8393726032227278,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s5",
+          "strict_passed": true,
+          "replay_s": 777.7296247910708,
+          "tool_wall_s": 16.07971227914095,
+          "queue_s": 30.099681980907917,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 2.4050143007189035,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s11",
+          "strict_passed": true,
+          "replay_s": 1174.0241805557162,
+          "tool_wall_s": 14.009145824238658,
+          "queue_s": 1.0051951985806227,
+          "official": {
+            "passed": true,
+            "required": 6,
+            "passed_count": 6,
+            "not_passed": [],
+            "duration_s": 0.4547332748770714,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_passed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s4",
+          "strict_passed": true,
+          "replay_s": 1112.6483111400157,
+          "tool_wall_s": 6.122862244024873,
+          "queue_s": 90.31132214330137,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 2.4588034860789776,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s6",
+          "strict_passed": true,
+          "replay_s": 1084.7441312931478,
+          "tool_wall_s": 6.078236738219857,
+          "queue_s": 120.41957218386233,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 2.5290656611323357,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s10",
+          "strict_passed": true,
+          "replay_s": 1166.7184505984187,
+          "tool_wall_s": 13.00102113187313,
+          "queue_s": 181.66916598379612,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 0.46315951831638813,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s14",
+          "strict_passed": true,
+          "replay_s": 1161.8526534158736,
+          "tool_wall_s": 11.549294317141175,
+          "queue_s": 211.78745811991394,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 0.7083573043346405,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0fd88717c9-s7",
+          "strict_passed": true,
+          "replay_s": 1563.4264563173056,
+          "tool_wall_s": 11.448605664074421,
+          "queue_s": 0.0011347513645887375,
+          "official": {
+            "passed": false,
+            "required": 30,
+            "passed_count": 26,
+            "not_passed": [
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_empty_password_file",
+              "test/units/plugins/lookup/test_password.py::TestParseContent::test_with_salt_and_ident"
+            ],
+            "duration_s": 2.2473544646054506,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s13",
+          "strict_passed": true,
+          "replay_s": 1429.6713915299624,
+          "tool_wall_s": 10.407386239618063,
+          "queue_s": 150.53898400440812,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 0.7487986199557781,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s3",
+          "strict_passed": true,
+          "replay_s": 1521.749290144071,
+          "tool_wall_s": 7.201754270121455,
+          "queue_s": 60.20650077983737,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 2.6831034552305937,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_passed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s1",
+          "strict_passed": true,
+          "replay_s": 1655.447116656229,
+          "tool_wall_s": 10.06986990198493,
+          "queue_s": 61.20929250493646,
+          "official": {
+            "passed": true,
+            "required": 16,
+            "passed_count": 16,
+            "not_passed": [],
+            "duration_s": 2.581593031063676,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_passed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s0",
+          "strict_passed": true,
+          "replay_s": 1694.0539782568812,
+          "tool_wall_s": 12.435362692922354,
+          "queue_s": 31.102326840162277,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 2.9204005245119333,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-0ea40e09d1-s2",
+          "strict_passed": true,
+          "replay_s": 1704.6142957285047,
+          "tool_wall_s": 3.3403707295656204,
+          "queue_s": 91.31387770548463,
+          "official": {
+            "passed": false,
+            "required": 16,
+            "passed_count": 15,
+            "not_passed": [
+              "test/units/utils/test_vars.py::TestVariableUtils::test_combine_vars_replace"
+            ],
+            "duration_s": 3.1521105747669935,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s8",
+          "strict_passed": true,
+          "replay_s": 1661.1258126683533,
+          "tool_wall_s": 6.266990549862385,
+          "queue_s": 151.54395724833012,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 0.4860822279006243,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-106909db8b-s9",
+          "strict_passed": true,
+          "replay_s": 1706.93387715891,
+          "tool_wall_s": 9.546509115025401,
+          "queue_s": 121.42272796109319,
+          "official": {
+            "passed": false,
+            "required": 6,
+            "passed_count": 4,
+            "not_passed": [
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_prepare_multipart",
+              "test/units/module_utils/urls/test_prepare_multipart.py::test_unknown_wrong_multipart_encoding"
+            ],
+            "duration_s": 0.4647527001798153,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        },
+        {
+          "sample": "ansible-11c1777d56-s15",
+          "strict_passed": true,
+          "replay_s": 8544.48136324808,
+          "tool_wall_s": 6912.345700757578,
+          "queue_s": 180.66638249345124,
+          "official": {
+            "passed": false,
+            "required": 1,
+            "passed_count": 0,
+            "not_passed": [
+              "test/units/module_utils/facts/network/test_locally_reachable_ips.py::TestLocalRoutesLinux::test"
+            ],
+            "duration_s": 0.8007560558617115,
+            "return_code": 0,
+            "evaluator_healthy": true,
+            "result_class": "tests_failed",
+            "infrastructure_reasons": []
+          }
+        }
+      ]
+    }
+  },
+  "source_sha256": {
+    "comparison.json": "3c3c82f672d597cd8ef36aa002f0ea67dd6d56f52f48d98e12c1f3b589a77b44",
+    "agentenv-final-review.json": "8713287e4809f4ea58f6b1c17837d5413408e7b9c62e340f26e2acfca7736782"
+  }
+}
