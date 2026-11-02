@@ -34,10 +34,15 @@ pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClie
 #[cfg(unix)]
 fn lsof_client_pid_for_peer(peer: SocketAddr) -> Result<Option<u32>> {
     let spec = lsof_tcp_spec(peer);
-    let output = Command::new("lsof")
-        .args(["-nP", "-F", "pnc", "-i", &spec, "-sTCP:ESTABLISHED"])
-        .output()
-        .with_context(|| format!("lsof peer lookup for {peer}"))?;
+    let output = super::process::output(Command::new("lsof").args([
+        "-nP",
+        "-F",
+        "pnc",
+        "-i",
+        &spec,
+        "-sTCP:ESTABLISHED",
+    ]))
+    .with_context(|| format!("lsof peer lookup for {peer}"))?;
     if !output.status.success() && output.stdout.is_empty() {
         return Ok(None);
     }
@@ -143,10 +148,9 @@ fn command_line_for_pid(pid: u32) -> Result<Option<String>> {
             }
         }
     }
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "args="])
-        .output()
-        .with_context(|| format!("ps args for pid {pid}"))?;
+    let output =
+        super::process::output(Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]))
+            .with_context(|| format!("ps args for pid {pid}"))?;
     if !output.status.success() {
         return Ok(None);
     }

@@ -193,3 +193,13 @@ wait hook for authorized GET/CONNECT traffic. The native adapter enables it with
 cooldown and delivery barriers, and needs no Agent header. Custom lifecycles
 retain the default no-hook behavior. CONNECT is opaque transport evidence, not
 recognition of model requests or TLS payload semantics.
+
+## Best-effort client identification
+
+Model forwarding uses cached client metadata and schedules missing identification
+on a blocking worker, with four concurrent probes per registry and duplicate
+suppression. A first request can omit client metadata; subsequent requests can use
+a completed lookup. Identification does not authorize requests. Subprocess probes
+receive a kill after one second and are reaped before releasing their worker slot;
+uninterruptible kernel waits can delay reaping. Read-back metadata is capped at
+1 MiB. Probe failure leaves metadata absent and does not fail model forwarding.

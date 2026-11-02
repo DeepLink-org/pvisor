@@ -105,10 +105,9 @@ fn local_username() -> String {
 
 #[cfg(unix)]
 fn username_for_pid(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "user="])
-        .output()
-        .ok()?;
+    let output =
+        super::process::output(Command::new("ps").args(["-p", &pid.to_string(), "-o", "user="]))
+            .ok()?;
     if !output.status.success() {
         return None;
     }

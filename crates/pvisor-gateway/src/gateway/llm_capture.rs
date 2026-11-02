@@ -157,10 +157,12 @@ pub(super) async fn llm_capture(
     let agent_id = cfg.agent_id.clone();
     let session_id = capture_route.session_id.clone();
 
-    let client_meta =
-        state
-            .session_clients
-            .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
+    let client_meta = state.session_clients.cached_or_schedule(
+        state.storage.as_path(),
+        &agent_id,
+        &capture_route,
+        peer,
+    );
 
     let mut parsed_request = understand_request(protocol, &body_bytes).ok();
     let stream_request = parsed_request

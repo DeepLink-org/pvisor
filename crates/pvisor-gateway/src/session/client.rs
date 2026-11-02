@@ -135,12 +135,64 @@ fn should_persist_session_meta_file(storage: &Path, route: &CaptureRoute) -> boo
 }
 
 /// Records client metadata once per session (best-effort; ignores lookup failures).
-#[derive(Default)]
 pub struct SessionClientRegistry {
     recorded: Mutex<HashSet<String>>,
+    cached: Mutex<std::collections::HashMap<String, Option<SessionClientMeta>>>,
+    lookup_slots: std::sync::Arc<tokio::sync::Semaphore>,
+}
+impl Default for SessionClientRegistry {
+    fn default() -> Self {
+        Self {
+            recorded: Mutex::default(),
+            cached: Mutex::default(),
+            lookup_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
+        }
+    }
 }
 
 impl SessionClientRegistry {
+    /// Only cached metadata is returned on the request path. Filesystem access,
+    /// process discovery and fingerprinting all run off the async executor.
+    /// The first request may omit client metadata; forwarding never waits for it.
+    pub fn cached_or_schedule(
+        self: &std::sync::Arc<Self>,
+        storage: &Path,
+        agent_id: &str,
+        route: &CaptureRoute,
+        peer: SocketAddr,
+    ) -> Option<SessionClientMeta> {
+        let key = format!("{}|{agent_id}|{}", storage.display(), route.seq_key());
+        let owner = self.clone();
+        let storage = storage.to_path_buf();
+        let agent_id = agent_id.to_owned();
+        let route = route.clone();
+        self.schedule_lookup(key, move || owner.ensure(&storage, &agent_id, &route, peer))
+    }
+
+    fn schedule_lookup(
+        self: &std::sync::Arc<Self>,
+        key: String,
+        lookup: impl FnOnce() -> Option<SessionClientMeta> + Send + 'static,
+    ) -> Option<SessionClientMeta> {
+        let mut cache = self.cached.lock().unwrap();
+        if let Some(meta) = cache.get(&key) {
+            return meta.clone();
+        }
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let permit = self.lookup_slots.clone().try_acquire_owned().ok()?;
+        // None means pending or completed without metadata. Do not repeatedly
+        // spawn probes for the same session after a timeout or lookup failure.
+        cache.insert(key.clone(), None);
+        drop(cache);
+        let owner = self.clone();
+        runtime.spawn_blocking(move || {
+            let _permit = permit;
+            let meta = lookup();
+            owner.cached.lock().unwrap().insert(key, meta);
+        });
+        None
+    }
+
     pub fn ensure(
         &self,
         storage: &Path,
@@ -321,5 +373,104 @@ mod tests {
         let meta = resolve_client_meta_for_session_dir(storage, &session_dir).unwrap();
         assert_eq!(meta.command, "python3 agent.py");
         assert_eq!(meta.pid, 99);
+    }
+}
+
+#[cfg(test)]
+mod background_lookup_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    fn meta() -> SessionClientMeta {
+        SessionClientMeta {
+            peer: "127.0.0.1:1234".into(),
+            peer_port: 1234,
+            pid: 42,
+            command: "agent".into(),
+            machine_fp: Some("known".into()),
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocked_lookup_does_not_block_request_or_duplicate_work() {
+        let registry = Arc::new(SessionClientRegistry::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        assert!(
+            registry
+                .schedule_lookup("session".into(), move || {
+                    let _ = started_tx.send(());
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .unwrap();
+                    Some(meta())
+                })
+                .is_none()
+        );
+        started_rx.await.unwrap();
+        assert!(
+            registry
+                .schedule_lookup("session".into(), || panic!("duplicate lookup"))
+                .is_none()
+        );
+        // A current-thread runtime is still responsive while discovery is blocked.
+        tokio::task::yield_now().await;
+        release_tx.send(()).unwrap();
+        let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(value) =
+                    registry.schedule_lookup("session".into(), || panic!("cache miss"))
+                {
+                    break value;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, meta());
+    }
+    #[tokio::test]
+    async fn concurrent_probes_are_bounded_and_slots_are_released() {
+        let registry = Arc::new(SessionClientRegistry::default());
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut release = Vec::new();
+        for i in 0..4 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            release.push(tx);
+            let count = count.clone();
+            assert!(
+                registry
+                    .schedule_lookup(i.to_string(), move || {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                        None
+                    })
+                    .is_none()
+            );
+        }
+        assert!(
+            registry
+                .schedule_lookup("overflow".into(), || panic!("unbounded probe"))
+                .is_none()
+        );
+        for tx in release {
+            tx.send(()).unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while registry.lookup_slots.available_permits() != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert!(
+            registry
+                .schedule_lookup("0".into(), || panic!("failed probe retried"))
+                .is_none()
+        );
+        assert!(!registry.cached.lock().unwrap().contains_key("overflow"));
     }
 }

@@ -9,6 +9,7 @@
 pub mod env;
 pub mod host_identity;
 pub mod peer;
+pub(crate) mod process;
 
 pub use env::{
     CAPTURE_PROXY_ENV_KEYS, capture_openai_v1_base, client_gateway_config_args, proxy_environment,
