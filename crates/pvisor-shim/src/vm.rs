@@ -223,9 +223,13 @@ pub fn boot_vm(
     for (index, (source, _, read_only)) in volume_shares.iter().enumerate() {
         let tag = format!("pvisor-vol-{index}");
         if *read_only {
-            // Minimum window: the guest mounts dax=never, so the window is
-            // reserved address space only, never coupled to dataset size.
-            vm.immutable_filesystem(&tag, source, 2 * 1024 * 1024)?;
+            // Host-enforced read-only passthrough (the same contract as the
+            // CLI container path): the host may keep updating a projected
+            // ConfigMap or Secret volume and the guest observes those
+            // updates, so the physically-immutable DAX share — which
+            // forbids host-side changes until teardown — must not be used
+            // for host-mutable datasets.
+            vm.read_only_filesystem(&tag, source)?;
         } else {
             vm.filesystem(&tag, source, 0)?;
         }

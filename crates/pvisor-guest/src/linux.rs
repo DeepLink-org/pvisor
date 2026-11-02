@@ -552,19 +552,13 @@ fn run() -> io::Result<i32> {
     }
     for share in &config.shares {
         // Pod volume mounts the VM tier re-expresses as shares. Read-only
-        // datasets deliberately use `dax=never`: ordinary reads stream
-        // through the one host page-cache copy with no DAX-window coupling
-        // to dataset size. A failed mount is fatal — the workload expects
-        // the volume to exist.
+        // datasets are host-enforced read-only passthrough: the host may
+        // keep updating them (ConfigMap rotation) and the guest sees those
+        // updates, unlike the physically immutable payloads share above. A
+        // failed mount is fatal — the workload expects the volume to exist.
         fs::create_dir_all(&share.path)?;
         if share.read_only {
-            mount_with_options(
-                &share.tag,
-                &share.path,
-                "virtiofs",
-                libc::MS_RDONLY,
-                Some("dax=never"),
-            )?;
+            mount_with_options(&share.tag, &share.path, "virtiofs", libc::MS_RDONLY, None)?;
         } else {
             mount(&share.tag, &share.path, "virtiofs", 0)?;
         }
