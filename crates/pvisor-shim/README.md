@@ -87,7 +87,7 @@ containerd ──ttrpc── PvisorTask (Task service)
   readiness; session failure rejects creation, and a session leader cannot join
   another task's process group. Host process-group signals require Linux 6.9 pidfd group support and fail
   explicitly on older kernels. VM task termination signals the owned runner;
-  guest exec termination closes its agent connection.
+  guest execs are signalled through the guest control protocol.
 - `service.rs` implements the ttrpc Task service and publishes
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
@@ -98,8 +98,9 @@ use it instead of reconstructing ownership from a saved PID. Stopped-task kill
 is idempotent. Host task processes establish their own session before readiness,
 so a process-group request cannot drift into another task's group. Group signals
 require Linux 6.9 pidfd group support; older kernels return an explicit unsupported
-error without falling back to numeric process-group signals. VM exec still uses
-its guest-agent connection, never a guest PID as a host signal target.
+error without falling back to numeric process-group signals. VM execs are
+signalled through the guest control protocol against the registered guest
+PID and registration generation, never a host PID or a raw guest PID.
 
 ## Executor tiers
 
@@ -130,7 +131,7 @@ read-write over virtio-fs (`/dev/root`), stdio over the virtio-console, VM
 shape via `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` (default 2 vCPU /
 512 MiB). Kill signals the VM runner (destroying the VM); the guest exit
 code propagates through the task exit status. The shim configures a vsock
-proxy for the guest agent (see below); this is not a network isolation claim.
+proxy for the guest control protocol (see below); this is not a network isolation claim.
 
 Build with the feature through the shared native build pipeline:
 
@@ -147,22 +148,34 @@ like proc/sysfs/tmpfs) and host-LSM process fields (`apparmorProfile`,
 `selinuxLabel`, `oomScoreAdj`) are accepted as no-ops for VM tasks — the
 guest kernel cannot honor host constraints — while `root.readonly=true` and
 hostname configuration are rejected (the runner does not install them).
-Bind mounts are accepted as no-ops: kubelet unconditionally bind-mounts
-`/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf` and `/dev/termination-log`
-into every pod, and the guest keeps its rootfs's own files for those paths
-(host paths, ConfigMaps and emptyDir volumes do not appear in the guest). Snapshotter
+Bind mounts: file binds (kubelet's `/etc/hosts`, `/etc/hostname`,
+`/etc/resolv.conf`, `/dev/termination-log`) are accepted as no-ops and the
+guest keeps its rootfs's own files for those paths, while directory binds
+(hostPath/NFS mount points, emptyDirs, projected volumes) are re-expressed
+as virtio-fs shares — read-only volumes as host-enforced read-only
+passthrough (the same contract as the CLI container path; the host may keep
+updating a projected ConfigMap and the guest sees the updates), read-write
+volumes as plain passthrough. Only the operator-managed payloads share is
+physically immutable and DAX-mapped. Snapshotter
 request mounts used to materialize the rootfs are distinct from OCI spec
 mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
 are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
 (optional log filter, or `1` for `debug`) makes the VM runner write VMM and
 early console diagnostics to `<bundle>/pvisor-vm.log` instead of stderr.
 
-VM egress networking (feature `vm`): `io.pvisor.vm.network` selects the
-task's network posture — `off`/unset (default: no network device at all),
-`public`, or `allowlist` with `io.pvisor.vm.network.allow`
-(`host[:port]`, comma separated) and optionally
-`io.pvisor.vm.network.allow-private: "true"` for entries that resolve to
-private space (intranet mirrors). Egress rides pvisor-overlaynet's virtio-net
+VM egress networking (feature `vm`): the single `io.pvisor.vm.network`
+annotation selects the task's network posture — `off`/unset (default: no
+network device at all), `public`, or `allowlist=<entries>` where entries
+are comma-separated `host[:port]` (exact hostname, `*.suffix`, IP literal
+or CIDR). The data plane treats every allowed target uniformly; the only
+entry-level distinction is the optional `private:` prefix on a HOSTNAME
+entry, which opts that name into private-space DNS resolutions — by
+default a hostname whose resolution lands in private space is rejected as
+an anti-DNS-rebinding measure (an untrusted workload could otherwise point
+an allowlisted public name at internal addresses). Explicit IP-literal and
+CIDR entries never need the prefix: the address itself is the
+authorization, private or not. A typo or malformed entry fails the task,
+never silently disables policy. Egress rides pvisor-overlaynet's virtio-net
 smoltcp backend: the device is the guest's only network path, DNS is served
 synthetically from the in-VM router (`/etc/resolv.conf` points at
 192.0.2.1), every TCP flow terminates on the host and is re-originated only
@@ -190,30 +203,36 @@ Non-terminal task IO rides the named virtio-console ports
 `CloseIO` EOF and piped stdin reach the workload with runc-compatible
 semantics.
 
-## Guest agent and exec-in-VM (feature `vm`)
+## Exec-in-VM through the guest control protocol (feature `vm`)
 
-VM tasks boot the shim binary itself as a guest agent: at boot the
-(statically linked) binary is copied into the rootfs and the Rust
-`pvisor-guest` supervisor starts it from `/.pvisor-guest.json`, without
-a shell helper (`io.pvisor.vm.agent=off` disables it). The agent listens
-on vsock port 0x7076; libkrun proxies host connections from
-`/run/pvisor-agent-<task-id-hash>.sock` into the guest (so `docker exec` /
-`kubectl exec` work on VM tasks; the socket cannot live in the bundle
-because Unix socket paths are capped at 108 bytes and containerd bundle
-paths exceed that; without `/run`, e.g. rootless, it falls back to the temp
-directory):
+Exec into a VM task rides the same `pvisor-guest` control protocol the CLI
+and `pvisor-daemon` use — there is no shim-specific guest agent any more.
+The guest supervisor starts its host-only vsock listener (port 1025) from
+`/.pvisor-guest.json` whenever `control` is enabled (`io.pvisor.vm.exec=off`
+disables exec: neither the listener nor the host proxy exists). libkrun
+proxies host connections from `/run/pvisor-control-<task-id-hash>.sock`
+into the guest (the socket cannot live in the bundle because Unix socket
+paths are capped at 108 bytes and containerd bundle paths exceed that;
+without `/run`, e.g. rootless, it falls back to the temp directory):
 
-- one agent connection per exec; frames are `[channel][length][payload]`
-  with JSON control messages (`exec_start`/`started`/`exited`)
+- one control connection per exec plus short-lived connections for
+  signals and PTY resizes; frames are length-bounded JSON
+  (`pvisor_guest::control`)
 - the guest process starts at `Exec` time (containerd's `Start` reports
   the pid; there is no two-phase gate across the VM boundary)
-- killing an exec drops the connection; the agent SIGKILLs the process
-- exec rlimits travel in the `exec_start` control message and are applied
-  in the guest before the process runs (same `prlimit64` contract as init)
-- agent boot/session failures are recorded in `/.pvisor-agent.log` inside
-  the rootfs (visible on the host through virtio-fs); spawn errors are
-  returned to the caller as `Error` control messages
-- tty exec in VMs is not supported yet
+- killing an exec delivers the requested signal to the registered guest
+  process group, fenced by a registration generation against PID reuse
+- exec rlimits and the complete exec environment travel in the `Start`
+  launch overrides and are applied in the guest before the process runs
+  (same `prlimit64` contract as init); a failed guest output pump is
+  reported before the exit code so lost output never reads as success
+- a dropped connection kills the exec unless stdin was explicitly closed
+  first — which is exactly `CloseIO`: the shim sends stdin EOF, so
+  detached execs keep running after the IO connection goes away
+- exit codes follow container conventions: `128 + signal` for a signalled
+  process, 126/127 for spawn failures, 137 when the VM itself died
+- tty exec is supported: the PTY lives in the guest, host FIFOs relay the
+  merged stream, and `ResizePty` forwards over the control protocol
 
 
 ## Payload injection
@@ -263,7 +282,7 @@ Semantics by design:
 - **Tier parity.** The container tier bind-mounts each payload read-only
   (`ro,nosuid,nodev` — deliberately not `noexec`) and forks one sibling per
   payload. The VM tier stages the binary into the rootfs (same
-  materialization as the guest agent) and the guest supervisor starts it
+  materialization as any staged payload) and the guest supervisor starts it
   from the launch config (`pvisor-guest` `GuestConfig.sidecars`). Payloads
   marked `"share": true` (with the catalogue's `share_dir`) never copy in
   the VM tier: the directory is attached as one read-only DAX virtio-fs
@@ -315,11 +334,12 @@ regression, not a mystery.
   already admits everything else — and are dropped at compilation instead
   of failing the policy). Rule targets use the sidecar contract's
   `host[:port]` form — a port scopes the compiled rule to that port, the
-  same split the `io.pvisor.vm.network.allow` annotation applies; an explicit
-  zero port is rejected instead of granting every port. An empty deny-default
-  allowlist is a valid deny-all policy, including during live updates. The gate
-  belongs to the sandbox and is unlinked on sandbox shutdown, not on individual
-  workload exit/delete, so workload restarts retain their policy. The 3-second gate window only spans the
+  same split the `io.pvisor.vm.network` allowlist entries applies; an
+  explicit zero port is rejected instead of granting every port. An empty
+  deny-default allowlist is a valid deny-all policy, including during
+  live updates. The gate belongs to the sandbox and is unlinked on
+  sandbox shutdown, not on individual workload exit/delete, so workload
+  restarts retain their policy. The 3-second gate window only spans the
   sidecar's Create, which kubelet issues milliseconds after the workload's
   Start. The gate stays a live channel for the task's lifetime: a runner
   thread applies its first read too, covering updates during initial VM setup,
@@ -328,16 +348,18 @@ regression, not a mystery.
   the pod netns, which VM traffic never traverses — republishing the gate
   file is the dynamic-policy contract for VM workloads. The sidecar rule
   syntax has no private-address opt-in, so the pod-level
-  `io.pvisor.vm.network.allow-private: "true"` annotation carries it: with
-  it, an explicitly allowed target may resolve into private space
-  (office-network relays, intranet registries); without it hostname rules
-  keep rejecting private resolutions, the anti-DNS-rebinding default.
+  `io.pvisor.vm.network.allow-private: "true"` annotation carries it for
+  gate tasks (annotation-driven tasks use per-entry `private:` prefixes
+  instead): with it, an explicitly allowed target may resolve into private
+  space (office-network relays, intranet registries); without it hostname
+  rules keep rejecting private resolutions, the anti-DNS-rebinding default.
 - **execd-installer init container** (CRI annotations: container name
   `execd-installer` plus an `/execd` image): under `io.pvisor.executor=vm`
   pods it becomes a **synthetic success** — the task reports readiness,
-  waits for Start and exits 0 without executing anything. Its emptyDir
-  output is invisible to VM guests (mounts are no-ops there and the shim's
-  injection already staged execd/bootstrap into the rootfs), so the
+  waits for Start and exits 0 without executing anything. Its Create
+  delivers the execd/bootstrap payloads into the pod volume's host source
+  (the VM's volume share then serves them into the guest; anything a real
+  installer would already have placed is left untouched), so the
   throwaway microVM it would otherwise boot — sequentially, on every
   sandbox creation — buys nothing. Container-tier pods run it normally:
   there the emptyDir copy is the execd delivery mechanism.
@@ -450,17 +472,19 @@ VM init and exec accept OCI process identity fields (uid/gid, supplementary
 groups, umask), capability sets and `noNewPrivileges`: they describe host
 processes, which the VM boundary subsumes (the same treatment kata and
 firecracker apply). They are not installed inside the guest. Init and exec
-rlimits travel to the guest supervisor/agent and are applied with
+rlimits travel to the guest supervisor and are applied with
 `prlimit64` before the workload runs. Neither the VM boundary nor VM shape
 substitutes for a requested OCI process security policy.
 
-Agent frame readers and writers limit each payload to **1 MiB**, including
-control JSON, and reject larger lengths before payload allocation or reading.
-Only EOF before a header is a clean close; truncated headers/payloads are errors.
-This prevents the guest-selected near-4-GiB allocation, but does not bound
-aggregate connections/threads, total output, JSON object overhead, or time spent
-waiting for a peer. The vsock agent has no protocol authentication and can launch
-root processes inside the guest. Those risks are not fixed by a frame cap.
+Control-protocol frames limit each payload to **1 MiB** (the guest enforces
+the same bound on its side), and reject larger lengths before payload
+allocation or reading. Only EOF before a header is a clean close; truncated
+headers/payloads are errors. This prevents the guest-selected near-4-GiB
+allocation, but does not bound aggregate connections/threads, total output,
+JSON object overhead, or time spent waiting for a peer. The guest control
+listener accepts host-CID peers only, but has no protocol authentication
+and can launch root processes inside the guest. Those risks are not fixed
+by a frame cap.
 
 Admission inspects fields retained by `oci-spec`'s typed deserializer, not raw
 JSON schema validation. Unknown fields discarded by that library are not covered
