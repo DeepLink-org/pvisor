@@ -29,13 +29,13 @@ print('shared-backing-guest-ok', index, flush=True)
 "#;
 fn main() -> anyhow::Result<()> {
     // Test-only runner containment: parent wrapper delegates the original budget.
-    if std::env::var_os("PVISOR_KRUN_RUNNER_SPEC").is_some() {
-        if let Some(root) = std::env::var_os("CASE_CGROUP") {
-            let group = PathBuf::from(root).join(format!("vm-{}", std::process::id()));
-            fs::create_dir(&group)?;
-            fs::write(group.join("cpu.max"), "250000 100000")?;
-            fs::write(group.join("cgroup.procs"), std::process::id().to_string())?;
-        }
+    if std::env::var_os("PVISOR_KRUN_RUNNER_SPEC").is_some()
+        && let Some(root) = std::env::var_os("CASE_CGROUP")
+    {
+        let group = PathBuf::from(root).join(format!("vm-{}", std::process::id()));
+        fs::create_dir(&group)?;
+        fs::write(group.join("cpu.max"), "250000 100000")?;
+        fs::write(group.join("cgroup.procs"), std::process::id().to_string())?;
     }
     if pvisor::run_krun_internal_if_requested()? {
         return Ok(());
