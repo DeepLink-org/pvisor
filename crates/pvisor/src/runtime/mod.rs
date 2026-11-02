@@ -6,8 +6,6 @@
 pub(crate) mod agentctl;
 pub(crate) mod agentctl_client;
 mod attempt;
-#[cfg(unix)]
-pub mod audit;
 pub(crate) mod bundle;
 pub mod checkpoint;
 pub(crate) mod completion;

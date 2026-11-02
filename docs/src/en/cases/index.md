@@ -33,7 +33,6 @@ This stages workspace files while host file access remains ambient. Before runni
 
 | Need | Tool and entry point | Next step |
 |---|---|---|
-| Review and approve access interactively | `pvisor spawn --tui` / `--ask`, dispatched to adjacent `pvisor-tui` | [CLI reference](../reference/cli.md) |
 | Route real model requests and capture trajectories | `pvisor spawn --gateway-mode capture --gateway-route ...` | [Capture guide](../guides/capture.md) and the local mock-request test in `mise run examples -- 04-gateway-llm-control` |
 | Prepare restoration from native Agent history | `pvisor replay`, dispatched to adjacent `pvisor-replay` | [Chapter 5](05-tools-and-restoration.md), [replay guide](../guides/replay.md) |
 | Select an OCI container or VM executor | `pvisor spawn --executor container` / `--executor vm` | [Containers](../guides/executors/container.md), [VMs](../guides/executors/vm.md); requires a runtime/rootfs |

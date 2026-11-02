@@ -7,8 +7,10 @@ use pvisor_overlay_core::OverlayCore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
+mod cache;
 mod dockerfile;
 mod filesystem;
+pub use cache::{PruneOptions, PruneReport, prune};
 use dockerfile::{expand, expanded_words, words};
 
 /// Inputs for a local Dockerfile build. Unsupported syntax fails explicitly.
@@ -29,6 +31,9 @@ pub struct BuildOptions {
     pub platform: Option<String>,
     /// Refresh registry bases even if a matching local reference exists.
     pub pull: bool,
+    /// Execute RUN instructions without reading cached results; successful results
+    /// still refresh the local cache, matching Docker's no-cache behavior.
+    pub no_cache: bool,
     /// Per-RUN VM vCPU count; must be nonzero.
     pub cpus: u8,
     /// Per-RUN total guest RAM in MiB; at least 16.
@@ -48,7 +53,7 @@ pub struct BuildOptions {
 /// All writers exit and the VMM is reaped before COPY, export or publication.
 /// Failure keeps prior tags unchanged; successful registry pulls may be retained.
 /// Scratch and multi-stage builds, common configuration instructions and local
-/// COPY are supported. Builds currently run without instruction-cache reuse and
+/// COPY are supported. Successful RUN checkpoints are reused locally and builds
 /// export one flattened filesystem layer. Non-local contexts, ADD, ONBUILD,
 /// RUN mounts/heredocs and foreign execution are rejected. The calling binary
 /// must dispatch [`super::internal_if_requested`] before ordinary startup.
@@ -124,6 +129,11 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
     };
     filesystem::snapshot(&context, &snapshot, &filesystem::Ignore::new(&ignore)?)?;
     let private = Store::open(work.path().join("store"))?;
+    // Hold a shared lease until publication: prune cannot remove a live build's
+    // checkpoints. Per-key locks serialize identical RUNs across builders.
+    let cache = cache::Cache::open(store)?;
+    let _lease = cache.lease(false)?;
+    let mut chain = String::new();
     let mut stages: Vec<(String, Built)> = Vec::new();
     let mut current: Option<Stage> = None;
     let native = native_platform();
@@ -210,14 +220,52 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
                     base(store, &from[0], options.pull)?
                 };
                 args = base.args.clone();
+                chain = digest(&serde_json::to_vec(&json!([
+                    "pvisor-build-run-v1",
+                    base.image.digest,
+                    base.config,
+                    native,
+                    options.cpus,
+                    options.memory_mib,
+                    options.network,
+                    options.timeout
+                ]))?);
                 current = Some(Stage::new(private.clone(), base, name, options)?);
                 return Ok(());
             }
             let stage = current.as_mut().context("only ARG may precede FROM")?;
             let mut env = args.clone();
             env.extend(stage.image.env.clone());
+            let inputs = if instruction.name == "COPY" {
+                let (root, sources, _, _, _) =
+                    copy_sources(&instruction.value, &env, &snapshot, &stages)?;
+                Some(cache::fingerprint(&root, &sources)?)
+            } else {
+                None
+            };
+            chain = digest(&serde_json::to_vec(&json!([
+                chain,
+                instruction.name,
+                instruction.value,
+                args,
+                inputs
+            ]))?);
             match instruction.name.as_str() {
                 "RUN" => {
+                    let _key = cache.key_lock(&chain)?;
+                    if !options.no_cache
+                        && let Some(built) = cache.load(&chain, work.path())?
+                    {
+                        if !options.quiet {
+                            eprintln!("Using cache");
+                        }
+                        let name = stage.name.clone();
+                        let cmd_set = stage.cmd_set;
+                        chain = digest(&serde_json::to_vec(&json!([chain, built.image.digest]))?);
+                        *stage = Stage::new(private.clone(), built, name, options)?;
+                        stage.cmd_set = cmd_set;
+                        return Ok(());
+                    }
                     let argv = if instruction.value.starts_with('[') {
                         words(&instruction.value)?
                     } else {
@@ -226,6 +274,14 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
                         a
                     };
                     stage.run(argv, &env, options)?;
+                    let name = stage.name.clone();
+                    let cmd_set = stage.cmd_set;
+                    let built = current.take().unwrap().finish(work.path(), args.clone())?;
+                    cache.save(&chain, &built)?;
+                    chain = digest(&serde_json::to_vec(&json!([chain, built.image.digest]))?);
+                    let mut resumed = Stage::new(private.clone(), built, name, options)?;
+                    resumed.cmd_set = cmd_set;
+                    current = Some(resumed);
                 }
                 "COPY" => stage.copy(&instruction.value, &env, &snapshot, &stages)?,
                 "ENV" => {
@@ -241,6 +297,7 @@ pub fn build(store: &Store, options: &BuildOptions) -> anyhow::Result<Image> {
                     }
                 }
                 "WORKDIR" => {
+                    stage.checkpoint = None;
                     let value = expanded_words(&instruction.value, &env)?.join(" ");
                     let path = filesystem::path(&value, &stage.image.cwd)?;
                     filesystem::mkdir(&stage.core()?, &path)?;
@@ -530,6 +587,9 @@ struct Stage {
     name: String,
     cmd_set: bool,
     lower: ImageRoot,
+    // A sealed filesystem can be reused for metadata-only changes and final
+    // publication; do not flatten/reimport it a second time after a RUN.
+    checkpoint: Option<Built>,
 }
 impl Stage {
     fn new(
@@ -589,6 +649,7 @@ impl Stage {
         let stage = Self {
             store,
             instance,
+            checkpoint: (!base.layout.as_os_str().is_empty()).then(|| base.clone()),
             image: base.image,
             config: base.config,
             name,
@@ -641,6 +702,7 @@ impl Stage {
         env: &BTreeMap<String, String>,
         options: &BuildOptions,
     ) -> anyhow::Result<()> {
+        self.checkpoint = None;
         ensure!(!argv.is_empty(), "RUN has no command");
         self.instance.argv = argv;
         self.instance.env = env.clone();
@@ -682,53 +744,14 @@ impl Stage {
         Ok(())
     }
     fn copy(
-        &self,
+        &mut self,
         value: &str,
         env: &BTreeMap<String, String>,
         context: &Path,
         stages: &[(String, Built)],
     ) -> anyhow::Result<()> {
-        let mut rest = value;
-        let mut from = None;
-        let mut owner = (0, 0);
-        let mut mode = None;
-        while rest.starts_with("--") {
-            let (flag, next) = rest
-                .split_once(char::is_whitespace)
-                .context("COPY has no source")?;
-            let (key, val) = flag.split_once('=').context("COPY flags require =value")?;
-            let val = expand(val, env)?;
-            match key {
-                "--from" => from = Some(val),
-                "--chmod" => {
-                    let parsed = u32::from_str_radix(&val, 8)?;
-                    ensure!(parsed <= 0o7777, "invalid COPY mode");
-                    mode = Some(parsed);
-                }
-                "--chown" => {
-                    let (a, b) = val.split_once(':').unwrap_or((&val, &val));
-                    owner = (
-                        a.parse()
-                            .context("COPY --chown currently requires numeric UID:GID")?,
-                        b.parse()?,
-                    );
-                }
-                _ => bail!("unsupported COPY flag {key}"),
-            };
-            rest = next.trim_start();
-        }
-        let mut paths = expanded_words(rest, env)?;
-        ensure!(paths.len() >= 2, "COPY requires sources and destination");
-        let destination = paths.pop().unwrap();
-        let root = if let Some(from) = from {
-            stages[stage_index(stages, &from).context("COPY --from must name a completed stage")?]
-                .1
-                .image
-                .cache
-                .temporary_root()?
-        } else {
-            context
-        };
+        self.checkpoint = None;
+        let (root, selected, destination, owner, mode) = copy_sources(value, env, context, stages)?;
         let core = self.core()?;
         let target = filesystem::path(&destination, &self.image.cwd)?;
         let target = filesystem::resolve(&core, &target, true)?;
@@ -736,63 +759,12 @@ impl Stage {
             || core
                 .resolve_checked(&target)?
                 .is_some_and(|e| fs::symlink_metadata(e.path).is_ok_and(|m| m.is_dir()));
-        let mut selected = Vec::new();
-        for source in paths {
-            ensure!(
-                !Path::new(&source)
-                    .components()
-                    .any(|c| c == std::path::Component::ParentDir),
-                "COPY source escapes context"
-            );
-            let source = source.trim_start_matches('/').trim_end_matches('/');
-            if source.contains(['*', '?', '[']) {
-                let pattern = globset::GlobBuilder::new(source)
-                    .literal_separator(true)
-                    .build()?
-                    .compile_matcher();
-                fn scan(
-                    root: &Path,
-                    rel: &Path,
-                    pattern: &globset::GlobMatcher,
-                    out: &mut Vec<PathBuf>,
-                ) -> anyhow::Result<()> {
-                    for entry in fs::read_dir(root.join(rel))? {
-                        let entry = entry?;
-                        let p = rel.join(entry.file_name());
-                        if pattern.is_match(&p) {
-                            out.push(p);
-                        } else if entry.file_type()?.is_dir() {
-                            scan(root, &p, pattern, out)?;
-                        }
-                    }
-                    Ok(())
-                }
-                let before = selected.len();
-                scan(root, Path::new(""), &pattern, &mut selected)?;
-                ensure!(
-                    selected.len() > before,
-                    "COPY source pattern matched no files"
-                );
-            } else {
-                selected.push(PathBuf::from(source));
-            }
-        }
         ensure!(
             selected.len() == 1 || is_dir,
             "multiple COPY sources require directory destination ending in /"
         );
         let mut links = BTreeMap::new();
         for source in selected {
-            let mut prefix = root.to_path_buf();
-            for component in source.components() {
-                prefix.push(component.as_os_str());
-                if prefix != root.join(&source) {
-                    ensure!(
-                        fs::symlink_metadata(&prefix)?.is_dir(),
-                        "COPY source traverses a symlink or non-directory"
-                    );
-                }
-            }
             let full = root.join(&source);
             let metadata = fs::symlink_metadata(&full)
                 .context("COPY source is missing or excluded by .dockerignore")?;
@@ -808,11 +780,27 @@ impl Stage {
         Ok(())
     }
     fn finish(mut self, work: &Path, args: BTreeMap<String, String>) -> anyhow::Result<Built> {
+        if let Some(mut built) = self.checkpoint.clone()
+            && self.config == built.config
+        {
+            built.args = args;
+            return Ok(built);
+        }
         let directory = work.join(format!("image-{}", uuid()));
         fs::create_dir(&directory)?;
         fs::create_dir_all(directory.join("blobs/sha256"))?;
         let layer = directory.join("layer.tar");
-        filesystem::export(&self.core()?, &layer)?;
+        if let Some(built) = &self.checkpoint {
+            let config: Value = serde_json::from_reader(File::open(
+                built.layout.join("blobs/sha256").join(&built.image.id[7..]),
+            )?)?;
+            let digest = config["rootfs"]["diff_ids"][0]
+                .as_str()
+                .context("missing sealed layer")?;
+            fs::hard_link(built.layout.join("blobs/sha256").join(&digest[7..]), &layer)?;
+        } else {
+            filesystem::export(&self.core()?, &layer)?;
+        }
         let layer_digest = file_digest(&layer)?;
         let size = fs::metadata(&layer)?.len();
         fs::rename(
@@ -841,12 +829,17 @@ impl Stage {
             directory.join("index.json"),
             serde_json::to_vec(&json!({"schemaVersion":2,"manifests":[manifest_desc]}))?,
         )?;
-        let rootfs = directory.join("rootfs");
-        fs::create_dir(&rootfs)?;
-        import_layer(
-            &directory.join("blobs/sha256").join(&layer_digest[7..]),
-            &rootfs,
-        )?;
+        let rootfs = if let Some(built) = &self.checkpoint {
+            built.image.cache.temporary_root()?.to_owned()
+        } else {
+            let rootfs = directory.join("rootfs");
+            fs::create_dir(&rootfs)?;
+            import_layer(
+                &directory.join("blobs/sha256").join(&layer_digest[7..]),
+                &rootfs,
+            )?;
+            rootfs
+        };
         self.image.id = config_desc["digest"].as_str().unwrap().into();
         self.image.digest = manifest_desc["digest"].as_str().unwrap().into();
         self.image.cache = BuildSource::Temporary { root: rootfs };
@@ -858,6 +851,117 @@ impl Stage {
             args,
         })
     }
+}
+
+type CopySources = (PathBuf, Vec<PathBuf>, String, (u32, u32), Option<u32>);
+
+// Resolve and validate once for both copying and cache identity. In particular,
+// hashing must never traverse a source symlink that COPY itself would reject.
+fn copy_sources(
+    value: &str,
+    env: &BTreeMap<String, String>,
+    context: &Path,
+    stages: &[(String, Built)],
+) -> anyhow::Result<CopySources> {
+    let mut rest = value;
+    let mut from = None;
+    let mut owner = (0, 0);
+    let mut mode = None;
+    while rest.starts_with("--") {
+        let (flag, next) = rest
+            .split_once(char::is_whitespace)
+            .context("COPY has no source")?;
+        let (key, val) = flag.split_once('=').context("COPY flags require =value")?;
+        let val = expand(val, env)?;
+        match key {
+            "--from" => from = Some(val),
+            "--chmod" => {
+                let parsed = u32::from_str_radix(&val, 8)?;
+                ensure!(parsed <= 0o7777, "invalid COPY mode");
+                mode = Some(parsed);
+            }
+            "--chown" => {
+                let (a, b) = val.split_once(':').unwrap_or((&val, &val));
+                owner = (
+                    a.parse()
+                        .context("COPY --chown currently requires numeric UID:GID")?,
+                    b.parse()?,
+                );
+            }
+            _ => bail!("unsupported COPY flag {key}"),
+        }
+        rest = next.trim_start();
+    }
+    let mut paths = expanded_words(rest, env)?;
+    ensure!(paths.len() >= 2, "COPY requires sources and destination");
+    let destination = paths.pop().unwrap();
+    let root = if let Some(from) = from {
+        stages[stage_index(stages, &from).context("COPY --from must name a completed stage")?]
+            .1
+            .image
+            .cache
+            .temporary_root()?
+            .to_owned()
+    } else {
+        context.to_owned()
+    };
+    fn scan(
+        root: &Path,
+        rel: &Path,
+        pattern: &globset::GlobMatcher,
+        out: &mut Vec<PathBuf>,
+    ) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(root.join(rel))?.collect::<io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let p = rel.join(entry.file_name());
+            if pattern.is_match(&p) {
+                out.push(p);
+            } else if entry.file_type()?.is_dir() {
+                scan(root, &p, pattern, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut selected = Vec::new();
+    for source in paths {
+        ensure!(
+            !Path::new(&source)
+                .components()
+                .any(|c| c == std::path::Component::ParentDir),
+            "COPY source escapes context"
+        );
+        let source = source.trim_start_matches('/').trim_end_matches('/');
+        if source.contains(['*', '?', '[']) {
+            let pattern = globset::GlobBuilder::new(source)
+                .literal_separator(true)
+                .build()?
+                .compile_matcher();
+            let before = selected.len();
+            scan(&root, Path::new(""), &pattern, &mut selected)?;
+            ensure!(
+                selected.len() > before,
+                "COPY source pattern matched no files"
+            );
+        } else {
+            selected.push(PathBuf::from(source));
+        }
+    }
+    for source in &selected {
+        let mut prefix = root.clone();
+        for component in source.components() {
+            prefix.push(component.as_os_str());
+            if prefix != root.join(source) {
+                ensure!(
+                    fs::symlink_metadata(&prefix)?.is_dir(),
+                    "COPY source traverses a symlink or non-directory"
+                );
+            }
+        }
+        fs::symlink_metadata(root.join(source))
+            .context("COPY source is missing or excluded by .dockerignore")?;
+    }
+    Ok((root, selected, destination, owner, mode))
 }
 
 fn digest(bytes: &[u8]) -> String {

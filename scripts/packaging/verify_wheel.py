@@ -20,7 +20,6 @@ from pathlib import Path
 
 EXPECTED_BINARIES = (
     "pvisor",
-    "pvisor-tui",
     "pvisor-replay",
     "pvisor-daemon",
 )
@@ -68,6 +67,8 @@ def _wheel_contents(
             raise RuntimeError("wheel contains retired executable pvisor-memory-pool")
         if any(name.endswith("/scripts/pvisor-cache") for name in archive.namelist()):
             raise RuntimeError("wheel contains retired executable pvisor-cache")
+        if any(name.endswith("/scripts/pvisor-tui") for name in archive.namelist()):
+            raise RuntimeError("wheel contains retired executable pvisor-tui")
         for name in expected:
             matches = [
                 info
@@ -464,7 +465,7 @@ def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None)
         _run([str(scripts / "pvisor"), "spawn", "--help"], env=env)
         for command in ("prepare", "publish", "read"):
             _run([str(scripts / "pvisor"), "cache", command, "--help"], env=env)
-        for command in ("tui", "replay"):
+        for command in ("replay",):
             _run([str(scripts / "pvisor"), command, "--help"], env=env)
 
         if acceptance_log is not None:

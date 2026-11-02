@@ -7,7 +7,7 @@ wheel 不包含 PyO3 扩展，也不使用 Maturin。
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
 - Python `pvisor` 版本标记，不是启动器；
-- 三个原生脚本 `pvisor`、`pvisor-tui`、`pvisor-replay`，直接安装到环境的 bin 目录；
+- 两个原生脚本 `pvisor`、`pvisor-replay`，直接安装到环境的 bin 目录；
 - 独立构建的 `pvisor-daemon`，Linux x86_64 和 macOS ARM64 wheel 均包含；
 - `libkrunfw.SOURCE` 来源记录；两个平台都内嵌压缩 guest 内核，不交付固件共享库。
 

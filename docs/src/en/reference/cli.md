@@ -14,7 +14,7 @@ are in
 Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
 (Docker-compatible container commands), **Agent Commands** (`spawn`, `status`,
 `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
-(installed `replay`/`tui` companions, `cache`, `feature`, `help`). It shows a short
+(installed `replay` companion, `cache`, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
@@ -270,26 +270,6 @@ pvisor apply last --path src
 storage. With `--stage PATH`, pass that path or the Job ID to later commands;
 see [Jobs and storage](../concepts/jobs.md).
 
-Add `--tui` for a Zellij-style terminal frame, bottom status bar and floating
-review panel:
-
-```bash
-pvisor spawn --tui -- bash
-```
-
-Keyboard input goes to the shell or Agent by default, and the terminal always
-keeps its full width. The header shows the working directory and the file and
-network boundaries; the bottom bar shows run state, elapsed time and nonzero
-access anomalies, and highlights pending authorization. Detailed counters stay
-in the panels.
-Press `Ctrl-]` to open the menu, which replaces the same line with shortcuts.
-pVisor's own startup diagnostics appear in the
-Log panel rather than the Agent terminal. Press `Ctrl-]` to enter command mode,
-then `r`, `f`, `n`, `u`, `l` or `p` to open the Overview, Files, Network, Job,
-Log or Permissions panel, and `?` for key help. In a panel, switch views with
-Tab or `1`–`6`, scroll with `j`/`k`, and return to the Agent with Esc or
-`Ctrl-]`. Press `Ctrl-]` twice to send the key to the Agent literally.
-
 ### Staging and storage {#暂存与存储}
 
 The table below describes the default CLI behavior. Explicit commit settings,
@@ -298,7 +278,7 @@ writable shares and application-compatibility policies can change where writes g
 | Mode or directory | Write destination | After exit |
 | --- | --- | --- |
 | Ordinary host, no staging | Original workspace | Written to the host; `drop` cannot undo it |
-| `--safe` or `--ask` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply` and `drop` |
+| `--safe` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply` and `drop` |
 | Workspace with explicit `--stage PATH` | The named stage | Retained; the option also enables staging |
 | VM workspace | The named stage or default Job storage | Retained |
 | Other writes to the VM root | Private temporary upper | Discarded when the VM exits |
@@ -306,7 +286,7 @@ writable shares and application-compatibility policies can change where writes g
 | Explicit `--mount SOURCE:write` | Host SOURCE | Written directly and persistently; bypasses workspace apply/drop |
 
 Job records and the Run Bundle are stored in run storage. `--stage PATH` chooses
-the location; it is not a prerequisite for `--safe`/`--ask` to retain workspace
+the location; it is not a prerequisite for `--safe` to retain workspace
 changes. File review does not undo remote side effects that already happened.
 
 ### Filesystem parameters {#文件系统参数}
@@ -317,7 +297,7 @@ point and contains the files already present in that directory. An explicit
 working directory or OverlayFS base takes precedence.
 
 An ordinary host Job writes workspace changes through to the lower by default.
-`--safe` and `--ask` retain workspace changes in Job storage by default, to be
+`--safe` retains workspace changes in Job storage by default, to be
 handled later with `status --review`, `apply` or `drop`. `--stage PATH` only
 chooses the storage location and is not a prerequisite for retaining
 changes.
@@ -326,60 +306,26 @@ changes.
 pvisor spawn --stage ../run-stage -- codex
 pvisor spawn --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
 pvisor spawn --access '**/.ssh:deny' -- zcode
-pvisor spawn --access '.env:ask' -- codex
+pvisor spawn --access '.env:deny' -- codex
 ```
 
 `--mount SOURCE:read` grants a host executor read-only access at the original
-absolute path and requires `--safe` or `--ask`; `SOURCE:write` modifies host
+absolute path and requires `--safe`; `SOURCE:write` modifies host
 storage directly. Neither rewrites TARGET, and neither may overlap the
 workspace, Job storage or writable runtime paths; a read-only share cannot live
-under Linux's private `/tmp`. Explicit shares bypass the workspace OverlayFS ask
-rules.
+under Linux's private `/tmp`. Do not share directories containing secrets.
 `--mount SOURCE[:TARGET]:stage` instead adds SOURCE as a lower layer of the
 workspace copy-on-write view; it is not an independent directory mount.
-`--access PATH-GLOB:deny|ask|warn` accumulates configuration, preset and CLI
-rules by default: deny refuses, ask prompts, and warn allows with a warning.
+`--access PATH-GLOB:deny|warn` accumulates configuration, preset and CLI
+rules by default: deny refuses, and warn allows with a warning.
 Clearing configuration and default file protection requires an explicit
-`--clear-access` before adding CLI rules. deny > ask > warn.
+`--clear-access` before adding CLI rules. deny > warn.
 The former `:read` warning spelling is rejected; use `:warn`, or
 `--mount PATH:read` for true read-only access.
 
-Use `pvisor --ask -- bash` to ask before matching an `ask` file rule or reaching
-an unlisted proxy network destination; `--ask` also enables `--tui` and
-`--safe`. Specifying `--access ...:ask` automatically enables the audit TUI and
-the safe staging view, with no separate `--ask` or `--tui`.
-
-The prompt uses Tab or the up/down arrows to switch scope, retention and
-buttons, left/right to choose, and Enter to confirm on a button; the deny button
-is selected by default. Press `s`, `w` or `u` to pick the session, workspace or
-user scope. Press `1` to allow only this file, `2` to allow the containing
-directory, or `3` to allow the same suffix; press `d` to deny this target. For
-an unlisted proxy network destination, the `--ask` prompt can press `1` to allow
-only this target or `2` to allow the current domain and its subdomains; both
-choices are limited to the current port and transport, and an IP address cannot
-use domain scope. An explicit `deny` rule still refuses directly without opening
-the prompt.
-
-Session decisions are written to `audit-policy.json` in the current Job
-directory, and workspace and user decisions to the `permissions` section of
-`~/.config/pvisor/config.toml` (or the `pvisor/config.toml` under an absolute
-`XDG_CONFIG_HOME`). A decision is applied automatically when the same scope
-matches again, and every decision is recorded in `audit.jsonl`. The workspace is
-identified by its canonical working directory; a new TUI Job loads the rules
-with session > workspace > user precedence, and within a layer the last matching
-rule wins. Persisted file rules use original absolute paths, so a user-level
-suffix rule can cover other workspaces; saving preserves other configuration
-settings and comments. Saved decisions are used only for ask-matched access and
-cannot override a static deny or an outer sandbox.
-
-In the Permissions panel, select a decision with `j`/`k` and press `x` twice to
-remove it; the access then falls back to a broader rule or a new prompt. Removal
-does not close already-open file handles, and other running TUIs pick up the
-change on their next launch. These records are retained after the Job by
-default; `--stage PATH` chooses the location.
-
-Proxy network auditing is a cooperative boundary: direct connections that bypass
-the proxy do not trigger this prompt.
+Configure static file and network boundaries before launch. Review staged files after execution
+with `review`, accept selected paths with `apply`, and discard the rest with `drop`.
+Proxy networking is a cooperative boundary: direct connections can bypass it.
 
 ```text
 Commands:
@@ -410,7 +356,6 @@ Agent Commands:
 Tools:
   cache       Build, publish and query caches
   replay      Replay an Agent trajectory (when installed)
-  tui         Interactive Job terminal (when installed)
   feature     List runtime experiments
   help        Show command details
 ```
@@ -765,11 +710,11 @@ pvisor spawn --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/
 
 `--mount SOURCE:read|write` is a host executor's explicit share, granting
 read-only or persistent write access respectively; a read-only share requires
-`--safe` or `--ask`. `--mount SOURCE[:TARGET]:stage` composes a lower layer of
+`--safe`. `--mount SOURCE[:TARGET]:stage` composes a lower layer of
 the workspace view.
-`--access PATH-GLOB:deny|ask|warn` appends file rules and does not replace the
+`--access PATH-GLOB:deny|warn` appends file rules and does not replace the
 default protections; only `--clear-access` clears them explicitly.
-`warn` only warns and is not read-only; file approval covers inspection,
+`warn` only warns and is not read-only; file rules cover inspection,
 reading, modification and deletion within the view.
 
 Rules match relative to the mount root: `*` does not cross directories, `**` may

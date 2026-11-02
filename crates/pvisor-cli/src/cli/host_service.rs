@@ -162,7 +162,6 @@ struct ContextData {
     cwd: PathBuf,
     environment: Vec<(Vec<u8>, Vec<u8>)>,
     command: JobCommand,
-    terminal: Option<super::terminal::ServiceTerminalContext>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -446,9 +445,8 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
             );
         }
     }
-    super::terminal::restore_service_context(context.terminal);
     pvisor::diagnostics::init_inherited();
-    super::terminal::init_child_context();
+    super::terminal::init_output();
     // Do this after self-exec and before Tokio shares the descriptor table.
     // It is optional: a low RLIMIT_NOFILE must not prevent ordinary host Jobs.
     let _ = pvisor::VmExecutor::prepare_process();
@@ -672,7 +670,6 @@ fn launch(
                 .map(|(key, value)| (key.as_bytes().to_vec(), value.as_bytes().to_vec()))
                 .collect(),
             command,
-            terminal: super::terminal::service_context(),
         },
     };
     let mut owned = FrontOwner {

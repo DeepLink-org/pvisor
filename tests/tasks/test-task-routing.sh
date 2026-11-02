@@ -60,7 +60,7 @@ if [[ "$name" == python3 && "$1" == scripts/packaging/stage_wheel_binaries.py ]]
     if [[ "${args[$i]}" == --profile ]]; then profile=${args[$((i+1))]}; fi
   done
   if [[ "$profile" == dev ]]; then profile=debug; fi
-  names=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
+  names=(pvisor pvisor-replay pvisor-daemon)
   for arg in "$@"; do
     case "$arg" in
       --all) names+=(pvisor-guest containerd-shim-pvisor-v2) ;;
@@ -267,7 +267,7 @@ for profile in debug release performance; do
   cargo_profile=$profile
   if [[ "$profile" == debug ]]; then cargo_profile=dev; fi
   check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR" --all
-  for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
+  for binary in pvisor pvisor-replay pvisor-daemon; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
   if [[ "$(uname -s)" == Linux ]]; then
     for binary in pvisor-daemon pvisor-guest containerd-shim-pvisor-v2; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
   fi
@@ -294,8 +294,9 @@ test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 if [[ "$(uname -s)" == Linux ]]; then
   printf retained > "$CARGO_TARGET_DIR/release/pvisor-memory-pool"
   run install-cli
-  for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
-  test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq 4
+  installed_binaries=(pvisor pvisor-replay pvisor-daemon)
+  for binary in "${installed_binaries[@]}"; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
+  test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq "${#installed_binaries[@]}"
   test ! -e "$CARGO_INSTALL_ROOT/bin/pvisor-memory-pool"
   test "$(cat "$CARGO_TARGET_DIR/release/pvisor-memory-pool")" == retained
 fi

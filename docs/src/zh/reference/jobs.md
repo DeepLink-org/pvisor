@@ -26,7 +26,7 @@ pvisor status --review run-20260102-abc  # or the Job ID
 
 | 调用方式 | 存储 |
 | --- | --- |
-| 默认，包括 `--safe` 与 `--ask` | `~/.pvisor/runs/run-<uuid>/`；用 `PVISOR_RUN_HOME` 覆盖根目录 |
+| 默认，包括 `--safe` | `~/.pvisor/runs/run-<uuid>/`；用 `PVISOR_RUN_HOME` 覆盖根目录 |
 | 显式 `--stage PATH` | `PATH` 本身 |
 
 默认根目录落在工作区下层时，pVisor 改用系统临时 Run 根，避免可写暂存出现在自己的下层里。目录结构见[项目发现](../reference/cli.md#run-项目发现)。

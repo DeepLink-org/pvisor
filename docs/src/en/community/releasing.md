@@ -5,7 +5,7 @@ The current stable-release workflow builds native components from version tags i
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - The Python `pvisor` version marker, not a launcher;
-- Three native scripts `pvisor`, `pvisor-tui` and `pvisor-replay`, installed directly into the environment's bin directory;
+- Two native scripts `pvisor` and `pvisor-replay`, installed directly into the environment's bin directory;
 - Independently built `pvisor-daemon` in Linux x86_64 and macOS ARM64 wheels;
 - A `libkrunfw.SOURCE` provenance receipt; both platforms embed the compressed guest kernel and ship no firmware shared library.
 

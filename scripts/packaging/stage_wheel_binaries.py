@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
 CLI_BINARIES = (
     "pvisor",
-    "pvisor-tui",
     "pvisor-replay",
 )
 EXPECTED_BINARIES = (*CLI_BINARIES, "pvisor-daemon")

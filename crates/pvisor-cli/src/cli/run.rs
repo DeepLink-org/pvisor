@@ -96,7 +96,7 @@ use super::trajectory::JournalRecording;
 #[cfg(feature = "gateway")]
 use pvisor::GatewayDriverConfig;
 
-// Keep pVisor diagnostics separate from the Agent PTY in TUI runs.
+// Route diagnostics through the ordinary CLI diagnostic output.
 macro_rules! run_log {
     ($($arg:tt)*) => {{
         #[cfg(unix)]
@@ -166,12 +166,6 @@ pub struct RunArgs {
     #[arg(long = "feature", value_name = "NAME", value_delimiter = ',')]
     #[serde(default)]
     pub(super) features: Vec<pvisor::features::Feature>,
-    /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
-    #[arg(long)]
-    tui: bool,
-    /// Ask on `ask` file rules and unlisted proxy destinations; implies --tui and --safe.
-    #[arg(long = "ask")]
-    audit: bool,
     /// Prepared JSON RunSpec for delegated execution; requires --result-file and the host executor.
     #[arg(long, value_name = "FILE")]
     spec: Option<PathBuf>,
@@ -287,60 +281,6 @@ impl RunArgs {
             command,
             ..Default::default()
         })
-    }
-
-    fn cli_asks(&self) -> bool {
-        self.overlayfs
-            .access
-            .iter()
-            .any(|rule| rule.level == FilesystemLevel::Ask)
-    }
-
-    #[cfg(unix)]
-    pub fn tui_requested(&self) -> bool {
-        self.tui || self.audit || self.cli_asks()
-    }
-
-    #[cfg(unix)]
-    pub fn audit_requested(&self) -> anyhow::Result<bool> {
-        if self.audit || self.cli_asks() {
-            return Ok(true);
-        }
-        if self.spec.is_some() {
-            return Ok(false);
-        }
-        let mut config = load_run_config(self, personal_config_root().as_deref(), false)?;
-        config
-            .load_policy_defaults(&std::env::current_dir()?, personal_config_root().as_deref())?;
-        if config
-            .policies
-            .filesystem(&Default::default())
-            .rules()
-            .iter()
-            .any(|(_, _, action)| *action == "ask")
-        {
-            return Ok(true);
-        }
-        Ok(config.overlayfs.as_ref().is_some_and(|filesystem| {
-            !filesystem.access_policy.ask().is_empty()
-                || filesystem
-                    .access
-                    .iter()
-                    .any(|rule| rule.level == FilesystemAccessLevel::Ask)
-        }))
-    }
-
-    #[cfg(unix)]
-    pub fn enable_tui(&mut self) {
-        self.tui = true;
-    }
-
-    #[cfg(unix)]
-    pub fn wants_tui(&self, audit: bool) -> bool {
-        (self.tui || audit)
-            && self.result_file.is_none()
-            && self.spec.is_none()
-            && self.run.stdio != Some(RunStdio::Capture)
     }
 }
 
@@ -556,7 +496,6 @@ struct FilesystemAccessArg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum FilesystemLevel {
     Deny,
-    Ask,
     Read,
     Warn,
     Stage,
@@ -572,11 +511,15 @@ impl FromStr for FilesystemAccessArg {
             .ok_or_else(|| "access must use PATH-GLOB:LEVEL".to_string())?;
         let level = match level {
             "deny" => FilesystemLevel::Deny,
-            "ask" => FilesystemLevel::Ask,
+            "ask" => {
+                return Err(
+                    "ask file rules are no longer supported; choose deny or warn explicitly".into(),
+                );
+            }
             "warn" => FilesystemLevel::Warn,
             _ => {
                 return Err(format!(
-                    "invalid access level `{level}`; use deny, ask, or warn; read-only sharing uses --mount PATH:read"
+                    "invalid access level `{level}`; use deny or warn; read-only sharing uses --mount PATH:read"
                 ));
             }
         };
@@ -608,7 +551,7 @@ struct OverlayFsOverrides {
     /// Host path mount: SOURCE[:TARGET]:ACCESS. ACCESS is read, stage, or write.
     #[arg(long = "mount", value_name = "SOURCE[:TARGET]:ACCESS")]
     mounts: Vec<FilesystemMountArg>,
-    /// Append an overlay-relative rule: PATH-GLOB:deny|ask|warn; ask opens permission prompts.
+    /// Append an overlay-relative rule: PATH-GLOB:deny|warn.
     /// Use `--mount` when a path must be staged or writable.
     #[arg(long = "access", value_name = "PATH-GLOB:LEVEL")]
     access: Vec<FilesystemAccessArg>,
@@ -923,12 +866,8 @@ fn load_run_config(
     Ok(config)
 }
 
-pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
+pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
     pvisor::startup_mark("cli.run_begin");
-    #[cfg(unix)]
-    if pvisor_core::audit::configured() {
-        args.audit = true;
-    }
     anyhow::ensure!(
         args.spec.is_none() || args.config.is_none(),
         "--spec and --config are mutually exclusive"
@@ -948,7 +887,7 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     }
     // Host runs keep the best-effort lifecycle/evidence profile by default;
     // filesystem restrictions, staging, and network isolation remain opt-in.
-    // `--safe`/`--ask` request the Agent-aware preset on top of that.
+    // `--safe` requests the Agent-aware preset on top of that.
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = load_run_config(&args, personal_config_root().as_deref(), true)?;
     apply_run_options(&mut config, args.clone())?;
@@ -1048,8 +987,8 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .validate(RunExecutorKind::Host)?;
     }
     anyhow::ensure!(
-        !args.run.safe && !args.audit,
-        "--safe/--ask cannot modify a prepared JSON RunSpec"
+        !args.run.safe,
+        "--safe cannot modify a prepared JSON RunSpec"
     );
     anyhow::ensure!(
         args.command.is_empty(),
@@ -1074,6 +1013,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .with_context(|| format!("read delegated RunSpec from {}", spec_path.display()))?,
     )
     .context("decode delegated RunSpec")?;
+    reject_ask_policies(&spec.policies, &Default::default())?;
     let mut stage_guard = None;
     let (pvisor, config) = if let Some(stage_path) = stage_spec {
         let cleanup = args.stage.is_none();
@@ -1384,6 +1324,7 @@ async fn execute_config(
     policy_source: PolicySource,
     stage_launch: Option<StageLaunch>,
 ) -> anyhow::Result<i32> {
+    reject_ask_config(&config)?;
     let safe = safe || config.run.profile == pvisor_core::RunProfile::Safe;
     if safe {
         config.run.profile = pvisor_core::RunProfile::Safe;
@@ -1391,6 +1332,11 @@ async fn execute_config(
     config.features.validate(config.run.executor)?;
     normalize_filesystem_config(&mut config)?;
     validate_prepared_workspace_request(&config)?;
+    // Resolve the same workspace used by the eventual executor before reading
+    // policy defaults. Overlay bases can select a workspace different from cwd.
+    let workspace = resolve_execution_workspace(&config, stage_launch.is_some())?;
+    policy_source.load_defaults(&mut config, &workspace, personal_config_root().as_deref())?;
+    reject_ask_config(&config)?;
     if config.run.executor == RunExecutorKind::Vm {
         config.vm.memory_pool = config
             .vm
@@ -1512,13 +1458,6 @@ async fn execute_config(
         );
     }
 
-    let workspace = config
-        .run
-        .workspace
-        .as_deref()
-        .map(Path::to_path_buf)
-        .unwrap_or(std::env::current_dir()?);
-    let workspace = resolve_workspace(&workspace)?;
     if config.run.executor == RunExecutorKind::Container {
         let mut sources = vec![workspace.clone()];
         sources.extend(
@@ -1536,7 +1475,6 @@ async fn execute_config(
         super::host_service::reject_guest_exposure(sources)?;
     }
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
-    policy_source.load_defaults(&mut config, &workspace, personal_config_root().as_deref())?;
     if config
         .policies
         .scopes()
@@ -1557,13 +1495,6 @@ async fn execute_config(
         config.overlaynet.mode = OverlayNetMode::Proxy;
     }
     let mut overlay = resolve_overlay(&config, &workspace, &storage)?;
-    #[cfg(unix)]
-    super::terminal::announce_stage(
-        overlay
-            .as_ref()
-            .and_then(|hint| hint.stage_dir.as_deref())
-            .unwrap_or(&storage),
-    );
     if config.run.executor == RunExecutorKind::Vm
         && config.vm.rootfs_immutable
         && config
@@ -1629,7 +1560,7 @@ async fn execute_config(
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host => {
-            // The --safe/--ask preset demands its boundary; the independent
+            // The --safe preset demands its boundary; the independent
             // --filesystem/--overlaynet policies stay best-effort and fall
             // back to the host process with a warning.
             if rootless_available {
@@ -2170,13 +2101,9 @@ fn normalize_filesystem_config(config: &mut RunConfig) -> anyhow::Result<()> {
                 )?;
             }
             FilesystemAccessLevel::Ask => {
-                let mut ask = filesystem.access_policy.ask().to_vec();
-                ask.push(normalize_policy_glob(&rule.path));
-                filesystem.access_policy = pvisor_core::FileAccessPolicy::new_with_ask(
-                    filesystem.access_policy.deny().to_vec(),
-                    ask,
-                    filesystem.access_policy.warn().to_vec(),
-                )?;
+                anyhow::bail!(
+                    "ask file policies are no longer supported by the CLI; choose deny or warn explicitly"
+                );
             }
             FilesystemAccessLevel::Warn => {
                 let mut warn = filesystem.access_policy.warn().to_vec();
@@ -2271,13 +2198,14 @@ fn free_loopback_address() -> anyhow::Result<String> {
 
 /// Resolve ordinary defaults/config, then the opt-in preset, then explicit CLI values.
 fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
-    if args.run.safe || args.audit || config.run.profile == pvisor_core::RunProfile::Safe {
+    reject_ask_config(config)?;
+    if args.run.safe || config.run.profile == pvisor_core::RunProfile::Safe {
         config.run.profile = pvisor_core::RunProfile::Safe;
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
         use clap::Parser;
-        let patch = safe::patch(&requested, args.audit);
+        let patch = safe::patch(&requested);
         let super::Command::Spawn(patch) = super::Cli::try_parse_from(
             ["pvisor".to_owned(), "spawn".to_owned()]
                 .into_iter()
@@ -2294,8 +2222,45 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         config.filesystem = FilesystemMode::Sandbox;
     }
     apply_cli(config, args.clone())?;
+    reject_ask_config(config)?;
     apply_safe_defaults(config)?;
     Ok(())
+}
+
+fn reject_ask_policies(
+    policies: &pvisor_core::SessionPolicies,
+    fallback: &pvisor_core::FileAccessPolicy,
+) -> anyhow::Result<()> {
+    reject_ask_file_policy(fallback)?;
+    for (_, layer) in policies.scopes() {
+        if let Some(policy) = &layer.filesystem {
+            reject_ask_file_policy(policy)?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_ask_file_policy(policy: &pvisor_core::FileAccessPolicy) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !policy.rules().iter().any(|(_, _, action)| *action == "ask"),
+        "ask file policies are no longer supported by the CLI; choose deny or warn explicitly"
+    );
+    Ok(())
+}
+
+fn reject_ask_config(config: &RunConfig) -> anyhow::Result<()> {
+    if let Some(overlay) = &config.overlayfs {
+        anyhow::ensure!(
+            !overlay
+                .access
+                .iter()
+                .any(|rule| rule.level == FilesystemAccessLevel::Ask),
+            "ask file policies are no longer supported by the CLI; choose deny or warn explicitly"
+        );
+        reject_ask_policies(&config.policies, &overlay.access_policy)
+    } else {
+        reject_ask_policies(&config.policies, &Default::default())
+    }
 }
 
 fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
@@ -2330,13 +2295,12 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
         "pVisor --safe warning: destination rules cannot distinguish inference from telemetry/upload APIs on the same host; Gateway routes are not an inference-path filter."
     );
     run_log!(
-        "pVisor --safe: OverlayFS denies private-key paths and asks or warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
+        "pVisor --safe: OverlayFS denies private-key paths and warns on sensitive paths according to the effective rules. Glob rules cover the overlay view; required sandbox restricts access outside that view. Explicit shares, renamed copies and embedded secrets need separate rules. No bulk-read or tool-call attribution monitoring."
     );
     if let Some(overlay) = &config.overlayfs {
         run_log!(
-            "pVisor --safe: file deny={:?}, ask={:?}, warn={:?}",
+            "pVisor --safe: file deny={:?}, warn={:?}",
             overlay.access_policy.deny(),
-            overlay.access_policy.ask(),
             overlay.access_policy.warn()
         );
     }
@@ -2670,7 +2634,6 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
                         path: access.path,
                         level: match access.level {
                             FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
-                            FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
                             FilesystemLevel::Read => FilesystemAccessLevel::Read,
                             FilesystemLevel::Warn => FilesystemAccessLevel::Warn,
                             FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
@@ -2690,7 +2653,6 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
                     target: Some(mount.target),
                     access: match mount.access {
                         FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
-                        FilesystemLevel::Ask => FilesystemAccessLevel::Ask,
                         FilesystemLevel::Read => FilesystemAccessLevel::Read,
                         FilesystemLevel::Warn => FilesystemAccessLevel::Warn,
                         FilesystemLevel::Stage => FilesystemAccessLevel::Stage,
@@ -3117,7 +3079,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
             .filesystem
             .iter()
             .any(|grant| grant.access == FilesystemAccess::Read),
-        "read-only shares require --safe or --ask"
+        "read-only shares require --safe"
     );
     if let Some(filesystem) = &config.overlayfs {
         anyhow::ensure!(
@@ -3295,15 +3257,22 @@ fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
         .as_deref()
         .context("VM execution requires vm.rootfs or --rootfs <PATH>")?;
     let rootfs = resolve_directory(rootfs, "libkrun rootfs")?;
+    let workspace = resolve_execution_workspace(config, false)?;
+    Ok((rootfs, workspace))
+}
+
+fn resolve_execution_workspace(config: &RunConfig, stage_launch: bool) -> anyhow::Result<PathBuf> {
+    if stage_launch {
+        return resolve_workspace(&std::env::current_dir()?);
+    }
     let workspace = config
         .overlayfs
         .as_ref()
-        .filter(|overlay| overlay.target.is_some())
+        .filter(|overlay| config.run.executor != RunExecutorKind::Vm || overlay.target.is_some())
         .and_then(|overlay| overlay.base.clone())
         .or_else(|| config.run.workspace.clone())
         .unwrap_or(std::env::current_dir()?);
-    let workspace = resolve_workspace(&workspace)?;
-    Ok((rootfs, workspace))
+    resolve_workspace(&workspace)
 }
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
@@ -3559,7 +3528,7 @@ mod tests {
             Spawn(Box<RunArgs>),
         }
         let parsed = Companion::try_parse_from([
-            "pvisor-tui",
+            "companion",
             "spawn",
             "--feature",
             "workload-aware-memory-offloading,workload-aware-memory-offloading",
@@ -3581,14 +3550,12 @@ mod tests {
     ))]
     #[test]
     fn safe_patch_does_not_validate_features_before_explicit_vm_override() {
-        for option in ["--safe", "--ask"] {
-            let mut config = RunConfig::default();
-            config.features.workload_aware_memory_offloading = true;
-            let args = preset_args(&[option, "--executor", "vm", "--", "true"]);
-            apply_run_options(&mut config, args).unwrap();
-            assert!(config.features.workload_aware_memory_offloading);
-            assert_eq!(config.run.executor, RunExecutorKind::Vm);
-        }
+        let mut config = RunConfig::default();
+        config.features.workload_aware_memory_offloading = true;
+        let args = preset_args(&["--safe", "--executor", "vm", "--", "true"]);
+        apply_run_options(&mut config, args).unwrap();
+        assert!(config.features.workload_aware_memory_offloading);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
     }
 
     #[test]
@@ -4238,36 +4205,37 @@ mod tests {
     }
 
     #[test]
-    fn safe_and_ask_runs_use_persistent_job_storage() {
+    fn safe_runs_use_persistent_job_storage() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         let storage = temporary.path().join("job");
         std::fs::create_dir(&workspace).unwrap();
-        for flag in ["--safe", "--ask"] {
-            let mut config = RunConfig::default();
-            apply_run_options(&mut config, preset_args(&[flag, "--", "bash"])).unwrap();
-            normalize_filesystem_config(&mut config).unwrap();
-            let overlay = resolve_overlay(&config, &workspace, &storage)
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, preset_args(&["--safe", "--", "bash"])).unwrap();
+        normalize_filesystem_config(&mut config).unwrap();
+        let overlay = resolve_overlay(&config, &workspace, &storage)
+            .unwrap()
+            .unwrap();
+        assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
+        assert!(!overlay.auto_discard);
+        assert!(
+            config
+                .overlayfs
                 .unwrap()
-                .unwrap();
-            assert_eq!(overlay.stage_dir, Some(storage.canonicalize().unwrap()));
-            assert!(!overlay.auto_discard);
-            assert!(
-                config
-                    .overlayfs
-                    .unwrap()
-                    .access_policy
-                    .denied(Path::new(".ssh/key"))
-            );
-        }
+                .access_policy
+                .denied(Path::new(".ssh/key"))
+        );
     }
 
     #[test]
-    fn ask_enables_permission_prompts_not_an_agent_command() {
-        let args = preset_args(&["--tui", "--ask", "--", "bash"]);
-        assert!(args.audit_requested().unwrap());
-        assert!(args.audit);
-        assert_eq!(args.command, ["bash"]);
+    fn removed_interactive_flags_are_rejected() {
+        for flag in ["--tui", "--ask"] {
+            assert!(Cli::try_parse_from(["pvisor", "spawn", flag, "--", "bash"]).is_err());
+        }
+        assert!(Cli::try_parse_from(["pvisor", "resume", "last", "--tui"]).is_err());
+        assert!(
+            Cli::try_parse_from(["pvisor", "spawn", "--access", ".env:ask", "--", "bash"]).is_err()
+        );
     }
 
     #[test]
@@ -4276,10 +4244,10 @@ mod tests {
         apply_run_options(
             &mut config,
             preset_args(&[
-                "--ask",
+                "--safe",
                 "--clear-access",
                 "--access",
-                "custom:ask",
+                "custom:warn",
                 "--",
                 "bash",
             ]),
@@ -4287,7 +4255,7 @@ mod tests {
         .unwrap();
         normalize_filesystem_config(&mut config).unwrap();
         let policy = &config.overlayfs.unwrap().access_policy;
-        assert_eq!(policy.ask(), ["custom"]);
+        assert_eq!(policy.warn(), ["custom"]);
         assert!(policy.deny().is_empty());
         assert!("secret:read".parse::<FilesystemAccessArg>().is_err());
         assert!("secret:warn".parse::<FilesystemAccessArg>().is_ok());
@@ -4310,32 +4278,118 @@ mod tests {
     }
 
     #[test]
-    fn ask_rules_select_audit_without_an_extra_flag_and_keep_configured_rules() {
-        let args = preset_args(&["--access", ".env:ask", "--", "bash"]);
-        assert!(args.audit_requested().unwrap());
-        assert!(args.tui_requested());
-
-        let directory = tempfile::tempdir().unwrap();
-        let spec = directory.path().join("run.toml");
-        std::fs::write(
-            &spec,
+    fn configured_ask_rules_are_rejected_even_when_cli_clears_them() {
+        for source in [
             "[[overlayfs.access]]\npath = 'secrets/*.pem'\nlevel = 'ask'\n",
+            "[policies.user.filesystem]\nask = ['secrets/*.pem']\n",
+            "[policies.workspace.filesystem]\nask = ['secrets/*.pem']\n",
+            "[policies.session.filesystem]\nask = ['secrets/*.pem']\n",
+        ] {
+            let mut config: RunConfig = toml::from_str(source).unwrap();
+            let error = apply_run_options(
+                &mut config,
+                preset_args(&["--safe", "--clear-access", "--", "bash"]),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("ask file policies are no longer supported")
+            );
+        }
+        // Embedded/recorded settings carry the compiled policy rather than TOML access rules.
+        let mut config = RunConfig {
+            overlayfs: Some(OverlayFsSettings {
+                access_policy: pvisor_core::FileAccessPolicy::new_with_ask(
+                    vec![],
+                    vec!["secret".into()],
+                    vec![],
+                )
+                .unwrap(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            reject_ask_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("ask file policies")
+        );
+        let layered = pvisor_core::FileAccessPolicy::layered(
+            [(
+                pvisor_core::PolicyScope::User,
+                &config.overlayfs.as_ref().unwrap().access_policy,
+            )],
+            &Default::default(),
+        );
+        assert!(layered.ask().is_empty());
+        config.overlayfs.as_mut().unwrap().access_policy =
+            serde_json::from_value(serde_json::to_value(layered).unwrap()).unwrap();
+        // Session composition must not erase asks nested in the raw fallback.
+        assert!(
+            reject_ask_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("ask file policies")
+        );
+    }
+
+    #[tokio::test]
+    async fn host_overlay_base_selects_policy_workspace_before_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("actual-workspace");
+        let decoy = root.path().join("configured-workspace");
+        std::fs::create_dir_all(workspace.join(".pvisor")).unwrap();
+        std::fs::create_dir_all(decoy.join(".pvisor")).unwrap();
+        std::fs::write(
+            decoy.join(".pvisor/policy.toml"),
+            "[filesystem]\ndeny = ['wrong-workspace']\n",
         )
         .unwrap();
-        let args = preset_args(&["--config", spec.to_str().unwrap(), "--", "bash"]);
-        assert!(args.audit_requested().unwrap());
-        let mut config = load_run_config(&args, None, false).unwrap();
-        let mut effective = args;
-        effective.audit = true;
-        apply_run_options(&mut config, effective).unwrap();
-        normalize_filesystem_config(&mut config).unwrap();
-        assert!(
-            config
-                .overlayfs
-                .unwrap()
-                .access_policy
-                .ask()
-                .contains(&"secrets/*.pem".into())
+        let policy = workspace.join(".pvisor/policy.toml");
+        std::fs::write(&policy, "[filesystem]\nask = ['secret']\n").unwrap();
+        let mut config = RunConfig::default();
+        config.run.workspace = Some(decoy);
+        config.run.command = vec!["/bin/sh".into(), "-c".into(), "touch launched".into()];
+        config.overlayfs = Some(OverlayFsSettings {
+            base: Some(workspace.clone()),
+            ..Default::default()
+        });
+        let error = execute_config(
+            config.clone(),
+            "workspace-policy-rejection".into(),
+            false,
+            None,
+            PolicySource::CurrentDefaults,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("ask file policies"));
+        assert!(!workspace.join("launched").exists());
+
+        std::fs::write(&policy, "[filesystem]\ndeny = ['secret']\n").unwrap();
+        let selected = resolve_execution_workspace(&config, false).unwrap();
+        assert_eq!(selected, workspace.canonicalize().unwrap());
+        PolicySource::CurrentDefaults
+            .load_defaults(&mut config, &selected, None)
+            .unwrap();
+        reject_ask_config(&config).unwrap();
+        let effective = config.policies.filesystem(&Default::default());
+        assert!(effective.denied(Path::new("secret")));
+        assert!(!effective.denied(Path::new("wrong-workspace")));
+
+        // VM overlay bases select the workspace only when they have a guest target.
+        config.run.executor = RunExecutorKind::Vm;
+        assert_ne!(
+            resolve_execution_workspace(&config, false).unwrap(),
+            selected
+        );
+        config.overlayfs.as_mut().unwrap().target = Some(PathBuf::from("/workspace"));
+        assert_eq!(
+            resolve_execution_workspace(&config, false).unwrap(),
+            selected
         );
     }
 
@@ -4582,19 +4636,6 @@ level = "warn"
         )
         .unwrap();
         assert!(normalize_filesystem_config(&mut config).is_err());
-
-        let mut config = RunConfig::default();
-        apply_run_options(
-            &mut config,
-            preset_args(&["--ask", "--access", "secrets/*.pem:ask", "--", "codex"]),
-        )
-        .unwrap();
-        normalize_filesystem_config(&mut config).unwrap();
-        let policy = &config.overlayfs.as_ref().unwrap().access_policy;
-        assert!(policy.ask().contains(&"secrets/*.pem".into()));
-        assert!(policy.ask().contains(&"**/.env".into()));
-        assert!(policy.denied(Path::new(".ssh/key")));
-        assert!(policy.warn().is_empty());
     }
 
     #[test]

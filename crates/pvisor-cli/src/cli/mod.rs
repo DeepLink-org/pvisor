@@ -119,7 +119,7 @@ fn grouped_commands(command: &clap::Command) -> String {
             "Commands",
             &[
                 "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
-                "logs", "network",
+                "logs", "network", "builder",
             ],
         ),
         (
@@ -142,9 +142,7 @@ fn grouped_commands(command: &clap::Command) -> String {
         ),
         (
             "Tools",
-            &[
-                "daemon", "cache", "replay", "tui", "feature", "vm-run", "help",
-            ],
+            &["daemon", "cache", "replay", "feature", "vm-run", "help"],
         ),
     ];
     let width = command
@@ -230,7 +228,7 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     pvisor::diagnostics::init_inherited();
-    terminal::init_child_context();
+    terminal::init_output();
     match pvisor::sandbox::run_internal_if_requested() {
         Ok(true) => return Ok(()),
         Ok(false) => {}
@@ -413,20 +411,6 @@ pub fn main() -> anyhow::Result<()> {
         }
         Command::Cache(args) => cache::run(args)?,
         Command::Spawn(run) => {
-            if !terminal::is_child() {
-                let audit = run.audit_requested()?;
-                if run.tui_requested() || audit {
-                    anyhow::ensure!(
-                        run.wants_tui(audit),
-                        "--tui/--ask requires inherited stdio and a normal Job"
-                    );
-                    anyhow::ensure!(
-                        terminal::available(),
-                        "--tui/--ask requires an interactive terminal"
-                    );
-                    return companions::dispatch("tui", &args[1..]);
-                }
-            }
             finish(host_service::call(host::JobCommand::Run(run))?);
         }
         Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
@@ -441,13 +425,6 @@ pub fn main() -> anyhow::Result<()> {
         Command::Suspend(args) => finish(host_service::call(host::JobCommand::Suspend(args.args))?),
         Command::Resume(resume) => {
             let resume = resume.args;
-            if resume.tui && !terminal::is_child() {
-                anyhow::ensure!(
-                    terminal::available(),
-                    "--tui requires an interactive terminal"
-                );
-                return companions::dispatch("tui", &args[1..]);
-            }
             finish(host_service::call(host::JobCommand::Resume(resume))?);
         }
         Command::Kill(args) => finish(host_service::call(host::JobCommand::Kill(args))?),

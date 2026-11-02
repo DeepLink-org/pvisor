@@ -95,7 +95,7 @@ echo "Installing ${url}" >&2
 "$PYTHON" -c "import pvisor; print('pVisor', pvisor.__version__)"
 
 scripts_dir="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
-binaries=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
+binaries=(pvisor pvisor-replay pvisor-daemon)
 for binary in "${binaries[@]}"; do
   if [ ! -x "$scripts_dir/$binary" ]; then
     echo "error: wheel did not install executable $scripts_dir/$binary" >&2

@@ -210,7 +210,7 @@ impl NetworkPolicy {
         })
     }
 
-    /// A TUI decision grants only this logical host, transport, and port.
+    /// An approval decision grants only this logical host, transport, and port.
     /// Explicit denies, resolved-address safety, and bandwidth limits remain.
     pub fn one_time_grant(&self, request: &NetworkAccessRequest) -> anyhow::Result<Self> {
         anyhow::ensure!(

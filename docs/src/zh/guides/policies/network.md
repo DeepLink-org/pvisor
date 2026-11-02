@@ -200,8 +200,8 @@ deny = ["generated/private/**"]
 所有已声明的网络层与基础网络策略均须放行。省略 `default_action` 默认拒绝
 未匹配目标；需要 deny-only 或带宽限制策略时应显式写 `default_action = "allow"`。
 任一层显式 deny、端口／协议限制或解析地址安全检查失败都会拒绝请求，各层
-匹配的带宽限制全部叠加。交互审批不能覆盖显式 deny 或基础 deny-all。
-文件策略跨层按 deny、ask、warn、allow 取最严格决策；allow 不能覆盖其他层限制。
+匹配的带宽限制全部叠加。
+文件策略跨层按 deny、warn、allow 取最严格决策；allow 不能覆盖其他层限制。
 文件 glob 相对于暂存工作区视图。策略在 Attempt 内固定，修改文件只影响后续 Session。
 
 网络层策略会为 host/container 的 `auto` 启用显式 proxy，该边界仍是协作式。

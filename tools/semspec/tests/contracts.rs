@@ -267,7 +267,7 @@ fn migration_preserves_existing_claims_scripts_and_xfail() {
             actual.insert(case.id, seal::digest(&[fields.join("\0").as_bytes()]));
         }
     }
-    assert_eq!(actual.len(), 74);
+    assert_eq!(actual.len(), 72);
     assert_eq!(actual, expected);
 }
 

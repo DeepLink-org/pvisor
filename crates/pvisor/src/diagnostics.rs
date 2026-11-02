@@ -1,5 +1,5 @@
 //! Host diagnostics shared by runtime services and the CLI.
-//! The frontend selects the destination; services do not depend on the TUI.
+//! The frontend selects the destination independently of runtime services.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

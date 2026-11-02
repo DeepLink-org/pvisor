@@ -132,7 +132,7 @@ Open fetches controls, root.bin and the root-directory frame without parsing the
 
 Writable mode reuses mutable-tag HEADs for five minutes; publishers update with --refresh. Read-only mode always uses published HEADs without registry queries. Tasks pin returned image_handles, and older revisions remain readable while retained. IMAGE@sha256:… is an independent reference whose meta must be published separately; a tag's returned image_handle already pins that version.
 
-Actual S3 traffic includes control objects, metadata pages, and complete data chunks. TUI Transferred only measures logical file bytes returned by the cache API, not billed traffic. Automatic GC/quotas are not implemented. Disable relevant jobs/publications and confirm readers exited before deleting meta/data; never delete shared objects based solely on age.
+Actual S3 traffic includes control objects, metadata pages, and complete data chunks. Logical file bytes returned by the cache API are not billed traffic. Automatic GC/quotas are not implemented. Disable relevant jobs/publications and confirm readers exited before deleting meta/data; never delete shared objects based solely on age.
 
 ## Code layout
 
@@ -225,16 +225,6 @@ pvisor cache prepare alpine:latest
 ```
 
 TCP requires a nonempty token and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
-
-## TUI transfer statistics
-
-With `--tui`, lazy-image Runs display file counts/sizes for `Cached` (local cache reads), `Transferred` (received from local or remote image servers) and `Total` (complete image). Narrow bars abbreviate these to `C / X / T`; Overview shows all three with exact bytes. Log records validated block transfers, paths, bytes and cumulative Run totals.
-
-Status/Overview also show local cache reads: distinct file paths and cumulative bytes served from validated memory/disk caches, including repeated reads. Only requested slices count, not internally read full 1 MiB blocks. These are separate from downloads and exclude host/guest kernel page-cache hits. The first local cache hit per file appears as `no download`. Directory listings fetch metadata without counting as content reads. Startup/I/O diagnostics go to Log rather than guest terminal, or stderr without TUI.
-
-Downloads count validated content received from the cache server during this Run, excluding local hits, protocol metadata and guest networking. Partially downloaded files count once; repeated transfers add bytes again. A warm Run can therefore show zero downloads while using the image.
-
-Totals count regular file paths and uncompressed logical sizes in the server's extracted image, including empty files and each hard-link name, excluding directories/symlinks. A metadata-only scan caches totals by manifest digest. Totals describe the full image rather than compressed OCI layers. Missing totals display `?`.
 
 ## Wire format
 

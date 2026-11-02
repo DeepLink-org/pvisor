@@ -25,10 +25,9 @@ pvisor spawn --safe \
 | Level | Effect |
 | --- | --- |
 | `deny` | The path is hidden from directory listings; access, creation, and modification are all denied |
-| `ask` | Prompts on access (automatically enables the audit TUI and the `--safe` staging view) |
 | `warn` | Allows access and prints the path to the supervisor's stderr (without contents); **not read-only** |
 
-When multiple rules match, the strictest wins: deny > ask > warn. `--access` appends after the config file and preset and does not replace default protection; clearing default protection requires an explicit `--clear-access`.
+When multiple rules match, the strictest wins: deny > warn. `--access` appends after the config file and preset and does not replace default protection; clearing default protection requires an explicit `--clear-access`.
 
 ## Matching rules
 
@@ -45,11 +44,13 @@ To let the agent read a directory outside the workspace, use an explicit share r
 pvisor spawn --safe --mount /opt/tool:read -- agent-command
 ```
 
-`--mount SOURCE:read` grants read-only access to the original absolute path and requires a host executor plus `--safe` or `--ask`; `SOURCE:write` writes host paths directly, bypassing staging and apply. Explicit shares do not pass through the workspace's ask rules, so do not share directories that contain secrets.
+`--mount SOURCE:read` grants read-only access to the original absolute path and requires a host executor plus `--safe`; `SOURCE:write` writes host paths directly, bypassing staging and apply. Do not share directories that contain secrets.
 
-## Approval prompts
+## Static boundaries and staged review
 
-When an `ask` rule matches, the prompt lets you choose the grant scope: this file only, its sibling directory, or the same suffix; deny is selected by default. Choices are written to `audit-policy.json` in the current Job directory and applied automatically the next time the same scope matches, and each decision is recorded in `audit.jsonl`. Saved decisions apply to ask only and cannot override static deny or an outer sandbox.
+Set static
+boundaries before launch; use `--safe` or `--stage PATH` to retain workspace
+changes, then `review`, `apply`, and `drop` to decide which files to keep.
 
 ## Layered policies
 

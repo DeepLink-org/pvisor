@@ -608,7 +608,7 @@ fn main() -> anyhow::Result<()> {
         args: ReplayArgs,
     }
     use clap::Parser;
-    pvisor_cli::cli::terminal::init_child_context();
+    pvisor_cli::cli::terminal::init_output();
     let code = run(ReplayCli::parse().args);
     if code != 0 {
         std::process::exit(code);

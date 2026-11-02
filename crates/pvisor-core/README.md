@@ -17,7 +17,10 @@ Core definitions for pVisor operations and external interactions. pVisor owns sc
 
 The only production operation is `run.execute`. There is no text language or generic rewrite interpreter. Rewritten records actual before/after snapshots; Placement is separate. Events preserve observed causality, not deterministic replay of arbitrary external effects.
 
-Executors, AgentCtl clients/servers, approval socket I/O and lifecycle ownership reside in `pvisor`; mount/network implementations reside in their drivers. Core does not start processes or open control sockets. Policy evaluation does not itself prove enforcement.
+Executors, AgentCtl clients/servers and lifecycle ownership reside in `pvisor`;
+mount/network implementations reside in their drivers. Embedding callers supply
+Core's injected approval channels. Core does not start processes or open
+control sockets. Policy evaluation does not itself prove enforcement.
 
 Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
 
@@ -39,9 +42,7 @@ ownership and snapshot implementation belong to `pvisor`. The separate
 
 Cgroup observation directories use Linux path syntax even when validated on a
 Windows host. Snapshot stores and live RAM backing files instead use the local
-host's absolute-path rules. Attempt-bound file-policy preparation is portable;
-after arming (or deserialization), Ask rules still fail closed without an
-available approval transport.
+host's absolute-path rules. Attempt-bound file-policy preparation is portable.
 
 ```sh
 mise run test -- core

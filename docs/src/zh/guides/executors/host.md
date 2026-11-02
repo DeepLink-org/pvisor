@@ -10,7 +10,7 @@ pvisor spawn --executor host --stage ../stage-host -- /bin/sh
 
 | 需要 | 参数 | 效果 |
 | --- | --- | --- |
-| 可审查的写时复制工作区 | `--stage PATH`，或 `--safe`/`--ask` | 工作区改动进入 stage，apply 前不影响项目 |
+| 可审查的写时复制工作区 | `--stage PATH`，或 `--safe` | 工作区改动进入 stage，apply 前不影响项目 |
 | 限制路径访问 | `--filesystem sandbox` | 启用平台的文件系统访问控制（见下） |
 | 拒绝所有普通网络出口 | `--overlaynet-deny-all` | 安装平台的网络边界（见下） |
 

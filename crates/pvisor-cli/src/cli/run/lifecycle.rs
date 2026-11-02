@@ -114,6 +114,20 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     crate::cli::host_service::check_record(&source)?;
     // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
     let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
+    super::reject_ask_config(&config)?;
+    let selected_checkpoint = match args.checkpoint.as_deref() {
+        Some(id) => {
+            let checkpoint = pvisor::checkpoint::resolve_checkpoint(&source, id)?;
+            super::reject_ask_file_policy(&checkpoint.access_policy)?;
+            Some(checkpoint)
+        }
+        None => {
+            if let Some(overlay) = &source.overlay {
+                super::reject_ask_file_policy(&overlay.access_policy)?;
+            }
+            None
+        }
+    };
     // Inherited policy omits attempt-local endpoints. Allocate before any stage
     // mutation; normal launch validation must still reject user-supplied port 0.
     if config.overlaynet.mode == pvisor::OverlayNetMode::Proxy {
@@ -124,8 +138,8 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("workspace fork lacks parent executor boundary evidence"))?
         .isolation;
-    let checkpoint = match args.checkpoint.as_deref() {
-        Some(id) => pvisor::checkpoint::resolve_checkpoint(&source, id)?,
+    let checkpoint = match selected_checkpoint {
+        Some(checkpoint) => checkpoint,
         None => pvisor::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
     };
     anyhow::ensure!(
@@ -238,6 +252,7 @@ pub(in crate::cli) async fn resume_execution(
     eager_ram: bool,
 ) -> anyhow::Result<i32> {
     use pvisor::job_service::{JobSelection, ResumeRequest, ResumeResponse, RuntimeJobService};
+    reject_ask_restore_source(&source)?;
     let response = RuntimeJobService::resume(
         &crate::cli::host::service_context(),
         ResumeRequest {
@@ -264,6 +279,7 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
     use pvisor::job_service::{
         ExecutionForkRequest, ExecutionForkResponse, JobSelection, RuntimeJobService,
     };
+    reject_ask_restore_source(&source)?;
     let response = RuntimeJobService::fork_execution(
         &crate::cli::host::service_context(),
         ExecutionForkRequest {
@@ -294,11 +310,29 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
     }
 }
 
+fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
+    let job = crate::cli::host::lock_selected_job(source)?;
+    let (current, _lease) = source.lock_current()?;
+    crate::cli::host::check_selected_record(source, &current)?;
+    crate::cli::host_service::check_record(&current)?;
+    if let Some(overlay) = &current.overlay {
+        super::reject_ask_file_policy(&overlay.access_policy)?;
+    }
+    if let Some((job, _)) = &job {
+        super::reject_ask_config(&job.config)?;
+        super::reject_ask_policies(&job.spec.policies, &Default::default())?;
+    }
+    Ok(())
+}
+
 async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyhow::Result<i32> {
+    super::reject_ask_config(&attempt.config)?;
+    super::reject_ask_policies(&attempt.spec.policies, &attempt.overlay.access_policy)?;
     let stage = attempt.stage.clone();
     let mut recording = None;
     let managed = attempt
         .start_with(|config, stage, executor, overlay| {
+            super::reject_ask_config(config)?;
             let event_sink: Arc<dyn pvisor::EventSink> = if config.gateway.mode
                 == GatewayMode::Capture
                 || config.record.destination.is_some()
@@ -352,8 +386,6 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
                         .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
                 );
             }
-            #[cfg(unix)]
-            crate::cli::terminal::announce_stage(stage);
             Ok(builder.build())
         })
         .await?;
@@ -533,6 +565,70 @@ mod tests {
             serde_json::to_value(job.current().unwrap()).unwrap(),
             before_job
         );
+    }
+
+    #[tokio::test]
+    async fn execution_restore_rejects_recorded_and_spec_asks_before_service_mutation() {
+        for location in ["recorded", "spec"] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut source, mut job) = fixture(root.path());
+            job.active_attempt = source.attempt_id.clone().unwrap();
+            let ask =
+                pvisor_core::FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![])
+                    .unwrap();
+            if location == "spec" {
+                job.spec.policies.session.filesystem = Some(ask);
+            } else {
+                source.overlay = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "id":"job-fence","target":root.path(),
+                        "upper":{"upper_dir":root.path().join("upper"),"work_dir":root.path().join("work")},
+                        "merged_dir":root.path().join("merged"),"stage_dir":root.path(),
+                        "auto_apply":false,"state":"staged","access_policy":ask
+                    }))
+                    .unwrap(),
+                );
+                source.write().unwrap();
+            }
+            job.write().unwrap();
+            assert!(job.config.overlayfs.is_none());
+            let before_job = serde_json::to_value(job.current().unwrap()).unwrap();
+            let before_record = std::fs::read(root.path().join("run.json")).unwrap();
+            for _ in 0..2 {
+                let error = resume_execution(source.clone(), Some("retry".into()), false)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("ask file policies"), "{error:#}");
+                let error = fork_execution(
+                    ForkArgs {
+                        source: root.path().into(),
+                        state: crate::cli::checkpoint::Kind::Execution,
+                        checkpoint: None,
+                        stage: Some(root.path().join("child")),
+                        name: None,
+                        ram_storage: None,
+                        eager_ram: false,
+                        request_id: Some("retry".into()),
+                        output_dir: root.path().into(),
+                        command: vec![],
+                    },
+                    source.clone(),
+                )
+                .await
+                .unwrap_err();
+                assert!(error.to_string().contains("ask file policies"), "{error:#}");
+                assert_eq!(
+                    serde_json::to_value(job.current().unwrap()).unwrap(),
+                    before_job
+                );
+                assert_eq!(
+                    std::fs::read(root.path().join("run.json")).unwrap(),
+                    before_record
+                );
+                assert!(!root.path().join("child").exists());
+                assert!(!root.path().join("attempts").exists());
+            }
+        }
     }
 
     #[tokio::test]

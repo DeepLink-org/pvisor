@@ -152,6 +152,7 @@ impl PrepareImage {
                 target: None,
                 platform: Some("linux/amd64".into()),
                 pull: false,
+                no_cache: false,
                 cpus: 1,
                 memory_mib: 512,
                 network: false,

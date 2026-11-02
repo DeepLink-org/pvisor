@@ -65,9 +65,9 @@ elif sys.argv[1] == '-':
 PY
 chmod +x "$work/python"
 for included in 1 0; do
-  for missing in none pvisor pvisor-tui pvisor-replay pvisor-daemon; do
+  for missing in none pvisor pvisor-replay pvisor-daemon; do
     rm -f "$work/pip.log"
-    for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do
+    for binary in pvisor pvisor-replay pvisor-daemon; do
       printf '#!/bin/sh\necho "pvisor %s"\n' "$INSTALL_TEST_VERSION" > "$work/$binary"
       chmod +x "$work/$binary"
     done

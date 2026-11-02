@@ -309,6 +309,96 @@ fn legacy_workspace_fork_rejects_missing_policy_without_mutation() {
 }
 
 #[test]
+fn workspace_ask_fork_rejection_is_inert_and_retryable() {
+    #[cfg(target_os = "macos")]
+    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        return;
+    }
+    for location in ["inherited", "recorded", "checkpoint"] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = managed_fixture(temp.path());
+        let stage = record.stage_dir();
+        let ask = pvisor_core::FileAccessPolicy::layered(
+            [(
+                pvisor_core::PolicyScope::User,
+                &pvisor_core::FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![])
+                    .unwrap(),
+            )],
+            &Default::default(),
+        );
+        let checkpoint = if location == "checkpoint" {
+            let checkpoint = parsed(invoke(&["checkpoint", "create", "--json"], Some(&stage)));
+            let id = checkpoint["checkpoint_id"].as_str().unwrap().to_owned();
+            let manifest = stage.join("checkpoints").join(&id).join("checkpoint.json");
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+            value["access_policy"] = serde_json::to_value(&ask).unwrap();
+            std::fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+            Some(id)
+        } else {
+            if location == "inherited" {
+                let path = stage.join("workspace-launch-policy.json");
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                value["policies"]["session"]["filesystem"] = serde_json::to_value(&ask).unwrap();
+                std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+            } else {
+                record.overlay.as_mut().unwrap().access_policy = ask;
+                record.write().unwrap();
+            }
+            None
+        };
+        let (_, lease) = record.lock_current().unwrap();
+        drop(lease);
+        // Admission lock files are not checkpoint/stage mutations.
+        std::fs::write(stage.join("job.lock"), []).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            stage.join("job.lock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let original = filesystem_snapshot(temp.path());
+        let child = temp.path().join("child");
+        for _ in 0..2 {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+            command.arg("fork");
+            if let Some(id) = &checkpoint {
+                command.args(["--checkpoint", id]);
+            }
+            let output = command
+                .arg("--stage")
+                .arg(&child)
+                .arg(&stage)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("ask file policies"), "{location}: {error}");
+            assert!(!child.exists());
+            let after = filesystem_snapshot(temp.path());
+            assert_eq!(
+                after.keys().collect::<Vec<_>>(),
+                original.keys().collect::<Vec<_>>()
+            );
+            for (path, before) in &original {
+                assert!(
+                    after.get(path) == Some(before),
+                    "{location}: changed {}",
+                    path.display()
+                );
+            }
+        }
+        if let Some(id) = checkpoint {
+            let show = parsed(invoke(&["checkpoint", "show", "--json", &id], Some(&stage)));
+            assert_eq!(show["branch_references"], 0);
+        } else {
+            assert!(!stage.join("checkpoints").exists());
+        }
+    }
+}
+
+#[test]
 fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
     #[cfg(target_os = "macos")]
     if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {

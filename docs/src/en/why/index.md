@@ -60,7 +60,7 @@ Supervision and deployment scale are independent dimensions: multiple Jobs can r
 
 | Level | Human intervention | Current status |
 | --- | --- | --- |
-| L0 | Approve commands before execution | Use agent-native approval or the Job `--ask` channel |
+| L0 | Approve commands before execution | Use agent-native approval |
 | L1 | Review changes after execution, then select what to merge | Native Jobs provide stage, review, apply/drop and conflict checks |
 | L2 | Policy and evidence determine exemptions; humans spot-check | Callers can compose existing checks; a unified exemption policy and automatic merge gate still need acceptance |
 | L3 | Continuous audit; humans handle exceptions | Evidence aggregation and external orchestration remain integration directions without a complete product contract |

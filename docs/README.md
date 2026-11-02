@@ -349,8 +349,8 @@ Readers and entry points:
 Keep one canonical article per subject and link to it instead of repeating its
 contract. Start task guides with prerequisites and executable examples. Separate
 implemented behavior from design goals; describe a guarantee only with its
-executor and scope. Review/apply examples must enable staging with `--safe`,
-`--ask` or `--stage`. If a path is specified, put it outside the project.
+executor and scope. Review/apply examples must enable staging with `--safe`
+or `--stage`. If a path is specified, put it outside the project.
 
 The integration matrix distinguishes native CLI Jobs, embedded Rust Runtime,
 daemon Sandbox API and containerd shim identities and exposed capabilities.

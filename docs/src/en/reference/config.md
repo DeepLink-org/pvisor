@@ -132,7 +132,7 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 
 ### Files and networking
 
-`[overlayfs].mount` and `access` are arrays of tables. Mount entries have `source`, optional `target`, and required `access`; access rules have `path` and `level`. Levels are `deny`, `ask`, `read`, `warn`, `stage`, and `write`. See [File policies](../guides/policies/files.md) for usage.
+`[overlayfs].mount` and `access` are arrays of tables. Mount entries have `source`, optional `target`, and required `access`; access rules have `path` and `level`. Levels are `deny`, `read`, `warn`, `stage`, and `write`. See [File policies](../guides/policies/files.md) for usage.
 
 `[overlaynet].mode` accepts `auto`, `off`, or `proxy`; `policy` accepts `public`, `deny`, or `allowlist`. `allow` is an array of destination strings; `rules`, `deny`, and `limits` are structured table arrays. Lists default to empty. See [Policy fields](policy.md) for port, transport, and address rules.
 
@@ -384,9 +384,9 @@ Field names and types are checked against the Rust serde structures during the d
 | `overlayfs.max_size` | `Option<u64>` | `unset` | Aggregate staged bytes; `--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `required` | Host source path |
 | `overlayfs.mount[].target` | `Option<PathBuf>` | `unset` | Agent-visible mount path; normalization supplies it when omitted |
-| `overlayfs.mount[].access` | `FilesystemAccessLevel` | `required` | deny, ask, read, warn, stage, write |
+| `overlayfs.mount[].access` | `FilesystemAccessLevel` | `required` | deny, read, warn, stage, write |
 | `overlayfs.access[].path` | `String` | `required` | Agent-visible path/rule; use the file policy guide grammar |
-| `overlayfs.access[].level` | `FilesystemAccessLevel` | `required` | deny, ask, read, warn, stage, write |
+| `overlayfs.access[].level` | `FilesystemAccessLevel` | `required` | deny, read, warn, stage, write |
 | `overlaynet.mode` | `OverlayNetMode` | `"auto"` | auto, off, proxy; `--overlaynet`; auto uses smoltcp in VM |
 | `overlaynet.listen` | `String` | `"127.0.0.1:19081"` | Proxy address; CLI chooses a free port for this default; `--overlaynet-listen` |
 | `overlaynet.policy` | `OverlayNetPolicy` | `"public"` | public, deny, allowlist; `--overlaynet-policy` |
@@ -429,7 +429,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `policies.workspace` | `PolicyLayer` | `{}` | Explicit layer or defaults from .pvisor/policy.toml |
 | `policies.user` | `PolicyLayer` | `{}` | Explicit layer or defaults from user configuration |
 | `policy_layer.network` | `Option<NetworkPolicyLayer>` | `unset` | Optional network_layer table; absent adds no scoped constraint |
-| `policy_layer.filesystem` | `Option<FileAccessPolicy>` | `unset` | Optional deny/ask/warn/allow glob arrays; see policy reference |
+| `policy_layer.filesystem` | `Option<FileAccessPolicy>` | `unset` | Optional deny/warn/allow glob arrays; see policy reference |
 | `network_layer.default_action` | `Option<NetworkDefaultAction>` | `unset` | allow or deny; absent denies unmatched targets when this layer exists |
 | `network_layer.allow` | `Vec<NetworkAccessRule>` | `[]` | network_rule grant entries |
 | `network_layer.deny` | `Vec<NetworkAccessRule>` | `[]` | network_rule denials; deny wins |

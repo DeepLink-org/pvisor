@@ -14,14 +14,14 @@ pvisor spawn -- codex
 ```
 
 `--stage PATH` 将 changeset 保留在指定目录。普通 host Job 省略时直接写入工作区；
-`--safe` 和 `--ask` 默认保留工作区暂存改动，生命周期见 [暂存与存储](../reference/cli.md#暂存与存储)。选中的 host、container 或 VM Provider 会在
+`--safe` 默认保留工作区暂存改动，生命周期见 [暂存与存储](../reference/cli.md#暂存与存储)。选中的 host、container 或 VM Provider 会在
 Run Bundle 中分别记录实际 capability 与限制。
 
 常用控制按目的分组：
 
 | 目的 | 选项 | 结果 |
 | --- | --- | --- |
-| Filesystem | `--safe`、`--stage`、`--mount SOURCE[:TARGET]:read\|stage\|write`、`--access PATH-GLOB:deny\|ask\|warn` | 按需暂存改动并声明路径权限 |
+| Filesystem | `--safe`、`--stage`、`--mount SOURCE[:TARGET]:read\|stage\|write`、`--access PATH-GLOB:deny\|warn` | 按需暂存改动并声明路径权限 |
 | Runtime | `--executor host\|container\|vm`、`--rootfs`、`--container-image` | 选择执行 Provider 与 rootfs |
 | Network | `--overlaynet-deny-all`、`--overlaynet-allow`、`--overlaynet-limit` | 请求 deny、allowlist 或限速策略 |
 | Gateway | `--gateway-mode`、`--gateway-route`、`--gateway-level` | 配置路由，并按需捕获模型流量 |
@@ -73,19 +73,19 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按对象组织：容器命令管理独立 VM，Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放、TUI 和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
+顶层按对象组织：容器命令管理独立 VM，Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
 
 | 职责 | 入口 |
 |---|---|
 | Job 生命周期与分支 | `spawn`、`status`、`kill`、`suspend`、`resume`、`fork` |
 | 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
 | Job 不可变检查点 | `checkpoint` |
-| 轨迹回放与交互前端 | `replay`、`tui` |
+| 轨迹回放 | `replay` |
 | 本机 sandbox 生命周期 | `pvisor-daemon prepare-image` / `serve --sandbox` 与 OpenSandbox/E2B 部分协议 API |
 | 不可变镜像缓存 | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | 可选 daemon 自有共享页 | `pvisor-daemon serve --sandbox --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 
-`status --review` 是快捷形式；`review` 是详细审查入口。`spawn --tui` 是主要交互路径，顶层 `tui` 用于显式前端调用。Job 操作直接使用顶层命令，没有 `job` 命令层。
+`status --review` 是快捷形式；`review` 是详细审查入口。Job 操作直接使用顶层命令，没有 `job` 命令层。
 
 资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
@@ -96,7 +96,7 @@ pvisor cache --help
 pvisor-daemon memory-pool --help
 ```
 
-Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存、replay 和 TUI 仍独立于 Job 命令；replay/TUI 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
+Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存和 replay 仍独立于 Job 命令；replay 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
 工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署与原生资源预算见 [daemon 架构](daemon/index.md)与[运维](daemon/operations.md)。
 

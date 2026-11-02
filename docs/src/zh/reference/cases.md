@@ -13,7 +13,7 @@
 | 只想运行一个命令，或确认默认写入 | A01–A03、A07 |
 | 需要超时、内存或文件限制 | A04、B01–B04 |
 | 想保留、丢弃或检查文件改动 | C01–C06 |
-| 需要组合 OverlayFS 层或授予路径权限 | D01、D04–D06 |
+| 需要组合 OverlayFS 层或授予路径权限 | D01、D04–D05 |
 | 想了解 host 默认隔离 | D02–D03 |
 | 使用 VM、宿主 rootfs 或 OCI 镜像 | E01–E06 |
 | 使用原生 OCI 容器 | F01–F04 |
@@ -23,10 +23,9 @@
 | 参考多能力组合 | J01–J03 |
 | 审查、选择性提交、分支或终止 Job | K01–K04 |
 | 准备轨迹回放 | M01 |
-| 验证终端界面与权限弹窗 | D06、M02 |
 
 本文件同时是用户文档和 semspec 的 DOC 规格源。每个场景包含用途、语义、违反示例、
-命令和断言；`mise run cases` 直接执行下方 Bash 检查。原 A01–M02 编号保留在标题中。
+命令和断言；`mise run cases` 直接执行下方 Bash 检查。原 A01–M01 编号保留在标题中。
 
 ## 如何使用
 
@@ -48,7 +47,7 @@ mise run cases
 mise run semspec -- --spec-dir docs/src/zh/reference show S-DOC-001
 ```
 
-`mise run cases` 构建 release pVisor，发现本页的 54 个有效 DOC 规格和
+`mise run cases` 构建 release pVisor，发现本页的 52 个有效 DOC 规格和
 [VM 控制与 RAM backing 的六条场景](cases-vm.md)，输出 JSON 报告到
 `target/pvisor-case-report.json`。使用 S-DOC ID 选择 case；A01 对应 S-DOC-001，
 C01 对应 S-DOC-012。标题保留完整的场景编号。也可以通过
@@ -537,21 +536,11 @@ bundle_expect network.policy.mode allowlist "$PVISOR_CASE_ROOT/safe-home"
 
 ## D. OverlayFS 与 Host 安全边界
 
-D01 讲视图层组合，D02/D03 讲 host executor，D04–D06 讲拒绝、显式写入和交互授权。
-文件规则为 `deny`、`ask`、`warn`：分别表示拒绝、询问、放行并警告；默认累加。
-`--mount` 的 `read` 授予只读宿主共享（要求 host executor 加 `--safe`/`--ask`），
+D01 讲视图层组合，D02/D03 讲 host executor，D04–D05 讲拒绝和显式写入。
+文件规则为 `deny`、`warn`：分别表示拒绝、放行并警告；默认累加。
+`--mount` 的 `read` 授予只读宿主共享（要求 host executor 加 `--safe`），
 `stage` 组合写时复制底层，`write` 直接写入宿主 lower。
-`--access PATH-GLOB:ask` 会自动启用审计 TUI 和 safe 暂存视图，无需另加 `--ask`。
-文件弹窗的 `1` 仅允许此文件，`2` 允许同级目录中的文件，`3` 允许相同后缀的文件；
-`d` 拒绝此目标。明确的 `deny` 规则仍直接拒绝，不弹窗。
-弹窗默认仅对当前 session 生效；先按 `s`、`w`、`u`，分别选择 session、workspace、user，
-再按数字选择授权范围，按 Enter 确认；默认选中拒绝按钮，`d` 直接拒绝。session 规则写入当前 Job 的 `audit-policy.json`；
-workspace 和 user 规则写入 `~/.config/pvisor/config.toml` 的 `permissions` 部分
-（设置了绝对路径 `XDG_CONFIG_HOME` 时使用该目录）。workspace 按规范化后的工作目录区分。
-后续 TUI Job 加载这些规则，优先级为 session > workspace > user，同层最后匹配的规则生效。
-持久化文件路径使用原始绝对路径；用户级后缀规则可覆盖其他工作区，授权时应注意范围。
-可在 Permissions 面板查看规则，用 j/k 选择后按两次 x 移除决定；随后可能命中其他规则或重新询问。
-`audit.jsonl` 记录人工及自动决策和保存范围。Job 记录默认保留；`--stage PATH` 可指定位置。
+执行后用 `review` 审查暂存改动，用 `apply` 接受选定路径，再用 `drop` 丢弃剩余改动。
 
 ### S-DOC-018：D01 高级 OverlayFS 组合
 
@@ -698,88 +687,6 @@ pvisor --mount "$CASE_ROOT/shared":write -- \
 CASE_COMMAND
 
 test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
-```
-
-### S-DOC-023：D06 `ask` 弹窗与当前 Job 的目录授权
-
-
-准备：Linux user/mount namespace 和 Python 3 可用。示例用伪终端自动输入 `2`、Enter；手工运行时在弹窗中选择后按 Enter 确认。
-
-**语义**：只出现一次文件授权弹窗，两个文件均可读取；`audit-policy.json` 保存目录规则，`audit.jsonl` 记录第二次自动允许。`--stage` 保留当前 Job 的审计记录，不会把选择变成全局配置。
-
-**理由**：用 `--access 'private/*.txt:ask'` 启动审计 TUI；第一次读取时按 `2`、Enter 授权同级目录，再读取另一文件，验证规则自动复用。
-
-**违反示例**：第二个同级文件再次弹窗，或目录授权被持久化为错误范围。
-
-<!-- semspec: case id=S-DOC-023 -->
-```bash
-require_python3
-require_rootless
-case_setup
-case_run success <<'CASE_COMMAND'
-mkdir -p private
-printf ASK_ONE > private/one.txt
-printf ASK_TWO > private/two.txt
-python3 - <<'PY'
-import fcntl, os, pty, select, signal, struct, time
-
-pid, master = pty.fork()
-if pid == 0:
-    os.environ['TERM'] = 'xterm-256color'
-    os.execvp('pvisor', [
-        'pvisor', '--no-agent-defaults', '--stage', os.environ['CASE_ROOT'] + '/ask-stage',
-        '--access', 'private/*.txt:ask', '--', '/bin/sh', '-c',
-        'cat private/one.txt; sleep 1; cat private/two.txt',
-    ])
-fcntl.ioctl(master, 0x5414, struct.pack('HHHH', 24, 100, 0, 0))
-screen = bytearray()
-prompted = False
-status = None
-deadline = time.monotonic() + 25
-try:
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.1)
-        if ready:
-            try:
-                screen.extend(os.read(master, 65536))
-            except OSError:
-                pass
-        if not prompted and b'FILE ACCESS PAUSED' in screen:
-            os.write(master, b'2\r')
-            prompted = True
-        ended, result = os.waitpid(pid, os.WNOHANG)
-        if ended:
-            status = result
-            break
-    if status is None:
-        os.killpg(pid, signal.SIGTERM)
-        _, status = os.waitpid(pid, 0)
-        raise RuntimeError('timed out waiting for the Job')
-finally:
-    os.close(master)
-assert prompted and os.waitstatus_to_exitcode(status) == 0
-assert b'ASK_ONE' in screen and b'ASK_TWO' in screen
-print('ASK directory grant reused')
-PY
-CASE_COMMAND
-
-stdout_has 'ASK directory grant reused'
-python3 - <<'PY'
-import json, os
-from pathlib import Path
-
-stage = Path(os.environ['CASE_ROOT'] + '/ask-stage')
-policy = json.loads((stage / 'audit-policy.json').read_text())
-assert any(rule['kind'] == 'file' and rule['scope'] == 'directory'
-           and rule['value'] == 'private' and rule['decision'] == 'allow'
-           for rule in policy['rules'])
-decisions = [json.loads(line) for line in (stage / 'audit.jsonl').read_text().splitlines()]
-assert any(item['request']['target'] == 'private/two.txt'
-           and item['decision'] == 'allow' and item['automatic']
-           for item in decisions)
-PY
-test "$(cat private/one.txt)" = ASK_ONE
-test "$(cat private/two.txt)" = ASK_TWO
 ```
 
 ## E. VM 与 rootfs
@@ -1096,10 +1003,7 @@ bundle_expect run.state completed
 ## G. OverlayNet
 
 这一组只讨论网络边界。proxy 适合需要 host Gateway 的协作式访问，VM auto 和 host deny-all 才适合需要更强网络边界的场景。
-使用 `--ask` 时，未列入规则的代理网络目标会暂停并弹窗：`1` 仅允许当前目标，
-`2` 允许当前主机名及其子域名，范围仍限于相同端口和传输协议；IP 地址没有域名选项，
-`d` 拒绝当前目标。与文件授权一样，先按 `s` / `w` / `u` 选择 session / workspace / user 保存范围。
-显式拒绝规则不进入弹窗；未经代理的直接 socket 连接也不会触发此审计。
+启动前配置静态网络规则；未经代理的直接 socket 连接可能绕过协作式代理。
 
 ### S-DOC-034：G01 启用默认 proxy
 
@@ -1697,64 +1601,4 @@ CASE_COMMAND
 
 test ! -e marker
 python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] == "prepared" and d["replayed_tool_calls"] == 0'
-```
-
-### S-DOC-056：M02 TUI 保留命令输出并可打开 Log 面板
-
-
-准备：Linux 和 Python 3。
-
-**语义**：子命令正常退出；屏幕流中出现命令输出、底栏引导和 Log 面板。
-
-**理由**：用伪终端执行 `--tui`，验证 Agent 输出、底栏引导键和 `Ctrl-]` → `l` 打开的浮动 Log 面板。交互终端由测试脚本提供。
-
-**违反示例**：TUI 丢失命令输出，或 Ctrl-] 后看不到底栏和 Log 面板。
-
-<!-- semspec: case id=S-DOC-056 -->
-```bash
-require_python3
-require_linux
-case_setup
-case_run success <<'CASE_COMMAND'
-python3 - <<'PY'
-import fcntl, os, pty, select, struct, subprocess, termios, time
-
-master, slave = pty.openpty()
-fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
-env = os.environ.copy()
-env['TERM'] = 'xterm-256color'
-child = subprocess.Popen(
-    ['pvisor', '--tui', '--', '/bin/sh', '-c', 'printf TUI_READY; sleep 1.5'],
-    stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True,
-)
-os.close(slave)
-screen = bytearray()
-sent = False
-deadline = time.monotonic() + 8
-try:
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.1)
-        if ready:
-            try:
-                screen.extend(os.read(master, 65536))
-            except OSError:
-                break
-        if not sent and b'TUI_READY' in screen:
-            os.write(master, b'\x1dl')
-            sent = True
-        if child.poll() is not None and not ready:
-            break
-    if child.poll() is None:
-        child.kill()
-    child.wait(timeout=2)
-finally:
-    os.close(master)
-assert child.returncode == 0, child.returncode
-assert sent and b'TUI_READY' in screen
-assert b'Ctrl-]' in screen and b'pVisor Review' in screen
-print('TUI_READY status-bar log-panel')
-PY
-CASE_COMMAND
-
-stdout_has 'TUI_READY status-bar log-panel'
 ```

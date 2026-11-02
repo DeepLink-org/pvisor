@@ -88,7 +88,7 @@ Linux/KVM acceptance.
 
 ## Coverage and limits
 
-The active profile has 35 Bats cases and 86 Go cases. Each test first pulls its
+The active profile has 35 Bats cases and 91 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -98,7 +98,7 @@ image; none is skipped based on engine failure.
 | Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
 | Bats `033-run-validation.bats` | Repeated/literal environment values, missing host variable removal, CRLF env-files, missing bind source rejection, conflicting mount destinations and paths containing spaces |
 | Bats `070-build.bats` | Cached-base build/run/removal, relative external Dockerfile and TMPDIR, ignore-all definition discovery, external definition with ignore-all, symlink context and rejected ignored COPY source |
-| Go `build_test.go` | Basic build/removal, iidfile/full-ID execution, missing definition/file context errors, symlink workdir, copied empty directories/symlinks, ignore filtering, cross-directory COPY hardlinks, default COPY ownership, build arguments and WORKDIR/CMD/ENV/LABEL defaults |
+| Go `build_test.go` | Basic build/removal, iidfile/full-ID execution, missing definition/file context errors, symlink workdir, copied empty directories/symlinks, ignore filtering, cross-directory COPY hardlinks, default COPY ownership, build arguments and WORKDIR/CMD/ENV/LABEL defaults; RUN cache reuse/invalidation/no-cache refresh, concurrent builders, multi-stage/target/base replacement, failed prefixes, missing parent checkpoints and builder-prune retention/image safety |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
 | Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
 | Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, concurrent rapid auto-removal with exact exits/streams, TCP port restart/release/conflict and multiple endpoints |

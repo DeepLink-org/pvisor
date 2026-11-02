@@ -19,14 +19,14 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 | `pvisor-guest` | VM PID 1 and command launch contract |
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
-| `pvisor-cli` | CLI, TUI, cache/replay frontends and Host Job application adapters; consumes the runtime |
+| `pvisor-cli` | CLI, cache/replay frontends and Host Job application adapters; consumes the runtime |
 | `pvisor-shim` | containerd Runtime v2 shim (`io.containerd.pvisor.v2`); lifecycle, exec and FIFO/PTY IO for OCI container and optional VM execution tiers |
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
 The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `RuntimeJobService` in independent supervisors and reuses in-process `AttemptService` for controls on the same live Attempt. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Job stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
 
-Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
+Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers; embedding callers supply Core approval channels. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway or replay; the `gateway` feature enables capture.
 
 ## Technical layers and resource ownership {#technical-layers}
 
@@ -127,7 +127,7 @@ add no user-wide persistent process.
 
 | Channel | Current callers and implementation | Planned consolidation |
 | --- | --- | --- |
-| Overlay control | `registry.rs::RunControlServer` discovers its private endpoint through the stage's `control.sock` link; owner status queries itself, the TUI still reads observations, and the old inspect mount table duplicates owner inspect | Migrate TUI observations and SDK callers before removing old inspect branches, the listener and link discovery |
+| Overlay control | `registry.rs::RunControlServer` discovers its private endpoint through the stage's `control.sock` link; owner status queries itself, and the old inspect mount table duplicates owner inspect | Migrate SDK callers before removing old inspect branches, the listener and link discovery |
 | Native execution capture | `job_execution.rs::Server` retains `execution.sock`; after receiving capture, the owner still calls itself through this runtime endpoint | Call directly inside the owner while preserving request receipts, operation locks, freezing and suspended-head terminal confirmation |
 | Explicit VM debugging | `--vm-socket` and embedded `host_vm_exchange` use a separate asynchronous exchange; record discovery uses `LiveControlRecord::exchange_checked` | Share bounded, cancellable transport while retaining the public SDK adapter |
 
@@ -174,7 +174,7 @@ Ctrl-C does not interrupt its response wait, and underlying disconnect errors
 may omit the uncertainty warning. This implementation gap awaits consolidation.
 Reconcile state after a disconnect on either path. Scoped checkpoint receipts
 do not provide universal exactly-once delivery.
-Transport/process tests do not establish guest correctness or real-VM TUI coverage.
+Transport/process tests do not establish guest correctness or real-VM terminal coverage.
 
 ## A production execution path
 
