@@ -423,6 +423,29 @@ impl SnapshotChain {
         layout: &RamLayout,
         parent: Option<&Self>,
         dirty: &BTreeSet<u64>,
+        read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        Self::capture_inner(directory, layout, parent, dirty, false, read)
+    }
+
+    /// Capture newly zero-initialized storage. `written` must contain every block
+    /// ever written, even if written back to zero. The caller must flush mmap
+    /// writes and provide a stable epoch. No parent/compaction can use this path.
+    pub(super) fn capture_zero_base(
+        directory: &Path,
+        layout: &RamLayout,
+        written: &BTreeSet<u64>,
+        read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        Self::capture_inner(directory, layout, None, written, true, read)
+    }
+
+    fn capture_inner(
+        directory: &Path,
+        layout: &RamLayout,
+        parent: Option<&Self>,
+        dirty: &BTreeSet<u64>,
+        zero_base: bool,
         mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> io::Result<Self> {
         layout.validate()?;
@@ -451,8 +474,24 @@ impl SnapshotChain {
         let mut entries = Vec::new();
         let mut sizes = Vec::new();
         let mut payload_bytes = 0;
+        let mut zero_checksums = std::collections::BTreeMap::new();
         for block in blocks {
             let (_, length) = layout.block_span(block)?;
+            if zero_base && !dirty.contains(&block) {
+                // Preserve the complete base index and its content identity, but
+                // never materialize or scan an unwritten block more than once
+                // per length (including short region tails).
+                let checksum = *zero_checksums
+                    .entry(length)
+                    .or_insert_with(|| hash(&vec![0; length]));
+                entries.push(Entry {
+                    block,
+                    frame: None,
+                    fill: Some(0),
+                    checksum,
+                });
+                continue;
+            }
             let mut data = vec![0; length];
             read(block, &mut data)?;
             let checksum = hash(&data);
@@ -639,6 +678,114 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn zero_base_skips_unwritten_blocks_and_matches_generic_identity() {
+        for written in [BTreeSet::new(), BTreeSet::from([0, 1])] {
+            let fast_dir = tempfile::tempdir().unwrap();
+            let plain_dir = tempfile::tempdir().unwrap();
+            let l = layout(); // Includes a seven-byte region tail.
+            let mut data = vec![0; l.logical_bytes() as usize];
+            if !written.is_empty() {
+                data[4093..4101].fill(23);
+                data[BLOCK_BYTES + 2] = 91;
+            }
+            let mut reads = Vec::new();
+            let fast =
+                SnapshotChain::capture_zero_base(fast_dir.path(), &l, &written, |block, out| {
+                    assert!(written.contains(&block), "unwritten block must not be read");
+                    reads.push(block);
+                    let start = l.block_span(block)?.0 as usize;
+                    out.copy_from_slice(&data[start..start + out.len()]);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(reads, written.iter().copied().collect::<Vec<_>>());
+            let generic = capture(plain_dir.path(), None, &[], &data);
+            assert_eq!(fast.head_id(), generic.head_id());
+            let reopened = SnapshotChain::open(fast_dir.path(), fast.head_id()).unwrap();
+            let output = tempfile::tempfile().unwrap();
+            reopened.restore_to(&output).unwrap();
+            let mut restored = vec![0; data.len()];
+            output.read_exact_at(&mut restored, 0).unwrap();
+            assert_eq!(restored, data);
+        }
+    }
+
+    #[test]
+    fn zero_base_written_zero_is_read_and_reader_failure_propagates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reads = 0;
+        let result = SnapshotChain::capture_zero_base(
+            dir.path(),
+            &layout(),
+            &BTreeSet::from([1]),
+            |_, _| {
+                reads += 1;
+                Err(io::Error::other("injected read failure"))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(reads, 1);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let chain = SnapshotChain::capture_zero_base(
+            dir.path(),
+            &layout(),
+            &BTreeSet::from([1]),
+            |block, out| {
+                assert_eq!(block, 1);
+                out.fill(0);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let reference = tempfile::tempdir().unwrap();
+        assert_eq!(
+            chain.head_id(),
+            capture(
+                reference.path(),
+                None,
+                &[],
+                &vec![0; layout().logical_bytes() as usize]
+            )
+            .head_id()
+        );
+        assert!(
+            SnapshotChain::capture_zero_base(
+                dir.path(),
+                &layout(),
+                &BTreeSet::from([99]),
+                |_, _| panic!("invalid set must fail first")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn zero_base_followed_by_compaction_preserves_clean_nonzero_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = layout();
+        let mut data = vec![0; l.logical_bytes() as usize];
+        data[0] = 77;
+        let mut chain =
+            SnapshotChain::capture_zero_base(dir.path(), &l, &BTreeSet::from([0]), |block, out| {
+                assert_eq!(block, 0);
+                out.copy_from_slice(&data[..out.len()]);
+                Ok(())
+            })
+            .unwrap();
+        let mut compacted = false;
+        for i in 0..COMPACT_DEPTH + 2 {
+            data[BLOCK_BYTES] = (i + 1) as u8;
+            let before = chain.depth();
+            chain = capture(dir.path(), Some(&chain), &[1], &data);
+            compacted |= chain.depth() < before;
+            let mut actual = vec![0; data.len()];
+            chain.read_at(0, &mut actual).unwrap();
+            assert_eq!(actual, data);
+        }
+        assert!(compacted);
+    }
+
     #[test]
     fn delta_inherits_zero_overrides_and_restores_across_regions() {
         let directory = tempfile::tempdir().unwrap();
