@@ -82,6 +82,37 @@ pub trait ReadOnlyBackend: Send + Sync {
     fn prepare_directory(&self, relative: &Path) -> io::Result<()>;
     fn attributes(&self, relative: &Path) -> io::Result<FileAttr>;
     fn read_at(&self, relative: &Path, offset: u64, size: u32) -> io::Result<Vec<u8>>;
+    /// Deliver at most `size` verified bytes to this call's borrowed sink.
+    /// EOF is a successful short result. On error a verified prefix may already
+    /// be present; callers must not publish it as a successful reply. The sink
+    /// and its buffers must never be retained after this synchronous call.
+    /// Default behavior preserves existing backends' owned-buffer reads.
+    fn read_into(
+        &self,
+        relative: &Path,
+        offset: u64,
+        size: u32,
+        sink: &mut dyn io::Write,
+    ) -> io::Result<usize> {
+        let bytes = self.read_at(relative, offset, size)?;
+        if bytes.len() > size as usize {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        sink.write_all(&bytes)?;
+        Ok(bytes.len())
+    }
+    /// Whether this producer can populate an exclusively owned, empty private
+    /// destination directly from verified immutable content. Default is false.
+    fn supports_direct_copy(&self) -> bool {
+        false
+    }
+    /// Populate the destination without changing native lower placeholders.
+    /// Only used with a stable namespace registration and positive capability.
+    /// Must return the complete logical length; error may leave private partial
+    /// bytes, which the adapter must remove rather than publish. Never retain FD.
+    fn copy_file_direct(&self, _relative: &Path, _destination: &fs::File) -> io::Result<u64> {
+        Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+    }
     /// Fill native bytes before code opens a backing file directly.
     fn materialize_file(&self, relative: &Path) -> io::Result<()>;
     /// An owned tree copy must include unvisited image objects too.
@@ -175,7 +206,37 @@ impl BackendAttachment {
 /// the lease never turns native placeholders into directly readable content.
 /// Leases are process-local and cannot be serialized into a VM snapshot.
 pub struct StableNamespaceLease {
-    _attachment: Arc<Attachment>,
+    attachment: Arc<Attachment>,
+}
+
+/// Content identity within one pinned stable namespace, not a native inode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StableContentIdentity {
+    /// Nonzero backend object identifier; aliases of one object must share it.
+    pub object: u64,
+    /// Immutable logical byte length of the regular file.
+    pub size: u64,
+}
+
+impl StableNamespaceLease {
+    /// Resolve a regular file's immutable content identity within this revision.
+    /// Validates a relative no-parent path, propagates backend/traversal errors,
+    /// and returns None for nonregular files. Object IDs are meaningful only
+    /// with this lease; no native placeholder bytes or authorization are granted.
+    pub fn content_identity(&self, relative: &Path) -> io::Result<Option<StableContentIdentity>> {
+        crate::OverlayCore::validate_rel(relative)?;
+        let attr = self.attachment.backend.attributes(relative)?;
+        if attr.kind != FileType::RegularFile {
+            return Ok(None);
+        }
+        if attr.ino == 0 || attr.size > i64::MAX as u64 {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        Ok(Some(StableContentIdentity {
+            object: attr.ino,
+            size: attr.size,
+        }))
+    }
 }
 
 /// Obtain a lease only for an exact, explicitly stable attachment root.
@@ -192,7 +253,7 @@ pub fn stable_namespace(root: &Path) -> io::Result<Option<StableNamespaceLease>>
         .map_err(|_| io::Error::other("backend registry poisoned"))?;
     Ok(entries.iter().filter_map(Weak::upgrade).find_map(|entry| {
         (entry.root == root && entry.stable_namespace)
-            .then_some(StableNamespaceLease { _attachment: entry })
+            .then_some(StableNamespaceLease { attachment: entry })
     }))
 }
 
@@ -290,6 +351,64 @@ pub fn read_at(path: &Path, offset: u64, size: u32) -> io::Result<Option<Vec<u8>
     find(path)?
         .map(|(entry, relative)| entry.backend.read_at(&relative, offset, size))
         .transpose()
+}
+
+/// Synchronously deliver verified backend bytes into a caller-owned sink.
+/// None means no backend is attached and leaves the sink untouched. On error
+/// the sink may contain a verified prefix; no backend may retain its borrow.
+pub fn read_into(
+    path: &Path,
+    offset: u64,
+    size: u32,
+    sink: &mut dyn io::Write,
+) -> io::Result<Option<usize>> {
+    find(path)?
+        .map(|(entry, relative)| entry.backend.read_into(&relative, offset, size, sink))
+        .transpose()
+}
+
+/// Retained direct-copy capability for one fixed backend object path.
+/// This is not an authorization token and cannot outlive its producer storage.
+pub struct DirectFileSource {
+    attachment: Arc<Attachment>,
+    relative: PathBuf,
+    size: u64,
+}
+
+impl DirectFileSource {
+    /// Fill a new, empty, private destination; failures may leave partial bytes.
+    /// The caller owns preimage ordering, validation, cleanup and publication.
+    pub fn copy_into(&self, destination: &fs::File) -> io::Result<u64> {
+        let copied = self
+            .attachment
+            .backend
+            .copy_file_direct(&self.relative, destination)?;
+        if copied != self.size || destination.metadata()?.len() != self.size {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        Ok(copied)
+    }
+}
+
+/// Return a retained capability only for an explicitly stable producer which
+/// supports direct copying. Native, legacy and ordinary attachments return None.
+/// Does not fill placeholder contents or bypass path/policy checks.
+pub fn direct_file_source(path: &Path) -> io::Result<Option<DirectFileSource>> {
+    let Some((attachment, relative)) = find(path)? else {
+        return Ok(None);
+    };
+    if !attachment.stable_namespace || !attachment.backend.supports_direct_copy() {
+        return Ok(None);
+    }
+    let attr = attachment.backend.attributes(&relative)?;
+    if attr.kind != FileType::RegularFile {
+        return Ok(None);
+    }
+    Ok(Some(DirectFileSource {
+        attachment,
+        relative,
+        size: attr.size,
+    }))
 }
 
 pub fn materialize_file(path: &Path) -> io::Result<()> {

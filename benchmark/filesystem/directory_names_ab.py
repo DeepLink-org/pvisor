@@ -101,12 +101,13 @@ def prepare(args):
             "inputs": inputs,
             "samples": args.samples,
             "experiment": args.experiment,
-            "mode": "copyup-concurrent"
-            if args.experiment == "prepared-copy-up"
-            else "directory-pages",
-            "metric": "copyup-total"
-            if args.experiment == "prepared-copy-up"
-            else "directory-pages",
+            "mode": {
+                "prepared-copy-up": "copyup-concurrent",
+                "scoped-names": "scoped-reimport",
+            }.get(args.experiment, "directory-pages"),
+            "metric": {"prepared-copy-up": "copyup-total", "scoped-names": "names-reimport"}.get(
+                args.experiment, "directory-pages"
+            ),
             "seed": 52871,
             "cpus": sorted(os.sched_getaffinity(0))[:2],
             "primary": "three guest rounds summed per fresh VM",
@@ -133,7 +134,8 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
     scratch = batch / "work" / label
     scratch.mkdir()
     prepared = manifest["experiment"] == "prepared-copy-up"
-    names_enabled = 1 if prepared else enabled
+    scoped = manifest["experiment"] == "scoped-names"
+    names_enabled = 1 if prepared or scoped else enabled
     command = [
         "systemd-run",
         "--user",
@@ -155,6 +157,12 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
         f"TMPDIR={scratch}",
         f"PVISOR_VM_FS_DIRECTORY_NAMES_CACHE={names_enabled}",
         f"PVISOR_VM_FS_PREPARED_COPY_UP={enabled if prepared else 0}",
+        f"PVISOR_VM_FS_SCOPED_NAMES={enabled if scoped else 0}",
+        "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=0",
+        "PVISOR_VM_FS_LOGICAL_DATA_CACHE=0",
+        "PVISOR_VM_FS_REUSE_LAZY_NODES=0",
+        "PVISOR_VM_FS_STREAM_LAZY_READS=0",
+        "PVISOR_VM_FS_DIRECT_LAZY_COPY=0",
         f"PVISOR_FS_PROFILE={int(diagnostic)}",
         "PVISOR_VM_GUEST_CACHE=1",
         "PVISOR_VM_FS_WRITEBACK=0",
@@ -202,6 +210,7 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
     expected = {
         "directory-pages": ["directory-pages"],
         "copyup-concurrent": ["copyup-open", "copyup-metadata", "copyup-total"],
+        "scoped-reimport": ["names-reimport", "names-edit-cycle"],
         "bench": ["stat256", "scan300", "open10000"],
     }[mode]
     if sorted((p["phase"], p["round"]) for p in phases) != sorted(
@@ -244,8 +253,15 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
         if enabled_values != ([0, 1, 1] if names_enabled else [0, 0, 0]):
             raise ValueError(f"wrong actual cache qualification: {enabled_values}")
         hits = sum(m.get("directory_names_cache_hits", {}).get("units", 0) for m in overlays)
-        if not prepared and bool(hits) != bool(enabled):
+        if not prepared and not scoped and bool(hits) != bool(enabled):
             raise ValueError("cache did not exercise the intended path")
+        if scoped:
+            active = sorted(m["directory_names_scoped_enabled"]["units"] for m in overlays)
+            retained = sum(
+                m.get("directory_names_scoped_retained", {}).get("units", 0) for m in overlays
+            )
+            if active != ([0, 1, 1] if enabled else [0, 0, 0]) or bool(retained) != bool(enabled):
+                raise ValueError("scoped invalidation path was not exercised")
         if prepared:
             actual = [m["prepared_copy_up_enabled"]["units"] for m in overlays]
             if actual != [enabled] * 3:
@@ -315,7 +331,9 @@ def main():
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument(
-        "--experiment", choices=["directory-names", "prepared-copy-up"], default="directory-names"
+        "--experiment",
+        choices=["directory-names", "prepared-copy-up", "scoped-names"],
+        default="directory-names",
     )
     args = parser.parse_args()
     if args.prepare:

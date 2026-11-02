@@ -9,6 +9,9 @@
 以及第四批对象级READ屏障原型。前三项完成独立N30对照；第四项仅完成
 定向合同测试，尚无性能结论。四个开关均默认关闭，不扩大生产默认资格。
 
+本文记录初轮；第二轮五项独立N30结果与负结果见
+`FOLLOWUP_OPTIMIZATION_REPORT.md`，两轮编号与收益不可混用或累加。
+
 ## Experiment design
 
 注册条目：`benchmark/REGISTRY.md` 的 B-FS-ENG。冻结基线为

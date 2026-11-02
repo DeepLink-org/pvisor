@@ -858,19 +858,30 @@ const MAX_LOWER_DATA_OBJECTS: usize = 4096;
 
 /// No eviction: a guest may retain pages after the native FH is released.
 /// The layer ordinal is a generation within this fixed-root owner; the remaining
-/// fields are actual FD device/inode/mount/size evidence. No descriptor is pinned.
+/// native fields are actual FD evidence, while logical fields are scoped to a
+/// pinned namespace revision. The domains never collide; no descriptor is pinned.
 #[derive(Default)]
 struct LowerDataObjects {
-    ids: HashMap<(usize, u64, u64, u64, u64), u32>,
+    ids: HashMap<LowerDataKey, u32>,
+}
+
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+enum LowerDataKey {
+    Native((usize, u64, u64, u64, u64)),
+    Logical { layer: usize, object: u64, size: u64 },
 }
 
 impl LowerDataObjects {
-    fn register(&mut self, key: (usize, u64, u64, u64, u64)) -> Option<(LowerDataObject, bool)> {
+    fn register(&mut self, key: LowerDataKey) -> Option<(LowerDataObject, bool)> {
+        let size = match key {
+            LowerDataKey::Native(key) => key.4,
+            LowerDataKey::Logical { size, .. } => size,
+        };
         if let Some(id) = self.ids.get(&key) {
             return Some((
                 LowerDataObject {
                     id: *id,
-                    size: key.4,
+                    size,
                 },
                 false,
             ));
@@ -880,7 +891,7 @@ impl LowerDataObjects {
         }
         let id = self.ids.len() as u32 + 1;
         self.ids.insert(key, id);
-        Some((LowerDataObject { id, size: key.4 }, true))
+        Some((LowerDataObject { id, size }, true))
     }
 }
 
@@ -910,8 +921,10 @@ pub struct OverlayFs {
     mutation_lock: Mutex<()>,
     prepared_copy_up_enabled: bool,
     logical_directory_cache_enabled: bool,
-    stable_namespace_leases: Vec<backend::StableNamespaceLease>,
+    stable_namespace_leases: HashMap<usize, backend::StableNamespaceLease>,
+    logical_data_cache: bool,
     directory_names_cache_enabled: bool,
+    scoped_names_invalidation: bool,
     directory_names_cache: Mutex<Option<DirectoryNames>>,
     io_activity: Arc<IoActivity>,
     // Dropped before Core/layers. The worker owns only native object leases,
@@ -1207,10 +1220,11 @@ impl OverlayFs {
             && guest_cache
             && !dax
             && self.snapshot_config.semantics == passthrough::PermissionSemantics::LinuxComplete
-            && self
+            && (self
                 .snapshot_config
                 .lower_mutability
-                .contains(&pvisor_overlay_core::LayerMutability::Immutable);
+                .contains(&pvisor_overlay_core::LayerMutability::Immutable)
+                || self.logical_data_cache);
         self.lower_data_cache_configured = true;
         self.profile
             .add("lower_data_cache_requested", u64::from(requested));
@@ -1285,6 +1299,14 @@ impl OverlayFs {
     }
 
     fn write_operation(&self) -> io::Result<WriteOperation<'_>> {
+        self.write_operation_scoped(None)
+    }
+
+    fn write_operation_for_entries(&self, entries: &[(u64, &CStr)]) -> io::Result<WriteOperation<'_>> {
+        self.write_operation_scoped(self.scoped_names_invalidation.then_some(entries))
+    }
+
+    fn write_operation_scoped(&self, entries: Option<&[(u64, &CStr)]>) -> io::Result<WriteOperation<'_>> {
         let mutation = if self.prepared_copy_up_enabled {
             Some(
                 self.mutation_lock
@@ -1294,13 +1316,17 @@ impl OverlayFs {
         } else {
             None
         };
-        let mut operation = self.write_namespace_operation()?;
+        let mut operation = self.write_namespace_operation_scoped(entries)?;
         operation._mutation = mutation;
         Ok(operation)
     }
 
     // Caller either holds mutation_lock or has preparation disabled.
     fn write_namespace_operation(&self) -> io::Result<WriteOperation<'_>> {
+        self.write_namespace_operation_scoped(None)
+    }
+
+    fn write_namespace_operation_scoped(&self, entries: Option<&[(u64, &CStr)]>) -> io::Result<WriteOperation<'_>> {
         let _wait = self.profile.span("operation_write_lock_wait");
         let operation = self
             .operation_lock
@@ -1309,7 +1335,16 @@ impl OverlayFs {
         // All upper namespace/type/permission changes take this lock. Clear
         // before attempting them, including operations which subsequently fail.
         if self.directory_names_cache_enabled {
-            self.directory_names_cache.lock().unwrap().take();
+            let mut cache = self.directory_names_cache.lock().unwrap();
+            let invalidate = cache.as_ref().is_some_and(|cached| {
+                entries.is_none_or(|entries| entries.iter().any(|(parent, name)| {
+                    let Ok(parent) = self.path(*parent) else { return true; };
+                    let Ok(child) = OverlayCore::child(&parent, OsStr::from_bytes(name.to_bytes())) else { return true; };
+                    cached.path == parent || cached.path.starts_with(child)
+                }))
+            });
+            if invalidate { cache.take(); }
+            else if cache.is_some() { self.profile.add("directory_names_scoped_retained", 1); }
         }
         let _ = self.drain_buffered_writes();
         let upper_namespace = self.core.upper_namespace_mutation();
@@ -1505,8 +1540,10 @@ impl OverlayFs {
             mutation_lock: Mutex::new(()),
             prepared_copy_up_enabled: false,
             logical_directory_cache_enabled: false,
-            stable_namespace_leases: Vec::new(),
+            stable_namespace_leases: HashMap::new(),
+            logical_data_cache: false,
             directory_names_cache_enabled: false,
+            scoped_names_invalidation: false,
             directory_names_cache: Mutex::new(None),
             io_activity: Arc::new(IoActivity::default()),
             host_writeback: false,
@@ -2170,6 +2207,13 @@ impl OverlayFs {
         );
     }
 
+    pub(super) fn configure_scoped_names(&mut self, requested: bool) {
+        // Restricted hardlink policies can change visibility of source aliases.
+        self.scoped_names_invalidation = requested && self.directory_names_cache_enabled
+            && self.snapshot_config.access_policy == Default::default();
+        self.profile.add("directory_names_scoped_enabled", u64::from(self.scoped_names_invalidation));
+    }
+
     pub(super) fn configure_prepared_copy_up(&mut self, requested: bool) {
         self.prepared_copy_up_enabled = requested;
         self.profile
@@ -2187,7 +2231,7 @@ impl OverlayFs {
                 "logical directory cache does not support restore",
             ));
         }
-        let mut leases = Vec::new();
+        let mut leases = HashMap::new();
         // Local OPEN must not bypass a live target's first-read observation.
         // First version covers image/rootfs views with no apply journal only.
         let mut eligible = requested
@@ -2202,7 +2246,7 @@ impl OverlayFs {
                     continue;
                 }
                 match backend::stable_namespace(root)? {
-                    Some(lease) => leases.push(lease),
+                    Some(lease) => { leases.insert(index + 1, lease); }
                     None => {
                         eligible = false;
                         break;
@@ -2229,6 +2273,12 @@ impl OverlayFs {
                 .lower_mutability
                 .iter()
                 .all(|m| *m == pvisor_overlay_core::LayerMutability::Immutable)
+    }
+
+    pub(super) fn configure_logical_data_cache(&mut self, requested: bool) {
+        self.logical_data_cache = requested && self.logical_directory_cache_enabled
+            && cfg!(target_os = "linux") && !self.host_writeback && !self.new_session_writeback;
+        self.profile.add("logical_data_cache_enabled", u64::from(self.logical_data_cache));
     }
 
     // The caller holds read_operation through handle publication. A writer
@@ -2513,7 +2563,7 @@ impl OverlayFs {
             }
         };
         let _io = (!readonly).then(|| self.fence_paths(&[&path]));
-        let (layer, inner, immutable_regular) = match self
+        let (layer, inner, immutable_regular, logical_regular) = match self
             .core
             .prepare_open_for_backing_lookup(&path, native_flags)
             .map_err(linux_error)?
@@ -2522,7 +2572,7 @@ impl OverlayFs {
                 self.preserve_other_aliases(&path)?;
                 let entry = self.inner_entry(Layer(0), &path, ctx)?;
                 self.bind_upper(&path, inode, &entry.attr);
-                (Layer(0), entry.inode, false)
+                (Layer(0), entry.inode, false, false)
             }
             OpenBacking::ReadOnly(backing) => {
                 let layer = Layer(backing.entry.layer);
@@ -2534,7 +2584,10 @@ impl OverlayFs {
                 let inner = self
                     .inner_entry_with_parents(layer, &path, ctx, &backing.parents)?
                     .inode;
-                (layer, inner, immutable_regular)
+                let logical_regular = self.logical_data_cache
+                    && backing.entry.metadata.is_file()
+                    && self.stable_namespace_leases.contains_key(&layer.0);
+                (layer, inner, immutable_regular, logical_regular)
             }
         };
         #[cfg(target_os = "linux")]
@@ -2587,12 +2640,11 @@ impl OverlayFs {
         }
         if self.lower_data_cache_active.load(Ordering::Relaxed)
             && readonly
-            && immutable_regular
             && !options.contains(OpenOptions::DIRECT_IO)
-            && matches!(
+            && (logical_regular || (immutable_regular && matches!(
                 backend::attributes(&self.roots[layer.0].join(&path)),
                 Ok(None)
-            )
+            )))
         {
             options |= OpenOptions::PVISOR_DATA_OBJECT;
         }
@@ -2654,8 +2706,10 @@ impl OverlayFs {
         let receipt = (|| {
             let lease = self.file_io_lease(handle).ok()?;
             let h = &lease.handle;
-            if h.overlay_inode != inode
-                || h.layer
+            if h.overlay_inode != inode || h.layer.0 == 0 { return None; }
+            let logical = self.logical_data_cache
+                && self.stable_namespace_leases.contains_key(&h.layer.0);
+            if !logical && h.layer
                     .0
                     .checked_sub(1)
                     .and_then(|i| self.snapshot_config.lower_mutability.get(i))
@@ -2667,30 +2721,38 @@ impl OverlayFs {
             // placeholder's physical inode. Unrelated virtual files do not
             // affect this selected entry's qualification.
             let physical = self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path));
-            if !matches!(backend::attributes(&physical), Ok(None)) {
+            if !logical && !matches!(backend::attributes(&physical), Ok(None)) {
                 return None;
             }
-            let identity = match qualification {
-                Some(identity) => {
-                    self.profile.add("open_qualification_receipt_hits", 1);
-                    identity?
-                }
-                None => {
-                    self.profile.add("open_qualification_receipt_misses", 1);
-                    self.layers[h.layer.0].lower_data_identity_profiled(
-                        h.inode,
-                        h.handle,
-                        &self.profile,
-                    )?
-                }
-            };
-            let key = (
+            let key = if logical {
+                let pinned = self.stable_namespace_leases.get(&h.layer.0)?;
+                let content = pinned.content_identity(
+                    Path::new(OsStr::from_bytes(&h.relative_path))
+                ).ok()??;
+                if !self.layers[h.layer.0].logical_data_fd_eligible(
+                    &lease.native, content.size, &self.profile,
+                ) { return None; }
+                LowerDataKey::Logical { layer: h.layer.0, object: content.object, size: content.size }
+            } else {
+                let identity = match qualification {
+                    Some(identity) => {
+                        self.profile.add("open_qualification_receipt_hits", 1);
+                        identity?
+                    }
+                    None => {
+                        self.profile.add("open_qualification_receipt_misses", 1);
+                        self.layers[h.layer.0].lower_data_identity_profiled(
+                            h.inode, h.handle, &self.profile,
+                        )?
+                    }
+                };
+                LowerDataKey::Native((
                 h.layer.0,
                 identity.dev,
                 identity.ino,
                 identity.mount_id,
                 identity.size,
-            );
+            )) };
             match self.lower_data_objects.lock().unwrap().register(key) {
                 Some((receipt, registered)) => {
                     self.profile.add(
@@ -3613,7 +3675,7 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].symlink(ctx, linkname, upper_parent, &upper_name, extensions);
@@ -3635,7 +3697,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].mknod(
@@ -3664,7 +3726,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         #[cfg(target_os = "linux")]
         let virtual_parent = if self.virtual_metadata {
@@ -3722,7 +3784,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         self.preserve_other_aliases(&path)?;
@@ -3734,7 +3796,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         self.core.remove(&path, true).map_err(linux_error)?;
@@ -3751,7 +3813,7 @@ impl FileSystem for OverlayFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(olddir, oldname), (newdir, newname)])?;
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         let _io = self.fence_paths(&[&old, &new]);
@@ -3798,7 +3860,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(newparent, newname)])?;
         let source = self.path(inode)?;
         let destination = self.child(newparent, newname)?;
         let _io = self.fence_paths(&[&source, &destination]);
@@ -3886,7 +3948,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
-        let _operation = self.write_operation()?;
+        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         let exists = self
@@ -4023,13 +4085,12 @@ impl FileSystem for OverlayFs {
         }
         let h = &lease.handle;
         let backing = self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path));
-        if let Some(bytes) = self
+        if let Some(count) = self
             .core
-            .read_remote(&backing, offset, size)
+            .read_remote_into(&backing, offset, size, &mut w)
             .map_err(linux_error)?
         {
-            w.write_all(&bytes)?;
-            Ok(bytes.len())
+            Ok(count)
         } else {
             self.layers[h.layer.0].read_leased(&lease.native, w, size, offset)
         }
@@ -5741,6 +5802,37 @@ mod tests {
         assert!(fs.unlink(ctx, fuse::ROOT_ID, c"missing").is_err());
         assert!(fs.directory_names_cache.lock().unwrap().is_none());
         fs.releasedir(ctx, fuse::ROOT_ID, 0, old.unwrap()).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scoped_names_keep_unrelated_inventory_and_invalidate_rename_subtrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut fs = negative_entry_fixture(temp.path());
+        fs.configure_directory_names_cache(true);
+        fs.configure_scoped_names(true);
+        let ctx = root_context();
+        let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
+        let cache = |fs: &OverlayFs| {
+            let _guard = fs.read_operation().unwrap();
+            fs.directory_names(Path::new("dir")).unwrap().names
+        };
+        let initial = cache(&fs);
+        fs.mkdir(ctx, fuse::ROOT_ID, c"unrelated", 0o755, 0, Extensions::default()).unwrap();
+        assert!(Arc::ptr_eq(&initial, &cache(&fs)));
+        fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0).unwrap();
+        assert!(Arc::ptr_eq(&initial, &cache(&fs)));
+        fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()).unwrap();
+        let changed = cache(&fs);
+        assert!(!Arc::ptr_eq(&initial, &changed));
+        assert!(changed.iter().any(|name| name == b"child"));
+        fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0).unwrap();
+        assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        fs.snapshot_config.access_policy = pvisor_overlay_core::FileAccessPolicy::new(
+            vec!["private/**".into()], vec![],
+        ).unwrap();
+        fs.configure_scoped_names(true);
+        assert!(!fs.scoped_names_invalidation, "restricted aliases require global invalidation");
     }
 
     #[cfg(target_os = "linux")]
@@ -8592,26 +8684,32 @@ mod tests {
     #[test]
     fn lower_data_object_ids_are_bounded_never_recycled_and_layer_specific() {
         let mut table = LowerDataObjects::default();
-        let first = (1, 2, 3, 4, 5);
+        let mut domains = LowerDataObjects::default();
+        let native = domains.register(LowerDataKey::Native((1, 2, 3, 4, 5))).unwrap().0;
+        let key = LowerDataKey::Logical { layer: 1, object: 3, size: 5 };
+        let logical = domains.register(key).unwrap().0;
+        assert_ne!(native.id, logical.id);
+        assert_eq!(domains.register(key), Some((logical, false)));
+        let first = LowerDataKey::Native((1, 2, 3, 4, 5));
         let (a, fresh) = table.register(first).unwrap();
         assert!(fresh);
         assert_eq!(a, LowerDataObject { id: 1, size: 5 });
         assert_eq!(table.register(first), Some((a, false)));
         for index in 1..MAX_LOWER_DATA_OBJECTS {
-            let key = (1, 2, index as u64 + 3, 4, 5);
+            let key = LowerDataKey::Native((1, 2, index as u64 + 3, 4, 5));
             assert_eq!(table.register(key).unwrap().0.id, index as u32 + 1);
         }
-        assert!(table.register((2, 2, 3, 4, 5)).is_none());
+        assert!(table.register(LowerDataKey::Native((2, 2, 3, 4, 5))).is_none());
         assert_eq!(table.register(first), Some((a, false))); // hit still works at limit
         assert_eq!(table.ids.len(), MAX_LOWER_DATA_OBJECTS);
         let mut layers = LowerDataObjects::default();
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register((2, 2, 3, 4, 5)).unwrap().0.id
+            layers.register(LowerDataKey::Native((2, 2, 3, 4, 5))).unwrap().0.id
         );
         assert_ne!(
             layers.register(first).unwrap().0.id,
-            layers.register((1, 2, 3, 4, 6)).unwrap().0.id
+            layers.register(LowerDataKey::Native((1, 2, 3, 4, 6))).unwrap().0.id
         );
     }
 
@@ -8739,7 +8837,7 @@ mod tests {
                 fs.lower_data_objects
                     .lock()
                     .unwrap()
-                    .register((1, 2, 3, 4, 5))
+                    .register(LowerDataKey::Native((1, 2, 3, 4, 5)))
                     .unwrap();
             } else {
                 fs.capture_state().unwrap();
@@ -10698,8 +10796,14 @@ mod tests {
                 fs.snapshot_config.preimage_dir = None;
                 fs.configure_logical_directory_cache(true, false).unwrap();
             }
+            fs.configure_logical_data_cache(true);
+            fs.configure_lower_data_cache(true, true, false).unwrap();
+            fs.init(FsOptions::PVISOR_DATA_OBJECT).unwrap();
             let ctx = root_context();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+            let receipt = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
+            assert_eq!(receipt.data_object.is_some(), stable && cfg!(target_os = "linux"));
+            fs.release(ctx, entry.inode, 0, receipt.handle.unwrap(), false, false, None).unwrap();
             assert_eq!(entry.attr.st_uid, 1234);
             assert_eq!(entry.attr.st_gid, 2345);
             assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
@@ -10733,6 +10837,9 @@ mod tests {
             let (attr, _) = fs.getattr(ctx, entry.inode, Some(handle)).unwrap();
             assert_eq!(attr.st_uid, 1234);
             fs.core.copy_up(Path::new("file")).unwrap();
+            let upper_reply = fs.open_for_reply(ctx, entry.inode, false, libc::O_RDONLY as u32, true).unwrap();
+            assert!(upper_reply.data_object.is_none(), "upper must not reuse lower content identity");
+            fs.release(ctx, entry.inode, 0, upper_reply.handle.unwrap(), false, false, None).unwrap();
             assert_eq!(
                 std::fs::read(temp.path().join("upper/file")).unwrap(),
                 b"real image data"

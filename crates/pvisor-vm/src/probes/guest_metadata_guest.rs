@@ -2075,13 +2075,116 @@ fn main() {
         println!("GUEST_METADATA_PASS review-poll");
         return;
     }
-    if mode == "logical-root" {
+    if mode == "direct-copy" {
+        let mut expected = vec![0u8; 1 << 20];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            *byte = state as u8;
+        }
+        for round in 1u64..=3 {
+            let path = format!("/fixture/copy-{round}");
+            let completed = Instant::now();
+            let started = Instant::now();
+            let file = fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            let open_ms = started.elapsed().as_secs_f64() * 1000.0;
+            file.write_all_at(b"changed!", 0).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            File::open("/fixture").unwrap().sync_all().unwrap();
+            let total_ms = completed.elapsed().as_secs_f64() * 1000.0;
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"copy-open\",\"ms\":{open_ms}}}");
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"copy-completed\",\"ms\":{total_ms}}}");
+            let bytes = fs::read(path).unwrap();
+            assert_eq!(bytes.len(), 8 << 20);
+            expected[..8].copy_from_slice(&round.to_le_bytes());
+            for (index, chunk) in bytes.chunks_exact(1 << 20).enumerate() {
+                if index == 0 {
+                    assert_eq!(&chunk[..8], b"changed!");
+                    assert_eq!(&chunk[8..], &expected[8..]);
+                } else { assert_eq!(chunk, expected); }
+            }
+        }
+        println!("GUEST_METADATA_PASS direct-copy");
+        return;
+    }
+    if mode == "logical-data" || mode == "logical-data-review" {
+        let mut expected = vec![0u8; 65536];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            *byte = state as u8;
+        }
+        if mode == "logical-data-review" {
+            let old = File::open("/fixture/data-0").unwrap();
+            let mut original = vec![0u8; 65536];
+            expected[..8].copy_from_slice(&0u64.to_le_bytes());
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected);
+            let upper = fs::OpenOptions::new().write(true).open("/fixture/data-0").unwrap();
+            upper.write_all_at(b"changed!", 0).unwrap();
+            upper.sync_all().unwrap();
+            assert_eq!(&fs::read("/fixture/data-0").unwrap()[..8], b"changed!");
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected, "copy-up mixed upper and retained lower pages");
+            fs::remove_file("/fixture/data-0").unwrap();
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected, "unlink lost the retained data object");
+            println!("GUEST_METADATA_PASS logical-data-review");
+            return;
+        }
+        for round in 1..=3 {
+            for (phase, passes) in [("data-first", 1), ("data-reopen", 4)] {
+                let mut elapsed = 0.0;
+                for _ in 0..passes {
+                    for index in 0u64..256 {
+                        let started = Instant::now();
+                        let bytes = fs::read(format!("/fixture/data-{index}")).unwrap();
+                        elapsed += started.elapsed().as_secs_f64() * 1000.0;
+                        expected[..8].copy_from_slice(&index.to_le_bytes());
+                        assert_eq!(bytes, expected);
+                    }
+                }
+                println!("SDK_PHASE {{\"round\":{round},\"phase\":\"{phase}\",\"ms\":{elapsed}}}");
+            }
+        }
+        println!("GUEST_METADATA_PASS logical-data");
+        return;
+    }
+    if mode == "read-stream" {
+        let mut expected = vec![0u8; 1 << 20];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        for round in 1..=3 {
+            for phase in ["stream-first", "stream-reopen"] {
+                let mut elapsed = 0.0;
+                for index in 0u64..8 {
+                    let started = Instant::now();
+                    let bytes = fs::read(format!("/fixture/stream-{index}")).unwrap();
+                    elapsed += started.elapsed().as_secs_f64() * 1000.0;
+                    expected[..8].copy_from_slice(&index.to_le_bytes());
+                    assert_eq!(bytes.len(), 4 << 20);
+                    assert!(bytes.chunks_exact(1 << 20).all(|chunk| chunk == expected));
+                }
+                println!("SDK_PHASE {{\"round\":{round},\"phase\":\"{phase}\",\"ms\":{elapsed}}}");
+            }
+        }
+        println!("GUEST_METADATA_PASS read-stream");
+        return;
+    }
+    if mode == "logical-root" || mode == "lazy-deep" {
+        let suffix = if mode == "lazy-deep" { "/a/b/c/d/e/f/g" } else { "" };
         for round in 1..=3 {
             let started = Instant::now();
             for directory in 0..32 {
                 for index in 0..64 {
                     assert_eq!(
-                        fs::metadata(format!("/fixture/d{directory:02}/f{index:03}"))
+                        fs::metadata(format!("/fixture/d{directory:02}{suffix}/f{index:03}"))
                             .unwrap()
                             .len(),
                         8
@@ -2096,7 +2199,7 @@ fn main() {
             for directory in 0u64..32 {
                 for index in 0u64..8 {
                     assert_eq!(
-                        fs::read(format!("/fixture/d{directory:02}/f{index:03}")).unwrap(),
+                        fs::read(format!("/fixture/d{directory:02}{suffix}/f{index:03}")).unwrap(),
                         (directory * 64 + index).to_le_bytes()
                     );
                 }
@@ -2106,7 +2209,7 @@ fn main() {
                 started.elapsed().as_secs_f64() * 1000.0
             );
         }
-        println!("GUEST_METADATA_PASS logical-root");
+        println!("GUEST_METADATA_PASS {mode}");
         return;
     }
     if mode == "copyup-concurrent" {
@@ -2149,6 +2252,40 @@ fn main() {
         }
         assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
         println!("GUEST_METADATA_PASS copyup-concurrent");
+        return;
+    }
+    if mode == "scoped-reimport" {
+        mount_share("metadata-stable", "/tmp/metadata-stable");
+        let scan = || {
+            let mut seen = vec![false; 8192];
+            for entry in fs::read_dir("/tmp/metadata-stable/pages").unwrap() {
+                let name = entry.unwrap().file_name();
+                let name = name.to_str().unwrap();
+                let index: usize = name[1..6].parse().unwrap();
+                assert_eq!(name, format!("f{index:05}-{}", "x".repeat(64)));
+                assert!(!seen[index]);
+                seen[index] = true;
+            }
+            assert!(seen.iter().all(|v| *v));
+        };
+        scan();
+        for round in 1..=3 {
+            let cycle = Instant::now();
+            fs::write("/tmp/metadata-stable/scratch/pending", b"edit").unwrap();
+            fs::rename("/tmp/metadata-stable/scratch/pending", "/tmp/metadata-stable/scratch/done").unwrap();
+            fs::remove_file("/tmp/metadata-stable/scratch/done").unwrap();
+            // Drop guest metadata only; never drop host caches or change host
+            // policy. This deliberately exercises reimport under cache pressure.
+            fs::write("/proc/sys/vm/drop_caches", b"2\n").unwrap();
+            let started = Instant::now();
+            scan();
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            let cycle_ms = cycle.elapsed().as_secs_f64() * 1000.0;
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-reimport\",\"ms\":{ms}}}");
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-edit-cycle\",\"ms\":{cycle_ms}}}");
+        }
+        assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
+        println!("GUEST_METADATA_PASS scoped-reimport");
         return;
     }
     if mode == "directory-pages" {

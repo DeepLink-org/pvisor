@@ -1070,8 +1070,37 @@ use the existing guest directory mirror without declaring their growing physical
 projections Immutable. The default is off. Every lower must be physically
 Immutable or have an exact-root trusted backend lease; live/native mutable
 directories and staged apply journals never gain eligibility. Native metadata
-caches, DAX and data-object qualification are unchanged. Capture/restore of an
+caches, DAX and data-object qualification are unchanged by this switch alone. Capture/restore of an
 enabled logical-mirror owner is explicitly unsupported.
+
+Separate `PVISOR_VM_FS_LOGICAL_DATA_CACHE=1` additionally opts eligible Linux
+no-journal V2 views into independent guest content-page caching. It uses the
+leased logical object/length domain, not native placeholder inode identity.
+Native open-description checks, verified content reads, upper separation and
+capture refusal remain. Guest/host writeback and DAX are outside this experiment;
+the flag defaults off and old peers retain ordinary reads.
+
+`PVISOR_VM_FS_REUSE_LAZY_NODES=1` is a default-off direct-image experiment.
+Only fixed V2 sources reuse a positive Node after this projection has completed
+its full no-symlink ancestor walk and native publication. Reuse consults the
+existing inode/path tables; no second metadata cache or negative cache is added.
+Unprojected names, legacy sources and traversal failures retain the original
+walk. Values other than `0`/`1` fail attachment before serving requests.
+
+`PVISOR_VM_FS_STREAM_LAZY_READS=1` streams verified content-cache slices into the
+VM reply sink instead of constructing an intermediate owned payload Vec. It is
+default-off (`0`), rejects other values, retains normal block verification and
+EOF rules, and does not retain guest buffers after the request. A failed request
+may have copied a verified prefix but must publish an error, not a partial success.
+Native FD reads and the host FUSE owned-buffer path are unchanged.
+
+`PVISOR_VM_FS_DIRECT_LAZY_COPY=1` lets fixed V2 direct-image producers fill Core's
+private upper temporary file from verified blocks, without first materializing
+and syncing a complete native lower copy. It is default-off, rejects other values,
+retains preimage/metadata/source validation and full-length checks, and never
+publishes a partial destination on error. Ordinary and prepared copy-up paths
+use the same capability. Snapshot export and explicit native lower materialization
+retain their existing behavior; this does not implement block/extent COW.
 
 Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
 not enable DAX or make the mutable physical projection Immutable. A cold small

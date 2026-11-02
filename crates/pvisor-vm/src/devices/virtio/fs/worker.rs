@@ -673,6 +673,38 @@ fn logical_directory_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Res
     }
 }
 
+fn scoped_names_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_SCOPED_NAMES must be 0 or 1")),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn followup_settings_are_strict_and_default_off() {
+    use std::ffi::OsStr;
+    for parse in [scoped_names_enabled, logical_data_cache_enabled] {
+        assert!(!parse(None).unwrap());
+        assert!(!parse(Some(OsStr::new("0"))).unwrap());
+        assert!(parse(Some(OsStr::new("1"))).unwrap());
+        assert!(parse(Some(OsStr::new("true"))).is_err());
+    }
+}
+
+fn logical_data_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_LOGICAL_DATA_CACHE must be 0 or 1")),
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn directory_names_cache_setting_defaults_off_and_is_strict() {
@@ -790,6 +822,10 @@ impl FsWorker {
         let object_read_barriers = object_read_barriers_enabled(
             std::env::var_os("PVISOR_VM_FS_OBJECT_READ_BARRIERS").as_deref(),
         )?;
+        let logical_data_cache = logical_data_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_LOGICAL_DATA_CACHE").as_deref(),
+        )?;
+        let scoped_names = scoped_names_enabled(std::env::var_os("PVISOR_VM_FS_SCOPED_NAMES").as_deref())?;
         let exclusive_upper_absence_cache = exclusive_upper_absence_cache_enabled(
             std::env::var_os("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
         )?;
@@ -820,8 +856,10 @@ impl FsWorker {
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
                 inner.configure_directory_names_cache(directory_names_cache);
+                inner.configure_scoped_names(scoped_names);
                 inner.configure_prepared_copy_up(prepared_copy_up);
                 inner.configure_logical_directory_cache(logical_directory_cache, restoring)?;
+                inner.configure_logical_data_cache(logical_data_cache);
                 inner.configure_exclusive_upper_absence_cache(exclusive_upper_absence_cache)?;
                 inner.configure_readonly_flush_elision(
                     readonly_flush_elision,
@@ -829,7 +867,7 @@ impl FsWorker {
                     shm_region.is_some(),
                 )?;
                 inner.configure_lower_data_cache(
-                    lower_data_cache,
+                    lower_data_cache || logical_data_cache,
                     guest_cache,
                     shm_region.is_some(),
                 )?;

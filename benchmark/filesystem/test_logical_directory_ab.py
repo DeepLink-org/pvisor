@@ -13,6 +13,19 @@ SPEC.loader.exec_module(SUBJECT)
 
 
 class LogicalDirectoryContracts(unittest.TestCase):
+    def test_each_followup_changes_only_its_requested_mechanism(self):
+        for experiment, variable in [
+            ("lazy-nodes", "PVISOR_VM_FS_REUSE_LAZY_NODES"),
+            ("read-sink", "PVISOR_VM_FS_STREAM_LAZY_READS"),
+            ("logical-data", "PVISOR_VM_FS_LOGICAL_DATA_CACHE"),
+            ("direct-copy", "PVISOR_VM_FS_DIRECT_LAZY_COPY"),
+        ]:
+            left = SUBJECT.environment(Path("/owned/batch"), 0, experiment=experiment)
+            right = SUBJECT.environment(Path("/owned/batch"), 1, experiment=experiment)
+            delta = [(a, b) for a, b in zip(left, right, strict=True) if a != b]
+            self.assertEqual(delta, [(f"{variable}=0", f"{variable}=1")])
+            self.assertIn("PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=1", left)
+
     def test_only_logical_cache_varies_between_timed_arms(self):
         left = SUBJECT.environment(Path("/owned/batch"), 0)
         right = SUBJECT.environment(Path("/owned/batch"), 1)

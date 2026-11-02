@@ -20,7 +20,8 @@ BASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BASE)
 
 
-def environment(batch, enabled, diagnostic=False):
+def environment(batch, enabled, diagnostic=False, experiment="logical-directory"):
+    logical = enabled if experiment == "logical-directory" else 1
     return [
         "/usr/bin/env",
         "-i",
@@ -31,7 +32,11 @@ def environment(batch, enabled, diagnostic=False):
         f"XDG_DATA_HOME={batch / 'data'}",
         f"PVISOR_DOCKER_HOME={batch / 'store'}",
         f"PVISOR_IMAGE_STORE={batch / 'images'}",
-        f"PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE={enabled}",
+        f"PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE={logical}",
+        f"PVISOR_VM_FS_REUSE_LAZY_NODES={enabled if experiment == 'lazy-nodes' else 0}",
+        f"PVISOR_VM_FS_STREAM_LAZY_READS={enabled if experiment == 'read-sink' else 0}",
+        f"PVISOR_VM_FS_LOGICAL_DATA_CACHE={enabled if experiment == 'logical-data' else 0}",
+        f"PVISOR_VM_FS_DIRECT_LAZY_COPY={enabled if experiment == 'direct-copy' else 0}",
         f"PVISOR_FS_PROFILE={int(diagnostic)}",
         "PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=1",
         "PVISOR_VM_FS_PREPARED_COPY_UP=1",
@@ -62,13 +67,41 @@ def prepare(args):
         raise ValueError("firmware receipt mismatch")
     for directory in range(32):
         path = batch / "context/fixture" / f"d{directory:02}"
+        if args.experiment == "lazy-nodes":
+            path = path / "a/b/c/d/e/f/g"
         path.mkdir(parents=True)
         for index in range(64):
             (path / f"f{index:03}").write_bytes((directory * 64 + index).to_bytes(8, "little"))
+    if args.experiment == "read-sink":
+        for index in range(8):
+            block = bytearray(BASE.copyup_expected_block())
+            block[:8] = index.to_bytes(8, "little")
+            with (batch / "context/fixture" / f"stream-{index}").open("wb") as file:
+                for _ in range(4):
+                    file.write(block)
+    if args.experiment == "logical-data":
+        for index in range(256):
+            block = bytearray(BASE.copyup_expected_block()[:65536])
+            block[:8] = index.to_bytes(8, "little")
+            (batch / "context/fixture" / f"data-{index}").write_bytes(block)
+    if args.experiment == "direct-copy":
+        for index in range(1, 4):
+            block = bytearray(BASE.copyup_expected_block())
+            block[:8] = index.to_bytes(8, "little")
+            with (batch / "context/fixture" / f"copy-{index}").open("wb") as file:
+                for _ in range(8):
+                    file.write(block)
+    mode = "lazy-deep" if args.experiment == "lazy-nodes" else "logical-root"
+    if args.experiment == "read-sink":
+        mode = "read-stream"
+    if args.experiment == "logical-data":
+        mode = "logical-data"
+    if args.experiment == "direct-copy":
+        mode = "direct-copy"
     (batch / "context/Dockerfile").write_text(
-        'FROM scratch\nCOPY fixture /fixture\nCOPY probe /probe\nCMD ["/probe", "logical-root"]\n'
+        "FROM scratch\nCOPY fixture /fixture\nCOPY probe /probe\n" + f'CMD ["/probe", "{mode}"]\n'
     )
-    command = environment(batch, 0) + [
+    command = environment(batch, 0, experiment=args.experiment) + [
         str(batch / "bin/pvisor"),
         "build",
         "-q",
@@ -79,6 +112,20 @@ def prepare(args):
     BASE.save(batch / "build.command.json", command)
     with (batch / "build.log").open("wb") as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+    if args.experiment == "logical-data":
+        review = environment(batch, 1, experiment=args.experiment) + [
+            str(batch / "bin/pvisor"),
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "logical-fixture:local",
+            "/probe",
+            "logical-data-review",
+        ]
+        BASE.save(batch / "review.command.json", review)
+        with (batch / "review.log").open("wb") as log:
+            subprocess.run(review, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
     repo = Path(__file__).resolve().parents[2]
     inputs = {}
     for root in [
@@ -110,9 +157,13 @@ def prepare(args):
             "controls_pairs": 0,
             "cpus": sorted(os.sched_getaffinity(0))[:2],
             "seed": 98171,
-            "experiment": "logical-directory",
-            "mode": "logical-root",
-            "metric": "logical-stat",
+            "experiment": args.experiment,
+            "mode": mode,
+            "metric": {
+                "read-sink": "stream-reopen",
+                "logical-data": "data-reopen",
+                "direct-copy": "copy-completed",
+            }.get(args.experiment, "logical-stat"),
             "no_interference_filter": True,
         },
     )
@@ -170,7 +221,7 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
             "-c",
             ",".join(map(str, manifest["cpus"])),
         ]
-        + environment(batch, enabled, diagnostic)
+        + environment(batch, enabled, diagnostic, manifest["experiment"])
         + [
             str(batch / "bin/pvisor"),
             "run",
@@ -198,28 +249,30 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
         raise
     elapsed = (time.perf_counter_ns() - started) / 1e6
     text = (batch / f"{label}.log").read_text()
-    if result.returncode or text.count("GUEST_METADATA_PASS logical-root") != 1:
+    if result.returncode or text.count(f"GUEST_METADATA_PASS {manifest['mode']}") != 1:
         raise ValueError(f"CLI trial failed: {label}")
     phases = [
         json.loads(line.removeprefix("SDK_PHASE "))
         for line in text.splitlines()
         if line.startswith("SDK_PHASE ")
     ]
+    names = {
+        "read-sink": ("stream-first", "stream-reopen"),
+        "logical-data": ("data-first", "data-reopen"),
+        "direct-copy": ("copy-open", "copy-completed"),
+    }.get(manifest["experiment"], ("logical-stat", "logical-read"))
     if sorted((p["phase"], p["round"]) for p in phases) != sorted(
-        (name, round_) for name in ("logical-stat", "logical-read") for round_ in (1, 2, 3)
+        (name, round_) for name in names for round_ in (1, 2, 3)
     ):
         raise ValueError("phase inventory incomplete")
     record = {
         "pair": pair,
         "enabled": enabled,
         "diagnostic": diagnostic,
-        "mode": "logical-root",
+        "mode": manifest["mode"],
         "phases": phases,
         "process_ms": elapsed,
-        "totals_ms": {
-            name: sum(p["ms"] for p in phases if p["phase"] == name)
-            for name in ("logical-stat", "logical-read")
-        },
+        "totals_ms": {name: sum(p["ms"] for p in phases if p["phase"] == name) for name in names},
     }
     if diagnostic:
         lines = []
@@ -236,14 +289,27 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
             lines = text.splitlines()
         profiles = profile_inventory(lines)
         overlays = [p for p in profiles if p["component"] == "virtio-fs-overlay"]
-        if (
-            len(overlays) != 1
-            or overlays[0]["measurements"]["logical_directory_cache_enabled"]["units"] != enabled
-        ):
+        if len(overlays) != 1 or overlays[0]["measurements"]["logical_directory_cache_enabled"][
+            "units"
+        ] != (enabled if manifest["experiment"] == "logical-directory" else 1):
             raise ValueError("logical cache qualification differs from request")
+        if manifest["experiment"] == "logical-data":
+            measurements = overlays[0]["measurements"]
+            if measurements["logical_data_cache_enabled"]["units"] != enabled:
+                raise ValueError("logical data qualification differs from request")
+            if bool(measurements["lower_data_cache_open_flags"]["units"]) != bool(enabled):
+                raise ValueError("logical data receipt path was not exercised")
+        if manifest["experiment"] == "direct-copy":
+            copied = sum(
+                p["measurements"].get("copy_up_direct_bytes", {}).get("units", 0)
+                for p in profiles
+                if p["component"] == "overlay-core"
+            )
+            if copied != ((24 << 20) if enabled else 0):
+                raise ValueError("direct-copy byte accounting differs from workload")
         record["profiles"] = profiles
         subprocess.run(
-            environment(batch, enabled)
+            environment(batch, enabled, experiment=manifest["experiment"])
             + [
                 str(batch / "bin/pvisor"),
                 "rm",
@@ -290,6 +356,11 @@ def main():
     for name in ["cli", "guest", "firmware", "firmware-source"]:
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--samples", type=int, default=30)
+    parser.add_argument(
+        "--experiment",
+        choices=["logical-directory", "lazy-nodes", "read-sink", "logical-data", "direct-copy"],
+        default="logical-directory",
+    )
     args = parser.parse_args()
     if args.prepare:
         if not all([args.cli, args.guest, args.firmware, args.firmware_source]) or args.samples < 1:

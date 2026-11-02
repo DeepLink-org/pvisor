@@ -915,6 +915,14 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 
 ## Guest 目录镜像
 
+`PVISOR_VM_FS_LOGICAL_DATA_CACHE=1` 是默认关闭的Linux实验：要求逻辑目录
+租约资格、无journal/host写缓存、guest目录缓存开启及DAX/guest WB关闭。
+复用既有独立lower-data inode协议，但key使用固定layer租约内backend对象ID
+与逻辑长度，不使用占位文件的native身份作为内容证明。OPEN仍做原授权、
+native FD形态核验，READ仍校验源内容；native与逻辑key不共用域，upper不能
+取得lower数据ID。未知backend、direct/write FD、旧peer保留普通路径。
+已协商会话拒绝capture，所有值只接受0/1。
+
 `PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=1` 可在 fresh、无 preimage/apply journal
 的镜像视图上启用逻辑目录镜像；默认或 `0` 关闭，其他值拒绝。每个物理
 Mutable lower 必须持有 exact-root、可信固定 revision 的 backend lease，
@@ -931,6 +939,13 @@ Immutable 的 overlay 保留最近一个目录的名称/类型快照，供分页
 已经打开的目录仍持有各自 Arc 快照。capture/restore/destroy 经过同一屏障，
 缓存不序列化；Mutable/lazy 物理投影不扩大资格。该实验默认关闭，性能
 证据必须将目录导入与完整工作负载分开，不以减少枚举次数推导耗时收益。
+
+`PVISOR_VM_FS_SCOPED_NAMES=1` 在上述物理名称缓存已启用、默认访问策略下，
+仅失效create/link/unlink/mkdir/rmdir/symlink/mknod/rename的相关父目录和源/
+目标子树。路径在namespace独占锁内解析；失败也按同范围失效，未知路径、
+属性修改/OPEN/capture及非默认策略仍全失效，避免hardlink策略旁路。
+默认关闭，非法值拒绝；只是名称/类型快照，不保留属性或授权。受控guest
+metadata压力实验未检出收益，因此不默认启用，也不改变guest rename镜像协议。
 
 在宿主 runner 启动前设置 `PVISOR_VM_GUEST_CACHE=0`，可整体关闭 guest
 目录元数据镜像和惰性只读 open；`1` 或未设置默认开启。该开关对所有

@@ -268,6 +268,40 @@ Design: 负载、对照、控制变量与有效样本判据。
   固件/二进制/源码/输入和命令独立冻结；逻辑租约只覆盖认证revision，
   不扩大物理缓存、live stage或snapshot资格。失败停止并保留，无慢值剔除。
 - **想要的结论：** "改动 X 让负载 Y 的中位数变化 Z%（95% 置信区间），其余负载未检出差异"；以及"staged 与 FUSE 直通之间的差距中，持久化占 A ms，内容指纹占 B ms，路径解析占 C ms"。
+- **后续1／已解析lazy对象复用：** `logical_directory_ab.py --experiment lazy-nodes`，
+  固定逻辑目录镜像和既有名称/prepared-copy-up开启，仅切换
+  `PVISOR_VM_FS_REUSE_LAZY_NODES=0/1`。同一release CLI和静态guest、本地V2
+  镜像、32×64文件，增加7层物理/逻辑路径，三轮stat为主要指标、读回和
+  CLI进程时间分别保留。N30配对随机交替，资源/校验/profile沿用第三批。
+  复用只覆盖同一投影已成功完整遍历并发布的正项，不用目录预取项或缺项
+  作为祖先证明。独立批次`.data/lazy-nodes-*`，不累加旧结果或外推Agent。
+- **后续2／流式lazy READ：** 同入口`--experiment read-sink`，只切换
+  `PVISOR_VM_FS_STREAM_LAZY_READS=0/1`，节点复用和DATA关闭，逻辑目录镜像开启。
+  8个4MiB高熵文件，每环境3轮首次/重开读分计，完整字节校验在各读时钟外。
+  reopen三轮累计为主要指标；N30随机配对，固定固件、同release CLI，沿用
+  两核/2GiB/swap0预算和独立profile，保持内容校验、短读/EOF、sink失败合同。
+  本地`.data/read-sink-*`批次保留所有输入、失败、慢值，不宣称冷盘或零拷贝。
+- **后续3／V2逻辑内容对象缓存：** 同入口`--experiment logical-data`，
+  256×64KiB文件，每轮首次及4次重开读分别计时，三轮reopen累计为主要指标；
+  N30、同源制品、同资源预算及完整字节校验。仅切换逻辑DATA开关，
+  物理Mutable、流式读/节点复用关闭；独立profile确认receipt与READ数量，
+  正式样本不插桩。先以候选在真实guest验证copy-up/旧FD/整页隔离/unlink，
+  失败停止；无journal/lazy不可变revision范围，不外推live workspace。
+- **后续4／直接填充upper：** 同入口`--experiment direct-copy`，三轮各新
+  8MiB文件首次可写OPEN、8字节修改、文件及父目录fsync完成分别计时，逐字节
+  核对8MiB upper。只切换`PVISOR_VM_FS_DIRECT_LAZY_COPY`，前述新机制关闭，
+  既有prepared-copy-up开启；N30和独立profile，direct字节必须为24MiB/环境。
+  原像、校验、元数据及发布顺序保持；native/legacy/backend不声明capability
+  的原路径保留，lower物化/快照导出不删除。完整copy+sync为主要指标，
+  不以OPEN提前返回推导收益，失败停止保留。
+- **后续5／目录快照按修改范围失效：** SDK入口`directory_names_ab.py
+  --experiment scoped-names`，名称缓存开启，其他新机制关闭，仅切换SCOPED_NAMES。
+  Immutable物理lower/default策略；8192长名称目录先导入，另一个目录执行
+  create→rename→unlink，再仅在guest内drop_caches=2强制metadata重新导入。
+  三轮reimport累计为主要指标，完整编辑循环另记；N30随机配对和独立profile，
+  校验全名称、重复项及scope-retained计数；不改变宿主cache或策略。
+  修改父目录及源/目标子树先失效，未知范围/非默认策略/属性修改仍全失效。
+  这是受控guest metadata压力机制实验，不是自然编辑器或整Agent收益。
 - **实验设计：**
   - 版本 A/B 使用同一份冻结源码，只应用待测改动后构建两个二进制，同机随机交替运行，每格 30 个样本，并报告置信区间。
   - 分解实验在同一批次内对照原生、FUSE 直通和 staged，同时打开 profile 计数器另跑一批；带计数器的批次不计入计时结论。

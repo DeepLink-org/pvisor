@@ -2764,7 +2764,12 @@ impl OverlayCore {
         let links = crate::backend::link_count(&resolved.path, metadata.nlink())?;
         let attributes = crate::backend::attributes(&resolved.path)?;
         let skip_contents = truncate && links == 1;
-        if !skip_contents {
+        let direct = if skip_contents {
+            None
+        } else {
+            crate::backend::direct_file_source(&resolved.path)?
+        };
+        if !skip_contents && direct.is_none() {
             crate::backend::materialize_file(&resolved.path)?;
         }
         if !source_immutable {
@@ -2820,6 +2825,12 @@ impl OverlayCore {
         if skip_contents {
             self.profile
                 .add("copy_up_truncate_skipped_bytes", prepared.metadata.len());
+        } else if let Some(direct) = direct {
+            prepared.verify_source(None, &self.profile)?;
+            let copied = direct.copy_into(&destination)?;
+            self.profile.add("copy_up_direct_bytes", copied);
+            self.profile.add("copy_up_bytes", copied);
+            prepared.verify_source(None, &self.profile)?;
         } else {
             let mut source = OpenOptions::new()
                 .read(true)
@@ -2993,12 +3004,20 @@ impl OverlayCore {
                         self.profile
                             .add("copy_up_truncate_skipped_bytes", metadata.len());
                     } else {
-                        crate::backend::materialize_file(&resolved.path)?;
-                        let mut source = OpenOptions::new()
-                            .read(true)
-                            .custom_flags(libc::O_NOFOLLOW)
-                            .open(&resolved.path)?;
-                        let copied = io::copy(&mut source, &mut destination)?;
+                        let copied = if let Some(direct) =
+                            crate::backend::direct_file_source(&resolved.path)?
+                        {
+                            let copied = direct.copy_into(&destination)?;
+                            self.profile.add("copy_up_direct_bytes", copied);
+                            copied
+                        } else {
+                            crate::backend::materialize_file(&resolved.path)?;
+                            let mut source = OpenOptions::new()
+                                .read(true)
+                                .custom_flags(libc::O_NOFOLLOW)
+                                .open(&resolved.path)?;
+                            io::copy(&mut source, &mut destination)?
+                        };
                         self.profile.add("copy_up_bytes", copied);
                     }
                 }

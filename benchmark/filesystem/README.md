@@ -19,6 +19,12 @@ VM shutdown 会结束整个 runner，Rust TempDir 析构不能作为清理或 ho
 guest phase 时钟；不是冷磁盘、普通 CLI 或完整 Agent 性能结论。
 本轮进度和未验收项见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
 
+后续五项的独立N30结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
+CLI sampler增加`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
+SDK sampler增加`--experiment scoped-names`。每批只改变该项开关，
+其他后续机制关闭；使用原来的prepare→semspec bench→analysis入口。
+流式读与范围失效未检出收益，不能把点估计作为默认开启依据。
+
 `logical_directory_ab.py` 单独验证第三批的真实Docker-style CLI固定镜像，
 接收`--prepare BATCH --cli CLI --guest GUEST --firmware FW
 --firmware-source SOURCE --samples 30`；生成计划后由同样的`semspec bench`
