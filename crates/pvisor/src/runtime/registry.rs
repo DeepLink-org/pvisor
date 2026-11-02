@@ -32,6 +32,9 @@ use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
 pub const CONTROL_FILENAME: &str = "control.sock";
+/// CLI instance creation mode, retained in Run/Bundle orchestration metadata.
+/// Values are `spawn` (ephemeral) and `stage` (persistent, including workspace forks).
+pub const INSTANCE_KIND_KEY: &str = "pvisor.orchestration.instance_kind";
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_MAX_INSPECT_MOUNTS: usize = 16;
 
@@ -245,7 +248,8 @@ impl JobDirectoryLock {
         );
         let root = super::job_execution::Job::read(&current)?
             .map(|job| job.root)
-            .unwrap_or_else(|| current.stage_dir());
+            .map(Ok)
+            .unwrap_or_else(|| current.instance_dir())?;
         let path = root.join("job.lock");
         let mut file = OpenOptions::new()
             .read(true)
@@ -392,14 +396,31 @@ impl RunRecord {
             .unwrap_or_else(|| self.storage.clone())
     }
 
-    /// Initialize preview lock inodes during explicit project-scope launch only.
+    /// Stable CLI instance root, validated against its immutable identity.
+    /// Legacy/embedded Runs without a layout binding use their Attempt stage.
+    /// Filesystem/journal paths must still come from `stage_dir`/OverlayRecord.
+    pub fn instance_dir(&self) -> anyhow::Result<PathBuf> {
+        let Some(value) = self.orchestration.get(super::instance::ROOT_KEY) else {
+            return Ok(self.stage_dir());
+        };
+        let root = PathBuf::from(value.as_str().context("invalid instance root binding")?);
+        anyhow::ensure!(
+            root.is_absolute() && self.stage_dir().starts_with(root.join("attempts")),
+            "Attempt storage is outside its instance root"
+        );
+        super::instance::validate_root(&root, &self.run_id)?;
+        Ok(root)
+    }
+
+    /// Initialize preview lock inodes during CLI-instance or explicit project-scope launch.
     /// The caller owns the new Attempt lease; previews must never call this method.
     pub(crate) fn initialize_apply_observation_locks(&self) -> anyhow::Result<()> {
-        if self.project_apply_scope.is_none() {
+        if self.project_apply_scope.is_none() && !self.orchestration.contains_key(INSTANCE_KIND_KEY)
+        {
             return Ok(());
         }
         use std::os::unix::fs::OpenOptionsExt;
-        let stage = self.stage_dir();
+        let stage = self.instance_dir()?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -435,11 +456,12 @@ impl RunRecord {
             "{}.json",
             crate::util::encode_hex(self.run_id.as_bytes())
         ));
+        let index_stage = self.instance_dir()?;
         let contents =
             crate::util::persistence_step(&self.run_id, "run_index", "serialize", || {
                 serde_json::to_vec_pretty(&RunIndex {
                     run_id: self.run_id.clone(),
-                    stage_dir: stage,
+                    stage_dir: index_stage,
                 })
             })?;
         // State updates do not move the Run. Keep the existing index inode,
@@ -464,6 +486,18 @@ impl RunRecord {
         } else {
             crate::util::write_run_bytes(&index_path, &contents, &self.run_id, "run_index")?;
         }
+        // CLI instances need one user-wide discovery index even when --stage
+        // chooses storage outside the default run home. Embedded Runs opt out.
+        if self.orchestration.contains_key(INSTANCE_KIND_KEY) {
+            let global = self
+                .instance_registry()?
+                .join(".pvisor")
+                .join("runs")
+                .join(index_path.file_name().expect("index filename"));
+            if global != index_path && fs::read(&global).ok().as_deref() != Some(&contents) {
+                crate::util::write_run_bytes(&global, &contents, &self.run_id, "instance_index")?;
+            }
+        }
         Ok(())
     }
 
@@ -482,6 +516,8 @@ impl RunRecord {
     }
 
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
+        let resolved_stage = super::instance::resolve_stage(stage)?;
+        let stage = resolved_stage.as_path();
         // A Job's original stage remains a stable selector across Attempts.
         // The active Attempt owns its own run.json, Bundle and storage lease.
         let active = super::job_execution::Job::read_stage(stage)?;
@@ -527,15 +563,109 @@ impl RunRecord {
     }
 
     pub fn remove_index(&self) -> anyhow::Result<()> {
-        let path = self.storage.join(".pvisor").join("runs").join(format!(
-            "{}.json",
-            crate::util::encode_hex(self.run_id.as_bytes())
-        ));
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
+        let mut roots = vec![self.storage.clone()];
+        if self.orchestration.contains_key(INSTANCE_KIND_KEY) {
+            roots.push(self.instance_registry()?);
         }
+        roots.sort();
+        roots.dedup();
+        for root in roots {
+            let path = root.join(".pvisor").join("runs").join(format!(
+                "{}.json",
+                crate::util::encode_hex(self.run_id.as_bytes())
+            ));
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn instance_registry(&self) -> anyhow::Result<PathBuf> {
+        match self
+            .orchestration
+            .get("pvisor.orchestration.instance_registry")
+        {
+            Some(value) => {
+                let path = PathBuf::from(
+                    value
+                        .as_str()
+                        .context("invalid instance registry binding")?,
+                );
+                anyhow::ensure!(path.is_absolute(), "instance registry must be absolute");
+                Ok(path)
+            }
+            None => Ok(default_run_home()),
+        }
+    }
+
+    /// Remove a stopped CLI instance and its owned Job storage, not its workspace,
+    /// external lower layers or external snapshot stores. Acquires Job-directory,
+    /// execution-operation and Attempt locks in that order and rereads identity.
+    /// Live/unknown execution and retained checkpoint/lower dependencies fail
+    /// closed. Filesystem-CoW children do not depend on the parent's inodes.
+    /// Failure during deletion may leave partial storage; no workspace is applied.
+    pub fn remove_instance(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.orchestration.contains_key(INSTANCE_KIND_KEY),
+            "only registered CLI instances can be removed with rm"
+        );
+        let _directory = JobDirectoryLock::acquire(self, "rm")?;
+        let job = super::job_execution::Job::read(self)?;
+        let _operation = job.as_ref().map(|job| job.lock()).transpose()?;
+        let (current, _attempt) = self.lock_current()?;
+        current.require_stopped()?;
+        if let Some(overlay) = &current.overlay {
+            anyhow::ensure!(
+                !pvisor_overlay_core::apply::has_pending_applies(overlay)?,
+                "pending apply recovery evidence must be reconciled before removing the instance"
+            );
+        }
+        let root = job
+            .as_ref()
+            .map(|job| job.root.clone())
+            .map(Ok)
+            .unwrap_or_else(|| current.instance_dir())?;
+        let root = root.canonicalize()?;
+        let metadata = fs::symlink_metadata(&root)?;
+        anyhow::ensure!(
+            root.parent().is_some()
+                && metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() },
+            "instance storage must be an owned directory other than /"
+        );
+        for checkpoint in super::checkpoint::list_checkpoints(&current)? {
+            anyhow::ensure!(
+                super::checkpoint::checkpoint_branch_refs(&checkpoint)? == 0,
+                "instance checkpoint is retained by a legacy branch; remove dependent branches first"
+            );
+        }
+        if let Some(job) = &job {
+            anyhow::ensure!(
+                job.checkpoints
+                    .values()
+                    .all(|capture| capture.branches.values().all(|path| !path.exists())),
+                "execution checkpoints are retained by branches; remove dependent branches first"
+            );
+        }
+        for other in registered_runs()? {
+            if other.run_id != current.run_id {
+                anyhow::ensure!(
+                    other
+                        .overlay_lowers
+                        .iter()
+                        .all(|path| !path.starts_with(&root)),
+                    "instance {} still uses this instance's filesystem layers",
+                    other.run_id
+                );
+            }
+        }
+        // Removing the index first would hide a failed deletion from ps -a.
+        fs::remove_dir_all(&root)?;
+        current.remove_index()?;
+        Ok(())
     }
 }
 
@@ -975,6 +1105,8 @@ pub fn control_unmount_inspect(stage: &Path, id: String) -> anyhow::Result<()> {
 }
 
 pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
+    let resolved_stage = super::instance::resolve_stage(stage_dir)?;
+    let stage_dir = resolved_stage.as_path();
     let path = stage_dir.join(LEASE_FILENAME);
     if !path.exists() {
         return Ok(false);
@@ -1016,11 +1148,22 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
             return RunRecord::read(&index.stage_dir);
         }
-        if let Some(record) = default_runs()?
+        let records = registered_runs()?;
+        let exact: Vec<_> = records
+            .iter()
+            .filter(|record| record.run_id == id || record.agent == id)
+            .collect();
+        if !exact.is_empty() {
+            anyhow::ensure!(exact.len() == 1, "ambiguous Job name: {id}; use its ID");
+            return Ok(exact[0].clone());
+        }
+        let matches: Vec<_> = records
             .into_iter()
-            .find(|record| record.run_id == id)
-        {
-            return Ok(record);
+            .filter(|record| !id.is_empty() && record.run_id.starts_with(id.as_ref()))
+            .collect();
+        if !matches.is_empty() {
+            anyhow::ensure!(matches.len() == 1, "ambiguous Job ID: {id}");
+            return Ok(matches.into_iter().next().expect("one match"));
         }
         anyhow::bail!("pVisor Run not found: {}", selector.display());
     }
@@ -1051,7 +1194,10 @@ fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRec
     latest_run(storage).or_else(|_| latest_default_run())
 }
 
-fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
+/// Discover Runs in the default homes and CLI instances registered with custom
+/// stage storage. Returned records are completion-validated and deduplicated by
+/// Job identity, newest first. Vanished/unpublished records are not instances.
+pub fn registered_runs() -> anyhow::Result<Vec<RunRecord>> {
     let mut records = Vec::new();
     let mut roots = vec![default_run_home(), std::env::temp_dir().join("pvisor-runs")];
     roots.sort();
@@ -1060,8 +1206,18 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
         if !root.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(root)? {
-            let storage = entry?.path();
+        records.extend(all_runs(&root)?);
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let storage = entry.path();
             if let Ok(record) = RunRecord::read(&storage) {
                 records.push(record);
             } else {
@@ -1070,11 +1226,13 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
         }
     }
     records.sort_by_key(|record| std::cmp::Reverse(record.started_at_unix_ms));
+    let mut seen = std::collections::HashSet::new();
+    records.retain(|record| seen.insert(record.run_id.clone()));
     Ok(records)
 }
 
 fn latest_default_run() -> anyhow::Result<RunRecord> {
-    default_runs()?.into_iter().next().ok_or_else(|| {
+    registered_runs()?.into_iter().next().ok_or_else(|| {
         anyhow::anyhow!(
             "no pVisor Runs found under {}",
             default_run_home().display()
@@ -1086,7 +1244,7 @@ fn latest_workspace_run(workspace: &Path) -> anyhow::Result<RunRecord> {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
-    default_runs()?
+    registered_runs()?
         .into_iter()
         .find(|record| {
             record.workspace.as_ref().is_some_and(|root| {
@@ -1124,6 +1282,9 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
     }
     candidates.extend(absolute.ancestors().map(Path::to_path_buf));
     for stage in candidates {
+        if stage.join(super::instance::MANIFEST).is_file() {
+            return RunRecord::read(&stage);
+        }
         if stage.join(RUN_META_FILENAME).is_file() {
             return RunRecord::read(&stage);
         }
@@ -1165,22 +1326,49 @@ fn path_within(path: &Path, root: &Path) -> bool {
 
 pub fn all_runs(storage: &Path) -> anyhow::Result<Vec<RunRecord>> {
     let dir = storage.join(".pvisor").join("runs");
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
     let mut records = Vec::new();
-    for entry in fs::read_dir(dir)? {
+    for entry in entries {
         let path = entry?.path();
         if path
             .extension()
             .is_some_and(|extension| extension == "json")
         {
-            let index: RunIndex = match serde_json::from_slice(&fs::read(path)?) {
-                Ok(index) => index,
-                Err(_) => continue,
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
             };
-            if let Ok(record) = RunRecord::read(&index.stage_dir) {
-                records.push(record);
+            let index: RunIndex = serde_json::from_slice(&bytes)
+                .with_context(|| format!("invalid instance index {}", path.display()))?;
+            if !index.stage_dir.try_exists()? {
+                continue;
+            }
+            match RunRecord::read(&index.stage_dir) {
+                Ok(record) => {
+                    anyhow::ensure!(
+                        record.run_id == index.run_id,
+                        "instance index identity mismatch"
+                    );
+                    records.push(record);
+                }
+                // Removal may race discovery. Only disappearance is benign;
+                // corrupt committed state must not authorize backend fallback.
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+                Err(_) if !index.stage_dir.try_exists()? => {}
+                Err(error) => {
+                    return Err(error.context(format!(
+                        "invalid indexed instance {}",
+                        index.stage_dir.display()
+                    )));
+                }
             }
         }
     }

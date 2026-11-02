@@ -107,7 +107,7 @@ pwd
 运行下面的命令：
 
 ```bash
-pvisor spawn --safe --overlaynet-deny-all -- sh -c '
+pvisor stage --executor host --safe --overlaynet-deny-all -- sh -c '
   echo "Hello from pVisor" > hello.txt
   echo "Temporary notes" > scratch.txt
 '
@@ -188,6 +188,9 @@ test ! -e scratch.txt && echo 'scratch.txt: absent'
 ```
 
 应再次看到相同的两行结果。`drop` 不会删除已经合入的 `hello.txt`。
+
+已停止的实例仍会出现在 `pvisor ps -a` 中。不再需要时执行 `pvisor rm last`。
+`spawn` 是临时执行，退出后删除 stage，因此退出后审查应使用 `stage`。
 
 ### 刚才发生了什么？ {#what-happened}
 

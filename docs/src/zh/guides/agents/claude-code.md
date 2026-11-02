@@ -56,7 +56,7 @@ description: "在 pVisor 下运行 Claude Code：--safe 放行哪些网络目标
 1. ### 启动 Agent 并交付任务 {#task-agent}
 
     ```bash title="Shell"
-    pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
+    pvisor stage --executor host --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
     在 Agent 中粘贴以下任务：
@@ -133,7 +133,7 @@ macOS 上 `--safe` 使用临时 HOME，宿主上已登录的会话状态不可�
 Agent 需要安装依赖或访问文档站点时，显式追加目标。注意 `--overlaynet-allow` 会覆盖预设列表，所以要把模型 API 一起写上：
 
 ```bash title="Shell"
-pvisor spawn --safe \
+pvisor stage --executor host --safe \
   --overlaynet-allow api.anthropic.com:443 \
   --overlaynet-allow pypi.org:443 \
   --pass-env ANTHROPIC_API_KEY -- claude

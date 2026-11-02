@@ -70,12 +70,12 @@ fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
     for message in [
         "workspace writes are direct",
         "boundary:",
-        "Run Bundle:",
         "run-",
-        "Review: pvisor status --review",
+        "Temporary stage removed",
     ] {
         assert!(log.contains(message), "missing {message}: {log}");
     }
+    assert!(!log.contains("Review: pvisor status --review"), "{log}");
 
     let output = command.env("PVISOR_STARTUP_TIMING", "1").output().unwrap();
     assert!(

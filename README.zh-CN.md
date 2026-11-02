@@ -72,13 +72,14 @@ Apple Silicon macOS 需要启用 FSKit 的 macFUSE 5.4.0 或更新版本。在�
 ```bash
 mkdir pvisor-demo
 cd pvisor-demo
-pvisor spawn --safe --overlaynet-deny-all -- sh -c '
+pvisor stage --executor host --safe --overlaynet-deny-all -- sh -c '
   echo "Hello from pVisor" > hello.txt
   echo "Temporary notes" > scratch.txt
 '
 pvisor review last --diff
 pvisor apply last --path hello.txt
 pvisor drop last
+pvisor rm last
 cat hello.txt
 ```
 
@@ -86,6 +87,11 @@ cat hello.txt
 `last` 选择当前工作区最近一次登记的 Job。
 [Stagebox 上手教程](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style)
 会逐步检查原目录、暂存视图和最终文件状态。这个 Host 示例不需要模型账号或 VM 镜像。
+
+`spawn` 创建临时实例，退出后删除 stage。需要退出后审查的改动应使用 `stage`，
+存储一直保留到显式执行 `pvisor rm`。`pvisor ps` 列出运行中的实例，
+`ps -a` 包括已停止的 stage 和容器。`pvisor fork ID` 从已停止的 stage 或容器
+创建持久的文件系统 CoW 分支，要求底层文件系统支持原生 CoW。
 
 ### 3. 用 Agent 完成一个任务
 
@@ -114,6 +120,7 @@ pvisor review ../pvisor-experiment --diff
 pvisor apply ../pvisor-experiment --path src --dry-run --diff
 pvisor apply ../pvisor-experiment --path src
 pvisor drop ../pvisor-experiment
+pvisor rm ../pvisor-experiment
 ```
 
 确认剩余候选均不需要后才执行 drop；全部接收后应跳过。

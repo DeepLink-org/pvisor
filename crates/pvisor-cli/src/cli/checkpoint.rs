@@ -319,6 +319,14 @@ pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
     pvisor::job_service::execution_blocker(record)
 }
 pub(super) fn check_execution(record: &RunRecord) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        record
+            .orchestration
+            .get(pvisor::INSTANCE_KIND_KEY)
+            .and_then(|value| value.as_str())
+            != Some("spawn"),
+        "ephemeral spawn cannot retain suspended execution; use stage for execution checkpoints and restore"
+    );
     pvisor::job_service::require_execution(record)
 }
 

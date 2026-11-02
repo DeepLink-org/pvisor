@@ -990,6 +990,83 @@ impl Store {
         self.save(&instance)?;
         Ok(instance)
     }
+
+    /// Fork a stopped container's rootfs into a new persistent, stopped instance.
+    /// The catalog lock fences starts/removal while native filesystem CoW clones
+    /// the upper. The pinned image and read-only mounts remain shared; writable
+    /// binds, staged binds and volumes are rejected rather than silently shared.
+    /// The child gets a new ID/name and network address, no published ports, and
+    /// never inherits auto-removal. A nonempty command replaces the effective argv.
+    /// Running sources and unsupported CoW fail without publishing a child.
+    /// Independent inodes keep the child usable after its parent is removed.
+    pub fn fork(
+        &self,
+        selector: &str,
+        name: Option<String>,
+        command: Vec<String>,
+    ) -> anyhow::Result<Instance> {
+        let _guard = self.lock()?;
+        let source = self.resolve(selector)?;
+        ensure!(
+            !self.active(&source)? && source.state != "starting",
+            "fork requires a stopped container; stop it before capturing its filesystem"
+        );
+        ensure!(
+            source
+                .config
+                .mounts
+                .iter()
+                .all(|mount| mount.read_only && !mount.staged),
+            "CAPABILITY_UNSUPPORTED: fork cannot snapshot writable binds, staged binds or volumes; no writable mount is shared implicitly"
+        );
+        let id = format!("{}{}", uuid(), uuid());
+        let name = name.unwrap_or_else(|| format!("pvisor_{}", &id[..12]));
+        ensure!(valid_name(&name), "invalid container name");
+        ensure!(
+            !self.all()?.iter().any(|instance| instance.name == name),
+            "container name already in use: {name}"
+        );
+        let mut child = source.clone();
+        child.id = id;
+        child.name = name.clone();
+        child.config.name = Some(name);
+        child.config.auto_remove = false;
+        child.config.ports.clear();
+        child.config.ipv4_address = None;
+        // SDK peer attachments have no catalog allocator to grant a new identity.
+        ensure!(
+            child.config.network_name.is_some() || child.config.peers.is_none(),
+            "CAPABILITY_UNSUPPORTED: fork requires a catalog-managed network attachment"
+        );
+        child.config.peers = None;
+        self.assign_network(&mut child.config, &child.name)?;
+        if !command.is_empty() {
+            child.config.entrypoint = Some(command[0].clone());
+            child.config.command = command[1..].to_vec();
+            child.argv = command;
+        }
+        child.state = "created".into();
+        child.generation.clear();
+        child.started_ms = 0;
+        child.exit_code = None;
+        child.created_ms = crate::unix_now_ms();
+        let directory = self.directory(&child.id);
+        private_directory(&directory)?;
+        let result = (|| {
+            pvisor_overlay_core::apply::clone_overlay_upper(
+                &self.directory(&source.id).join("upper"),
+                &directory.join("upper"),
+            )?;
+            private_directory(&directory.join("work"))?;
+            self.save(&child)?;
+            Ok(child)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(directory);
+        }
+        result
+    }
+
     /// Open/create an owned managed volume beneath the private store.
     /// Guest-controlled modes are retained; volumes survive container removal.
     pub fn volume(&self, name: &str) -> anyhow::Result<PathBuf> {
@@ -2283,6 +2360,10 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, Store, Image) {
         let directory = tempfile::tempdir().unwrap();
+        fixture_in(directory)
+    }
+
+    fn fixture_in(directory: tempfile::TempDir) -> (tempfile::TempDir, Store, Image) {
         let store = Store::open(directory.path().join("docker")).unwrap();
         let context = directory.path().join("context");
         fs::create_dir(&context).unwrap();
@@ -2307,6 +2388,100 @@ mod tests {
         )
         .unwrap();
         (directory, store, image)
+    }
+
+    #[test]
+    fn docker_fork_uses_independent_cow_storage_and_releases_parent_ownership() {
+        let directory = tempfile::Builder::new()
+            .prefix("pvisor-container-cow-")
+            .tempdir_in(
+                std::env::var_os("PVISOR_TEST_COW_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| "/var/tmp".into()),
+            )
+            .unwrap();
+        let (_directory, store, _) = fixture_in(directory);
+        let mut config = request();
+        config.auto_remove = true;
+        config.network = true;
+        config.network_name = Some("bridge".into());
+        config.ports.push(Port {
+            address: std::net::Ipv4Addr::LOCALHOST,
+            host: 0,
+            guest: 80,
+        });
+        let parent = store.create(config).unwrap();
+        let upper = store.directory(&parent.id).join("upper");
+        fs::write(upper.join("file"), b"original").unwrap();
+        let lease = acquire_lease(&store.directory(&parent.id).join("owner.lock")).unwrap();
+        assert!(
+            store
+                .fork(&parent.id, Some("busy".into()), Vec::new())
+                .unwrap_err()
+                .to_string()
+                .contains("stopped")
+        );
+        drop(lease);
+        let child = match store.fork(
+            &parent.id,
+            Some("branch".into()),
+            vec!["/new-command".into()],
+        ) {
+            Ok(child) => child,
+            Err(error) => {
+                assert!(error.to_string().contains("CoW"), "{error:#}");
+                assert_eq!(store.instances(true).unwrap().len(), 1);
+                assert_eq!(fs::read(upper.join("file")).unwrap(), b"original");
+                assert!(
+                    std::env::var_os("PVISOR_TEST_REQUIRE_COW").is_none(),
+                    "{error:#}"
+                );
+                eprintln!(
+                    "native CoW unsupported; refusal and parent preservation verified: {error:#}"
+                );
+                return;
+            }
+        };
+        assert_ne!(child.id, parent.id);
+        assert_eq!(child.image.id, parent.image.id);
+        assert_eq!(child.argv, ["/new-command"]);
+        assert!(!child.config.auto_remove);
+        assert!(child.config.ports.is_empty());
+        assert_ne!(
+            child.config.peers.as_ref().unwrap().address,
+            parent.config.peers.as_ref().unwrap().address
+        );
+        let child_upper = store.directory(&child.id).join("upper");
+        assert_ne!(
+            fs::metadata(upper.join("file")).unwrap().ino(),
+            fs::metadata(child_upper.join("file")).unwrap().ino()
+        );
+        fs::write(child_upper.join("file"), b"child").unwrap();
+        assert_eq!(fs::read(upper.join("file")).unwrap(), b"original");
+        store.remove(&parent.id, false).unwrap();
+        assert_eq!(fs::read(child_upper.join("file")).unwrap(), b"child");
+        assert_eq!(store.resolve("branch").unwrap().id, child.id);
+        store.remove(&child.id, false).unwrap();
+        assert!(store.instances(true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn docker_fork_refuses_to_share_writable_mounts() {
+        let (directory, store, _) = fixture();
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: directory.path().join("context"),
+            target: "/external".into(),
+            read_only: false,
+            volume: None,
+            staged: false,
+        });
+        let parent = store.create(config).unwrap();
+        let error = store
+            .fork(&parent.id, Some("branch".into()), Vec::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("writable"), "{error:#}");
+        assert_eq!(store.instances(true).unwrap().len(), 1);
     }
     #[test]
     #[cfg(target_os = "linux")]

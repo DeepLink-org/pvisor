@@ -107,7 +107,7 @@ Run the remaining commands here. If the directory exists, choose a new name so f
 Run this command:
 
 ```bash
-pvisor spawn --safe --overlaynet-deny-all -- sh -c '
+pvisor stage --executor host --safe --overlaynet-deny-all -- sh -c '
   echo "Hello from pVisor" > hello.txt
   echo "Temporary notes" > scratch.txt
 '
@@ -188,6 +188,10 @@ test ! -e scratch.txt && echo 'scratch.txt: absent'
 ```
 
 Expect the same two lines again. `drop` leaves the accepted `hello.txt` in place.
+
+The stopped instance remains in `pvisor ps -a`. Run `pvisor rm last` when you no
+longer need it. `spawn` is temporary and removes its stage after exit, so use
+`stage` for this post-exit review workflow.
 
 ### What happened? {#what-happened}
 

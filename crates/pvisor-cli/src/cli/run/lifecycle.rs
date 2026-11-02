@@ -14,7 +14,7 @@ use pvisor::RunExecutorKind;
 use pvisor::job_execution::JobState;
 use pvisor::job_service::paths::fork_stage_candidate;
 use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
-use pvisor::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
+use pvisor::{NetworkDriverConfig, PVisor, RunBundle};
 use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
 use pvisor_journal::api::JournalStore;
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -70,6 +70,22 @@ impl ForkArgs {
     pub(in crate::cli) fn pin_selection(&mut self, path: PathBuf) {
         self.source = path;
     }
+    pub(in crate::cli) fn fork_container(
+        self,
+        store: &pvisor::docker::Store,
+        id: &str,
+    ) -> anyhow::Result<i32> {
+        anyhow::ensure!(
+            !self.restores_execution()
+                && self.checkpoint.is_none()
+                && self.stage.is_none()
+                && self.ram_storage.is_none()
+                && !self.eager_ram
+                && self.request_id.is_none(),
+            "container fork supports filesystem state only; checkpoint, execution and --stage options are unsupported"
+        );
+        crate::cli::docker::fork(store, id, self.name, self.command)
+    }
 }
 
 pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
@@ -115,6 +131,52 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
     let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
     super::reject_ask_config(&config)?;
+    let stage_launch = if config.run.executor == pvisor::RunExecutorKind::Vm {
+        let (job, _) = source_job
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("stage fork requires its recorded native Job"))?;
+        let pvisor_core::RunInvocation::Process(process) = &job.spec.invocation;
+        if source.workspace.as_deref() != Some(Path::new("/")) {
+            source
+                .project_apply_scope
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("stage fork lacks its recorded project scope"))?
+                .validate()?;
+        }
+        let stdio = job
+            .spec
+            .metadata
+            .get("pvisor.vm.stage_stdio")
+            .ok_or_else(|| anyhow::anyhow!("stage fork lacks its recorded terminal contract"))?;
+        Some(super::StageLaunch {
+            cwd: process
+                .cwd
+                .as_deref()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("stage fork lacks its recorded cwd"))?,
+            interactive: stdio
+                .get("interactive")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| anyhow::anyhow!("invalid stage stdin contract"))?,
+            tty: serde_json::from_value(
+                stdio
+                    .get("tty")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("invalid stage tty contract"))?,
+            )?,
+            env: process.env.clone(),
+            project_scope: source.project_apply_scope.clone(),
+            unset_env: serde_json::from_value(
+                job.spec
+                    .metadata
+                    .get("pvisor.vm.env_unset")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("invalid stage environment contract"))?,
+            )?,
+        })
+    } else {
+        None
+    };
     let selected_checkpoint = match args.checkpoint.as_deref() {
         Some(id) => {
             let checkpoint = pvisor::checkpoint::resolve_checkpoint(&source, id)?;
@@ -140,7 +202,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         .isolation;
     let checkpoint = match selected_checkpoint {
         Some(checkpoint) => checkpoint,
-        None => pvisor::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
+        None => pvisor::checkpoint::create_cow_checkpoint_locked(&source)?,
     };
     anyhow::ensure!(
         checkpoint.run_id == source.run_id,
@@ -205,13 +267,24 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         "child stage must not overlap the source Job or contain its filesystem layers"
     );
     Persistence::create_dir_all_durable(&stage)?;
-    let upper = stage.join("upper");
+    let attempt_stage = pvisor::instance::prepare(&stage, &run_id, "stage")?;
+    let upper = attempt_stage.join("upper");
     // Exclusive pin creation arbitrates competing forks targeting one empty
     // directory. A loser must never remove the winner's files during cleanup.
-    pvisor::checkpoint::pin_checkpoint(&checkpoint, &stage)?;
-    if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper, &stage.join("preimages")) {
+    pvisor::checkpoint::pin_checkpoint(&checkpoint, &attempt_stage)?;
+    if let Err(error) = pvisor::checkpoint::fork_logical_checkpoint(
+        &checkpoint,
+        &upper,
+        &attempt_stage.join("preimages"),
+    ) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
+    }
+    // Both trees now own independent CoW inodes, not paths into the parent.
+    // Release the temporary retention pin so parent rm cannot break or block them.
+    std::fs::remove_file(attempt_stage.join("source-checkpoint.json"))?;
+    if config.vm.ram_backing.is_some() {
+        config.vm.ram_backing = Some(attempt_stage.join("live-ram"));
     }
     config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
     drop(source_lease);
@@ -225,7 +298,8 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             checkpoint_id: checkpoint.checkpoint_id,
         }),
         pvisor::job_service::policy::PolicySource::Inherited(parent_isolation),
-        None,
+        stage_launch,
+        true,
     )
     .await
 }

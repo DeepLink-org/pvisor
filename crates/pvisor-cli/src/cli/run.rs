@@ -28,6 +28,9 @@ impl FromStr for ByteSize {
                 ("gib", 1 << 30),
                 ("gb", 1_000_000_000),
                 ("b", 1),
+                ("k", 1 << 10),
+                ("m", 1 << 20),
+                ("g", 1 << 30),
             ],
         )
         .map(ByteSize)
@@ -124,18 +127,18 @@ pub(super) use lifecycle::{fork, resume_execution};
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with independent filesystem, staging, and network policies";
+    "Run an ephemeral Agent instance; remove its stage after exit";
 #[cfg(target_os = "linux")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Run an ephemeral Agent instance under pVisor management. Its stage is removed after exit, including a nonzero workload exit. --stage only selects temporary storage; it does not make the instance persistent. Use pvisor stage for retained changes and post-exit review/apply/fork. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for temporary change staging, and --overlaynet for network policy. Direct host writes and external side effects are not undone by cleanup. Unknown completion is retained for recovery rather than deleted.";
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with independent filesystem, staging, and network policies";
+    "Run an ephemeral Agent instance; remove its stage after exit";
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Run an ephemeral Agent instance under pVisor management. Its stage is removed after exit, including a nonzero workload exit. --stage only selects temporary storage. Use stage --executor host for persistent Host Jobs and post-exit review/apply/fork. Unknown completion is retained for recovery. Direct host writes and external side effects are not undone by cleanup. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for temporary change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor management";
@@ -160,6 +163,9 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain o
 #[serde(deny_unknown_fields)]
 pub struct RunArgs {
     #[arg(skip)]
+    #[serde(default)]
+    persistent: bool,
+    #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stage_launch: Option<StageLaunch>,
     /// Explicit runtime enables, also parsed by companions reusing RunArgs.
@@ -181,7 +187,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
-    /// Changeset directory; requests a private filesystem view unless --filesystem host is set.
+    /// Changeset storage path; spawn removes it on exit and stage retains it.
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
@@ -202,7 +208,7 @@ pub struct RunArgs {
 
     /// Agent command; replaces `run.command` from the TOML spec.
     #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
+    pub(super) command: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -213,13 +219,41 @@ struct StageLaunch {
     tty: Option<[u16; 2]>,
     env: std::collections::BTreeMap<String, String>,
     unset_env: Vec<String>,
+    project_scope: Option<pvisor::job_service::ProjectApplyScope>,
 }
 
 impl RunArgs {
     pub(super) fn for_stage(args: super::stage::StageArgs) -> anyhow::Result<Self> {
+        let mut job = args.job;
+        job.persistent = true;
+        anyhow::ensure!(
+            job.spec.is_none(),
+            "stage accepts --config, not delegated --spec"
+        );
+        // Explicit Job providers use the same policies as spawn, with retained
+        // storage. No implicit host fallback from the default host-root VM.
+        if job
+            .run
+            .executor
+            .is_some_and(|executor| executor != RunExecutorKind::Vm)
+            || job.config.is_some()
+            || job.vm.rootfs.is_some()
+            || job.vm.rootfs_base.is_some()
+        {
+            anyhow::ensure!(
+                args.env.is_empty()
+                    && args.env_files.is_empty()
+                    && args.cwd.is_none()
+                    && !args.tty
+                    && !args.interactive
+                    && args.network == "bridge",
+                "stage -i/-t/-e/--env-file/--workdir/--network are host-root VM options; explicit Job executors use shared Job/config options"
+            );
+            return Ok(job);
+        }
         anyhow::ensure!(
             cfg!(target_os = "linux"),
-            "stage requires Linux host-root VM support"
+            "stage requires Linux host-root VM support; macOS is unsupported (no fallback); select --executor host explicitly for a Host stage"
         );
         anyhow::ensure!(
             !args.tty || super::terminal::available(),
@@ -228,8 +262,8 @@ impl RunArgs {
         let cwd = args.cwd.unwrap_or(std::env::current_dir()?);
         anyhow::ensure!(cwd.is_absolute(), "--workdir must be an absolute path");
         let (env, unset_env) = super::docker::environment(&args.env, &args.env_files)?;
-        let interactive = args.interactive || args.command.is_empty();
-        let tty = if args.tty || (args.command.is_empty() && super::terminal::available()) {
+        let interactive = args.interactive || job.command.is_empty();
+        let tty = if args.tty || (job.command.is_empty() && super::terminal::available()) {
             let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
             let dimensions =
                 if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, size.as_mut_ptr()) }
@@ -244,43 +278,41 @@ impl RunArgs {
         } else {
             None
         };
-        let command = if args.command.is_empty() {
+        let command = if job.command.is_empty() {
             vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())]
         } else {
-            args.command
+            std::mem::take(&mut job.command)
         };
-        Ok(Self {
-            stage_launch: Some(StageLaunch {
-                cwd,
-                interactive,
-                tty,
-                env,
-                unset_env,
-            }),
-            no_agent_defaults: true,
-            stage: args.stage,
-            run: RunOverrides {
-                name: args.name,
-                executor: Some(RunExecutorKind::Vm),
-                memory: Some(ByteSize(u64::from(args.memory) * 1024 * 1024)),
-                cpu: Some(u16::from(args.cpus)),
-                ..Default::default()
-            },
-            vm: VmOverrides {
-                rootfs: Some("host".into()),
-                ..Default::default()
-            },
-            overlaynet: OverlayNetOverrides {
-                overlaynet: Some(if args.network == "none" {
-                    OverlayNetMode::Off
-                } else {
-                    OverlayNetMode::Auto
-                }),
-                ..Default::default()
-            },
-            command,
-            ..Default::default()
-        })
+        let memory = job.run.memory.unwrap_or(ByteSize(512 * 1024 * 1024));
+        if memory.0 < 16 * 1024 * 1024 {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                "stage memory must be at least 16 MiB",
+            )
+            .into());
+        }
+        job.stage_launch = Some(StageLaunch {
+            cwd,
+            interactive,
+            tty,
+            env,
+            unset_env,
+            project_scope: None,
+        });
+        job.no_agent_defaults = true;
+        job.run.executor = Some(RunExecutorKind::Vm);
+        job.run.memory = Some(memory);
+        job.run.cpu = job.run.cpu.or(Some(u16::from(args.cpus)));
+        job.vm.rootfs = Some("host".into());
+        if job.overlaynet.overlaynet.is_none() {
+            job.overlaynet.overlaynet = Some(if args.network == "none" {
+                OverlayNetMode::Off
+            } else {
+                OverlayNetMode::Auto
+            });
+        }
+        job.command = command;
+        Ok(job)
     }
 }
 
@@ -308,7 +340,7 @@ struct RunOverrides {
     #[arg(long)]
     strict: bool,
     /// Maximum memory for the Agent execution (for example `256MiB` or `4GB`).
-    #[arg(long, visible_alias = "mem", value_name = "SIZE")]
+    #[arg(short = 'm', long, visible_alias = "mem", value_name = "SIZE")]
     memory: Option<ByteSize>,
     /// CPU count allocated to the executor.
     #[arg(long, value_name = "COUNT")]
@@ -938,6 +970,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         None,
         PolicySource::CurrentDefaults,
         args.stage_launch,
+        args.persistent,
     )
     .await
 }
@@ -1013,21 +1046,23 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .with_context(|| format!("read delegated RunSpec from {}", spec_path.display()))?,
     )
     .context("decode delegated RunSpec")?;
+    let mut spec = spec;
+    spec.metadata
+        .insert(pvisor::INSTANCE_KIND_KEY.into(), "spawn".into());
+    spec.metadata.insert(
+        "pvisor.orchestration.instance_registry".into(),
+        serde_json::to_value(std::path::absolute(default_run_home())?)?,
+    );
     reject_ask_policies(&spec.policies, &Default::default())?;
     let mut stage_guard = None;
     let (pvisor, config) = if let Some(stage_path) = stage_spec {
-        let cleanup = args.stage.is_none();
+        let cleanup = true;
+        let attempt_stage = pvisor::instance::prepare(&stage_path, spec.run_id.as_str(), "spawn")?;
+        spec.metadata.insert(
+            pvisor::instance::ROOT_KEY.into(),
+            serde_json::to_value(std::path::absolute(&stage_path)?)?,
+        );
         if cleanup {
-            if stage_path.exists() {
-                let nonempty = std::fs::read_dir(&stage_path)?.next().is_some();
-                anyhow::ensure!(
-                    !nonempty,
-                    "temporary stage must be empty before use: {}",
-                    stage_path.display()
-                );
-            } else {
-                std::fs::create_dir_all(&stage_path)?;
-            }
             std::fs::write(
                 stage_path.join(STAGE_OWNER_FILE),
                 spec.run_id.as_str().as_bytes(),
@@ -1069,7 +1104,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             config.record.destination.is_none(),
             "JSON --spec does not accept recording overrides"
         );
-        let storage = resolve_run_storage(&stage_path)?;
+        let storage = resolve_run_storage(&attempt_stage)?;
+        if let Some(overlay) = &mut config.overlayfs {
+            overlay.stage = Some(storage.clone());
+        }
         #[cfg(feature = "gateway")]
         let proxy = resolve_proxy(&config)?;
         #[allow(unused_mut)]
@@ -1126,6 +1164,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     };
     let write_result = pvisor::write_private_json(&result_path, &output)
         .with_context(|| format!("write delegated RunResult to {}", result_path.display()));
+    if let Some(guard) = &stage_guard {
+        let record = pvisor::RunRecord::read(&guard.path)?;
+        record.remove_index()?;
+    }
     let cleanup_result = stage_guard
         .as_mut()
         .map(|guard| cleanup_temporary_stage(&guard.path, output.result.run_id.as_str(), true))
@@ -1159,6 +1201,16 @@ fn cleanup_temporary_stage(path: &Path, run_id: &str, successful: bool) -> anyho
             path.display()
         );
         return Ok(());
+    }
+    anyhow::ensure!(
+        !pvisor::is_live(path)?,
+        "temporary stage is still leased; retaining {}",
+        path.display()
+    );
+    let stage = pvisor::instance::resolve_stage(path)?;
+    if stage.join("run.json").exists() {
+        // Never treat a lost/unknown completion as permission to erase evidence.
+        return pvisor::RunRecord::read(path)?.remove_instance();
     }
     if let Err(error) = std::fs::remove_dir_all(path) {
         if successful {
@@ -1195,8 +1247,13 @@ impl TemporaryStageGuard {
 
 impl Drop for TemporaryStageGuard {
     fn drop(&mut self) {
-        if self.armed {
-            let _ = cleanup_temporary_stage(&self.path, &self.run_id, false);
+        if self.armed
+            && let Err(error) = cleanup_temporary_stage(&self.path, &self.run_id, false)
+        {
+            run_log!(
+                "Temporary stage retained at {}: {error:#}",
+                self.path.display()
+            );
         }
     }
 }
@@ -1323,8 +1380,12 @@ async fn execute_config(
     lineage: Option<RunLineage>,
     policy_source: PolicySource,
     stage_launch: Option<StageLaunch>,
+    persistent: bool,
 ) -> anyhow::Result<i32> {
     reject_ask_config(&config)?;
+    // Creation mode, not --stage PATH or journal durability, owns lifecycle.
+    // A workspace fork is always a persistent instance.
+    let ephemeral = !persistent;
     let safe = safe || config.run.profile == pvisor_core::RunProfile::Safe;
     if safe {
         config.run.profile = pvisor_core::RunProfile::Safe;
@@ -1390,7 +1451,7 @@ async fn execute_config(
         {
             let (rootfs, workspace) = resolve_vm_layout(&config)?;
             let workspace = if stage_launch.is_some() {
-                resolve_workspace(&std::env::current_dir()?)?
+                resolve_execution_workspace(&config, true)?
             } else {
                 workspace
             };
@@ -1474,7 +1535,22 @@ async fn execute_config(
         }
         super::host_service::reject_guest_exposure(sources)?;
     }
-    let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    let instance_root = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    let kind = if ephemeral { "spawn" } else { "stage" };
+    let storage = if lineage.is_none() {
+        pvisor::instance::prepare(&instance_root, &run_id, kind)?
+    } else {
+        pvisor::instance::prepared_stage(&instance_root, &run_id)?
+    };
+    let mut temporary_stage = if ephemeral {
+        std::fs::write(instance_root.join(STAGE_OWNER_FILE), run_id.as_bytes())?;
+        Some(TemporaryStageGuard::new(
+            instance_root.clone(),
+            run_id.clone(),
+        ))
+    } else {
+        None
+    };
     if config
         .policies
         .scopes()
@@ -1483,6 +1559,9 @@ async fn execute_config(
         && config.overlayfs.is_none()
     {
         config.overlayfs = Some(Default::default());
+    }
+    if let Some(overlay) = &mut config.overlayfs {
+        overlay.stage = Some(storage.clone());
     }
     if config
         .policies
@@ -1702,6 +1781,18 @@ async fn execute_config(
         .split_first()
         .context("missing Agent command; pass it after `--` or set run.command")?;
     let mut spec = RunSpec::process(run_id.as_str(), &config.run.agent, program);
+    spec.metadata.insert(
+        pvisor::INSTANCE_KIND_KEY.into(),
+        if ephemeral { "spawn" } else { "stage" }.into(),
+    );
+    spec.metadata.insert(
+        pvisor::instance::ROOT_KEY.into(),
+        serde_json::to_value(&instance_root)?,
+    );
+    spec.metadata.insert(
+        "pvisor.orchestration.instance_registry".into(),
+        serde_json::to_value(std::path::absolute(default_run_home())?)?,
+    );
     if config.run.executor == RunExecutorKind::Vm
         && config
             .vm
@@ -1795,8 +1886,18 @@ async fn execute_config(
     );
     if config.run.executor == RunExecutorKind::Vm {
         if let Some(stage) = &stage_launch {
+            spec.metadata.insert(
+                "pvisor.vm.stage_launch_policy".into(),
+                serde_json::to_value((&config.vm, config.overlaynet.mode, &config.features))?,
+            );
             if workspace != Path::new("/") {
-                let scope = pvisor::job_service::ProjectApplyScope::capture(&workspace)?;
+                let scope = if let Some(scope) = &stage.project_scope {
+                    scope.validate()?;
+                    anyhow::ensure!(scope.root == workspace, "fork project scope changed");
+                    scope.clone()
+                } else {
+                    pvisor::job_service::ProjectApplyScope::capture(&workspace)?
+                };
                 spec.metadata.insert(
                     pvisor::job_service::PROJECT_APPLY_SCOPE_KEY.into(),
                     serde_json::to_value(scope)?,
@@ -1986,16 +2087,18 @@ async fn execute_config(
         )
     })?;
     let bundle_path = RunBundle::path(&record.stage_dir());
-    run_log!("Run Bundle: {}", bundle_path.display());
-    run_log!(
-        "Review: pvisor status --review {}",
-        record.stage_dir().display()
-    );
-    if bundle.filesystem.is_some() {
+    if !ephemeral {
+        run_log!("Run Bundle: {}", bundle_path.display());
+        run_log!(
+            "Review: pvisor status --review {}",
+            record.stage_dir().display()
+        );
+    }
+    if !ephemeral && bundle.filesystem.is_some() {
         if stage_launch.is_some() {
             run_log!(
                 "Stage retained: {} (Job {})",
-                record.stage_dir().display(),
+                record.instance_dir()?.display(),
                 record.run_id
             );
             run_log!(
@@ -2010,8 +2113,9 @@ async fn execute_config(
                 "Preview: add --path <project-relative-path> --dry-run --diff. Unselected project and environment changes stay staged; apply does not run tests or restart services."
             );
             run_log!(
-                "Cleanup: pvisor drop {} — discards pending files, not already applied files or remote effects.",
-                record.stage_dir().display()
+                "Discard changes: pvisor drop {}. Remove instance: pvisor rm {}. Neither undoes already applied files or remote effects.",
+                record.stage_dir().display(),
+                record.run_id
             );
             if result.state != RunState::Completed || result.exit_code.is_some_and(|code| code != 0)
             {
@@ -2035,6 +2139,16 @@ async fn execute_config(
         for warning in &result.warnings {
             run_log!("pVisor Job warning: {warning}");
         }
+    }
+    if ephemeral {
+        record
+            .remove_instance()
+            .context("ephemeral instance cleanup failed; storage retained for inspection")?;
+        temporary_stage
+            .as_mut()
+            .expect("ephemeral storage guard")
+            .disarm();
+        run_log!("Temporary stage removed for {run_id}.");
     }
     Ok(match result.state {
         RunState::Completed => result.exit_code.unwrap_or(0),
@@ -3263,7 +3377,13 @@ fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
 
 fn resolve_execution_workspace(config: &RunConfig, stage_launch: bool) -> anyhow::Result<PathBuf> {
     if stage_launch {
-        return resolve_workspace(&std::env::current_dir()?);
+        return resolve_workspace(
+            config
+                .run
+                .workspace
+                .as_deref()
+                .unwrap_or(&std::env::current_dir()?),
+        );
     }
     let workspace = config
         .overlayfs
@@ -4363,6 +4483,7 @@ mod tests {
             None,
             PolicySource::CurrentDefaults,
             None,
+            false,
         )
         .await
         .unwrap_err();

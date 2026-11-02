@@ -521,6 +521,50 @@ pub fn snapshot_overlay_upper(
 
 /// Restore a raw upper snapshot into a directory upper.
 pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), OverlayError> {
+    restore_raw_tree(source, destination, false)
+}
+
+/// Clone a raw upper using filesystem copy-on-write, preserving physical metadata,
+/// whiteouts, opaque markers and hardlinks within the cloned tree. The caller must
+/// fence source writers and supply an absent destination outside the source tree.
+/// Regular files receive independent inodes; deleting either tree cannot invalidate
+/// the other. Linux requires reflink and macOS requires clonefile on the backing
+/// filesystem. Unsupported cloning fails without falling back to a byte copy.
+/// A failed clone removes its partially built destination.
+pub fn clone_overlay_upper(source: &Path, destination: &Path) -> Result<(), OverlayError> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => {
+            return Err(OverlayError::InvalidConfig(format!(
+                "CoW destination must be absent: {}",
+                destination.display()
+            )));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let source = source.canonicalize()?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| {
+            OverlayError::InvalidConfig("CoW destination needs a parent directory".into())
+        })?
+        .canonicalize()?;
+    let destination = parent.join(destination.file_name().ok_or_else(|| {
+        OverlayError::InvalidConfig("CoW destination needs a final component".into())
+    })?);
+    if destination.starts_with(&source) || source.starts_with(&destination) {
+        return Err(OverlayError::InvalidConfig(
+            "CoW source and destination must not overlap".into(),
+        ));
+    }
+    let result = restore_raw_tree(&source, &destination, true);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&destination);
+    }
+    result
+}
+
+fn restore_raw_tree(source: &Path, destination: &Path, cow: bool) -> Result<(), OverlayError> {
     if !source.is_dir() {
         return Err(OverlayError::InvalidConfig(format!(
             "snapshot source is not a directory: {}",
@@ -532,7 +576,7 @@ pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), Ov
     }
     fs::create_dir_all(destination)?;
     let mut hard_links = HashMap::new();
-    snapshot_directory_raw(source, destination, &mut hard_links)?;
+    snapshot_directory_raw(source, destination, &mut hard_links, cow)?;
     if let Some(parent) = destination.parent() {
         File::open(parent)?.sync_all()?;
     }
@@ -3203,6 +3247,7 @@ fn snapshot_directory_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    cow: bool,
 ) -> Result<(), OverlayError> {
     ensure_directory(destination)?;
     for entry in fs::read_dir(source)? {
@@ -3211,6 +3256,7 @@ fn snapshot_directory_raw(
             &entry.path(),
             &destination.join(entry.file_name()),
             hard_links,
+            cow,
         )?;
     }
     copy_snapshot_metadata(source, destination)?;
@@ -3222,11 +3268,12 @@ fn snapshot_entry_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    cow: bool,
 ) -> Result<(), OverlayError> {
     let metadata = fs::symlink_metadata(source)?;
     let kind = metadata.file_type();
     if kind.is_dir() {
-        return snapshot_directory_raw(source, destination, hard_links);
+        return snapshot_directory_raw(source, destination, hard_links, cow);
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -3242,7 +3289,11 @@ fn snapshot_entry_raw(
             fs::hard_link(existing, destination)?;
             return Ok(());
         }
-        fs::copy(source, destination)?;
+        if cow {
+            clone_file_cow(source, destination)?;
+        } else {
+            fs::copy(source, destination)?;
+        }
         if metadata.nlink() > 1 {
             hard_links.insert(identity, destination.to_path_buf());
         }
@@ -3265,6 +3316,41 @@ fn snapshot_entry_raw(
         File::open(destination)?.sync_all()?;
     }
     Ok(())
+}
+
+fn clone_file_cow(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let input = File::open(source)?;
+        let output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?;
+        if unsafe { libc::ioctl(output.as_raw_fd(), libc::FICLONE, input.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let source = c_path(source)?;
+        let destination = c_path(destination)?;
+        if unsafe { libc::clonefile(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
+            return Ok(());
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let error = io::Error::last_os_error();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let error = io::Error::new(io::ErrorKind::Unsupported, "native CoW is unavailable");
+    Err(io::Error::new(
+        error.kind(),
+        format!(
+            "CoW clone {} -> {} failed: {error}; fork requires native filesystem CoW (no byte-copy fallback)",
+            source.display(),
+            destination.display()
+        ),
+    ))
 }
 
 /// Copy physical identity and raw control attributes for reopening an upper.

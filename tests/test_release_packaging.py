@@ -1216,8 +1216,9 @@ class ReleasePackagingTests(unittest.TestCase):
 
                     def __init__(self, command, **kwargs):
                         state["attempt"] += 1
-                        stage.mkdir(exist_ok=True)
-                        (stage / "run.json").write_text("{}")
+                        attempt = stage / "attempts/initial"
+                        attempt.mkdir(parents=True, exist_ok=True)
+                        (attempt / "run.json").write_text("{}")
                         counter.write_text(str(1000 + state["attempt"]))
 
                     def poll(self):
@@ -1237,14 +1238,15 @@ class ReleasePackagingTests(unittest.TestCase):
                     code, output = 0, ""
                     if args[0] == "rustc":
                         pass
-                    elif args[1] == "spawn":
+                    elif args[1] in ("spawn", "stage"):
                         code = 1 if "--strict" in args else 0 if "vm" in args else 7
                         if "--strict" in args and fault == "strict-executed":
                             (directory / "workspace/forbidden").touch()
                         if "vm" in args and fault == "vm-start":
                             code = 1
                             failed_stage = Path(args[args.index("--stage") + 1])
-                            failed_stage.mkdir()
+                            failed_stage = failed_stage / "attempts/initial"
+                            failed_stage.mkdir(parents=True)
                             (failed_stage / "run-bundle.json").write_text(
                                 json.dumps({"run": {"output": {"stderr": "VM startup error"}}})
                             )

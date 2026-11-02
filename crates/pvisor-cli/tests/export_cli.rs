@@ -126,7 +126,7 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            "c7d399c6e23dae1d7b78c7556b163514e38becb4d280cca9e605002716b75572",
+            "ae025354137c19731be8976d40246a99c64c9d53fce824cc2449770cfea6eb83",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);

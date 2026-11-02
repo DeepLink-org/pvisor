@@ -478,7 +478,15 @@ fn command(
 fn validate_apply_source(record: &RunRecord, selection: &JobSelection) -> anyhow::Result<()> {
     let selector = selection.selector.as_deref();
     let implicit = selector.is_none() || selector == Some(Path::new("last"));
-    if selector == Some(Path::new(&record.run_id)) && !selector.unwrap().exists() {
+    if let Some(selector) = selector.filter(|_| !implicit)
+        && !selector.exists()
+        && selector.components().count() == 1
+        && selector.to_str().is_some_and(|selector| {
+            !selector.is_empty()
+                && (selector == record.agent || record.run_id.starts_with(selector))
+        })
+    {
+        // Resolution already checked name/prefix ambiguity and pinned identity.
         return Ok(());
     }
     let candidate = if implicit {
@@ -495,7 +503,7 @@ fn validate_apply_source(record: &RunRecord, selection: &JobSelection) -> anyhow
         );
     }
     if !implicit {
-        let mut allowed = vec![record.stage_dir()];
+        let mut allowed = vec![record.stage_dir(), record.instance_dir()?];
         if let Some(workspace) = &record.workspace {
             allowed.push(workspace.clone());
         }

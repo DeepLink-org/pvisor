@@ -65,7 +65,7 @@ if pid == 0:
     os.chdir(root)
     original = os.tcgetpgrp(0)
     env = dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0')
-    run = [binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', 'exit 0']
+    run = [binary, 'stage', '--executor', 'host', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', 'exit 0']
     try:
         seed = subprocess.run(run, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=20)
         assert seed.returncode == 0, seed.stderr

@@ -91,7 +91,9 @@ fn managed_fixture(root: &Path) -> pvisor::RunRecord {
     drop(listener);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--filesystem",
             "host",
             "--overlaynet-deny-all",
@@ -111,10 +113,19 @@ fn managed_fixture(root: &Path) -> pvisor::RunRecord {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stage.join("workspace-launch-policy.json").is_file());
-    assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), b"staged");
+    let record = pvisor::RunRecord::read(&stage).unwrap();
+    assert!(
+        record
+            .stage_dir()
+            .join("workspace-launch-policy.json")
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read(record.stage_dir().join("upper/file")).unwrap(),
+        b"staged"
+    );
     assert!(!target.join("file").exists());
-    pvisor::RunRecord::read(&stage).unwrap()
+    record
 }
 
 fn filesystem_snapshot(
@@ -351,10 +362,10 @@ fn workspace_ask_fork_rejection_is_inert_and_retryable() {
         let (_, lease) = record.lock_current().unwrap();
         drop(lease);
         // Admission lock files are not checkpoint/stage mutations.
-        std::fs::write(stage.join("job.lock"), []).unwrap();
+        std::fs::write(record.instance_dir().unwrap().join("job.lock"), []).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
-            stage.join("job.lock"),
+            record.instance_dir().unwrap().join("job.lock"),
             std::fs::Permissions::from_mode(0o600),
         )
         .unwrap();
@@ -399,13 +410,20 @@ fn workspace_ask_fork_rejection_is_inert_and_retryable() {
 }
 
 #[test]
-fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
+fn workspace_fork_clones_files_and_preimages_without_retaining_parent_storage() {
     #[cfg(target_os = "macos")]
     if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
         eprintln!("skipping workspace fork integration: macFUSE is not installed");
         return;
     }
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("pvisor-cow-fork-")
+        .tempdir_in(
+            std::env::var_os("PVISOR_TEST_COW_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| "/var/tmp".into()),
+        )
+        .unwrap();
     let record = managed_fixture(temp.path());
     let stage = record.stage_dir();
     let checkpoint = parsed(invoke(&["checkpoint", "create", "--json"], Some(&stage)));
@@ -425,6 +443,7 @@ fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
         String::from_utf8_lossy(&output.stderr)
     );
     let child_record = pvisor::RunRecord::read(&child).unwrap();
+    let child_stage = child_record.stage_dir();
     let child_listen: std::net::SocketAddr = child_record
         .overlaynet_listen
         .as_deref()
@@ -435,16 +454,25 @@ fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
     assert_ne!(child_listen.port(), 0);
     assert_ne!(child_record.run_id, record.run_id);
     assert_eq!(child_record.lineage.as_ref().unwrap().checkpoint_id, id);
-    assert_eq!(std::fs::read(child.join("upper/file")).unwrap(), b"child");
+    assert_eq!(
+        std::fs::read(child_stage.join("upper/file")).unwrap(),
+        b"child"
+    );
     assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), b"staged");
-    assert!(child.join("preimages").is_dir());
-    assert!(child.join("source-checkpoint.json").is_file());
+    assert!(child_stage.join("preimages").is_dir());
+    assert!(!child_stage.join("source-checkpoint.json").exists());
     let show = parsed(invoke(&["checkpoint", "show", "--json", id], Some(&stage)));
-    assert_eq!(show["branch_references"], 1);
+    assert_eq!(show["branch_references"], 0);
     let delete = invoke(&["checkpoint", "delete", id], Some(&stage));
-    assert_eq!(delete.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&delete.stderr).contains("CHECKPOINT_REFERENCED"));
+    assert!(delete.status.success(), "{delete:?}");
+    assert!(!stage.join("checkpoints").join(id).exists());
+    assert!(invoke(&["rm"], Some(&stage)).status.success());
+    assert!(!stage.exists());
+    assert_eq!(
+        std::fs::read(child_stage.join("upper/file")).unwrap(),
+        b"child"
+    );
     assert!(invoke(&["drop"], Some(&child)).status.success());
-    assert!(child.join("source-checkpoint.json").is_file());
-    assert!(stage.join("checkpoints").join(id).exists());
+    assert!(invoke(&["rm"], Some(&child)).status.success());
+    assert!(!child.exists());
 }

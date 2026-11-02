@@ -15,6 +15,7 @@ mod host_image;
 mod host_process;
 #[cfg(unix)]
 mod host_service;
+mod instances;
 mod values;
 use crate::companions;
 mod product;
@@ -64,9 +65,9 @@ enum Command {
     Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Spawn(Box<run::RunArgs>),
-    /// Run a command with all host-root filesystem changes staged for review (Linux only).
+    /// Create a persistent stagebox (default: Linux host-root VM).
     #[command(long_about = stage::STAGE_LONG_ABOUT)]
-    Stage(stage::StageArgs),
+    Stage(Box<stage::StageArgs>),
 
     /// Apply selected changes, preview them, or pick paths in a terminal.
     #[command(
@@ -107,7 +108,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Job execution (spawn).\nUse pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor ps -a\n  pvisor review last\n  pvisor apply last --path src\n  pvisor rm last\n\nUse pvisor -- COMMAND for ephemeral Job execution (spawn).\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -353,7 +354,14 @@ pub fn main() -> anyhow::Result<()> {
         return crate::vm_run::run(args);
     }
     parsed.command = match parsed.command {
-        Command::Stage(args) => Command::Spawn(Box::new(args.into_run()?)),
+        Command::Stage(args) => {
+            let args = args.into_run().inspect_err(|error| {
+                if let Some(error) = error.downcast_ref::<clap::Error>() {
+                    error.exit();
+                }
+            })?;
+            Command::Spawn(Box::new(args))
+        }
         command => command,
     };
     if let Command::Feature(query) = &parsed.command {
@@ -413,7 +421,7 @@ pub fn main() -> anyhow::Result<()> {
         Command::Spawn(run) => {
             finish(host_service::call(host::JobCommand::Run(run))?);
         }
-        Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
+        Command::Fork(args) => finish(instances::fork(args)?),
         Command::Apply(args) => finish(apply::run(args)),
         Command::Drop(args) => finish(host_service::call(host::JobCommand::Drop(args))?),
         Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args.args))?),
@@ -610,14 +618,14 @@ mod feature_parser_tests {
             let Command::Stage(stage) = parsed.command else {
                 panic!("stage")
             };
-            assert_eq!(stage.command, ["echo", "--feature", "guest-only"]);
+            assert_eq!(stage.job.command, ["echo", "--feature", "guest-only"]);
         }
         let parsed = parse(&["pvisor", "stage", "echo", "--feature", "guest-only"]);
         assert!(parsed.features.is_empty());
         let Command::Stage(stage) = parsed.command else {
             panic!("stage")
         };
-        assert_eq!(stage.command, ["echo", "--feature", "guest-only"]);
+        assert_eq!(stage.job.command, ["echo", "--feature", "guest-only"]);
         let parsed = parse(&[
             "pvisor",
             "--feature",

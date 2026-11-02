@@ -107,6 +107,14 @@ behavior for corrupt identities in fresh apply and Prepared recovery.
 VM mutation regressions cover guest modes, chmod, access denial and control-xattr
 protection. Native KVM stage tests never apply to the real host root.
 
+`clone_overlay_upper` preserves the same raw state using native filesystem CoW.
+It requires fenced source writers and an absent, nonoverlapping destination.
+Linux uses reflink and macOS uses clonefile, with no byte-copy fallback.
+Regular files get independent inodes while hardlinks within the child stay
+linked. A failed clone removes partial destination storage. The CoW contract
+tests cover write isolation, deletion/rename, raw markers and attributes,
+unsupported filesystems and continued use after parent deletion.
+
 ## Physical lower immutability (conservative first version)
 
 `LayerMutability::{Mutable, Immutable}` is the shared contract. Build a layout

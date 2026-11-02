@@ -165,6 +165,15 @@ where
         !stage.exists() || std::fs::read_dir(&stage)?.next().is_none(),
         "execution fork requires an empty stage"
     );
+    let child_root = stage.clone();
+    let stage = if source
+        .orchestration
+        .contains_key(super::super::instance::ROOT_KEY)
+    {
+        super::super::instance::prepare(&child_root, &run_id, "stage")?
+    } else {
+        stage
+    };
     let (mut executor, mut overlay) =
         VmExecutor::restore(parent.config.vm.clone(), checkpoint.clone(), &stage)?;
     executor = executor.with_features(parent.config.features.clone())?;
@@ -174,6 +183,19 @@ where
     super::preserve_apply_target(&source, &mut overlay);
     let mut spec = parent.spec.clone();
     spec.metadata.remove(job_execution::STORE_KEY);
+    if source
+        .orchestration
+        .contains_key(super::super::instance::ROOT_KEY)
+    {
+        spec.metadata.insert(
+            super::super::instance::ROOT_KEY.into(),
+            serde_json::to_value(&child_root)?,
+        );
+        spec.metadata.insert(
+            super::super::registry::INSTANCE_KIND_KEY.into(),
+            "stage".into(),
+        );
+    }
     spec.run_id = run_id.clone().into();
     spec.parent_run_id = Some(parent.run_id.clone().into());
     spec.metadata.insert(
@@ -189,7 +211,7 @@ where
     let child = job_execution::Job {
         version: job_execution::JOB_SCHEMA_VERSION,
         run_id: run_id.clone(),
-        root: stage.clone(),
+        root: child_root,
         active_stage: stage.clone(),
         previous_stage: stage.clone(),
         active_attempt: String::new(),
@@ -201,7 +223,7 @@ where
         requests: Default::default(),
         resumes: Default::default(),
         forks: Default::default(),
-        stores: [stage.join("execution-snapshots")].into(),
+        stores: Default::default(),
     };
     child.write()?;
     child.link_stage(&stage)?;

@@ -38,9 +38,12 @@ impl PolicySource {
     pub fn validate_executor(self, executor: &pvisor_core::ExecutorPlan) -> anyhow::Result<()> {
         if let Self::Inherited(parent) = self {
             anyhow::ensure!(
-                executor.kind == ExecutorKind::Process
+                (executor.kind == ExecutorKind::Process
                     && (parent == pvisor_core::IsolationKind::HostProcess
-                        || executor.isolation == parent),
+                        || executor.isolation == parent))
+                    || (parent == pvisor_core::IsolationKind::VirtualMachine
+                        && executor.kind == ExecutorKind::VirtualMachine
+                        && executor.isolation == parent),
                 "workspace fork cannot preserve parent executor boundary {parent:?} with {:?}; refusing best-effort downgrade",
                 executor.isolation
             );
@@ -65,6 +68,12 @@ struct LaunchPolicy {
     pass_env: Vec<String>,
     stdio: RunStdio,
     required_sandbox: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vm: Option<(
+        crate::config::VmSettings,
+        OverlayNetMode,
+        crate::features::FeatureSettings,
+    )>,
 }
 
 pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Result<()> {
@@ -75,11 +84,35 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
         .get("pvisor.filesystem.mode")
         .and_then(|v| v.as_str());
     let defaults = RuntimeConfig::default();
-    let unsupported = if resolved.descriptor.kind != ExecutorKind::Process
-        || !matches!(
-            resolved.descriptor.name.as_str(),
-            "local-process-v1" | "local-rootless-v1" | "local-seatbelt-v1"
-        ) {
+    let vm = spec
+        .metadata
+        .get("pvisor.vm.stage_launch_policy")
+        .map(|value| {
+            serde_json::from_value::<(
+                crate::config::VmSettings,
+                OverlayNetMode,
+                crate::features::FeatureSettings,
+            )>(value.clone())
+        })
+        .transpose()
+        .context("invalid stage VM launch policy")?;
+    let stage_vm = resolved.descriptor.kind == ExecutorKind::VirtualMachine
+        && resolved.descriptor.name == "libkrun-root-overlay-v1"
+        && spec
+            .metadata
+            .get(super::super::registry::INSTANCE_KIND_KEY)
+            .and_then(|v| v.as_str())
+            == Some("stage")
+        && vm.as_ref().is_some_and(|(settings, mode, _)| {
+            settings.rootfs.as_deref() == Some(std::path::Path::new("/"))
+                && matches!(mode, OverlayNetMode::Auto | OverlayNetMode::Off)
+        });
+    let unsupported = if !stage_vm
+        && (resolved.descriptor.kind != ExecutorKind::Process
+            || !matches!(
+                resolved.descriptor.name.as_str(),
+                "local-process-v1" | "local-rootless-v1" | "local-seatbelt-v1"
+            )) {
         Some("workspace launch policy cannot reconstruct this executor (VM/container/custom executor)".into())
     } else if !matches!(filesystem, Some("host" | "sandbox")) {
         Some("workspace launch policy lacks an explicit filesystem mode".into())
@@ -107,7 +140,7 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
     {
         Some("workspace launch policy contains controls not expressible by RunConfig".into())
     } else if process.stdout != process.stderr
-        || process.stdin != StdioMode::Inherit
+        || (!stage_vm && process.stdin != StdioMode::Inherit)
         || !matches!(process.stdout, StdioMode::Inherit | StdioMode::Capture)
     {
         Some("workspace launch policy cannot reconstruct process stdio".into())
@@ -154,6 +187,7 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
             .get(crate::executor::sandbox::REQUIRED_SANDBOX_KEY)
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        vm: stage_vm.then_some(vm).flatten(),
     };
     crate::util::write_private_json(&record.stage_dir().join(FILENAME), &policy)
 }
@@ -244,6 +278,21 @@ impl LaunchPolicy {
         } else {
             OverlayNetMode::Off
         };
+        if let Some((mut vm, network, features)) = self.vm {
+            anyhow::ensure!(
+                record
+                    .executor
+                    .as_ref()
+                    .is_some_and(|executor| executor.kind == ExecutorKind::VirtualMachine
+                        && executor.isolation == pvisor_core::IsolationKind::VirtualMachine),
+                "stage VM policy does not match the recorded executor boundary"
+            );
+            vm.control_socket = None;
+            config.vm = vm;
+            config.features = features;
+            config.run.executor = crate::config::RunExecutorKind::Vm;
+            config.overlaynet.mode = network;
+        }
         config.policies = self.policies;
         let supplemental_limits = self.network.limits.clone();
         let mut capability = self

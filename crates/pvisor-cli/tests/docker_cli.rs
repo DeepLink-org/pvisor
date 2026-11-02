@@ -9,6 +9,7 @@ use std::{
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
     command.env("PVISOR_DOCKER_HOME", home);
+    command.env("PVISOR_RUN_HOME", home.with_extension("jobs"));
     command
 }
 

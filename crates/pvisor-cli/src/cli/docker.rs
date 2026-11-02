@@ -44,13 +44,13 @@ pub(super) enum DockerCommand {
     Rmi(RemoveImages),
     /// Execute a command inside a running container VM.
     Exec(Exec),
-    /// List containers.
+    /// List running instances; -a includes stopped persistent stages and containers.
     Ps(List),
     /// Start one or more stopped containers, retaining their writable files.
     Start(Select),
     /// Stop one or more running containers.
     Stop(Stop),
-    /// Remove one or more containers.
+    /// Remove stopped instances and release their owned storage.
     Rm(Remove),
     /// Fetch container stdout and stderr.
     Logs(Logs),
@@ -311,6 +311,52 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
     })
 }
 
+pub(super) fn fork(
+    store: &Store,
+    source: &str,
+    name: Option<String>,
+    command: Vec<String>,
+) -> anyhow::Result<i32> {
+    let instance = store.fork(source, name, command)?;
+    eprintln!("Forked instance: {}", instance.id);
+    launch(store, &instance, false)
+}
+
+fn launch(store: &Store, instance: &docker::Instance, detach: bool) -> anyhow::Result<i32> {
+    let output = store.output(instance)?;
+    let started = store.start(&instance.id)?;
+    let interactive = instance.config.interactive;
+    let _terminal = Terminal::new(instance.config.tty.is_some() && !detach, interactive)?;
+    let _signals = if detach {
+        None
+    } else {
+        Some(Signals::forward(store.clone(), started.clone())?)
+    };
+    if interactive && !detach && started.state != "exited" {
+        let mut input = store.connect(&started)?;
+        write_guest_frame(&mut input, &GuestRequest::Input {})?;
+        ensure!(
+            matches!(
+                read_guest_frame::<GuestReply>(&mut input)?,
+                GuestReply::Ready
+            ),
+            "guest stdin unavailable"
+        );
+        input.set_read_timeout(None)?;
+        input.set_write_timeout(None)?;
+        std::thread::spawn(move || {
+            let _ = send_stdin(&mut input);
+            let _ = read_guest_frame::<GuestReply>(&mut input);
+        });
+    }
+    if detach {
+        println!("{}", instance.id);
+        Ok(0)
+    } else {
+        output.follow(&started.generation, &mut io::stdout(), &mut io::stderr())
+    }
+}
+
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     if let DockerCommand::Build(args) = command {
         return build::run(args);
@@ -372,7 +418,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         }
         DockerCommand::Ps(args) => {
             if !args.quiet {
-                println!("CONTAINER ID\tIMAGE\tCOMMAND\tSTATUS\tPORTS\tNAMES");
+                println!("INSTANCE ID\tTYPE\tIMAGE\tCOMMAND\tSTATUS\tLIFETIME\tPORTS\tNAMES");
             }
             for instance in store.instances(args.all)? {
                 let id = if args.no_trunc {
@@ -398,10 +444,50 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                         .collect::<Vec<_>>()
                         .join(", ");
                     println!(
-                        "{id}\t{}\t{:?}\t{status}\t{ports}\t{}",
+                        "{id}\trun\t{}\t{:?}\t{status}\t{}\t{ports}\t{}",
                         instance.image.reference,
                         instance.argv.join(" "),
+                        if instance.config.auto_remove {
+                            "ephemeral"
+                        } else {
+                            "persistent"
+                        },
                         instance.name
+                    );
+                }
+            }
+            for record in pvisor::registered_runs()? {
+                let live = pvisor::is_live(&record.stage_dir())?;
+                if !args.all && !live {
+                    continue;
+                }
+                let kind = record
+                    .orchestration
+                    .get(pvisor::INSTANCE_KIND_KEY)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("job");
+                let id = if args.no_trunc {
+                    &record.run_id
+                } else {
+                    &record.run_id[..record.run_id.len().min(12)]
+                };
+                if args.quiet {
+                    println!("{id}");
+                } else {
+                    println!(
+                        "{id}\t{kind}\t-\t{:?}\t{}\t{}\t-\t{}",
+                        record.command.join(" "),
+                        if live {
+                            "running"
+                        } else {
+                            record.state.as_str()
+                        },
+                        if kind == "spawn" {
+                            "ephemeral"
+                        } else {
+                            "persistent"
+                        },
+                        record.agent,
                     );
                 }
             }
@@ -462,36 +548,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                 let mut display = progress::PullDisplay::new(&config.image);
                 store.create_with_progress(config, &mut |event| display.update(event))?
             };
-            let output = store.output(&instance)?;
-            let started = store.start(&instance.id)?;
-            let _terminal = Terminal::new(args.tty && !args.detach, args.interactive)?;
-            let _signals = if args.detach {
-                None
-            } else {
-                Some(Signals::forward(store.clone(), started.clone())?)
-            };
-            if args.interactive && !args.detach && started.state != "exited" {
-                let mut input = store.connect(&started)?;
-                write_guest_frame(&mut input, &GuestRequest::Input {})?;
-                ensure!(
-                    matches!(
-                        read_guest_frame::<GuestReply>(&mut input)?,
-                        GuestReply::Ready
-                    ),
-                    "guest stdin unavailable"
-                );
-                input.set_read_timeout(None)?;
-                input.set_write_timeout(None)?;
-                std::thread::spawn(move || {
-                    let _ = send_stdin(&mut input);
-                    let _ = read_guest_frame::<GuestReply>(&mut input);
-                });
-            }
-            if args.detach {
-                println!("{}", instance.id);
-            } else {
-                return output.follow(&started.generation, &mut io::stdout(), &mut io::stderr());
-            }
+            return launch(&store, &instance, args.detach);
         }
         DockerCommand::Start(args) => {
             return batch(&args.containers, |selector| {
@@ -517,10 +574,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
         }
         DockerCommand::Rm(args) => {
             return batch(&args.containers, |selector| {
-                if args.force {
-                    store.stop(selector, Duration::ZERO, Some("SIGKILL"))?;
-                }
-                store.remove(selector, args.volumes)?;
+                super::instances::remove(&store, selector, args.force, args.volumes)?;
                 println!("{selector}");
                 Ok(())
             });
