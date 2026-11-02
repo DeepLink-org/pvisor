@@ -87,6 +87,17 @@ pub struct ExecLaunch {
     /// Overrides merged into the launch environment; native transport keys are removed.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Treat `env` as the complete process environment instead of an overlay
+    /// onto the launch environment. Callers that already carry a full
+    /// environment (OCI exec specs) use this; native transport keys are
+    /// still removed and HOME keeps its Docker-equivalent defaulting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_env: bool,
+    /// Per-exec rlimits keyed by Linux resource name with soft and hard
+    /// values, replacing the launch limits entirely. Empty inherits them,
+    /// which is the OCI exec default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<String, (u64, u64)>,
     /// Optional absolute guest cwd; omission inherits workload cwd.
     pub cwd: Option<PathBuf>,
     /// Existing guest identity; omission inherits launch identity.

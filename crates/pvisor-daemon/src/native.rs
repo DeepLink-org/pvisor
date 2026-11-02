@@ -954,6 +954,8 @@ mod tests {
             launch: ExecLaunch {
                 argv: vec!["tool".into()],
                 env: BTreeMap::new(),
+                replace_env: false,
+                limits: BTreeMap::new(),
                 cwd: None,
                 user: None,
                 tty: None,

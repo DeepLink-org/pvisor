@@ -186,6 +186,8 @@ fn command(body: Value) -> Result<(ExecLaunch, bool, u64), Error> {
         ExecLaunch {
             argv,
             env: body.envs,
+            replace_env: false,
+            limits: BTreeMap::new(),
             cwd,
             user,
             tty: None,
