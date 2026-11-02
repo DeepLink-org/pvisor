@@ -885,11 +885,12 @@ pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -
         .is_some_and(|value| value == "true")
 }
 
-/// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
-/// works (the shim binary is copied into the rootfs at boot).
-pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
+/// True unless `io.pvisor.vm.exec=off`: VMs enable the guest supervisor's
+/// control listener and its host-side vsock proxy so exec (docker exec /
+/// kubectl exec) works. `off` exposes neither end, disabling exec.
+pub fn vm_exec_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
-        .get(format!("{ANNOTATION_PREFIX}vm.agent").as_str())
+        .get(format!("{ANNOTATION_PREFIX}vm.exec").as_str())
         .map(|value| value != "off")
         .unwrap_or(true)
 }
@@ -919,7 +920,7 @@ pub fn validate_vm_process(
     // subsumes; accepting them matches how every VM runtime (kata,
     // firecracker) treats OCI process-level security. Rlimits (init and
     // exec alike) travel to the guest: init through the launch config,
-    // exec through the agent's ExecStart message.
+    // exec through the guest control protocol's launch overrides.
     let _ = process.no_new_privileges();
     let _ = process.capabilities();
     let _ = process.rlimits();
@@ -928,7 +929,7 @@ pub fn validate_vm_process(
 
 pub fn guest_config(
     process: &ProcessPlan,
-    agent: bool,
+    control: bool,
 ) -> anyhow::Result<pvisor_guest::GuestConfig> {
     // Identity, capabilities and no_new_privileges were validated at plan
     // time (validate_vm_process): the VM boundary subsumes host-process
@@ -952,11 +953,14 @@ pub fn guest_config(
             .iter()
             .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
             .collect(),
-        agent: agent.then(|| {
-            vec![
-                crate::agent::AGENT_GUEST_PATH.into(),
-                crate::agent::AGENT_ARG.into(),
-            ]
+        // Enables the supervisor's host-only vsock control listener, the
+        // exec path shared with the CLI; false starts no listener. The
+        // control contract requires the workload to run in its own session
+        // so Stop signals its process group without reaching PID 1.
+        control,
+        process: control.then(|| pvisor_guest::ProcessConfig {
+            new_session: true,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -2358,7 +2362,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_config_preserves_arguments_environment_and_agent() {
+    fn guest_config_preserves_arguments_environment_and_control() {
         let process = ProcessPlan {
             argv: vec!["/bin/sh".into(), "-c".into(), "echo 'hi there'".into()],
             env: vec!["GREETING=hello world".into()],
@@ -2377,21 +2381,18 @@ mod tests {
         assert_eq!(config.argv, process.argv);
         assert_eq!(config.env["GREETING"], "hello world");
         assert_eq!(config.limits["RLIMIT_NOFILE"], (32, 64));
-        assert_eq!(
-            config.agent.unwrap(),
-            [crate::agent::AGENT_GUEST_PATH, crate::agent::AGENT_ARG]
-        );
-        assert!(guest_config(&process, false).unwrap().agent.is_none());
+        assert!(config.control);
+        assert!(!guest_config(&process, false).unwrap().control);
     }
 
     #[test]
-    fn vm_agent_annotation_controls_the_agent() {
+    fn vm_exec_annotation_controls_the_control_listener() {
         let mut annotations = HashMap::new();
-        assert!(vm_agent_enabled(&annotations));
-        annotations.insert("io.pvisor.vm.agent".to_string(), "off".to_string());
-        assert!(!vm_agent_enabled(&annotations));
-        annotations.insert("io.pvisor.vm.agent".to_string(), "on".to_string());
-        assert!(vm_agent_enabled(&annotations));
+        assert!(vm_exec_enabled(&annotations));
+        annotations.insert("io.pvisor.vm.exec".to_string(), "off".to_string());
+        assert!(!vm_exec_enabled(&annotations));
+        annotations.insert("io.pvisor.vm.exec".to_string(), "on".to_string());
+        assert!(vm_exec_enabled(&annotations));
     }
 
     #[test]

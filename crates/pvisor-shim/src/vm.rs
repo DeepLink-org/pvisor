@@ -10,9 +10,10 @@
 //! from the host. `VmRuntime::run` enters the VMM and terminates the runner
 //! with the workload exit code reported by the guest.
 
-use crate::agent::{AGENT_GUEST_PATH, AGENT_VSOCK_PORT};
-use crate::plan::{ContainerPlan, guest_config, vm_agent_enabled, vm_ram_dedup_enabled};
+use crate::plan::{ContainerPlan, guest_config, vm_exec_enabled, vm_ram_dedup_enabled};
+use crate::sockets::{bridge_socket_path, control_socket_path};
 use anyhow::{Context, Result};
+use pvisor_guest::control::CONTROL_PORT;
 use pvisor_vm::api::{RamDedupControl, VmConfiguration, VmRuntime};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -35,8 +36,8 @@ pub fn boot_vm(
 ) -> Result<i32> {
     let config = plan.vm_config();
 
-    let agent = vm_agent_enabled(&plan.annotations);
-    let mut guest = guest_config(&plan.process, agent)?;
+    let exec_enabled = vm_exec_enabled(&plan.annotations);
+    let mut guest = guest_config(&plan.process, exec_enabled)?;
     // Injected payloads become guest sidecars when they run; stage-only
     // entries (entrypoint wrappers) are just staged below. Port bridges ride
     // AF_VSOCK with the same numbering: the guest supervisor relays each
@@ -122,23 +123,6 @@ pub fn boot_vm(
         });
     }
     let guest_config = serde_json::to_vec(&guest)?;
-    if agent {
-        // The static musl shim binary doubles as the guest agent: copy it
-        // into the rootfs so exec works without image requirements.
-        let mut agent_file = pvisor_overlay_core::sys::prepare_rooted_path(
-            &plan.rootfs,
-            Path::new(AGENT_GUEST_PATH.trim_start_matches('/')),
-            false,
-            true,
-        )
-        .context("prepare guest agent without following image symlinks")?;
-        agent_file.set_len(0)?;
-        std::io::copy(
-            &mut std::fs::File::open(std::env::current_exe().context("current exe")?)?,
-            &mut agent_file,
-        )?;
-        agent_file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
-    }
     for injection in &plan.injections {
         let relative = injection
             .target
@@ -185,10 +169,10 @@ pub fn boot_vm(
             })?;
             continue;
         }
-        // Same materialization as the agent binary, into the container's
-        // writable rootfs layer: the guest supervisor starts it from the
-        // sidecar argv. Create-time admission already verified the target
-        // was free, so a collision here is unexpected and fails the boot.
+        // Staged into the container's writable rootfs layer; the guest
+        // supervisor starts it from the sidecar argv. Create-time admission
+        // already verified the target was free, so a collision here is
+        // unexpected and fails the boot.
         let mut payload =
             pvisor_overlay_core::sys::prepare_rooted_path(&plan.rootfs, relative, false, true)
                 .with_context(|| {
@@ -253,21 +237,20 @@ pub fn boot_vm(
         0o400,
         true,
     )?;
-    vm.vsock_port(
-        AGENT_VSOCK_PORT,
-        crate::agent::agent_socket_path(&plan.id),
-        true,
-    )?;
+    if exec_enabled {
+        // Host end of the guest control protocol (docker exec / kubectl
+        // exec into the VM): libkrun listens on the socket and tunnels
+        // connections to the guest supervisor's vsock listener. The
+        // supervisor only starts that listener when the launch config
+        // enables control, so a disabled task exposes neither end.
+        vm.vsock_port(CONTROL_PORT, control_socket_path(&plan.id), true)?;
+    }
     // Bridged ports: libkrun listens on each host unix socket and tunnels
     // connections into the guest's AF_VSOCK listener of the same number
     // (the pod-netns proxies connect here; see the bridge proxies).
     for injection in &plan.injections {
         if let Some(port) = injection.bridge {
-            vm.vsock_port(
-                u32::from(port),
-                crate::agent::bridge_socket_path(&plan.id, port),
-                true,
-            )?;
+            vm.vsock_port(u32::from(port), bridge_socket_path(&plan.id, port), true)?;
         }
     }
     if let Some(stream) = network {
