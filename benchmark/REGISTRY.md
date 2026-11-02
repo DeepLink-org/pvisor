@@ -1045,7 +1045,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色：** engineering A/B
 - **Motivation：** 防止 Run 的启动和 Bundle 读取在日常开发中出现回归。
 - **想要的结论：** "候选版本相对主干，最小 Run 的耗时和 status 读取耗时没有超过阈值的回归"。
-- **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。
+- **实验设计：** 同机同套件，smoke 使用 2 次预热、10 个样本，nightly 使用 10 次预热、50 个样本；默认 15% 阈值。最小 host Job 条件保留并校验每个完成 Bundle：新 CLI 使用 `stage --executor host`，旧基线使用保留记录的 `spawn`/`run`，不与退出后清理的临时 `spawn` 混合。
 - **入口脚本：** `benchmark/process/smoke.md` 与 `nightly.md` 分别声明 2/10 和 10/50 的四个 bench cell，由 semspec filter 提供已验证计划清单。`prepare.py` 准备并冻结输入，semspec bench 与公共 runtime 测量，`mise run benchmark -- smoke` / `nightly` 入口不变；旧 `bench.py` 已删除；历史复现使用原批次的冻结 harness。
 
 ## 检查清单 {#checklist}

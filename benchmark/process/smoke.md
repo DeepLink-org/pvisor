@@ -19,7 +19,9 @@ Design: 四个固定 argv，逐条件顺序运行；每条件 2 次预热、10 �
 
 准备时展开 `@BINARY@`、`@JOB_COMMAND@`、`@JOB@`、`@BATCH@`、`@REPO@`，
 路径仍是独立 argv，不经过 shell 拼接。`@JOB_COMMAND@` 从 CLI 顶层 help 选择
-spawn，兼容尚未重命名的基线 run。实验使用已准备的二进制，默认关闭附加性能日志。
+支持显式 Host 的持久 stage，旧基线则使用保留记录的 spawn/run。两个版本都必须
+逐次产生并校验完成 Bundle；不将临时 spawn 的清理耗时混入这个持久 Job 条件。
+实验使用已准备的二进制，默认关闭附加性能日志。
 
 ```sh
 mise run benchmark -- smoke
@@ -53,7 +55,7 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=host-run -->
 ```toml
-argv = ["@BINARY@", "@JOB_COMMAND@", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
+argv = ["@BINARY@", "@JOB_COMMAND@", "--executor", "host", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
 conclude = ["python3", "@REPO@/benchmark/process/check.py", "new-bundle", "@BATCH@/runs"]
 warmup = 2
 runs = 10

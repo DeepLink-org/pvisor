@@ -437,6 +437,25 @@ fn workspace_fork_clones_files_and_preimages_without_retaining_parent_storage() 
         .env("PVISOR_RUN_HOME", temp.path().join("runs"))
         .output()
         .unwrap();
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("CAPABILITY_UNSUPPORTED: CoW clone")
+    {
+        assert!(
+            !child.exists(),
+            "unsupported CoW must not publish a partial child"
+        );
+        assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), b"staged");
+        let show = parsed(invoke(&["checkpoint", "show", "--json", id], Some(&stage)));
+        assert_eq!(show["branch_references"], 0);
+        assert!(
+            std::env::var_os("PVISOR_TEST_REQUIRE_COW").is_none(),
+            "{output:?}"
+        );
+        eprintln!(
+            "filesystem has no native CoW; refusal, source preservation and pin cleanup verified"
+        );
+        return;
+    }
     assert!(
         output.status.success(),
         "{}",

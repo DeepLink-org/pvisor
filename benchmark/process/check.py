@@ -20,7 +20,7 @@ if __name__ == "__main__":
     elif mode == "new-bundle":
         # A failed command never reaches this hook. Track every completed Run,
         # rather than silently revalidating an old Bundle when no new Run exists.
-        current = {str(p) for p in path.glob("run-*/run-bundle.json")}
+        current = {str(p) for p in path.glob("run-*/**/run-bundle.json")}
         previous_path = path / ".checked.json"
         previous = set(json.loads(previous_path.read_text())) if previous_path.exists() else set()
         fresh = current - previous

@@ -10,6 +10,17 @@ struct Fixture {
     root: tempfile::TempDir,
 }
 
+fn staging_available() -> bool {
+    #[cfg(target_os = "macos")]
+    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        eprintln!(
+            "staged-write integration requires installed macFUSE; metadata lifetime tests still run"
+        );
+        return false;
+    }
+    true
+}
+
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
@@ -48,6 +59,9 @@ fn spawn_removes_default_and_explicit_storage_on_success_and_nonzero_exit() {
     let fixture = Fixture::new();
     for code in [0, 7] {
         for explicit in [false, true] {
+            if explicit && !staging_available() {
+                continue;
+            }
             let stage = fixture.path("temporary-stage");
             let mut command = fixture.command();
             command.args(["spawn", "--no-agent-defaults", "--overlaynet", "off"]);
@@ -71,17 +85,16 @@ fn spawn_removes_default_and_explicit_storage_on_success_and_nonzero_exit() {
 fn spawn_is_visible_while_running_and_cancellation_removes_its_stage() {
     use std::io::{BufRead, BufReader};
     let fixture = Fixture::new();
-    let stage = fixture.path("live-stage");
     let mut child = fixture
         .command()
         .args([
             "spawn",
             "--no-agent-defaults",
+            "--filesystem",
+            "host",
             "--overlaynet",
             "off",
-            "--stage",
         ])
-        .arg(&stage)
         .args(["--", "/bin/sh", "-c", "echo READY; exec /bin/sleep 30"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -92,6 +105,8 @@ fn spawn_is_visible_while_running_and_cancellation_removes_its_stage() {
         .read_line(&mut line)
         .unwrap();
     assert_eq!(line, "READY\n");
+    let id = String::from_utf8(fixture.success(&["ps", "-q", "--no-trunc"]).stdout).unwrap();
+    let stage = fixture.path("runs").join(id.trim());
     let listing = fixture.success(&["ps", "--no-trunc"]);
     let listing = String::from_utf8(listing.stdout).unwrap();
     let record = pvisor::RunRecord::read(&stage).unwrap();
@@ -120,6 +135,9 @@ fn spawn_is_visible_while_running_and_cancellation_removes_its_stage() {
 
 #[test]
 fn custom_persistent_stage_is_listed_by_id_and_name_until_explicit_removal() {
+    if !staging_available() {
+        return;
+    }
     let fixture = Fixture::new();
     let stage = fixture.path("outside-run-home");
     let output = fixture
@@ -245,4 +263,39 @@ fn corrupt_instance_indexes_fail_closed_before_fork_or_removal() {
     }
     fs::write(index, original).unwrap();
     fixture.success(&["rm", "recorded"]);
+}
+
+#[test]
+fn delegated_spawn_removes_explicit_storage_without_a_filesystem_mount() {
+    let fixture = Fixture::new();
+    let stage = fixture.path("delegated-stage");
+    let spec_path = fixture.path("spec.json");
+    let result_path = fixture.path("result.json");
+    let mut spec = pvisor_core::RunSpec::process("delegated-lifetime", "sh", "/bin/sh");
+    let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
+    process.args = vec!["-c".into(), "exit 7".into()];
+    fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let output = fixture
+        .command()
+        .args([
+            "spawn",
+            "--executor",
+            "host",
+            "--overlaynet",
+            "off",
+            "--filesystem",
+            "host",
+            "--spec",
+        ])
+        .arg(&spec_path)
+        .arg("--result-file")
+        .arg(&result_path)
+        .arg("--stage")
+        .arg(&stage)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    assert!(!stage.exists());
+    assert!(result_path.is_file());
+    assert!(fixture.success(&["ps", "-aq"]).stdout.is_empty());
 }

@@ -3343,10 +3343,24 @@ fn clone_file_cow(source: &Path, destination: &Path) -> io::Result<()> {
     let error = io::Error::last_os_error();
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let error = io::Error::new(io::ErrorKind::Unsupported, "native CoW is unavailable");
+    let unsupported = error.kind() == io::ErrorKind::Unsupported
+        || matches!(
+            error.raw_os_error(),
+            Some(libc::EXDEV | libc::ENOTTY | libc::EINVAL | libc::ENOSYS)
+        );
+    let prefix = if unsupported {
+        "CAPABILITY_UNSUPPORTED: "
+    } else {
+        ""
+    };
     Err(io::Error::new(
-        error.kind(),
+        if unsupported {
+            io::ErrorKind::Unsupported
+        } else {
+            error.kind()
+        },
         format!(
-            "CoW clone {} -> {} failed: {error}; fork requires native filesystem CoW (no byte-copy fallback)",
+            "{prefix}CoW clone {} -> {} failed: {error}; fork requires native filesystem CoW (no byte-copy fallback)",
             source.display(),
             destination.display()
         ),

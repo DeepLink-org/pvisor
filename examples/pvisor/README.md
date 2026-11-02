@@ -11,7 +11,7 @@
 |---|---|
 | [01-filesystem-isolation](01-filesystem-isolation) | Agent 写入 upper，lower 在 apply 前保持不变 |
 | [02-changeset-management](02-changeset-management) | changeset 可 review，并可分别 apply 或 drop |
-| [03-network-isolation](03-network-isolation) | 三条平铺命令展示 allowlist、deny-all 与 cooperative proxy 的 direct-socket 边界 |
+| [03-network-isolation](03-network-isolation) | 三条平铺命令展示 allowlist、显式 deny 规则与 cooperative proxy 的 direct-socket 边界 |
 | [04-gateway-llm-control](04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
 | [05-zcode-cli](05-zcode-cli)（可选） | 真实 ZCode CLI 的文件工具、SSE 捕获、选择性 apply/drop 与超时清理 |
 

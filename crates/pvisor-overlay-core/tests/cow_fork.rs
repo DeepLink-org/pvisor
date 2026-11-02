@@ -13,7 +13,11 @@ fn cow_fork_preserves_raw_state_and_independent_inode_ownership() {
     // /tmp may be tmpfs, so exercise the repository's backing filesystem.
     let root = tempfile::Builder::new()
         .prefix(".cow-")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .tempdir_in(
+            std::env::var_os("PVISOR_TEST_COW_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").into()),
+        )
         .unwrap();
     let source = root.path().join("parent");
     let child = root.path().join("child");
