@@ -54,7 +54,7 @@ pub struct EgressRule {
 }
 
 /// Split a sidecar rule target `host[:port]` the same way the
-/// `io.pvisor.vm.network.allow` annotation path does: first colon separates
+/// `io.pvisor.vm.network` allowlist entries do: first colon separates
 /// an IPv4 literal or hostname from a decimal port. Without the split the
 /// port would corrupt the host pattern and every `host:port` target would
 /// compile into a policy that can never match.
@@ -86,12 +86,13 @@ fn split_egress_target(target: &str) -> anyhow::Result<(String, u16)> {
 /// (which policy compilation rejects). Rule targets use the sidecar
 /// contract's `host[:port]` form; a target without a port admits every port.
 ///
-/// The OpenSandbox rule syntax cannot express the private-address opt-in the
-/// annotation path exposes (`io.pvisor.vm.network.allow-private`), so it is
-/// passed by the caller: with it, an explicitly allowed target may resolve
-/// into private space (office-network relays, intranet registries); without
-/// it hostname rules keep rejecting private resolutions, the documented
-/// anti-DNS-rebinding default.
+/// The OpenSandbox rule syntax cannot express the private-address opt-in
+/// the annotation path carries per entry (`private:` prefixes inside
+/// `io.pvisor.vm.network=allowlist=...`), so it is passed by the caller
+/// (`io.pvisor.vm.network.allow-private`): with it, an explicitly allowed
+/// target may resolve into private space (office-network relays, intranet
+/// registries); without it hostname rules keep rejecting private
+/// resolutions, the documented anti-DNS-rebinding default.
 fn egress_rules_config(
     rules: &EgressRules,
     allow_private: bool,
@@ -139,12 +140,18 @@ impl VmNetworkAttachment {
             },
             ..Default::default()
         };
-        for (host, port) in &network.allow {
+        for entry in &network.allow {
             config.rules.push(pvisor_core::NetworkAccessRule {
-                host: host.clone(),
-                ports: if *port != 0 { vec![*port] } else { Vec::new() },
+                host: entry.host.clone(),
+                ports: if entry.port != 0 {
+                    vec![entry.port]
+                } else {
+                    Vec::new()
+                },
                 transports: Vec::new(),
-                allow_private_ips: network.allow_private,
+                // The per-entry `private:` opt-in from the annotation; entries
+                // without it keep the anti-DNS-rebinding default.
+                allow_private_ips: entry.private,
             });
         }
         Self::from_config(config, &plan.id).map(Some)

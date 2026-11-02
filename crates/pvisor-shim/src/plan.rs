@@ -751,10 +751,12 @@ impl ContainerPlan {
         config
     }
 
-    /// VM egress mode from `io.pvisor.vm.network` (`off`/unset, `public`,
-    /// `allowlist`) with entries from `io.pvisor.vm.network.allow`
-    /// (`host[:port]`, comma separated). Errors on unknown modes or
-    /// malformed entries so a typo cannot silently disable policy.
+    /// VM egress posture from the single `io.pvisor.vm.network` annotation:
+    /// `off`/unset (no device), `public`, or `allowlist=<entries>` where
+    /// entries are comma-separated `host[:port]` and an optional `private:`
+    /// prefix opts that entry into private-space resolutions (intranet
+    /// mirrors). Errors on unknown values or malformed entries so a typo
+    /// cannot silently disable policy.
     pub fn vm_network_plan(&self) -> Result<VmNetworkPlan, PlanError> {
         let Some(mode) = self
             .annotations
@@ -762,57 +764,81 @@ impl ContainerPlan {
         else {
             return Ok(VmNetworkPlan::default());
         };
-        match mode.trim() {
-            "off" | "none" => Ok(VmNetworkPlan::default()),
-            "public" => Ok(VmNetworkPlan {
+        let mode = mode.trim();
+        if mode == "off" || mode == "none" {
+            return Ok(VmNetworkPlan::default());
+        }
+        if mode == "public" {
+            return Ok(VmNetworkPlan {
                 mode: VmNetworkMode::Public,
                 allow: Vec::new(),
-                allow_private: false,
-            }),
-            "allowlist" => {
-                // Intranet mirrors and model hubs commonly resolve to
-                // private space; hostname rules reject private resolutions
-                // unless the task opts in.
-                let allow_private = vm_network_allow_private_enabled(&self.annotations);
-                let allow = self
-                    .annotations
-                    .get(format!("{ANNOTATION_PREFIX}vm.network.allow").as_str())
-                    .map(String::as_str)
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter(|entry| !entry.trim().is_empty())
-                    .map(|entry| entry.trim())
-                    .map(|entry| match entry.split_once(':') {
-                        Some((host, port)) => port
-                            .parse::<u16>()
-                            .ok()
-                            .filter(|port| *port != 0 && !host.is_empty())
-                            .map(|port| (host.to_string(), port))
-                            .ok_or_else(|| {
-                                PlanError::UnsupportedConstraint(format!(
-                                    "invalid io.pvisor.vm.network.allow port in `{entry}`"
-                                ))
-                            }),
-                        None => Ok((entry.to_string(), 0)),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                if allow.is_empty() {
-                    return Err(PlanError::UnsupportedConstraint(
-                        "io.pvisor.vm.network=allowlist requires io.pvisor.vm.network.allow entries"
-                            .into(),
-                    ));
-                }
-                Ok(VmNetworkPlan {
-                    mode: VmNetworkMode::Allowlist,
-                    allow,
-                    allow_private,
-                })
-            }
-            other => Err(PlanError::UnsupportedConstraint(format!(
-                "unsupported io.pvisor.vm.network mode `{other}` (off, public, allowlist)"
-            ))),
+            });
         }
+        let Some(entries) = mode.strip_prefix("allowlist=") else {
+            return Err(PlanError::UnsupportedConstraint(format!(
+                "unsupported io.pvisor.vm.network value `{mode}` (off, public, allowlist=<entries>)"
+            )));
+        };
+        let allow = entries
+            .split(',')
+            .filter(|entry| !entry.trim().is_empty())
+            .map(parse_allow_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+        if allow.is_empty() {
+            return Err(PlanError::UnsupportedConstraint(
+                "io.pvisor.vm.network=allowlist requires at least one host entry".into(),
+            ));
+        }
+        Ok(VmNetworkPlan {
+            mode: VmNetworkMode::Allowlist,
+            allow,
+        })
     }
+}
+
+/// Parse one `io.pvisor.vm.network` allowlist entry: `[private:]host[:port]`.
+/// The `private:` prefix opts a HOSTNAME entry into private-space DNS
+/// resolutions (anti-DNS-rebinding default-off); explicit IP-literal and
+/// CIDR entries never need it — the address itself is the authorization.
+fn parse_allow_entry(entry: &str) -> Result<AllowEntry, PlanError> {
+    let entry = entry.trim();
+    let (private, entry) = match entry.strip_prefix("private:") {
+        Some(rest) => (true, rest),
+        None => (false, entry),
+    };
+    let (host, port) = match entry.split_once(':') {
+        Some((host, port)) => {
+            let port = port.parse::<u16>().map_err(|_| {
+                PlanError::UnsupportedConstraint(format!(
+                    "invalid port in io.pvisor.vm.network entry `{entry}`"
+                ))
+            })?;
+            if port == 0 {
+                // An explicit `:0` must never widen into an all-port grant;
+                // omit the port to allow every port.
+                return Err(PlanError::UnsupportedConstraint(format!(
+                    "explicit zero port in io.pvisor.vm.network entry `{entry}`"
+                )));
+            }
+            (host.to_string(), port)
+        }
+        None => (entry.to_string(), 0),
+    };
+    if host.is_empty() {
+        return Err(PlanError::UnsupportedConstraint(
+            "empty host in io.pvisor.vm.network entry".into(),
+        ));
+    }
+    if private && (host.contains('/') || host.parse::<std::net::IpAddr>().is_ok()) {
+        return Err(PlanError::UnsupportedConstraint(format!(
+            "the private: prefix applies to hostname entries only; `{host}` is authorized by the address itself"
+        )));
+    }
+    Ok(AllowEntry {
+        host,
+        port,
+        private,
+    })
 }
 
 /// Egress policy attached to a VM task. `Off` boots no network device at
@@ -825,9 +851,18 @@ pub struct VmNetworkPlan {
     #[serde(default)]
     pub mode: VmNetworkMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allow: Vec<(String, u16)>,
-    #[serde(default)]
-    pub allow_private: bool,
+    pub allow: Vec<AllowEntry>,
+}
+
+/// One `io.pvisor.vm.network` allowlist entry. `port` 0 allows any port.
+/// `private` opts a HOSTNAME entry into private-space DNS resolutions —
+/// the anti-DNS-rebinding default rejects them otherwise. Explicit
+/// IP-literal and CIDR entries ignore it: the address is the authorization.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AllowEntry {
+    pub host: String,
+    pub port: u16,
+    pub private: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -838,11 +873,12 @@ pub enum VmNetworkMode {
     Allowlist,
 }
 
-/// True only for `io.pvisor.vm.network.allow-private=true`: the task opts
-/// its hostname egress rules into private-space resolutions (intranet
-/// mirrors, office-network relays). Applies to both the `vm.network`
-/// annotation path and the OpenSandbox egress-gate path; any other value
-/// keeps the anti-DNS-rebinding default of rejecting private resolutions.
+/// True only for `io.pvisor.vm.network.allow-private=true`. This is read
+/// exclusively on the OpenSandbox egress-gate path, whose rule format is
+/// upstream-owned and has no per-entry private opt-in; annotation-driven
+/// tasks use per-entry `private:` prefixes inside
+/// `io.pvisor.vm.network=allowlist=...` instead. Any other value keeps the
+/// anti-DNS-rebinding default of rejecting private resolutions.
 pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
@@ -865,7 +901,7 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
 /// side-channel/trust-domain implications; merging additionally requires
 /// the host KSM scanner, which the shim never touches (registration alone
 /// changes nothing). Any other value keeps the default, matching the other
-/// boolean annotations (`vm.agent`, `vm.network.allow-private`).
+/// boolean annotations (`vm.exec`, `vm.network.allow-private`).
 pub fn vm_ram_dedup_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.ram-dedup").as_str())
@@ -2482,41 +2518,77 @@ mod tests {
             VmNetworkMode::Public
         );
 
-        let allowlist = plan(&[
-            ("io.pvisor.vm.network", "allowlist"),
-            (
-                "io.pvisor.vm.network.allow",
-                "pypi.example.com, registry.internal:443 ,10.0.0.0/8",
-            ),
-        ])
+        let allowlist = plan(&[(
+            "io.pvisor.vm.network",
+            "allowlist=pypi.example.com, registry.internal:443 ,private:mirrors.corp, 10.0.0.0/8",
+        )])
         .vm_network_plan()
         .unwrap();
         assert_eq!(allowlist.mode, VmNetworkMode::Allowlist);
         assert_eq!(
             allowlist.allow,
             vec![
-                ("pypi.example.com".to_string(), 0),
-                ("registry.internal".to_string(), 443),
-                ("10.0.0.0/8".to_string(), 0),
+                AllowEntry {
+                    host: "pypi.example.com".to_string(),
+                    port: 0,
+                    private: false,
+                },
+                AllowEntry {
+                    host: "registry.internal".to_string(),
+                    port: 443,
+                    private: false,
+                },
+                AllowEntry {
+                    host: "mirrors.corp".to_string(),
+                    port: 0,
+                    private: true,
+                },
+                // Explicit IP/CIDR grants are uniform: the address is the
+                // authorization, private or not, and needs no prefix.
+                AllowEntry {
+                    host: "10.0.0.0/8".to_string(),
+                    port: 0,
+                    private: false,
+                },
             ]
         );
 
-        // Unknown modes and malformed ports are rejected, never downgraded.
+        // Unknown values and malformed ports are rejected, never downgraded.
         assert!(
             plan(&[("io.pvisor.vm.network", "open")])
                 .vm_network_plan()
                 .is_err()
         );
         assert!(
-            plan(&[
-                ("io.pvisor.vm.network", "allowlist"),
-                ("io.pvisor.vm.network.allow", "host:notaport"),
-            ])
-            .vm_network_plan()
-            .is_err()
+            plan(&[("io.pvisor.vm.network", "allowlist=host:notaport")])
+                .vm_network_plan()
+                .is_err()
         );
-        // Allowlist mode without entries would deny everything silently;
+        // The prefix is meaningless on an address grant; rejecting it beats
+        // silently ignoring an explicit operator request.
+        assert!(
+            plan(&[("io.pvisor.vm.network", "allowlist=private:10.0.0.0/8")])
+                .vm_network_plan()
+                .is_err()
+        );
+        assert!(
+            plan(&[("io.pvisor.vm.network", "allowlist=private:10.1.2.3")])
+                .vm_network_plan()
+                .is_err()
+        );
+        // An explicit zero port must never widen into an all-port grant.
+        assert!(
+            plan(&[("io.pvisor.vm.network", "allowlist=example.com:0")])
+                .vm_network_plan()
+                .is_err()
+        );
+        // Allowlist without entries would deny everything silently;
         // reject it so the operator notices.
+        assert!(
+            plan(&[("io.pvisor.vm.network", "allowlist=")])
+                .vm_network_plan()
+                .is_err()
+        );
         assert!(
             plan(&[("io.pvisor.vm.network", "allowlist")])
                 .vm_network_plan()
