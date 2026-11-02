@@ -91,6 +91,7 @@ pub trait ReadOnlyBackend: Send + Sync {
 struct Attachment {
     root: PathBuf,
     backend: Arc<dyn ReadOnlyBackend>,
+    stable_namespace: bool,
 }
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 impl Drop for Attachment {
@@ -109,6 +110,34 @@ fn attachments() -> &'static RwLock<Vec<Weak<Attachment>>> {
 pub struct BackendAttachment(Arc<Attachment>);
 impl BackendAttachment {
     pub fn new(root: &Path, backend: Arc<dyn ReadOnlyBackend>) -> io::Result<Self> {
+        Self::register(root, backend, false)
+    }
+
+    /// Register a fixed logical namespace, independently of native projection mutability.
+    ///
+    /// The trusted producer must pin one authenticated revision and keep names,
+    /// types, logical attributes, permissions, aliases and content stable until
+    /// all attachment leases and consumers are gone. Native projection may add
+    /// placeholders or fill contents, but must not replace published object
+    /// identities or expose names absent from that revision. The caller retains
+    /// the private projection directory and prevents external writers.
+    ///
+    /// Canonicalizes `root` and requires a directory, as `new` does. Rejects any
+    /// ancestor/descendant attachment overlap with EEXIST, including future
+    /// registrations while a lease exists. Failure installs nothing. This is
+    /// not a physical `LayerMutability::Immutable` promise or authorization.
+    pub fn new_stable_namespace(
+        root: &Path,
+        backend: Arc<dyn ReadOnlyBackend>,
+    ) -> io::Result<Self> {
+        Self::register(root, backend, true)
+    }
+
+    fn register(
+        root: &Path,
+        backend: Arc<dyn ReadOnlyBackend>,
+        stable_namespace: bool,
+    ) -> io::Result<Self> {
         let root = root.canonicalize()?;
         if !fs::symlink_metadata(&root)?.is_dir() {
             return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
@@ -117,14 +146,18 @@ impl BackendAttachment {
             .write()
             .map_err(|_| io::Error::other("backend registry poisoned"))?;
         entries.retain(|entry| entry.strong_count() != 0);
-        if entries
-            .iter()
-            .filter_map(Weak::upgrade)
-            .any(|entry| entry.root == root)
-        {
+        if entries.iter().filter_map(Weak::upgrade).any(|entry| {
+            entry.root == root
+                || ((stable_namespace || entry.stable_namespace)
+                    && (root.starts_with(&entry.root) || entry.root.starts_with(&root)))
+        }) {
             return Err(io::Error::from_raw_os_error(libc::EEXIST));
         }
-        let attachment = Arc::new(Attachment { root, backend });
+        let attachment = Arc::new(Attachment {
+            root,
+            backend,
+            stable_namespace,
+        });
         ACTIVE.fetch_add(1, Ordering::Release);
         entries.push(Arc::downgrade(&attachment));
         Ok(Self(attachment))
@@ -133,6 +166,34 @@ impl BackendAttachment {
     pub fn root(&self) -> &Path {
         &self.0.root
     }
+}
+
+/// Pins a trusted stable namespace registration, not the caller's directory owner.
+///
+/// Dropping the original attachment does not revoke this lease or permit a
+/// replacement registration. The producer must still retain projection storage;
+/// the lease never turns native placeholders into directly readable content.
+/// Leases are process-local and cannot be serialized into a VM snapshot.
+pub struct StableNamespaceLease {
+    _attachment: Arc<Attachment>,
+}
+
+/// Obtain a lease only for an exact, explicitly stable attachment root.
+///
+/// Canonicalizes an existing root, propagating filesystem/registry errors.
+/// Returns None for ordinary native directories, ordinary attachments and
+/// subdirectories of stable attachments. Does not call backend I/O or infer
+/// stability from read-only permissions. Future overlapping attachments are
+/// refused until every attachment/lease is dropped.
+pub fn stable_namespace(root: &Path) -> io::Result<Option<StableNamespaceLease>> {
+    let root = root.canonicalize()?;
+    let entries = attachments()
+        .read()
+        .map_err(|_| io::Error::other("backend registry poisoned"))?;
+    Ok(entries.iter().filter_map(Weak::upgrade).find_map(|entry| {
+        (entry.root == root && entry.stable_namespace)
+            .then_some(StableNamespaceLease { _attachment: entry })
+    }))
 }
 
 fn find(path: &Path) -> io::Result<Option<(Arc<Attachment>, PathBuf)>> {

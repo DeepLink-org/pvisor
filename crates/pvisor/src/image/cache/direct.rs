@@ -363,6 +363,9 @@ impl DirectImage {
 }
 
 fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
+    // Only authenticated V2 revisions grant logical namespace stability.
+    // Legacy/test sources retain their original live projection contract.
+    let stable_namespace = source.digest.starts_with("pvisor-v2:");
     let objects = root
         .parent()
         .context("direct lower has no owner")?
@@ -377,7 +380,11 @@ fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
         complete: Mutex::default(),
     });
     projection.prepare_metadata(Path::new(""))?;
-    BackendAttachment::new(root, projection).map_err(Into::into)
+    if stable_namespace {
+        BackendAttachment::new_stable_namespace(root, projection).map_err(Into::into)
+    } else {
+        BackendAttachment::new(root, projection).map_err(Into::into)
+    }
 }
 
 pub(crate) struct RunnerLowers {

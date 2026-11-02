@@ -35,6 +35,59 @@ fn host_buffer_fixture(root: &Path) -> OverlayFs {
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn object_read_barriers_skip_unrelated_writes_but_wait_across_fd_aliases() {
+    for enabled in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut fs = host_buffer_fixture(temp.path());
+        // Configure before replacing the empty INIT queue in this private test.
+        fs.destroy();
+        fs.configure_object_read_barriers(enabled);
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = host_buffer_context();
+        let (inode, handle) = host_buffer_open_file(&fs);
+        let linked = fs.link(ctx, inode, fuse::ROOT_ID, c"file-link").unwrap();
+        let alias = fs.open(ctx, linked.inode, false, libc::O_RDONLY as u32).unwrap().0.unwrap();
+        let (other, other_handle, _) = fs.create(ctx, fuse::ROOT_ID, c"other", 0o600, false,
+            libc::O_RDWR as u32, 0, Extensions::default()).unwrap();
+        let other_handle = other_handle.unwrap();
+        let gate = host_buffer_block(&fs, None);
+        host_buffer_write(&fs, inode, handle, b"updated", 0).unwrap();
+        std::thread::scope(|scope| {
+            let fs = &fs;
+            let (sent, pending) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let mut out = ReadWriter { gate: None, bytes: vec![] };
+                let result = fs.read(ctx, linked.inode, alias, &mut out, 7, 0, None, 0);
+                sent.send((result, out.bytes)).unwrap();
+            });
+            let (sent, unrelated) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let mut out = ReadWriter { gate: None, bytes: vec![] };
+                sent.send(fs.read(ctx, other.inode, other_handle, &mut out, 1, 0, None, 0)).unwrap();
+            });
+            let independent = unrelated.recv_timeout(if enabled {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(50)
+            });
+            let premature = pending.recv_timeout(Duration::from_millis(20));
+            gate.release();
+            assert_eq!(independent.is_ok(), enabled);
+            if let Ok(result) = independent { result.unwrap(); }
+            else { unrelated.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(); }
+            assert!(premature.is_err(), "an alias read overtook pending object writes");
+            let (result, bytes) = pending.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(result.unwrap(), 7);
+            assert_eq!(bytes, b"updated");
+        });
+        fs.release(ctx, inode, 0, alias, false, false, None).unwrap();
+        fs.release(ctx, inode, 0, handle, false, false, None).unwrap();
+        fs.release(ctx, other.inode, 0, other_handle, false, false, None).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn host_buffer_context() -> Context {
     Context {
         uid: 0,
@@ -599,6 +652,7 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
         batch_bytes: 4096,
         max_chunks: 1,
         max_delay: Duration::ZERO,
+        object_barriers: false,
     };
     fs.configure_host_writeback_options(true, false, options, true, false)
         .unwrap();

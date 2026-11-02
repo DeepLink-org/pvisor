@@ -22,6 +22,7 @@ pub(super) struct WriteBufferOptions {
     pub(super) batch_bytes: usize,
     pub(super) max_chunks: usize,
     pub(super) max_delay: Duration,
+    pub(super) object_barriers: bool,
 }
 
 impl Default for WriteBufferOptions {
@@ -32,6 +33,7 @@ impl Default for WriteBufferOptions {
             batch_bytes: 1024 * 1024,
             max_chunks: 64,
             max_delay: Duration::from_millis(10),
+            object_barriers: false,
         }
     }
 }
@@ -82,6 +84,9 @@ pub(super) struct WriteBufferStats {
 /// the vectored write; every target in the batch stays alive through execution.
 pub(super) trait Target: Send + 'static {
     fn merge_key(&self) -> (u64, bool);
+    // Different FD/hardlink aliases of one backing object must use one key.
+    // The default is for test targets whose handle already identifies object.
+    fn object_key(&self) -> u64 { self.merge_key().0 }
     fn write(&self, chunks: &[&[u8]], offset: u64) -> io::Result<usize>;
 }
 
@@ -112,6 +117,7 @@ impl Failure {
 struct Job {
     sequence: u64,
     key: (u64, bool),
+    object: u64,
     target: Box<dyn Target>,
     bytes: Vec<u8>,
     offset: u64,
@@ -134,6 +140,9 @@ struct State {
     // Controls do not consume the data budget. A cut prevents a later write
     // joining its batch, so continuous producers cannot starve a barrier.
     cuts: BTreeMap<u64, usize>,
+    // Latest accepted sequence per pending object, including in-flight work.
+    // Completed objects are removed; entries therefore never exceed max_jobs.
+    objects: BTreeMap<u64, u64>,
 }
 
 struct Shared {
@@ -218,6 +227,7 @@ impl WriteBuffer {
                 failure: None,
                 stats: WriteBufferStats::default(),
                 cuts: BTreeMap::new(),
+                objects: BTreeMap::new(),
             }),
             changed: Condvar::new(),
             options,
@@ -296,9 +306,23 @@ impl WriteBuffer {
     /// batch. Later submissions do not extend the cut. This is not fdatasync.
     /// Any session error remains sticky and is returned after the cut drains.
     pub(super) fn flush(&self) -> io::Result<()> {
-        let mut state = self.shared.lock();
+        let state = self.shared.lock();
         let cut = state.accepted;
-        if state.completed == cut {
+        self.wait_cut(state, cut)
+    }
+
+    /// Wait the already-accepted cut for this backing object, not unrelated
+    /// later writes. The FIFO worker remains single and ordered. Session errors
+    /// remain sticky even if this object has no pending writes.
+    pub(super) fn flush_object(&self, object: u64) -> io::Result<()> {
+        if !self.shared.options.object_barriers { return self.flush(); }
+        let state = self.shared.lock();
+        let cut = state.objects.get(&object).copied().unwrap_or(state.completed);
+        self.wait_cut(state, cut)
+    }
+
+    fn wait_cut<'a>(&self, mut state: MutexGuard<'a, State>, cut: u64) -> io::Result<()> {
+        if state.completed >= cut {
             // Metadata and read-only workloads usually have no pending writes.
             // Avoid allocating a cut node or waking the worker in that case.
             return current_error(&state);
@@ -397,6 +421,7 @@ impl Permit {
             ));
         }
         let key = target.merge_key();
+        let object = if self.shared.options.object_barriers { target.object_key() } else { 0 };
         let mut state = self.shared.lock();
         admit(&state)?;
         let sequence = state.accepted.checked_add(1).ok_or_else(|| {
@@ -405,12 +430,14 @@ impl Permit {
         state.queue.push_back(Job {
             sequence,
             key,
+            object,
             target,
             bytes,
             offset,
             accepted_at: Instant::now(),
         });
         state.accepted = sequence;
+        if self.shared.options.object_barriers { state.objects.insert(object, sequence); }
         state.stats.total_jobs = sequence;
         self.held = false;
         self.shared.changed.notify_all();
@@ -522,6 +549,7 @@ fn worker_loop(shared: &Shared) {
         drop(state);
 
         let sequence = batch.last().unwrap().sequence;
+        let object = batch[0].object;
         let chunks = batch
             .iter()
             .map(|job| job.bytes.as_slice())
@@ -543,6 +571,10 @@ fn worker_loop(shared: &Shared) {
             }
         }
         state.completed = sequence;
+        if shared.options.object_barriers
+            && state.objects.get(&object).is_some_and(|last| *last <= sequence) {
+            state.objects.remove(&object);
+        }
         state.bytes -= bytes;
         state.jobs -= count;
         state.inflight_bytes = 0;
@@ -567,6 +599,7 @@ fn fail_worker(shared: &Shared) {
         state.jobs -= queue.len() + inflight_jobs;
         state.inflight_bytes = 0;
         state.inflight_jobs = 0;
+        state.objects.clear();
         shared.changed.notify_all();
         queue
     };
@@ -649,6 +682,23 @@ mod tests {
     }
 
     #[test]
+    fn object_index_is_pending_only_and_errors_remain_session_sticky() {
+        let buffer = WriteBuffer::with_options(WriteBufferOptions {
+            object_barriers: true, max_delay: Duration::ZERO,
+            ..WriteBufferOptions::default()
+        }).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for object in 0..1024 {
+            submit(&buffer, recording((object, false), &calls), b"x", 0);
+            buffer.flush_object(object).unwrap();
+            assert!(buffer.shared.lock().objects.is_empty(), "completed identities must not accumulate");
+        }
+        buffer.shared.lock().failure = Some(Failure::capture(io::Error::from_raw_os_error(libc::ENOSPC)));
+        assert_eq!(buffer.flush_object(u64::MAX).unwrap_err().raw_os_error(), Some(libc::ENOSPC));
+        assert!(buffer.stop().is_err());
+    }
+
+    #[test]
     fn options_preserve_defaults_and_accept_supported_boundaries() {
         let defaults = WriteBufferOptions::default();
         assert_eq!(defaults.budget_bytes, 64 * 1024 * 1024);
@@ -663,6 +713,7 @@ mod tests {
             batch_bytes: 4 * 1024,
             max_chunks: 1,
             max_delay: Duration::ZERO,
+            object_barriers: false,
         };
         let maximum = WriteBufferOptions {
             budget_bytes: 256 * 1024 * 1024,
@@ -670,6 +721,7 @@ mod tests {
             batch_bytes: 4 * 1024 * 1024,
             max_chunks: 64,
             max_delay: Duration::from_millis(50),
+            object_barriers: false,
         };
         for options in [minimum, maximum] {
             options.validate().unwrap();
@@ -751,6 +803,7 @@ mod tests {
                 batch_bytes,
                 max_chunks,
                 max_delay: Duration::ZERO,
+                object_barriers: false,
             })
             .unwrap();
             let (entered, started) = mpsc::channel();

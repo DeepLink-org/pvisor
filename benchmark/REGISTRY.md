@@ -238,6 +238,35 @@ Design: 负载、对照、控制变量与有效样本判据。
   `docs/src/*/lab-notes/filesystem-io-performance-analysis.md`
 - **角色：** engineering A/B
 - **Motivation：** 开发者需要判断一次文件系统改动是否让 B-FS-TOOLS 的用户结论变好，并定位时间花在哪一层（传输、OverlayCore、持久化、内容指纹）。
+- **顺序优化第一批／目录名称快照：** `directory_names_ab.py` 冻结同一 release
+  `guest_metadata_case`、静态 guest、固件与 SOURCE 收据，仅切换宿主
+  `PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=0/1`；默认仍关。8192 个长名称文件的
+  Immutable SDK share，单 VM 三轮重新挂载，guest 校验完整名称集合/重复项并
+  在目录时钟外校验首/中/末文件全部字节；rootfs 为私有空目录加注入 supervisor。
+  主要指标为每环境三轮目录枚举累计，VM 退出和准备另记；每格30个 fresh VM，
+  seeded 配对随机顺序，两核 affinity/quota、2 GiB父预算、swap0，guest2vCPU/
+  512MiB；所有有效慢值和失败保留。独立N1 profile检查READINDEX、名称缓存
+  hit/miss和实际启用；插桩时间不进入正式样本。另以既有bench场景检查窄目录
+  与工具式stat/open控制点。只报告SDK机制收益，不称为普通CLI或Agent收益；
+  原始来源、命令和样本留在独立`.data/directory-names-*`，不更新用户排名。
+- **顺序优化第二批／VM prepared-copy-up：** 同入口选择
+  `--experiment prepared-copy-up`，两臂固定第一批名称缓存开启，只切换
+  `PVISOR_VM_FS_PREPARED_COPY_UP=0/1`。每个fresh VM三轮各复制独立32MiB
+  lower文件并发执行256次强制statx；记录OPEN、metadata和两者完成时间，
+  三轮累计以环境为配对单位，30对。确定性阻塞backend单测另验准备期间
+  metadata可进、namespace修改不可越过；该阻塞注入不进入性能计时。
+  无journal的SDK copy-up只验证此机制，不代表live stage或lazy远程下载收益。
+- **顺序优化第三批／V2逻辑目录镜像：** `logical_directory_ab.py` 从本地
+  Dockerfile `FROM scratch/COPY` 构建固定V2镜像，真实Docker-style CLI
+  `run --rm --network none`，无外部registry下载；静态payload遍历32×64个
+  8字节文件并读回32×8个文件，三轮分记stat和read。仅切换
+  `PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=0/1`，lower仍物理Mutable；名称缓存
+  与prepared-copy-up固定1，其余DATA/FLUSH/WB关闭。N30随机配对，
+  2vCPU/512MiB、父两核affinity/quota、2GiB/swap0；独立N1诊断核对rootfs
+  逻辑资格和协议请求、注册/final库存。完整stat三轮累计为主要指标，另记
+  read及包含CLI启动/退出的进程时间，不外推真实Agent或联网任务。
+  固件/二进制/源码/输入和命令独立冻结；逻辑租约只覆盖认证revision，
+  不扩大物理缓存、live stage或snapshot资格。失败停止并保留，无慢值剔除。
 - **想要的结论：** "改动 X 让负载 Y 的中位数变化 Z%（95% 置信区间），其余负载未检出差异"；以及"staged 与 FUSE 直通之间的差距中，持久化占 A ms，内容指纹占 B ms，路径解析占 C ms"。
 - **实验设计：**
   - 版本 A/B 使用同一份冻结源码，只应用待测改动后构建两个二进制，同机随机交替运行，每格 30 个样本，并报告置信区间。

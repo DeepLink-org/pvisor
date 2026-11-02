@@ -109,6 +109,15 @@ protection. Native KVM stage tests never apply to the real host root.
 
 ## Physical lower immutability (conservative first version)
 
+`backend::BackendAttachment::new_stable_namespace` separately registers a trusted
+fixed logical revision whose private native projection can still grow. Exact-root
+`stable_namespace` leases pin that backend and prohibit overlapping registrations,
+but the producer still owns the projection directory lifetime. This never enables
+physical lower metadata caching or makes placeholder bytes readable natively.
+Consumers must keep policy/upper composition and reject unsupported snapshots.
+Ordinary registration grants no stability; no contract is inferred from read-only
+permissions, an arbitrary path, or a backend merely returning attributes.
+
 `LayerMutability::{Mutable, Immutable}` is the shared contract. Build a layout
 with `OverlayLayout::with_lower_mutability(Vec<LayerMutability>)`; entries match
 `lowers()` in highest-to-lowest priority order. Empty means all mutable for old

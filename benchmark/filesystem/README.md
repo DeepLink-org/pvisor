@@ -1,5 +1,32 @@
 # 文件系统评估：分层负载与独立实验
 
+## 顺序优化工程实验
+
+`directory_names_ab.py` 复用 B-FS-ENG，先验证目录分页名称快照，再验证
+VM writable OPEN 的 prepared-copy-up；两者均默认关闭，各批独立冻结
+release SDK driver、静态 guest 和匹配固件 SOURCE。`--experiment
+directory-names` 为默认；`--experiment prepared-copy-up` 固定名称缓存开启，
+只比较复制准备开关，不把第一批百分比累加。通过 `--prepare BATCH --driver
+DRIVER --guest GUEST --firmware FW --firmware-source SOURCE --samples 30`
+生成计划，再由 `semspec bench --cwd BATCH BATCH/in.json` 执行。
+`directory_names_analysis.py BATCH` 只分析完整成功批次，失败不得以部分样本
+补齐或发布。计数另跑，三轮以一个环境计；bootstrap 区间逐项未校正。
+
+VM shutdown 会结束整个 runner，Rust TempDir 析构不能作为清理或 host oracle。
+外层 harness 强制将 TMPDIR 放在批次 `work/`，退出后校验完整 copy-up 字节，
+仅回收成功且校验通过的自有夹具；失败现场和所有日志保留。目录枚举检查
+完整名称与重复项，时钟外核对首/中/末文件。环境准备、验证与退出不进入
+guest phase 时钟；不是冷磁盘、普通 CLI 或完整 Agent 性能结论。
+本轮进度和未验收项见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
+
+`logical_directory_ab.py` 单独验证第三批的真实Docker-style CLI固定镜像，
+接收`--prepare BATCH --cli CLI --guest GUEST --firmware FW
+--firmware-source SOURCE --samples 30`；生成计划后由同样的`semspec bench`
+执行，并使用`directory_names_analysis.py`分析。镜像仅本地COPY，不下载
+registry输入。稳定逻辑租约不改变物理Mutable声明；断网静态payload的收益
+不外推联网或完整Agent。第四批对象级READ屏障目前只有合同测试，没有
+计时harness或性能结论。
+
 <a name="user-workloads"></a>
 
 ## 分层用户对照

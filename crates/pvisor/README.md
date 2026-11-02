@@ -1063,6 +1063,16 @@ and 2,000,000 content spans; object limits can be reached first. Publication sti
 plans metadata in O(N) memory while staging encoded content on disk and bounding
 upload concurrency. See [the storage design](../../docs/src/en/design/lazy-image-v2.md).
 
+Fixed V2 direct-image attachments additionally register a stable *logical*
+namespace lease; legacy sources do not. Experimental
+`PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=1` lets eligible no-journal VM image views
+use the existing guest directory mirror without declaring their growing physical
+projections Immutable. The default is off. Every lower must be physically
+Immutable or have an exact-root trusted backend lease; live/native mutable
+directories and staged apply journals never gain eligibility. Native metadata
+caches, DAX and data-object qualification are unchanged. Capture/restore of an
+enabled logical-mirror owner is explicitly unsupported.
+
 Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
 not enable DAX or make the mutable physical projection Immutable. A cold small
 read can decode an entire content chunk; warm-cache latency and mmap performance
