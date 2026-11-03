@@ -1184,7 +1184,9 @@ fn check_review_data() {
             };
             println!("DATA_OBSERVATION {{\"name\":\"readonly-shared-msync-after-copyup-close\",\"flags\":4,\"returned\":{sync_result},\"errno\":{}}}", sync_errno.map_or_else(|| "null".into(), |value| value.to_string()));
             if sync_result != 0 {
-                errors.push(format!("old readonly MAP_SHARED msync(MS_SYNC) expected 0: errno {sync_errno:?}"));
+                errors.push(format!(
+                    "old readonly MAP_SHARED msync(MS_SYNC) expected 0: errno {sync_errno:?}"
+                ));
             }
             drop(mapping);
             close_checked(upper);
@@ -1695,17 +1697,30 @@ fn check_review_data() {
                 }
             }
             let magic_c = std::ffi::CString::new(magic.as_bytes()).unwrap();
-            let openat_number = if cfg!(target_arch = "aarch64") { 56 } else { 257 };
-            let pread_number = if cfg!(target_arch = "aarch64") { 67 } else { 17 };
-            let raw_fd = unsafe {
-                syscall(openat_number, -100i32, magic_c.as_ptr(), 0x28_0000i32, 0i32)
+            let openat_number = if cfg!(target_arch = "aarch64") {
+                56
+            } else {
+                257
             };
+            let pread_number = if cfg!(target_arch = "aarch64") {
+                67
+            } else {
+                17
+            };
+            let raw_fd =
+                unsafe { syscall(openat_number, -100i32, magic_c.as_ptr(), 0x28_0000i32, 0i32) };
             if raw_fd >= 0 {
                 let file = unsafe { File::from_raw_fd(raw_fd as i32) };
                 let actual_flags = unsafe { fcntl(file.as_raw_fd(), 3) };
                 let mut byte = [0u8];
                 let returned = unsafe {
-                    syscall(pread_number, file.as_raw_fd(), byte.as_mut_ptr(), 1usize, 0i64)
+                    syscall(
+                        pread_number,
+                        file.as_raw_fd(),
+                        byte.as_mut_ptr(),
+                        1usize,
+                        0i64,
+                    )
                 };
                 let read_errno = if returned < 0 {
                     std::io::Error::last_os_error().raw_os_error()
@@ -1714,7 +1729,9 @@ fn check_review_data() {
                 };
                 println!("DATA_OBSERVATION {{\"name\":\"map-files-opath-raw-openat\",\"hard_case\":true,\"openat_syscall\":{openat_number},\"pread_syscall\":{pread_number},\"requested_flags\":2097152,\"syscall_flags\":2621440,\"actual_flags\":{actual_flags},\"actual_opath\":{},\"pread_returned\":{returned},\"pread_errno\":{}}}", actual_flags >= 0 && actual_flags & 0x20_0000 != 0, read_errno.map_or_else(|| "null".into(), |value| value.to_string()));
                 if actual_flags < 0 || actual_flags & 0x20_0000 == 0 {
-                    errors.push(format!("raw openat O_PATH missing from F_GETFL: {actual_flags}"));
+                    errors.push(format!(
+                        "raw openat O_PATH missing from F_GETFL: {actual_flags}"
+                    ));
                 }
                 if returned != -1 || read_errno != Some(9) {
                     errors.push(format!("raw O_PATH magiclink pread expected EBADF: returned {returned}, errno {read_errno:?}"));
@@ -2058,6 +2075,256 @@ fn main() {
         println!("GUEST_METADATA_PASS review-poll");
         return;
     }
+    if mode == "direct-copy" {
+        let mut expected = vec![0u8; 1 << 20];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            *byte = state as u8;
+        }
+        for round in 1u64..=3 {
+            let path = format!("/fixture/copy-{round}");
+            let completed = Instant::now();
+            let started = Instant::now();
+            let file = fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            let open_ms = started.elapsed().as_secs_f64() * 1000.0;
+            file.write_all_at(b"changed!", 0).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            File::open("/fixture").unwrap().sync_all().unwrap();
+            let total_ms = completed.elapsed().as_secs_f64() * 1000.0;
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"copy-open\",\"ms\":{open_ms}}}");
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"copy-completed\",\"ms\":{total_ms}}}");
+            let bytes = fs::read(path).unwrap();
+            assert_eq!(bytes.len(), 8 << 20);
+            expected[..8].copy_from_slice(&round.to_le_bytes());
+            for (index, chunk) in bytes.chunks_exact(1 << 20).enumerate() {
+                if index == 0 {
+                    assert_eq!(&chunk[..8], b"changed!");
+                    assert_eq!(&chunk[8..], &expected[8..]);
+                } else { assert_eq!(chunk, expected); }
+            }
+        }
+        println!("GUEST_METADATA_PASS direct-copy");
+        return;
+    }
+    if mode == "logical-data" || mode == "logical-data-review" {
+        let mut expected = vec![0u8; 65536];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            *byte = state as u8;
+        }
+        if mode == "logical-data-review" {
+            let old = File::open("/fixture/data-0").unwrap();
+            let mut original = vec![0u8; 65536];
+            expected[..8].copy_from_slice(&0u64.to_le_bytes());
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected);
+            let upper = fs::OpenOptions::new().write(true).open("/fixture/data-0").unwrap();
+            upper.write_all_at(b"changed!", 0).unwrap();
+            upper.sync_all().unwrap();
+            assert_eq!(&fs::read("/fixture/data-0").unwrap()[..8], b"changed!");
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected, "copy-up mixed upper and retained lower pages");
+            fs::remove_file("/fixture/data-0").unwrap();
+            old.read_exact_at(&mut original, 0).unwrap();
+            assert_eq!(original, expected, "unlink lost the retained data object");
+            println!("GUEST_METADATA_PASS logical-data-review");
+            return;
+        }
+        for round in 1..=3 {
+            for (phase, passes) in [("data-first", 1), ("data-reopen", 4)] {
+                let mut elapsed = 0.0;
+                for _ in 0..passes {
+                    for index in 0u64..256 {
+                        let started = Instant::now();
+                        let bytes = fs::read(format!("/fixture/data-{index}")).unwrap();
+                        elapsed += started.elapsed().as_secs_f64() * 1000.0;
+                        expected[..8].copy_from_slice(&index.to_le_bytes());
+                        assert_eq!(bytes, expected);
+                    }
+                }
+                println!("SDK_PHASE {{\"round\":{round},\"phase\":\"{phase}\",\"ms\":{elapsed}}}");
+            }
+        }
+        println!("GUEST_METADATA_PASS logical-data");
+        return;
+    }
+    if mode == "read-stream" {
+        let mut expected = vec![0u8; 1 << 20];
+        let mut state = 79213u64;
+        for byte in &mut expected {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        for round in 1..=3 {
+            for phase in ["stream-first", "stream-reopen"] {
+                let mut elapsed = 0.0;
+                for index in 0u64..8 {
+                    let started = Instant::now();
+                    let bytes = fs::read(format!("/fixture/stream-{index}")).unwrap();
+                    elapsed += started.elapsed().as_secs_f64() * 1000.0;
+                    expected[..8].copy_from_slice(&index.to_le_bytes());
+                    assert_eq!(bytes.len(), 4 << 20);
+                    assert!(bytes.chunks_exact(1 << 20).all(|chunk| chunk == expected));
+                }
+                println!("SDK_PHASE {{\"round\":{round},\"phase\":\"{phase}\",\"ms\":{elapsed}}}");
+            }
+        }
+        println!("GUEST_METADATA_PASS read-stream");
+        return;
+    }
+    if mode == "logical-root" || mode == "lazy-deep" {
+        let suffix = if mode == "lazy-deep" { "/a/b/c/d/e/f/g" } else { "" };
+        for round in 1..=3 {
+            let started = Instant::now();
+            for directory in 0..32 {
+                for index in 0..64 {
+                    assert_eq!(
+                        fs::metadata(format!("/fixture/d{directory:02}{suffix}/f{index:03}"))
+                            .unwrap()
+                            .len(),
+                        8
+                    );
+                }
+            }
+            println!(
+                "SDK_PHASE {{\"round\":{round},\"phase\":\"logical-stat\",\"ms\":{}}}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            let started = Instant::now();
+            for directory in 0u64..32 {
+                for index in 0u64..8 {
+                    assert_eq!(
+                        fs::read(format!("/fixture/d{directory:02}{suffix}/f{index:03}")).unwrap(),
+                        (directory * 64 + index).to_le_bytes()
+                    );
+                }
+            }
+            println!(
+                "SDK_PHASE {{\"round\":{round},\"phase\":\"logical-read\",\"ms\":{}}}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        println!("GUEST_METADATA_PASS {mode}");
+        return;
+    }
+    if mode == "copyup-concurrent" {
+        mount_share("metadata-stable", "/tmp/metadata-stable");
+        let sentinel = c"/tmp/metadata-stable/copy-sentinel";
+        for round in 1..=3 {
+            let path = format!("/tmp/metadata-stable/copy-{round}");
+            assert_eq!(fs::metadata(&path).unwrap().len(), 32 << 20);
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let other = barrier.clone();
+            let started = Instant::now();
+            let writer = std::thread::spawn(move || {
+                other.wait();
+                let started = Instant::now();
+                let file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+                assert_eq!(file.metadata().unwrap().len(), 32 << 20);
+                drop(file);
+                started.elapsed().as_secs_f64() * 1000.0
+            });
+            barrier.wait();
+            let metadata_started = Instant::now();
+            for _ in 0..256 {
+                let stat = statx_record(sentinel, STATX_SIZE, AT_STATX_FORCE_SYNC);
+                assert_eq!(stat.size, 11);
+            }
+            let metadata_ms = metadata_started.elapsed().as_secs_f64() * 1000.0;
+            let open_ms = writer.join().unwrap();
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            for (phase, ms) in [
+                ("copyup-open", open_ms),
+                ("copyup-metadata", metadata_ms),
+                ("copyup-total", total_ms),
+            ] {
+                println!("SDK_PHASE {{\"round\":{round},\"phase\":\"{phase}\",\"ms\":{ms}}}");
+            }
+        }
+        assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
+        println!("GUEST_METADATA_PASS copyup-concurrent");
+        return;
+    }
+    if mode == "scoped-reimport" {
+        mount_share("metadata-stable", "/tmp/metadata-stable");
+        let scan = || {
+            let mut seen = vec![false; 8192];
+            for entry in fs::read_dir("/tmp/metadata-stable/pages").unwrap() {
+                let name = entry.unwrap().file_name();
+                let name = name.to_str().unwrap();
+                let index: usize = name[1..6].parse().unwrap();
+                assert_eq!(name, format!("f{index:05}-{}", "x".repeat(64)));
+                assert!(!seen[index]);
+                seen[index] = true;
+            }
+            assert!(seen.iter().all(|v| *v));
+        };
+        scan();
+        for round in 1..=3 {
+            let cycle = Instant::now();
+            fs::write("/tmp/metadata-stable/scratch/pending", b"edit").unwrap();
+            fs::rename("/tmp/metadata-stable/scratch/pending", "/tmp/metadata-stable/scratch/done").unwrap();
+            fs::remove_file("/tmp/metadata-stable/scratch/done").unwrap();
+            // Drop guest metadata only; never drop host caches or change host
+            // policy. This deliberately exercises reimport under cache pressure.
+            fs::write("/proc/sys/vm/drop_caches", b"2\n").unwrap();
+            let started = Instant::now();
+            scan();
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            let cycle_ms = cycle.elapsed().as_secs_f64() * 1000.0;
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-reimport\",\"ms\":{ms}}}");
+            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-edit-cycle\",\"ms\":{cycle_ms}}}");
+        }
+        assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
+        println!("GUEST_METADATA_PASS scoped-reimport");
+        return;
+    }
+    if mode == "directory-pages" {
+        for round in 1..=3 {
+            // Remount between rounds so the guest must import the directory
+            // again. Host backing stays warm; this is not a cold-disk test.
+            mount_share("metadata-stable", "/tmp/metadata-stable");
+            let started = Instant::now();
+            let mut seen = vec![false; 8192];
+            for entry in fs::read_dir("/tmp/metadata-stable/pages").unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name = name.to_str().unwrap();
+                let index: usize = name[1..6].parse().unwrap();
+                assert_eq!(name, format!("f{index:05}-{}", "x".repeat(64)));
+                assert!(!seen[index], "duplicate directory cookie");
+                seen[index] = true;
+            }
+            assert!(seen.iter().all(|present| *present));
+            println!(
+                "SDK_PHASE {{\"round\":{round},\"phase\":\"directory-pages\",\"ms\":{}}}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            // Complete byte validation is outside the directory timer.
+            for index in [0u64, 4096, 8191] {
+                assert_eq!(
+                    fs::read(format!(
+                        "/tmp/metadata-stable/pages/f{index:05}-{}",
+                        "x".repeat(64)
+                    ))
+                    .unwrap(),
+                    index.to_le_bytes()
+                );
+            }
+            assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
+        }
+        println!("GUEST_METADATA_PASS directory-pages");
+        return;
+    }
     if mode == "bench" {
         mount_share("metadata-stable", "/tmp/metadata-stable");
         for round in 1..=3 {
@@ -2171,12 +2438,10 @@ fn main() {
             remover.join().unwrap();
         }
         mount_share("metadata-mutable", "/tmp/metadata-mutable");
-        assert!(
-            fs::read_dir("/tmp/metadata-mutable")
-                .unwrap()
-                .next()
-                .is_none()
-        );
+        assert!(fs::read_dir("/tmp/metadata-mutable")
+            .unwrap()
+            .next()
+            .is_none());
         let created = "/tmp/metadata-mutable/created-after-import";
         assert!(!std::path::Path::new(created).exists());
         fs::write("/metadata-ready", b"ready").unwrap();

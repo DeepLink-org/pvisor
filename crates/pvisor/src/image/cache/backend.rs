@@ -441,6 +441,14 @@ impl RemoteFs {
             .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT).into())
     }
 
+    /// Positive-only reuse for a path whose complete ancestor walk the direct
+    /// projection already validated against the same fixed revision.
+    pub(super) fn cached_node(&self, path: &Path) -> Option<&Node> {
+        self.paths
+            .get(path.as_os_str().as_bytes())
+            .and_then(|ino| self.nodes.get(ino))
+    }
+
     pub(super) fn child(&mut self, parent: u64, name: &OsStr) -> anyhow::Result<Node> {
         let parent = self.node(parent)?;
         ensure!(parent.attr.kind == FileType::Directory, "not a directory");
@@ -880,20 +888,34 @@ impl ContentReader {
         );
         let end = offset.saturating_add(size as u64).min(node.attr.size);
         let mut result = Vec::with_capacity(end.saturating_sub(offset) as usize);
+        self.read_into(node, offset, size, &mut result)?;
+        Ok(result)
+    }
+
+    pub(super) fn read_into(
+        &self,
+        node: &Node,
+        offset: u64,
+        size: u32,
+        sink: &mut dyn std::io::Write,
+    ) -> anyhow::Result<usize> {
+        ensure!(
+            node.attr.kind == FileType::RegularFile,
+            "read requires a regular file"
+        );
+        let end = offset.saturating_add(u64::from(size)).min(node.attr.size);
         let mut cursor = offset;
         while cursor < end {
-            let (bytes, cached) = self.block(node, cursor / MAX_READ as u64)?;
-            let begin = (cursor % MAX_READ as u64) as usize;
+            let (bytes, cached) = self.block(node, cursor / u64::from(MAX_READ))?;
+            let begin = (cursor % u64::from(MAX_READ)) as usize;
             let count = (end - cursor).min((bytes.len() - begin) as u64) as usize;
-            result.extend_from_slice(&bytes[begin..begin + count]);
-            // Docker's local pool is ordinary host storage, not a user-visible
-            // transfer. Its diagnostics must not enter guest stderr/logs.
+            sink.write_all(&bytes[begin..begin + count])?;
             if cached && !self.client.is_local_pool() {
                 self.downloads.lock().unwrap().cached(&node.path, count);
             }
             cursor += count as u64;
         }
-        Ok(result)
+        Ok(cursor.saturating_sub(offset) as usize)
     }
 }
 

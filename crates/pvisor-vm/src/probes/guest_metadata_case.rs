@@ -22,6 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | "baseline"
             | "warm"
             | "bench"
+            | "directory-pages"
+            | "copyup-concurrent"
+            | "scoped-reimport"
             | "atime"
             | "review"
             | "review-time"
@@ -94,6 +97,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0u64..256 {
             std::fs::write(directory.join(format!("f{i:04}")), i.to_le_bytes())?;
         }
+    }
+    if mode == "directory-pages" || mode == "scoped-reimport" {
+        let directory = stable.join("pages");
+        std::fs::create_dir(&directory)?;
+        for i in 0u64..8192 {
+            std::fs::write(
+                directory.join(format!("f{i:05}-{}", "x".repeat(64))),
+                i.to_le_bytes(),
+            )?;
+        }
+    }
+    if mode == "scoped-reimport" {
+        std::fs::create_dir(stable.join("scratch"))?;
+    }
+    if mode == "copyup-concurrent" {
+        use std::io::Write;
+        let mut block = vec![0u8; 1 << 20];
+        let mut state = 79213u64;
+        for byte in &mut block {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        for round in 1..=3 {
+            let mut file = std::fs::File::create(stable.join(format!("copy-{round}")))?;
+            for _ in 0..32 {
+                file.write_all(&block)?;
+            }
+        }
+        std::fs::write(stable.join("copy-sentinel"), b"independent")?;
     }
     if mode == "atime" {
         for mask in ["size-mtime", "atime", "basic"] {

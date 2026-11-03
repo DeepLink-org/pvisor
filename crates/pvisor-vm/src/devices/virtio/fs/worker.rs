@@ -531,6 +531,7 @@ impl HostWritebackConfig {
             batch_bytes: self.batch_kib.checked_mul(1024).ok_or_else(invalid)?,
             max_chunks: self.chunks,
             max_delay: std::time::Duration::from_micros(self.delay_us),
+            object_barriers: false,
         };
         options.validate()?;
         Ok(options)
@@ -628,6 +629,128 @@ fn directory_cache_capacity(setting: Option<&std::ffi::OsStr>) -> io::Result<usi
         })
 }
 
+fn directory_names_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_DIRECTORY_NAMES_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+fn prepared_copy_up_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_PREPARED_COPY_UP must be 0 or 1",
+        )),
+    }
+}
+
+fn object_read_barriers_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_OBJECT_READ_BARRIERS must be 0 or 1")),
+    }
+}
+
+fn logical_directory_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE must be 0 or 1")),
+    }
+}
+
+fn scoped_names_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_SCOPED_NAMES must be 0 or 1")),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn followup_settings_are_strict_and_default_off() {
+    use std::ffi::OsStr;
+    for parse in [scoped_names_enabled, logical_data_cache_enabled] {
+        assert!(!parse(None).unwrap());
+        assert!(!parse(Some(OsStr::new("0"))).unwrap());
+        assert!(parse(Some(OsStr::new("1"))).unwrap());
+        assert!(parse(Some(OsStr::new("true"))).is_err());
+    }
+}
+
+fn logical_data_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_LOGICAL_DATA_CACHE must be 0 or 1")),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn directory_names_cache_setting_defaults_off_and_is_strict() {
+    use std::ffi::OsStr;
+    assert!(!directory_names_cache_enabled(None).unwrap());
+    assert!(!directory_names_cache_enabled(Some(OsStr::new("0"))).unwrap());
+    assert!(directory_names_cache_enabled(Some(OsStr::new("1"))).unwrap());
+    for invalid in ["", "true", "2", " 1"] {
+        assert!(directory_names_cache_enabled(Some(OsStr::new(invalid))).is_err());
+    }
+    use std::os::unix::ffi::OsStrExt;
+    assert!(directory_names_cache_enabled(Some(OsStr::from_bytes(&[0xff]))).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn prepared_copy_up_setting_defaults_off_and_is_strict() {
+    use std::ffi::OsStr;
+    assert!(!prepared_copy_up_enabled(None).unwrap());
+    assert!(!prepared_copy_up_enabled(Some(OsStr::new("0"))).unwrap());
+    assert!(prepared_copy_up_enabled(Some(OsStr::new("1"))).unwrap());
+    for invalid in ["", "true", "2"] {
+        assert!(prepared_copy_up_enabled(Some(OsStr::new(invalid))).is_err());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn logical_directory_cache_setting_defaults_off_and_is_strict() {
+    use std::ffi::OsStr;
+    assert!(!logical_directory_cache_enabled(None).unwrap());
+    assert!(!logical_directory_cache_enabled(Some(OsStr::new("0"))).unwrap());
+    assert!(logical_directory_cache_enabled(Some(OsStr::new("1"))).unwrap());
+    assert!(logical_directory_cache_enabled(Some(OsStr::new("true"))).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn object_read_barriers_setting_defaults_off_and_is_strict() {
+    use std::ffi::OsStr;
+    assert!(!object_read_barriers_enabled(None).unwrap());
+    assert!(!object_read_barriers_enabled(Some(OsStr::new("0"))).unwrap());
+    assert!(object_read_barriers_enabled(Some(OsStr::new("1"))).unwrap());
+    assert!(object_read_barriers_enabled(Some(OsStr::new("true"))).is_err());
+}
+
 pub(super) struct FsWorkerConfig {
     pub fs_tag: String,
     pub queues: Vec<Queue>,
@@ -688,6 +811,21 @@ impl FsWorker {
         let directory_cache_capacity = directory_cache_capacity(
             std::env::var_os("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
         )?;
+        let directory_names_cache = directory_names_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_DIRECTORY_NAMES_CACHE").as_deref(),
+        )?;
+        let prepared_copy_up =
+            prepared_copy_up_enabled(std::env::var_os("PVISOR_VM_FS_PREPARED_COPY_UP").as_deref())?;
+        let logical_directory_cache = logical_directory_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE").as_deref(),
+        )?;
+        let object_read_barriers = object_read_barriers_enabled(
+            std::env::var_os("PVISOR_VM_FS_OBJECT_READ_BARRIERS").as_deref(),
+        )?;
+        let logical_data_cache = logical_data_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_LOGICAL_DATA_CACHE").as_deref(),
+        )?;
+        let scoped_names = scoped_names_enabled(std::env::var_os("PVISOR_VM_FS_SCOPED_NAMES").as_deref())?;
         let exclusive_upper_absence_cache = exclusive_upper_absence_cache_enabled(
             std::env::var_os("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
         )?;
@@ -714,8 +852,14 @@ impl FsWorker {
                     host_writeback_config.qualification_lock,
                     host_writeback_config.synchronous,
                 )?;
+                inner.configure_object_read_barriers(object_read_barriers);
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
+                inner.configure_directory_names_cache(directory_names_cache);
+                inner.configure_scoped_names(scoped_names);
+                inner.configure_prepared_copy_up(prepared_copy_up);
+                inner.configure_logical_directory_cache(logical_directory_cache, restoring)?;
+                inner.configure_logical_data_cache(logical_data_cache);
                 inner.configure_exclusive_upper_absence_cache(exclusive_upper_absence_cache)?;
                 inner.configure_readonly_flush_elision(
                     readonly_flush_elision,
@@ -723,7 +867,7 @@ impl FsWorker {
                     shm_region.is_some(),
                 )?;
                 inner.configure_lower_data_cache(
-                    lower_data_cache,
+                    lower_data_cache || logical_data_cache,
                     guest_cache,
                     shm_region.is_some(),
                 )?;

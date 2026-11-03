@@ -1,5 +1,48 @@
 # 文件系统评估：分层负载与独立实验
 
+## 顺序优化工程实验
+
+`directory_names_ab.py` 复用 B-FS-ENG，先验证目录分页名称快照，再验证
+VM writable OPEN 的 prepared-copy-up；两者均默认关闭，各批独立冻结
+release SDK driver、静态 guest 和匹配固件 SOURCE。`--experiment
+directory-names` 为默认；`--experiment prepared-copy-up` 固定名称缓存开启，
+只比较复制准备开关，不把第一批百分比累加。通过 `--prepare BATCH --driver
+DRIVER --guest GUEST --firmware FW --firmware-source SOURCE --samples 30`
+生成计划，再由 `semspec bench --cwd BATCH BATCH/in.json` 执行。
+`directory_names_analysis.py BATCH` 只分析完整成功批次，失败不得以部分样本
+补齐或发布。计数另跑，三轮以一个环境计；bootstrap 区间逐项未校正。
+
+VM shutdown 会结束整个 runner，Rust TempDir 析构不能作为清理或 host oracle。
+外层 harness 强制将 TMPDIR 放在批次 `work/`，退出后校验完整 copy-up 字节，
+仅回收成功且校验通过的自有夹具；失败现场和所有日志保留。目录枚举检查
+完整名称与重复项，时钟外核对首/中/末文件。环境准备、验证与退出不进入
+guest phase 时钟；不是冷磁盘、普通 CLI 或完整 Agent 性能结论。
+本轮进度和未验收项见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
+
+后续五项的独立N30结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
+CLI sampler增加`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
+SDK sampler增加`--experiment scoped-names`。每批只改变该项开关，
+其他后续机制关闭；使用原来的prepare→semspec bench→analysis入口。
+流式读与范围失效未检出收益，不能把点估计作为默认开启依据。
+
+Apple Silicon macOS/HVF 的独立复测见 `MACOS_OPTIMIZATION_REPORT.md`，
+不与上述 Linux 批次合并。两个 sampler 在 macOS 使用真实
+`libkrunfw.5.dylib`，直接启动已签名的 release driver/CLI；
+guest 仍编译为 `aarch64-unknown-linux-musl`。macOS 没有此处 Linux
+cgroup/taskset 的等价限制，manifest 显式记录 host budget 为 unrestricted、
+affinity 为空；guest 仍为 2vCPU/512MiB。`logical-data` 在 macOS 不支持，
+准备阶段直接拒绝，不把未启用机制测成零收益。复制制品前先签名，再冻结摘要。
+固件必须取自与 SOURCE 摘要匹配的构建缓存；不要使用签名后摘要已变化、
+但收据未更新的 release 副本。Linux 包装器及其预算保持不变。
+
+`logical_directory_ab.py` 单独验证第三批的真实Docker-style CLI固定镜像，
+接收`--prepare BATCH --cli CLI --guest GUEST --firmware FW
+--firmware-source SOURCE --samples 30`；生成计划后由同样的`semspec bench`
+执行，并使用`directory_names_analysis.py`分析。镜像仅本地COPY，不下载
+registry输入。稳定逻辑租约不改变物理Mutable声明；断网静态payload的收益
+不外推联网或完整Agent。第四批对象级READ屏障目前只有合同测试，没有
+计时harness或性能结论。
+
 <a name="user-workloads"></a>
 
 ## 分层用户对照

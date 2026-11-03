@@ -174,6 +174,19 @@ impl FilesystemService {
     ) -> io::Result<Option<Vec<u8>>> {
         backend::read_at(backing, offset, size)
     }
+
+    /// Stream verified remote content into this call's borrowed sink, retaining
+    /// native callers' descriptor-based fallback when None is returned.
+    /// On error the caller must not publish any partial sink as a success.
+    pub fn read_remote_into(
+        &self,
+        backing: &Path,
+        offset: u64,
+        size: u32,
+        sink: &mut dyn io::Write,
+    ) -> io::Result<Option<usize>> {
+        backend::read_into(backing, offset, size, sink)
+    }
     /// Classify flags once for both adapters' operation-lock and copy-up decisions.
     pub fn is_write_open(flags: i32) -> bool {
         flags & libc::O_ACCMODE != libc::O_RDONLY || flags & (libc::O_APPEND | libc::O_TRUNC) != 0
