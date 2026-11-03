@@ -1608,6 +1608,14 @@ CPU topology changes and more than two configured CPUs are outside this profile.
 `PVISOR_DIAG_IDLE=1` records parked/checked masks, rendezvous generation and
 per-CPU remaining timer budgets alongside the existing whole-VM epoch.
 
+### Overlay root inode references
+
+Native overlay path resolution borrows the root inode without acquiring a lookup
+reference. Metadata, xattr and open/release paths must not forget that borrowed
+reference, including on errors. Non-root lookup references retain their existing
+release semantics. Repeated root operations must leave subsequent child lookups,
+creation and rename usable; Linux regressions cover these lifetimes without a VM.
+
 ### Rootless Linux passthrough ownership
 
 Plain writable shares map guest-root CREATE and CHOWN requests to the invoking

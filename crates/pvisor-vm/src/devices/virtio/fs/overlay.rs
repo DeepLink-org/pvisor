@@ -1805,6 +1805,8 @@ impl OverlayFs {
         drop((replaced, evicted));
     }
 
+    // Native path resolution borrows ROOT_ID (getattr only); non-root entries
+    // own a lookup reference that the caller must eventually forget.
     fn inner_entry_with_parents(
         &self,
         layer: Layer,
@@ -2321,7 +2323,9 @@ impl OverlayFs {
         #[cfg(target_os = "linux")]
         if kill_priv {
             if let Err(error) = self.clear_virtual_privileges(ctx, layer, inner) {
-                self.layers[layer.0].forget(ctx, inner, 1);
+                if inner != fuse::ROOT_ID {
+                    self.layers[layer.0].forget(ctx, inner, 1);
+                }
                 return Err(error);
             }
         }
@@ -2329,7 +2333,9 @@ impl OverlayFs {
         let (handle, mut options) = match opened {
             Ok((Some(handle), options)) => (handle, options),
             result => {
-                self.layers[layer.0].forget(ctx, inner, 1);
+                if inner != fuse::ROOT_ID {
+                    self.layers[layer.0].forget(ctx, inner, 1);
+                }
                 return match result {
                     Err(error) => Err(error),
                     _ => Err(io::Error::from_raw_os_error(libc::EIO)),
@@ -3327,7 +3333,9 @@ impl FileSystem for OverlayFs {
         }
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setattr(ctx, inner, native_attr, None, native_valid);
-        self.layers[0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[0].forget(ctx, inner, 1);
+        }
         let (mut attr, timeout) = result?;
         #[cfg(target_os = "linux")]
         if let Some(previous) = previous {
@@ -3381,7 +3389,9 @@ impl FileSystem for OverlayFs {
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].readlink(ctx, inner);
-        self.layers[layer.0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[layer.0].forget(ctx, inner, 1);
+        }
         result
     }
 
@@ -3961,7 +3971,9 @@ impl FileSystem for OverlayFs {
                     flock_release,
                     lock_owner,
                 );
-                self.layers[h.layer.0].forget(ctx, h.inode, 1);
+                if h.inode != fuse::ROOT_ID {
+                    self.layers[h.layer.0].forget(ctx, h.inode, 1);
+                }
                 result.and_then(|()| self.drain_buffered_writes())
             }
             _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
@@ -4003,7 +4015,9 @@ impl FileSystem for OverlayFs {
             .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].setxattr(ctx, inner, name, value, flags);
-        self.layers[0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[0].forget(ctx, inner, 1);
+        }
         result
     }
 
@@ -4023,7 +4037,9 @@ impl FileSystem for OverlayFs {
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
-        self.layers[layer.0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[layer.0].forget(ctx, inner, 1);
+        }
         result
     }
 
@@ -4064,7 +4080,9 @@ impl FileSystem for OverlayFs {
                 Ok(ListxattrReply::Names(filtered))
             }
         })();
-        self.layers[layer.0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[layer.0].forget(ctx, inner, 1);
+        }
         result
     }
 
@@ -4084,7 +4102,9 @@ impl FileSystem for OverlayFs {
             .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
         let result = self.layers[0].removexattr(ctx, inner, name);
-        self.layers[0].forget(ctx, inner, 1);
+        if inner != fuse::ROOT_ID {
+            self.layers[0].forget(ctx, inner, 1);
+        }
         result
     }
 
@@ -4359,6 +4379,159 @@ mod tests {
             }
             let fs = parent_cache_fixture(temp.path());
             (temp, fs, root_context())
+        }
+
+        fn assert_root_still_supports_file_lifecycle(fs: &OverlayFs, ctx: Context) {
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"result.tmp",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            fs.rename(
+                ctx,
+                fuse::ROOT_ID,
+                c"result.tmp",
+                fuse::ROOT_ID,
+                c"result",
+                0,
+            )
+            .unwrap();
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+            fs.unlink(ctx, fuse::ROOT_ID, c"result").unwrap();
+            fs.forget(ctx, entry.inode, 1);
+        }
+
+        #[test]
+        fn root_missing_xattr_queries_preserve_borrowed_reference() {
+            let (_temp, fs, ctx) = fixture(None);
+            for _ in 0..16 {
+                assert_eq!(
+                    fs.getxattr(ctx, fuse::ROOT_ID, c"user.missing_root_test", 0)
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(libc::ENODATA)
+                );
+            }
+            assert_root_still_supports_file_lifecycle(&fs, ctx);
+        }
+
+        #[test]
+        fn root_xattr_listing_preserves_borrowed_reference() {
+            let (_temp, fs, ctx) = fixture(None);
+            for _ in 0..16 {
+                fs.listxattr(ctx, fuse::ROOT_ID, 0).unwrap();
+            }
+            assert_root_still_supports_file_lifecycle(&fs, ctx);
+        }
+
+        #[test]
+        fn root_metadata_changes_preserve_borrowed_reference() {
+            let (_temp, fs, ctx) = fixture(None);
+            for _ in 0..16 {
+                fs.setxattr(ctx, fuse::ROOT_ID, c"user.root_test", b"value", 0)
+                    .unwrap();
+                fs.getxattr(ctx, fuse::ROOT_ID, c"user.root_test", 5)
+                    .unwrap();
+                fs.removexattr(ctx, fuse::ROOT_ID, c"user.root_test")
+                    .unwrap();
+                assert_eq!(
+                    fs.removexattr(ctx, fuse::ROOT_ID, c"user.root_test")
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(libc::ENODATA)
+                );
+                let attr = fs.getattr(ctx, fuse::ROOT_ID, None).unwrap().0;
+                fs.setattr(ctx, fuse::ROOT_ID, attr, None, SetattrValid::MODE)
+                    .unwrap();
+            }
+            assert_root_still_supports_file_lifecycle(&fs, ctx);
+        }
+
+        #[test]
+        fn root_failed_readlink_preserves_borrowed_reference() {
+            let (_temp, fs, ctx) = fixture(None);
+            let expected = fs.layers[0]
+                .readlink(ctx, fuse::ROOT_ID)
+                .unwrap_err()
+                .raw_os_error();
+            assert_ne!(expected, Some(libc::EBADF));
+            for _ in 0..16 {
+                assert_eq!(
+                    fs.readlink(ctx, fuse::ROOT_ID)
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    expected
+                );
+            }
+            assert_root_still_supports_file_lifecycle(&fs, ctx);
+        }
+
+        #[test]
+        fn non_root_xattr_queries_release_owned_references() {
+            let (temp, fs, ctx) = fixture(None);
+            std::fs::write(temp.path().join("upper/file"), b"data").unwrap();
+            let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+            let native = fs.layers[0].lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+            for _ in 0..16 {
+                assert_eq!(
+                    fs.getxattr(ctx, entry.inode, c"user.missing_root_test", 0)
+                        .err()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(libc::ENODATA)
+                );
+                fs.listxattr(ctx, entry.inode, 0).unwrap();
+            }
+            fs.layers[0].forget(ctx, native.inode, 1);
+            assert_eq!(
+                fs.layers[0]
+                    .getattr(ctx, native.inode, None)
+                    .err()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EBADF)
+            );
+            fs.forget(ctx, entry.inode, 1);
+        }
+
+        #[test]
+        fn root_open_release_preserves_borrowed_reference() {
+            let (_temp, fs, ctx) = fixture(None);
+            for _ in 0..16 {
+                let (handle, _) = fs
+                    .open(ctx, fuse::ROOT_ID, false, libc::O_RDONLY as u32)
+                    .unwrap();
+                fs.release(
+                    ctx,
+                    fuse::ROOT_ID,
+                    libc::O_RDONLY as u32,
+                    handle.unwrap(),
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            }
+            assert_root_still_supports_file_lifecycle(&fs, ctx);
         }
 
         #[test]
