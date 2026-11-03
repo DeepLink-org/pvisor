@@ -36,6 +36,66 @@ pub struct CacheConfig {
     pub read_only: bool,
     pub image_store: Option<PathBuf>,
 }
+
+/// Validated host-side capability; never serialized in runner descriptors.
+pub(super) enum ResolvedSource {
+    Pool(PathBuf),
+    Filesystem(PathBuf),
+    S3,
+    Http,
+    Server(super::transport::Endpoint),
+}
+
+impl ResolvedSource {
+    pub(super) fn resolve(
+        address: &str,
+        read_only: bool,
+        token: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        for (prefix, pool) in [("pool+file://", true), ("file://", false)] {
+            if let Some(path) = address.strip_prefix(prefix) {
+                ensure!(
+                    std::path::Path::new(path).is_absolute(),
+                    "cache path must be absolute"
+                );
+                return Ok(if pool {
+                    Self::Pool(path.into())
+                } else {
+                    Self::Filesystem(path.into())
+                });
+            }
+        }
+        if address.starts_with("s3://") {
+            super::storage::s3_location(address)?;
+            return Ok(Self::S3);
+        }
+        if address.starts_with("ipfs+")
+            || address.starts_with("http://")
+            || address.starts_with("https://")
+        {
+            ensure!(read_only, "HTTP/IPFS cache must be read-only");
+            super::http::Http::validate(address)?;
+            return Ok(Self::Http);
+        }
+        ensure!(!read_only, "read-only mode requires an object repository");
+        let endpoint = super::transport::endpoint(address)?;
+        if matches!(endpoint, super::transport::Endpoint::Tcp(_)) {
+            ensure!(
+                token.is_some_and(|value| !value.is_empty()),
+                "TCP requires PVISOR_CACHE_TOKEN"
+            );
+        }
+        Ok(Self::Server(endpoint))
+    }
+
+    pub(super) fn needs_host_network(&self) -> bool {
+        matches!(
+            self,
+            Self::S3 | Self::Http | Self::Server(super::transport::Endpoint::Tcp(_))
+        )
+    }
+}
+
 impl CacheConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_options(None, None, None, None)
@@ -121,9 +181,15 @@ impl CacheConfig {
         }
     }
     pub(super) fn explicit() -> bool {
-        [BACKEND_ENV, LOCATION_ENV, SERVER_ENV]
-            .iter()
-            .any(|key| std::env::var_os(key).is_some())
+        [
+            BACKEND_ENV,
+            LOCATION_ENV,
+            SERVER_ENV,
+            READ_ONLY_ENV,
+            super::transport::TOKEN_ENV,
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
     }
 }
 
@@ -153,6 +219,36 @@ pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<Strin
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn resolved_source_validates_capabilities_before_storage_io() {
+        for address in [
+            "file://relative",
+            "pool+file://relative",
+            "unix://relative",
+            "tcp://192.0.2.1:1234",
+            "unknown://source",
+        ] {
+            assert!(
+                ResolvedSource::resolve(address, false, Some("token")).is_err(),
+                "{address}"
+            );
+        }
+        assert!(ResolvedSource::resolve("tcp://127.0.0.1:1234", false, None).is_err());
+        assert!(ResolvedSource::resolve("https://mirror.example/root", false, None).is_err());
+        for (address, read_only, network) in [
+            ("file:///tmp/repository", false, false),
+            ("pool+file:///tmp/pool", false, false),
+            ("unix:///tmp/cache.sock", false, false),
+            ("tcp://127.0.0.1:1234", false, true),
+            ("https://mirror.example/root", true, true),
+            ("s3://bucket/root", false, true),
+        ] {
+            let source = ResolvedSource::resolve(address, read_only, Some("token")).unwrap();
+            assert_eq!(source.needs_host_network(), network, "{address}");
+        }
+    }
+
     #[test]
     fn http_and_s3_repository_options_validate_without_io() {
         for address in ["http://mirror.example/root", "https://mirror.example/root"] {

@@ -49,7 +49,7 @@ pub fn prepare_vm_image(
     store: Option<PathBuf>,
 ) -> anyhow::Result<(PreparedImage, Option<super::direct::DirectImage>)> {
     let store = crate::image::store::LocalStore::discover(store)?;
-    let client = CacheClient::discover()?.map_or_else(|| CacheClient::local(&store), Ok)?;
+    let client = CacheClient::resolve_image_source(&store)?;
     let downloads = super::progress::Downloads::new(image);
     crate::diagnostics::diagnostic(format_args!(
         "pVisor image: lazy loading from {}",

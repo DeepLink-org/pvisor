@@ -428,18 +428,17 @@ pub(crate) fn attach_runner_lowers<'a>(
         let binding: Binding = serde_json::from_reader(file)?;
         ensure!(binding.version == 1, "unsupported direct image binding");
         let mut client_binding = binding.client;
-        if cfg!(target_os = "linux") && client_binding.needs_host_network() {
+        // Capability parsing must not construct an HTTP/S3 transport: those
+        // start workers, but Linux namespace setup requires a single thread.
+        let source = client_binding.resolved_source()?;
+        if cfg!(target_os = "linux") && source.needs_host_network() {
             let (access, local_binding) =
                 super::network::NetworkAccess::start(parent, client_binding, &binding.handle)?;
             owners._network.push(access);
             client_binding = local_binding;
         }
         let client = CacheClient::from_binding(client_binding)?;
-        if let Some(location) = client
-            .address()
-            .strip_prefix("file://")
-            .or_else(|| client.address().strip_prefix("pool+file://"))
-        {
+        if let Some(location) = client.local_directory() {
             owners.read_only.push(location.into());
         }
         owners.read_write.push(parent.to_owned());

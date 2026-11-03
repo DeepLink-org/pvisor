@@ -1,8 +1,9 @@
 //! Blocking cache client and service discovery.
+use super::config::ResolvedSource;
 use super::portable::PortableCache;
 use super::protocol::{Envelope, hash, read_frame, write_frame};
 use super::storage::Storage;
-use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV, endpoint};
+use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV};
 use super::{CacheConfig, MAX_READ, Request, Response, SERVER_ENV};
 use anyhow::{Context, bail, ensure};
 use std::io::{Read, Write};
@@ -95,6 +96,8 @@ struct CacheConnectError(#[source] std::io::Error);
 pub struct CacheClient {
     transport: CacheTransport,
     binding: ClientBinding,
+    local_directory: Option<std::path::PathBuf>,
+    local_pool: bool,
 }
 
 enum CacheTransport {
@@ -122,6 +125,12 @@ pub(super) struct ClientBinding {
     pinned_read_retry: Option<String>,
 }
 impl ClientBinding {
+    /// Parse capabilities without opening storage or starting HTTP/S3 workers.
+    /// The Linux runner must remain single-threaded until its bridge is started.
+    pub(super) fn resolved_source(&self) -> anyhow::Result<ResolvedSource> {
+        ResolvedSource::resolve(&self.address, self.read_only, self.token.as_deref())
+    }
+
     pub(super) fn repository(address: &str, mirrors: &[String]) -> anyhow::Result<Self> {
         if address.starts_with("s3://") {
             super::storage::s3_location(address)?;
@@ -143,13 +152,6 @@ impl ClientBinding {
         })
     }
 
-    pub(super) fn needs_host_network(&self) -> bool {
-        self.address.starts_with("ipfs+http://")
-            || self.address.starts_with("s3://")
-            || self.address.starts_with("http://")
-            || self.address.starts_with("https://")
-            || matches!(endpoint(&self.address), Ok(Endpoint::Tcp(_)))
-    }
     pub(super) fn unix(socket: &std::path::Path) -> Self {
         Self {
             address: format!("unix://{}", socket.display()),
@@ -201,7 +203,14 @@ impl CacheClient {
         })
     }
     pub(super) fn is_local_pool(&self) -> bool {
-        self.address().starts_with("pool+file://")
+        self.local_pool
+    }
+    pub(super) fn local_directory(&self) -> Option<&std::path::Path> {
+        self.local_directory.as_deref()
+    }
+    #[cfg(test)]
+    pub(super) fn needs_host_network(&self) -> bool {
+        self.binding.resolved_source().unwrap().needs_host_network()
     }
     pub(super) fn address(&self) -> &str {
         &self.binding.address
@@ -239,12 +248,12 @@ impl CacheClient {
     }
     pub fn from_config(config: CacheConfig) -> anyhow::Result<Self> {
         let address = config.address()?;
-        Self::configured(
-            address,
-            std::env::var(TOKEN_ENV).ok(),
-            config.image_store,
-            config.read_only,
-        )
+        let token = match std::env::var(TOKEN_ENV) {
+            Ok(token) => Some(token),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(error.into()),
+        };
+        Self::configured(address, token, config.image_store, config.read_only)
     }
     pub fn new(address: String, token: Option<String>) -> anyhow::Result<Self> {
         Self::configured(address, token, None, false)
@@ -273,7 +282,12 @@ impl CacheClient {
             mirrors: mirrors.clone(),
             pinned_read_retry: None,
         };
-        let pooled = address.starts_with("pool+file://");
+        let source = binding.resolved_source()?;
+        let pooled = matches!(source, ResolvedSource::Pool(_));
+        let local_directory = match &source {
+            ResolvedSource::Pool(path) | ResolvedSource::Filesystem(path) => Some(path.clone()),
+            _ => None,
+        };
         let transport = if !mirrors.is_empty() {
             ensure!(read_only, "mirror repositories are read-only");
             let mut locations = vec![address.clone()];
@@ -283,57 +297,39 @@ impl CacheClient {
                 None,
                 true,
             ))
-        } else if let Some(path) = address.strip_prefix("pool+file://") {
-            CacheTransport::Objects(PortableCache::new(
-                Storage::Pool(std::sync::Arc::new(super::pool::PoolStorage::open(
-                    path.into(),
-                    !read_only,
-                )?)),
-                local_store,
-                read_only,
-            ))
-        } else if let Some(path) = address.strip_prefix("file://") {
-            CacheTransport::Objects(PortableCache::new(
-                Storage::filesystem(path.into(), !read_only)?,
-                local_store,
-                read_only,
-            ))
-        } else if address.starts_with("ipfs+")
-            || address.starts_with("http://")
-            || address.starts_with("https://")
-        {
-            ensure!(read_only, "HTTP/IPFS cache must be read-only");
-            CacheTransport::Objects(PortableCache::new(
-                Storage::Http(std::sync::Arc::new(super::http::Http::new(&address)?)),
-                None,
-                true,
-            ))
-        } else if address.starts_with("s3://") {
-            CacheTransport::Objects(PortableCache::new(
-                Storage::s3(&address)?,
-                local_store,
-                read_only,
-            ))
         } else {
-            ensure!(
-                !read_only,
-                "read-only mode requires filesystem or S3 cache backend"
-            );
-            let endpoint = endpoint(&address)?;
-            if matches!(endpoint, Endpoint::Tcp(_)) {
-                ensure!(
-                    token.as_ref().is_some_and(|s| !s.is_empty()),
-                    "TCP requires {TOKEN_ENV}"
-                );
-            }
-            CacheTransport::Server {
-                endpoint,
-                token,
-                pool: ConnectionPool {
-                    state: Mutex::new(PoolState::default()),
-                    available: Condvar::new(),
-                    enabled: std::env::var_os("PVISOR_LAZY_IMAGE_V2").as_deref()
-                        != Some(std::ffi::OsStr::new("0")),
+            match source {
+                ResolvedSource::Pool(path) => CacheTransport::Objects(PortableCache::new(
+                    Storage::Pool(std::sync::Arc::new(super::pool::PoolStorage::open(
+                        path, !read_only,
+                    )?)),
+                    local_store,
+                    read_only,
+                )),
+                ResolvedSource::Filesystem(path) => CacheTransport::Objects(PortableCache::new(
+                    Storage::filesystem(path, !read_only)?,
+                    local_store,
+                    read_only,
+                )),
+                ResolvedSource::Http => CacheTransport::Objects(PortableCache::new(
+                    Storage::Http(std::sync::Arc::new(super::http::Http::new(&address)?)),
+                    None,
+                    true,
+                )),
+                ResolvedSource::S3 => CacheTransport::Objects(PortableCache::new(
+                    Storage::s3(&address)?,
+                    local_store,
+                    read_only,
+                )),
+                ResolvedSource::Server(endpoint) => CacheTransport::Server {
+                    endpoint,
+                    token,
+                    pool: ConnectionPool {
+                        state: Mutex::new(PoolState::default()),
+                        available: Condvar::new(),
+                        enabled: std::env::var_os("PVISOR_LAZY_IMAGE_V2").as_deref()
+                            != Some(std::ffi::OsStr::new("0")),
+                    },
                 },
             }
         };
@@ -349,40 +345,46 @@ impl CacheClient {
                 server => server,
             },
             binding,
+            local_directory,
+            local_pool: pooled,
         })
     }
-    /// Discover the default socket, or require an explicitly configured service.
-    pub(crate) fn discover() -> anyhow::Result<Option<Self>> {
+    /// Resolve the configured source or the local pool. Only an absent implicit
+    /// default server (or the legacy explicit `off` switch) selects the pool.
+    /// Configuration, authentication and protocol failures never select it.
+    pub(crate) fn resolve_image_source(
+        store: &crate::image::store::LocalStore,
+    ) -> anyhow::Result<Self> {
         if std::env::var(SERVER_ENV).as_deref() == Ok("off")
             && std::env::var_os(super::config::BACKEND_ENV).is_none()
             && std::env::var_os(super::config::LOCATION_ENV).is_none()
         {
-            return Ok(None);
+            return Self::local(store);
         }
         let config = CacheConfig::from_env()?;
-        let address = config.address()?;
-        if address.starts_with("file://")
-            || address.starts_with("s3://")
-            || address.starts_with("http://")
-            || address.starts_with("https://")
-        {
-            return Ok(Some(Self::from_config(config)?));
+        let client = Self::from_config(config)?;
+        if !client.is_socket() {
+            return Ok(client);
         }
-        Self::probe(
-            address,
-            std::env::var(TOKEN_ENV).ok(),
-            CacheConfig::explicit(),
-        )
+        match client.probe_resolved(CacheConfig::explicit())? {
+            Some(client) => Ok(client),
+            None => Self::local(store),
+        }
     }
 
+    #[cfg(test)]
     pub(super) fn probe(
         address: String,
         token: Option<String>,
         explicit: bool,
     ) -> anyhow::Result<Option<Self>> {
         let client = Self::new(address, token)?;
-        match client.request_timeout(Request::Ping, Duration::from_secs(2)) {
-            Ok((Response::Ready, _)) => Ok(Some(client)),
+        client.probe_resolved(explicit)
+    }
+
+    fn probe_resolved(self, explicit: bool) -> anyhow::Result<Option<Self>> {
+        match self.request_timeout(Request::Ping, Duration::from_secs(2)) {
+            Ok((Response::Ready, _)) => Ok(Some(self)),
             Ok(_) => bail!("cache server returned an incompatible handshake"),
             Err(error) => {
                 let absent = error.downcast_ref::<CacheConnectError>().is_some_and(|e| {
@@ -1410,6 +1412,91 @@ pub(super) mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixListener;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn resolver_never_falls_back_after_explicit_selection_failure() {
+        const CHILD: &str = "PVISOR_RESOLVER_TEST_CASE";
+        if let Ok(case) = std::env::var(CHILD) {
+            let temp = tempfile::tempdir().unwrap();
+            let store = crate::image::store::LocalStore::open(temp.path().join("images")).unwrap();
+            let result = CacheClient::resolve_image_source(&store);
+            if case == "off" {
+                assert!(result.unwrap().is_local_pool());
+            } else {
+                assert!(result.is_err(), "{case} must not select the local pool");
+                assert!(
+                    !store.pool().exists(),
+                    "failure must not initialize a local pool"
+                );
+            }
+            return;
+        }
+        for (case, backend, location, server) in [
+            (
+                "missing-server",
+                "server",
+                "unix:///tmp/pvisor-resolver-missing/cache.sock",
+                "",
+            ),
+            ("invalid-path", "filesystem", "relative", ""),
+            ("invalid-backend", "typo", "", ""),
+            ("off", "", "", "off"),
+        ] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "image::cache::client::tests::resolver_never_falls_back_after_explicit_selection_failure"]);
+            for key in [
+                super::super::BACKEND_ENV,
+                super::super::LOCATION_ENV,
+                SERVER_ENV,
+                super::super::READ_ONLY_ENV,
+                TOKEN_ENV,
+                "PVISOR_IMAGE_STORE",
+            ] {
+                child.env_remove(key);
+            }
+            child.env(CHILD, case);
+            for (key, value) in [
+                (super::super::BACKEND_ENV, backend),
+                (super::super::LOCATION_ENV, location),
+                (SERVER_ENV, server),
+            ] {
+                if !value.is_empty() {
+                    child.env(key, value);
+                }
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn handoff_reconstructs_capabilities_without_changing_binding_wire() {
+        let temp = tempfile::tempdir().unwrap();
+        let location = temp.path().join("repository");
+        let client = CacheClient::new(format!("file://{}", location.display()), None).unwrap();
+        assert_eq!(client.local_directory(), Some(location.as_path()));
+        assert!(!client.is_local_pool());
+        assert!(!client.needs_host_network());
+        let wire = serde_json::to_value(client.binding()).unwrap();
+        assert!(wire.get("local_directory").is_none());
+        assert!(wire.get("needs_host_network").is_none());
+        let reopened =
+            CacheClient::from_binding(serde_json::from_value(wire.clone()).unwrap()).unwrap();
+        assert_eq!(reopened.local_directory(), client.local_directory());
+        assert_eq!(serde_json::to_value(reopened.binding()).unwrap(), wire);
+
+        let remote =
+            CacheClient::from_repositories(&["https://mirror.example/root".into()]).unwrap();
+        assert!(remote.needs_host_network());
+        assert!(remote.local_directory().is_none());
+        let mut invalid = serde_json::to_value(remote.binding()).unwrap();
+        invalid["read_only"] = false.into();
+        assert!(CacheClient::from_binding(serde_json::from_value(invalid).unwrap()).is_err());
+    }
 
     fn client_at(path: &std::path::Path) -> CacheClient {
         client_at_with_reuse(path, true)

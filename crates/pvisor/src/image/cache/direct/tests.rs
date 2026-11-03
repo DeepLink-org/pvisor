@@ -3,6 +3,45 @@ use crate::image::cache::{MAX_READ, backend::tests::fixture};
 use pvisor_overlay_core::{OverlayCore, backend, service::FilesystemService};
 use std::{fs::File, sync::atomic::Ordering};
 
+#[test]
+fn runner_starts_bridge_before_constructing_any_client_transport() {
+    let source = include_str!("../direct.rs");
+    let handoff = source
+        .split_once("let binding: Binding = serde_json::from_reader(file)?;")
+        .unwrap()
+        .1
+        .split_once("owners.read_write.push(parent.to_owned());")
+        .unwrap()
+        .0;
+    let bridge = handoff.find("NetworkAccess::start(").unwrap();
+    let client = handoff.find("CacheClient::from_binding(").unwrap();
+    assert!(
+        bridge < client,
+        "remote transports must not start workers before bridge setup"
+    );
+    assert!(handoff[..bridge].contains("client_binding.resolved_source()?"));
+    assert!(!handoff[..bridge].contains("CacheClient::"));
+    let resolver = include_str!("../config.rs")
+        .split_once("impl ResolvedSource {")
+        .unwrap()
+        .1
+        .split_once("impl CacheConfig {")
+        .unwrap()
+        .0;
+    for forbidden in [
+        "Storage::",
+        "Http::new(",
+        "PoolStorage::",
+        "thread::",
+        "Runtime::",
+    ] {
+        assert!(
+            !resolver.contains(forbidden),
+            "capability parsing must be thread/I/O free: {forbidden}"
+        );
+    }
+}
+
 fn image(client: CacheClient, digest: String, base: &Path) -> DirectImage {
     let source = RemoteFs::new(
         client,
