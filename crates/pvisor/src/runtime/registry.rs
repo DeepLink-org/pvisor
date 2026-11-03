@@ -456,7 +456,7 @@ impl RunRecord {
                 File::open(&index_path)?.sync_all()
             })?;
             crate::util::persistence_step(&self.run_id, "run_index", "directory_sync", || {
-                Persistence::sync_directory(&index_dir)
+                Persistence::sync_directory(index_dir)
             })?;
         } else {
             crate::util::write_run_bytes(&index_path, &contents, &self.run_id, "run_index")?;

@@ -126,7 +126,9 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            "c7d399c6e23dae1d7b78c7556b163514e38becb4d280cca9e605002716b75572",
+            // --vm-node-socket now describes the retained caller-provided RAM
+            // service rather than the retired bundled node server.
+            "75b100d8e55d77d3de427e2ec11a60a059762cfcb15f2516e84ec37c96d3ce1e",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);
