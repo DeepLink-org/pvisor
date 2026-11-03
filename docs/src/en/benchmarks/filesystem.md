@@ -180,6 +180,10 @@ The plan contains 19 workloads × 9 modes × 3 fresh environments = 513 environm
 
 <!-- measurement-status:end -->
 
+An [independent revision retest](../lab-notes/filesystem-performance-analysis.md#docs-workload-retest)
+retains these mechanism and complete-task workloads for ordinary and writeback VMs,
+with separate default-path levels and coverage limits. It does not replace the nine-mode cohort above.
+
 <details markdown="1">
 <summary>Storage paths, clocks and valid observations</summary>
 

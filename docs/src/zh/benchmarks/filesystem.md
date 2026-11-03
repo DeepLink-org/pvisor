@@ -180,6 +180,9 @@ N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样�
 
 <!-- measurement-status:end -->
 
+普通VM与写回VM的[独立版本复测](../lab-notes/filesystem-performance-analysis.md#docs-workload-retest)
+保留相同机制与完整任务负载，另列默认路径的水平和覆盖限制，不替换上述九模式批次。
+
 <details markdown="1">
 <summary>查看存储路径、计时细节与有效样本数</summary>
 

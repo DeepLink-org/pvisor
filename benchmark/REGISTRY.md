@@ -238,6 +238,19 @@ Design: 负载、对照、控制变量与有效样本判据。
   `docs/src/*/lab-notes/filesystem-io-performance-analysis.md`
 - **角色：** engineering A/B
 - **Motivation：** 开发者需要判断一次文件系统改动是否让 B-FS-TOOLS 的用户结论变好，并定位时间花在哪一层（传输、OverlayCore、持久化、内容指纹）。
+- **文档负载复测：** `filesystem/docs_retest.py` 复用本地 Python 标准库加载与完整
+  mmap 两遍的原始脚本和 OCI oracle，比较基线、PR 默认配置、显式缓存组合。
+  完整准备的同 digest V2 库存各自复制并重定位到私有目录，不写历史库存。
+  三次预热、N30 seeded 随机三臂，新 VM；4 CPU/4 GiB/swap0 产品预算、
+  2vCPU/512MiB guest，与本地读取用户实验一致。准备不计时，Ready/Exit和
+  guest两遍扫描分别记录；任何正确性、退出或资源门禁失败使整批无效。
+  这是整体配置工程对照，不推导单项贡献，不替换跨运行时用户表。
+  `filesystem/docs_rootfs_retest.py` 另以共同目录rootfs复用用户实验的M01–M12、
+  S01–S03、静态payload与最终host全字节oracle；基线/PR默认版本在普通VM与
+  guest-WB两配置各N3、三驻留轮，按case/pair随机交替版本。父两核/2GiB/
+  swap0、guest2vCPU/512MiB、单trial90秒；不封存live目录、不引入lazy资格。
+  N3只报告独立环境三轮累计的水平，不发布尾延迟或因果百分比；四个资源
+  饱和点不在此批覆盖范围，历史失败不改写。
 - **顺序优化第一批／目录名称快照：** `directory_names_ab.py` 冻结同一 release
   `guest_metadata_case`、静态 guest、固件与 SOURCE 收据，仅切换宿主
   `PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=0/1`；默认仍关。8192 个长名称文件的
