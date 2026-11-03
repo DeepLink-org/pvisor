@@ -226,8 +226,13 @@ class WorkloadTests(unittest.TestCase):
 
     def test_pvisor_external_pool_is_one_argument_before_image(self):
         config = dict(
-            kind="pvisor", binary="/bin/pvisor", image="prepared",
-            memory="8g", vcpus=2, cwd="/app", memory_pool="/tmp/replay pool/socket",
+            kind="pvisor",
+            binary="/bin/pvisor",
+            image="prepared",
+            memory="8g",
+            vcpus=2,
+            cwd="/app",
+            memory_pool="/tmp/replay pool/socket",
         )
         backend = build_backend(config)
         with patch("workload_backends.subprocess.run") as run:
@@ -243,19 +248,29 @@ class WorkloadTests(unittest.TestCase):
 
     def test_pool_configuration_rejected_before_execution(self):
         config = dict(
-            kind="pvisor", binary="/bin/pvisor", image="prepared",
-            memory="8g", vcpus=2, cwd="/app",
+            kind="pvisor",
+            binary="/bin/pvisor",
+            image="prepared",
+            memory="8g",
+            vcpus=2,
+            cwd="/app",
         )
         with patch("workload_backends.subprocess.run") as run:
             for pool in (None, "", "auto", "relative.sock", 1, "/tmp/\0sock"):
                 with self.subTest(pool=pool), self.assertRaises(ValueError):
                     build_backend(dict(config, memory_pool=pool))
             with self.assertRaisesRegex(ValueError, "only supported by pvisor"):
-                build_backend(dict(
-                    kind="agentenv", endpoint="http://localhost:18250",
-                    template="t", api_key_env="TOKEN", cwd="/app",
-                    vm_timeout_s=18000, memory_pool="/tmp/pool.sock",
-                ))
+                build_backend(
+                    dict(
+                        kind="agentenv",
+                        endpoint="http://localhost:18250",
+                        template="t",
+                        api_key_env="TOKEN",
+                        cwd="/app",
+                        vm_timeout_s=18000,
+                        memory_pool="/tmp/pool.sock",
+                    )
+                )
             run.assert_not_called()
 
     def test_validate_only_cli_does_not_start_or_import_sdk(self):

@@ -160,7 +160,9 @@ def build_backend(config):
         if kind != "pvisor":
             raise ValueError("memory_pool is only supported by pvisor")
         if not isinstance(pool, str) or not os.path.isabs(pool) or "\0" in pool:
-            raise ValueError("memory_pool must be an absolute path to an existing external pool socket")
+            raise ValueError(
+                "memory_pool must be an absolute path to an existing external pool socket"
+            )
     if kind == "agentenv":
         from urllib.parse import urlsplit
 
