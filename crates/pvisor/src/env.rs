@@ -45,6 +45,9 @@ pub(crate) mod cache {
     pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
     pub const IMAGE_STORE_ENV: &str = "PVISOR_IMAGE_STORE";
     pub const DOCKER_HOME_ENV: &str = "PVISOR_DOCKER_HOME";
+    pub(crate) const REUSE_LAZY_NODES_ENV: &str = "PVISOR_VM_FS_REUSE_LAZY_NODES";
+    pub(crate) const STREAM_LAZY_READS_ENV: &str = "PVISOR_VM_FS_STREAM_LAZY_READS";
+    pub(crate) const DIRECT_LAZY_COPY_ENV: &str = "PVISOR_VM_FS_DIRECT_LAZY_COPY";
 
     pub(crate) const SOURCE_ENV: [&str; 5] = [
         BACKEND_ENV,
@@ -56,6 +59,18 @@ pub(crate) mod cache {
 
     pub(crate) fn explicit() -> bool {
         SOURCE_ENV.iter().any(|key| super::os(key).is_some())
+    }
+
+    pub(crate) fn experiment_setting(
+        name: &str,
+        setting: Option<&std::ffi::OsStr>,
+    ) -> anyhow::Result<bool> {
+        match setting {
+            None => Ok(false),
+            Some(value) if value == "0" => Ok(false),
+            Some(value) if value == "1" => Ok(true),
+            Some(_) => anyhow::bail!("{name} must be 0 or 1"),
+        }
     }
 }
 
@@ -73,6 +88,7 @@ pub(crate) mod runner {
     pub(crate) const CONTROL_FD_ENV: &str = "PVISOR_KRUN_CONTROL_FD";
     pub(crate) const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
     pub(crate) const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
+    pub(crate) const LOGICAL_DIRECTORY_CACHE_ENV: &str = "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE";
     pub(crate) const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) const ENOMEM_OVERRIDE_ENV: &str = "PVISOR_KRUN_ENOMEM_WORKAROUND";

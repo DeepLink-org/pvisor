@@ -21,6 +21,9 @@ Unix virtio-fs 在 VMM attach 构造边界一次读取并验证 Host FS 环境�
 `PVISOR_VM_FS_WRITEBACK` 保留原三态规则：仅字符串 `0` 显式关闭，
 其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复旧 WB 状态。
 共享 OPEN 的非法设置仍仅在创建 OverlayFS 时拒绝，不影响 passthrough/null FS。
+main 的 directory-names、prepared-copy-up、object-read-barriers、
+logical-directory-cache、logical-data-cache 和 scoped-names 实验也由同一 profile
+在构造时解析；全部保持默认关闭，显式值仅接受 `0` 或 `1`。
 诊断开关 `PVISOR_FS_PROFILE` 不参与此行为配置，不声称所有 FS 相关环境都被冻结。
 此 profile 不进入公开 API 或快照，也不改变 Windows 独立 FS 的设置读取行为。
 
@@ -943,6 +946,38 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 
 ## Guest 目录镜像
 
+`PVISOR_VM_FS_LOGICAL_DATA_CACHE=1` 是默认关闭的Linux实验：要求逻辑目录
+租约资格、无journal/host写缓存、guest目录缓存开启及DAX/guest WB关闭。
+复用既有独立lower-data inode协议，但key使用固定layer租约内backend对象ID
+与逻辑长度，不使用占位文件的native身份作为内容证明。OPEN仍做原授权、
+native FD形态核验，READ仍校验源内容；native与逻辑key不共用域，upper不能
+取得lower数据ID。未知backend、direct/write FD、旧peer保留普通路径。
+已协商会话拒绝capture，所有值只接受0/1。
+
+`PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=1` 可在 fresh、无 preimage/apply journal
+的镜像视图上启用逻辑目录镜像；默认或 `0` 关闭，其他值拒绝。每个物理
+Mutable lower 必须持有 exact-root、可信固定 revision 的 backend lease，
+且注册表禁止覆盖该租约的父/子附件。物理 Immutable 的现有资格保持。
+该开关不修改 lower mutability、native 属性/数据缓存或 DAX 资格；启用的
+owner 拒绝 capture/restore。普通 live share、未声明稳定性的 backend 和
+live stage 不因此获得长期缓存。source/projection 的私有存储仍由调用方保活。
+
+宿主实验变量 `PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=1` 为物理 lower 全部
+Immutable 的 overlay 保留最近一个目录的名称/类型快照，供分页 READINDEX
+复用；未设置或 `0` 关闭，其他值拒绝。缓存不含属性、授权或 lookup 引用，
+保留的名称数组、类型数组和路径按分配容量限制为约 4 MiB，超限不缓存。
+所有 namespace/metadata 修改在独占 operation guard 内先失效，失败也失效；
+已经打开的目录仍持有各自 Arc 快照。capture/restore/destroy 经过同一屏障，
+缓存不序列化；Mutable/lazy 物理投影不扩大资格。该实验默认关闭，性能
+证据必须将目录导入与完整工作负载分开，不以减少枚举次数推导耗时收益。
+
+`PVISOR_VM_FS_SCOPED_NAMES=1` 在上述物理名称缓存已启用、默认访问策略下，
+仅失效create/link/unlink/mkdir/rmdir/symlink/mknod/rename的相关父目录和源/
+目标子树。路径在namespace独占锁内解析；失败也按同范围失效，未知路径、
+属性修改/OPEN/capture及非默认策略仍全失效，避免hardlink策略旁路。
+默认关闭，非法值拒绝；只是名称/类型快照，不保留属性或授权。受控guest
+metadata压力实验未检出收益，因此不默认启用，也不改变guest rename镜像协议。
+
 在宿主 runner 启动前设置 `PVISOR_VM_GUEST_CACHE=0`，可整体关闭 guest
 目录元数据镜像和惰性只读 open；`1` 或未设置默认开启。该开关对所有
 virtio-fs attachment 生效，在 worker 构造时读取，非法值会导致启动失败。
@@ -1087,6 +1122,14 @@ without treating their changed names as a change to the captured workload.
 
 ## virtio-fs 并发与冻结契约
 
+宿主实验变量 `PVISOR_VM_FS_PREPARED_COPY_UP=1` 将 writable OPEN 的普通
+lower 文件复制准备移出 namespace 独占锁；未设置或 `0` 关闭，非法值拒绝。
+独立 mutation admission 串行化修改、capture 和 teardown，准备期间允许
+metadata/read-only OPEN；发布仍在原 namespace 写锁内验证 Core receipt、
+执行 scoped I/O fence 和原有权限/原像处理。receipt 取消完成后才释放 mutation
+admission；非普通文件、upper 和退休对象保留原路径。该实验不提供并行修改、
+异步 OPEN 或跳过 lazy 完整物化，默认关闭。
+
 设备提供一个 hiprio 和多个普通 request queues；默认普通队列数为宿主
 可用 CPU 数，上限 4，guest 可只初始化其中一部分。每个已初始化队列由
 专有线程直接取请求、执行和发布完成。hiprio 线程只处理 FORGET、
@@ -1220,6 +1263,13 @@ staged OverlayFS 的新会话默认不协商 FUSE_WRITEBACK_CACHE；构造前设
 恢复仍拒绝 exported descriptors/DAX 等既有不支持状态。
 
 ### Host 大粒度写缓存基础
+
+`PVISOR_VM_FS_OBJECT_READ_BARRIERS=1` 是默认关闭的窄实验，非法值拒绝：
+仅 host-writeback 会话的 READ 按被固定的原生 upper 对象等待已接收写入 cut，
+不同FD/硬链接共享对象身份；旧lower FD不等待upper写，但仍检查sticky错误。
+单FIFO worker及全局metadata/OPEN/FLUSH/FSYNC/RELEASE/capture屏障保持，
+不提供并行写、可越过同对象写的读取或完整IOCP。pending对象索引不超过
+已接收任务预算，完成即移除；关闭开关不维护该索引。
 
 Linux staged virtio-fs 可用实验变量 `PVISOR_VM_FS_HOST_WRITEBACK=1` 开启
 host 拥有的异步写缓存；未设置或 `0` 关闭，其他值（含非 UTF-8）拒绝。

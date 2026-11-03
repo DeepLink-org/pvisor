@@ -1897,6 +1897,7 @@ fn run_vm<Backing>(
         vm.ram_backing(tempfile::tempfile_in(&directory)?)?;
     }
     let mut lowers = vec![image_root.rootfs().to_owned()];
+    let mut lower_mutability = vec![pvisor_overlay_core::LayerMutability::Mutable];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
         prepare_resolver(
@@ -1909,11 +1910,23 @@ fn run_vm<Backing>(
                 .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway),
         )?;
         lowers.insert(0, resolver);
+        // Opt-in only: this private generation is finished before VM entry and
+        // retained unchanged until exit. Keep ordinary launch declarations
+        // unchanged when the logical-mirror experiment is not requested.
+        let resolver_mutability = if crate::env::os(crate::env::runner::LOGICAL_DIRECTORY_CACHE_ENV)
+            .as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            pvisor_overlay_core::LayerMutability::Immutable
+        } else {
+            pvisor_overlay_core::LayerMutability::Mutable
+        };
+        lower_mutability.insert(0, resolver_mutability);
     }
     vm.overlay(
         "/dev/root",
         OverlayConfig {
-            lower_mutability: vec![pvisor_overlay_core::LayerMutability::Mutable; lowers.len()],
+            lower_mutability,
             lower_dirs: lowers,
             upper_dir: directory.join("upper"),
             work_dir: Some(directory.join("work")),

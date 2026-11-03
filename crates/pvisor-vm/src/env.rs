@@ -21,6 +21,12 @@ pub(crate) mod fs {
     pub(crate) const NEGATIVE_ENTRY_CACHE: &str = "PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE";
     pub(crate) const WRITEBACK: &str = "PVISOR_VM_FS_WRITEBACK";
     pub(crate) const SHARED_OPEN_QUALIFICATION: &str = "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION";
+    pub(crate) const DIRECTORY_NAMES_CACHE: &str = "PVISOR_VM_FS_DIRECTORY_NAMES_CACHE";
+    pub(crate) const PREPARED_COPY_UP: &str = "PVISOR_VM_FS_PREPARED_COPY_UP";
+    pub(crate) const OBJECT_READ_BARRIERS: &str = "PVISOR_VM_FS_OBJECT_READ_BARRIERS";
+    pub(crate) const LOGICAL_DIRECTORY_CACHE: &str = "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE";
+    pub(crate) const SCOPED_NAMES: &str = "PVISOR_VM_FS_SCOPED_NAMES";
+    pub(crate) const LOGICAL_DATA_CACHE: &str = "PVISOR_VM_FS_LOGICAL_DATA_CACHE";
     pub(crate) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
     pub(crate) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
 
@@ -37,6 +43,12 @@ pub(crate) mod fs {
         pub(crate) readonly_flush_elision: bool,
         pub(crate) lower_data_cache: bool,
         pub(crate) negative_entry_cache: bool,
+        pub(crate) directory_names_cache: bool,
+        pub(crate) prepared_copy_up: bool,
+        pub(crate) object_read_barriers: bool,
+        pub(crate) logical_directory_cache: bool,
+        pub(crate) scoped_names: bool,
+        pub(crate) logical_data_cache: bool,
         pub(crate) writeback: Option<String>,
         pub(crate) shared_open: io::Result<bool>,
     }
@@ -85,6 +97,18 @@ pub(crate) mod fs {
                 negative_entry_cache: negative_entry_cache_enabled(
                     get(NEGATIVE_ENTRY_CACHE).as_deref(),
                 )?,
+                directory_names_cache: directory_names_cache_enabled(
+                    get(DIRECTORY_NAMES_CACHE).as_deref(),
+                )?,
+                prepared_copy_up: prepared_copy_up_enabled(get(PREPARED_COPY_UP).as_deref())?,
+                object_read_barriers: object_read_barriers_enabled(
+                    get(OBJECT_READ_BARRIERS).as_deref(),
+                )?,
+                logical_directory_cache: logical_directory_cache_enabled(
+                    get(LOGICAL_DIRECTORY_CACHE).as_deref(),
+                )?,
+                scoped_names: scoped_names_enabled(get(SCOPED_NAMES).as_deref())?,
+                logical_data_cache: logical_data_cache_enabled(get(LOGICAL_DATA_CACHE).as_deref())?,
                 // Preserve env::var(...).ok(): non-Unicode is unset, all other
                 // strings (including empty/invalid) remain the explicit third state.
                 writeback: get(WRITEBACK).and_then(|v| v.into_string().ok()),
@@ -142,6 +166,16 @@ pub(crate) mod fs {
     );
     boolean_parser!(lower_data_cache_enabled, LOWER_DATA_CACHE, false);
     boolean_parser!(negative_entry_cache_enabled, NEGATIVE_ENTRY_CACHE, false);
+    boolean_parser!(directory_names_cache_enabled, DIRECTORY_NAMES_CACHE, false);
+    boolean_parser!(prepared_copy_up_enabled, PREPARED_COPY_UP, false);
+    boolean_parser!(object_read_barriers_enabled, OBJECT_READ_BARRIERS, false);
+    boolean_parser!(
+        logical_directory_cache_enabled,
+        LOGICAL_DIRECTORY_CACHE,
+        false
+    );
+    boolean_parser!(scoped_names_enabled, SCOPED_NAMES, false);
+    boolean_parser!(logical_data_cache_enabled, LOGICAL_DATA_CACHE, false);
     boolean_parser!(
         shared_open_qualification_enabled,
         SHARED_OPEN_QUALIFICATION,
@@ -188,6 +222,7 @@ pub(crate) mod fs {
                 batch_bytes: self.batch_kib.checked_mul(1024).ok_or_else(invalid)?,
                 max_chunks: self.chunks,
                 max_delay: std::time::Duration::from_micros(self.delay_us),
+                object_barriers: false,
             };
             options.validate()?;
             Ok(options)

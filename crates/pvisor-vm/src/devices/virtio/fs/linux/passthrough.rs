@@ -784,6 +784,25 @@ impl PassthroughFs {
         local_readonly_flush_filesystem(filesystem.f_type as u64 & 0xffff_ffff)
     }
 
+    /// Validate the actual open description without treating native placeholder
+    /// identity or private hardlink count as immutable content evidence.
+    pub(in crate::devices::virtio::fs) fn logical_data_fd_eligible(
+        &self, lease: &HandleLease, size: u64,
+        profile: &pvisor_overlay_core::profile::Profile,
+    ) -> bool {
+        let file = lease.0.file.read().unwrap();
+        profile.add("open_qualification_fgetfl_attempts", 1);
+        // SAFETY: the existing I/O admission/read guard pins this description.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags & (libc::O_DIRECT | libc::O_PATH) != 0 { return false; }
+        profile.add("open_qualification_fstat_attempts", 1);
+        file.metadata().is_ok_and(|m| m.is_file() && m.len() == size && m.nlink() != 0)
+        // Native link count may include the projection's private object alias.
+        // Content identity/immutability comes from the separate logical lease,
+        // never this FD's device/inode or its placeholder bytes.
+    }
+
     /// Gather identity and EOF from the actual successful native OPEN. This
     /// optional optimization rejects incomplete evidence without failing OPEN.
     pub(in crate::devices::virtio::fs) fn lower_data_identity_profiled(
