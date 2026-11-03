@@ -268,6 +268,15 @@ Design: 负载、对照、控制变量与有效样本判据。
   固件/二进制/源码/输入和命令独立冻结；逻辑租约只覆盖认证revision，
   不扩大物理缓存、live stage或snapshot资格。失败停止并保留，无慢值剔除。
 - **想要的结论：** "改动 X 让负载 Y 的中位数变化 Z%（95% 置信区间），其余负载未检出差异"；以及"staged 与 FUSE 直通之间的差距中，持久化占 A ms，内容指纹占 B ms，路径解析占 C ms"。
+- **macOS/HVF 独立复测：** 上述两个 sampler 支持 Apple Silicon，使用签名
+  release 制品、Linux AArch64 musl guest 和收据匹配的 `libkrunfw.5.dylib`。
+  N30 随机配对、每环境三轮、独立 profile 和原有完整性门禁保持；
+  SDK 各有 N5 控制。guest 2vCPU/512MiB，宿主不设 Linux cgroup/affinity
+  限制，manifest 记录 unrestricted，不与 Linux 受限批次合并。
+  Linux-only `logical-data` 在准备前拒绝；对象级 READ 屏障仍未计时。
+  七项复测及局部 OPEN 退化保留于 `filesystem/MACOS_OPTIMIZATION_REPORT.md`，
+  原始批次 `benchmark/.data/macos-*`。这是同二进制开关 A/B，
+  不是优化前后默认配置的版本级性能门禁，也不代表组合或完整 Agent 收益。
 - **后续1／已解析lazy对象复用：** `logical_directory_ab.py --experiment lazy-nodes`，
   固定逻辑目录镜像和既有名称/prepared-copy-up开启，仅切换
   `PVISOR_VM_FS_REUSE_LAZY_NODES=0/1`。同一release CLI和静态guest、本地V2

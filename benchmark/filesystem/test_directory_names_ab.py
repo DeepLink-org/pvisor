@@ -14,6 +14,23 @@ SPEC.loader.exec_module(SUBJECT)
 
 
 class DirectoryNamesContracts(unittest.TestCase):
+    def test_macos_does_not_claim_linux_host_limits(self):
+        with patch.object(SUBJECT.sys, "platform", "darwin"):
+            self.assertEqual(SUBJECT.host_cpus(), [])
+            self.assertEqual(SUBJECT.firmware_name(), "libkrunfw.5.dylib")
+            self.assertEqual(SUBJECT.host_budget(["driver"], "unit", []), ["driver"])
+            with patch.object(SUBJECT.subprocess, "run") as run:
+                SUBJECT.stop_trial("unit")
+                run.assert_not_called()
+
+    def test_linux_keeps_existing_budget_and_firmware(self):
+        with patch.object(SUBJECT.sys, "platform", "linux"):
+            self.assertEqual(SUBJECT.firmware_name(), "libkrunfw.so.5")
+            command = SUBJECT.host_budget(["driver"], "unit", [2, 3])
+            self.assertEqual(command[0], "systemd-run")
+            self.assertEqual(command[-4:], ["taskset", "-c", "2,3", "driver"])
+            self.assertIn("MemorySwapMax=0", command)
+
     def test_copyup_verification_requires_exactly_one_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -64,7 +81,10 @@ class DirectoryNamesContracts(unittest.TestCase):
                 (root / "directory-pages-0-0-time.command.json").read_text()
             )
             self.assertIn(f"TMPDIR={scratch}", command)
-            self.assertIn("MemorySwapMax=0", command)
+            if SUBJECT.sys.platform == "linux":
+                self.assertIn("MemorySwapMax=0", command)
+            else:
+                self.assertNotIn("systemd-run", command)
             self.assertIn("PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=0", command)
             self.assertIn("PVISOR_VM_FS_PREPARED_COPY_UP=0", command)
 
