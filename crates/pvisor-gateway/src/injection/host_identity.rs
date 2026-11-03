@@ -4,7 +4,7 @@
 //! (32-char hex = first 128 bits of BLAKE3).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 use std::process::Command;
 
 /// Inputs for [`fingerprint_host`]; exposed for deterministic unit tests.
@@ -46,7 +46,7 @@ pub fn fingerprint_host(input: &HostIdentityInput) -> String {
 
 /// Best-effort fingerprint for the machine / OS user behind a proxied TCP peer.
 ///
-/// When `client_pid` is known, uses that process owner (`ps user=`); otherwise the
+/// When `client_pid` is known, uses that process owner (procfs on Linux); otherwise the
 /// effective user of the capture proxy process.
 pub fn machine_fingerprint_for_client(peer: SocketAddr, client_pid: Option<u32>) -> String {
     let username = client_pid
@@ -103,7 +103,12 @@ fn local_username() -> String {
     )
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+fn username_for_pid(pid: u32) -> Option<String> {
+    super::procfs::username(pid).map(|user| normalize_username(&user))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 fn username_for_pid(pid: u32) -> Option<String> {
     let output =
         super::process::output(Command::new("ps").args(["-p", &pid.to_string(), "-o", "user="]))
