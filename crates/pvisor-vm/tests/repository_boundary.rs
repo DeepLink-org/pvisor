@@ -56,6 +56,54 @@ fn workspace_has_no_old_runtime_dependency() {
     }
 }
 
+#[test]
+fn retired_optional_devices_are_not_build_profiles() {
+    let manifest: toml::Value = include_str!("../Cargo.toml").parse().unwrap();
+    let features = manifest["features"].as_table().unwrap();
+    for feature in ["gpu", "snd", "input", "virgl_resource_map2"] {
+        assert!(!features.contains_key(feature), "retired feature {feature}");
+    }
+    let dependencies = manifest["dependencies"].as_table().unwrap();
+    for dependency in [
+        "krun_display",
+        "krun_input",
+        "pw",
+        "rutabaga_gfx",
+        "thiserror",
+        "zerocopy",
+    ] {
+        assert!(
+            !dependencies.contains_key(dependency),
+            "retired device dependency {dependency}"
+        );
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for device in ["gpu", "snd", "input"] {
+        assert!(
+            !root
+                .join("src/devices/virtio")
+                .join(device)
+                .join("mod.rs")
+                .exists(),
+            "retired device implementation {device}"
+        );
+    }
+    // These are product/validation profiles, not leftovers of the retired devices.
+    for feature in ["net", "init-blob", "test_utils"] {
+        assert!(features.contains_key(feature), "required feature {feature}");
+    }
+    assert!(root.join("src/windows/vmm/windows/vstate.rs").is_file());
+}
+
+#[test]
+fn byte_order_uses_one_private_source_for_both_backends() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let assembly = std::fs::read_to_string(root.join("src/windows/utils/mod.rs")).unwrap();
+    assert!(assembly.contains("#[path = \"../../utils/byte_order.rs\"]\npub mod byte_order;"));
+    assert!(root.join("src/utils/byte_order.rs").is_file());
+    assert!(!root.join("src/windows/utils/byte_order.rs").exists());
+}
+
 struct CallGuard;
 impl<'ast> Visit<'ast> for CallGuard {
     fn visit_path(&mut self, path: &'ast syn::Path) {

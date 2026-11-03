@@ -331,12 +331,7 @@ impl Vmm {
         if self.ram_unmapped {
             return Err("RAM is unmapped".into());
         }
-        if cfg!(any(
-            feature = "gpu",
-            feature = "snd",
-            feature = "input",
-            feature = "tee"
-        )) {
+        if cfg!(feature = "tee") {
             return Err("RAM sampling unavailable with unguarded devices".into());
         }
         Ok(())
@@ -478,14 +473,9 @@ impl Vmm {
                 "whole-VM offload is incompatible with experimental RAM preparation".into(),
             ));
         }
-        if cfg!(any(
-            feature = "gpu",
-            feature = "snd",
-            feature = "input",
-            feature = "tee"
-        )) {
+        if cfg!(feature = "tee") {
             return Err(Error::VcpuControl(
-                "offload is unavailable with unguarded GPU/audio/input/TEE devices".into(),
+                "offload is unavailable with unguarded TEE devices".into(),
             ));
         }
         if !self.device_memory_gate.is_idle_closed() {

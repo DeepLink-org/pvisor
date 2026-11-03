@@ -979,10 +979,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     }
     if cfg!(any(
         feature = "tee",
-        feature = "aws-nitro",
-        feature = "gpu",
-        feature = "snd",
-        feature = "input"
+        feature = "aws-nitro"
     )) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,

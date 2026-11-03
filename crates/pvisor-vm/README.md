@@ -2,12 +2,34 @@
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
+## 可选设备清理范围
+
+当前产品调用只选择默认 `init-blob` 和可选 `net`。未接入产品的上游
+`gpu`、`snd`、`input` 实现、依赖和分派已删除，GPU 子开关
+`virgl_resource_map2` 同时删除；选择这些旧 feature 会由 Cargo 明确拒绝。
+公开 API 未增加替代 no-op，原有不支持操作仍返回 `Unsupported`。
+KVM/HVF/WHP、Windows 树、virtio-fs/console/vsock、网络、RAM/快照和实验开关保留。
+
+`blk`、`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 仍留在内部，尚无产品调用，
+不是已验收的产品 profile。本轮不跨越其架构/启动依赖做机械删改。
+来源证据、暂缓原因和验证边界见 [清理审计](provenance/CLEANUP.md)。
+诊断实验曾移除 `runtime_modules.rs` 的原有 `dead_code` 抑制，macOS/net 检查
+删除前报告 160 条、删除后 165 条 VM warnings；原有属性随后恢复，未新增或扩大
+抑制。仍有平台/接口死代码待逐模块审核，不能据此声称零死代码或死代码门禁完成。
+
 ## Windows x86_64 / WHP
 
 Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在本 crate
 的私有 `src/windows/` 实现中，不依赖另一个公开 libkrun SDK。来源、固定提交、
 后续时钟修复与本地适配见 [Windows backport 记录](provenance/WINDOWS.md)。
 Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
+
+纯字节序转换由两套私有组装层共用 `src/utils/byte_order.rs`，Windows
+通过 `#[path]` 复用，调用路径仍为内部 `crate::utils::byte_order`。
+其有符号转换保留 x86_64/test 条件，大端写入只供单测使用；Windows
+支持范围仍为 x86_64。virtio 的 bindings、FUSE、descriptor 和 queue
+仍各自保留：它们含有宿主 ABI、协议扩展、内存租约或快照语义差异，
+不作为纯重复文件合并。
 
 支持 `x86_64-pc-windows-msvc`、默认 `init-blob` 或 `--no-default-features`。
 需要启用固件中的硬件虚拟化以及 Windows **Windows Hypervisor Platform**
@@ -288,7 +310,7 @@ THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言�
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
-pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
+pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
 
 Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出，并在锁与屏障外调用 store stats 处理延后的引用释放。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足一个块的尾部之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
 

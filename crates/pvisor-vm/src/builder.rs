@@ -87,9 +87,6 @@ impl<B: Backend> Builder<B> {
         if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
             || cfg!(any(
                 feature = "tee",
-                feature = "gpu",
-                feature = "snd",
-                feature = "input",
                 feature = "efi",
                 feature = "aws-nitro"
             ))
@@ -149,10 +146,7 @@ impl<B: Backend> Builder<B> {
             || cfg!(any(
                 feature = "tee",
                 feature = "aws-nitro",
-                feature = "efi",
-                feature = "gpu",
-                feature = "snd",
-                feature = "input"
+                feature = "efi"
             ))
             || self.resources.snapshot_profile
         {

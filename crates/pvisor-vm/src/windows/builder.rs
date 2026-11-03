@@ -34,10 +34,7 @@ impl Builder {
         if cfg!(any(
             feature = "tee",
             feature = "aws-nitro",
-            feature = "efi",
-            feature = "gpu",
-            feature = "snd",
-            feature = "input"
+            feature = "efi"
         )) {
             return Err(unsupported(
                 "this device profile is unsupported on Windows/WHP",

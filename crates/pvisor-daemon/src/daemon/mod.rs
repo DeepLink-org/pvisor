@@ -2,8 +2,6 @@
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
 pub mod api;
 mod claims;
-#[cfg(feature = "cluster")]
-pub mod cluster;
 mod e2b;
 mod models;
 mod store;

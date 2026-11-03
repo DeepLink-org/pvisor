@@ -24,10 +24,6 @@ pub mod device;
 pub mod file_traits;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub mod fs;
-#[cfg(feature = "gpu")]
-pub mod gpu;
-#[cfg(feature = "input")]
-pub mod input;
 #[cfg(not(target_os = "windows"))]
 pub mod linux_errno;
 #[cfg(target_os = "windows")]
@@ -89,8 +85,6 @@ pub mod net;
 mod queue;
 #[cfg(all(not(target_os = "windows"), not(feature = "tee")))]
 pub mod rng;
-#[cfg(feature = "snd")]
-pub mod snd;
 #[cfg(not(target_os = "windows"))]
 pub mod vsock;
 
@@ -103,8 +97,6 @@ pub use self::cpu::*;
 pub use self::device::*;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub use self::fs::*;
-#[cfg(feature = "gpu")]
-pub use self::gpu::*;
 #[cfg(not(feature = "tee"))]
 pub use self::mem::*;
 pub use self::mmio::*;
@@ -114,8 +106,6 @@ pub use self::net::Net;
 pub use self::queue::{Descriptor, DescriptorChain, Queue};
 #[cfg(all(not(target_os = "windows"), not(feature = "tee")))]
 pub use self::rng::*;
-#[cfg(feature = "snd")]
-pub use self::snd::Snd;
 #[cfg(not(target_os = "windows"))]
 pub use self::vsock::*;
 

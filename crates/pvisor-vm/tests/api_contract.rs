@@ -50,14 +50,7 @@ fn shared_kernel_baseline_is_explicit_atomic_and_excludes_snapshots() {
     let directory = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();
     if cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        && !cfg!(any(
-            feature = "tee",
-            feature = "aws-nitro",
-            feature = "efi",
-            feature = "gpu",
-            feature = "snd",
-            feature = "input"
-        ))
+        && !cfg!(any(feature = "tee", feature = "aws-nitro", feature = "efi"))
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -293,14 +286,7 @@ fn guest_idle_handoff_accepts_at_most_two_cpus_and_excludes_snapshot_profile() {
     if cfg!(all(
         target_os = "linux",
         target_arch = "x86_64",
-        not(any(
-            feature = "tee",
-            feature = "gpu",
-            feature = "snd",
-            feature = "input",
-            feature = "efi",
-            feature = "aws-nitro"
-        ))
+        not(any(feature = "tee", feature = "efi", feature = "aws-nitro"))
     )) {
         VmBuilder::new(2, 128)
             .unwrap()

@@ -6,7 +6,6 @@ use vm_memory::GuestAddress;
 
 #[derive(Debug)]
 pub enum Error {
-    DuplicatedGpuRegion,
     OutOfSpace,
 }
 
@@ -20,7 +19,6 @@ pub struct ShmManager {
     next_guest_addr: u64,
     page_size: usize,
     fs_regions: BTreeMap<usize, ShmRegion>,
-    gpu_region: Option<ShmRegion>,
 }
 
 impl ShmManager {
@@ -29,7 +27,6 @@ impl ShmManager {
             next_guest_addr: info.shm_start_addr,
             page_size: info.page_size,
             fs_regions: BTreeMap::new(),
-            gpu_region: None,
         }
     }
 
@@ -45,21 +42,12 @@ impl ShmManager {
             regions.push((region.1.guest_addr, region.1.size));
         }
 
-        if let Some(region) = &self.gpu_region {
-            regions.push((region.guest_addr, region.size));
-        }
-
         regions
     }
 
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn fs_region(&self, index: usize) -> Option<&ShmRegion> {
         self.fs_regions.get(&index)
-    }
-
-    #[cfg(feature = "gpu")]
-    pub fn gpu_region(&self) -> Option<&ShmRegion> {
-        self.gpu_region.as_ref()
     }
 
     fn create_region(&mut self, size: usize) -> Result<ShmRegion, Error> {
@@ -75,15 +63,6 @@ impl ShmManager {
             Ok(region)
         } else {
             Err(Error::OutOfSpace)
-        }
-    }
-
-    pub fn create_gpu_region(&mut self, size: usize) -> Result<(), Error> {
-        if self.gpu_region.is_some() {
-            Err(Error::DuplicatedGpuRegion)
-        } else {
-            self.gpu_region = Some(self.create_region(size)?);
-            Ok(())
         }
     }
 

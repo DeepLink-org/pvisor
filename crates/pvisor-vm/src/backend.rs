@@ -134,14 +134,10 @@ impl Backend for Hvf {
     type Arch = NativeArchitecture;
     const NAME: &'static str = "hvf";
     fn start_worker(
-        resources: &VmResources,
-        vm: Arc<Mutex<vmm::Vmm>>,
-        receiver: Receiver<crate::utils::worker_message::WorkerMessage>,
+        _resources: &VmResources,
+        _vm: Arc<Mutex<vmm::Vmm>>,
+        _receiver: Receiver<crate::utils::worker_message::WorkerMessage>,
     ) -> std::io::Result<()> {
-        if resources.gpu_virgl_flags.is_some() {
-            vmm::worker::start_worker_thread(vm, receiver)
-                .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
-        }
         Ok(())
     }
 }

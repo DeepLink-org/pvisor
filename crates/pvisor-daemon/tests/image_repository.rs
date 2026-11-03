@@ -47,7 +47,8 @@ impl Fixture {
                 tags: vec![],
                 build_args: BTreeMap::new(),
                 target: None,
-                platform: Some("linux/amd64".into()),
+                // Repository byte/metadata tests do not require CPU emulation.
+                platform: None,
                 pull: false,
                 no_cache: false,
                 cpus: 1,
@@ -103,6 +104,9 @@ impl Fixture {
             ("AWS_VIRTUAL_HOSTED_STYLE_REQUEST", "false"),
             ("AWS_EC2_METADATA_DISABLED", "true"),
         ]);
+        // dirs::cache_dir uses HOME/Library/Caches on macOS, not XDG_CACHE_HOME.
+        // Keep both platform paths private so prior verified bytes cannot bypass faults.
+        command.env("HOME", images.join("home"));
         command.env("XDG_CACHE_HOME", images.join("cache"));
         command.env("NO_PROXY", "127.0.0.1");
         command
@@ -136,6 +140,7 @@ impl Fixture {
         let mut command = self.environment(server, images, std::env::current_exe().unwrap());
         command.args(["--exact", "repository_reader_child", "--ignored"]);
         command.env("PVISOR_TEST_IMAGE_RECORD", images.join("tiny.json"));
+        command.env("HOME", images.join(cache_tag).join("home"));
         command.env("XDG_CACHE_HOME", images.join(cache_tag));
         command
     }

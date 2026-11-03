@@ -84,10 +84,7 @@ fn capabilities() -> Capabilities {
             || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
                 && !cfg!(any(
                     feature = "tee",
-                    feature = "aws-nitro",
-                    feature = "gpu",
-                    feature = "snd",
-                    feature = "input"
+                    feature = "aws-nitro"
                 ))),
     }
 }
@@ -168,10 +165,7 @@ mod cold_ram_tests {
                 target_arch = "x86_64",
                 not(any(
                     feature = "tee",
-                    feature = "aws-nitro",
-                    feature = "gpu",
-                    feature = "snd",
-                    feature = "input"
+                    feature = "aws-nitro"
                 ))
             )) {
                 assert_eq!(error.kind(), io::ErrorKind::Other);
@@ -190,10 +184,7 @@ mod cold_ram_tests {
                 target_arch = "x86_64",
                 not(any(
                     feature = "tee",
-                    feature = "aws-nitro",
-                    feature = "gpu",
-                    feature = "snd",
-                    feature = "input"
+                    feature = "aws-nitro"
                 ))
             ))
         );

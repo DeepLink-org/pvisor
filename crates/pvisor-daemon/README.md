@@ -3,10 +3,9 @@
 A **node-local service manager** for sandbox lifecycle, optional image caching
 and a shared memory pool. The `pvisor-daemon` executable owns component startup
 and shutdown, sandbox admission, persistent intentions, native lifecycle,
-expiration and API access. The optional `cluster` feature adds experimental
-Pulsing-based peer discovery, pull/work stealing and owner routing for the
-OpenSandbox and E2B profiles. Workflow scheduling, migration and cross-node recovery are
-not provided.
+expiration and API access for the single-node OpenSandbox and E2B profiles.
+Peer discovery, work stealing, owner routing, workflow scheduling, migration
+and cross-node recovery are not provided.
 
 ## Same-user discovery and on-demand startup
 
@@ -324,7 +323,7 @@ WAN performance or real VM startup; validate those in the target deployment.
 
 ## Public IPFS image distribution (experimental)
 
-IPFS is an optional read-only V2 image source, not the trusted-peer cluster below.
+IPFS is an optional read-only V2 image source, not a sandbox scheduler.
 Install Kubo separately and put `ipfs` on `PATH`. Normal use only needs an image
 name and an operation:
 
@@ -408,329 +407,26 @@ two-node Kubo runner (validated with 0.34.1) that checks actual Bitswap transfer
 and lazy reads on an isolated loopback network. Neither that runner nor mock
 gateway tests establish public-network performance.
 
-## Peer cluster (experimental, opt-in)
+## Retired peer cluster
 
-See also [public IPFS image distribution](#public-ipfs-image-distribution-experimental)
-for untrusted public content transport, separate from trusted daemon clustering.
+The experimental `cluster` feature, peer flags, discovery, Home queue, owner
+routing and `/v1/cluster/*` extensions have been removed. Both supported SDK
+profiles now operate only on the receiving daemon's local sandboxes. IPFS image
+distribution is independent and remains available.
 
-Build with `cargo build --locked -p pvisor-daemon --features cluster`. Default
-builds retain the single-node service and do not expose cluster flags. The Rust
-`pulsing-actor` dependency is pinned to commit
-`857bfa8d550a81bcb85e94eb0e9d2eccc0abb3fc`; upgrades require transport, discovery
-and retry-semantic review. Clustering is available through explicit `serve`, not
-same-user `start`/`auto` discovery. Protocol selection and deployment mode are
-independent: every sandbox daemon serves both partial OpenSandbox and E2B
-profiles, with or without clustering. Enabling clustering does not expand either
-protocol's supported operations.
+Before upgrading an experimental cluster deployment, stop new submissions and
+reconcile queued/assigned work through the old version. Confirm cleanup on each
+executor; preserve its Home ledger, registry and ownership state together.
+There is no automatic queue migration, remote cancellation or owner-ID routing
+fallback. Do not resubmit unresolved work or erase state to recover capacity.
 
-Every peer provides an HTTP entry point and a Pulsing service actor. There is no
-leader. Scheduling uses **pull/work stealing**, not per-request push placement or
-an authoritative cluster-wide utilization total. The HTTP entry node becomes the
-request's durable **Home**; an **Executor** claims work only while it has local
-resource capacity and the requested image. Gossip supplies peers, not execution
-authority. Static discovery metadata and Identity RPCs establish routing candidates;
-Status RPCs are asynchronous diagnostic samples, never scheduling inputs. Failed, paused, reserved
-and uncertain executions remain charged; there is no instantaneous host-load
-measurement or overcommit.
-
-Each daemon has two durable queue views:
-
-- **Owned/load queue:** Home tasks awaiting assignment, plus their assignment and
-  immutable completion records, stored in `cluster-queue.json`.
-- **Claimed/steal queue:** resource-bearing executor claims in the existing
-  registry. Both locally claimed and remotely stolen tasks use this same path.
-
-Workers alternate local-first and remote-first eligible rounds, with fallback
-within each round. Remote rounds sample at most two peers; donor queues scan FIFO
-for an image/resource-compatible task. Idle attempts use jittered backoff up to
-roughly two seconds, and discovery is refreshed periodically. This avoids always
-favoring a sustained local backlog without claiming strict global FIFO fairness.
-VM startup runs separately from actor message handling. Running sandboxes and
-commands for existing sandboxes are never stolen.
-
-Use the same `OPEN_SANDBOX_API_KEY` and a **separate high-entropy**
-`PVISOR_CLUSTER_SECRET` on all peers. Both are environment-only, never command
-arguments; the cluster secret must contain at least 32 bytes. A secret manager
-should supply generated values rather than human passwords. Merely setting the
-environment does not enable cluster mode. Different lifecycle keys and duplicate
-stable owners in discovery/Identity records fail closed.
-
-Example: two peers on one Linux/KVM host, using separate existing delegated
-cgroup roots and private state directories. Prepare the `ubuntu` manifest first
-as described below; supply the two secrets in each process's environment:
-
-```sh
-# Peer A: first member. Run in its own terminal/service unit.
-target/debug/pvisor-daemon serve --sandbox \
-  --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd-a \
-  --state /srv/pva --listen 127.0.0.1:8080 \
-  --public-endpoint 127.0.0.1:8080 \
-  --cluster-listen 127.0.0.1:9000
-
-# Peer B: join through A. A is a bootstrap seed, not a leader.
-target/debug/pvisor-daemon serve --sandbox \
-  --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd-b \
-  --state /srv/pvb --listen 127.0.0.1:8081 \
-  --public-endpoint 127.0.0.1:8081 \
-  --cluster-listen 127.0.0.1:9001 --cluster-seed 127.0.0.1:9000
-```
-
-Clients can use either HTTP entry point with the pinned OpenSandbox or E2B SDK. Repeat
-`--cluster-seed` for multiple seeds. At startup, the CLI snapshots supported image
-keys from direct regular `<key>.json` files in the canonical `--images-dir`.
-Keys contain 1–128 ASCII alphanumeric, `-`, `_` or `.` bytes, with no leading `.`.
-Other filenames, directories (including nested manifests), and all symlinks
-(including links escaping the image directory) are ignored. Directory read errors
-fail startup. Discovery checks filenames and file types, not manifest contents;
-the runtime still validates manifests and their resources when used.
-
-An empty inventory is allowed: the node can serve as Home and route requests,
-but matches no execution tasks locally. Empty never means all images. The
-inventory is a startup snapshot, not a watcher; restart after preparing or removing
-images to update it. Keep manifests and backing resources available while in use.
-The library's `ClusterConfig.images` remains an explicit caller-supplied snapshot
-with the same empty-set semantics; it is not a CLI option. Identical keys should
-identify compatible, digest-pinned images across nodes. Startup performs no image
-download or preparation; this is not distributed image provisioning.
-Gossip convergence is eventual; starting successfully does not prove that a seed
-is reachable or that every intended node has joined. Until convergence, placement
-and lists cover only the discovered membership.
-
-### Ownership, routing and failure semantics
-
-- External sandbox IDs are `<owner-hash>.<local-sandbox-id>`. The owner hash is
-  derived from the persisted registry owner, not Pulsing's transient node ID.
-  Preserve the state directory across restarts; never clone it onto a second
-  live peer. Both protocols return owner-qualified IDs; existing unqualified IDs
-  remain node-local. E2B uses these IDs in lifecycle paths and `E2b-Sandbox-Id`
-  headers with the explicit `/e2b` sandbox URL override, not wildcard DNS.
-- Lifecycle requests arriving at another peer travel through a TLS-protected
-  Pulsing RPC to the owner. Owner loss returns 503, not a fabricated 404 or a new
-  VM on another node. A failed unrelated peer does not veto healthy candidates
-  or healthy-owner routing.
-- Create first persists a Home task, then waits up to 120 seconds for its result.
-  Successful responses retain the existing OpenSandbox 202 or E2B 201 shape and
-  executor-qualified sandbox ID. Accepted responses include `X-PVISOR-TASK-ID`, containing
-  `<home-hash>.<task-uuid>`. A wait timeout returns 503 `CLUSTER_TASK_PENDING`;
-  it is not cancellation or evidence that no VM exists. Client disconnects do not
-  cancel accepted work, and a repeated client POST is still a new task.
-- Query `GET /v1/cluster/tasks/<home-hash>.<task-uuid>` at any peer with the lifecycle
-  API key to recover phase/result. Assigned tasks expose `executor` and `sandboxId`
-  for inspection/confirmed cleanup even when creation is uncertain. This extension
-  does not expose request bodies, environment or credentials, and supports GET
-  only. If a client disconnects before receiving its task ID, automatic recovery
-  by client idempotency key is not provided.
-- The protocol persists `Queued -> Offered -> Assigned -> Completed`. An offer
-  lasts ten seconds and grants **no permission to launch**. The executor durably
-  reserves local resources before accepting; Home commits Assigned before replying
-  with launch authorization. Repeated accepts/reports refer to the same complete
-  grant identity, generation and request fingerprint.
-- Expired unassigned offers can return to the queue. Queued/Offered tasks have a
-  120-second queue deadline and fail without launch if it expires. Assigned tasks
-  never expire back into the queue or move to another executor because of an RPC
-  timeout. Unknown acceptance retains reservations until Home explicitly rejects
-  the old grant. Internal protocol retries are idempotent; ordinary lifecycle
-  mutations are not automatically replayed.
-- Executor reservations share the same atomic budget as ordinary/E2B creates.
-  There is no release/reacquire gap or double charge when launching. A durable
-  Launching fence precedes runtime.create; retries and restarts never reissue
-  create after that fence. A crash between the fence and runtime startup may
-  require reconciliation rather than automatic execution. Reserved claims are
-  hidden from the sandbox API and cannot be deleted by ordinary TTL/startup
-  cleanup. Sandbox TTL begins at authorized launch, not while waiting in a queue.
-- Terminal create results are retained independently of mutable VM lifecycle
-  observations. Pause, renewal, TTL cleanup and deletion cannot rewrite an already
-  confirmed create result. Home or executor restart reconciles the same assignment;
-  Home unavailability prevents new grants, not execution already authorized.
-- Global list applies filters on each peer and pagination after aggregation.
-  Failure of any discovered live peer returns 503 instead of a partial success.
-  Inventory is paged in groups of 16, bounded to 65,536 items and a 32 MiB
-  accounting budget. It is not a transactional snapshot; concurrent mutation can
-  invalidate pagination. Partitioned or undiscovered peers cannot be included.
-- Endpoint responses retain the owner's direct authenticated URL and local ID.
-  **Each `--public-endpoint` must route uniquely to that owner**, not to a shared
-  random load balancer. Clients must be able to reach these endpoints and retain
-  returned authentication headers. Global-ID proxy URLs also route to the owner,
-  preserving uploads/downloads/SSE as streams rather than actor-buffered bodies.
-- Actor work, RPCs and HTTP ingress have concurrency limits. Actor handlers return
-  deferred response streams so slow creation does not block status reporting.
-  Dropping a reply does not cancel an accepted lifecycle operation. Shutdown
-  stops discovery/transport, not owned VMs; TTL remains the local best-effort
-  contract. No drain protocol, migration, replication, consensus inventory or
-  automatic recovery from owner-host loss is provided.
-
-### E2B routing and template resolution
-
-Both `POST /sandboxes` and `POST /v2/sandboxes` translate the validated E2B
-request into the **same Home ledger, pull loop, executor claim and resource
-budget** as OpenSandbox. Home resolves the prepared template profile locally or
-from discovered peers before enqueueing; an empty-inventory Home can accept a
-request for a template available elsewhere. Executors recheck the template's
-CPU, memory and envd version before reserving resources. Identical keys must
-refer to compatible pinned contents; matching profiles are not content-digest
-attestation. Missing templates return E2B 404 `TEMPLATE_NOT_FOUND`; unreachable
-or undiscovered templates cannot be resolved. Mismatched executor profiles do
-not launch and may leave a task waiting until its queue deadline.
-
-All supported E2B lifecycle routes listed below route by owner: get, delete,
-timeout replacement, pause, connect/resume (including `/v2/.../connect`). Lists
-aggregate only E2B records, retain filters/order and apply `limit`/`nextToken`
-globally. They have the same discovered-membership, inventory-budget and
-nontransactional limitations as OpenSandbox lists. Unsupported features still
-return the local adapter's errors; no snapshot, template-build or arbitrary-port
-support is implied.
-
-E2B lifecycle uses `X-API-Key`, not the OpenSandbox header, and retains numeric
-`code`, `message`, `error_code` errors. Create/get/connect return the executor's
-sandbox-scoped `envdAccessToken`. Credentials are not stored in Home completion
-snapshots: after a successful queued launch, create fetches the executor's current
-E2B record. If that fetch fails, the response retains `X-PVISOR-TASK-ID`; inspect
-the task and GET the assigned sandbox rather than resubmitting. The task-status
-extension remains an OpenSandbox-shaped endpoint authenticated with
-`OPEN-SANDBOX-API-KEY` (the same configured secret).
-
-Set `E2B_API_URL=http://ENTRY:PORT` and
-`E2B_SANDBOX_URL=http://ENTRY:PORT/e2b`; the two entries can be different peers.
-The pinned SDK accepts owner-qualified IDs with these explicit URL overrides.
-Global-ID `/e2b/*` requests route to the executor while streaming uploads,
-downloads and Connect command output. They forward the original scoped
-`X-Access-Token` and guest Basic authorization, never inject a lifecycle key,
-and retain the executor's private-route and port checks. Peer HTTP transport
-restrictions below apply. `get_host()`, signed file URLs and wildcard-domain
-routing are **not** supported by this profile.
-
-**Cold-download gap:** `prepare-image --name e2b-base --image ubuntu:24.04 --e2b`
-provides an explicit operator-selected OCI base, downloads/builds it as needed,
-and publishes a local prepared manifest. Neither the manifest-key inventory nor
-an E2B request supplies a registry source mapping for runtime provisioning.
-Create does not invoke preparation or recover missing backing pool objects by
-pulling. A wholly empty cluster cannot execute by downloading `e2b-base`; prepare
-that key on an executor and restart to refresh its inventory. No mapping from
-`e2b-base` to any public image is inferred. Automatic cold provisioning would
-need an explicit trusted source/build recipe, profile and artifact verification,
-concurrency/failure handling and inventory refresh; it is not implemented here.
-
-### Approximate cluster observations
-
-Scheduling and observability are separate paths. Background discovery caches
-actor-pinned candidates from Pulsing's `pvisor.discovery.v1` metadata; selected
-peers are validated through Identity RPCs. Descriptor/address/incarnation changes
-invalidate cached identities and samples. Owner routing uses the owner index,
-not random utilization probes. Local-first scheduling does not await discovery;
-remote pulls sample at most two cached candidates and admission uses exact local
-resource reservations. Remote recovery runs in bounded background work so an
-unavailable Home does not block local queue progress.
-
-Authenticated `GET /v1/cluster/observations` returns a **cache-only**, versioned
-JSON view from the receiving node. It does not synchronously query peers, disk,
-or a monitoring backend. Use the same lifecycle API key as other control routes:
-
-```http
-GET /v1/cluster/observations HTTP/1.1
-Host: 127.0.0.1:8080
-OPEN-SANDBOX-API-KEY: <lifecycle-api-key>
-```
-
-The response includes:
-
-- `version: 1`, `timestamp`, `source: "local"` and the observer's `owner`.
-- `node` and `peers`: `freshness` (`fresh`, `stale`, `missing`),
-  `sample_age_seconds`, and `lastAttempt` (age and a bounded outcome label).
-  Missing usage is null, not zero. A failed attempt preserves the previous
-  successful sample and its original timestamp.
-- Usage `count`, `cpu` (millicores), `memory` (bytes), and corresponding `max_*`
-  limits. These are admission-accounting values, including reserved and uncertain
-  claims, **not measured process CPU or resident memory**.
-- Local and sampled peer `queue` summaries: `Queued`, `Offered`, `Assigned`,
-  `Completed`, `oldest_queued_seconds`, `retained_len`, and `storage_failed`.
-- `totals`: sums of fresh samples only, or null when no fresh sample contributes.
-  `contributors` reports local contribution and fresh/stale/missing peer counts.
-  A lower total can mean lost coverage, not released capacity.
-- `peer_coverage`: discovered/validated counts, discovery age, freshness limits
-  and identity-conflict status. `complete_for_discovered_members` only describes
-  the currently discovered set. `membership_complete` and
-  `peer_coverage.complete` remain false; `unknown_membership` remains true.
-  Gossip cannot prove that all intended nodes have been discovered.
-
-Discovery uses a one-second inter-round delay; sampling uses two seconds.
-Discovery and usage samples become stale after ten seconds; Identity validation
-has a separate thirty-second freshness bound. Slow rounds can extend actual
-sampling intervals. Background sampling uses concurrency eight and three-second
-RPC timeouts, with separate outbound observation permits and separate server
-Status/Identity slots. Telemetry failure cannot authorize a launch, release a
-claim, or requeue an Assigned task. Public observations omit request bodies,
-environment, credentials, key digests and raw peer errors.
-
-This endpoint is a JSON pull source for an external observability collector,
-not a Prometheus exporter, an OpenTelemetry pipeline, or a strongly consistent
-cluster inventory. Do not sum the overlapping peer totals from multiple
-observers. The ordinary sandbox list retains its stricter contract: failure of
-a member in its captured discovered set returns an error, not partial success.
-
-### Cluster trust and transport
-
-Pulsing uses passphrase-based TLS for gossip and lifecycle RPC. This establishes
-shared-secret membership, **not independently authenticated node ownership**.
-Every peer is trusted with lifecycle authority. Keep actor listeners on a
-restricted network; the pinned upstream transport buffers some messages before
-application-level size validation. This is not a hostile-peer security boundary.
-
-The current peer HTTP proxy uses plaintext HTTP. By default it permits only
-literal loopback destinations. Cross-host forwarding requires explicit
-`--allow-insecure-peer-http` and a protected network (for example an encrypted
-host-to-host tunnel); it transmits client credentials. DNS names also require
-this opt-in. Pulsing TLS does not encrypt that HTTP data plane. Non-loopback
-API listening separately requires `--allow-insecure-listen`; do not expose it
-without suitable transport protection. Native egress/host-network and disk
-quota limitations below still apply.
-
-### Queue storage and operational limits
-
-Keep `cluster-queue.json`, `cluster-queue.lock` (also the activation marker), and
-the daemon registry together. Missing activated ledgers, owner mismatch and
-corruption fail closed. Queue updates publish via private-file fsync, atomic
-rename and directory fsync; an uncertain commit stops queue mutation until
-restart/reconciliation. Do not delete queue state to recover capacity or copy a
-Home identity onto another live node. The Home ledger is local, not replicated;
-its loss is not repaired by gossip.
-
-Retention is intentionally bounded and **has no automatic fence garbage
-collection** in this version:
-
-- Home retains at most 4,096 tasks, including completed tasks, with a 32 MiB
-  physical/logical ledger budget. Admission reserves terminal-result space, so
-  the live backlog ceiling is lower: at most 29 small live requests in an empty
-  ledger, fewer for large requests or retained results. Exhaustion returns 429
-  `CLUSTER_QUEUE_FULL` before accepting a new task.
-- Executor claims retain released replay-fence tombstones under the existing
-  16 MiB registry budget. Each claim reserves lifecycle/result storage headroom
-  when admitted; later launch and cleanup cannot lose that headroom to another
-  admission. Released claims consume no CPU/memory/count capacity, but their
-  persistent storage charge remains. Exhaustion refuses new records rather than
-  evicting fences. No online compaction/reset operation is provided.
-- Completion drops Home request payloads and sanitizes released executor launch
-  inputs. Immutable successful create snapshots still contain public metadata,
-  argv and image fields; caller secrets placed there remain in private retained
-  records. Environment and endpoint credentials are not in the result snapshot.
-- Claim state is understood even by a default-feature build, which preserves
-  reservations/tombstones but does not run the stealing worker. Upgrading from
-  earlier experimental claim formats lacking storage charges fails closed;
-  there is no inferred-charge migration. Ordinary pre-cluster records are unchanged.
-
-These caps and whole-ledger Home commits make this a bounded experimental queue,
-not an indefinitely operating production task service. Durable cancellation,
-retention compaction, replicated Home recovery and client idempotency keys require
-separate protocols; never bypass their absence by discarding unresolved records.
-
-Cluster tests use real loopback Pulsing TLS systems and HTTP listeners with fake
-VM runtimes. Run `mise run test -- pvisor-daemon -- --features cluster` for
-stealing/fairness, stale offers, lost grants, Home/executor restart, immutable
-results, capacity transfer, retention boundaries, disconnected waits, routing,
-peer failures, authentication and streaming regressions. E2B coverage includes
-three-node create/owner routing, all supported lifecycle aliases, global list,
-scoped-token streaming uploads/downloads, shared OpenSandbox accounting, Home
-ledger reopen and executor reservation/released-fence restart. These are not real multi-host/KVM SDK, partition-soak or production
-capacity acceptance tests.
+The registry still reads and validates existing executor claims. Reserved claims
+remain hidden and charged, uncertain launches are not replayed, and confirmed
+cleanup retains Released tombstones and their storage charge. The single-node
+daemon does not grant or resume queued work. Claims lacking required storage
+charges still fail closed; no inferred migration or fence garbage collection is
+provided. Immutable successful create results can retain public metadata, argv
+and image fields, so keep these records private.
 
 ## Protocol baseline
 
@@ -932,8 +628,6 @@ and async, using the native guest adapter by default for new `--e2b` templates, 
 **envd 0.10.2** for explicitly prepared `--envd` templates. Source commits and
 protocol blobs are pinned in [`e2b.lock.json`](e2b.lock.json). This is a partial
 protocol profile, tested locally with unmodified SDKs, not full E2B service conformance.
-The optional cluster mode routes this same subset; cluster tests use loopback
-peers and fake runtimes, not real multi-host/KVM SDK acceptance.
 OpenSandbox and E2B templates can coexist in one daemon and share the compressed
 image pool, admission limits, persistent registry and confirmed native cleanup.
 Native templates share the guest engine; their protocol/resource profile remains
@@ -1480,9 +1174,8 @@ or production density.
 ## Package and evidence scope
 
 The Cargo package/directory/library are `pvisor-daemon` / `pvisor_daemon`.
-The library exports `daemon` and `runtime` for sandbox management, with optional
-`daemon::cluster` for the experimental shared Home/executor queue. Workflow
-scheduling and recovery beyond that bounded queue belong to external orchestrators.
+The library exports `daemon` and `runtime` for single-node sandbox management.
+Cross-node scheduling and recovery belong to external orchestrators.
 
 Cluster/controller measurements are not evidence for this node-local daemon's
 performance, admission behavior or resource density.
@@ -1629,8 +1322,7 @@ density require their own validation.
 | `daemon/mod.rs` | Admission/commit serialization, lifecycle, restart reconciliation, TTL and endpoint access |
 | `daemon/api.rs` | OpenSandbox HTTP adapter, filters, shared streaming data-plane proxy |
 | `daemon/e2b.rs` | Pinned E2B lifecycle schemas, shared request validation/translation, SDK routes, TTL/connect and envd authentication |
-| `daemon/cluster_e2b.rs` | Optional E2B owner routing, peer template resolution, aggregate list and shared-queue admission |
-| `daemon/cluster_queue.rs`, `daemon/claims.rs` | Protocol-independent durable Home work and executor reservations/launch fences |
+| `daemon/claims.rs` | Retained executor claim validation, replay fences and confirmed-cleanup tombstones |
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |

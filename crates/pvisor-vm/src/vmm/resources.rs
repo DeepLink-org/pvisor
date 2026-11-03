@@ -13,8 +13,6 @@ use std::sync::Arc;
 #[cfg(feature = "tee")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "gpu")]
-use crate::devices::virtio::display::DisplayInfo;
 #[cfg(feature = "blk")]
 use crate::vmm::vmm_config::block::{BlockBuilder, BlockConfigError, BlockDeviceConfig};
 use crate::vmm::vmm_config::external_kernel::ExternalKernel;
@@ -32,8 +30,6 @@ use crate::vmm::vmm_config::vsock::*;
 use crate::vmm::vstate::VcpuConfig;
 #[cfg(feature = "tee")]
 use kbs_types::Tee;
-#[cfg(feature = "gpu")]
-use krun_display::DisplayBackend;
 
 type Result<E> = std::result::Result<(), E>;
 
@@ -167,21 +163,6 @@ pub struct VmResources {
     /// TEE configuration
     #[cfg(feature = "tee")]
     pub tee_config: TeeConfig,
-    /// Flags for the virtio-gpu device.
-    pub gpu_virgl_flags: Option<u32>,
-    pub gpu_shm_size: Option<usize>,
-    #[cfg(feature = "gpu")]
-    pub display_backend: Option<DisplayBackend<'static>>,
-    #[cfg(feature = "gpu")]
-    pub displays: Vec<DisplayInfo>,
-    #[cfg(feature = "input")]
-    pub input_backends: Vec<(
-        krun_input::InputConfigBackend<'static>,
-        krun_input::InputEventProviderBackend<'static>,
-    )>,
-    #[cfg(feature = "snd")]
-    /// Enable the virtio-snd device.
-    pub snd_device: bool,
     /// File to send console output.
     pub console_output: Option<PathBuf>,
     /// SMBIOS OEM Strings
@@ -349,19 +330,6 @@ impl VmResources {
         self.vsock.insert(config)
     }
 
-    pub fn set_gpu_virgl_flags(&mut self, virgl_flags: u32) {
-        self.gpu_virgl_flags = Some(virgl_flags);
-    }
-
-    pub fn set_gpu_shm_size(&mut self, shm_size: usize) {
-        self.gpu_shm_size = Some(shm_size);
-    }
-
-    #[cfg(feature = "snd")]
-    pub fn set_snd_device(&mut self, enabled: bool) {
-        self.snd_device = enabled;
-    }
-
     pub fn set_console_output(&mut self, console_output: PathBuf) {
         self.console_output = Some(console_output);
     }
@@ -405,8 +373,6 @@ impl VmResources {
 #[cfg(test)]
 mod tests {
     use crate::utils::tempfile::TempFile;
-    #[cfg(feature = "gpu")]
-    use crate::vmm::resources::DisplayBackendConfig;
     use crate::vmm::resources::VmResources;
     use crate::vmm::vmm_config::kernel_cmdline::KernelCmdlineConfig;
     use crate::vmm::vmm_config::machine_config::{CpuFeaturesTemplate, VmConfig, VmConfigError};
@@ -436,16 +402,6 @@ mod tests {
             block: Default::default(),
             #[cfg(feature = "net")]
             net: Default::default(),
-            gpu_virgl_flags: None,
-            gpu_shm_size: None,
-            #[cfg(feature = "gpu")]
-            display_backend: None,
-            #[cfg(feature = "gpu")]
-            displays: Vec::new(),
-            #[cfg(feature = "input")]
-            input_backends: Vec::new(),
-            #[cfg(feature = "snd")]
-            snd_device: false,
             console_output: None,
             smbios_oem_strings: None,
             nested_enabled: false,

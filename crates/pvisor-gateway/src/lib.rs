@@ -15,8 +15,6 @@ pub mod config;
 pub mod conversion;
 pub mod dead_letter;
 pub mod dialogue_extract;
-#[cfg(feature = "echo-server")]
-pub mod echo;
 pub mod engine;
 mod gateway;
 pub mod injection;
