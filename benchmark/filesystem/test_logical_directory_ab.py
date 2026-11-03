@@ -4,6 +4,8 @@ import importlib.util
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "logical_directory_ab", Path(__file__).with_name("logical_directory_ab.py")
@@ -13,6 +15,11 @@ SPEC.loader.exec_module(SUBJECT)
 
 
 class LogicalDirectoryContracts(unittest.TestCase):
+    def test_macos_rejects_linux_only_data_before_creating_batch(self):
+        with patch.object(SUBJECT.sys, "platform", "darwin"):
+            with self.assertRaisesRegex(ValueError, "unsupported on macOS"):
+                SUBJECT.prepare(SimpleNamespace(experiment="logical-data"))
+
     def test_each_followup_changes_only_its_requested_mechanism(self):
         for experiment, variable in [
             ("lazy-nodes", "PVISOR_VM_FS_REUSE_LAZY_NODES"),

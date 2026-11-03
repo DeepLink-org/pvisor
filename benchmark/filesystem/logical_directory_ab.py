@@ -51,6 +51,8 @@ def environment(batch, enabled, diagnostic=False, experiment="logical-directory"
 
 
 def prepare(args):
+    if sys.platform == "darwin" and args.experiment == "logical-data":
+        raise ValueError("logical-data is unsupported on macOS (Linux-only data-object protocol)")
     batch = args.prepare.resolve()
     batch.mkdir(parents=True, exist_ok=False, mode=0o700)
     for name in ["bin", "work", "context", "cache", "data"]:
@@ -58,12 +60,12 @@ def prepare(args):
     for source, name in [
         (args.cli, "bin/pvisor"),
         (args.guest, "context/probe"),
-        (args.firmware, "bin/libkrunfw.so.5"),
+        (args.firmware, f"bin/{BASE.firmware_name()}"),
         (args.firmware_source, "bin/libkrunfw.SOURCE"),
     ]:
         shutil.copy2(source, batch / name)
     receipt = json.loads((batch / "bin/libkrunfw.SOURCE").read_text())
-    if BASE.digest(batch / "bin/libkrunfw.so.5") != receipt["firmware_sha256"]:
+    if BASE.digest(batch / "bin" / BASE.firmware_name()) != receipt["firmware_sha256"]:
         raise ValueError("firmware receipt mismatch")
     for directory in range(32):
         path = batch / "context/fixture" / f"d{directory:02}"
@@ -155,7 +157,9 @@ def prepare(args):
             "inputs": inputs,
             "samples": args.samples,
             "controls_pairs": 0,
-            "cpus": sorted(os.sched_getaffinity(0))[:2],
+            "cpus": BASE.host_cpus(),
+            "host_platform": sys.platform,
+            "host_budget": "unrestricted" if sys.platform == "darwin" else "cgroup-2G-2cpu-swap0",
             "seed": 98171,
             "experiment": args.experiment,
             "mode": mode,
@@ -203,25 +207,7 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
     unit = f"pvisor-logical-{os.getpid()}-{label}"
     before_logs = set((batch / "store").rglob("*.log"))
     command = (
-        [
-            "systemd-run",
-            "--user",
-            "--wait",
-            "--pipe",
-            "--collect",
-            "--quiet",
-            f"--unit={unit}",
-            "-p",
-            "MemoryMax=2G",
-            "-p",
-            "MemorySwapMax=0",
-            "-p",
-            "CPUQuota=200%",
-            "taskset",
-            "-c",
-            ",".join(map(str, manifest["cpus"])),
-        ]
-        + environment(batch, enabled, diagnostic, manifest["experiment"])
+        environment(batch, enabled, diagnostic, manifest["experiment"])
         + [
             str(batch / "bin/pvisor"),
             "run",
@@ -237,6 +223,7 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
             "logical-fixture:local",
         ]
     )
+    command = BASE.host_budget(command, unit, manifest["cpus"])
     BASE.save(batch / f"{label}.command.json", command)
     started = time.perf_counter_ns()
     try:
@@ -245,7 +232,7 @@ def trial(batch, manifest, pair, enabled, diagnostic=False):
                 command, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=90
             )
     except BaseException:
-        subprocess.run(["systemctl", "--user", "stop", unit], check=False, timeout=20)
+        BASE.stop_trial(unit)
         raise
     elapsed = (time.perf_counter_ns() - started) / 1e6
     text = (batch / f"{label}.log").read_text()

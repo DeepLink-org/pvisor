@@ -24,6 +24,49 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def firmware_name():
+    return "libkrunfw.5.dylib" if sys.platform == "darwin" else "libkrunfw.so.5"
+
+
+def host_cpus():
+    # macOS has no hard per-process affinity API equivalent to taskset.
+    return sorted(os.sched_getaffinity(0))[:2] if sys.platform == "linux" else []
+
+
+def host_budget(command, unit, cpus):
+    if sys.platform == "darwin":
+        return command
+    return [
+        "systemd-run",
+        "--user",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--quiet",
+        f"--unit={unit}",
+        "-p",
+        "MemoryMax=2G",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "CPUQuota=200%",
+        "taskset",
+        "-c",
+        ",".join(map(str, cpus)),
+    ] + command
+
+
+def stop_trial(unit):
+    if sys.platform == "linux":
+        subprocess.run(
+            ["systemctl", "--user", "stop", unit],
+            check=False,
+            timeout=20,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
 @functools.cache
 def copyup_expected_block():
     block = bytearray(1 << 20)
@@ -64,14 +107,14 @@ def prepare(args):
     for name, source in [
         ("driver", args.driver),
         ("guest", args.guest),
-        ("libkrunfw.so.5", args.firmware),
+        (firmware_name(), args.firmware),
         ("libkrunfw.SOURCE", args.firmware_source),
     ]:
         destination = artifacts / name
         shutil.copy2(source.resolve(), destination)
         inputs[str(destination.relative_to(batch))] = digest(destination)
     receipt = json.loads((artifacts / "libkrunfw.SOURCE").read_text())
-    if receipt["firmware_sha256"] != inputs["artifacts/libkrunfw.so.5"]:
+    if receipt["firmware_sha256"] != inputs[f"artifacts/{firmware_name()}"]:
         raise ValueError("firmware does not match its SOURCE receipt")
     repo = Path(__file__).resolve().parents[2]
     (batch / "source").mkdir()
@@ -86,7 +129,10 @@ def prepare(args):
         shutil.copy2(repo / name, batch / "source" / name)
         inputs[f"source/{name}"] = digest(batch / "source" / name)
     for path, expected in receipt["inputs"].items():
-        if path.startswith("patches/") or path in ("Makefile", "config-libkrunfw_x86_64"):
+        if path.startswith("patches/") or path in (
+            "Makefile",
+            "config-libkrunfw_aarch64" if sys.platform == "darwin" else "config-libkrunfw_x86_64",
+        ):
             if digest(repo / "fw" / path) != expected:
                 raise ValueError(f"firmware source/config differs: {path}")
     harness = batch / "harness.py"
@@ -109,7 +155,9 @@ def prepare(args):
                 args.experiment, "directory-pages"
             ),
             "seed": 52871,
-            "cpus": sorted(os.sched_getaffinity(0))[:2],
+            "cpus": host_cpus(),
+            "host_platform": sys.platform,
+            "host_budget": "unrestricted" if sys.platform == "darwin" else "cgroup-2G-2cpu-swap0",
             "primary": "three guest rounds summed per fresh VM",
             "controls_pairs": 5,
             "no_interference_filter": True,
@@ -137,22 +185,6 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
     scoped = manifest["experiment"] == "scoped-names"
     names_enabled = 1 if prepared or scoped else enabled
     command = [
-        "systemd-run",
-        "--user",
-        "--wait",
-        "--pipe",
-        "--collect",
-        "--quiet",
-        f"--unit={unit}",
-        "-p",
-        "MemoryMax=2G",
-        "-p",
-        "MemorySwapMax=0",
-        "-p",
-        "CPUQuota=200%",
-        "taskset",
-        "-c",
-        ",".join(map(str, manifest["cpus"])),
         "/usr/bin/env",
         f"TMPDIR={scratch}",
         f"PVISOR_VM_FS_DIRECTORY_NAMES_CACHE={names_enabled}",
@@ -173,10 +205,11 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
         "PVISOR_VM_CACHE_EXPERIMENT=off",
         str(batch / "artifacts/driver"),
         str(batch / "rootfs"),
-        str(batch / "artifacts/libkrunfw.so.5"),
+        str(batch / "artifacts" / firmware_name()),
         str(batch / "artifacts/guest"),
         mode,
     ]
+    command = host_budget(command, unit, manifest["cpus"])
     save(batch / f"{label}.command.json", command)
     started = time.perf_counter_ns()
     try:
@@ -190,13 +223,7 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
                 check=False,
             )
     except BaseException:
-        subprocess.run(
-            ["systemctl", "--user", "stop", unit],
-            check=False,
-            timeout=20,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        stop_trial(unit)
         raise
     elapsed = (time.perf_counter_ns() - started) / 1e6
     text = (batch / f"{label}.log").read_text()

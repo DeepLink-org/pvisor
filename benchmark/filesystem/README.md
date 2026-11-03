@@ -61,6 +61,16 @@ prepare后同样通过`semspec bench`运行，整父组两核/2GiB/swap0，
 不使用lazy资格，N3只展示水平，不推导稳定百分比，资源饱和点未复测。
 新工程结果写双语lab-note，原九模式用户表和历史失败保持不变。
 
+Apple Silicon macOS/HVF 的独立复测见 `MACOS_OPTIMIZATION_REPORT.md`，
+不与上述 Linux 批次合并。两个 sampler 在 macOS 使用真实
+`libkrunfw.5.dylib`，直接启动已签名的 release driver/CLI；
+guest 仍编译为 `aarch64-unknown-linux-musl`。macOS 没有此处 Linux
+cgroup/taskset 的等价限制，manifest 显式记录 host budget 为 unrestricted、
+affinity 为空；guest 仍为 2vCPU/512MiB。`logical-data` 在 macOS 不支持，
+准备阶段直接拒绝，不把未启用机制测成零收益。复制制品前先签名，再冻结摘要。
+固件必须取自与 SOURCE 摘要匹配的构建缓存；不要使用签名后摘要已变化、
+但收据未更新的 release 副本。Linux 包装器及其预算保持不变。
+
 `logical_directory_ab.py` 单独验证第三批的真实Docker-style CLI固定镜像，
 接收`--prepare BATCH --cli CLI --guest GUEST --firmware FW
 --firmware-source SOURCE --samples 30`；生成计划后由同样的`semspec bench`
