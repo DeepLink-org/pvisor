@@ -186,6 +186,8 @@ pub enum StartMicrovmError {
     RegisterEvent(EventManagerError),
     /// Cannot initialize a MMIO Fs Device or add ad device to the MMIO Bus.
     RegisterFsDevice(device_manager::mmio::Error),
+    /// Invalid host filesystem settings or failed filesystem construction.
+    CreateFsDevice(String),
     // Cannot initialize a MMIO Fs Device or add ad device to the MMIO Bus.
     RegisterConsoleDevice(device_manager::mmio::Error),
     /// Cannot register SIGWINCH event file descriptor.
@@ -376,6 +378,7 @@ impl Display for StartMicrovmError {
                     "Cannot initialize a MMIO Block Device or add a device to the MMIO Bus. {err_msg}"
                 )
             }
+            CreateFsDevice(ref err) => write!(f, "Cannot construct filesystem device: {err}"),
             RegisterEvent(ref err) => write!(f, "Cannot register EventHandler. {err:?}"),
             RegisterFsDevice(ref err) => {
                 let mut err_msg = format!("{err}");
@@ -2168,18 +2171,21 @@ fn attach_fs_devices(
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
+    if fs_devs.is_empty() {
+        return Ok(());
+    }
+    let profile = Arc::new(
+        crate::devices::virtio::fs::FsProfile::from_env()
+            .map_err(|error| StartMicrovmError::CreateFsDevice(error.to_string()))?,
+    );
     for (i, config) in fs_devs.iter().enumerate() {
         let fs = Arc::new(Mutex::new(
-            crate::devices::virtio::Fs::new(
-                config.fs_id.clone(),
-                config.semantics,
-                config.shared_dir.clone(),
+            crate::devices::virtio::Fs::new_with_profile(
+                config,
                 exit_code.clone(),
-                config.read_only,
-                config.virtual_entries.clone(),
-                config.overlay.clone(),
+                profile.clone(),
             )
-            .unwrap(),
+            .map_err(|error| StartMicrovmError::CreateFsDevice(format!("{error:?}")))?,
         ));
 
         fs.lock().unwrap().set_managed(config.managed);

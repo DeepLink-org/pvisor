@@ -99,9 +99,35 @@ fn retired_optional_devices_are_not_build_profiles() {
 fn byte_order_uses_one_private_source_for_both_backends() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let assembly = std::fs::read_to_string(root.join("src/windows/utils/mod.rs")).unwrap();
-    assert!(assembly.contains("#[path = \"../../utils/byte_order.rs\"]\npub mod byte_order;"));
+    assert!(has_shared_byte_order_declaration(&assembly));
     assert!(root.join("src/utils/byte_order.rs").is_file());
     assert!(!root.join("src/windows/utils/byte_order.rs").exists());
+}
+
+fn has_shared_byte_order_declaration(assembly: &str) -> bool {
+    let mut lines = assembly.lines();
+    let mut previous = lines.next();
+    for line in lines {
+        if previous == Some("#[path = \"../../utils/byte_order.rs\"]")
+            && line == "pub mod byte_order;"
+        {
+            return true;
+        }
+        previous = Some(line);
+    }
+    false
+}
+
+#[test]
+fn byte_order_guard_preserves_paired_declaration_with_windows_line_endings() {
+    for newline in ["\n", "\r\n"] {
+        assert!(has_shared_byte_order_declaration(&format!(
+            "#[path = \"../../utils/byte_order.rs\"]{newline}pub mod byte_order;{newline}"
+        )));
+        assert!(!has_shared_byte_order_declaration(&format!(
+            "#[path = \"../../utils/byte_order.rs\"]{newline}pub mod other;{newline}pub mod byte_order;"
+        )));
+    }
 }
 
 struct CallGuard;

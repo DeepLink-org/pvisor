@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::Queue;
@@ -410,7 +410,11 @@ impl RequestPool {
         // if arm wins, that worker signals the sleeping owner. Never park with
         // an already queued completion, but still poll stop/kick events first.
         self.awaiting_wake.swap(true, Ordering::AcqRel);
-        if self.completed.is_empty() { -1 } else { 0 }
+        if self.completed.is_empty() {
+            -1
+        } else {
+            0
+        }
     }
 
     fn submit(&mut self, mut request: Request) {
@@ -445,14 +449,76 @@ impl Drop for RequestPool {
     }
 }
 
-pub(super) fn worker_count() -> usize {
-    // Controls normal queue count; hiprio always gets its own lane. The guest
-    // may initialize fewer queues, for example on a single-vCPU VM.
-    std::env::var("PVISOR_VM_FS_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|count| (1..=8).contains(count))
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| n.get().min(4)))
+/// Host settings captured once before device publication.
+pub(crate) struct FsProfile {
+    pub(crate) workers: usize,
+    root_data_cache: bool,
+    guest_cache: bool,
+    host_writeback: bool,
+    host_writeback_config: HostWritebackConfig,
+    directory_cache_capacity: usize,
+    exclusive_upper_absence_cache: bool,
+    readonly_flush_elision: bool,
+    lower_data_cache: bool,
+    negative_entry_cache: bool,
+    pub(super) writeback: Option<String>,
+    pub(super) shared_open: io::Result<bool>,
+}
+
+impl FsProfile {
+    pub(crate) fn from_env() -> io::Result<Self> {
+        Self::parse(|key| std::env::var_os(key))
+    }
+
+    pub(super) fn parse(
+        mut get: impl FnMut(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<Self> {
+        let workers = get("PVISOR_VM_FS_WORKERS")
+            .and_then(|v| v.into_string().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| (1..=8).contains(v))
+            .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| n.get().min(4)));
+        let cache_setting = get("PVISOR_VM_CACHE_EXPERIMENT")
+            .map(|v| {
+                v.into_string().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "PVISOR_VM_CACHE_EXPERIMENT must be UTF-8",
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            workers,
+            root_data_cache: root_data_cache_enabled("/dev/root", cache_setting.as_deref())?,
+            guest_cache: guest_cache_enabled(get("PVISOR_VM_GUEST_CACHE").as_deref())?,
+            host_writeback: host_writeback_enabled(get("PVISOR_VM_FS_HOST_WRITEBACK").as_deref())?,
+            host_writeback_config: host_writeback_config(
+                get("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG").as_deref(),
+            )?,
+            directory_cache_capacity: directory_cache_capacity(
+                get("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
+            )?,
+            exclusive_upper_absence_cache: exclusive_upper_absence_cache_enabled(
+                get("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
+            )?,
+            readonly_flush_elision: readonly_flush_elision_enabled(
+                get("PVISOR_VM_FS_READONLY_FLUSH_ELISION").as_deref(),
+            )?,
+            lower_data_cache: lower_data_cache_enabled(
+                get("PVISOR_VM_FS_LOWER_DATA_CACHE").as_deref(),
+            )?,
+            negative_entry_cache: negative_entry_cache_enabled(
+                get("PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE").as_deref(),
+            )?,
+            // env::var(...).ok() historically treats non-Unicode as unset.
+            writeback: get("PVISOR_VM_FS_WRITEBACK").and_then(|v| v.into_string().ok()),
+            shared_open: super::overlay::shared_open_qualification_enabled(
+                get("PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").as_deref(),
+            )
+            .map(|enabled| enabled && cfg!(target_os = "linux")),
+        })
+    }
 }
 
 fn root_data_cache_enabled(tag: &str, setting: Option<&str>) -> io::Result<bool> {
@@ -629,6 +695,7 @@ fn directory_cache_capacity(setting: Option<&std::ffi::OsStr>) -> io::Result<usi
 }
 
 pub(super) struct FsWorkerConfig {
+    pub profile: Arc<FsProfile>,
     pub fs_tag: String,
     pub queues: Vec<Queue>,
     pub queue_evts: Vec<Arc<EventFd>>,
@@ -650,6 +717,7 @@ pub(super) struct FsWorkerConfig {
 impl FsWorker {
     pub fn new(config: FsWorkerConfig) -> Result<Self, io::Error> {
         let FsWorkerConfig {
+            profile,
             fs_tag,
             queues,
             queue_evts,
@@ -667,46 +735,20 @@ impl FsWorker {
             #[cfg(target_os = "macos")]
             map_sender,
         } = config;
-        let cache_setting = match std::env::var("PVISOR_VM_CACHE_EXPERIMENT") {
-            Ok(value) => Some(value),
-            Err(std::env::VarError::NotPresent) => None,
-            Err(std::env::VarError::NotUnicode(_)) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "PVISOR_VM_CACHE_EXPERIMENT must be UTF-8",
-                ));
-            }
-        };
-        let root_data_cache = root_data_cache_enabled(&fs_tag, cache_setting.as_deref())?;
-        let guest_cache =
-            guest_cache_enabled(std::env::var_os("PVISOR_VM_GUEST_CACHE").as_deref())?;
-        let host_writeback =
-            host_writeback_enabled(std::env::var_os("PVISOR_VM_FS_HOST_WRITEBACK").as_deref())?;
-        let host_writeback_config = host_writeback_config(
-            std::env::var_os("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG").as_deref(),
-        )?;
-        let directory_cache_capacity = directory_cache_capacity(
-            std::env::var_os("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
-        )?;
-        let exclusive_upper_absence_cache = exclusive_upper_absence_cache_enabled(
-            std::env::var_os("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
-        )?;
-        let readonly_flush_elision = readonly_flush_elision_enabled(
-            std::env::var_os("PVISOR_VM_FS_READONLY_FLUSH_ELISION").as_deref(),
-        )?;
-        let lower_data_cache =
-            lower_data_cache_enabled(std::env::var_os("PVISOR_VM_FS_LOWER_DATA_CACHE").as_deref())?;
-        let negative_entry_cache = negative_entry_cache_enabled(
-            std::env::var_os("PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE").as_deref(),
-        )?;
+        let root_data_cache = profile.root_data_cache && fs_tag == "/dev/root";
+        let guest_cache = profile.guest_cache;
+        let host_writeback = profile.host_writeback;
+        let host_writeback_config = &profile.host_writeback_config;
+        let directory_cache_capacity = profile.directory_cache_capacity;
+        let exclusive_upper_absence_cache = profile.exclusive_upper_absence_cache;
+        let readonly_flush_elision = profile.readonly_flush_elision;
+        let lower_data_cache = profile.lower_data_cache;
+        let negative_entry_cache = profile.negative_entry_cache;
         let inode_alloc = Arc::new(InodeAllocator::new());
         let mut server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
-                let mut inner = if restoring {
-                    OverlayFs::open_existing(cfg, inode_alloc.clone())?
-                } else {
-                    OverlayFs::new(cfg, inode_alloc.clone())?
-                };
+                let mut inner =
+                    OverlayFs::build_with_profile(cfg, inode_alloc.clone(), restoring, &profile)?;
                 inner.configure_host_writeback_options(
                     host_writeback,
                     shm_region.is_some(),
@@ -1039,14 +1081,72 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
+    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
     use std::time::Duration;
     use vm_memory::GuestAddress;
 
+    #[test]
+    fn profile_preserves_defaults_validation_and_writeback_tristate() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let defaults = FsProfile::parse(|_| None).unwrap();
+        assert!(defaults.guest_cache && defaults.root_data_cache);
+        assert!(!defaults.host_writeback && !defaults.negative_entry_cache);
+        assert_eq!(defaults.writeback, None);
+        for value in ["0", "1", "", "false", "arbitrary"] {
+            let profile =
+                FsProfile::parse(|key| (key == "PVISOR_VM_FS_WRITEBACK").then(|| value.into()))
+                    .unwrap();
+            assert_eq!(profile.writeback.as_deref(), Some(value));
+        }
+        let non_unicode = FsProfile::parse(|key| {
+            (key == "PVISOR_VM_FS_WRITEBACK").then(|| OsString::from_vec(vec![0xff]))
+        })
+        .unwrap();
+        assert!(non_unicode.writeback.is_none());
+        for key in [
+            "PVISOR_VM_CACHE_EXPERIMENT",
+            "PVISOR_VM_GUEST_CACHE",
+            "PVISOR_VM_FS_HOST_WRITEBACK",
+            "PVISOR_VM_FS_HOST_WRITEBACK_CONFIG",
+            "PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY",
+            "PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE",
+            "PVISOR_VM_FS_READONLY_FLUSH_ELISION",
+            "PVISOR_VM_FS_LOWER_DATA_CACHE",
+            "PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE",
+        ] {
+            assert!(
+                FsProfile::parse(|candidate| (candidate == key).then(|| "invalid".into())).is_err(),
+                "{key}"
+            );
+        }
+        for value in ["0", "9", "invalid"] {
+            let profile =
+                FsProfile::parse(|key| (key == "PVISOR_VM_FS_WORKERS").then(|| value.into()))
+                    .unwrap();
+            assert!((1..=4).contains(&profile.workers));
+        }
+    }
+
     pub(super) fn queue_worker(mem: GuestMemoryMmap, queues: Vec<Queue>) -> FsWorker {
+        queue_worker_with_profile(
+            mem,
+            queues,
+            Arc::new(FsProfile::parse(|_| None).unwrap()),
+            None,
+        )
+    }
+
+    fn queue_worker_with_profile(
+        mem: GuestMemoryMmap,
+        queues: Vec<Queue>,
+        profile: Arc<FsProfile>,
+        passthrough_cfg: Option<passthrough::Config>,
+    ) -> FsWorker {
         use crate::devices::legacy::DummyIrqChip;
         let queue_count = queues.len();
         let mut worker = FsWorker::new(FsWorkerConfig {
+            profile,
             fs_tag: "test".into(),
             queues,
             queue_evts: (0..queue_count)
@@ -1056,7 +1156,7 @@ mod tests {
             mem,
             allow_idmap: false,
             shm_region: None,
-            passthrough_cfg: None,
+            passthrough_cfg,
             overlay_cfg: None,
             read_only: false,
             virtual_entries: vec![],
@@ -1070,6 +1170,28 @@ mod tests {
         worker.dispatch_profile =
             pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
         worker
+    }
+
+    #[test]
+    fn invalid_shared_open_setting_does_not_reject_passthrough_or_null_worker() {
+        let profile = Arc::new(
+            FsProfile::parse(|key| {
+                (key == "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").then(|| "invalid".into())
+            })
+            .unwrap(),
+        );
+        assert!(profile.shared_open.is_err());
+        let root = tempfile::tempdir().unwrap();
+        for passthrough_cfg in [
+            None,
+            Some(passthrough::Config {
+                root_dir: root.path().to_str().unwrap().into(),
+                ..Default::default()
+            }),
+        ] {
+            let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+            let _worker = queue_worker_with_profile(mem, vec![], profile.clone(), passthrough_cfg);
+        }
     }
 
     #[test]
@@ -1482,14 +1604,12 @@ mod tests {
             });
         }
         assert_eq!(normal.used.idx.get(), 2);
-        assert!(
-            !worker
-                .dispatch_profile
-                .report()
-                .unwrap()
-                .measurements
-                .contains_key("notification_checks")
-        );
+        assert!(!worker
+            .dispatch_profile
+            .report()
+            .unwrap()
+            .measurements
+            .contains_key("notification_checks"));
         worker.notify_completed([false, true]);
         let report = worker.dispatch_profile.report().unwrap();
         assert_eq!(report.measurements["published_completions"].units, 2);

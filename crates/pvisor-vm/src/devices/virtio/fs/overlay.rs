@@ -60,7 +60,7 @@ fn buffered_request_flags(flags: u32) -> bool {
     }
 }
 
-fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
+pub(super) fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
     match setting {
         None => Ok(false),
         Some(value) if value == "0" => Ok(false),
@@ -935,10 +935,12 @@ pub struct OverlayFs {
 }
 
 impl OverlayFs {
+    #[cfg(test)]
     pub fn new(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, false)
     }
 
+    #[cfg(test)]
     pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, true)
     }
@@ -1316,11 +1318,31 @@ impl OverlayFs {
         fence
     }
 
+    #[cfg(test)]
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        let writeback_setting = std::env::var("PVISOR_VM_FS_WRITEBACK").ok();
-        Self::build_with_writeback(cfg, inode_alloc, restoring, writeback_setting.as_deref())
+        let profile = super::worker::FsProfile::from_env()?;
+        Self::build_with_profile(cfg, inode_alloc, restoring, &profile)
     }
 
+    pub(super) fn build_with_profile(
+        cfg: Config,
+        inode_alloc: Arc<InodeAllocator>,
+        restoring: bool,
+        profile: &super::worker::FsProfile,
+    ) -> io::Result<Self> {
+        Self::build_with_settings(
+            cfg,
+            inode_alloc,
+            restoring,
+            profile.writeback.as_deref(),
+            *profile
+                .shared_open
+                .as_ref()
+                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?,
+        )
+    }
+
+    #[cfg(test)]
     fn build_with_writeback(
         cfg: Config,
         inode_alloc: Arc<InodeAllocator>,
@@ -1330,6 +1352,22 @@ impl OverlayFs {
         let shared_open_qualification = shared_open_qualification_enabled(
             std::env::var_os("PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").as_deref(),
         )? && cfg!(target_os = "linux");
+        Self::build_with_settings(
+            cfg,
+            inode_alloc,
+            restoring,
+            writeback_setting,
+            shared_open_qualification,
+        )
+    }
+
+    fn build_with_settings(
+        cfg: Config,
+        inode_alloc: Arc<InodeAllocator>,
+        restoring: bool,
+        writeback_setting: Option<&str>,
+        shared_open_qualification: bool,
+    ) -> io::Result<Self> {
         if cfg.lower_dirs.is_empty() || (cfg.baseline_lower.is_some() && cfg.apply_target.is_none())
         {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -5627,7 +5665,9 @@ mod tests {
     fn overlay_does_not_negotiate_backing_submounts() {
         let temp = tempfile::tempdir().unwrap();
         let fs = negative_entry_fixture(temp.path());
-        let options = fs.init(FsOptions::SUBMOUNTS | FsOptions::DO_READDIRPLUS).unwrap();
+        let options = fs
+            .init(FsOptions::SUBMOUNTS | FsOptions::DO_READDIRPLUS)
+            .unwrap();
         assert!(
             !options.contains(FsOptions::SUBMOUNTS),
             "copy-up must not turn a backing mount boundary into a new guest device"
@@ -7127,6 +7167,74 @@ mod tests {
         assert!(legacy.getattr(ctx, legacy_inode, None).is_ok());
         legacy.destroy();
         assert!(legacy.detached_writeback.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn frozen_profile_restore_preserves_writeback_unset_and_rejects_explicit_zero() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        let enabled = super::super::worker::FsProfile::parse(|key| {
+            (key == "PVISOR_VM_FS_WRITEBACK").then(|| "arbitrary".into())
+        })
+        .unwrap();
+        let source = OverlayFs::build_with_profile(
+            config.clone(),
+            Arc::new(InodeAllocator::new()),
+            false,
+            &enabled,
+        )
+        .unwrap();
+        source
+            .init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
+            .unwrap();
+        let snapshot = source.capture_state().unwrap();
+        drop(source);
+        for value in [
+            None,
+            Some(std::ffi::OsString::from_vec(vec![0xff])),
+            Some("0".into()),
+        ] {
+            let profile = super::super::worker::FsProfile::parse(|key| {
+                if key == "PVISOR_VM_FS_WRITEBACK" {
+                    value.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+            let restored = OverlayFs::build_with_profile(
+                config.clone(),
+                Arc::new(InodeAllocator::new()),
+                true,
+                &profile,
+            )
+            .unwrap();
+            restored.init(FsOptions::empty()).unwrap();
+            let result = restored.restore_state(&snapshot);
+            assert_eq!(result.is_ok(), profile.writeback.as_deref() != Some("0"));
+        }
+    }
+
+    #[test]
+    fn invalid_shared_open_setting_still_rejects_overlay() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        let profile = super::super::worker::FsProfile::parse(|key| {
+            (key == "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").then(|| "invalid".into())
+        })
+        .unwrap();
+        let error =
+            OverlayFs::build_with_profile(config, Arc::new(InodeAllocator::new()), false, &profile)
+                .err()
+                .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION must be 0 or 1"
+        );
     }
 
     #[test]

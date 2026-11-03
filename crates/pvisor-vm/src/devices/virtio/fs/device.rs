@@ -43,6 +43,7 @@ impl Default for VirtioFsConfig {
 unsafe impl ByteValued for VirtioFsConfig {}
 
 pub struct Fs {
+    profile: Arc<super::worker::FsProfile>,
     avail_features: u64,
     acked_features: u64,
     device_state: DeviceState,
@@ -65,6 +66,7 @@ pub struct Fs {
 }
 
 impl Fs {
+    #[cfg(test)]
     pub fn new(
         fs_id: String,
         semantics: PermissionSemantics,
@@ -74,27 +76,53 @@ impl Fs {
         virtual_entries: Vec<VirtualDirEntry>,
         overlay_cfg: Option<OverlayConfig>,
     ) -> super::Result<Fs> {
+        let profile = super::worker::FsProfile::from_env().map_err(FsError::EventFd)?;
+        Self::new_with_profile(
+            &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                fs_id,
+                semantics,
+                shared_dir,
+                read_only,
+                virtual_entries,
+                overlay: overlay_cfg,
+                shm_size: None,
+                managed: false,
+            },
+            exit_code,
+            Arc::new(profile),
+        )
+    }
+
+    pub(crate) fn new_with_profile(
+        device_config: &crate::vmm::vmm_config::fs::FsDeviceConfig,
+        exit_code: Arc<AtomicI32>,
+        profile: Arc<super::worker::FsProfile>,
+    ) -> super::Result<Fs> {
         let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
 
-        let tag = fs_id.into_bytes();
+        let tag = device_config.fs_id.as_bytes();
         let mut config = VirtioFsConfig::default();
-        config.tag[..tag.len()].copy_from_slice(tag.as_slice());
-        config.num_request_queues = super::worker::worker_count() as u32;
+        config.tag[..tag.len()].copy_from_slice(tag);
+        config.num_request_queues = profile.workers as u32;
         let queue_config =
             vec![QueueConfig::new(defs::QUEUE_SIZE); config.num_request_queues as usize + 1];
 
-        let fs_cfg = shared_dir.map(|root_dir| passthrough::Config {
-            root_dir,
-            semantics,
-            // Another mount or VM can change the backing inode between opens.
-            attr_timeout: Duration::ZERO,
-            entry_timeout: Duration::ZERO,
-            ..Default::default()
-        });
+        let fs_cfg = device_config
+            .shared_dir
+            .clone()
+            .map(|root_dir| passthrough::Config {
+                root_dir,
+                semantics: device_config.semantics,
+                // Another mount or VM can change the backing inode between opens.
+                attr_timeout: Duration::ZERO,
+                entry_timeout: Duration::ZERO,
+                ..Default::default()
+            });
 
-        let allow_idmap = matches!(semantics, PermissionSemantics::LinuxComplete);
+        let allow_idmap = matches!(device_config.semantics, PermissionSemantics::LinuxComplete);
 
         Ok(Fs {
+            profile,
             avail_features,
             acked_features: 0,
             device_state: DeviceState::Inactive,
@@ -103,9 +131,9 @@ impl Fs {
             allow_idmap,
             shm_region: None,
             passthrough_cfg: fs_cfg,
-            overlay_cfg,
-            read_only,
-            virtual_entries,
+            overlay_cfg: device_config.overlay.clone(),
+            read_only: device_config.read_only,
+            virtual_entries: device_config.virtual_entries.clone(),
             worker_thread: None,
             parked_worker: None,
             freeze_requested: false,
@@ -295,6 +323,7 @@ impl VirtioDevice for Fs {
 
         let virtual_entries = self.virtual_entries.clone();
         let worker = FsWorker::new(super::worker::FsWorkerConfig {
+            profile: self.profile.clone(),
             fs_tag: String::from_utf8_lossy(&self.config.tag)
                 .trim_end_matches('\0')
                 .into(),
@@ -389,17 +418,30 @@ mod tests {
 
     #[test]
     fn request_queue_configuration_preserves_hiprio_and_rejects_invalid_counts() {
-        let mut fs = Fs::new(
-            "queue-test".into(),
-            PermissionSemantics::LinuxComplete,
-            None,
+        let profile = Arc::new(
+            super::super::worker::FsProfile::parse(|key| {
+                (key == "PVISOR_VM_FS_WORKERS").then(|| "8".into())
+            })
+            .unwrap(),
+        );
+        let mut fs = Fs::new_with_profile(
+            &crate::vmm::vmm_config::fs::FsDeviceConfig {
+                fs_id: "queue-test".into(),
+                semantics: PermissionSemantics::LinuxComplete,
+                shared_dir: None,
+                shm_size: None,
+                read_only: false,
+                managed: false,
+                virtual_entries: vec![],
+                overlay: None,
+            },
             Arc::new(AtomicI32::new(0)),
-            false,
-            vec![],
-            None,
+            profile.clone(),
         )
         .unwrap();
+        assert_eq!(fs.queue_config().len(), 9);
         fs.configure_request_queues(3).unwrap();
+        assert_eq!(profile.workers, 8);
         let count = fs.config.num_request_queues;
         assert_eq!(count, 3);
         assert_eq!(fs.queue_config().len(), 4);
