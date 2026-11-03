@@ -17,7 +17,7 @@ mod server;
 pub mod snapshot;
 pub mod virtual_entry;
 mod worker;
-mod write_buffer;
+pub(crate) mod write_buffer;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -39,7 +39,6 @@ pub use self::defs::uapi::VIRTIO_ID_FS as TYPE_FS;
 pub use self::device::Fs;
 pub use self::filesystem::ExportTable;
 pub use self::overlay::Config as OverlayConfig;
-pub(crate) use self::worker::FsProfile;
 
 mod defs {
     pub const FS_DEV_ID: &str = "virtio_fs";

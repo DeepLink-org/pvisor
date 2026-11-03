@@ -49,6 +49,7 @@ mod vmm;
 
 #[path = "api.rs"]
 pub mod api;
+mod env;
 #[cfg(unix)]
 #[path = "backend.rs"]
 mod backend;

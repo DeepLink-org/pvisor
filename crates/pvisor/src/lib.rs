@@ -20,6 +20,7 @@ mod config;
 pub mod diagnostics;
 /// Rootless container VM lifecycle and image catalog.
 pub mod docker;
+mod env;
 mod executor;
 pub mod features;
 mod image;

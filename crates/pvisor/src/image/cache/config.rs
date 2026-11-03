@@ -1,11 +1,13 @@
 //! Shared CLI and executor configuration for server and daemonless caches.
-use super::{SERVER_ENV, default_endpoint};
+use super::default_endpoint;
+use crate::env::{
+    self,
+    cache::{IMAGE_STORE_ENV, SERVER_ENV},
+};
 use anyhow::ensure;
 use std::path::PathBuf;
 
-pub const BACKEND_ENV: &str = "PVISOR_CACHE_BACKEND";
-pub const LOCATION_ENV: &str = "PVISOR_CACHE_LOCATION";
-pub const READ_ONLY_ENV: &str = "PVISOR_CACHE_READ_ONLY";
+pub use crate::env::cache::{BACKEND_ENV, LOCATION_ENV, READ_ONLY_ENV};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CacheBackend {
     #[default]
@@ -108,47 +110,40 @@ impl CacheConfig {
     ) -> anyhow::Result<Self> {
         let backend = match backend {
             Some(backend) => backend,
-            None => match std::env::var(BACKEND_ENV) {
-                Ok(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
-                Err(std::env::VarError::NotPresent) => CacheBackend::Server,
-                Err(error) => return Err(error.into()),
+            None => match env::unicode(BACKEND_ENV)? {
+                Some(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
+                None => CacheBackend::Server,
             },
         };
         let location = match location {
             Some(location) => location,
-            None => match std::env::var(LOCATION_ENV) {
-                Ok(value) => value,
-                Err(std::env::VarError::NotPresent) if backend == CacheBackend::Server => {
-                    match std::env::var(SERVER_ENV) {
-                        Ok(value) => value,
-                        Err(std::env::VarError::NotPresent) => default_endpoint()?,
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                Err(std::env::VarError::NotPresent) => {
+            None => match env::unicode(LOCATION_ENV)? {
+                Some(value) => value,
+                None if backend == CacheBackend::Server => match env::unicode(SERVER_ENV)? {
+                    Some(value) => value,
+                    None => default_endpoint()?,
+                },
+                None => {
                     anyhow::bail!("{LOCATION_ENV} is required for {backend:?}")
                 }
-                Err(error) => return Err(error.into()),
             },
         };
         let read_only = match read_only {
             Some(read_only) => read_only,
-            None => match std::env::var(READ_ONLY_ENV) {
-                Ok(value) => match value.as_str() {
+            None => match env::unicode(READ_ONLY_ENV)? {
+                Some(value) => match value.as_str() {
                     "1" | "true" => true,
                     "0" | "false" => false,
                     _ => anyhow::bail!("{READ_ONLY_ENV} must be true/false or 1/0"),
                 },
-                Err(std::env::VarError::NotPresent) => backend == CacheBackend::Http,
-                Err(error) => return Err(error.into()),
+                None => backend == CacheBackend::Http,
             },
         };
         Ok(Self {
             backend,
             location,
             read_only,
-            image_store: image_store
-                .or_else(|| std::env::var_os("PVISOR_IMAGE_STORE").map(PathBuf::from)),
+            image_store: image_store.or_else(|| env::os(IMAGE_STORE_ENV).map(PathBuf::from)),
         })
     }
     pub fn address(&self) -> anyhow::Result<String> {
@@ -181,15 +176,7 @@ impl CacheConfig {
         }
     }
     pub(super) fn explicit() -> bool {
-        [
-            BACKEND_ENV,
-            LOCATION_ENV,
-            SERVER_ENV,
-            READ_ONLY_ENV,
-            super::transport::TOKEN_ENV,
-        ]
-        .iter()
-        .any(|key| std::env::var_os(key).is_some())
+        env::cache::explicit()
     }
 }
 
@@ -201,13 +188,7 @@ pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<Strin
             env.get(*key)
                 .is_some_and(|value| value.starts_with("s3://"))
         });
-    for key in [
-        BACKEND_ENV,
-        LOCATION_ENV,
-        READ_ONLY_ENV,
-        SERVER_ENV,
-        "PVISOR_CACHE_TOKEN",
-    ] {
+    for key in env::cache::SOURCE_ENV {
         env.remove(key);
     }
     if s3 {

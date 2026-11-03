@@ -43,7 +43,7 @@ impl Default for VirtioFsConfig {
 unsafe impl ByteValued for VirtioFsConfig {}
 
 pub struct Fs {
-    profile: Arc<super::worker::FsProfile>,
+    profile: Arc<crate::env::fs::FsProfile>,
     avail_features: u64,
     acked_features: u64,
     device_state: DeviceState,
@@ -76,7 +76,7 @@ impl Fs {
         virtual_entries: Vec<VirtualDirEntry>,
         overlay_cfg: Option<OverlayConfig>,
     ) -> super::Result<Fs> {
-        let profile = super::worker::FsProfile::from_env().map_err(FsError::EventFd)?;
+        let profile = crate::env::fs::FsProfile::from_env().map_err(FsError::EventFd)?;
         Self::new_with_profile(
             &crate::vmm::vmm_config::fs::FsDeviceConfig {
                 fs_id,
@@ -96,7 +96,7 @@ impl Fs {
     pub(crate) fn new_with_profile(
         device_config: &crate::vmm::vmm_config::fs::FsDeviceConfig,
         exit_code: Arc<AtomicI32>,
-        profile: Arc<super::worker::FsProfile>,
+        profile: Arc<crate::env::fs::FsProfile>,
     ) -> super::Result<Fs> {
         let avail_features = (1u64 << VIRTIO_F_VERSION_1) | (1u64 << VIRTIO_RING_F_EVENT_IDX);
 
@@ -419,8 +419,8 @@ mod tests {
     #[test]
     fn request_queue_configuration_preserves_hiprio_and_rejects_invalid_counts() {
         let profile = Arc::new(
-            super::super::worker::FsProfile::parse(|key| {
-                (key == "PVISOR_VM_FS_WORKERS").then(|| "8".into())
+            crate::env::fs::FsProfile::parse(|key| {
+                (key == crate::env::fs::WORKERS).then(|| "8".into())
             })
             .unwrap(),
         );

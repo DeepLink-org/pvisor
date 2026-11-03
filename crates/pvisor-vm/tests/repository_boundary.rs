@@ -16,6 +16,34 @@ const OLD_PACKAGES: &[&str] = &[
     "krun-smbios",
 ];
 
+#[test]
+fn fs_environment_parsing_has_one_private_owner() {
+    let assembly = include_str!("../src/runtime_modules.rs");
+    assert!(assembly.lines().any(|line| line == "mod env;"));
+    let environment = include_str!("../src/env.rs");
+    let lines: Vec<_> = environment.lines().collect();
+    assert!(lines
+        .windows(2)
+        .any(|pair| { pair[0] == "#[cfg(unix)]" && pair[1] == "pub(crate) mod fs {" }));
+    assert!(environment.contains("pub(crate) struct FsProfile"));
+    for source in [
+        include_str!("../src/devices/virtio/fs/worker.rs"),
+        include_str!("../src/devices/virtio/fs/device.rs"),
+        include_str!("../src/devices/virtio/fs/overlay.rs"),
+        include_str!("../src/vmm/builder.rs"),
+    ] {
+        assert!(!source.contains("struct FsProfile"));
+        // Error assertions may spell out the complete diagnostic; lookup keys
+        // must always refer to the environment owner's constants.
+        for line in source.lines() {
+            assert!(
+                !line.contains("\"PVISOR_VM_FS_") || line.contains("must be"),
+                "duplicated FS environment lookup: {line}"
+            );
+        }
+    }
+}
+
 fn inspect_manifest(value: &toml::Value) {
     if let toml::Value::Table(table) = value {
         for (key, value) in table {

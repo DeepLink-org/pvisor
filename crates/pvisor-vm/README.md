@@ -17,14 +17,19 @@ KVM/HVF/WHP、Windows 树、virtio-fs/console/vsock、网络、RAM/快照和实�
 删除前报告 160 条、删除后 165 条 VM warnings；原有属性随后恢复，未新增或扩大
 抑制。仍有平台/接口死代码待逐模块审核，不能据此声称零死代码或死代码门禁完成。
 
-## Windows x86_64 / WHP
+## Unix FS 环境设置
 
+FS 环境变量名称、默认值和解析规则集中在私有 `src/env.rs`。
 Unix virtio-fs 在 VMM attach 构造边界一次读取并验证 Host FS 环境设置，
 由私有不可变 profile 传给设备、worker 和 overlay；激活和恢复不再重读这些设置。
 恢复的请求队列数量仍由快照覆盖构造时的 `PVISOR_VM_FS_WORKERS` 默认拓扑。
 `PVISOR_VM_FS_WRITEBACK` 保留原三态规则：仅字符串 `0` 显式关闭，
 其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复旧 WB 状态。
+共享 OPEN 的非法设置仍仅在创建 OverlayFS 时拒绝，不影响 passthrough/null FS。
+诊断开关 `PVISOR_FS_PROFILE` 不参与此行为配置，不声称所有 FS 相关环境都被冻结。
 此 profile 不进入公开 API 或快照，也不改变 Windows 独立 FS 的设置读取行为。
+
+## Windows x86_64 / WHP
 
 Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在本 crate
 的私有 `src/windows/` 实现中，不依赖另一个公开 libkrun SDK。来源、固定提交、

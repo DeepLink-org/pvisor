@@ -33,7 +33,7 @@ pub use lazy::prepare_vm_image;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use lazy::{LazyImage, open_image_handle_for_host, open_image_handle_for_vm};
 
-pub const SERVER_ENV: &str = "PVISOR_CACHE_SERVER";
+pub use crate::env::cache::SERVER_ENV;
 
 fn architecture() -> &'static str {
     match std::env::consts::ARCH {

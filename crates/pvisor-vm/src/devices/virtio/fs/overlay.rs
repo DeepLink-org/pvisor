@@ -31,8 +31,7 @@ use super::passthrough::{self, PassthroughFs};
 use super::write_buffer::{Target as BufferedWriteTarget, WriteBuffer, WriteBufferOptions};
 
 const TTL: Duration = Duration::from_secs(1);
-pub(super) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
-pub(super) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
+use crate::env::fs::{DEFAULT_DIRECTORY_CACHE_CAPACITY, MAX_DIRECTORY_CACHE_CAPACITY};
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
 
@@ -57,18 +56,6 @@ fn buffered_request_flags(flags: u32) -> bool {
     {
         let _ = flags;
         false
-    }
-}
-
-pub(super) fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION must be 0 or 1",
-        )),
     }
 }
 
@@ -1320,7 +1307,7 @@ impl OverlayFs {
 
     #[cfg(test)]
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        let profile = super::worker::FsProfile::from_env()?;
+        let profile = crate::env::fs::FsProfile::from_env()?;
         Self::build_with_profile(cfg, inode_alloc, restoring, &profile)
     }
 
@@ -1328,7 +1315,7 @@ impl OverlayFs {
         cfg: Config,
         inode_alloc: Arc<InodeAllocator>,
         restoring: bool,
-        profile: &super::worker::FsProfile,
+        profile: &crate::env::fs::FsProfile,
     ) -> io::Result<Self> {
         Self::build_with_settings(
             cfg,
@@ -1349,8 +1336,8 @@ impl OverlayFs {
         restoring: bool,
         writeback_setting: Option<&str>,
     ) -> io::Result<Self> {
-        let shared_open_qualification = shared_open_qualification_enabled(
-            std::env::var_os("PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").as_deref(),
+        let shared_open_qualification = crate::env::fs::shared_open_qualification_enabled(
+            std::env::var_os(crate::env::fs::SHARED_OPEN_QUALIFICATION).as_deref(),
         )? && cfg!(target_os = "linux");
         Self::build_with_settings(
             cfg,
@@ -4394,6 +4381,7 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    use crate::env::fs::shared_open_qualification_enabled;
     use super::super::filesystem::root_context;
     include!("overlay_correctness_tests.rs");
     #[cfg(target_os = "linux")]
@@ -7175,8 +7163,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
-        let enabled = super::super::worker::FsProfile::parse(|key| {
-            (key == "PVISOR_VM_FS_WRITEBACK").then(|| "arbitrary".into())
+        let enabled = crate::env::fs::FsProfile::parse(|key| {
+            (key == crate::env::fs::WRITEBACK).then(|| "arbitrary".into())
         })
         .unwrap();
         let source = OverlayFs::build_with_profile(
@@ -7196,8 +7184,8 @@ mod tests {
             Some(std::ffi::OsString::from_vec(vec![0xff])),
             Some("0".into()),
         ] {
-            let profile = super::super::worker::FsProfile::parse(|key| {
-                if key == "PVISOR_VM_FS_WRITEBACK" {
+            let profile = crate::env::fs::FsProfile::parse(|key| {
+                if key == crate::env::fs::WRITEBACK {
                     value.clone()
                 } else {
                     None
@@ -7222,8 +7210,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
-        let profile = super::super::worker::FsProfile::parse(|key| {
-            (key == "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").then(|| "invalid".into())
+        let profile = crate::env::fs::FsProfile::parse(|key| {
+            (key == crate::env::fs::SHARED_OPEN_QUALIFICATION).then(|| "invalid".into())
         })
         .unwrap();
         let error =

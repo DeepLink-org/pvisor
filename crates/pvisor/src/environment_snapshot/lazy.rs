@@ -241,7 +241,10 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .env(
+                crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
+                self.directory.path(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -363,7 +366,7 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_SERVER", spec.path())
+            .env(crate::env::runner::RESTORE_RAM_SERVER_ENV, spec.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -446,7 +449,10 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .env(
+                crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
+                self.directory.path(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())

@@ -849,6 +849,16 @@ is not permission, and missing authority fails startup without fallback or globa
 sysctl changes. Linux external `memory_pool` negotiates physical-page sharing or
 sealed compression; only the latter uses the 64 KiB userfaultfd pager.
 
+Native executor construction resolves the legacy
+`PVISOR_EXPERIMENTAL_MEMORY_POOL` alias once, with explicit `VmSettings.memory_pool`
+taking precedence. Admission validates the resolved settings; the private runner
+descriptor carries an explicit disabled/local/pool selection. Changing the
+parent environment afterwards cannot change that executor's RAM strategy, and
+the child does not inherit the alias. Older private runner descriptors without
+this selection are rejected, not inferred from environment variables. These
+descriptors are same-executable launch inputs, not checkpoint compatibility
+records. Host diagnostic environment settings remain independent of this policy.
+
 The store rejects raw/poorly compressed blocks, caps encoded payload at half
 configured RAM and bounds object count by the configured 64 KiB block count.
 Two quiescence windows capture/recheck bounded batches before discard; validated
@@ -1238,6 +1248,18 @@ not depend on `pvisor-cli`; application enums are parsed by app-local Clap
 adapters. Clap is retained only as a development dependency for standalone
 runtime demonstration/measurement examples.
 
+The supervisor retains `GatewayDriverConfig` as one configuration owner rather
+than copying its fields into a second configuration model. Attempt-local bound
+wait adapters and listening endpoints are runtime state. Binding ephemeral ports
+does not rewrite the configured policy or credentials; the diagnostic snapshot
+uses a separate copy with the actual endpoints and existing credential redaction.
+Snapshots remain observations, not inputs that can change an active policy.
+
+RAM/native-runner and image-source environment names and environment-only readers
+are defined in private `src/env.rs`. Domain validation remains with the owning
+configuration/source types. Existing public cache constant import paths remain
+compatible; this is not a global environment registry or a new cross-crate API.
+
 Journal storage and trace production use `pvisor_journal::api::{JournalStore,
 TraceProducer}` alongside the opaque `Journal` and `Trace` owners. The existing
 `trace` module explicitly re-exports these contracts; trace identity is immutable
@@ -1263,6 +1285,19 @@ Lazy storage V2 uses compressed directory frames and `pvisor-v2:` immutable
 handles. Reader and transport capabilities below are independent of the storage
 version; OCI contents, guest commands, copy-up/export ownership and the
 physical-lower stability declaration retain their contracts.
+
+Image preparation resolves environment/configuration, transport validation,
+default-server probing and local-pool fallback in one private source resolver.
+Only an implicit default server's connection refusal or missing socket permits
+fallback; authentication, protocol and explicitly configured source failures
+remain errors. The legacy `PVISOR_CACHE_SERVER=off` local selection remains
+available. Setting a cache token or read-only override also makes discovery
+explicit; a non-Unicode token is an error rather than an ignored credential.
+Attachment uses capabilities derived from the validated source, without
+reinterpreting address prefixes. Capability parsing starts no transport workers:
+the Linux runner creates the host-network bridge before constructing its final
+Unix client, preserving single-threaded namespace setup. IPFS and the pinned
+private-network bridge remain supported.
 
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
   The client loads authenticated directory radix frames, including permissions,

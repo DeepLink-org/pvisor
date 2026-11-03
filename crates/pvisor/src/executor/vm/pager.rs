@@ -1,5 +1,6 @@
 //! Product-side cold RAM pool authorization and diagnostic destinations.
 //! VM mapping transitions and fault/device recovery live in pvisor-vm.
+use crate::env::{self, ram::METRICS_ENV};
 use crate::ram_backing::ipc::{PoolClient, RemoteObject};
 use pvisor_vm::api::ColdRamControl;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -17,7 +18,6 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
-pub const METRICS_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_METRICS";
 // Diagnostics deliberately inherit the native runner host profile. They do not
 // select a memory strategy; pool selection is exclusively a RunnerSpec input.
 pub(super) fn start_if_requested(
@@ -26,7 +26,7 @@ pub(super) fn start_if_requested(
     memory_mib: u32,
 ) -> io::Result<()> {
     start_diagnostics(&handle)?;
-    let metrics = std::env::var_os(METRICS_ENV).is_some();
+    let metrics = env::os(METRICS_ENV).is_some();
     if matches!(selection, super::supported::RamPager::Local) {
         // Per-instance ceilings: at most half configured RAM as encoded payload,
         // and one object per 64 KiB RAM block. Index overhead is bounded separately.
@@ -56,7 +56,7 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     let _ = handle;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY") {
+    if let Some(directory) = env::os(env::ram::PAGE_INVENTORY_ENV) {
         let directory = std::path::PathBuf::from(directory);
         let metadata = directory.metadata()?;
         if !metadata.is_dir()
@@ -68,8 +68,8 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
             ));
         }
         let measured = handle.clone();
-        let process_directory = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY")
-            .map(std::path::PathBuf::from);
+        let process_directory =
+            env::os(env::ram::PROCESS_INVENTORY_ENV).map(std::path::PathBuf::from);
         std::thread::Builder::new().name("pvisor-ram-inventory".into()).spawn(move || {
             // Diagnostic only: one full query during the quiet window. Do not
             // include this run's pauses in production pager performance claims.
@@ -134,7 +134,7 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
         })?;
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if std::env::var_os(METRICS_ENV).is_some() {
+    if env::os(METRICS_ENV).is_some() {
         let measured = handle.clone();
         std::thread::Builder::new()
             .name("pvisor-ram-metrics".into())

@@ -248,11 +248,7 @@ impl CacheClient {
     }
     pub fn from_config(config: CacheConfig) -> anyhow::Result<Self> {
         let address = config.address()?;
-        let token = match std::env::var(TOKEN_ENV) {
-            Ok(token) => Some(token),
-            Err(std::env::VarError::NotPresent) => None,
-            Err(error) => return Err(error.into()),
-        };
+        let token = crate::env::unicode(TOKEN_ENV)?;
         Self::configured(address, token, config.image_store, config.read_only)
     }
     pub fn new(address: String, token: Option<String>) -> anyhow::Result<Self> {
@@ -355,9 +351,9 @@ impl CacheClient {
     pub(crate) fn resolve_image_source(
         store: &crate::image::store::LocalStore,
     ) -> anyhow::Result<Self> {
-        if std::env::var(SERVER_ENV).as_deref() == Ok("off")
-            && std::env::var_os(super::config::BACKEND_ENV).is_none()
-            && std::env::var_os(super::config::LOCATION_ENV).is_none()
+        if crate::env::required_unicode(SERVER_ENV).as_deref() == Ok("off")
+            && crate::env::os(super::config::BACKEND_ENV).is_none()
+            && crate::env::os(super::config::LOCATION_ENV).is_none()
         {
             return Self::local(store);
         }
@@ -1420,7 +1416,7 @@ pub(super) mod tests {
             let temp = tempfile::tempdir().unwrap();
             let store = crate::image::store::LocalStore::open(temp.path().join("images")).unwrap();
             let result = CacheClient::resolve_image_source(&store);
-            if case == "off" {
+            if case == "off" || case == "off-with-invalid-overrides" {
                 assert!(result.unwrap().is_local_pool());
             } else {
                 assert!(result.is_err(), "{case} must not select the local pool");
@@ -1440,8 +1436,13 @@ pub(super) mod tests {
             ),
             ("invalid-path", "filesystem", "relative", ""),
             ("invalid-backend", "typo", "", ""),
+            ("token-only", "", "", ""),
+            ("non-unicode-token", "", "", ""),
+            ("read-only-only", "", "", ""),
             ("off", "", "", "off"),
+            ("off-with-invalid-overrides", "", "", "off"),
         ] {
+            let home = tempfile::tempdir().unwrap();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
             child.args(["--exact", "image::cache::client::tests::resolver_never_falls_back_after_explicit_selection_failure"]);
             for key in [
@@ -1450,11 +1451,31 @@ pub(super) mod tests {
                 SERVER_ENV,
                 super::super::READ_ONLY_ENV,
                 TOKEN_ENV,
-                "PVISOR_IMAGE_STORE",
+                crate::env::cache::IMAGE_STORE_ENV,
             ] {
                 child.env_remove(key);
             }
             child.env(CHILD, case);
+            if matches!(case, "token-only" | "non-unicode-token" | "read-only-only") {
+                // Select a missing service without making discovery explicit
+                // through BACKEND/LOCATION/SERVER, so TOKEN/READ_ONLY alone
+                // must prevent the implicit local fallback.
+                child.env("XDG_CACHE_HOME", home.path());
+                child.env("HOME", home.path());
+                if case == "read-only-only" {
+                    child.env(super::super::READ_ONLY_ENV, "false");
+                } else if case == "non-unicode-token" {
+                    use std::os::unix::ffi::OsStringExt;
+                    child.env(TOKEN_ENV, std::ffi::OsString::from_vec(vec![0xff]));
+                } else {
+                    child.env(TOKEN_ENV, "explicit-token");
+                }
+            }
+            if case == "off-with-invalid-overrides" {
+                use std::os::unix::ffi::OsStringExt;
+                child.env(TOKEN_ENV, std::ffi::OsString::from_vec(vec![0xff]));
+                child.env(super::super::READ_ONLY_ENV, "invalid");
+            }
             for (key, value) in [
                 (super::super::BACKEND_ENV, backend),
                 (super::super::LOCATION_ENV, location),

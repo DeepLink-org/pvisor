@@ -16,12 +16,12 @@ use std::time::{Duration, Instant};
 /// A single job is never split to meet `batch_bytes`: a larger accepted job is
 /// executed alone. `max_chunks = 1` and zero delay disable coalescing.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct WriteBufferOptions {
-    pub(super) budget_bytes: usize,
-    pub(super) max_jobs: usize,
-    pub(super) batch_bytes: usize,
-    pub(super) max_chunks: usize,
-    pub(super) max_delay: Duration,
+pub(crate) struct WriteBufferOptions {
+    pub(crate) budget_bytes: usize,
+    pub(crate) max_jobs: usize,
+    pub(crate) batch_bytes: usize,
+    pub(crate) max_chunks: usize,
+    pub(crate) max_delay: Duration,
 }
 
 impl Default for WriteBufferOptions {
@@ -38,7 +38,7 @@ impl Default for WriteBufferOptions {
 
 impl WriteBufferOptions {
     /// Rejects unsupported bounds before a worker or queue is created.
-    pub(super) fn validate(&self) -> io::Result<()> {
+    pub(crate) fn validate(&self) -> io::Result<()> {
         let invalid = if !(4 * 1024 * 1024..=256 * 1024 * 1024).contains(&self.budget_bytes) {
             Some("write-buffer budget_bytes must be between 4 MiB and 256 MiB")
         } else if !(1..=4096).contains(&self.max_jobs) {

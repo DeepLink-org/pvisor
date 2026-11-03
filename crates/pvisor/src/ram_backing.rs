@@ -86,7 +86,7 @@ pub fn write_process_inventory(
 
 #[cfg(target_os = "macos")]
 pub fn record_process_inventory_if_requested() -> io::Result<()> {
-    if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY") {
+    if let Some(directory) = crate::env::os(crate::env::ram::PROCESS_INVENTORY_ENV) {
         let inventory = inventory::process_inventory()?;
         write_process_inventory(Path::new(&directory), inventory)?;
     }

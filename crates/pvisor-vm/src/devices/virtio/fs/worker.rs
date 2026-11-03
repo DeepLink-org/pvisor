@@ -29,7 +29,13 @@ use super::passthrough::{self, PassthroughFs};
 use super::read_only::PassthroughFsRo;
 use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
-use super::write_buffer::WriteBufferOptions;
+use crate::env::fs::FsProfile;
+#[cfg(test)]
+use crate::env::fs::{
+    directory_cache_capacity, exclusive_upper_absence_cache_enabled, guest_cache_enabled,
+    host_writeback_config, host_writeback_enabled, lower_data_cache_enabled,
+    negative_entry_cache_enabled, readonly_flush_elision_enabled, root_data_cache_enabled,
+};
 use crate::devices::virtio::{InterruptTransport, VirtioShmRegion};
 
 mod scheduler;
@@ -449,251 +455,6 @@ impl Drop for RequestPool {
     }
 }
 
-/// Host settings captured once before device publication.
-pub(crate) struct FsProfile {
-    pub(crate) workers: usize,
-    root_data_cache: bool,
-    guest_cache: bool,
-    host_writeback: bool,
-    host_writeback_config: HostWritebackConfig,
-    directory_cache_capacity: usize,
-    exclusive_upper_absence_cache: bool,
-    readonly_flush_elision: bool,
-    lower_data_cache: bool,
-    negative_entry_cache: bool,
-    pub(super) writeback: Option<String>,
-    pub(super) shared_open: io::Result<bool>,
-}
-
-impl FsProfile {
-    pub(crate) fn from_env() -> io::Result<Self> {
-        Self::parse(|key| std::env::var_os(key))
-    }
-
-    pub(super) fn parse(
-        mut get: impl FnMut(&str) -> Option<std::ffi::OsString>,
-    ) -> io::Result<Self> {
-        let workers = get("PVISOR_VM_FS_WORKERS")
-            .and_then(|v| v.into_string().ok())
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| (1..=8).contains(v))
-            .unwrap_or_else(|| thread::available_parallelism().map_or(1, |n| n.get().min(4)));
-        let cache_setting = get("PVISOR_VM_CACHE_EXPERIMENT")
-            .map(|v| {
-                v.into_string().map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "PVISOR_VM_CACHE_EXPERIMENT must be UTF-8",
-                    )
-                })
-            })
-            .transpose()?;
-        Ok(Self {
-            workers,
-            root_data_cache: root_data_cache_enabled("/dev/root", cache_setting.as_deref())?,
-            guest_cache: guest_cache_enabled(get("PVISOR_VM_GUEST_CACHE").as_deref())?,
-            host_writeback: host_writeback_enabled(get("PVISOR_VM_FS_HOST_WRITEBACK").as_deref())?,
-            host_writeback_config: host_writeback_config(
-                get("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG").as_deref(),
-            )?,
-            directory_cache_capacity: directory_cache_capacity(
-                get("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
-            )?,
-            exclusive_upper_absence_cache: exclusive_upper_absence_cache_enabled(
-                get("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
-            )?,
-            readonly_flush_elision: readonly_flush_elision_enabled(
-                get("PVISOR_VM_FS_READONLY_FLUSH_ELISION").as_deref(),
-            )?,
-            lower_data_cache: lower_data_cache_enabled(
-                get("PVISOR_VM_FS_LOWER_DATA_CACHE").as_deref(),
-            )?,
-            negative_entry_cache: negative_entry_cache_enabled(
-                get("PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE").as_deref(),
-            )?,
-            // env::var(...).ok() historically treats non-Unicode as unset.
-            writeback: get("PVISOR_VM_FS_WRITEBACK").and_then(|v| v.into_string().ok()),
-            shared_open: super::overlay::shared_open_qualification_enabled(
-                get("PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").as_deref(),
-            )
-            .map(|enabled| enabled && cfg!(target_os = "linux")),
-        })
-    }
-}
-
-fn root_data_cache_enabled(tag: &str, setting: Option<&str>) -> io::Result<bool> {
-    match setting {
-        None | Some("root-data") => Ok(tag == "/dev/root"),
-        Some("off") => Ok(false),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_CACHE_EXPERIMENT supports root-data or off; metadata and no-open modes are not integrated",
-        )),
-    }
-}
-
-fn guest_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(true),
-        Some(value) if value == "1" => Ok(true),
-        Some(value) if value == "0" => Ok(false),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_GUEST_CACHE must be 0 or 1",
-        )),
-    }
-}
-
-fn host_writeback_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_HOST_WRITEBACK must be 0 or 1",
-        )),
-    }
-}
-
-/// Private engineering controls. Values never enter the public VM contract or
-/// snapshots; each new connection validates them before admitting any request.
-#[derive(Debug, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct HostWritebackConfig {
-    capacity_mib: usize,
-    jobs: usize,
-    batch_kib: usize,
-    chunks: usize,
-    delay_us: u64,
-    qualification_lock: bool,
-    synchronous: bool,
-}
-
-impl Default for HostWritebackConfig {
-    fn default() -> Self {
-        Self {
-            capacity_mib: 64,
-            jobs: 1024,
-            batch_kib: 1024,
-            chunks: 64,
-            delay_us: 10_000,
-            qualification_lock: false,
-            synchronous: false,
-        }
-    }
-}
-
-impl HostWritebackConfig {
-    fn options(&self) -> io::Result<WriteBufferOptions> {
-        let invalid =
-            || io::Error::new(io::ErrorKind::InvalidInput, "host writeback size overflow");
-        let options = WriteBufferOptions {
-            budget_bytes: self
-                .capacity_mib
-                .checked_mul(1024 * 1024)
-                .ok_or_else(invalid)?,
-            max_jobs: self.jobs,
-            batch_bytes: self.batch_kib.checked_mul(1024).ok_or_else(invalid)?,
-            max_chunks: self.chunks,
-            max_delay: std::time::Duration::from_micros(self.delay_us),
-        };
-        options.validate()?;
-        Ok(options)
-    }
-}
-
-fn host_writeback_config(setting: Option<&std::ffi::OsStr>) -> io::Result<HostWritebackConfig> {
-    let config = match setting {
-        None => HostWritebackConfig::default(),
-        Some(value) => {
-            let invalid = |error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG: {error}"),
-                )
-            };
-            let parsed: serde_json::Value =
-                serde_json::from_slice(value.as_bytes()).map_err(invalid)?;
-            if !parsed.is_object() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "PVISOR_VM_FS_HOST_WRITEBACK_CONFIG must be a JSON object",
-                ));
-            }
-            // Decode the original bytes so duplicate fields are also rejected.
-            serde_json::from_slice(value.as_bytes()).map_err(invalid)?
-        }
-    };
-    config.options()?;
-    Ok(config)
-}
-
-fn exclusive_upper_absence_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE must be 0 or 1",
-        )),
-    }
-}
-
-fn readonly_flush_elision_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_READONLY_FLUSH_ELISION must be 0 or 1",
-        )),
-    }
-}
-
-fn lower_data_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_LOWER_DATA_CACHE must be 0 or 1",
-        )),
-    }
-}
-
-fn negative_entry_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE must be 0 or 1",
-        )),
-    }
-}
-
-fn directory_cache_capacity(setting: Option<&std::ffi::OsStr>) -> io::Result<usize> {
-    let Some(setting) = setting else {
-        return Ok(super::overlay::DEFAULT_DIRECTORY_CACHE_CAPACITY);
-    };
-    setting
-        .to_str()
-        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|capacity| (1..=super::overlay::MAX_DIRECTORY_CACHE_CAPACITY).contains(capacity))
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY must be an ASCII decimal integer from 1 to 4096",
-            )
-        })
-}
-
 pub(super) struct FsWorkerConfig {
     pub profile: Arc<FsProfile>,
     pub fs_tag: String,
@@ -1081,6 +842,7 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::fs as env;
     use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
     use std::time::Duration;
     use vm_memory::GuestAddress;
@@ -1095,25 +857,25 @@ mod tests {
         assert_eq!(defaults.writeback, None);
         for value in ["0", "1", "", "false", "arbitrary"] {
             let profile =
-                FsProfile::parse(|key| (key == "PVISOR_VM_FS_WRITEBACK").then(|| value.into()))
+                FsProfile::parse(|key| (key == env::WRITEBACK).then(|| value.into()))
                     .unwrap();
             assert_eq!(profile.writeback.as_deref(), Some(value));
         }
         let non_unicode = FsProfile::parse(|key| {
-            (key == "PVISOR_VM_FS_WRITEBACK").then(|| OsString::from_vec(vec![0xff]))
+            (key == env::WRITEBACK).then(|| OsString::from_vec(vec![0xff]))
         })
         .unwrap();
         assert!(non_unicode.writeback.is_none());
         for key in [
-            "PVISOR_VM_CACHE_EXPERIMENT",
-            "PVISOR_VM_GUEST_CACHE",
-            "PVISOR_VM_FS_HOST_WRITEBACK",
-            "PVISOR_VM_FS_HOST_WRITEBACK_CONFIG",
-            "PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY",
-            "PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE",
-            "PVISOR_VM_FS_READONLY_FLUSH_ELISION",
-            "PVISOR_VM_FS_LOWER_DATA_CACHE",
-            "PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE",
+            env::CACHE_EXPERIMENT,
+            env::GUEST_CACHE,
+            env::HOST_WRITEBACK,
+            env::HOST_WRITEBACK_CONFIG,
+            env::DIRECTORY_CACHE_CAPACITY,
+            env::EXCLUSIVE_UPPER_ABSENCE_CACHE,
+            env::READONLY_FLUSH_ELISION,
+            env::LOWER_DATA_CACHE,
+            env::NEGATIVE_ENTRY_CACHE,
         ] {
             assert!(
                 FsProfile::parse(|candidate| (candidate == key).then(|| "invalid".into())).is_err(),
@@ -1122,7 +884,7 @@ mod tests {
         }
         for value in ["0", "9", "invalid"] {
             let profile =
-                FsProfile::parse(|key| (key == "PVISOR_VM_FS_WORKERS").then(|| value.into()))
+                FsProfile::parse(|key| (key == env::WORKERS).then(|| value.into()))
                     .unwrap();
             assert!((1..=4).contains(&profile.workers));
         }
@@ -1176,7 +938,7 @@ mod tests {
     fn invalid_shared_open_setting_does_not_reject_passthrough_or_null_worker() {
         let profile = Arc::new(
             FsProfile::parse(|key| {
-                (key == "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").then(|| "invalid".into())
+                (key == env::SHARED_OPEN_QUALIFICATION).then(|| "invalid".into())
             })
             .unwrap(),
         );
@@ -1251,7 +1013,7 @@ mod tests {
         ] {
             let error = host_writeback_enabled(Some(OsStr::from_bytes(value))).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-            assert!(error.to_string().contains("PVISOR_VM_FS_HOST_WRITEBACK"));
+            assert!(error.to_string().contains(env::HOST_WRITEBACK));
         }
     }
 

@@ -171,7 +171,7 @@ impl NetworkAccess {
         }
         let child = command
             .env(INTERNAL_ENV, descriptor.path())
-            .env_remove("PVISOR_KRUN_RUNNER_SPEC")
+            .env_remove(crate::env::runner::RUNNER_SPEC_ENV)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -1130,7 +1130,7 @@ mod v2_tests {
                         .env("PVISOR_LAZY_BRIDGE_V2", bridge)
                         .env("PVISOR_LAZY_IMAGE_V2", upstream)
                         .env(METRICS_ENV, directory.path())
-                        .env_remove("PVISOR_KRUN_RUNNER_SPEC")
+                        .env_remove(crate::env::runner::RUNNER_SPEC_ENV)
                         .stdin(Stdio::null())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())

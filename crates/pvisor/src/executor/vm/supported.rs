@@ -1,6 +1,14 @@
 //! libkrun VM process isolation over a pVisor-provided root OverlayFS.
 
 use crate::config::VmSettings;
+use crate::env::{
+    self,
+    ram::POOL_ENV,
+    runner::{
+        CONTROL_FD_ENV, IDLE_FD_ENV, LOADER_ENV, NETWORK_FD_ENV, RAM_FD_ENV, READONLY_FLUSH_ENV,
+        RESTORE_RAM_SERVER_ENV, RESTORE_RAM_WATCHDOG_ENV, RUNNER_SPEC_ENV,
+    },
+};
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use anyhow::Context as _;
@@ -19,17 +27,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-pub(super) const RUNNER_SPEC_ENV: &str = "PVISOR_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
-const NETWORK_FD_ENV: &str = "PVISOR_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
-const CONTROL_FD_ENV: &str = "PVISOR_KRUN_CONTROL_FD";
 const CONTROL_CHILD_FD: RawFd = 199;
-const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
 const RAM_CHILD_FD: RawFd = 200;
-const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
 const IDLE_CHILD_FD: RawFd = 202;
-const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
 
 pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
@@ -49,7 +51,7 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn needs_krun_enomem_workaround() -> bool {
-    let override_value = std::env::var("PVISOR_KRUN_ENOMEM_WORKAROUND").ok();
+    let override_value = env::required_unicode(env::runner::ENOMEM_OVERRIDE_ENV).ok();
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok();
     krun_workaround_policy(override_value.as_deref(), release.as_deref())
 }
@@ -582,10 +584,7 @@ impl VmExecutor {
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
         // Legacy host alias is consumed once, at admission. Explicit settings
         // win; the child receives only the normalized descriptor.
-        resolve_ram_settings(
-            &mut settings,
-            std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL"),
-        )?;
+        resolve_ram_settings(&mut settings, env::os(POOL_ENV))?;
         anyhow::ensure!(
             settings.prepared_rootfs.is_none() || settings.snapshot_filesystem_pool.is_none(),
             "CAPABILITY_UNSUPPORTED: prepared rootfs cannot use an execution checkpoint filesystem pool"
@@ -980,11 +979,7 @@ fn configure_runner_firmware(
 fn scrub_runner_loader_environment(command: &mut Command) {
     // Firmware selection travels only in RunnerSpec, never through the host's
     // dynamic-loader search paths (including inherited values).
-    for key in [
-        "LD_LIBRARY_PATH",
-        "DYLD_LIBRARY_PATH",
-        "DYLD_FALLBACK_LIBRARY_PATH",
-    ] {
+    for key in LOADER_ENV {
         command.env_remove(key);
     }
 }
@@ -1780,10 +1775,10 @@ impl RunExecutor for VmExecutor {
             &mut command,
             self,
             &runner,
-            std::env::var_os(READONLY_FLUSH_ENV).as_deref(),
+            env::os(READONLY_FLUSH_ENV).as_deref(),
         );
         // Policy is carried in RunnerSpec, never inherited as an alias.
-        command.env_remove("PVISOR_EXPERIMENTAL_MEMORY_POOL");
+        command.env_remove(POOL_ENV);
         let diagnostic_runner =
             crate::diagnostics::runner_output().and_then(|file| runner_fd(file.as_raw_fd()).ok());
         let diagnostic_source_fd = diagnostic_runner.as_ref().map(AsRawFd::as_raw_fd);
@@ -1843,9 +1838,9 @@ impl RunExecutor for VmExecutor {
         // diagnostic override still takes precedence.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if needs_krun_enomem_workaround() {
-            command.env("KRUN_ENOMEM_WORKAROUND", "1");
+            command.env(env::runner::ENOMEM_WORKAROUND_ENV, "1");
         } else {
-            command.env_remove("KRUN_ENOMEM_WORKAROUND");
+            command.env_remove(env::runner::ENOMEM_WORKAROUND_ENV);
         }
 
         scrub_runner_loader_environment(&mut command);
@@ -2462,15 +2457,15 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if super::cpu_qos::run_anchor_if_requested()? {
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_WATCHDOG") {
+    if let Some(path) = env::os(RESTORE_RAM_WATCHDOG_ENV) {
         crate::environment_snapshot::watch_mount(Path::new(&path))?;
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_SERVER") {
+    if let Some(path) = env::os(RESTORE_RAM_SERVER_ENV) {
         crate::environment_snapshot::serve_ram(Path::new(&path))?;
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
+    if let Some(path) = env::os(RUNNER_SPEC_ENV) {
         crate::util::startup_mark("runner.spec_read_begin");
         let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
         crate::util::startup_mark_run("runner.spec_read_ready", &spec.run_id);
@@ -2535,7 +2530,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     let restore = if spec.restore.is_some() {
-        let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+        let ram = env::required_unicode(RAM_FD_ENV)?.parse::<RawFd>()?;
         anyhow::ensure!(ram == RAM_CHILD_FD, "invalid restore RAM descriptor");
         if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -2717,7 +2712,7 @@ fn run_linked_krun(
         )?;
     }
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
-    let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+    let ram = env::required_unicode(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -2762,7 +2757,7 @@ fn run_linked_krun(
             baseline_indexes.get(1).cloned().flatten(),
         )?;
     }
-    if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
+    if let Some(fd) = env::os(NETWORK_FD_ENV) {
         let fd = fd
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid {NETWORK_FD_ENV}"))?
@@ -2801,7 +2796,7 @@ fn run_linked_krun(
     #[cfg(not(target_os = "linux"))]
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     crate::util::startup_mark_run("runner.attestation_ready", &spec.run_id);
-    let control = std::env::var(CONTROL_FD_ENV)
+    let control = env::required_unicode(CONTROL_FD_ENV)
         .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
         .parse::<RawFd>()?;
     anyhow::ensure!(control == CONTROL_CHILD_FD, "invalid VM control descriptor");
@@ -2816,7 +2811,7 @@ fn run_linked_krun(
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
         enable_vcpu_observation(&handle, &spec.features)?;
         if spec.guest_idle {
-            let fd = std::env::var(IDLE_FD_ENV).map_err(std::io::Error::other)?.parse::<RawFd>().map_err(std::io::Error::other)?;
+            let fd = env::required_unicode(IDLE_FD_ENV).map_err(std::io::Error::other)?.parse::<RawFd>().map_err(std::io::Error::other)?;
             if fd != IDLE_CHILD_FD { return Err(std::io::Error::other("invalid idle descriptor")); }
             if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { return Err(std::io::Error::last_os_error()); }
             super::idle::serve(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) }, handle.clone()).map_err(std::io::Error::other)?;

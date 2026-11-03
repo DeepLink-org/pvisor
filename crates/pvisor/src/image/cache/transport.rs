@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub(super) const TOKEN_ENV: &str = "PVISOR_CACHE_TOKEN";
+pub(super) use crate::env::cache::TOKEN_ENV;
 pub(super) const TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn default_endpoint() -> anyhow::Result<String> {

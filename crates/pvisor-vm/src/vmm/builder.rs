@@ -2175,7 +2175,7 @@ fn attach_fs_devices(
         return Ok(());
     }
     let profile = Arc::new(
-        crate::devices::virtio::fs::FsProfile::from_env()
+        crate::env::fs::FsProfile::from_env()
             .map_err(|error| StartMicrovmError::CreateFsDevice(error.to_string()))?,
     );
     for (i, config) in fs_devs.iter().enumerate() {
