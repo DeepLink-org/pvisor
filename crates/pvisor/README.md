@@ -20,7 +20,7 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Job lifecycle commands, the per-Job owner
 bootstrap, terminal/rendering code and companion discovery.
-Cache storage and node resource protocols remain runtime components; cache
+Cache storage and the optional node resource client remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
 owns the server entry point.
 Dockerfile builds have a separate, user-private RUN checkpoint cache under
@@ -450,6 +450,20 @@ mutations recheck admission under their leases. Capture rechecks before sending,
 not after an effectful request has been sent. Scoped receipts and lost-response
 ambiguity remain; this is not a universal exactly-once dispatcher.
 
+`lookup_run_id` performs strict, read-only discovery across the selected storage
+and default Job roots. Only `Ok(None)` permits trying another selector namespace;
+corrupt records/indexes, conflicting owners, duplicate IDs and discovery I/O
+failures return `RunLookupError`. The result is not a lock or reservation.
+Ordinary `resolve_run` retains its path, workspace and `last` behavior.
+
+Apply responses retain schema 1 and add `picker`: an optional admitted inventory
+whose `excluded` entries are zero-based indices into that response's `candidates`.
+Indices preserve non-UTF-8 path identities without a second path encoding.
+The inventory remains available when a selected set conflicts, but is absent on
+admission failure, including pending apply and discarded stage. It is not apply
+authorization: every preview and execution repeats validation and execution
+still checks the expected-plan token.
+
 Ordinary Job execution uses `RuntimeJobService::start_managed()` and
 `ManagedJobRun`. The runtime retains the actual Attempt completion task, installs
 the durable execution Job server for VM Attempts and publishes its completion
@@ -817,10 +831,12 @@ window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
 `pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
-`pvisor-daemon serve --cache` serves the cache. Node runtime protocols own immutable mounts and snapshot
-RAM with same-user authorization, compatibility checks and connection pins.
-The daemon has no node acquire/release adapter. Embedded callers retain explicit
-resource ownership and must release consumers before backing owners.
+`pvisor-daemon serve --cache` serves the cache. The optional `vm.node_socket`
+connects to a caller-provided same-host resource service; the runtime retains its
+client protocol and connection pins for restored RAM. No node server, owner
+registry or bounded-warming service is bundled. The daemon has no node
+acquire/release adapter. Embedded callers retain explicit resource ownership and
+must release consumers before backing owners.
 
 Linux x86_64 also has default-off experimental instance-local live cold
 compression: `VmSettings.cold_ram_compression` / `[vm].cold_ram_compression` or
@@ -1232,8 +1248,8 @@ publication and Run persistence diagnostics retain their own helpers.
 Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
 and two entries in `src/bin/`: `pvisor`
 and `pvisor-replay`. Daemon pool lifecycle belongs in
-`../pvisor-daemon/src/memory_pool.rs`; node protocols remain in `src/node.rs`
-and `src/node/`. Feature listing and cache argument
+`../pvisor-daemon/src/memory_pool.rs`; the node client remains in `src/node.rs`.
+Feature listing and cache argument
 parsing also live in the application. Executable-dependent integration tests
 live in its `tests/`; runtime-only tests remain here. Tests combining command
 execution with runtime APIs link both crates from the application test suite.
@@ -1256,7 +1272,8 @@ physical-lower stability declaration retain their contracts.
   response receipts are neither trusted nor written in this mode. Invalid
   metadata fails without silently falling back to RPC; invalid local encoded
   cache frames may be refetched. Decoded nodes have a 16 MiB/4,096-entry LRU;
-  allocations stay budget-charged through the last active reference. Content
+  evicted allocations held by active readers live until their last `Arc` is
+  released. These caps bound cache retention, not all active-reader memory. Content
   frames have a separate 64 MiB/4,096-entry cache. Same-key misses coalesce with
   bounded concurrent admission. Persistent encoded disk caches have no total
   eviction quota. Initial immutable-object,

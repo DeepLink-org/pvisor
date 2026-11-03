@@ -107,6 +107,29 @@ fn validate_apply_admission(record: &OverlayRecord) -> Result<(), OverlayError> 
     Ok(())
 }
 
+/// Check selection-independent admission before offering an apply inventory.
+///
+/// Rejects unsealed/ephemeral stages, protected or terminal targets and pending
+/// intents. A project boundary additionally requires the original root overlay,
+/// a valid bound project directory and complete recorded preimages; project apply
+/// is unsupported outside Linux. Does not inspect selection/dependency conflicts,
+/// take target locks, write state or grant permission to execute. Callers must
+/// still use preview and execution, which repeat their own admission checks.
+pub fn check_apply_inventory(
+    record: &OverlayRecord,
+    boundary: Option<&ProjectApplyBoundary>,
+) -> Result<(), OverlayError> {
+    validate_apply_admission(record)?;
+    if let Some(boundary) = boundary {
+        require_root_project_record(record)?;
+        ProjectTarget::open(record, boundary)?;
+        require_project_preimages(record)?;
+    } else {
+        ApplyTargetKind::resolve(record)?;
+    }
+    Ok(())
+}
+
 fn prepare_overlay_apply(
     record: &OverlayRecord,
     lowers: &[PathBuf],
@@ -1358,11 +1381,7 @@ fn prepare_project_apply(
 ) -> Result<(ProjectTarget, ApplyPlan, Vec<PathPreimage>), OverlayError> {
     validate_apply_admission(record)?;
     let target = ProjectTarget::open(record, boundary)?;
-    if !preimage_journal_is_complete(&record.stage_dir.join("preimages")) {
-        return Err(OverlayError::InvalidState(
-            "project apply requires complete recorded preimages".into(),
-        ));
-    }
+    require_project_preimages(record)?;
     let plan = plan_overlay_apply_in_scope(
         record,
         lowers,
@@ -1384,6 +1403,15 @@ fn prepare_project_apply(
         .collect::<Vec<_>>();
     target.validate_preimages(record, &preimages, &plan.selected, false)?;
     Ok((target, plan, preimages))
+}
+
+fn require_project_preimages(record: &OverlayRecord) -> Result<(), OverlayError> {
+    if !preimage_journal_is_complete(&record.stage_dir.join("preimages")) {
+        return Err(OverlayError::InvalidState(
+            "project apply requires complete recorded preimages".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn require_root_project_record(record: &OverlayRecord) -> Result<(), OverlayError> {

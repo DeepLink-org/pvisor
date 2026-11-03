@@ -69,8 +69,8 @@ pub use registry::LEASE_FILENAME;
 pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, JobDirectoryLock, RunLineage, RunRecord, RunRecordState,
+    EnvironmentProjection, JobDirectoryLock, RunLineage, RunLookupError, RunRecord, RunRecordState,
     control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
-    default_run_home, is_live, resolve_run,
+    default_run_home, is_live, lookup_run_id, resolve_run,
 };
 pub use supervisor::RuntimeCapabilities;

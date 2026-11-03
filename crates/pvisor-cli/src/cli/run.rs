@@ -317,7 +317,7 @@ struct RunOverrides {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
     /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
-    /// Emitted by the --safe preset; rarely needed by hand.
+    /// The --safe preset clears this list internally; this flag also works on its own.
     #[arg(long, hide = true)]
     clear_pass_env: bool,
     /// Maximum processes/threads admitted for the Job.
@@ -396,7 +396,7 @@ struct VmOverrides {
     #[arg(short = 'M', conflicts_with = "vm_memory_pool")]
     #[serde(default)]
     vm_shared_memory_pool: bool,
-    /// Same-host node resource service for shared immutable images and restored RAM.
+    /// Caller-provided same-host resource service for restored RAM; no bundled node server.
     #[arg(long = "vm-node-socket", value_name = "SOCKET")]
     vm_node_socket: Option<PathBuf>,
     /// Immutable filesystem pool for Linux x86_64 no-network native checkpoints.
@@ -1005,9 +1005,9 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         .result_file
         .clone()
         .context("JSON --spec requires --result-file")?;
-    let stage_spec = Some(args.stage.clone().unwrap_or_else(|| {
+    let stage_path = args.stage.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("pvisor-stage-{}", uuid::Uuid::new_v4()))
-    }));
+    });
     let spec: RunSpec = serde_json::from_slice(
         &std::fs::read(&spec_path)
             .with_context(|| format!("read delegated RunSpec from {}", spec_path.display()))?,
@@ -1015,7 +1015,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     .context("decode delegated RunSpec")?;
     reject_ask_policies(&spec.policies, &Default::default())?;
     let mut stage_guard = None;
-    let (pvisor, config) = if let Some(stage_path) = stage_spec {
+    let (pvisor, config) = {
         let cleanup = args.stage.is_none();
         if cleanup {
             if stage_path.exists() {
@@ -1107,13 +1107,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             );
         }
         (builder.build(), config)
-    } else {
-        (
-            PVisor::builder()
-                .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
-                .build(),
-            RunConfig::default(),
-        )
     };
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
@@ -2204,18 +2197,8 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
-        use clap::Parser;
         let patch = safe::patch(&requested);
-        let super::Command::Spawn(patch) = super::Cli::try_parse_from(
-            ["pvisor".to_owned(), "spawn".to_owned()]
-                .into_iter()
-                .chain(patch),
-        )?
-        .command
-        else {
-            unreachable!("expected run command")
-        };
-        apply_cli_unvalidated(config, *patch)?;
+        apply_cli_unvalidated(config, patch)?;
         // The preset requests the sandboxed filesystem view so the launcher
         // installs the synthetic root/Landlock or Seatbelt write controls.
         // An explicit --filesystem value in `args` still wins below.

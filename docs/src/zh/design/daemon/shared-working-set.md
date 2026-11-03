@@ -1,6 +1,6 @@
 # 共享工作集与按需加载
 
-按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 node 资源提供这一路径的机制；Daemon 可显式启用自有 Linux physical pool；它尚无通用 node acquire/release 适配器，完整 API 路径的密度收益仍待验证。
+按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 RAM 恢复提供这一路径的机制；Daemon 可显式启用自有 Linux physical pool。可选 node socket 是面向调用方自备服务的客户端协议，不是随产品提供的 node 服务端。Daemon 尚无通用 node acquire/release 适配器，完整 API 路径的密度收益仍待验证。
 
 ![Linux physical pool 的共享原文页与 COW 写入](../assets/memory-cow.svg)
 
@@ -16,7 +16,7 @@
 
 | 组件 | 机制 | 边界 |
 | --- | --- | --- |
-| `pvisor/src/node.rs`、`node/registry.rs` | 同用户、同主机不可变 owner；按身份准备、连接 pin、有界 warming | 供原生调用方使用的运行时协议；无 daemon 适配器或透明 live 接管 |
+| `pvisor/src/node.rs` | 面向调用方自备同主机资源服务的客户端协议与连接 pin | 不提供 node 服务端、owner registry、有界 warming、daemon 适配器或透明 live 接管 |
 | 原生镜像缓存 | 校验后的按需读、分页 metadata 与内容复用 | 已发布 FS/S3 对象支持分页读；普通未缓存 OCI prepare 仍可能全部准备后返回 |
 | 原生 Linux RAM 恢复 | 经授权的 sealed 身份／兼容性与共享只读 inode，guest 私有 COW 映射 | 普通新启动绕过 RAM restore；仍要求兼容原生 profile |
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
@@ -25,7 +25,7 @@
 | Daemon sealed 压缩池 | 共享不可变编码 64 KiB 块，客户端本地解码并恢复私有 RAM | 显式压缩模式；要求 userfaultfd，组件测试与双 VM 正确性探针已通过 |
 | NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 可选 daemon 自有池；无自动 node socket 获取、RAM restore 或 lazy snapshot 集成 |
 
-其他源码区域：`image/cache/lazy.rs`、`image/cache/portable/binary.rs`、`executor/vm/restore_ram.rs`、`environment_snapshot/lazy.rs` 与 `pvisor-vm/src/memory.rs`。原生 node acquire 校验授权 store、发布与兼容性，不以缓存存在替代权威。
+其他源码区域：`image/cache/lazy.rs`、`image/cache/portable/binary.rs`、`executor/vm/restore_ram.rs`、`environment_snapshot/lazy.rs` 与 `pvisor-vm/src/memory.rs`。原生恢复在获取 pin 前校验发布与兼容性；外部资源服务必须自行执行 store 授权，不能以缓存存在替代权威。
 
 ## 工作集记账 {#model}
 
@@ -41,11 +41,11 @@
 
 物理共享页只计一次。共享成本随版本和访问模式改变，私有成本随执行数和写比例增长。分散访问与大量写入可以消除收益。文件 copy-up、传输块、read-ahead 与 COW 可能放大请求字节。
 
-逻辑预留、物理占用和可回收缓存分开。原生 node retained-payload 记账覆盖内容块、分页 metadata 和 decoded RAM，不含完整 metadata、scratch、外部引用或内核页。仍需内核上限和整组观察。这些机制不放宽 daemon 的[硬限制准入](index.md#admission)。
+逻辑预留、物理占用和可回收缓存分开。原生缓存 retained-payload 记账覆盖内容块、分页 metadata 和 decoded RAM，不含完整 metadata、scratch、外部引用或内核页。外部资源服务自行负责额外记账。仍需内核上限和整组观察。这些机制不放宽 daemon 的[硬限制准入](index.md#admission)。
 
 ## 所有权与未来接入 {#integration}
 
-连接 pin 保护活动不可变挂载／backing，直到原生 runner 已回收。最后释放后才能拆除或有界 warming。同身份准备串行，慢 I/O 不占用全局 map 锁。可重新获取的 decoded cache 可以驱逐，活动 owner 或私有冷 RAM 唯一剩余副本不能视为缓存。
+客户端保留连接 pin，直到原生 runner 已回收。准备、warming 与 backing 拆除由外部服务负责；pVisor 不再提供 node owner registry。可重新获取的 decoded cache 可以驱逐，活动 owner 或私有冷 RAM 唯一剩余副本不能视为缓存。
 
 为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。Daemon 没有 node acquire/release 适配器。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
 

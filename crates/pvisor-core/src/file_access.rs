@@ -621,6 +621,7 @@ mod tests {
             policy.authorize(Path::new("secrets/note.txt")),
             FileAccessDecision::Warn
         );
+        assert!(policy.check(Path::new("secrets/note.txt")).is_ok());
         assert_eq!(
             policy.matched_rule_ids(Path::new("secrets/public.key")),
             ["fs.ask.0"]

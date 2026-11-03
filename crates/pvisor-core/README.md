@@ -22,6 +22,14 @@ mount/network implementations reside in their drivers. Embedding callers supply
 Core's injected approval channels. Core does not start processes or open
 control sockets. Policy evaluation does not itself prove enforcement.
 
+The in-repository CLI and runtime do not install an approval channel; the CLI
+rejects Ask file policies rather than offering interactive approval. The public
+`audit::AuditChannel` contract is an embedding extension: an embedding caller
+must explicitly implement and install it and own its transport and caching.
+Without a channel, approval requests deny and ordinary Ask file-access checks
+fail closed; Warn checks still emit a warning and permit access. This extension
+does not mean interactive approval is supported by the shipped CLI or runtime.
+
 Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
 
 The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.

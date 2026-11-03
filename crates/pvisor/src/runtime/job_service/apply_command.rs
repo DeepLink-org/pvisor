@@ -154,6 +154,18 @@ pub struct ApplyCommandExecution {
     pub ledger_confirmed: bool,
     pub error: Option<String>,
 }
+/// Admitted picker inventory for this request's scope and exclusions.
+///
+/// This is a read-only snapshot, not authorization to apply. Planning conflicts
+/// may still block the selected set; preview and execution must revalidate it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyCommandPicker {
+    /// Zero-based indices into this response's `candidates` excluded by the
+    /// request, including ancestor-directory matches. Positive selection does
+    /// not affect this list. Indices avoid lossy encoding of non-UTF-8 paths
+    /// and are valid only for the inventory in this same response.
+    pub excluded: Vec<usize>,
+}
 /// JSON schema 1 response. `mode` is preview/execute and `status` is
 /// ready/applied/no_changes/blocked/error;
 /// selected and required are separate, scope-relative change records. Candidates
@@ -173,6 +185,10 @@ pub struct ApplyCommandResponse {
     pub execution: Option<ApplyCommandExecution>,
     pub candidates: Vec<ChangeEntry>,
     pub plan: Option<String>,
+    /// Present after inventory admission, even if the selected set conflicts.
+    /// Absent when admission fails, including pending apply or discarded stage.
+    /// Existing JSON fields retain their schema 1 meanings.
+    pub picker: Option<ApplyCommandPicker>,
 }
 impl RuntimeJobService {
     /// Plan and optionally execute under Job directory, ExecutionJob and Attempt
@@ -210,6 +226,7 @@ impl RuntimeJobService {
             execution: None,
             candidates: vec![],
             plan: None,
+            picker: None,
         };
         if let Err(error) = command(context, &selected, &request, &mut response) {
             let error = format!("{error:#}");
@@ -315,7 +332,8 @@ fn command(
         // '/' cannot match any strict relative staged path.
         selection.includes.push("/".into());
     }
-    let mapped = map_selection(&selection, &changes, prefix)?;
+    let scope_selection = CompiledApplySelection::compile(&selection)?;
+    let mapped = map_selection(&selection, &scope_selection, &changes, prefix)?;
     response.plan = Some(plan_token(
         &record,
         &overlay,
@@ -331,6 +349,23 @@ fn command(
         overlay.state != OverlayState::Discarded,
         "stage was dropped; changes cannot be recovered"
     );
+    if overlay.state != OverlayState::Applied {
+        // Offer selection adjustment only after all global Core admission checks.
+        // Applied stages retain their existing successful no-op behavior below.
+        core::check_apply_inventory(&overlay, boundary.as_ref())?;
+    }
+    response.picker = Some(ApplyCommandPicker {
+        excluded: response
+            .candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, change)| {
+                scope_selection
+                    .excluded(&change.relative_path())
+                    .then_some(index)
+            })
+            .collect(),
+    });
     if overlay.state == OverlayState::Applied {
         if let Some(expected) = &request.expected_plan {
             ensure!(
@@ -636,14 +671,13 @@ impl CompiledApplySelection {
 }
 fn map_selection(
     selection: &ApplySelection,
+    compiled: &CompiledApplySelection,
     changes: &[ChangeEntry],
     prefix: Option<&Path>,
 ) -> anyhow::Result<ApplySelection> {
     let Some(prefix) = prefix else {
-        CompiledApplySelection::compile(selection)?;
         return Ok(selection.clone());
     };
-    let compiled = CompiledApplySelection::compile(selection)?;
     let mut paths = vec![];
     let mut excludes = vec![];
     for change in changes {
@@ -728,6 +762,57 @@ fn plan_token(
         }
     }
     Ok(hash.finalize().to_hex().to_string())
+}
+
+#[cfg(test)]
+mod selection_contract_tests {
+    use super::*;
+
+    #[test]
+    fn picker_and_rootstage_mapping_share_scope_relative_ancestor_exclusions() {
+        let selection = ApplySelection {
+            excludes: vec!["build".into(), "*.log".into()],
+            ..Default::default()
+        };
+        let compiled = CompiledApplySelection::compile(&selection).unwrap();
+        let changes: Vec<ChangeEntry> = [
+            "project/build/nested/file",
+            "project/src/main.rs",
+            "project/build-more/file",
+            "project/output.log",
+            "outside/file",
+        ]
+        .into_iter()
+        .map(|path| {
+            serde_json::from_value(serde_json::json!({"path": path, "kind": "added"})).unwrap()
+        })
+        .collect();
+        let prefix = Some(Path::new("project"));
+        let mapped = map_selection(&selection, &compiled, &changes, prefix).unwrap();
+        let mapped = CompiledApplySelection::compile(&mapped).unwrap();
+        let mut excluded = vec![];
+        for change in &changes {
+            let path = change.relative_path();
+            if in_scope(&path, prefix) {
+                let relative = relative_change(change, prefix).relative_path();
+                assert_eq!(compiled.excluded(&relative), mapped.excluded(&path));
+                if compiled.excluded(&relative) {
+                    excluded.push(relative);
+                } else {
+                    assert!(mapped.requested(&path));
+                }
+            } else {
+                assert!(!mapped.requested(&path));
+            }
+        }
+        assert_eq!(
+            excluded,
+            [
+                PathBuf::from("build/nested/file"),
+                PathBuf::from("output.log")
+            ]
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1168,6 +1253,12 @@ mod tests {
                     assert!(response.plan.is_some());
                 }
                 assert_eq!(
+                    response.picker.is_some(),
+                    matches!(scenario, "ready" | "picker" | "conflict"),
+                    "{scenario}: {:?}",
+                    response.blockers
+                );
+                assert_eq!(
                     before,
                     tree_snapshot(root.path()),
                     "preview wrote: {scenario}, execution_job={execution_job}"
@@ -1267,6 +1358,15 @@ mod tests {
         preview_request.selection.excludes = vec!["b".into()];
         let preview = run(preview_request);
         assert_eq!(preview.status, "ready", "{:?}", preview.blockers);
+        let excluded: Vec<_> = preview
+            .picker
+            .as_ref()
+            .unwrap()
+            .excluded
+            .iter()
+            .map(|&index| preview.candidates[index].path.as_str())
+            .collect();
+        assert_eq!(excluded, ["b"]);
         assert_eq!(preview.mode, "preview");
         assert_eq!(preview.scope.kind, "project");
         assert_eq!(

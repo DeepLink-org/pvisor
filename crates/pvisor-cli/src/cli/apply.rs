@@ -81,7 +81,7 @@ pub(super) fn render_error(json: bool, dry_run: bool, message: &str) {
                 "mode": if dry_run { "preview" } else { "execute" }, "status": "error",
                 "source": null, "scope": null, "selected": [], "required": [],
                 "blockers": [message], "remaining": {"in_scope": null, "outside_scope": null},
-                "execution": null, "candidates": [], "plan": null
+                "execution": null, "candidates": [], "plan": null, "picker": null
             })
         );
     }
@@ -273,41 +273,21 @@ fn interactive(args: &mut ApplyArgs) -> anyhow::Result<i32> {
         inventory_args.include.clear();
         let inventory = request(&inventory_args, true, None)?;
         args.selector = inventory.source.stage.clone();
-        if inventory.status == "blocked"
-            && (inventory.plan.is_none()
-                || inventory.candidates.is_empty()
-                || inventory
-                    .blockers
-                    .iter()
-                    .any(|b| b.contains("pending apply") || b.contains("stage was dropped")))
-        {
+        let Some(picker) = &inventory.picker else {
             render(&inventory, false);
             return Ok(3);
-        }
+        };
         for blocker in &inventory.blockers {
             println!("inventory blocker: {blocker}");
         }
+        let excluded: std::collections::HashSet<_> = picker.excluded.iter().copied().collect();
+        let enabled: Vec<_> = inventory
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, _)| !excluded.contains(&index))
+            .collect();
         let candidates = inventory.candidates;
-        let mut enabled = vec![true; candidates.len()];
-        // Ask the same planner, not a second glob implementation. A no-match result
-        // means excluded; other blockers remain visible at confirmation and cannot apply.
-        if !args.exclude.is_empty() {
-            for (index, change) in candidates.iter().enumerate() {
-                let mut probe = args.clone();
-                probe.all = false;
-                probe.paths = vec![change.relative_path()];
-                probe.include.clear();
-                let response = request(&probe, true, None)?;
-                let no_match = response
-                    .blockers
-                    .iter()
-                    .any(|b| b.contains("no staged changes matched"))
-                    || (matches!(response.status.as_str(), "ready" | "preview")
-                        && response.selected.is_empty()
-                        && response.required.is_empty());
-                enabled[index] = !no_match;
-            }
-        }
         let mut selected: Vec<bool> = candidates
             .iter()
             .enumerate()

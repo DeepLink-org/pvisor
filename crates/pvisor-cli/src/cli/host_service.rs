@@ -347,7 +347,6 @@ fn unblock_owner_signals() -> anyhow::Result<()> {
 pub(crate) struct Completion {
     exit_code: i32,
     cancelled: bool,
-    signal: Option<i32>,
 }
 type Request = AgentCtlHostRequest<ContextData>;
 type Response = AgentCtlHostResponse<Completion>;
@@ -565,7 +564,6 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
             .map(|exit_code| Completion {
                 exit_code: if signal != 0 { 128 + signal } else { exit_code },
                 cancelled: signal != 0,
-                signal: (signal != 0).then_some(signal),
             })
             .map_err(|error| {
                 AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, format!("{error:#}"))

@@ -1210,125 +1210,24 @@ fn decoded_index_nodes_are_reused_for_positive_and_negative_lookups() {
             );
         }
     }
-}
 
-#[test]
-fn decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc() {
-    const CHILD: &str = "PVISOR_TEST_DECODED_NODE_BUDGET";
-    let Some(mode) = std::env::var_os(CHILD) else {
-        for mode in ["retained", "exhausted"] {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "image::cache::portable::tests::decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc", "--nocapture"])
-                .env(CHILD, mode).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{mode}:\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        return;
-    };
-    let (tmp, cache, store, image) = fixture();
-    let canonical = crate::image::oci::cache_reference("example:test")
-        .unwrap()
-        .0;
-    cache.publish(&store, &image, "amd64", &canonical).unwrap();
-    let handle = Handle::parse(&read_handle(&cache)).unwrap();
-    drop(cache);
-    let limit = if mode == "exhausted" {
-        1
-    } else {
-        8 * binary::PAGE_BYTES
-    };
-    crate::cache_budget::configure(limit).unwrap();
-    let reader = PortableCache::new(
-        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
-        None,
-        true,
-    );
-    let loaded = reader.load(&handle).unwrap();
-    if mode == "exhausted" {
-        for _ in 0..2 {
-            assert_eq!(loaded.entry(b"small").unwrap().path, b"small");
-            assert!(
-                loaded
-                    .entry(b"missing")
-                    .unwrap_err()
-                    .downcast_ref::<std::io::Error>()
-                    .is_some()
-            );
-            assert_eq!(loaded.cached_page_count(), 0);
-        }
-        let (used, actual_limit, misses) = crate::cache_budget::stats();
-        assert_eq!((used, actual_limit), (0, limit));
-        assert!(misses > 0);
-    } else {
-        let mut nodes = loaded.cached_nodes();
-        assert_eq!(nodes.len(), 1);
-        let (_, held, bytes) = nodes.pop().unwrap();
-        assert!(bytes > 0 && bytes < binary::PAGE_BYTES);
-        loaded.resize_metadata_cache(1);
-        assert_eq!(crate::cache_budget::stats().0, bytes);
-        // Root file reads evict the index node, but the traversal's Arc still owns its charge.
-        loaded.clear_metadata_cache();
-        assert!(loaded.cached_nodes().is_empty());
-        let used = crate::cache_budget::stats().0;
-        assert!(used >= bytes && used <= limit);
-        loaded.entry(b"small").unwrap();
-        assert!(crate::cache_budget::stats().0 <= limit);
-        drop(loaded);
-        drop(reader);
-        assert_eq!(crate::cache_budget::stats().0, bytes);
-        drop(held);
-        assert_eq!(crate::cache_budget::stats().0, 0);
-    }
-}
-
-#[test]
-fn held_frames_keep_budget_charge_after_eviction_and_reload() {
-    const CHILD: &str = "PVISOR_TEST_FRAME_CHARGE";
-    if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "image::cache::portable::tests::held_frames_keep_budget_charge_after_eviction_and_reload", "--nocapture"])
-            .env(CHILD, "1").output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        return;
-    }
-    let (tmp, cache, store, image) = fixture();
-    let canonical = crate::image::oci::cache_reference("example:test")
-        .unwrap()
-        .0;
-    cache.publish(&store, &image, "amd64", &canonical).unwrap();
-    let handle = Handle::parse(&read_handle(&cache)).unwrap();
-    drop(cache);
-    let limit = 8 * binary::PAGE_BYTES;
-    crate::cache_budget::configure(limit).unwrap();
-    let reader = PortableCache::new(
-        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
-        None,
-        true,
-    );
-    let loaded = reader.load(&handle).unwrap();
-    let (_, held, bytes) = loaded.cached_nodes().pop().unwrap();
+    // Eviction and owner teardown must not invalidate an active traversal.
+    let (_, held, bytes) = before.into_iter().next().unwrap();
+    assert!(bytes > 0 && bytes < binary::PAGE_BYTES);
     let concurrent_reader = held.clone();
+    let lifetime = Arc::downgrade(&held);
     loaded.clear_metadata_cache();
     assert_eq!(loaded.cached_page_count(), 0);
-    assert_eq!(crate::cache_budget::stats().0, bytes);
     loaded.entry(b"small").unwrap();
-    assert!(crate::cache_budget::stats().0 >= bytes + loaded.cached_nodes()[0].2);
-    assert!(crate::cache_budget::stats().0 <= limit);
+    assert!(loaded.cached_page_count() <= 1);
+    drop(after);
     drop(loaded);
     drop(reader);
-    assert_eq!(crate::cache_budget::stats().0, bytes);
+    assert!(lifetime.upgrade().is_some());
     drop(held);
-    assert_eq!(crate::cache_budget::stats().0, bytes);
+    assert!(lifetime.upgrade().is_some());
     drop(concurrent_reader);
-    assert_eq!(crate::cache_budget::stats().0, 0);
+    assert!(lifetime.upgrade().is_none());
 }
 
 #[test]

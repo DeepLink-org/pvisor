@@ -467,6 +467,14 @@ observations. Stop stage writers first. A successful preview is an observation,
 not a reservation: execution checks again under the target lock. Legacy ordinary
 apply retains its existing explicit execution-time implicit recovery behavior.
 
+`apply::check_apply_inventory(record, boundary)` exposes only the shared global
+admission checks for frontend inventory: sealed stage, mutable nonterminal target,
+no pending intent, and (when scoped) a valid project binding with complete
+preimages. It performs no selection/dependency or target-conflict checks and
+does not authorize execution. This lets pickers refuse global failures while
+still allowing users to adjust a conflicting selection; full preview and
+execution remain mandatory.
+
 The returned `ApplyPreview` separates `selected` (requested matches after
 exclusions) from `required` (implicit dependency entries). Their union is the
 execution plan. `candidates` is the scope's full change list before selection and

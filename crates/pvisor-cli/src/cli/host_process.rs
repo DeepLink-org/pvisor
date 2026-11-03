@@ -183,7 +183,6 @@ fn discover_mac_descendants(
     processes: &mut BTreeMap<i32, (u64, u64)>,
     snapshot: &BTreeMap<i32, MacProcess>,
     parent: i32,
-    excluded: i32,
 ) {
     let mut owned: BTreeSet<i32> = processes
         .iter()
@@ -206,7 +205,7 @@ fn discover_mac_descendants(
     loop {
         let before = owned.len();
         for (&pid, info) in snapshot {
-            if pid == parent || pid == excluded || !info.alive {
+            if pid == parent || !info.alive {
                 continue;
             }
             if processes
@@ -309,7 +308,6 @@ pub(super) struct OwnedTree {
     /// The owner adopts request orphans; foreign-child test trees opt in explicitly.
     #[cfg(target_os = "linux")]
     adopt: Option<i32>,
-    excluded: i32,
     #[cfg(target_os = "linux")]
     processes: BTreeMap<i32, OwnedFd>,
     #[cfg(target_os = "macos")]
@@ -320,7 +318,7 @@ pub(super) struct OwnedTree {
     processes: BTreeMap<i32, (u64, u64)>,
 }
 impl OwnedTree {
-    pub(super) fn new(root: i32, parent: i32, _adopt: bool, excluded: i32) -> anyhow::Result<Self> {
+    pub(super) fn new(root: i32, parent: i32, _adopt: bool) -> anyhow::Result<Self> {
         #[cfg(target_os = "linux")]
         {
             let before = stat(root)?;
@@ -337,7 +335,6 @@ impl OwnedTree {
                 root,
                 cleaned: false,
                 adopt: _adopt.then_some(parent),
-                excluded,
                 processes: BTreeMap::from([(root, fd)]),
             })
         }
@@ -351,7 +348,6 @@ impl OwnedTree {
             );
             Ok(Self {
                 root,
-                excluded,
                 identity: (info.pbi_start_tvsec, info.pbi_start_tvusec),
                 cleaned: false,
                 parent,
@@ -363,7 +359,7 @@ impl OwnedTree {
     }
     pub(super) fn owner(parent: i32) -> anyhow::Result<Self> {
         #[allow(unused_mut)]
-        let mut tree = Self::new(std::process::id() as i32, parent, false, 0)?;
+        let mut tree = Self::new(std::process::id() as i32, parent, false)?;
         #[cfg(target_os = "linux")]
         {
             tree.adopt = Some(std::process::id() as i32);
@@ -411,9 +407,7 @@ impl OwnedTree {
             loop {
                 let before = owned.len();
                 for (&pid, &(parent, _, _)) in &snapshot {
-                    if pid != self.excluded
-                        && (owned.contains(&parent) || self.adopt == Some(parent))
-                    {
+                    if owned.contains(&parent) || self.adopt == Some(parent) {
                         owned.insert(pid);
                     }
                 }
@@ -442,7 +436,7 @@ impl OwnedTree {
                     "owned worker identity changed; refusing numeric-PID signalling"
                 );
             }
-            discover_mac_descendants(&mut self.processes, &snapshot, self.parent, self.excluded);
+            discover_mac_descendants(&mut self.processes, &snapshot, self.parent);
             ensure!(
                 self.processes.len() <= 65_536,
                 "macOS request process identity budget exceeded"
@@ -780,19 +774,19 @@ mod tests {
             (50, process(1, 50, 5)),
             (60, process(50, 60, 6)), // independent persistent service
         ]);
-        discover_mac_descendants(&mut owned, &snapshot, 50, 60);
+        discover_mac_descendants(&mut owned, &snapshot, 50);
         assert_eq!(
             owned.keys().copied().collect::<Vec<_>>(),
             [100, 200, 201, 300]
         );
         snapshot.remove(&200); // leader reaped, still-owned member reserves group
         snapshot.insert(202, process(1, 200, 7));
-        discover_mac_descendants(&mut owned, &snapshot, 50, 60);
+        discover_mac_descendants(&mut owned, &snapshot, 50);
         assert!(owned.contains_key(&202));
         snapshot.insert(300, process(1, 300, 8)); // PID reused, unrelated process
         snapshot.insert(301, process(300, 301, 9));
         snapshot.insert(302, process(1, 300, 10));
-        discover_mac_descendants(&mut owned, &snapshot, 50, 60);
+        discover_mac_descendants(&mut owned, &snapshot, 50);
         assert_eq!(owned[&300], (4, 0));
         assert!(!owned.contains_key(&301));
         assert!(!owned.contains_key(&302));
@@ -834,8 +828,7 @@ while True: time.sleep(1)
             .process_group(0)
             .spawn()
             .unwrap();
-        let mut tree =
-            OwnedTree::new(child.id() as i32, std::process::id() as i32, true, 0).unwrap();
+        let mut tree = OwnedTree::new(child.id() as i32, std::process::id() as i32, true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let escaped: i32 = loop {
             if let Some(pid) = std::fs::read_to_string(&marker)
@@ -878,8 +871,7 @@ while True: time.sleep(1)
             .process_group(0)
             .spawn()
             .unwrap();
-        let mut tree =
-            OwnedTree::new(child.id() as i32, std::process::id() as i32, false, 0).unwrap();
+        let mut tree = OwnedTree::new(child.id() as i32, std::process::id() as i32, false).unwrap();
         tree.cleanup(false).unwrap();
         assert!(!tree.cleaned);
         assert!(!tree.root_exited());
@@ -891,8 +883,7 @@ while True: time.sleep(1)
     #[test]
     fn root_exit_wait_preserves_child_reaping_ownership() {
         let mut child = Command::new("/bin/true").process_group(0).spawn().unwrap();
-        let mut tree =
-            OwnedTree::new(child.id() as i32, std::process::id() as i32, false, 0).unwrap();
+        let mut tree = OwnedTree::new(child.id() as i32, std::process::id() as i32, false).unwrap();
         assert!(tree.wait_root(Duration::from_secs(2)).unwrap());
         tree.cleanup(true).unwrap();
         assert!(child.wait().unwrap().success());

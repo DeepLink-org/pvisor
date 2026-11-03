@@ -566,7 +566,7 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 策略按直接可执行文件名匹配，shell 包装器不会触发。`zcode-bigmodel` Gateway profile
 是独立的路由适配。
 
-预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
+类型化预设在内部清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
 直接运行 Codex 时保留宿主环境继承，以维持账号与路由配置；其他命令默认关闭继承，
 凭据通过显式 `--pass-env NAME` 授予。

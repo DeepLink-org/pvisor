@@ -453,7 +453,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         .spawn()
         .with_context(|| format!("execute inspect command `{program}`"))?;
     let mut tree =
-        super::host_process::OwnedTree::new(child.id() as i32, std::process::id() as i32, true, 0)?;
+        super::host_process::OwnedTree::new(child.id() as i32, std::process::id() as i32, true)?;
     let foreground = super::host_process::TerminalOwner::give_to(child.id() as i32)?;
     let mut deadline = None;
     let status = loop {

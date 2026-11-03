@@ -202,6 +202,11 @@ Use ↑/↓ to move, Space to toggle, `a` for all eligible paths, `n` for none,
 `--interactive` preselects matching paths. Execution checks the preview's
 expected-plan token; a changed plan requires a fresh preview and confirmation.
 
+The runtime supplies candidate exclusions in one inventory response; the picker
+does not probe each path with a separate plan or interpret blocker text.
+Conflicting selections can still be adjusted, while pending apply, discarded
+stage and failed admission refuse entry to the picker.
+
 `--dry-run` does not write the target, journals, ledger or recovery state and
 does not consume staged changes. Preview locks open only existing lock files
 and leases: missing `job.lock` or required lease files fail closed, without
@@ -479,6 +484,11 @@ pvisor drop edits --mount /notes
 pvisor rm edits
 ```
 
+Without `--mount`, paths and `last` retain Job semantics. Bare IDs fall back to
+container selection only after runtime discovery confirms that no Job matches.
+Corrupt records/indexes, duplicate Job IDs and discovery errors refuse fallback;
+explicit `--mount` selects the container namespace without that Job lookup.
+
 Apply paths/globs are relative to the selected host source: `--path src` means
 `HOST/src`, not `/workspace/src`. Authority is bound to that source and launch
 generation; container rootfs writes are never applied to host `/`, and
@@ -649,6 +659,12 @@ semantics. These interface changes do not establish a performance result.
 - `src/bin/`: executable entry points.
 - `tests/`: executable/frontend integration tests, including tests that combine
   runtime APIs with command execution. Runtime-only tests remain in `pvisor`.
+
+Safe Agent presets construct typed `RunArgs` overrides; they do not generate argv
+or re-enter Clap. Presets and explicit CLI options use the same merge rules, with
+explicit options applied last. Intermediate preset layers are not independently
+validated as complete configurations. The documented standalone `--clear-pass-env`
+option and existing shell/OpenAI grants remain compatible.
 
 The runtime README retains detailed execution, control, storage, service and
 platform limits. Its command examples refer to these installed frontends.

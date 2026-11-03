@@ -253,6 +253,151 @@ fn json_preview_all_exclude_store_and_direct_execution() {
 }
 
 #[test]
+fn picker_inventory_reports_exclusions_without_hiding_conflicts_or_writing() {
+    use pvisor::job_service::{
+        ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+    };
+    let f = Fixture::new();
+    fs::write(f.target.join("keep.txt"), b"concurrent\n").unwrap();
+    let before = tree_snapshot(f.root.path());
+    let response = RuntimeJobService::apply_command(
+        &ServiceContext::default(),
+        ApplyCommandRequest {
+            job: JobSelection {
+                selector: Some(f.stage.clone()),
+                storage: f.root.path().to_path_buf(),
+            },
+            rootfs: false,
+            selection: pvisor::ApplySelection {
+                excludes: vec!["skip.*".into()],
+                ..Default::default()
+            },
+            all: true,
+            dry_run: true,
+            expected_plan: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(response.status, "blocked");
+    assert!(!response.blockers.is_empty());
+    let picker = response
+        .picker
+        .as_ref()
+        .expect("conflict retains inventory");
+    let excluded: Vec<_> = picker
+        .excluded
+        .iter()
+        .map(|&index| response.candidates[index].path.as_str())
+        .collect();
+    assert_eq!(excluded, ["skip.txt"]);
+    assert_eq!(tree_snapshot(f.root.path()), before);
+
+    // A conflict on an excluded path does not disable the other candidate.
+    let value = object(
+        &f.run(&["--all", "--exclude", "keep.*", "--dry-run", "--json"]),
+        0,
+    );
+    let excluded = value["picker"]["excluded"].as_array().unwrap();
+    assert_eq!(excluded.len(), 1);
+    let index = excluded[0].as_u64().unwrap() as usize;
+    assert_eq!(value["candidates"][index]["path"], "keep.txt");
+    assert_eq!(value["selected"][0]["path"], "skip.txt");
+    assert_eq!(tree_snapshot(f.root.path()), before);
+}
+
+#[test]
+// Native macOS filesystems reject byte-invalid UTF-8 names with EILSEQ.
+#[cfg(target_os = "linux")]
+fn picker_inventory_preserves_non_utf8_candidate_identity_in_json() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let f = Fixture::new();
+    let bytes = b"non-utf8-\xff".to_vec();
+    fs::write(
+        f.stage
+            .join("upper")
+            .join(OsString::from_vec(bytes.clone())),
+        b"staged bytes",
+    )
+    .unwrap();
+    let before = tree_snapshot(f.root.path());
+    let value = object(
+        &f.run(&["--all", "--exclude", "*", "--dry-run", "--json"]),
+        0,
+    );
+    let candidates = value["candidates"].as_array().unwrap();
+    let index = candidates
+        .iter()
+        .position(|candidate| candidate["path_bytes"] == json!(bytes))
+        .expect("lossless path bytes retained");
+    assert!(
+        value["picker"]["excluded"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(index))
+    );
+    assert!(value["selected"].as_array().unwrap().is_empty());
+    assert_eq!(tree_snapshot(f.root.path()), before);
+}
+
+#[test]
+fn picker_inventory_is_unavailable_after_admission_failure() {
+    use pvisor_core::overlay::{ApplyRecord, ApplyRecordState};
+    for reason in [
+        "missing-lock",
+        "pending",
+        "dropped",
+        "unsealed",
+        "incomplete-journal",
+        "protected-target",
+    ] {
+        let f = Fixture::new();
+        let mut record = pvisor::RunRecord::read(&f.stage).unwrap();
+        match reason {
+            "missing-lock" => fs::remove_file(f.stage.join("job.lock")).unwrap(),
+            "pending" => {
+                let overlay = record.overlay.as_ref().unwrap();
+                let intent = ApplyRecord {
+                    schema_version: 1,
+                    apply_id: "picker-pending".into(),
+                    created_at_unix_ms: 1,
+                    overlay_id: overlay.id.clone(),
+                    overlay_generation: overlay.generation,
+                    target: f.target.clone(),
+                    selection: Default::default(),
+                    changes: vec![],
+                    planned_paths: vec![],
+                    preimages: vec![],
+                    state: ApplyRecordState::Prepared,
+                    remaining_changes: 0,
+                };
+                fs::write(
+                    f.stage.join("apply-ledger.json"),
+                    serde_json::to_vec(&json!({"schema_version":1,"records":[intent]})).unwrap(),
+                )
+                .unwrap();
+            }
+            "dropped" => {
+                record.overlay.as_mut().unwrap().state =
+                    pvisor_core::overlay::OverlayState::Discarded;
+                record.write().unwrap();
+            }
+            "unsealed" => fs::remove_file(f.stage.join("preimages/sealed-v1")).unwrap(),
+            "incomplete-journal" => fs::remove_file(f.stage.join("preimages/complete-v1")).unwrap(),
+            "protected-target" => {
+                record.overlay.as_mut().unwrap().protect_target = true;
+                record.write().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = tree_snapshot(f.root.path());
+        let value = object(&f.run(&["--all", "--dry-run", "--json"]), 3);
+        assert!(value["picker"].is_null(), "{reason}: {value}");
+        assert!(value["execution"].is_null(), "{reason}: {value}");
+        assert_eq!(tree_snapshot(f.root.path()), before, "{reason}");
+    }
+}
+
+#[test]
 fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     let f = Fixture::new();
     // A sealed, stopped stage exercises the CLI handoff without FUSE, KVM or a model.
@@ -500,6 +645,7 @@ if pid == 0:
     args = [binary, 'apply', stage]
     if mode == 'exclude': args += ['-i', '--all', '--exclude', 'keep.*']
     if mode == 'exclude_conflict': args += ['-i', '--exclude', 'skip.*']
+    if mode == 'apply_excluding_conflict': args += ['-i', '--exclude', 'keep.*']
     child = subprocess.Popen(args)
     code = child.wait()
     actual = terminal_state()
@@ -511,7 +657,7 @@ if pid == 0:
                        if before != after]
         os.write(1, ('TERMIOS DIFF (field, saved, actual): %r\n' % differences).encode())
     os.write(1, ('RESTORED:%s EXIT:%s\n' % (int(restored), code)).encode())
-    os._exit(0 if restored and code == (0 if mode == 'apply' else 130) else 41)
+    os._exit(0 if restored and code == (0 if mode in ('apply', 'apply_excluding_conflict') else 130) else 41)
 output = bytearray()
 state = 0
 deadline = time.monotonic() + 20
@@ -530,6 +676,9 @@ try:
                     output.clear(); os.write(master, b'n \r'); state = 4
                 elif mode == 'escape':
                     output.clear(); os.write(master, b'\x1b'); state = 7
+                elif mode == 'apply_excluding_conflict':
+                    assert b'(excluded)' in output, bytes(output)
+                    output.clear(); os.write(master, b'a\r'); state = 9
                 else:
                     assert b'[x]' not in output, bytes(output)
                     os.write(master, b'an\x1b[B\x1b[A \r'); state = 1
@@ -556,6 +705,11 @@ try:
                 assert b'selected: 1' in output and b'"skip.txt"' in output, bytes(output)
                 assert b'"keep.txt"' not in output.split(b'selected: 1', 1)[1], bytes(output)
                 os.write(master, b'q'); state = 5
+            if state == 9 and b'[a] apply' in output:
+                assert b'selected: 1' in output and b'"skip.txt"' in output, bytes(output)
+                assert b'(apply blocked)' not in output, bytes(output)
+                assert b'"keep.txt"' not in output.split(b'selected: 1', 1)[1], bytes(output)
+                os.write(master, b'a'); state = 5
             if state == 6 and b'Enter preview, q quit' in output and b'fresh.txt' in output:
                 os.write(master, b'q'); state = 5
             if state == 7 and b'Enter preview, q quit' in output:
@@ -587,9 +741,10 @@ fn real_pty_quit_back_apply_and_exclusion_restore_terminal() {
         "refresh",
         "escape",
         "exclude_conflict",
+        "apply_excluding_conflict",
     ] {
         let f = Fixture::new();
-        if mode == "exclude_conflict" {
+        if matches!(mode, "exclude_conflict" | "apply_excluding_conflict") {
             fs::write(f.target.join("keep.txt"), b"concurrent\n").unwrap();
         }
         let output = Command::new("python3")
@@ -603,6 +758,13 @@ fn real_pty_quit_back_apply_and_exclusion_restore_terminal() {
         if mode == "apply" {
             assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
             assert!(!f.target.join("skip.txt").exists());
+        } else if mode == "apply_excluding_conflict" {
+            assert_eq!(
+                fs::read(f.target.join("keep.txt")).unwrap(),
+                b"concurrent\n"
+            );
+            assert_eq!(fs::read(f.target.join("skip.txt")).unwrap(), b"skipped\n");
+            assert!(f.stage.join("upper/keep.txt").exists());
         } else if mode == "exclude_conflict" {
             assert_eq!(
                 fs::read(f.target.join("keep.txt")).unwrap(),

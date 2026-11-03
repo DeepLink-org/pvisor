@@ -678,7 +678,7 @@ workspace stage, even with `--safe`. The policy matches the direct executable
 name, so shell wrappers do not trigger it. The `zcode-bigmodel` Gateway profile
 is a separate routing adapter.
 
-The preset uses `--clear-pass-env` to clear configured `run.pass_env`;
+The typed preset clears configured `run.pass_env` internally;
 `--clear-pass-env` also works on its own, and an explicit `--pass-env NAME`
 afterward still applies. Direct Codex commands keep host environment inheritance
 to preserve account and routing configuration; other commands disable

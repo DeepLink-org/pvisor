@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 mod apply_command;
 pub use apply_command::{
-    ApplyCommandExecution, ApplyCommandRemaining, ApplyCommandRequest, ApplyCommandResponse,
-    ApplyCommandScope, ApplyCommandSource, PROJECT_APPLY_SCOPE_KEY, ProjectApplyScope,
+    ApplyCommandExecution, ApplyCommandPicker, ApplyCommandRemaining, ApplyCommandRequest,
+    ApplyCommandResponse, ApplyCommandScope, ApplyCommandSource, PROJECT_APPLY_SCOPE_KEY,
+    ProjectApplyScope,
 };
 mod capture;
 mod effects;

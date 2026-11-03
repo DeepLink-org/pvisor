@@ -20,7 +20,7 @@ The [daemon API](../daemon/index.md) does not expose native Job staging, executi
 | --- | --- | --- |
 | Native pVisor execution | Job lifecycle, executor control, staging, optional Gateway and recording | Orchestration adapters and representative workload acceptance |
 | Sandbox daemon | VM admission, persistent supervisors, image preparation and tested OpenSandbox/E2B core flows | Full protocol and production-density acceptance; stage/checkpoint APIs remain unwired |
-| Native node resources | Node-local immutable ownership, pins and bounded warming | Daemon integration, complete transient accounting and workload measurement |
+| Optional node resource client | Connection pins for a caller-provided same-host service; no bundled server or bounded warming | External owner implementation, daemon integration, complete transient accounting and workload measurement |
 | External orchestration | Host selection, queues, dependencies, retries and tenants | Explicit execution/evidence handoff and business side-effect reconciliation |
 | Evidence/checkpoint stores | Native integrity, publication and retention contracts | Centralized collection, authorization, replication and cross-host compatibility |
 
