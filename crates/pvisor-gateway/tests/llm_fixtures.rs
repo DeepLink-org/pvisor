@@ -5,8 +5,7 @@
 use bytes::Bytes;
 use pvisor_gateway::config::ProxyConfig;
 use pvisor_gateway::conversion::{
-    ProtocolBridge, StreamTranslator, completions_response_to_messages,
-    messages_request_to_completions,
+    ProtocolBridge, StreamTranslator, translate_request_for_bridge, translate_response_for_bridge,
 };
 use pvisor_gateway::models_list::build_models_response;
 use pvisor_gateway::protocol::ProtocolKind;
@@ -45,7 +44,15 @@ fn protocol_from_openai_paths() {
 #[test]
 fn messages_to_completions_fixture() {
     let body = Bytes::from_static(include_bytes!("fixtures/requests/messages/basic.json"));
-    let out = messages_request_to_completions(&body, "upstream-model").unwrap();
+    let parsed =
+        pvisor_gateway::understanding::understand_request(ProtocolKind::Messages, &body).unwrap();
+    let out = translate_request_for_bridge(
+        ProtocolBridge::MessagesToCompletions,
+        &parsed.semantic,
+        "upstream-model",
+        None,
+    )
+    .unwrap();
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["model"], "upstream-model");
     assert_eq!(v["messages"][0]["content"][0]["text"], "Hello, world");
@@ -54,7 +61,14 @@ fn messages_to_completions_fixture() {
 #[test]
 fn completions_to_messages_fixture() {
     let body = Bytes::from_static(include_bytes!("fixtures/response/completions/basic.json"));
-    let out = completions_response_to_messages(&body, "claude-test").unwrap();
+    let out = translate_response_for_bridge(
+        ProtocolBridge::MessagesToCompletions,
+        &body,
+        ProtocolKind::Messages,
+        "claude-test",
+    )
+    .unwrap()
+    .body;
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["type"], "message");
     assert_eq!(v["content"][0]["type"], "text");

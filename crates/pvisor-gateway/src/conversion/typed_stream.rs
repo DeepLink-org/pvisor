@@ -60,7 +60,7 @@ impl TypedStreamTranslator {
         if self.passthrough {
             return Ok(Bytes::new());
         }
-        let rendered = self.renderer.finish(&events)?;
+        let rendered = self.renderer.finish(&events, &self.decoder.protocol)?;
         Ok(Bytes::from(rendered))
     }
 
@@ -898,7 +898,7 @@ impl StreamRenderer {
         Ok(output)
     }
 
-    fn finish(&mut self, events: &[LlmStreamEvent]) -> Result<String> {
+    fn finish(&mut self, events: &[LlmStreamEvent], source: &LlmProtocol) -> Result<String> {
         let mut output = self.push_events(events)?;
         if self.finished {
             return Ok(output);
@@ -906,7 +906,7 @@ impl StreamRenderer {
         self.finished = true;
         match self.protocol {
             LlmProtocol::ChatCompletions => output.push_str("data: [DONE]\n\n"),
-            LlmProtocol::Messages => self.finish_messages(&mut output)?,
+            LlmProtocol::Messages => self.finish_messages(&mut output, source)?,
             LlmProtocol::Responses => self.finish_responses(&mut output)?,
             LlmProtocol::Gemini | LlmProtocol::Unknown => {}
         }
@@ -1074,7 +1074,7 @@ impl StreamRenderer {
         index
     }
 
-    fn finish_messages(&mut self, output: &mut String) -> Result<()> {
+    fn finish_messages(&mut self, output: &mut String, source: &LlmProtocol) -> Result<()> {
         for index in 0..self.next_block {
             output.push_str(&format_sse(
                 Some("content_block_stop"),
@@ -1082,7 +1082,7 @@ impl StreamRenderer {
             )?);
         }
         let mut usage = json!({
-            "input_tokens": self.usage.input_tokens,
+            "input_tokens": super::semantic::messages_input_tokens(&self.usage, source),
             "output_tokens": self.usage.output_tokens,
             "cache_read_input_tokens": self.usage.cache_read_tokens,
         });
@@ -1325,6 +1325,30 @@ fn from_llm_usage(usage: &LlmUsage) -> TokenUsage {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn native_messages_input_is_not_discounted_twice() {
+        let usage = LlmUsage {
+            input_tokens: 70,
+            output_tokens: 5,
+            cache_read_tokens: 20,
+            cache_write_tokens: 10,
+            ..Default::default()
+        };
+        let mut renderer = StreamRenderer::new(LlmProtocol::Messages, "client");
+        let output = renderer
+            .finish(&[LlmStreamEvent::Usage { usage }], &LlmProtocol::Messages)
+            .unwrap();
+        let delta = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|event| event["type"] == "message_delta")
+            .unwrap();
+        assert_eq!(delta["usage"]["input_tokens"], 70);
+        assert_eq!(delta["usage"]["cache_read_input_tokens"], 20);
+        assert_eq!(delta["usage"]["cache_creation_input_tokens"], 10);
+    }
 
     #[test]
     fn responses_tool_identity_and_messages_usage_survive_deltas() {
@@ -1603,7 +1627,7 @@ mod tests {
             .unwrap();
         assert!(!late_start.contains("response.output_item.added"));
 
-        let finished = renderer.finish(&[]).unwrap();
+        let finished = renderer.finish(&[], &LlmProtocol::Responses).unwrap();
         assert!(finished.contains("\"output_index\":0"));
         assert!(finished.contains("\"name\":\"weather\""));
         let completed = finished

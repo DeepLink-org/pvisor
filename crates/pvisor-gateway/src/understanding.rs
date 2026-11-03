@@ -203,7 +203,7 @@ fn parse_chat_response(object: &Map<String, Value>) -> LlmResponse {
             .map(str::to_string),
         candidates,
         usage: object.get("usage").map(parse_usage),
-        extensions: BTreeMap::new(),
+        extensions: response_usage_extensions(object, false),
     }
 }
 
@@ -291,7 +291,7 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
         .get("responseId")
         .and_then(Value::as_str)
         .unwrap_or("gemini");
-    let candidates = object
+    let mut candidates: Vec<LlmCandidate> = object
         .get("candidates")
         .and_then(Value::as_array)
         .into_iter()
@@ -327,6 +327,19 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
             }
         })
         .collect();
+    if candidates.is_empty()
+        && object
+            .get("promptFeedback")
+            .and_then(|feedback| feedback.get("blockReason"))
+            .is_some()
+    {
+        candidates.push(LlmCandidate {
+            index: 0,
+            message: LlmMessage::new(LlmRole::Assistant, Vec::new()),
+            finish_reason: Some("content_filter".into()),
+            extensions: BTreeMap::new(),
+        });
+    }
     LlmResponse {
         id: object
             .get("responseId")
@@ -338,7 +351,7 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
             .map(str::to_string),
         candidates,
         usage: object.get("usageMetadata").map(parse_usage),
-        extensions: BTreeMap::new(),
+        extensions: response_usage_extensions(object, true),
     }
 }
 
@@ -417,9 +430,7 @@ fn parse_responses_request(object: &Map<String, Value>) -> LlmRequest {
                         flush_pending_calls(&mut pending_calls, &mut request.messages);
                         push_wire_message(item, &mut request);
                     }
-                    "" if item.get("role").and_then(Value::as_str).is_some()
-                        && item.get("content").is_some() =>
-                    {
+                    "" if item.get("content").is_some() => {
                         flush_pending_calls(&mut pending_calls, &mut request.messages);
                         push_wire_message(item, &mut request);
                     }
@@ -970,6 +981,46 @@ fn selected_extensions(object: &Map<String, Value>) -> BTreeMap<String, Value> {
     extensions
 }
 
+// Optional-field presence is wire metadata, not a second copy of provider JSON.
+fn response_usage_extensions(object: &Map<String, Value>, gemini: bool) -> BTreeMap<String, Value> {
+    let mut extensions = BTreeMap::new();
+    let usage = object.get(if gemini { "usageMetadata" } else { "usage" });
+    for (name, pointer) in if gemini {
+        [
+            ("usage.cache_read_present", "/cachedContentTokenCount"),
+            ("usage.cache_write_present", "/cacheWriteTokenCount"),
+            ("usage.reasoning_present", "/thoughtsTokenCount"),
+        ]
+    } else {
+        [
+            (
+                "usage.cache_read_present",
+                "/prompt_tokens_details/cached_tokens",
+            ),
+            (
+                "usage.cache_write_present",
+                "/prompt_tokens_details/cache_write_tokens",
+            ),
+            (
+                "usage.reasoning_present",
+                "/completion_tokens_details/reasoning_tokens",
+            ),
+        ]
+    } {
+        if usage
+            .and_then(|usage| usage.pointer(pointer))
+            .and_then(Value::as_u64)
+            .is_some()
+        {
+            extensions.insert(name.into(), Value::Bool(true));
+        }
+    }
+    if let Some(tier) = object.get("service_tier").filter(|tier| !tier.is_null()) {
+        extensions.insert("openai.service_tier".into(), tier.clone());
+    }
+    extensions
+}
+
 fn parse_usage(value: &Value) -> LlmUsage {
     let input_tokens = first_u64(
         value,
@@ -990,7 +1041,12 @@ fn parse_usage(value: &Value) -> LlmUsage {
             .and_then(Value::as_u64)
             .unwrap_or(0),
     );
-    let cache_write_tokens = first_u64(value, &["cache_creation_input_tokens"]);
+    let cache_write_tokens = first_u64(value, &["cache_creation_input_tokens"]).max(
+        value
+            .pointer("/prompt_tokens_details/cache_write_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    );
     let reasoning_tokens = first_u64(value, &["thoughtsTokenCount"]).max(
         value
             .get("completion_tokens_details")

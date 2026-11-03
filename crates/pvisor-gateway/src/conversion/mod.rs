@@ -2,9 +2,7 @@
 
 use crate::config::provider_kind;
 
-mod gemini_native;
-mod messages_completions;
-mod responses_completions;
+mod gemini_schema;
 mod semantic;
 mod tool_call;
 mod typed_stream;
@@ -19,11 +17,6 @@ pub const MAX_SSE_FRAME_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum complete streaming response retained for durable raw capture.
 pub const MAX_STREAM_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
 
-pub use gemini_native::{completions_request_to_gemini, gemini_response_to_completions};
-pub use messages_completions::{completions_response_to_messages, messages_request_to_completions};
-pub use responses_completions::{
-    completions_response_to_responses, responses_request_to_completions,
-};
 pub use tool_call::{decode_stream_arguments_delta, unquote_chat_tool_arguments};
 pub use typed_stream::TypedStreamTranslator as StreamTranslator;
 
@@ -43,9 +36,9 @@ pub enum ProtocolBridge {
     ResponsesToCompletions,
     /// Client `/v1/chat/completions` → Gemini native `generateContent`.
     CompletionsToGemini,
-    /// Client `/v1/messages` → Chat Completions → Gemini native `generateContent`.
+    /// Client `/v1/messages` → Gemini native `generateContent` via semantic IR.
     MessagesToGemini,
-    /// Client `/v1/responses` → Chat Completions → Gemini native `generateContent`.
+    /// Client `/v1/responses` → Gemini native `generateContent` via semantic IR.
     ResponsesToGemini,
 }
 
@@ -188,15 +181,43 @@ pub fn translate_error_for_bridge(
     match bridge {
         ProtocolBridge::MessagesToCompletions => openai_error_to_messages(body, status),
         ProtocolBridge::MessagesToGemini => {
-            let openai = gemini_native::translate_gemini_error(body)?;
+            let openai = translate_gemini_error(body)?;
             openai_error_to_messages(&openai, status)
         }
         ProtocolBridge::CompletionsToGemini | ProtocolBridge::ResponsesToGemini => {
-            gemini_native::translate_gemini_error(body)
+            translate_gemini_error(body)
         }
         // Responses and Chat Completions use the same OpenAI-compatible error envelope.
         ProtocolBridge::ResponsesToCompletions | ProtocolBridge::Passthrough => Ok(body.clone()),
     }
+}
+
+fn translate_gemini_error(body: &Bytes) -> anyhow::Result<Bytes> {
+    use anyhow::Context;
+    use serde_json::{Value, json};
+
+    let value: Value = serde_json::from_slice(body).context("parse Gemini error")?;
+    let root = value
+        .as_array()
+        .and_then(|array| array.first())
+        .unwrap_or(&value);
+    let error = root.get("error").unwrap_or(root);
+    let status = error.get("status").and_then(Value::as_str);
+    let error_type = match status {
+        Some("INVALID_ARGUMENT" | "FAILED_PRECONDITION") => "invalid_request_error",
+        Some("NOT_FOUND") => "not_found_error",
+        Some("PERMISSION_DENIED" | "UNAUTHENTICATED") => "authentication_error",
+        Some("RESOURCE_EXHAUSTED") => "rate_limit_error",
+        _ => "api_error",
+    };
+    Ok(Bytes::from(serde_json::to_vec(&json!({
+        "error":{
+            "type":error_type,
+            "message":error.get("message").and_then(Value::as_str).unwrap_or("Gemini request failed"),
+            "param":null,
+            "code":status
+        }
+    }))?))
 }
 
 fn openai_error_to_messages(body: &Bytes, status: axum::http::StatusCode) -> anyhow::Result<Bytes> {
@@ -443,9 +464,12 @@ mod tests {
                 "messages": [{"role": "user", "content": text.clone()}],
                 "stream": stream,
             });
-            let translated = messages_request_to_completions(
-                &Bytes::from(serde_json::to_vec(&request).unwrap()),
+            let parsed = crate::understanding::understand_request_value(ProtocolKind::Messages, &request).unwrap();
+            let translated = translate_request_for_bridge(
+                ProtocolBridge::MessagesToCompletions,
+                &parsed,
                 "upstream-model",
+                None,
             )
             .unwrap();
             let wire: serde_json::Value = serde_json::from_slice(&translated).unwrap();
@@ -454,7 +478,7 @@ mod tests {
             prop_assert_eq!(wire["stream"].as_bool(), Some(stream));
             let user_index = if let Some(system) = system.as_ref() {
                 prop_assert_eq!(wire["messages"][0]["role"].as_str(), Some("system"));
-                prop_assert_eq!(wire["messages"][0]["content"].as_str(), Some(system.as_str()));
+                prop_assert_eq!(&wire["messages"][0]["content"], &serde_json::json!([{"type":"text","text":system}]));
                 1
             } else {
                 0
@@ -480,8 +504,10 @@ mod tests {
                 "input": text.clone(),
                 "stream": stream,
             });
-            let translated = responses_request_to_completions(
-                &Bytes::from(serde_json::to_vec(&request).unwrap()),
+            let parsed = crate::understanding::understand_request_value(ProtocolKind::Responses, &request).unwrap();
+            let translated = translate_request_for_bridge(
+                ProtocolBridge::ResponsesToCompletions,
+                &parsed,
                 "upstream-model",
                 None,
             )
@@ -525,7 +551,9 @@ mod tests {
             });
             let body = Bytes::from(serde_json::to_vec(&response).unwrap());
 
-            let messages = completions_response_to_messages(&body, &model).unwrap();
+            let messages = translate_response_for_bridge(
+                ProtocolBridge::MessagesToCompletions, &body, ProtocolKind::Messages, &model,
+            ).unwrap().body;
             let messages_wire: serde_json::Value = serde_json::from_slice(&messages).unwrap();
             let expected_stop = match finish_reason {
                 "length" => "max_tokens",
@@ -541,7 +569,9 @@ mod tests {
             prop_assert_eq!(messages_wire["usage"]["input_tokens"].as_u64(), Some(input_tokens));
             prop_assert_eq!(messages_wire["usage"]["output_tokens"].as_u64(), Some(output_tokens));
 
-            let responses = completions_response_to_responses(&body, &model).unwrap();
+            let responses = translate_response_for_bridge(
+                ProtocolBridge::ResponsesToCompletions, &body, ProtocolKind::Responses, &model,
+            ).unwrap().body;
             let responses_wire: serde_json::Value = serde_json::from_slice(&responses).unwrap();
             let expected_status = match finish_reason {
                 "length" => "incomplete",
