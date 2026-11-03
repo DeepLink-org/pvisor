@@ -660,6 +660,13 @@ semantics. These interface changes do not establish a performance result.
 - `tests/`: executable/frontend integration tests, including tests that combine
   runtime APIs with command execution. Runtime-only tests remain in `pvisor`.
 
+Normal startup, prepared JSON specs and restored Jobs share one private
+configuration-to-builder adapter for storage, network, Gateway and the resolved
+control socket. Each entry still owns executor/stage preparation, recording
+admission and resource lifetimes. Prepared specs remain host-only; restored
+execution retains its existing network restrictions. Sharing field assembly
+does not grant additional restore or checkpoint capabilities.
+
 Safe Agent presets construct typed `RunArgs` overrides; they do not generate argv
 or re-enter Clap. Presets and explicit CLI options use the same merge rules, with
 explicit options applied last. Intermediate preset layers are not independently

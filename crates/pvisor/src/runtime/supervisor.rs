@@ -13,8 +13,6 @@ use crate::{NetworkDriverConfig, OverlayNetMode};
 use pvisor_core::{AttemptId, NetworkCapability, RunSpec};
 use pvisor_core::{ControlController, PolicyControlController};
 #[cfg(feature = "gateway")]
-use pvisor_gateway::config::ProxyConfig;
-#[cfg(feature = "gateway")]
 use pvisor_journal::api::JournalStore;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,17 +112,7 @@ fn network_config_from_capability(
 #[derive(Clone, Default)]
 pub struct RuntimeSupervisorBuilder {
     #[cfg(feature = "gateway")]
-    proxy: Option<ProxyConfig>,
-    #[cfg(feature = "gateway")]
-    gateway_output_dir: Option<PathBuf>,
-    #[cfg(feature = "gateway")]
-    gateway_enabled: bool,
-    #[cfg(feature = "gateway")]
-    model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
-    #[cfg(feature = "gateway")]
-    native_model_wait: Option<crate::NativeModelWait>,
-    #[cfg(feature = "gateway")]
-    cooperative_model_wait: Option<crate::CooperativeModelWait>,
+    gateway: Option<GatewayDriverConfig>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -226,12 +214,7 @@ impl RuntimeSupervisorBuilder {
 
     #[cfg(feature = "gateway")]
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
-        self.proxy = Some(gateway.proxy);
-        self.gateway_output_dir = Some(gateway.output_dir);
-        self.gateway_enabled = gateway.gateway_enabled;
-        self.model_wait = gateway.model_wait;
-        self.native_model_wait = gateway.native_model_wait;
-        self.cooperative_model_wait = gateway.cooperative_model_wait;
+        self.gateway = Some(gateway);
         self
     }
 
@@ -264,17 +247,9 @@ impl RuntimeSupervisorBuilder {
     pub fn build(self) -> RuntimeSupervisor {
         RuntimeSupervisor {
             #[cfg(feature = "gateway")]
-            proxy: self.proxy,
+            gateway: self.gateway,
             #[cfg(feature = "gateway")]
-            gateway_output_dir: self.gateway_output_dir,
-            #[cfg(feature = "gateway")]
-            gateway_enabled: self.gateway_enabled,
-            #[cfg(feature = "gateway")]
-            model_wait: self.model_wait,
-            #[cfg(feature = "gateway")]
-            native_model_wait: self.native_model_wait,
-            #[cfg(feature = "gateway")]
-            cooperative_model_wait: self.cooperative_model_wait,
+            bound_model_wait: None,
             storage: self.storage,
             #[cfg(feature = "gateway")]
             #[cfg(feature = "gateway")]
@@ -293,17 +268,10 @@ impl RuntimeSupervisorBuilder {
 #[derive(Clone)]
 pub struct RuntimeSupervisor {
     #[cfg(feature = "gateway")]
-    proxy: Option<ProxyConfig>,
+    gateway: Option<GatewayDriverConfig>,
+    /// Attempt-bound adapter, separate from the immutable configured policy.
     #[cfg(feature = "gateway")]
-    gateway_output_dir: Option<PathBuf>,
-    #[cfg(feature = "gateway")]
-    gateway_enabled: bool,
-    #[cfg(feature = "gateway")]
-    model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
-    #[cfg(feature = "gateway")]
-    native_model_wait: Option<crate::NativeModelWait>,
-    #[cfg(feature = "gateway")]
-    cooperative_model_wait: Option<crate::CooperativeModelWait>,
+    bound_model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -327,17 +295,20 @@ impl RuntimeSupervisor {
         controls: crate::RunControlHandle,
     ) -> anyhow::Result<Self> {
         let mut bound = self.clone();
-        if let Some(mode) = self.native_model_wait {
+        let Some(gateway) = &self.gateway else {
+            return Ok(bound);
+        };
+        if let Some(mode) = gateway.native_model_wait {
             anyhow::ensure!(
                 cfg!(all(target_os = "linux", target_arch = "x86_64")),
                 "native model waits require Linux x86_64"
             );
             anyhow::ensure!(
-                self.proxy.is_some() && self.gateway_enabled,
+                gateway.gateway_enabled,
                 "native model waits require an enabled Gateway"
             );
             anyhow::ensure!(
-                self.model_wait.is_none(),
+                gateway.model_wait.is_none() && self.bound_model_wait.is_none(),
                 "native model waits conflict with a custom model-wait lifecycle"
             );
             anyhow::ensure!(
@@ -345,7 +316,7 @@ impl RuntimeSupervisor {
                     == pvisor_core::ExecutorKind::VirtualMachine,
                 "native model waits require a VM executor"
             );
-            bound.model_wait = Some(Arc::new(super::run::model_wait::NativeLifecycle::new(
+            bound.bound_model_wait = Some(Arc::new(super::run::model_wait::NativeLifecycle::new(
                 controls, mode,
             )));
         }
@@ -358,7 +329,11 @@ impl RuntimeSupervisor {
     pub(crate) fn write_paths(&self) -> Vec<&std::path::Path> {
         let paths = self.storage.iter().map(PathBuf::as_path);
         #[cfg(feature = "gateway")]
-        let paths = paths.chain(self.gateway_output_dir.iter().map(PathBuf::as_path));
+        let paths = paths.chain(
+            self.gateway
+                .iter()
+                .map(|gateway| gateway.output_dir.as_path()),
+        );
         paths.collect()
     }
 
@@ -367,18 +342,21 @@ impl RuntimeSupervisor {
         &self,
         executor: pvisor_core::ExecutorKind,
     ) -> anyhow::Result<()> {
+        let Some(gateway) = &self.gateway else {
+            return Ok(());
+        };
         anyhow::ensure!(
-            self.native_model_wait.is_none() || self.cooperative_model_wait.is_none(),
+            gateway.native_model_wait.is_none() || gateway.cooperative_model_wait.is_none(),
             "legacy and Host-observed model waits are mutually exclusive"
         );
-        if let Some(policy) = self.cooperative_model_wait {
+        if let Some(policy) = gateway.cooperative_model_wait {
             policy.validate()?;
             anyhow::ensure!(
-                self.proxy.is_some() && self.gateway_enabled,
+                gateway.gateway_enabled,
                 "cooperative model wait requires enabled Gateway"
             );
             anyhow::ensure!(
-                self.model_wait.is_none(),
+                gateway.model_wait.is_none() && self.bound_model_wait.is_none(),
                 "custom and built-in model waits are mutually exclusive"
             );
             anyhow::ensure!(
@@ -396,20 +374,24 @@ impl RuntimeSupervisor {
         cancellation: tokio_util::sync::CancellationToken,
     ) -> (Self, Option<Arc<super::wait_coordinator::WaitCoordinator>>) {
         let mut runtime = self.clone();
-        let coordinator = self.cooperative_model_wait.map(|policy| {
-            let attempt_id = controls.status().attempt.attempt_id;
-            let coordinator = super::wait_coordinator::WaitCoordinator::new(
-                Arc::new(controls),
-                cancellation,
-                policy,
-            );
-            coordinator.start_host_reads();
-            runtime.model_wait = Some(Arc::new(super::model_wait::NativeModelWait {
-                coordinator: coordinator.clone(),
-                attempt_id,
-            }));
-            coordinator
-        });
+        let coordinator = self
+            .gateway
+            .as_ref()
+            .and_then(|gateway| gateway.cooperative_model_wait)
+            .map(|policy| {
+                let attempt_id = controls.status().attempt.attempt_id;
+                let coordinator = super::wait_coordinator::WaitCoordinator::new(
+                    Arc::new(controls),
+                    cancellation,
+                    policy,
+                );
+                coordinator.start_host_reads();
+                runtime.bound_model_wait = Some(Arc::new(super::model_wait::NativeModelWait {
+                    coordinator: coordinator.clone(),
+                    attempt_id,
+                }));
+                coordinator
+            });
         (runtime, coordinator)
     }
     pub(crate) fn overlay_hint(&self) -> &OverlayHint {
@@ -434,7 +416,9 @@ impl RuntimeSupervisor {
             .or({
                 #[cfg(feature = "gateway")]
                 {
-                    self.proxy.as_ref().map(|proxy| proxy.network.clone())
+                    self.gateway
+                        .as_ref()
+                        .map(|gateway| gateway.proxy.network.clone())
                 }
                 #[cfg(not(feature = "gateway"))]
                 {
@@ -454,7 +438,7 @@ impl RuntimeSupervisor {
 
     pub(crate) fn proxy_network_is_configured(&self) -> bool {
         #[cfg(feature = "gateway")]
-        if self.proxy.is_some() {
+        if self.gateway.is_some() {
             return true;
         }
         self.network_mode() == OverlayNetMode::Proxy
@@ -495,7 +479,7 @@ impl RuntimeSupervisor {
             self.prepare_drivers(spec, preparation, limits, vm_executor, attempt_id)?;
         if self.network_mode() == OverlayNetMode::Proxy {
             #[cfg(feature = "gateway")]
-            if self.proxy.is_some() {
+            if self.gateway.is_some() {
                 return Ok(session);
             }
             let mut network = self.network.clone().unwrap_or_default();
@@ -597,47 +581,44 @@ impl RuntimeSupervisor {
             );
         }
         #[cfg(feature = "gateway")]
-        if is_vm && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
+        if is_vm && network_mode == OverlayNetMode::Off && self.gateway.is_some() {
             anyhow::bail!(
                 "overlaynet mode `off` makes the VM offline and cannot be combined with Gateway/proxy configuration"
             );
         }
         #[cfg(feature = "gateway")]
-        if let Some(proxy) = &self.proxy {
-            let mut proxy = proxy.clone();
+        if let Some(gateway) = &self.gateway {
+            let mut gateway = gateway.clone();
             // The admitted preparation is the one Attempt policy source. ProxyConfig
             // retains its field for standalone Gateway use only.
             if vm_network {
-                proxy.network = self
+                gateway.proxy.network = self
                     .vm_network_options(network, supervisor_limits, attempt_id)
                     .network;
             } else {
-                proxy.network = network;
-                proxy.network.limits.extend_from_slice(supervisor_limits);
+                gateway.proxy.network = network;
+                gateway
+                    .proxy
+                    .network
+                    .limits
+                    .extend_from_slice(supervisor_limits);
             }
             let storage = self
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".pvisor/capture"));
-            let capture_storage = self
-                .gateway_output_dir
-                .clone()
-                .unwrap_or_else(|| storage.clone());
             let session = prepare_attempt(
                 spec,
                 preparation,
                 AttemptPrepareOpts {
-                    config: &proxy,
+                    config: &gateway,
                     storage: &storage,
-                    capture_storage: &capture_storage,
                     #[cfg(feature = "gateway")]
                     sink: self.sink.clone(),
                     #[cfg(feature = "gateway")]
                     overlay_override: overlay.clone(),
                     controller: Arc::clone(&self.controller),
-                    #[cfg(feature = "gateway")]
-                    gateway_enabled: self.gateway_enabled,
-                    model_wait: self.model_wait.clone(),
+                    bound_model_wait: self.bound_model_wait.clone(),
                     vm_network,
                     peers: self
                         .network
@@ -733,9 +714,11 @@ impl RuntimeSupervisor {
                 .insert("PVISOR_OVERLAYNET_STRENGTH".into(), "cooperative".into());
         }
         #[cfg(feature = "gateway")]
-        if let Some(path) = &self.gateway_output_dir {
-            plan.env
-                .insert("PVISOR_CAPTURE_STORAGE".into(), path.display().to_string());
+        if let Some(gateway) = &self.gateway {
+            plan.env.insert(
+                "PVISOR_CAPTURE_STORAGE".into(),
+                gateway.output_dir.display().to_string(),
+            );
             plan.notes.push("capture: storage path exported".into());
         }
 
@@ -867,6 +850,52 @@ models = []
 "#,
         )
         .unwrap()
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_keeps_custom_wait_and_rejects_cooperative_policy_conflict() {
+        #[derive(Debug)]
+        struct CustomWait;
+        impl pvisor_gateway::model_wait::ModelWaitLifecycle for CustomWait {
+            fn reserve(
+                &self,
+                _: pvisor_core::ModelCallRequest,
+            ) -> anyhow::Result<Box<dyn pvisor_gateway::model_wait::ModelWait>> {
+                anyhow::bail!("test lifecycle must not be invoked at configuration time")
+            }
+        }
+        let custom: Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle> = Arc::new(CustomWait);
+        let configured = GatewayDriverConfig::new(test_proxy()).model_wait(custom.clone());
+        let runtime = RuntimeSupervisorBuilder::new()
+            .gateway(configured.clone())
+            .build();
+        assert!(Arc::ptr_eq(
+            runtime
+                .gateway
+                .as_ref()
+                .unwrap()
+                .model_wait
+                .as_ref()
+                .unwrap(),
+            &custom,
+        ));
+        assert!(runtime.bound_model_wait.is_none());
+        assert!(
+            runtime
+                .validate_model_wait(pvisor_core::ExecutorKind::Process)
+                .is_ok()
+        );
+        let conflicting = RuntimeSupervisorBuilder::new()
+            .gateway(configured.cooperative_model_wait(crate::CooperativeModelWait::default()))
+            .build();
+        assert!(
+            conflicting
+                .validate_model_wait(pvisor_core::ExecutorKind::VirtualMachine)
+                .unwrap_err()
+                .to_string()
+                .contains("custom and built-in model waits")
+        );
     }
 
     #[cfg(feature = "gateway")]
@@ -1032,6 +1061,70 @@ models = []
                 capability
             );
         }
+    }
+
+    #[test]
+    #[cfg(feature = "gateway")]
+    fn gateway_bindings_and_diagnostics_do_not_rewrite_resolved_policy() {
+        let temporary = tempfile::tempdir().unwrap();
+        let proxy = ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
+agent_id = "bound-test"
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:1"
+api_key = "test-frozen-key"
+"#,
+        )
+        .unwrap();
+        let configured = GatewayDriverConfig::new(proxy)
+            .output_dir(temporary.path())
+            .gateway_enabled(false);
+        let frozen = configured.proxy.to_toml_string().unwrap();
+        let supervisor = RuntimeSupervisorBuilder::new()
+            .storage(temporary.path().to_path_buf())
+            .gateway(configured)
+            .build();
+        let mut spec = RunSpec::process("binding-policy", "test", "true");
+        let preparation = crate::PVisor::new()
+            .resolve_run(spec.clone())
+            .unwrap()
+            .preparation;
+        let session = supervisor
+            .prepare(
+                &mut spec,
+                &preparation,
+                &[],
+                false,
+                &AttemptId::new("attempt-binding"),
+            )
+            .unwrap()
+            .unwrap();
+        let record = session.record();
+        let actual = record.overlaynet_listen.unwrap();
+        assert_ne!(actual, "127.0.0.1:0");
+        assert!(record.gateway_listen.is_none());
+        let diagnostic = pvisor_gateway::runtime::run_config::load_session_proxy_config(
+            temporary.path(),
+            spec.run_id.as_str(),
+        )
+        .unwrap();
+        assert_eq!(diagnostic.listen, actual);
+        assert_ne!(diagnostic.admin_listen, "127.0.0.1:0");
+        assert!(diagnostic.models[0].api_key.is_none());
+        assert_eq!(
+            supervisor
+                .gateway
+                .as_ref()
+                .unwrap()
+                .proxy
+                .to_toml_string()
+                .unwrap(),
+            frozen
+        );
+        drop(session.teardown(Some(0), false, false));
     }
 
     #[test]

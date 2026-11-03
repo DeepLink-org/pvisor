@@ -6,22 +6,19 @@ use super::{
     select_run_storage, wait_cli_job,
 };
 use crate::cli::trajectory::JournalRecording;
-#[cfg(feature = "gateway")]
-use pvisor::GatewayDriverConfig;
 #[cfg(test)]
 use pvisor::RunExecutorKind;
 #[cfg(test)]
 use pvisor::job_execution::JobState;
 use pvisor::job_service::paths::fork_stage_candidate;
-use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
-use pvisor::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
+use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, RunConfig};
+use pvisor::{RunBundle, restore_logical_checkpoint};
 use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
 use pvisor_journal::api::JournalStore;
 use pvisor_journal::api::{DurableFiles, Persistence};
 
 use clap::Args;
 use pvisor_core::RunState;
-use pvisor_overlaynet::{NetworkConfig, NetworkMode};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -349,43 +346,18 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
             } else {
                 Arc::new(pvisor::trace::Journal::memory())
             };
-            let network = NetworkDriverConfig::new(
-                config.overlaynet.mode,
-                NetworkConfig {
-                    capability: None,
-                    mode: match config.overlaynet.policy {
-                        OverlayNetPolicy::Public => NetworkMode::Public,
-                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                    },
-                    allowed_hosts: config.overlaynet.allow.clone(),
-                    rules: config.overlaynet.rules.clone(),
-                    deny_rules: config.overlaynet.deny.clone(),
-                    limits: config.overlaynet.limits.clone(),
-                },
-            )
-            .listen(&config.overlaynet.listen)
-            .peer_network(config.overlaynet.peers.clone());
-            #[allow(unused_mut)]
-            let mut builder = PVisor::builder()
-                .storage(stage)
-                .overlay(overlay)
-                .executors(vec![report_terminal(Arc::new(executor))])
-                .network(network)
-                .event_sink(event_sink);
             let control_socket = crate::cli::host_service::vm_control_socket(None)?
                 .or_else(|| config.vm.control_socket.clone());
-            if let Some(path) = &control_socket {
-                builder = builder.control_socket(path);
-            }
-            #[cfg(feature = "gateway")]
-            if let Some(proxy) = resolve_proxy(config)? {
-                builder = builder.gateway(
-                    GatewayDriverConfig::new(proxy)
-                        .output_dir(stage)
-                        .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-                );
-            }
+            let builder = super::configured_runtime_builder(
+                config,
+                stage,
+                control_socket.as_deref(),
+                #[cfg(feature = "gateway")]
+                resolve_proxy(config)?,
+            )
+            .overlay(overlay)
+            .executors(vec![report_terminal(Arc::new(executor))])
+            .event_sink(event_sink);
             Ok(builder.build())
         })
         .await?;

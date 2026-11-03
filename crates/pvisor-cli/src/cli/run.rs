@@ -1072,40 +1072,14 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         let storage = resolve_run_storage(&stage_path)?;
         #[cfg(feature = "gateway")]
         let proxy = resolve_proxy(&config)?;
-        #[allow(unused_mut)]
-        let mut builder = PVisor::builder()
-            .storage(&storage)
-            .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
-            .network(
-                NetworkDriverConfig::new(
-                    config.overlaynet.mode,
-                    NetworkConfig {
-                        capability: None,
-                        mode: match config.overlaynet.policy {
-                            OverlayNetPolicy::Public => NetworkMode::Public,
-                            OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                            OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                        },
-                        allowed_hosts: config.overlaynet.allow.clone(),
-                        rules: config.overlaynet.rules.clone(),
-                        deny_rules: config.overlaynet.deny.clone(),
-                        limits: config.overlaynet.limits.clone(),
-                    },
-                )
-                .listen(&config.overlaynet.listen)
-                .peer_network(config.overlaynet.peers.clone()),
-            );
-        if let Some(path) = &config.vm.control_socket {
-            builder = builder.control_socket(path);
-        }
-        #[cfg(feature = "gateway")]
-        if let Some(proxy) = proxy {
-            builder = builder.gateway(
-                GatewayDriverConfig::new(proxy)
-                    .output_dir(&storage)
-                    .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-            );
-        }
+        let builder = configured_runtime_builder(
+            &config,
+            &storage,
+            config.vm.control_socket.as_deref(),
+            #[cfg(feature = "gateway")]
+            proxy,
+        )
+        .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))]);
         (builder.build(), config)
     };
     let managed =
@@ -1639,39 +1613,14 @@ async fn execute_config(
         }
     };
     policy_source.validate_executor(&executor.descriptor())?;
-    let mut builder = PVisor::builder()
-        .storage(&storage)
-        .event_sink(event_sink)
-        .network(
-            NetworkDriverConfig::new(
-                config.overlaynet.mode,
-                NetworkConfig {
-                    capability: None,
-                    mode: match config.overlaynet.policy {
-                        OverlayNetPolicy::Public => NetworkMode::Public,
-                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                    },
-                    allowed_hosts: config.overlaynet.allow.clone(),
-                    rules: config.overlaynet.rules.clone(),
-                    deny_rules: config.overlaynet.deny.clone(),
-                    limits: config.overlaynet.limits.clone(),
-                },
-            )
-            .listen(&config.overlaynet.listen)
-            .peer_network(config.overlaynet.peers.clone()),
-        );
-    if let Some(path) = &config.vm.control_socket {
-        builder = builder.control_socket(path);
-    }
-    #[cfg(feature = "gateway")]
-    if let Some(proxy) = proxy {
-        builder = builder.gateway(
-            GatewayDriverConfig::new(proxy)
-                .output_dir(&storage)
-                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-        );
-    }
+    let mut builder = configured_runtime_builder(
+        &config,
+        &storage,
+        config.vm.control_socket.as_deref(),
+        #[cfg(feature = "gateway")]
+        proxy,
+    )
+    .event_sink(event_sink);
     if let Some(overlay) = overlay {
         builder = builder.overlay(overlay);
     }
@@ -3256,6 +3205,47 @@ fn resolve_execution_workspace(config: &RunConfig, stage_launch: bool) -> anyhow
         .or_else(|| config.run.workspace.clone())
         .unwrap_or(std::env::current_dir()?);
     resolve_workspace(&workspace)
+}
+
+// Only common driver wiring lives here. Callers own admission, resolved owner
+// sockets, proxy resolution timing, recording, executors and stage lifetimes.
+fn configured_runtime_builder(
+    config: &RunConfig,
+    storage: &Path,
+    control_socket: Option<&Path>,
+    #[cfg(feature = "gateway")] proxy: Option<ProxyConfig>,
+) -> pvisor::PVisorBuilder {
+    let mut builder = PVisor::builder().storage(storage).network(
+        NetworkDriverConfig::new(
+            config.overlaynet.mode,
+            NetworkConfig {
+                capability: None,
+                mode: match config.overlaynet.policy {
+                    OverlayNetPolicy::Public => NetworkMode::Public,
+                    OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                    OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                },
+                allowed_hosts: config.overlaynet.allow.clone(),
+                rules: config.overlaynet.rules.clone(),
+                deny_rules: config.overlaynet.deny.clone(),
+                limits: config.overlaynet.limits.clone(),
+            },
+        )
+        .listen(&config.overlaynet.listen)
+        .peer_network(config.overlaynet.peers.clone()),
+    );
+    if let Some(path) = control_socket {
+        builder = builder.control_socket(path);
+    }
+    #[cfg(feature = "gateway")]
+    if let Some(proxy) = proxy {
+        builder = builder.gateway(
+            GatewayDriverConfig::new(proxy)
+                .output_dir(storage)
+                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
+        );
+    }
+    builder
 }
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
