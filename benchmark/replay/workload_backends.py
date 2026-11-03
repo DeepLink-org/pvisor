@@ -25,6 +25,7 @@ class PvisorBackend:
     def start(self):
         self.attempted = True
         c = self.config
+        pool_args = ["--memory-pool", c["memory_pool"]] if c.get("memory_pool") else []
         value = self.command(
             "run",
             "-d",
@@ -38,6 +39,7 @@ class PvisorBackend:
             str(c["memory"]),
             "--entrypoint",
             "/bin/sh",
+            *pool_args,
             c["image"],
             "-c",
             "while :; do sleep 3600; done",
@@ -153,6 +155,12 @@ def build_backend(config):
     number = "vcpus" if kind == "pvisor" else "vm_timeout_s"
     if type(config.get(number)) is not int or config[number] <= 0:
         raise ValueError("positive integer required: " + number)
+    if "memory_pool" in config:
+        pool = config["memory_pool"]
+        if kind != "pvisor":
+            raise ValueError("memory_pool is only supported by pvisor")
+        if not isinstance(pool, str) or not os.path.isabs(pool) or "\0" in pool:
+            raise ValueError("memory_pool must be an absolute path to an existing external pool socket")
     if kind == "agentenv":
         from urllib.parse import urlsplit
 

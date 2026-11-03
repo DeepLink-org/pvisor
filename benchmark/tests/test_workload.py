@@ -215,6 +215,7 @@ class WorkloadTests(unittest.TestCase):
         with patch("workload_backends.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
             b.start()
+            self.assertNotIn("--memory-pool", run.call_args_list[0].args[0])
             b.exec("echo $(secret)")
             receipt = b.stop()
             argv = run.call_args_list[1].args[0]
@@ -222,6 +223,40 @@ class WorkloadTests(unittest.TestCase):
             self.assertNotIn("shell", run.call_args_list[1].kwargs)
             self.assertTrue(receipt["api_deleted"])
             self.assertFalse(receipt["physical_exit_verified"])
+
+    def test_pvisor_external_pool_is_one_argument_before_image(self):
+        config = dict(
+            kind="pvisor", binary="/bin/pvisor", image="prepared",
+            memory="8g", vcpus=2, cwd="/app", memory_pool="/tmp/replay pool/socket",
+        )
+        backend = build_backend(config)
+        with patch("workload_backends.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            backend.start()
+            argv = run.call_args.args[0]
+            index = argv.index("--memory-pool")
+            self.assertEqual(argv[index + 1], config["memory_pool"])
+            self.assertLess(index, argv.index("prepared"))
+            backend.stop()
+            self.assertEqual(run.call_count, 2)  # no pool creation or destruction
+            self.assertEqual(run.call_args.args[0][-3:], ["rm", "-f", backend.name])
+
+    def test_pool_configuration_rejected_before_execution(self):
+        config = dict(
+            kind="pvisor", binary="/bin/pvisor", image="prepared",
+            memory="8g", vcpus=2, cwd="/app",
+        )
+        with patch("workload_backends.subprocess.run") as run:
+            for pool in (None, "", "auto", "relative.sock", 1, "/tmp/\0sock"):
+                with self.subTest(pool=pool), self.assertRaises(ValueError):
+                    build_backend(dict(config, memory_pool=pool))
+            with self.assertRaisesRegex(ValueError, "only supported by pvisor"):
+                build_backend(dict(
+                    kind="agentenv", endpoint="http://localhost:18250",
+                    template="t", api_key_env="TOKEN", cwd="/app",
+                    vm_timeout_s=18000, memory_pool="/tmp/pool.sock",
+                ))
+            run.assert_not_called()
 
     def test_validate_only_cli_does_not_start_or_import_sdk(self):
         with tempfile.TemporaryDirectory() as tmp:
