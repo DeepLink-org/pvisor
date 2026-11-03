@@ -8,13 +8,8 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
-    ToolCall,
+    AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
 };
-
-pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
-    build_swe_plan(request).map(AdapterPlan::SweAgent)
-}
 
 pub(super) fn execute(
     plan: &ReplayPlan,
@@ -24,7 +19,7 @@ pub(super) fn execute(
     run_swe(plan, context, journal)
 }
 
-fn build_swe_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let mut value: Value = serde_json::from_slice(&raw).replay_context(
         ReplayErrorKind::Trajectory,

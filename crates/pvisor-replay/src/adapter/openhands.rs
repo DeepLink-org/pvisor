@@ -14,14 +14,9 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
-    ToolBatch, ToolCall,
+    FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
 };
 use crate::process::{ProcessSpec, run_process};
-
-pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
-    build_openhands_plan(request).map(AdapterPlan::Openhands)
-}
 
 pub(super) fn execute(
     plan: &ReplayPlan,
@@ -31,7 +26,7 @@ pub(super) fn execute(
     run_openhands(plan, context, journal)
 }
 
-fn build_openhands_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let events: Vec<Value> = serde_json::from_slice(&raw).replay_context(
         ReplayErrorKind::Trajectory,

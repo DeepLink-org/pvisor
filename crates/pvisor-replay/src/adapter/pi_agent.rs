@@ -7,15 +7,10 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
-    ToolCall,
+    AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
 };
 
 const SUPPORTED_TOOLS: &[&str] = &["read", "bash", "edit", "write"];
-
-pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
-    build_pi_plan(request).map(AdapterPlan::PiAgent)
-}
 
 pub(super) fn execute(
     plan: &ReplayPlan,
@@ -44,7 +39,7 @@ pub(super) fn execute(
     run_sdk_bridge(plan, context, journal, AgentKind::PiAgent)
 }
 
-fn build_pi_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let events = parse_jsonl_events(&raw)?;
     let last_turn_end = events

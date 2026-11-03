@@ -653,6 +653,18 @@ fn native_jsonl_prepare_only_never_executes_tools_or_replaces_observations() {
         assert_eq!(report.result.phase, ReplayPhase::Prepared);
         assert_eq!(report.result.replayed_tool_calls, 0);
         assert!(!marker.exists(), "{agent:?} prepare-only executed a tool");
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(report.result.output_dir.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["schema_version"], "sandbox-replay.plan/v1");
+        assert_eq!(manifest["agent"]["name"], agent.as_str());
+        assert_eq!(manifest["agent"]["version"], agent.supported_version());
+        assert_eq!(manifest["agent"]["profile"], agent.profile());
+        assert_eq!(manifest["boundary"]["after_step"], 1);
+        assert_eq!(manifest["boundary"]["complete_tool_batch"], true);
+        assert_eq!(manifest["boundary"]["tool_calls"], 1);
+        assert_eq!(manifest["batches"].as_array().unwrap().len(), 1);
         let prepared = fs::read_to_string(
             report
                 .result
