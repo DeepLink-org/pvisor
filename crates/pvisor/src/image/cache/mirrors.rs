@@ -162,8 +162,8 @@ mod tests {
             .collect();
         assert!(validate(&too_many).is_err());
         let client = super::super::CacheClient::from_repositories(&roots).unwrap();
-        assert!(client.needs_host_network());
         let binding = client.binding();
+        assert!(binding.resolved_source().unwrap().needs_host_network());
         let mut wire = serde_json::to_value(binding).unwrap();
         assert_eq!(wire["mirrors"][0], roots[1]);
         super::super::CacheClient::from_binding(serde_json::from_value(wire.clone()).unwrap())

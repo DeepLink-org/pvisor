@@ -175,9 +175,6 @@ impl CacheConfig {
             }
         }
     }
-    pub(super) fn explicit() -> bool {
-        env::cache::explicit()
-    }
 }
 
 /// Cache configuration and implicit storage credentials belong to the host.

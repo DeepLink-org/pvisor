@@ -3,8 +3,9 @@ use super::config::ResolvedSource;
 use super::portable::PortableCache;
 use super::protocol::{Envelope, hash, read_frame, write_frame};
 use super::storage::Storage;
-use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV};
+use super::transport::{Endpoint, Stream, TIMEOUT};
 use super::{CacheConfig, MAX_READ, Request, Response, SERVER_ENV};
+use crate::env::cache::TOKEN_ENV;
 use anyhow::{Context, bail, ensure};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -208,10 +209,6 @@ impl CacheClient {
     pub(super) fn local_directory(&self) -> Option<&std::path::Path> {
         self.local_directory.as_deref()
     }
-    #[cfg(test)]
-    pub(super) fn needs_host_network(&self) -> bool {
-        self.binding.resolved_source().unwrap().needs_host_network()
-    }
     pub(super) fn address(&self) -> &str {
         &self.binding.address
     }
@@ -362,7 +359,7 @@ impl CacheClient {
         if !client.is_socket() {
             return Ok(client);
         }
-        match client.probe_resolved(CacheConfig::explicit())? {
+        match client.probe_resolved(crate::env::cache::explicit())? {
             Some(client) => Ok(client),
             None => Self::local(store),
         }
@@ -1501,7 +1498,13 @@ pub(super) mod tests {
         let client = CacheClient::new(format!("file://{}", location.display()), None).unwrap();
         assert_eq!(client.local_directory(), Some(location.as_path()));
         assert!(!client.is_local_pool());
-        assert!(!client.needs_host_network());
+        assert!(
+            !client
+                .binding()
+                .resolved_source()
+                .unwrap()
+                .needs_host_network()
+        );
         let wire = serde_json::to_value(client.binding()).unwrap();
         assert!(wire.get("local_directory").is_none());
         assert!(wire.get("needs_host_network").is_none());
@@ -1512,7 +1515,13 @@ pub(super) mod tests {
 
         let remote =
             CacheClient::from_repositories(&["https://mirror.example/root".into()]).unwrap();
-        assert!(remote.needs_host_network());
+        assert!(
+            remote
+                .binding()
+                .resolved_source()
+                .unwrap()
+                .needs_host_network()
+        );
         assert!(remote.local_directory().is_none());
         let mut invalid = serde_json::to_value(remote.binding()).unwrap();
         invalid["read_only"] = false.into();

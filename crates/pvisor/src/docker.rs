@@ -436,7 +436,7 @@ impl Store {
     /// then that explicit Docker home's `images`, then the user data directory.
     /// Both roots must be owned private directories.
     pub fn discover() -> anyhow::Result<Self> {
-        let root = std::env::var_os("PVISOR_DOCKER_HOME")
+        let root = crate::env::os(crate::env::cache::DOCKER_HOME_ENV)
             .map(PathBuf::from)
             .unwrap_or(
                 dirs::data_local_dir()
@@ -2050,7 +2050,7 @@ fn run_vm<Backing>(
                 crate::executor::vm::start_with_pool(
                     handle,
                     pool,
-                    std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some(),
+                    crate::env::os(crate::env::ram::METRICS_ENV).is_some(),
                 )?;
             }
         }
