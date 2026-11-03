@@ -25,6 +25,42 @@ SDK sampler增加`--experiment scoped-names`。每批只改变该项开关，
 其他后续机制关闭；使用原来的prepare→semspec bench→analysis入口。
 流式读与范围失效未检出收益，不能把点估计作为默认开启依据。
 
+### 文档原始负载的版本复测
+
+`docs_retest.py` 使用历史本地读取批次中的固定Python 3.12 OCI输入和已准备
+V2库存，保留标准库加载与完整库树两遍mmap/hash脚本。复制库存仅包含
+pool和catalog，不复制历史实例或投影；空旧`rootfs`字段经校验后移除，
+catalog的cache位置指向新私有副本，不修改历史数据。GNU release的
+基线/候选均与同一固件并排冻结；它不是原静态用户二进制的逐字节复现。
+三次预热、30个随机三臂环境分别是main、PR默认、PR显式缓存组合。
+短Python与全树扫描独立分析，不把扫描收益外推短任务。
+
+```sh
+python3 benchmark/filesystem/docs_retest.py --prepare benchmark/.data/NEW_READS \
+  --original HISTORICAL_LOCAL_READ_BATCH \
+  --baseline FROZEN_BASE/bin/pvisor --candidate FROZEN_PR/bin/pvisor
+target/semspec/debug/semspec bench --cwd ABS_BATCH ABS_BATCH/in.json
+python3 benchmark/filesystem/docs_retest_analysis.py ABS_BATCH
+```
+
+两制品目录均须带`libkrunfw.so.5`。执行前关闭环境中的外部实验覆盖，
+固定同一源码/编译profile/固件，保留build日志和版本摘要。
+显式组合启用名称缓存、prepared copy-up、逻辑目录、已解析节点复用、
+逻辑DATA和直接copy-up；stream、scoped names、object barriers不启用，
+WB保持关闭。计时不插桩，不宣称组合内各机制独立贡献。
+
+`docs_rootfs_retest.py` 另复用`user_workloads.py`的原目录rootfs路径、
+M01–M12与S01–S03、原始静态payload、namespace隔离和host最终oracle，
+不改用户runner。接收`--prepare BATCH --payload PAYLOAD_BATCH --rootfs
+TOOLROOT --builds BASE_AND_CANDIDATE --samples 3`，制品位于
+`BUILDS/{main,candidate}/bin/`并分别有`build-receipt.json`。
+prepare后同样通过`semspec bench`运行，整父组两核/2GiB/swap0，
+每case普通VM和guest-WB各三对环境、每环境三轮、90秒超时。
+完成后用`python3 benchmark/filesystem/docs_retest_analysis.py --rootfs BATCH`
+校验完整环境库存并生成三轮累计的中位数及范围。
+不使用lazy资格，N3只展示水平，不推导稳定百分比，资源饱和点未复测。
+新工程结果写双语lab-note，原九模式用户表和历史失败保持不变。
+
 Apple Silicon macOS/HVF 的独立复测见 `MACOS_OPTIMIZATION_REPORT.md`，
 不与上述 Linux 批次合并。两个 sampler 在 macOS 使用真实
 `libkrunfw.5.dylib`，直接启动已签名的 release driver/CLI；

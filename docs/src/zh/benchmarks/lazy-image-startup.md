@@ -82,6 +82,9 @@ ms、N=30；Ready 是宿主观察，mmap 两遍是实例内阶段时钟，二者
 
 远程读取不是全部代价：本地池也经过 VM 文件服务、路径解析与 guest page cache。该对照包含运行时与文件系统差异，不能把差值全部归为 Zstd 解压；也不能由热重复扫描推导随机 mmap 或写入性能。
 
+后续版本与显式缓存组合的[同负载工程复测](../lab-notes/filesystem-performance-analysis.md#docs-workload-retest)
+单独记录默认路径和短任务、完整库树扫描之间的取舍；不与上述跨运行时样本合并。
+
 整组内存，MiB、五个新产品组中位数；只测空闲 shell/sleep。
 
 | 空闲部署内存 | Docker MiB | pVisor MiB | PV−Docker [95% CI] MiB |
