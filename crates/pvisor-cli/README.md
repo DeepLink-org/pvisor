@@ -660,6 +660,13 @@ Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pv
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
+The pool-startup cancellation integration test reserves nextest's test-thread
+slots while it runs. Concurrent cold execution of copied Mach-O binaries can
+stall before `main` on macOS and consume its resolver readiness budget. Slot
+reservation isolates this real-time contract; both five-second deadlines and
+the required cancellation exit status remain unchanged. It is not a benchmark
+of concurrent frontend cold starts.
+
 Linux OCI fixtures distinguish an inner deadline (an untrusted child process
 exit) from the host transport watchdog. The latter must terminate and reap an
 unresponsive runtime; delegated result files use the writable `output/` mount.
