@@ -1716,8 +1716,11 @@ impl Vcpu {
                 }
                 // Documentation specifies that below kvm exits are considered
                 // errors.
-                VcpuExit::FailEntry(reason, vcpu) => {
-                    error!("Received KVM_EXIT_FAIL_ENTRY signal: reason={reason}, vcpu={vcpu}");
+                VcpuExit::FailEntry(reason, host_cpu) => {
+                    error!(
+                        "Received KVM_EXIT_FAIL_ENTRY signal: reason={reason}, host_cpu={host_cpu}, vcpu={}",
+                        self.id
+                    );
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 VcpuExit::InternalError => {

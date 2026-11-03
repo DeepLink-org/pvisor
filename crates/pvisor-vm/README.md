@@ -1732,3 +1732,12 @@ remain unverified.
 workload on KVM, HVF and WHP. Windows CI builds the CLI and retains the existing
 WHP API smoke. See the [platform matrix](../../docs/src/en/reference/platforms.md)
 for supported features, inputs and results.
+
+## Snapshot allocation regression measurements
+
+The shared-RAM capture regression synchronizes source fixture writes before and
+after capture's allocation comparison, so delayed filesystem allocation is not
+attributed to capture. Byte contents, file offsets, unchanged source allocation
+and sparse destination checks remain enforced. KVM entry-failure diagnostics
+distinguish the host CPU returned by KVM from the runtime's vCPU ID; entry
+failures remain fatal.
