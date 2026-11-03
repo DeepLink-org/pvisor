@@ -17,21 +17,17 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
-pub const POOL_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_POOL";
 pub const METRICS_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_METRICS";
+// Diagnostics deliberately inherit the native runner host profile. They do not
+// select a memory strategy; pool selection is exclusively a RunnerSpec input.
 pub(super) fn start_if_requested(
     handle: pvisor_vm::api::VmmHandle,
-    local: bool,
+    selection: &super::supported::RamPager,
     memory_mib: u32,
 ) -> io::Result<()> {
     start_diagnostics(&handle)?;
     let metrics = std::env::var_os(METRICS_ENV).is_some();
-    if local {
-        if std::env::var_os(POOL_ENV).is_some() {
-            return Err(io::Error::other(
-                "local cold RAM compression cannot use an external memory pool",
-            ));
-        }
+    if matches!(selection, super::supported::RamPager::Local) {
         // Per-instance ceilings: at most half configured RAM as encoded payload,
         // and one object per 64 KiB RAM block. Index overhead is bounded separately.
         let ram_bytes = usize::try_from(u64::from(memory_mib) * 1024 * 1024)
@@ -49,10 +45,10 @@ pub(super) fn start_if_requested(
             },
         );
     }
-    let Some(_path) = std::env::var_os(POOL_ENV) else {
+    let super::supported::RamPager::Pool(path) = selection else {
         return Ok(());
     };
-    start_with_pool(handle, Path::new(&_path), metrics)
+    start_with_pool(handle, path, metrics)
 }
 
 /// Start opt-in self-query diagnostics independently of cold-pool selection.
