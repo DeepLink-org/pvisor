@@ -15,8 +15,8 @@ Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 
-The unused `echo` module and `echo-server` feature are retired. Gateway does not
-bundle a mock upstream service; HTTP tests own their controlled upstream fixtures.
+Gateway does not bundle a mock upstream service; HTTP tests own their controlled
+upstream fixtures.
 
 Online network/model policy is fixed in memory at startup. Session `proxy.toml`
 files are diagnostic snapshots, omit inline API keys, and cannot change policy or
@@ -46,8 +46,7 @@ protocol-conversion path.
 Conversion regressions and fuzz targets use the same production path:
 `understanding::understand_request` → `conversion::translate_request_for_bridge`,
 and `conversion::translate_response_for_bridge` for non-streaming replies.
-There are no parallel legacy wire-to-wire converters. Gemini schema normalization
-and provider error envelopes remain private production helpers.
+Gemini schema normalization and provider error envelopes are private helpers.
 
 ## Host-observed inference waits
 

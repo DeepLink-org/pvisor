@@ -19,7 +19,6 @@ validation scope in [WINDOWS.md](WINDOWS.md).
 Current first-party adapters: `api.rs`, `backend.rs`, `builder.rs`, `firmware.rs`,
 `handle.rs`, `memory.rs`, `portable.rs`, and the owned Rust guest build integration.
 Only `pvisor_vm::api` is public. Core runtime components compile inside this
-crate. Unconnected upstream GPU, sound and input implementations and their
-optional dependencies have been removed; original manifests remain historical
-source records, not current build profiles. See [the cleanup audit](CLEANUP.md)
-for the product-call evidence, deferred profiles and dead-code diagnostic scope.
+crate. Original manifests remain historical source records, not current build
+profiles; current capabilities and platform limits are documented in the crate
+README.

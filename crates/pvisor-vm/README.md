@@ -2,20 +2,15 @@
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
-## 可选设备清理范围
+## 设备支持范围
 
-当前产品调用只选择默认 `init-blob` 和可选 `net`。未接入产品的上游
-`gpu`、`snd`、`input` 实现、依赖和分派已删除，GPU 子开关
-`virgl_resource_map2` 同时删除；选择这些旧 feature 会由 Cargo 明确拒绝。
-公开 API 未增加替代 no-op，原有不支持操作仍返回 `Unsupported`。
-KVM/HVF/WHP、Windows 树、virtio-fs/console/vsock、网络、RAM/快照和实验开关保留。
+产品构建选择默认 `init-blob` 和可选 `net`，使用 KVM/HVF/WHP、
+virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台说明。
+不提供 `gpu`、`snd`、`input` 或 `virgl_resource_map2` feature；
+不支持的公开操作返回 `Unsupported`。
 
-`blk`、`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 仍留在内部，尚无产品调用，
-不是已验收的产品 profile。本轮不跨越其架构/启动依赖做机械删改。
-来源证据、暂缓原因和验证边界见 [清理审计](provenance/CLEANUP.md)。
-诊断实验曾移除 `runtime_modules.rs` 的原有 `dead_code` 抑制，macOS/net 检查
-删除前报告 160 条、删除后 165 条 VM warnings；原有属性随后恢复，未新增或扩大
-抑制。仍有平台/接口死代码待逐模块审核，不能据此声称零死代码或死代码门禁完成。
+`blk`、`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
+不属于已验收的产品 profile。
 
 ## Unix FS 环境设置
 
@@ -40,14 +35,13 @@ Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
 通过 `#[path]` 复用，调用路径仍为内部 `crate::utils::byte_order`。
 其有符号转换保留 x86_64/test 条件，大端写入只供单测使用；Windows
 支持范围仍为 x86_64。virtio 的 bindings、FUSE、descriptor 和 queue
-仍各自保留：它们含有宿主 ABI、协议扩展、内存租约或快照语义差异，
-不作为纯重复文件合并。
+使用平台实现，包含宿主 ABI、协议扩展、内存租约和快照语义差异。
 
 支持 `x86_64-pc-windows-msvc`、默认 `init-blob` 或 `--no-default-features`。
 需要启用固件中的硬件虚拟化以及 Windows **Windows Hypervisor Platform**
 可选功能，启用后重启；运行于虚拟机时还需要宿主允许嵌套虚拟化。
 `capabilities()` 返回 `Hypervisor::Whp`，仅描述已编译能力，不检测机器权限。
-本阶段不承诺 Windows ARM64、TEE、GPU、音频或 EFI profile。
+不支持 Windows ARM64、TEE、GPU、音频或 EFI profile。
 
 | 能力 | Windows 实现 |
 | --- | --- |

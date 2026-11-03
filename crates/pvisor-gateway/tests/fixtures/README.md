@@ -53,9 +53,8 @@ fixtures/
 客户端渲染，并检查成功输出的 JSON、模型标识及语义来源协议。
 
 生产语义路径保留 `openrouter_reasoning` 的推理文本，而 AG 旧响应 snap
-只列可见文本。测试在完整 snap 上精确补充预期 thinking 块（包含顺序），
-不删除原有字段或跳过该用例。Messages 字符串 system 在生产输出中规范化为
-text block 数组；属性测试对该数组和文字作精确断言。
+只列可见文本，因此测试期望包含有序的 thinking 块和可见文本。
+Messages 字符串 system 在输出中规范化为 text block 数组。
 
 PolicyVisor 当前实现 **Messages ↔ Completions**、**Responses ↔ Completions**，以及
 **Completions/Messages/Responses ↔ Gemini native generateContent** bridge。支持的请求、响应和
