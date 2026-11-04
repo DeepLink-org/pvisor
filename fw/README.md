@@ -323,12 +323,18 @@ The generic x86-64 guest is IPv4-only (`CONFIG_IPV6` is disabled). IPv6 sockets,
 `::1` loopback and dual-stack listeners are unavailable; workloads must support
 IPv4. IPv4, virtio-net, vsock and TSI remain enabled.
 
-The netfilter family is enabled for Docker-in-VM workloads: NAT, nftables,
-legacy xtables (`iptables-legacy`), MASQUERADE, br_netfilter and the common
-match/target extensions. This lets `dockerd` inside a pVisor VM initialize its
-default bridge (MASQUERADE, port publishing) without `--iptables=false`;
-container outbound traffic still traverses the host-side overlaynet egress
-policy.
+The netfilter family is enabled for Docker-in-VM workloads: NAT, nftables
+(including `NFT_COMPAT`/`NFT_NAT`/`NFT_MASQ` for the `iptables-nft` backend the
+official `docker:dind` image uses), legacy xtables (`iptables-legacy`),
+MASQUERADE, br_netfilter and the common match/target extensions. The bridge
+device, veth pairs and cgroup BPF (`BPF_SYSCALL` + `CGROUP_BPF`, required by
+runc's cgroup-v2 device controller) are enabled as well. This lets `dockerd`
+inside a pVisor VM run unmodified with its default bridge, iptables rules,
+MASQUERADE and published ports — no `--iptables=false`/`--bridge=none`
+workarounds; container outbound traffic still traverses the host-side
+overlaynet egress policy. Kernel bundles must be built from this directory
+(`mise run fw -- build` or the standalone Makefile); extracting a bundle from
+an arbitrary prebuilt upstream `libkrunfw.so` silently reverts these options.
 
 For this variant, `make` builds only `vmlinux`, skipping the unused compressed
 `bzImage` and its boot decompressor. The `HAVE_KERNEL_*` capability flags and
