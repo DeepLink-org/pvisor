@@ -15,6 +15,7 @@ mod startup_profile;
 pub mod trace;
 pub use session::Session;
 
+mod agent;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;

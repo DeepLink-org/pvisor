@@ -1659,18 +1659,7 @@ async fn execute_config(
     }
     spec.policies = config.policies.clone();
     spec.capabilities.filesystem = resolve_filesystem_grants(&config, &workspace, &storage)?;
-    if let Some(path) = &config.gateway.zcode_builtin_config {
-        spec.metadata.insert(
-            "pvisor.gateway.zcode_builtin_config".into(),
-            serde_json::to_value(path.canonicalize()?)?,
-        );
-    }
-    if let Some(profile) = config.gateway.profile {
-        spec.metadata.insert(
-            "pvisor.gateway.profile".into(),
-            serde_json::to_value(profile)?,
-        );
-    }
+    super::agent::project(&config, &mut spec)?;
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = program_args.to_vec();
     process.stdin = if stage_launch.as_ref().is_none_or(|stage| stage.interactive) {
@@ -2695,21 +2684,12 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
             };
         }
     }
-    if let Some(profile) = args.gateway.gateway_profile {
-        config.gateway.profile = Some(profile);
-        anyhow::ensure!(
-            args.gateway.gateway_mode != Some(GatewayMode::Off),
-            "--gateway-profile conflicts with --gateway-mode off"
-        );
-        config.gateway.mode = GatewayMode::Capture;
-        if explicit_overlaynet_mode.is_none() {
-            config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
-                OverlayNetMode::Auto
-            } else {
-                OverlayNetMode::Proxy
-            };
-        }
-    }
+    super::agent::apply_profile(
+        config,
+        args.gateway.gateway_profile,
+        args.gateway.gateway_mode,
+        explicit_overlaynet_mode,
+    )?;
     if let Some(value) = args.gateway.gateway_admin_listen {
         config.gateway.admin_listen = value;
     }
@@ -3019,46 +2999,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
             "composed filesystem layers cannot be combined with automatic apply"
         );
     }
-    if let Some(profile) = config.gateway.profile {
-        anyhow::ensure!(
-            config.gateway.mode == GatewayMode::Capture,
-            "Gateway profile requires capture mode"
-        );
-        anyhow::ensure!(
-            config.gateway.routes.is_empty(),
-            "Gateway profile cannot be combined with custom model routes"
-        );
-        anyhow::ensure!(
-            config
-                .run
-                .command
-                .first()
-                .and_then(|program| Path::new(program).file_name())
-                .and_then(|s| s.to_str())
-                == Some("zcode"),
-            "Gateway profile requires a direct zcode command"
-        );
-        if profile == GatewayProfile::ZcodeBigmodel {
-            let path = config
-                .gateway
-                .zcode_builtin_config
-                .as_deref()
-                .context("zcode-bigmodel requires gateway.zcode_builtin_config")?;
-            anyhow::ensure!(
-                path.is_absolute() && path.is_file(),
-                "gateway.zcode_builtin_config must name an existing absolute file"
-            );
-            anyhow::ensure!(
-                config.run.executor == RunExecutorKind::Host,
-                "zcode-bigmodel currently requires the host executor"
-            );
-        }
-    } else {
-        anyhow::ensure!(
-            config.gateway.zcode_builtin_config.is_none(),
-            "gateway.zcode_builtin_config requires the zcode-bigmodel profile"
-        );
-    }
+    super::agent::validate(config)?;
     if safe {
         anyhow::ensure!(
             config.filesystem == FilesystemMode::Sandbox,
@@ -3403,11 +3344,7 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         network,
         overlay: OverlayConfig::default(),
         models: if config.gateway.mode == GatewayMode::Capture {
-            config
-                .gateway
-                .profile
-                .map(GatewayProfile::routes)
-                .unwrap_or_else(|| config.gateway.routes.clone())
+            super::agent::routes(config)
         } else {
             Vec::new()
         },

@@ -3,7 +3,7 @@
 use super::{host::JobCommand, host_process::TerminalOwner};
 use anyhow::{Context, ensure};
 pub(super) use pvisor::host_transport::read_host_frame_sync as read_frame;
-use pvisor::host_transport::{InstanceCommand, write_host_frame_sync as write_frame};
+use pvisor::host_transport::write_host_frame_sync as write_frame;
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, AgentCtlTarget,
@@ -785,7 +785,7 @@ fn launch(
     }
 }
 
-pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
+fn frontend() -> anyhow::Result<(tokio::runtime::Runtime, Arc<AtomicI32>)> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -794,6 +794,25 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         .set(tokio_util::sync::CancellationToken::new())
         .map_err(|_| anyhow::anyhow!("duplicate frontend cancellation"))?;
     let signal = signals(&rt)?;
+    Ok((rt, signal))
+}
+
+/// Live controls stay in the foreground; they never enter owner launch or Job locking.
+pub(super) fn call_vm(command: super::live_vm::VmRequest) -> anyhow::Result<i32> {
+    let (rt, signal) = frontend()?;
+    let target = command.target()?;
+    REQUEST_TARGET
+        .set(Some(target))
+        .map_err(|_| anyhow::anyhow!("duplicate frontend target"))?;
+    if signal.load(Ordering::SeqCst) != 0 {
+        return Ok(128 + signal.load(Ordering::SeqCst));
+    }
+    command.validate_target(REQUEST_TARGET.get().and_then(Option::as_ref))?;
+    command.execute(&rt)
+}
+
+pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
+    let (rt, signal) = frontend()?;
     if let JobCommand::Review(args) = &mut command {
         args.selector = super::stage_source::resolve(
             args.selector.as_deref(),
@@ -828,17 +847,7 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         .is_some_and(|endpoint| endpoint.is_available());
     if matches!(&command, JobCommand::Resume(_)) && live {
         let record = record.as_ref().unwrap();
-        let result = record.live_control.as_ref().unwrap().exchange_checked(
-            &record.run_id,
-            record
-                .attempt_id
-                .as_deref()
-                .context("live Job has no Attempt identity")?,
-            InstanceCommand::Resume {},
-            Some(&check_cancelled),
-        )?;
-        println!("{}", serde_json::to_string(&result)?);
-        return Ok(0);
+        return super::live_vm::resume_record(&rt, record);
     }
     if let Some(record) = &record {
         command.preflight(record)?;

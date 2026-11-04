@@ -16,10 +16,10 @@ virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台�
 
 FS 环境变量名称、默认值和解析规则集中在私有 `src/env.rs`。
 Unix virtio-fs 在 VMM attach 构造边界一次读取并验证 Host FS 环境设置，
-由私有不可变 profile 传给设备、worker 和 overlay；激活和恢复不再重读这些设置。
+由私有不可变 profile 传给设备、worker 和 overlay；激活和恢复只消费该 profile。
 恢复的请求队列数量仍由快照覆盖构造时的 `PVISOR_VM_FS_WORKERS` 默认拓扑。
-`PVISOR_VM_FS_WRITEBACK` 保留原三态规则：仅字符串 `0` 显式关闭，
-其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复旧 WB 状态。
+`PVISOR_VM_FS_WRITEBACK` 使用三态规则：仅字符串 `0` 显式关闭，
+其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复快照的 WB 状态。
 共享 OPEN 的非法设置仍仅在创建 OverlayFS 时拒绝，不影响 passthrough/null FS。
 directory-names、prepared-copy-up、object-read-barriers、
 logical-directory-cache 和 logical-data-cache 实验也由同一 profile
@@ -618,7 +618,7 @@ filemap_check_errors, then skips only the backend FLUSH RPC. Ordinary RELEASE,
 descriptor leases, local guest lock lifetime, writable handles, data caching and
 metadata validity are unchanged. Eliminating the backend dup/close naturally
 eliminates its internal resource errors such as dup's EMFILE; this is not a claim
-that every historical close errno remains identical. It preserves the guest's
+that backend close errors are identical with and without the capability. It preserves the guest's
 data/locking error boundary and does not fix lower/upper shared-page-cache issues.
 
 Sessions actually negotiating the new capability reject capture with Unsupported;
@@ -701,7 +701,7 @@ contain its negative replies because capture after the first reply is rejected.
 Before any such reply, the prior capture/restore path remains available.
 An enabled negative-cache owner also rejects a saved WB=1 native session under
 that lock before restoring any layer or namespace state, including when an unset
-writeback environment otherwise permits historical WB=1 restoration. Disabling
+writeback environment otherwise permits WB=1 snapshot restoration. Disabling
 this preference retains that existing compatibility; WB=0 restores remain valid.
 Private tests cover qualification, unchanged positive TTLs and errors, real
 exclusions and their existing/missing ancestors, protected subtrees and unrelated
@@ -1849,9 +1849,8 @@ not promise a measured total-memory saving before workload validation.
 
 ## Shared CLI VM contracts and Windows directory rename
 
-Windows directory rename now updates cached paths for the directory and all
-known descendants, retaining inode IDs and lookup counts. Previously, cached
-children kept obsolete paths and could fail getattr/open after a move. A native
+Windows directory rename updates cached paths for the directory and all
+known descendants, retaining inode IDs and lookup counts. A native
 regression checks nested inodes and a no-op rename; the shared guest workload
 checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
 remain unverified.

@@ -142,16 +142,9 @@ impl AttemptSession {
             "network interception: explicit proxy (cooperative; direct sockets remain ambient)"
                 .into(),
         );
-        super::zcode::prepare(
-            spec,
-            &mut plan,
-            &proxy.listen,
-            &self.run_record.storage,
-            None,
-        )?;
+        crate::agent::prepare_proxy(spec, &mut plan, &proxy.listen, &self.run_record.storage)?;
         let RunInvocation::Process(process) = &mut spec.invocation;
         apply_implant(process, &plan);
-        super::zcode::apply_environment(process, &plan);
         self.run_record.overlaynet_listen = Some(proxy.listen.clone());
         self.run_record.network_interception =
             Some(pvisor_overlaynet::InterceptionProfile::explicit_proxy());
@@ -1605,17 +1598,10 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
-    let profile = spec
-        .metadata
-        .get("pvisor.gateway.profile")
-        .cloned()
-        .map(serde_json::from_value::<crate::config::GatewayProfile>)
-        .transpose()?;
-    super::zcode::prepare(spec, &mut plan, listen, run_storage, profile)?;
+    crate::agent::prepare_capture(spec, &mut plan, listen, run_storage)?;
 
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
-    super::zcode::apply_environment(process, &plan);
     if gateway_enabled {
         inject_gateway_args(process, listen);
     }

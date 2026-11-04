@@ -109,7 +109,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
     crate::cli::host_service::check_record(&source)?;
-    // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
+    // Fail before checkpoint/stage mutations when the recorded policy cannot be reconstructed.
     let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
     super::reject_ask_config(&config)?;
     let selected_checkpoint = match args.checkpoint.as_deref() {

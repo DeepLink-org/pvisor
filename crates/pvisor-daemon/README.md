@@ -407,16 +407,15 @@ two-node Kubo runner (validated with 0.34.1) that checks actual Bitswap transfer
 and lazy reads on an isolated loopback network. Neither that runner nor mock
 gateway tests establish public-network performance.
 
-## Retired peer cluster
+## Single-node ownership and deployment safety
 
-The experimental `cluster` feature, peer flags, discovery, Home queue, owner
-routing and `/v1/cluster/*` extensions have been removed. Both supported SDK
-profiles now operate only on the receiving daemon's local sandboxes. IPFS image
-distribution is independent and remains available.
+Both supported SDK profiles operate only on the receiving daemon's local
+sandboxes. Peer discovery, Home queues, owner routing and `/v1/cluster/*`
+extensions are unsupported. IPFS image distribution is independent.
 
-Before upgrading an experimental cluster deployment, stop new submissions and
-reconcile queued/assigned work through the old version. Confirm cleanup on each
-executor; preserve its Home ledger, registry and ownership state together.
+When replacing a deployment with queued or remotely assigned work, stop new
+submissions and reconcile that work through the executable that owns it.
+Confirm cleanup on each executor; preserve its Home ledger, registry and ownership state together.
 There is no automatic queue migration, remote cancellation or owner-ID routing
 fallback. Do not resubmit unresolved work or erase state to recover capacity.
 

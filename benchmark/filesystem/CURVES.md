@@ -1,11 +1,10 @@
 # 文件系统缓存与异步写：系统曲线评估与复现手册
 
-本手册保留已执行曲线的合同与复现方法。后续替代七工具系统总分的三层负载协议见
+本手册描述曲线实验的合同与复现方法。三层负载协议见
 [WORKLOADS.md](WORKLOADS.md)；其离线计划已可生成，新执行器与结果尚未提供。
 
-当前 `curves.py` 不再生成 `async-old`、`owned-sync` 两个消融条件，产品配置
-也不再接受它们的 JSON 字段。以下涉及这两项的假设与条件表是历史协议；
-原始数据和分析器的历史因子解码保留，复现须使用批次冻结的 harness 与制品。
+`curves.py` 支持下表中的条件。已保存批次按其冻结的 harness、配置与制品复现；
+分析器读取批次记录的条件，不将不同条件的数据合并。
 
 ## 结论范围
 
@@ -33,8 +32,8 @@ backing 调用。把 WRITE 提前回复只移动等待位置；若随后 flush�
 
 1. 连续、保持打开的同一文件上，合批减少 backing 调用，并改善包含最终同步的
    吞吐；收益随请求粒度变大而减弱。
-2. `unmerged` 与 `owned-sync` 能区分后台接管、复制/worker 交接及合批的作用。
-   `async-old` 用于识别前台/后台资格检查锁耦合的影响。
+2. `unmerged` 与 `async` 对照合批的作用；`sync` 与 `unmerged` 对照接管、
+   复制和后台队列的组合影响，不能单独归因于其中一个组件。
 3. 高频 fsync、write-close 小文件和只读阶段限制了可隐藏的等待，可能不受益或
    退化。同步、关闭和目录持久化成本必须保留。
 4. 有界预算只允许有限的提前接收。工作量跨过可用预算后，需观察完成吞吐和
@@ -105,8 +104,6 @@ quota、memory/swap 上限和进程 affinity；原始 cgroup、CPU 和 backing �
 | `sync` | host writeback=0 | 原有直接同步宿主路径 |
 | `async` | 默认配置 | 完整候选 |
 | `unmerged` | `chunks=1, delay_us=0` | 保留接管/后台队列，禁止合并 |
-| `owned-sync`（历史） | `synchronous=true` | 保留 owned copy 和 worker 交接，WRITE 回复前排空 |
-| `async-old`（历史） | `qualification_lock=true` | 恢复前台/后台资格检查锁耦合 |
 | `native` | 相同 payload 直接在宿主运行 | 原生参考，不作为产品条件或单组件消融 |
 
 宿主私有开关为 `PVISOR_VM_FS_HOST_WRITEBACK=0|1`，未设置默认关闭。
@@ -503,7 +500,7 @@ runner 已有开关，也不是已完成或已有结果。
 
 | 问题 | 轴与对照 | 主要指标 | 当前覆盖 / 后续动作 |
 | --- | --- | --- | --- |
-| 改善来自哪一环？ | sync、owned-sync、unmerged、async、async-old | 完成/循环吞吐、阶段时间、实际 backing batches/bytes | 已有 shape 消融；需先核对 DIAG 实际走了哪些路径 |
+| 改善来自哪一环？ | sync、unmerged、async | 完成/循环吞吐、阶段时间、实际 backing batches/bytes | shape 对照结合 DIAG 核对实际路径；复制、worker 交接与资格检查的独立贡献需另行登记诊断设计 |
 | 粒度和局部文件并发如何影响收益？ | 1–1024 KiB；1/2/4 worker，总字节固定 | 完成吞吐、同步/关闭占比、逐对比值 | 已有闭环有限工作量曲线；不是多 VM 扩展性 |
 | 高频同步和小文件是否退化？ | 每 1/16/256 次及最终 fsync；create/write/close | total、accepted、applied、fsync、close、dirsync | 已有；另有普通 CLI 七工具 N5，Cargo/npm 等应用待测 |
 | 队列参数是否稳健？ | Q=4/16/64/256 MiB；batch=64/256/1024 KiB；delay=0/100/1000/10000/50000 μs | 完成吞吐、两类高水位、reserve waits、整环境资源 | 已有部分逐项参数臂；需识别 jobs 瓶颈，再登记 jobs/更大请求敏感性 |

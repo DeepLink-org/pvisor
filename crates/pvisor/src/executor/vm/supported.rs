@@ -163,8 +163,8 @@ impl RamPager {
     }
 }
 
-// The caller supplies the legacy alias exactly once. This pure resolver also
-// makes precedence testable without mutating process-global environment state.
+// The caller reads the environment alias once. Resolution and validation do not
+// mutate process-global environment state.
 fn resolve_ram_settings(
     settings: &mut VmSettings,
     legacy_pool: Option<std::ffi::OsString>,
@@ -206,8 +206,7 @@ pub(super) struct RunnerSpec {
     pub(super) ram_dedup: bool,
     #[serde(default)]
     pub(super) private_ram: bool,
-    // Required: pre-normalization private runner descriptors are unsupported,
-    // rather than silently reinterpreting their inherited environment.
+    // Required: runner policy is explicit, never inferred from inherited environment.
     pub(super) ram_pager: RamPager,
     #[serde(default)]
     pub(super) firmware_path: Option<PathBuf>,
@@ -583,7 +582,7 @@ impl VmExecutor {
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
-        // Legacy host alias is consumed once, at admission. Explicit settings
+        // The host environment alias is consumed once, at admission. Explicit settings
         // win; the child receives only the normalized descriptor.
         resolve_ram_settings(&mut settings, env::os(POOL_ENV))?;
         anyhow::ensure!(

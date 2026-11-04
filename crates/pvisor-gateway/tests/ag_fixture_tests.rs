@@ -129,9 +129,8 @@ fn ag_completions_response_matches_messages_snap() {
             .body;
             let actual: Value = serde_json::from_slice(&out).unwrap();
             let mut expected = ag_snap_response(&snap_path);
-            // The production semantic renderer preserves reasoning that AG's
-            // historical wire converter omitted. Keep every golden field and
-            // require the additional thinking block exactly, including order.
+            // Reasoning is rendered before the text response. Compare every
+            // golden field and the additional thinking block, including order.
             if case == "openrouter_reasoning" {
                 expected["content"].as_array_mut().unwrap().insert(
                     0,

@@ -316,15 +316,10 @@ Design: 负载、对照、控制变量与有效样本判据。
   原像、校验、元数据及发布顺序保持；native/legacy/backend不声明capability
   的原路径保留，lower物化/快照导出不删除。完整copy+sync为主要指标，
   不以OPEN提前返回推导收益，失败停止保留。
-- **后续5／目录快照按修改范围失效（已退役，以下为历史协议）：** 当时 SDK入口`directory_names_ab.py
-  --experiment scoped-names`，名称缓存开启，其他新机制关闭，仅切换SCOPED_NAMES。
-  Immutable物理lower/default策略；8192长名称目录先导入，另一个目录执行
-  create→rename→unlink，再仅在guest内drop_caches=2强制metadata重新导入。
-  三轮reimport累计为主要指标，完整编辑循环另记；N30随机配对和独立profile，
-  校验全名称、重复项及scope-retained计数；不改变宿主cache或策略。
-  修改父目录及源/目标子树先失效，未知范围/非默认策略/属性修改仍全失效。
-  这是受控guest metadata压力机制实验，不是自然编辑器或整Agent收益。
-  当前实现统一保守失效；当前 sampler 拒绝该 experiment，历史数据及冻结 harness 不改写。
+- **目录名称缓存失效策略：** namespace/metadata admission 统一保守失效；
+  sampler 支持目录名称缓存与 prepared-copy-up 对照。按修改范围失效的独立
+  N30 对照设计、数据及分析见 `filesystem/FOLLOWUP_OPTIMIZATION_REPORT.md`；
+  复现使用对应批次冻结的 harness 与制品，不据此推导自然编辑器或整 Agent 收益。
 - **实验设计：**
   - 版本 A/B 使用同一份冻结源码，只应用待测改动后构建两个二进制，同机随机交替运行，每格 30 个样本，并报告置信区间。
   - 分解实验在同一批次内对照原生、FUSE 直通和 staged，同时打开 profile 计数器另跑一批；带计数器的批次不计入计时结论。
@@ -360,8 +355,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **host-owned 写缓存曲线协议：** 问题是“相同显式持久化语义下，异步接管与合批
   随请求粒度、并发、屏障频率和容量如何影响完成吞吐、延迟与内存？”入口为
   `benchmark/filesystem/curves.py`，静态 Rust payload 在 native 与 VM 中使用相同字节。
-  WB=0、DAX=0；同步、异步不合并、异步合并使用同一冻结 host 制品，
-  旧资格检查锁和 owned-worker 同步排空消融已退役，仅保留历史分析兼容；
+  WB=0、DAX=0；同步、异步不合并、异步合并使用同一冻结 host 制品；
   私有有界参数逐项改变，不做未经声明的全因子搜索。每个点分列 WRITE 返回、
   checked dup/close 的 FLUSH 排空、逐文件 fsync、最终 close 和总时间；off/on 都显式
   fsync，不能用 off 的 ENOSYS SYNCFS 对照 on 的真实 SYNCFS。准备、全字节读回和

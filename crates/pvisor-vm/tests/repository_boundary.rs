@@ -116,7 +116,7 @@ fn retired_optional_devices_are_not_build_profiles() {
             "retired device implementation {device}"
         );
     }
-    // These are product/validation profiles, not leftovers of the retired devices.
+    // Product and validation profiles must remain available.
     for feature in ["net", "init-blob", "test_utils"] {
         assert!(features.contains_key(feature), "required feature {feature}");
     }

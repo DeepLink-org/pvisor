@@ -1165,8 +1165,7 @@ impl PVisor {
                 true.into(),
             );
         }
-        crate::runtime::apply_process_policies(&mut spec, &descriptor)
-            .map_err(PVisorError::Prepare)?;
+        crate::agent::apply_process_policy(&mut spec, &descriptor).map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
         if spec.runtime.cpu_qos.is_some()
             && !(cfg!(target_os = "linux") && vm_executor && executor.supports_cpu_qos())

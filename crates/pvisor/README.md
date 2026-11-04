@@ -39,6 +39,13 @@ Job frontend, not a runtime dependency. Cross-node placement and distributed sch
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
 
+The private Agent adapter owns client compatibility policy, preset routes,
+catalog schemas and client-specific proxy environment. Gateway configuration
+keeps its serialized fields and public `GatewayProfile` contract. Attempt
+preparation passes the bound listener to the adapter without interpreting
+provider profiles or catalogs. Catalog copies are Run-local; credentials,
+installed catalogs and personal model selections remain client-owned.
+
 ```mermaid
 flowchart TD
     Entry[CLI / PVisor API] --> Session[Session: one Attempt]
@@ -82,7 +89,7 @@ retains its existing failure semantics.
 Event delivery is separate from committed execution: rejected/unknown terminal
 appends never replace a committed result or publish a contradictory terminal.
 Post-commit audit gaps appear in the returned result's warnings, without rewriting
-the immutable Bundle/receipt. They are not appended to that historical Bundle;
+the immutable Bundle/receipt. They are not appended to the committed Bundle;
 automatic event backfill after a crash is not implemented.
 Readers reject missing/changed Bundles and
 foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
@@ -181,7 +188,7 @@ non-symlink, non-`/` directory plus its device/inode. The runtime validates it a
 Attempt preparation, requires its root to match the recorded workspace, persists
 `RunRecord.project_apply_scope` and the same optional
 field in the completion-bound Run Bundle, and compares that binding on reads even
-when Bundle semantic validation was memoized. Old records default to no contract;
+when Bundle semantic validation was memoized. An absent field means no contract;
 workspace/cwd does not grant rootstage project apply authority. Ordinary spawn
 never adds this contract. A replaced root or symlink ancestor fails closed.
 
@@ -208,9 +215,9 @@ Explicit project-scope stage preparation initializes the Job-directory and
 ExecutionJob observation locks while holding the new Attempt lease, before
 publishing the Run record. The Attempt lease is already created by launch.
 Ordinary spawn without that explicit scope does not gain lock-initialization side
-effects. Legacy stages missing any required lock fail preview closed with an
-existing-lock error; preview never repairs or upgrades them. Recreate such a stage
-with the explicit launch contract. Ordinary older workspace records keep their
+effects. Stages missing any required lock fail preview closed with an
+existing-lock error; preview never initializes the missing locks. Recreate such a stage
+with the explicit launch contract. Ordinary workspace records keep their
 recorded target contract for execution, but preview still requires existing lock
 inodes. This limitation is not treated as a successful empty preview.
 
@@ -430,15 +437,16 @@ new macOS isolation guarantees.
 
 Lost responses, timeouts and cancellation may follow accepted effects.
 Record-based CLI control reports uncertainty and does not automatically retry.
-The explicit `--vm-socket` debug path still uses the older asynchronous exchange:
+The explicit `--vm-socket` debug path uses a separate asynchronous exchange:
 Ctrl-C does not interrupt its response wait, and disconnect errors may omit that
 warning. Unifying this path is pending. Reconcile state before
 resubmitting; scoped checkpoint receipts are not universal exactly-once delivery.
 
-For upgrade, drain Jobs and stop the old `--pvisor-internal-host` with the old
-binary. New CLIs never connect to `<generation>.sock`. Old records without
-`live_control` expose disk state only; old running VMs are not automatically
-discovered. The daemon supervisor listener, framing and admission are unchanged.
+Before replacing an installation, drain Jobs and stop `--pvisor-internal-host`
+using its owning executable. CLIs never connect to `<generation>.sock`.
+Records without `live_control` expose disk state only; their running VMs are not
+automatically discovered. The daemon supervisor has separate listener, framing
+and admission contracts.
 
 ### Shared runtime implementation
 
@@ -621,7 +629,7 @@ Two vCPUs support pause/resume only, retain normal PSI/TX-watchdog behavior,
 and need matching ABI-v3 firmware. Automatic offload remains single-vCPU.
 Overlapping calls keep forwarding but disable automatic transitions for the
 remainder of that Attempt. There is no new CLI/TOML switch, daemon integration,
-or scheduler-budget release. `CooperativeModelWait` is the historical Rust name;
+or scheduler-budget release. The Rust API type is `CooperativeModelWait`;
 cooperation is between pVisor's VMM and guest kernel, not the Agent application.
 
 ```rust,ignore
@@ -849,12 +857,12 @@ is not permission, and missing authority fails startup without fallback or globa
 sysctl changes. Linux external `memory_pool` negotiates physical-page sharing or
 sealed compression; only the latter uses the 64 KiB userfaultfd pager.
 
-Native executor construction resolves the legacy
+Native executor construction resolves the environment
 `PVISOR_EXPERIMENTAL_MEMORY_POOL` alias once, with explicit `VmSettings.memory_pool`
 taking precedence. Admission validates the resolved settings; the private runner
 descriptor carries an explicit disabled/local/pool selection. Changing the
 parent environment afterwards cannot change that executor's RAM strategy, and
-the child does not inherit the alias. Older private runner descriptors without
+the child does not inherit the alias. Private runner descriptors without
 this selection are rejected, not inferred from environment variables. These
 descriptors are same-executable launch inputs, not checkpoint compatibility
 records. Host diagnostic environment settings remain independent of this policy.
@@ -1329,8 +1337,8 @@ Image preparation resolves environment/configuration, transport validation,
 default-server probing and local-pool fallback in one private source resolver.
 Only an implicit default server's connection refusal or missing socket permits
 fallback; authentication, protocol and explicitly configured source failures
-remain errors. The legacy `PVISOR_CACHE_SERVER=off` local selection remains
-available. Setting a cache token or read-only override also makes discovery
+remain errors. `PVISOR_CACHE_SERVER=off` selects local storage.
+Setting a cache token or read-only override also makes discovery
 explicit; a non-Unicode token is an error rather than an ignored credential.
 Attachment uses capabilities derived from the validated source, without
 reinterpreting address prefixes. Capability parsing starts no transport workers:
@@ -1449,16 +1457,16 @@ identity/order against the final normalized stack; promises cannot silently
 transfer to inserted targets or frozen copies. Host mounts receive the declarations
 through `OverlayMountConfig`; native VM handoff serializes `lower_mutability`
 alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
-`pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
+`pvisor_vm::api::OverlayConfig`. Runner metadata omitting the field defaults
 to mutable. Restored/rebound copies are not automatically promoted. The enum
 lives only in overlay-core; no duplicate runtime contract is introduced.
 New low-level host/VM mount APIs default their lowers to Immutable. The runtime
 expands unspecified transparent rootfs/live workspace declarations to explicit
-Mutable at handoff, preserving external-edit visibility and legacy restoration.
+Mutable at handoff, preserving external-edit visibility on startup and restoration.
 Authenticated prepared bases retain their explicit Immutable declarations.
 When VM networking prepends the attempt-owned synthetic resolver lower, it prepends
 an immutable declaration to an explicit mutability vector as well. Existing
-declarations keep their original physical-layer association. Legacy empty vectors stay empty.
+declarations keep their original physical-layer association. Empty vectors stay empty.
 Resolver preparation tests exercise the production preparation function and VM
 builder validation, including disabled networking and local write failure, without
 booting a guest or requiring firmware.

@@ -6747,7 +6747,7 @@ mod tests {
             let saved = source.capture_state().unwrap();
             drop(source);
 
-            // Unset preserves native restoration support for historical WB1,
+            // Unset permits native restoration of a WB1 snapshot,
             // while the preference for a future INIT remains writeback-off.
             let mut restored = OverlayFs::build_with_writeback(
                 config,

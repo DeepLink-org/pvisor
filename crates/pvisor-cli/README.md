@@ -25,6 +25,12 @@ that directory must remain executable regular files owned by the current user or
 root, with no group/world write permission; the installation directory has the
 same ownership and write-permission requirements. Lookup does not search `PATH`.
 
+Client preset admission and projection belong to the private Agent adapter.
+`--gateway-profile`, `[gateway].profile` and `zcode_builtin_config` retain their
+syntax. The adapter validates client-specific restrictions, projects the launch
+metadata and selects ordinary model routes; generic Run assembly does not read
+provider catalogs or implement provider schemas.
+
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
 durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
@@ -55,12 +61,10 @@ combine with `--path` or `--include`. Exclusions alone require `--interactive`.
 See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
 argument, JSON and exit-code contracts.
 
-**Breaking change:** apply no longer accepts `--target`, `-o` or
-`--output-dir`, including as hidden aliases. Use `--store DIR` for Job lookup;
+Apply rejects `--target`, `-o` and `--output-dir`. Use `--store DIR` for Job lookup;
 the writeback target cannot be redirected. The runtime entry point is
 `RuntimeJobService::apply_command` with `ApplyCommandRequest` and a schema-1
-result. The old `ApplyRequest` and `RuntimeJobService::apply` are removed,
-without a compatibility adapter.
+result.
 
 TOML `[run] profile = "safe"` selects the same preset as `--safe`. Explicit
 `--filesystem host` conflicts with the safe profile and fails before workload
@@ -110,6 +114,11 @@ inside the starting owner binary through `pvisor-instance-control-1`; compatible
 caller binaries need not have matching digests. Stopped operations take the Job
 root's `job.lock`. Apply/drop refuse an owner still holding stage. See the runtime
 README for socket validation, lost-response ambiguity and platform limitations.
+Live VM requests are foreground-only and carry an exact Job/Attempt target plus
+either recorded discovery or an explicit debug socket. They are not serialized
+into the Job owner bootstrap protocol and cannot launch, restore or lock a Job.
+Ordinary resume of a live owner uses the same live-control execution path;
+stopped resume retains its checkpoint restoration path.
 The explicit `--vm-socket` debug override still uses the older SDK exchange;
 its response wait currently ignores CLI cancellation. Runtime Overlay and native
 capture sockets also remain in use. See [internal channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
@@ -133,9 +142,9 @@ The [startup diagnostic collector](../../benchmark/startup/startup_profile.py)
 keeps process-relative spans separate from host checkpoint gaps and workload Ready.
 
 The frontend verifies and pins its own executable before launching its owner;
-there is no user-wide digest admission or generation socket. For upgrade, drain
-old Jobs and stop the old `--pvisor-internal-host` with the old binary first.
-New CLIs read old records without live control as disk state only.
+there is no user-wide digest admission or generation socket. Before replacing an
+installation, drain Jobs and stop `--pvisor-internal-host` using its owning executable.
+Records without live control expose disk state only.
 
 ## Staged system experiments (Linux preview)
 
@@ -293,8 +302,8 @@ applies to the real host root.
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Job stage/review/apply semantics.
 Unknown command names and leading Job options default to `spawn`;
-`pvisor -- COMMAND` explicitly selects default Job execution. The former Job
-`run` syntax must now use `spawn`. Each container
+`pvisor -- COMMAND` explicitly selects default Job execution. Use `spawn` for Jobs.
+Each container
 uses its own Linux VM and supervisor, started as the current host user. No
 central Docker daemon, privileged helper or shared Linux VM is required.
 Guest root is independent of host root; the image's `User` is respected.
@@ -535,7 +544,7 @@ files pack by directory; large files use independent 1 MiB chunks. VM reads go t
 backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
 archives and extracted rootfs trees are temporary import/build inputs, except
 explicit `--output` exports. Original configurations remain under the image store's `configs`.
-Old directory-based records continue to work and are not automatically removed.
+Directory-based records are supported and are not automatically removed.
 Pool revisions remain pinned in container records across tag replacement/removal.
 Short and fully qualified Docker Hub references address the same catalog tag.
 Replacing or removing it through any alias affects that one identity; existing
@@ -546,9 +555,9 @@ directory is retained. `SSL_CERT_FILE` can supply a host registry CA bundle.
 Socket clients and the VM bridge require protocol V2; unsupported peers fail
 without automatic downgrade, even when connection reuse is disabled.
 
-V1 storage handles and pool encodings are retired. Re-pull to publish an image to
-the new pool, then recreate containers pinned to old handles; old data is never
-automatically deleted. Filesystem, S3 and pool use the same V2 physical format.
+Storage requires V2 handles and pool encodings. To replace unsupported handles,
+re-pull the image and recreate the containers pinned to those handles; source data
+is never automatically deleted. Filesystem, S3 and pool use the same V2 physical format.
 Arbitrary xattrs are rejected because the current pool format cannot preserve
 them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
 page caching, with no new DAX path or measured performance claim. See the
@@ -573,8 +582,8 @@ before initializing/copying, without contacting or changing a listener.
 catalog entry in the ordinary Job owner, before default host rootfs or
 OCI preparation. Both options are required together and conflict with `--rootfs`,
 configured image sources, host/container execution and JSON `--spec`. TOML can
-use `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`; old configs
-retain their defaults. Jobs persist the canonical selector and exact root path;
+use `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`; omission
+keeps prepared-rootfs selection disabled. Jobs persist the canonical selector and exact root path;
 future owners must authenticate both rather than trust the path alone.
 
 Warm opens verify the small record/seal and marker, then retain a GC lease in the

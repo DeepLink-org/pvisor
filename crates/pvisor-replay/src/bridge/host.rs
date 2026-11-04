@@ -55,7 +55,7 @@ impl Cancellation {
     }
 }
 
-/// Preserve each bridge's existing executor choice without duplicating servers.
+/// Executor strategy selected by the protocol bridge.
 #[derive(Clone, Copy)]
 pub(super) enum WorkerRuntime {
     CurrentThread,

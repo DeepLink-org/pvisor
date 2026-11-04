@@ -13,7 +13,7 @@ pub(super) struct StatusCommandArgs {
     #[command(flatten)]
     pub args: StatusArgs,
     #[command(flatten)]
-    pub vm: super::host::VmOptions,
+    pub vm: super::live_vm::VmOptions,
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]

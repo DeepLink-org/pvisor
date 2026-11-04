@@ -320,7 +320,7 @@ workspace copy-on-write view; it is not an independent directory mount.
 rules by default: deny refuses, and warn allows with a warning.
 Clearing configuration and default file protection requires an explicit
 `--clear-access` before adding CLI rules. deny > warn.
-The former `:read` warning spelling is rejected; use `:warn`, or
+The `:read` access action is rejected; use `:warn`, or
 `--mount PATH:read` for true read-only access.
 
 Configure static file and network boundaries before launch. Review staged files after execution
@@ -571,11 +571,11 @@ captured again by reusing the same key. Forks retain hard-link references to the
 source manifest, requiring parent and child stages on the same filesystem;
 deletion is refused while references exist. `drop JOB` preserves the Job,
 checkpoints and branch references. `apply/drop` require an explicit Job and records
-confirming it has stopped. `review` JSON distinguishes historical execution
+confirming it has stopped. `review` JSON distinguishes recorded execution
 evidence from the currently selected file view; successful apply/drop advances
 the workspace generation.
 
-Reading or forking historical workspace checkpoints still requires the source Job lease and refuses a running source.
+Reading or forking saved workspace checkpoints requires the source Job lease and refuses a running source.
 
 ### Full VM execution checkpoints {#full-vm-execution-checkpoints}
 
@@ -848,8 +848,8 @@ The result schema is `sandbox-playback.result/v3`: `phase` is `prepared`,
 `failed`, plus state/output locations, artifacts and an optional structured
 failure. Failed results keep the logs and native trajectory already produced;
 even when the OpenHands process exits 0, the result is still a failure if the
-controller reports a fatal status. Non-Claude callers that used `replay_only = true` only to
-construct a prefix must migrate to `prepare_only = true`.
+controller reports a fatal status. Non-Claude callers use `prepare_only = true`
+to construct a prefix without executing replay.
 
 `disable_thinking` belongs to `[replay]` and is also exposed as
 `--disable-thinking`. Claude Code's protocol bridge applies it to the upstream

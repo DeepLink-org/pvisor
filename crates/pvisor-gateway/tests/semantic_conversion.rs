@@ -1,4 +1,4 @@
-//! Contract regressions retained from the retired wire-to-wire converters.
+//! Production bridge contracts for conversation context, tools and response ordering.
 
 use bytes::Bytes;
 use pvisor_gateway::conversion::{

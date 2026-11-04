@@ -17,14 +17,14 @@ VM shutdown 会结束整个 runner，Rust TempDir 析构不能作为清理或 ho
 仅回收成功且校验通过的自有夹具；失败现场和所有日志保留。目录枚举检查
 完整名称与重复项，时钟外核对首/中/末文件。环境准备、验证与退出不进入
 guest phase 时钟；不是冷磁盘、普通 CLI 或完整 Agent 性能结论。
-本轮进度和未验收项见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
+实验结果与验证范围见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
 
-后续五项的独立N30结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
-CLI sampler增加`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
+独立N30机制对照结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
+CLI sampler支持`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
 每批只改变该项开关，
-其他后续机制关闭；使用原来的prepare→semspec bench→analysis入口。
-名称范围失效实验已退役，当前 SDK sampler 不再接受 `--experiment scoped-names`；
-其历史结果保持原样，复现使用该批次冻结的 harness 和制品。
+其他待测机制关闭；使用prepare→semspec bench→analysis入口。
+SDK sampler支持目录名称缓存与prepared-copy-up对照。
+报告中其他条件的复现使用对应批次冻结的 harness 和制品。
 当前 sampler 剔除继承的 `PVISOR_*` 覆盖值，只使用记录在命令中的显式实验设置。
 其他候选按各自平台报告判断，不把点估计作为默认开启依据。
 

@@ -60,7 +60,7 @@ pub(super) struct SuspendCommandArgs {
     #[command(flatten)]
     pub args: SuspendArgs,
     #[command(flatten)]
-    pub vm: super::host::SuspendVmOptions,
+    pub vm: super::live_vm::SuspendVmOptions,
 }
 
 #[derive(Debug, Args)]
@@ -68,7 +68,7 @@ pub(super) struct ResumeCommandArgs {
     #[command(flatten)]
     pub args: ResumeArgs,
     #[command(flatten)]
-    pub vm: super::host::ResumeVmOptions,
+    pub vm: super::live_vm::ResumeVmOptions,
 }
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]

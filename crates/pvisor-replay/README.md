@@ -22,8 +22,8 @@ seconds; an unconfirmed worker is reported as detached, never as a clean finish.
 Drop is best-effort; callers use explicit finish to observe teardown failures.
 Cancellation does not revoke a model request already received by the upstream.
 
-Claude retains its retry/status policy and two-thread runtime. Codex also uses
-two runtime threads; OpenCode keeps its current-thread runtime. A failed or
+Claude owns its retry/status policy and uses a two-thread runtime. Codex also uses
+two runtime threads; OpenCode uses a current-thread runtime. A failed or
 cancelled transport exchange does not increment the forwarded-request count;
 protocol-specific finish checks still decide continuation validity.
 

@@ -716,22 +716,6 @@ pub enum GatewayProfile {
     ZcodeBigmodel,
 }
 
-impl GatewayProfile {
-    pub fn routes(self) -> Vec<ModelRoute> {
-        match self {
-            Self::ZcodeBigmodel => vec![ModelRoute {
-                name: "*".into(),
-                provider: Some("anthropic".into()),
-                upstream: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
-                upstream_anthropic: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
-                api_key_env: None,
-                api_key: None,
-                forward: None,
-            }],
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordSettings {
@@ -803,7 +787,7 @@ impl Default for ModelWaitRounds {
 }
 
 /// Experimental Host-side model-wait timers. No Agent/client declaration needed.
-/// The historical type name is retained; cooperation is with the guest kernel.
+/// Cooperation is with the guest kernel.
 /// Disabled unless installed on `GatewayDriverConfig`. A request owns its wait
 /// until final delivery, cancellation or stream EOF; each idle round has an
 /// independent, revocable guest permit.

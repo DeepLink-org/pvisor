@@ -28,7 +28,6 @@ pub(crate) mod run;
 mod supervisor;
 #[cfg(feature = "gateway")]
 mod wait_coordinator;
-pub(crate) mod zcode;
 
 pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use attempt::{AttemptSession, AttemptTeardown};
@@ -38,20 +37,6 @@ pub(crate) use overlay::{
 pub(crate) use registry::RunLease as StagedRunLease;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
-
-/// Apply application-specific process compatibility policies before the
-/// Run's capabilities are validated and the executor prepares its sandbox.
-pub(crate) fn apply_process_policies(
-    spec: &mut pvisor_core::RunSpec,
-    executor: &pvisor_core::ExecutorPlan,
-) -> anyhow::Result<()> {
-    if executor.kind == pvisor_core::ExecutorKind::Process
-        && executor.isolation == pvisor_core::IsolationKind::RootlessProcess
-    {
-        zcode::apply_host_process_policy(spec)?;
-    }
-    Ok(())
-}
 
 pub use implant::{ExecutionOverlayHint, ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
