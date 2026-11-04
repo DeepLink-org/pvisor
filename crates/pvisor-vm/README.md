@@ -491,6 +491,20 @@ guest `st_dev` between pathname `stat` and open-FD `fstat` for the same nodeid,
 causing ordinary tools such as GNU `cp` to report a replaced input. Ordinary
 passthrough shares retain their existing native submount behavior.
 
+Nested guest overlayfs (for example dockerd's overlay2 graph driver on the
+shared rootfs) is supported at the FUSE contract level. RENAME2 accepts
+`RENAME_WHITEOUT`; the overlay adapter performs the rename and creates the
+whiteout as a real char(0,0) node in the writable upper layer under the
+guest-visible name, so lookups, `st_rdev` and readdir `DT_CHR` behave like a
+native overlayfs upperdir. Core's own `.wh.` markers stay reserved and hidden.
+Guest `trusted.overlay.*`/`user.overlay.*`/`user.fuseoverlayfs.*` control
+xattrs are translated into the `user.pvisor.overlay.*` stored namespace by
+SETXATTR/GETXATTR/REMOVEXATTR and back by LISTXATTR; direct guest access to
+stored names is rejected so control state cannot be forged. Creating whiteout
+nodes requires the host server to hold `CAP_MKNOD`; without it the guest
+overlayfs mount probe fails closed and dockerd falls back to its vfs storage
+driver.
+
 ## Physical lower stability contract
 
 `api::OverlayConfig::lower_mutability` uses the shared

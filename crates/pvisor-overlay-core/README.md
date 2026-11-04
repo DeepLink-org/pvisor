@@ -82,6 +82,20 @@ Shared helper contracts (exported at this unmigrated crate's existing root):
   fingerprints exclude both names from ordinary xattrs, but still compare the
   logical mode/UID/GID and all other supported user xattrs. Thus creating an
   equivalent virtual identity is not itself a conflict.
+- `STORED_OVERLAY_XATTR_PREFIX`, `STORED_FUSEOVERLAYFS_XATTR_PREFIX`,
+  `stored_overlay_xattr_name`, `guest_overlay_xattr_name` and
+  `is_stored_overlay_xattr` translate guest overlayfs control xattrs
+  (`trusted.overlay.*`, `user.overlay.*`, `user.fuseoverlayfs.*`) into the
+  private `user.pvisor.overlay.*` stored namespace and back. The VM virtio-fs
+  adapter uses them so a guest kernel can mount overlayfs on the served view
+  (for example dockerd's overlay2 graph driver). Both overlay xattr classes
+  share one stored name; listings report the `trusted.overlay.*` spelling.
+  Stored names survive copy-up as ordinary user xattrs, and Core's own
+  opaque-dir interpretation never reads them, so the nested overlay's control
+  state cannot alter the merged view. Adapters must reject direct guest access
+  to stored names so control state cannot be forged or enumerated;
+  `validate_guest_xattr` keeps rejecting the reserved overlay spellings for
+  adapters without translation (host FUSE stagebox path).
 
 Review reports logical modes, including permission-only override modes. Apply
 publishes logical UID/GID/mode through `copy_host_metadata` and strips both

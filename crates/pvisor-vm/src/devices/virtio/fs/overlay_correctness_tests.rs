@@ -1,5 +1,11 @@
 // Included in overlay::tests to exercise the private protocol adapter.
 
+// libc S_IF* constants are u16 on macOS and u32 on Linux; local u32
+// constants keep assertions and mknod modes cast-free on both platforms.
+const S_IFMT: u32 = 0o170000;
+const S_IFCHR: u32 = 0o020000;
+const S_IFREG: u32 = 0o100000;
+
 fn correctness_fixture(root: &Path) -> OverlayFs {
     let config = parent_cache_fixture(root).snapshot_config.clone();
     let fs = OverlayFs::new(
@@ -256,4 +262,220 @@ fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() 
     assert_eq!(file.inode, alias.inode);
     assert_eq!(read(0), entries, "LOOKUP must not change the open directory snapshot");
     fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rename_whiteout_leaves_a_char_zero_device_at_the_old_name() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    std::fs::write(temp.path().join("upper/source"), b"payload").unwrap();
+    let ctx = root_context();
+    // The guest kernel overlayfs mount probe issues exactly this rename.
+    match fs.rename(
+        ctx,
+        fuse::ROOT_ID,
+        c"source",
+        fuse::ROOT_ID,
+        c"dest",
+        bindings::LINUX_RENAME_WHITEOUT as u32,
+    ) {
+        Ok(()) => {}
+        // Unprivileged hosts cannot create device nodes; the guest overlayfs
+        // mount probe fails closed there too, so skipping matches production.
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            eprintln!("skipping: host lacks CAP_MKNOD for whiteout nodes");
+            return;
+        }
+        Err(error) => panic!("rename with RENAME_WHITEOUT failed: {error}"),
+    }
+    // The renamed entry keeps its content.
+    let dest = fs.lookup(ctx, fuse::ROOT_ID, c"dest").unwrap();
+    assert_eq!(dest.attr.st_mode & S_IFMT, S_IFREG);
+    let reader = fs.open(ctx, dest.inode, false, 0).unwrap().0.unwrap();
+    assert_eq!(correctness_read(&fs, ctx, dest.inode, reader), b"payload");
+    fs.release(ctx, dest.inode, 0, reader, false, false, None)
+        .unwrap();
+    // The old name is a whiteout: char device 0,0, visible to the guest and
+    // stored as a real device node in the host upper layer.
+    let whiteout = fs.lookup(ctx, fuse::ROOT_ID, c"source").unwrap();
+    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(whiteout.attr.st_rdev, 0);
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let metadata = std::fs::symlink_metadata(temp.path().join("upper/source")).unwrap();
+        assert!(metadata.file_type().is_char_device());
+        assert_eq!(metadata.rdev(), 0);
+    }
+    // Name-only readdir reports the whiteout as DT_CHR, which is what the
+    // kernel's d_type support probe depends on.
+    let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+    let mut entries = Vec::new();
+    fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
+        entries.push((entry.name.to_vec(), entry.type_));
+        Ok(1)
+    })
+    .unwrap();
+    fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+    let whiteout_type = entries
+        .iter()
+        .find(|(name, _)| name == b"source")
+        .map(|(_, kind)| *kind)
+        .expect("whiteout must stay listed");
+    assert_eq!(whiteout_type, libc::DT_CHR as u32);
+}
+
+#[test]
+fn guest_overlay_xattrs_round_trip_through_the_stored_namespace() {
+    use super::super::filesystem::{GetxattrReply, ListxattrReply};
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    std::fs::create_dir(temp.path().join("lower/lower-dir")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    let dir = fs
+        .mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+        .unwrap();
+
+    // setxattr translates the guest control name into the stored namespace.
+    fs.setxattr(ctx, dir.inode, c"trusted.overlay.opaque", b"y", 0)
+        .unwrap();
+    match fs
+        .getxattr(ctx, dir.inode, c"trusted.overlay.opaque", 64)
+        .unwrap()
+    {
+        GetxattrReply::Value(value) => assert_eq!(value, b"y".to_vec()),
+        GetxattrReply::Count(count) => panic!("unexpected count reply {count}"),
+    }
+    // The userxattr spelling reads the same stored name.
+    match fs
+        .getxattr(ctx, dir.inode, c"user.overlay.opaque", 64)
+        .unwrap()
+    {
+        GetxattrReply::Value(value) => assert_eq!(value, b"y".to_vec()),
+        GetxattrReply::Count(count) => panic!("unexpected count reply {count}"),
+    }
+
+    let upper_dir = temp.path().join("upper/dir");
+    assert_eq!(
+        pvisor_overlay_core::sys::get_xattr(
+            &upper_dir,
+            std::ffi::OsStr::new("user.pvisor.overlay.opaque")
+        )
+        .unwrap(),
+        b"y".to_vec()
+    );
+    // Core's own opaque interpretation ignores the stored namespace.
+    assert!(!pvisor_overlay_core::is_opaque_directory(&upper_dir));
+
+    // listxattr reports guest spellings and hides the stored form.
+    let names = match fs.listxattr(ctx, dir.inode, 512).unwrap() {
+        ListxattrReply::Names(names) => names,
+        ListxattrReply::Count(count) => panic!("unexpected count reply {count}"),
+    };
+    let names: Vec<&[u8]> = names
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(names.contains(&b"trusted.overlay.opaque".as_slice()));
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with(b"user.pvisor.overlay.")),
+        "stored overlay-control names must not be listed: {names:?}"
+    );
+
+    // Direct stored-name access cannot forge or observe control state.
+    assert_eq!(
+        fs.setxattr(ctx, dir.inode, c"user.pvisor.overlay.opaque", b"n", 0)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EPERM)
+    );
+    assert!(
+        fs.getxattr(ctx, dir.inode, c"user.pvisor.overlay.opaque", 64)
+            .is_err()
+    );
+    assert_eq!(
+        fs.removexattr(ctx, dir.inode, c"user.pvisor.overlay.opaque")
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EPERM)
+    );
+
+    // Copy-up carries translated control state onto the upper entry.
+    let lower_dir = fs.lookup(ctx, fuse::ROOT_ID, c"lower-dir").unwrap();
+    fs.setxattr(ctx, lower_dir.inode, c"trusted.overlay.opaque", b"y", 0)
+        .unwrap();
+    assert_eq!(
+        pvisor_overlay_core::sys::get_xattr(
+            &temp.path().join("upper/lower-dir"),
+            std::ffi::OsStr::new("user.pvisor.overlay.opaque")
+        )
+        .unwrap(),
+        b"y".to_vec()
+    );
+
+    // removexattr removes through the guest spelling.
+    fs.removexattr(ctx, dir.inode, c"trusted.overlay.opaque")
+        .unwrap();
+    assert!(
+        fs.getxattr(ctx, dir.inode, c"trusted.overlay.opaque", 64)
+            .is_err()
+    );
+}
+
+#[test]
+fn rename_rejects_exchange_combined_with_whiteout() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    std::fs::write(temp.path().join("upper/a"), b"a").unwrap();
+    std::fs::write(temp.path().join("upper/b"), b"b").unwrap();
+    let ctx = root_context();
+    let flags = (bindings::LINUX_RENAME_EXCHANGE | bindings::LINUX_RENAME_WHITEOUT) as u32;
+    assert_eq!(
+        fs.rename(ctx, fuse::ROOT_ID, c"a", fuse::ROOT_ID, c"b", flags)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EINVAL)
+    );
+    assert_eq!(std::fs::read(temp.path().join("upper/b")).unwrap(), b"b");
+    assert_eq!(std::fs::read(temp.path().join("upper/a")).unwrap(), b"a");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn standalone_whiteout_nodes_are_visible_and_linkable() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("lower")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    // vfs_whiteout() creates standalone whiteouts through MKNOD.
+    let whiteout = match fs.mknod(
+        ctx,
+        fuse::ROOT_ID,
+        c"whiteout",
+        S_IFCHR | 0o600,
+        0,
+        0,
+        Extensions::default(),
+    ) {
+        Ok(entry) => entry,
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            eprintln!("skipping: host lacks CAP_MKNOD for whiteout nodes");
+            return;
+        }
+        Err(error) => panic!("whiteout mknod failed: {error}"),
+    };
+    assert_eq!(whiteout.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(whiteout.attr.st_rdev, 0);
+    // The kernel links one shared whiteout to every hidden name.
+    let shared = fs.link(ctx, whiteout.inode, fuse::ROOT_ID, c"shared").unwrap();
+    assert_eq!(shared.attr.st_mode & S_IFMT, S_IFCHR);
+    let looked_up = fs.lookup(ctx, fuse::ROOT_ID, c"shared").unwrap();
+    assert_eq!(looked_up.inode, whiteout.inode);
+    assert_eq!(looked_up.attr.st_mode & S_IFMT, S_IFCHR);
+    assert_eq!(looked_up.attr.st_rdev, 0);
 }

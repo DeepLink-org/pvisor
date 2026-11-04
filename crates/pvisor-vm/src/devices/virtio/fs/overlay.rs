@@ -34,8 +34,9 @@ const TTL: Duration = Duration::from_secs(1);
 pub(super) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
 pub(super) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
 const MAX_DIRECTORY_NAMES_BYTES: usize = 4 << 20;
-const RENAME_NOREPLACE: u32 = 1;
-const RENAME_EXCHANGE: u32 = 2;
+const RENAME_NOREPLACE: u32 = bindings::LINUX_RENAME_NOREPLACE as u32;
+const RENAME_EXCHANGE: u32 = bindings::LINUX_RENAME_EXCHANGE as u32;
+const RENAME_WHITEOUT: u32 = bindings::LINUX_RENAME_WHITEOUT as u32;
 
 fn core_open_flags(flags: u32) -> i32 {
     // Linux O_APPEND equals native O_TRUNC on macOS.
@@ -59,6 +60,17 @@ fn buffered_request_flags(flags: u32) -> bool {
         let _ = flags;
         false
     }
+}
+
+/// Translate a guest overlayfs control xattr name (`trusted.overlay.*`,
+/// `user.overlay.*`, `user.fuseoverlayfs.*`) onto its stored private name so a
+/// guest kernel mounting overlayfs on the served view can persist its control
+/// state without colliding with Core's own opaque-dir interpretation. Returns
+/// `None` for every other name. The input comes from a FUSE `CStr`, and the
+/// prefixes contain no NUL, so the stored name has no interior NUL.
+fn stored_overlay_xattr(name: &CStr) -> Option<CString> {
+    pvisor_overlay_core::stored_overlay_xattr_name(OsStr::from_bytes(name.to_bytes()))
+        .map(|stored| CString::new(stored.as_bytes()).expect("stored xattr name has no NUL"))
 }
 
 fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
@@ -2430,6 +2442,30 @@ impl OverlayFs {
         ))
     }
 
+    /// Create a guest overlayfs whiteout (char device 0,0) at `path` in the
+    /// writable upper layer. Follows the MKNOD path so Core records the
+    /// absence preimage and clears any outer `.wh.` marker that the preceding
+    /// rename left at the old name; the guest sees the same real char node it
+    /// would see on a native overlayfs upperdir.
+    fn create_guest_whiteout(&self, ctx: Context, path: &Path) -> io::Result<Entry> {
+        let (upper_parent, upper_name) = self.upper_parent(ctx, path)?;
+        let created = self.layers[0].mknod(
+            ctx,
+            upper_parent,
+            &upper_name,
+            backend::FileType::CharDevice.mode() | 0o600,
+            0,
+            0,
+            Extensions::default(),
+        );
+        if upper_parent != fuse::ROOT_ID {
+            self.layers[0].forget(ctx, upper_parent, 1);
+        }
+        let created = created?;
+        self.layers[0].forget(ctx, created.inode, 1);
+        self.created_entry(path.to_path_buf(), created)
+    }
+
     fn allocate_handle(&self, handle: Handle) -> u64 {
         let id = self.next_handle.fetch_add(1, Ordering::Relaxed);
         self.handles.lock().unwrap().insert(id, handle);
@@ -3846,7 +3882,7 @@ impl FileSystem for OverlayFs {
 
     fn rename(
         &self,
-        _ctx: Context,
+        ctx: Context,
         olddir: u64,
         oldname: &CStr,
         newdir: u64,
@@ -3857,7 +3893,12 @@ impl FileSystem for OverlayFs {
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         let _io = self.fence_paths(&[&old, &new]);
-        let retired = if flags == 0
+        // Plain renames and RENAME_WHITEOUT unconditionally replace an
+        // existing target, so the overwritten entry needs detached writeback.
+        // NOREPLACE (with or without WHITEOUT) fails with EEXIST instead and
+        // must not retire anything.
+        let overwrites = flags & RENAME_EXCHANGE == 0 && flags & RENAME_NOREPLACE == 0;
+        let retired = if overwrites
             && old != new
             && self
                 .core
@@ -3866,15 +3907,19 @@ impl FileSystem for OverlayFs {
                 .is_some()
         {
             self.preserve_other_aliases(&new)?;
-            self.prepare_detached_writeback(_ctx, &new)?
+            self.prepare_detached_writeback(ctx, &new)?
         } else {
             None
         };
+        let whiteout = flags & RENAME_WHITEOUT != 0;
         match flags {
-            0 => self.core.rename(&old, &new, false).map_err(linux_error)?,
+            0 | RENAME_WHITEOUT => self.core.rename(&old, &new, false).map_err(linux_error)?,
             RENAME_NOREPLACE => self.core.rename(&old, &new, true).map_err(linux_error)?,
             RENAME_EXCHANGE => self.core.exchange(&old, &new).map_err(linux_error)?,
-            _ => return Err(linux_error(io::Error::from_raw_os_error(libc::ENOTSUP))),
+            combined if combined == RENAME_NOREPLACE | RENAME_WHITEOUT => {
+                self.core.rename(&old, &new, true).map_err(linux_error)?
+            }
+            _ => return Err(linux_error(io::Error::from_raw_os_error(libc::EINVAL))),
         }
         if old == new
             || (flags != RENAME_EXCHANGE
@@ -3894,6 +3939,14 @@ impl FileSystem for OverlayFs {
         } else {
             self.remove_path(&new);
             self.remap_path(&old, &new);
+        }
+        if whiteout {
+            // renameat2(RENAME_WHITEOUT) leaves a whiteout at the old name so a
+            // guest overlayfs mount can atomically hide its own lower entries.
+            // The whiteout is a real char(0,0) node in the upper layer, in the
+            // same namespace the guest sees; Core's own `.wh.` markers stay
+            // untouched and keep hiding merged-view deletions.
+            self.create_guest_whiteout(ctx, &old)?;
         }
         self.commit_detached_writeback(retired);
         Ok(())
@@ -4325,12 +4378,21 @@ impl FileSystem for OverlayFs {
         flags: u32,
     ) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            // The stored overlay-control namespace is server-private; a direct
+            // guest write could forge nested-overlay control state.
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        let stored = stored_overlay_xattr(name);
+        let effective = stored.as_deref().unwrap_or(name);
         if self.virtual_metadata
-            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(
+                effective.to_bytes(),
+            ))
         {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
-        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
         let path = self.path(inode)?;
         let _io = self.fence_paths(&[&path]);
@@ -4338,7 +4400,7 @@ impl FileSystem for OverlayFs {
             .prepare_metadata_change(&path)
             .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
-        let result = self.layers[0].setxattr(ctx, inner, name, value, flags);
+        let result = self.layers[0].setxattr(ctx, inner, effective, value, flags);
         if inner != fuse::ROOT_ID {
             self.layers[0].forget(ctx, inner, 1);
         }
@@ -4353,14 +4415,21 @@ impl FileSystem for OverlayFs {
         size: u32,
     ) -> io::Result<GetxattrReply> {
         let _operation = self.write_operation()?;
+        if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(super::super::linux_errno::enodata());
+        }
+        let stored = stored_overlay_xattr(name);
+        let effective = stored.as_deref().unwrap_or(name);
         if self.virtual_metadata
-            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(
+                effective.to_bytes(),
+            ))
         {
             return Err(super::super::linux_errno::enodata());
         }
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
-        let result = self.layers[layer.0].getxattr(ctx, inner, name, size);
+        let result = self.layers[layer.0].getxattr(ctx, inner, effective, size);
         if inner != fuse::ROOT_ID {
             self.layers[layer.0].forget(ctx, inner, 1);
         }
@@ -4372,14 +4441,11 @@ impl FileSystem for OverlayFs {
         let path = self.path(inode)?;
         let (layer, inner) = self.observed_inner(ctx, &path)?;
         let result = (|| {
-            if !self.virtual_metadata {
-                return self.layers[layer.0].listxattr(ctx, inner, size);
-            }
             let ListxattrReply::Count(count) = self.layers[layer.0].listxattr(ctx, inner, 0)?
             else {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
             };
-            let mut filtered = Vec::new();
+            let mut projected = Vec::new();
             if count != 0 {
                 let ListxattrReply::Names(names) =
                     self.layers[layer.0].listxattr(ctx, inner, count)?
@@ -4390,18 +4456,29 @@ impl FileSystem for OverlayFs {
                     .split(|byte| *byte == 0)
                     .filter(|name| !name.is_empty())
                 {
-                    if !pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name)) {
-                        filtered.extend_from_slice(name);
-                        filtered.push(0);
+                    let name = OsStr::from_bytes(name);
+                    if self.virtual_metadata
+                        && pvisor_overlay_core::is_private_metadata_xattr(name)
+                    {
+                        continue;
                     }
+                    if let Some(guest) = pvisor_overlay_core::guest_overlay_xattr_name(name) {
+                        // Stored overlay-control names surface in the guest's
+                        // own overlay spelling, never in the stored form.
+                        projected.extend_from_slice(guest.as_bytes());
+                        projected.push(0);
+                        continue;
+                    }
+                    projected.extend_from_slice(name.as_bytes());
+                    projected.push(0);
                 }
             }
             if size == 0 {
-                Ok(ListxattrReply::Count(filtered.len() as u32))
-            } else if (size as usize) < filtered.len() {
+                Ok(ListxattrReply::Count(projected.len() as u32))
+            } else if (size as usize) < projected.len() {
                 Err(io::Error::from_raw_os_error(libc::ERANGE))
             } else {
-                Ok(ListxattrReply::Names(filtered))
+                Ok(ListxattrReply::Names(projected))
             }
         })();
         if inner != fuse::ROOT_ID {
@@ -4412,12 +4489,19 @@ impl FileSystem for OverlayFs {
 
     fn removexattr(&self, ctx: Context, inode: u64, name: &CStr) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        if pvisor_overlay_core::is_stored_overlay_xattr(OsStr::from_bytes(name.to_bytes())) {
+            return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        let stored = stored_overlay_xattr(name);
+        let effective = stored.as_deref().unwrap_or(name);
         if self.virtual_metadata
-            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(name.to_bytes()))
+            && pvisor_overlay_core::is_private_metadata_xattr(OsStr::from_bytes(
+                effective.to_bytes(),
+            ))
         {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
         }
-        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(name.to_bytes()))
+        pvisor_overlay_core::validate_guest_xattr(OsStr::from_bytes(effective.to_bytes()))
             .map_err(linux_error)?;
         let path = self.path(inode)?;
         let _io = self.fence_paths(&[&path]);
@@ -4425,7 +4509,7 @@ impl FileSystem for OverlayFs {
             .prepare_metadata_change(&path)
             .map_err(linux_error)?;
         let inner = self.writable_inner(ctx, &path)?;
-        let result = self.layers[0].removexattr(ctx, inner, name);
+        let result = self.layers[0].removexattr(ctx, inner, effective);
         if inner != fuse::ROOT_ID {
             self.layers[0].forget(ctx, inner, 1);
         }

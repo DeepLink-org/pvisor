@@ -716,6 +716,70 @@ pub fn validate_guest_xattr(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// Stored namespace for guest overlay-control xattrs. A guest kernel mounting
+/// overlayfs on the served view sets and reads `trusted.overlay.*` (or
+/// `user.overlay.*` in a user namespace); those names are either rejected by
+/// `validate_guest_xattr` or interpreted by Core's own opaque-dir logic, so the
+/// VM adapter translates them into this private namespace before storing.
+pub const STORED_OVERLAY_XATTR_PREFIX: &str = "user.pvisor.overlay.";
+/// Sub-namespace for the fuse-overlayfs spelling, kept apart so a guest that
+/// writes both `user.overlay.X` and `user.fuseoverlayfs.X` cannot alias them.
+pub const STORED_FUSEOVERLAYFS_XATTR_PREFIX: &str = "user.pvisor.overlay.fuseoverlayfs.";
+const GUEST_TRUSTED_OVERLAY_PREFIX: &str = "trusted.overlay.";
+const GUEST_USER_OVERLAY_PREFIX: &str = "user.overlay.";
+const GUEST_FUSEOVERLAYFS_PREFIX: &str = "user.fuseoverlayfs.";
+
+/// Map a guest-visible overlay-control xattr name onto its stored private
+/// counterpart. Both overlay xattr classes (`trusted.overlay.X` for mounts in
+/// the initial user namespace, `user.overlay.X` for userxattr mounts) share the
+/// same stored name; a guest kernel uses only one class per mount. Returns
+/// `None` for names outside the three known guest prefixes and for a bare
+/// prefix with no remainder.
+pub fn stored_overlay_xattr_name(guest: &OsStr) -> Option<OsString> {
+    let bytes = guest.as_bytes();
+    for prefix in [GUEST_TRUSTED_OVERLAY_PREFIX, GUEST_USER_OVERLAY_PREFIX] {
+        if let Some(rest) = bytes.strip_prefix(prefix.as_bytes()) {
+            return stored_name_with_rest(STORED_OVERLAY_XATTR_PREFIX, rest);
+        }
+    }
+    if let Some(rest) = bytes.strip_prefix(GUEST_FUSEOVERLAYFS_PREFIX.as_bytes()) {
+        return stored_name_with_rest(STORED_FUSEOVERLAYFS_XATTR_PREFIX, rest);
+    }
+    None
+}
+
+/// Inverse of [`stored_overlay_xattr_name`] for listings: maps a stored name
+/// back to the guest-visible `trusted.overlay.*` form (the class a root guest
+/// mount reads). Bare prefixes map to `None`.
+pub fn guest_overlay_xattr_name(stored: &OsStr) -> Option<OsString> {
+    let bytes = stored.as_bytes();
+    if let Some(rest) = bytes.strip_prefix(STORED_FUSEOVERLAYFS_XATTR_PREFIX.as_bytes()) {
+        return stored_name_with_rest(GUEST_FUSEOVERLAYFS_PREFIX, rest);
+    }
+    if let Some(rest) = bytes.strip_prefix(STORED_OVERLAY_XATTR_PREFIX.as_bytes()) {
+        return stored_name_with_rest(GUEST_TRUSTED_OVERLAY_PREFIX, rest);
+    }
+    None
+}
+
+/// Whether `name` lives in the stored guest-overlay namespace. Adapters must
+/// reject direct guest reads/writes of these names so stored control state
+/// cannot be forged or enumerated.
+pub fn is_stored_overlay_xattr(name: &OsStr) -> bool {
+    name.as_bytes()
+        .starts_with(STORED_OVERLAY_XATTR_PREFIX.as_bytes())
+}
+
+fn stored_name_with_rest(prefix: &str, rest: &[u8]) -> Option<OsString> {
+    if rest.is_empty() {
+        return None;
+    }
+    let mut stored = Vec::with_capacity(prefix.len() + rest.len());
+    stored.extend_from_slice(prefix.as_bytes());
+    stored.extend_from_slice(rest);
+    Some(OsString::from_vec(stored))
+}
+
 fn ignorable_metadata_error(err: &io::Error) -> bool {
     matches!(
         err.raw_os_error(),
@@ -4941,6 +5005,66 @@ mod tests {
         let before = fingerprint_at(&base, Path::new("file")).unwrap();
         sys::set_xattr(&file, OsStr::new("user.pvisor.conflict"), b"after", 0).unwrap();
         assert!(!before.matches(&fingerprint_at(&base, Path::new("file")).unwrap()));
+    }
+
+    #[test]
+    fn overlay_xattr_names_translate_both_ways_and_reject_bare_prefixes() {
+        use super::*;
+        let trusted = OsStr::new("trusted.overlay.opaque");
+        let user = OsStr::new("user.overlay.redirect");
+        let fuse = OsStr::new("user.fuseoverlayfs.opaque");
+        assert_eq!(
+            stored_overlay_xattr_name(trusted).as_deref(),
+            Some(OsStr::new("user.pvisor.overlay.opaque"))
+        );
+        assert_eq!(
+            stored_overlay_xattr_name(user).as_deref(),
+            Some(OsStr::new("user.pvisor.overlay.redirect"))
+        );
+        assert_eq!(
+            stored_overlay_xattr_name(fuse).as_deref(),
+            Some(OsStr::new("user.pvisor.overlay.fuseoverlayfs.opaque"))
+        );
+        // Both overlay classes share one stored name; the guest projection
+        // reports the trusted form.
+        assert_eq!(
+            guest_overlay_xattr_name(OsStr::new("user.pvisor.overlay.redirect")).as_deref(),
+            Some(OsStr::new("trusted.overlay.redirect"))
+        );
+        assert_eq!(
+            guest_overlay_xattr_name(OsStr::new("user.pvisor.overlay.fuseoverlayfs.opaque"))
+                .as_deref(),
+            Some(fuse)
+        );
+        // Bare prefixes, foreign names and unrelated pvisor controls do not map.
+        assert_eq!(
+            stored_overlay_xattr_name(OsStr::new("trusted.overlay.")),
+            None
+        );
+        assert_eq!(stored_overlay_xattr_name(OsStr::new("user.overlay.")), None);
+        assert_eq!(
+            stored_overlay_xattr_name(OsStr::new("security.selinux")),
+            None
+        );
+        assert_eq!(
+            stored_overlay_xattr_name(OsStr::new(PRIVATE_BACKING_XATTR)),
+            None
+        );
+        assert_eq!(
+            guest_overlay_xattr_name(OsStr::new("user.pvisor.overlay.")),
+            None
+        );
+        assert_eq!(
+            guest_overlay_xattr_name(OsStr::new("user.pvisor.private_backing")),
+            None
+        );
+        // The stored namespace is exactly the prefix, and direct stored-name
+        // access stays distinguishable from every guest-visible spelling.
+        assert!(is_stored_overlay_xattr(OsStr::new(
+            "user.pvisor.overlay.origin"
+        )));
+        assert!(!is_stored_overlay_xattr(trusted));
+        assert!(!is_stored_overlay_xattr(OsStr::new("user.overlay.opaque")));
     }
 
     #[test]
