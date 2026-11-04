@@ -815,14 +815,6 @@ impl PassthroughFs {
         Ok(false)
     }
 
-    /// Preserve Linux's private candidate signature; buffering remains unsupported.
-    pub(in crate::devices::virtio::fs) fn buffered_write_eligible_unlocked(
-        &self,
-        _lease: &HandleLease,
-    ) -> io::Result<bool> {
-        Ok(false)
-    }
-
     /// Preserve the private cross-platform signature without enabling an
     /// unvalidated macOS write-buffering or privilege-removal path.
     pub(in crate::devices::virtio::fs) fn write_buffered_leased(

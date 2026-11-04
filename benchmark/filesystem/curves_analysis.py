@@ -229,6 +229,8 @@ def condition_factors(protocol: dict) -> tuple[dict, str]:
             "batch_kib": 1024,
             "chunks": 64,
             "delay_us": 10000,
+            # Decode historical factors only; current samplers cannot emit
+            # these retired execution modes.
             "qualification_lock": name == "async-old",
             "synchronous": name == "owned-sync",
         }

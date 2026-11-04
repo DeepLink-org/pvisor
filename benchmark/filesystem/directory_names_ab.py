@@ -15,6 +15,17 @@ import sys
 import time
 from pathlib import Path
 
+EXPERIMENTS = {
+    "directory-names": ("directory-pages", "directory-pages"),
+    "prepared-copy-up": ("copyup-concurrent", "copyup-total"),
+}
+
+
+def experiment_protocol(name):
+    if name not in EXPERIMENTS:
+        raise ValueError(f"unsupported or retired experiment: {name}; use its frozen harness")
+    return EXPERIMENTS[name]
+
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
@@ -99,6 +110,7 @@ def verify_copyup_fixture(scratch):
 
 
 def prepare(args):
+    mode, metric = experiment_protocol(args.experiment)
     batch = args.prepare.resolve()
     batch.mkdir(parents=True, exist_ok=False)
     artifacts = batch / "artifacts"
@@ -147,13 +159,8 @@ def prepare(args):
             "inputs": inputs,
             "samples": args.samples,
             "experiment": args.experiment,
-            "mode": {
-                "prepared-copy-up": "copyup-concurrent",
-                "scoped-names": "scoped-reimport",
-            }.get(args.experiment, "directory-pages"),
-            "metric": {"prepared-copy-up": "copyup-total", "scoped-names": "names-reimport"}.get(
-                args.experiment, "directory-pages"
-            ),
+            "mode": mode,
+            "metric": metric,
             "seed": 52871,
             "cpus": host_cpus(),
             "host_platform": sys.platform,
@@ -175,6 +182,7 @@ def prepare(args):
 
 
 def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
+    experiment_protocol(manifest["experiment"])
     label = f"{mode}-{pair}-{enabled}-{'profile' if diagnostic else 'time'}"
     unit = f"pvisor-fs-names-{os.getpid()}-{label}"
     # VmRuntime exits its isolated process on guest shutdown, bypassing Rust
@@ -182,14 +190,12 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
     scratch = batch / "work" / label
     scratch.mkdir()
     prepared = manifest["experiment"] == "prepared-copy-up"
-    scoped = manifest["experiment"] == "scoped-names"
-    names_enabled = 1 if prepared or scoped else enabled
+    names_enabled = 1 if prepared else enabled
     command = [
         "/usr/bin/env",
         f"TMPDIR={scratch}",
         f"PVISOR_VM_FS_DIRECTORY_NAMES_CACHE={names_enabled}",
         f"PVISOR_VM_FS_PREPARED_COPY_UP={enabled if prepared else 0}",
-        f"PVISOR_VM_FS_SCOPED_NAMES={enabled if scoped else 0}",
         "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE=0",
         "PVISOR_VM_FS_LOGICAL_DATA_CACHE=0",
         "PVISOR_VM_FS_REUSE_LAZY_NODES=0",
@@ -221,6 +227,9 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
                 stderr=subprocess.STDOUT,
                 timeout=90,
                 check=False,
+                env={
+                    key: value for key, value in os.environ.items() if not key.startswith("PVISOR_")
+                },
             )
     except BaseException:
         stop_trial(unit)
@@ -237,7 +246,6 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
     expected = {
         "directory-pages": ["directory-pages"],
         "copyup-concurrent": ["copyup-open", "copyup-metadata", "copyup-total"],
-        "scoped-reimport": ["names-reimport", "names-edit-cycle"],
         "bench": ["stat256", "scan300", "open10000"],
     }[mode]
     if sorted((p["phase"], p["round"]) for p in phases) != sorted(
@@ -280,15 +288,8 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
         if enabled_values != ([0, 1, 1] if names_enabled else [0, 0, 0]):
             raise ValueError(f"wrong actual cache qualification: {enabled_values}")
         hits = sum(m.get("directory_names_cache_hits", {}).get("units", 0) for m in overlays)
-        if not prepared and not scoped and bool(hits) != bool(enabled):
+        if not prepared and bool(hits) != bool(enabled):
             raise ValueError("cache did not exercise the intended path")
-        if scoped:
-            active = sorted(m["directory_names_scoped_enabled"]["units"] for m in overlays)
-            retained = sum(
-                m.get("directory_names_scoped_retained", {}).get("units", 0) for m in overlays
-            )
-            if active != ([0, 1, 1] if enabled else [0, 0, 0]) or bool(retained) != bool(enabled):
-                raise ValueError("scoped invalidation path was not exercised")
         if prepared:
             actual = [m["prepared_copy_up_enabled"]["units"] for m in overlays]
             if actual != [enabled] * 3:
@@ -307,6 +308,7 @@ def trial(batch, manifest, pair, mode, enabled, diagnostic=False):
 
 def measure(batch):
     manifest = json.loads((batch / "manifest.json").read_text())
+    experiment_protocol(manifest["experiment"])
     for name, expected in manifest["inputs"].items():
         if digest(batch / name) != expected:
             raise ValueError(f"frozen input changed: {name}")
@@ -359,7 +361,7 @@ def main():
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument(
         "--experiment",
-        choices=["directory-names", "prepared-copy-up", "scoped-names"],
+        choices=list(EXPERIMENTS),
         default="directory-names",
     )
     args = parser.parse_args()

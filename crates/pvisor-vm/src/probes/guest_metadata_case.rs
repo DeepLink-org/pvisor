@@ -24,7 +24,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | "bench"
             | "directory-pages"
             | "copyup-concurrent"
-            | "scoped-reimport"
             | "atime"
             | "review"
             | "review-time"
@@ -98,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(directory.join(format!("f{i:04}")), i.to_le_bytes())?;
         }
     }
-    if mode == "directory-pages" || mode == "scoped-reimport" {
+    if mode == "directory-pages" {
         let directory = stable.join("pages");
         std::fs::create_dir(&directory)?;
         for i in 0u64..8192 {
@@ -107,9 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 i.to_le_bytes(),
             )?;
         }
-    }
-    if mode == "scoped-reimport" {
-        std::fs::create_dir(stable.join("scratch"))?;
     }
     if mode == "copyup-concurrent" {
         use std::io::Write;

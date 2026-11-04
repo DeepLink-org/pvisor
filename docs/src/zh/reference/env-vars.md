@@ -53,7 +53,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 `PVISOR_VM_FS_HOST_WRITEBACK` 是默认关闭的实验性 host 写缓存：未设置或 `0` 关闭，`1` 启用，其他值拒绝。当前只支持 Linux staged virtio-fs、guest writeback 关闭和 DAX 关闭；每连接 64 MiB payload、1024 个在途项，相邻连续写按最多 1 MiB 或 10 ms 聚合。显式同步与退出仍观察后台错误；完整 Agent IOCP 和自动卸载尚未接通。范围与同步合同见 [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer)。
 
-`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。`qualification_lock` 和 `synchronous` 用于保留旧资格锁或等待 owned worker 完成的消融；不属于稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../lab-notes/filesystem-io-performance-analysis.md)。
+`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。已退役的 `qualification_lock`、`synchronous` 消融字段按未知字段拒绝。前台资格检查不获取 native 写 I/O 锁，后台仍重检资格，同步屏障仍报告错误。这些不是稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../lab-notes/filesystem-io-performance-analysis.md)。
 
 下面两个变量影响 Linux x86_64 musl 与 macOS ARM64 产品**构建时**嵌入的 guest 内核：
 

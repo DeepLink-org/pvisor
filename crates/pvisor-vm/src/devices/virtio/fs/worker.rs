@@ -37,7 +37,7 @@ use crate::env::fs::{
     guest_cache_enabled, host_writeback_config, host_writeback_enabled, logical_data_cache_enabled,
     logical_directory_cache_enabled, lower_data_cache_enabled, negative_entry_cache_enabled,
     object_read_barriers_enabled, prepared_copy_up_enabled, readonly_flush_elision_enabled,
-    root_data_cache_enabled, scoped_names_enabled,
+    root_data_cache_enabled,
 };
 
 mod scheduler;
@@ -459,14 +459,12 @@ impl Drop for RequestPool {
 
 #[cfg(test)]
 #[test]
-fn followup_settings_are_strict_and_default_off() {
+fn logical_data_cache_setting_defaults_off_and_is_strict() {
     use std::ffi::OsStr;
-    for parse in [scoped_names_enabled, logical_data_cache_enabled] {
-        assert!(!parse(None).unwrap());
-        assert!(!parse(Some(OsStr::new("0"))).unwrap());
-        assert!(parse(Some(OsStr::new("1"))).unwrap());
-        assert!(parse(Some(OsStr::new("true"))).is_err());
-    }
+    assert!(!logical_data_cache_enabled(None).unwrap());
+    assert!(!logical_data_cache_enabled(Some(OsStr::new("0"))).unwrap());
+    assert!(logical_data_cache_enabled(Some(OsStr::new("1"))).unwrap());
+    assert!(logical_data_cache_enabled(Some(OsStr::new("true"))).is_err());
 }
 
 #[cfg(test)]
@@ -570,7 +568,6 @@ impl FsWorker {
         let logical_directory_cache = profile.logical_directory_cache;
         let object_read_barriers = profile.object_read_barriers;
         let logical_data_cache = profile.logical_data_cache;
-        let scoped_names = profile.scoped_names;
         let inode_alloc = Arc::new(InodeAllocator::new());
         let mut server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
@@ -580,14 +577,11 @@ impl FsWorker {
                     host_writeback,
                     shm_region.is_some(),
                     host_writeback_config.options()?,
-                    host_writeback_config.qualification_lock,
-                    host_writeback_config.synchronous,
                 )?;
                 inner.configure_object_read_barriers(object_read_barriers);
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
                 inner.configure_directory_names_cache(directory_names_cache);
-                inner.configure_scoped_names(scoped_names);
                 inner.configure_prepared_copy_up(prepared_copy_up);
                 inner.configure_logical_directory_cache(logical_directory_cache, restoring)?;
                 inner.configure_logical_data_cache(logical_data_cache);
@@ -931,7 +925,6 @@ mod tests {
         assert!(!defaults.object_read_barriers);
         assert!(!defaults.logical_directory_cache);
         assert!(!defaults.logical_data_cache);
-        assert!(!defaults.scoped_names);
         assert_eq!(defaults.writeback, None);
         for value in ["0", "1", "", "false", "arbitrary"] {
             let profile =
@@ -958,7 +951,6 @@ mod tests {
             env::PREPARED_COPY_UP,
             env::OBJECT_READ_BARRIERS,
             env::LOGICAL_DIRECTORY_CACHE,
-            env::SCOPED_NAMES,
             env::LOGICAL_DATA_CACHE,
         ] {
             assert!(
@@ -986,7 +978,6 @@ mod tests {
                     env::OBJECT_READ_BARRIERS,
                     env::LOGICAL_DIRECTORY_CACHE,
                     env::LOGICAL_DATA_CACHE,
-                    env::SCOPED_NAMES,
                 ]
                 .contains(&key)
                 .then(|| value.into())
@@ -999,7 +990,6 @@ mod tests {
                 profile.object_read_barriers,
                 profile.logical_directory_cache,
                 profile.logical_data_cache,
-                profile.scoped_names,
             ] {
                 assert_eq!(enabled, value == "1");
             }
@@ -1077,7 +1067,6 @@ mod tests {
         use std::ffi::OsStr;
         let default = host_writeback_config(None).unwrap();
         assert_eq!(default.options().unwrap().budget_bytes, 64 << 20);
-        assert!(!default.qualification_lock);
         let unmerged = host_writeback_config(Some(OsStr::new(
             r#"{"chunks":1,"delay_us":0,"capacity_mib":4,"batch_kib":4}"#,
         )))
@@ -1096,6 +1085,10 @@ mod tests {
             b"{\"batch_kib\":8192}",
             b"{\"jobs\":-1}",
             b"{\"qualification_lock\":1}",
+            b"{\"qualification_lock\":true}",
+            b"{\"qualification_lock\":false}",
+            b"{\"synchronous\":true}",
+            b"{\"synchronous\":false}",
             b"\xff",
         ] {
             assert_eq!(

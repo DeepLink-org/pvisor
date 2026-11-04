@@ -21,8 +21,8 @@ Unix virtio-fs 在 VMM attach 构造边界一次读取并验证 Host FS 环境�
 `PVISOR_VM_FS_WRITEBACK` 保留原三态规则：仅字符串 `0` 显式关闭，
 其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复旧 WB 状态。
 共享 OPEN 的非法设置仍仅在创建 OverlayFS 时拒绝，不影响 passthrough/null FS。
-main 的 directory-names、prepared-copy-up、object-read-barriers、
-logical-directory-cache、logical-data-cache 和 scoped-names 实验也由同一 profile
+directory-names、prepared-copy-up、object-read-barriers、
+logical-directory-cache 和 logical-data-cache 实验也由同一 profile
 在构造时解析；全部保持默认关闭，显式值仅接受 `0` 或 `1`。
 诊断开关 `PVISOR_FS_PROFILE` 不参与此行为配置，不声称所有 FS 相关环境都被冻结。
 此 profile 不进入公开 API 或快照，也不改变 Windows 独立 FS 的设置读取行为。
@@ -971,12 +971,8 @@ Immutable 的 overlay 保留最近一个目录的名称/类型快照，供分页
 缓存不序列化；Mutable/lazy 物理投影不扩大资格。该实验默认关闭，性能
 证据必须将目录导入与完整工作负载分开，不以减少枚举次数推导耗时收益。
 
-`PVISOR_VM_FS_SCOPED_NAMES=1` 在上述物理名称缓存已启用、默认访问策略下，
-仅失效create/link/unlink/mkdir/rmdir/symlink/mknod/rename的相关父目录和源/
-目标子树。路径在namespace独占锁内解析；失败也按同范围失效，未知路径、
-属性修改/OPEN/capture及非默认策略仍全失效，避免hardlink策略旁路。
-默认关闭，非法值拒绝；只是名称/类型快照，不保留属性或授权。受控guest
-metadata压力实验未检出收益，因此不默认启用，也不改变guest rename镜像协议。
+名称缓存统一采用上述保守失效规则，不提供按修改范围保留其他目录快照的模式。
+访问策略、guest rename 镜像协议和已打开目录的快照生命周期不变。
 
 在宿主 runner 启动前设置 `PVISOR_VM_GUEST_CACHE=0`，可整体关闭 guest
 目录元数据镜像和惰性只读 open；`1` 或未设置默认开启。该开关对所有
@@ -1289,12 +1285,11 @@ DAX 和恢复 guest-writeback 会话明确不支持。直接共享目录的 pass
 字段为 `capacity_mib`（4–256）、`jobs`（1–4096）、`batch_kib`（4–4096，
 不超过容量）、`chunks`（1–64）和 `delay_us`（0–50000）。单个大请求不为
 满足合批大小而拆分，单独执行；`chunks=1,delay_us=0` 是不合并的异步对照。
-`qualification_lock=true` 恢复前台资格检查等待后台 native I/O 锁的旧路径；
-默认 false 在保留 File 的同一个 HandleLease 中查询固定 FD，实时核对 flags、
-export 和 statx，不缓存可变资格。后台仍持 native 写锁并再次核对资格。
-`synchronous=true` 在相同 host-owned 复制与 worker 路径后等排空才回复，
-用于测量复制、线程调度和异步接管的消融，并非原同步实现。上述控制是会话
-局部实验接口，不写入 snapshot；DESTROY 后 INIT 沿用当前连接的配置。
+资格检查在保留 File 的同一个 HandleLease 中查询固定 FD，不等待后台 native
+I/O 锁；每次实时核对 flags、export 和 statx，不缓存可变资格。后台仍持
+native 写锁并再次核对资格。不提供恢复旧资格锁或在回复前强制排空 worker
+的消融模式；旧 `qualification_lock`、`synchronous` JSON 字段按未知字段拒绝。
+这些参数不写入 snapshot；DESTROY 后 INIT 沿用当前连接的配置。
 队列诊断包含预算内预留/排队/执行项高水位、实际批次数和预算等待；每队列
 退出后只记录一次，跨重连的 peak sum 不能当单次最大值。
 

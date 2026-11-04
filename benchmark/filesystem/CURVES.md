@@ -3,6 +3,10 @@
 本手册保留已执行曲线的合同与复现方法。后续替代七工具系统总分的三层负载协议见
 [WORKLOADS.md](WORKLOADS.md)；其离线计划已可生成，新执行器与结果尚未提供。
 
+当前 `curves.py` 不再生成 `async-old`、`owned-sync` 两个消融条件，产品配置
+也不再接受它们的 JSON 字段。以下涉及这两项的假设与条件表是历史协议；
+原始数据和分析器的历史因子解码保留，复现须使用批次冻结的 harness 与制品。
+
 ## 结论范围
 
 这里回答的问题是：**在相同的显式文件与目录 fsync 边界下，host 接管写入、
@@ -101,8 +105,8 @@ quota、memory/swap 上限和进程 affinity；原始 cgroup、CPU 和 backing �
 | `sync` | host writeback=0 | 原有直接同步宿主路径 |
 | `async` | 默认配置 | 完整候选 |
 | `unmerged` | `chunks=1, delay_us=0` | 保留接管/后台队列，禁止合并 |
-| `owned-sync` | `synchronous=true` | 保留 owned copy 和 worker 交接，WRITE 回复前排空 |
-| `async-old` | `qualification_lock=true` | 恢复前台/后台资格检查锁耦合 |
+| `owned-sync`（历史） | `synchronous=true` | 保留 owned copy 和 worker 交接，WRITE 回复前排空 |
+| `async-old`（历史） | `qualification_lock=true` | 恢复前台/后台资格检查锁耦合 |
 | `native` | 相同 payload 直接在宿主运行 | 原生参考，不作为产品条件或单组件消融 |
 
 宿主私有开关为 `PVISOR_VM_FS_HOST_WRITEBACK=0|1`，未设置默认关闭。
@@ -117,8 +121,6 @@ snapshot schema。
 | `batch_kib` | 1024 | 整数 4–4096；不得超过 payload 预算 |
 | `chunks` | 64 | 整数 1–64；一次合批最多多少个原始请求 |
 | `delay_us` | 10000 | 整数 0–50000；最老待处理项的合批等待目标 |
-| `qualification_lock` | false | 布尔值；资格检查锁消融 |
-| `synchronous` | false | 布尔值；提交后在 WRITE 回复前等待排空 |
 
 单项写入不为满足 batch 大小而拆分；超过 batch 目标的单项单独执行。合并还
 要求同一打开对象/句柄身份、相同 killpriv 语义和连续 offset。这里的容量不是

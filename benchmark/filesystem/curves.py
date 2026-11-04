@@ -120,17 +120,9 @@ def conditions(suite):
                 "native": dict(
                     env={}, description="same payload on native filesystem; reference only"
                 ),
-                "async-old": arm(
-                    {"qualification_lock": True},
-                    description="original foreground/background qualification lock coupling",
-                ),
                 "unmerged": arm(
                     {"chunks": 1, "delay_us": 0},
                     description="owned asynchronous writes without merging",
-                ),
-                "owned-sync": arm(
-                    {"synchronous": True},
-                    description="owned copy plus worker dispatch, drain before WRITE reply",
                 ),
             }
         )

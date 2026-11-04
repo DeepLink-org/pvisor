@@ -952,22 +952,12 @@ impl PassthroughFs {
         reader.read_to(&file, size as usize, offset)
     }
 
-    /// Qualify this pinned native FD for asynchronous positional writes.
-    /// Callers must separately exclude guest DAX mappings and order exports.
-    pub(in crate::devices::virtio::fs) fn buffered_write_eligible(
-        &self,
-        lease: &HandleLease,
-    ) -> io::Result<bool> {
-        let file = lease.0.file.read().unwrap();
-        buffered_write_file_eligible(&file, lease.0.exported.load(Ordering::Relaxed))
-    }
-
-    /// Query the same live qualification without waiting for native I/O.
+    /// Qualify this pinned native FD without waiting for native I/O.
     /// The lease's Arc retains the never-replaced File behind qualification_fd;
     /// no File reference is created or borrowed through the I/O lock. Native
     /// flags, exported status and statx attributes are still queried each time.
     /// Callers must separately exclude guest DAX mappings and order exports.
-    pub(in crate::devices::virtio::fs) fn buffered_write_eligible_unlocked(
+    pub(in crate::devices::virtio::fs) fn buffered_write_eligible(
         &self,
         lease: &HandleLease,
     ) -> io::Result<bool> {
@@ -3238,7 +3228,6 @@ mod tests {
         for flags in [libc::O_WRONLY, libc::O_RDWR] {
             let (_root, fs, lease) = buffered_write_fixture(flags);
             assert!(fs.buffered_write_eligible(&lease).unwrap());
-            assert!(fs.buffered_write_eligible_unlocked(&lease).unwrap());
         }
         for flags in [
             libc::O_RDONLY,
@@ -3252,15 +3241,10 @@ mod tests {
                 !fs.buffered_write_eligible(&lease).unwrap(),
                 "flags={flags:#x}"
             );
-            assert!(
-                !fs.buffered_write_eligible_unlocked(&lease).unwrap(),
-                "flags={flags:#x}"
-            );
         }
         let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
         lease.0.exported.store(true, Ordering::Relaxed);
         assert!(!fs.buffered_write_eligible(&lease).unwrap());
-        assert!(!fs.buffered_write_eligible_unlocked(&lease).unwrap());
         let file = File::open(root.path()).unwrap();
         let directory = HandleLease(Arc::new(HandleData {
             directory_snapshot: None,
@@ -3270,51 +3254,33 @@ mod tests {
             exported: AtomicBool::new(false),
         }));
         assert!(!fs.buffered_write_eligible(&directory).unwrap());
-        assert!(!fs.buffered_write_eligible_unlocked(&directory).unwrap());
     }
 
     #[test]
-    fn buffered_unlocked_qualification_progresses_while_native_write_lock_is_held() {
+    fn buffered_qualification_progresses_while_native_write_lock_is_held() {
         let (_root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
         std::thread::scope(|scope| {
             // Declared inside the scope closure so an assertion failure drops
             // the guard before scoped threads are joined during unwinding.
             let native_write = lease.0.file.write().unwrap();
-            let (started, starting) = std::sync::mpsc::channel();
-            let (locked, locked_result) = std::sync::mpsc::channel();
+            let (qualified, qualification_result) = std::sync::mpsc::channel();
             let fs_ref = &fs;
             let lease_ref = &lease;
             scope.spawn(move || {
-                started.send(()).unwrap();
-                locked
+                qualified
                     .send(fs_ref.buffered_write_eligible(lease_ref))
                     .unwrap();
             });
-            starting.recv_timeout(Duration::from_secs(2)).unwrap();
-            let (unlocked, unlocked_result) = std::sync::mpsc::channel();
-            scope.spawn(move || {
-                unlocked
-                    .send(fs_ref.buffered_write_eligible_unlocked(lease_ref))
-                    .unwrap();
-            });
-            assert!(unlocked_result
+            assert!(qualification_result
                 .recv_timeout(Duration::from_secs(2))
                 .unwrap()
                 .unwrap());
-            assert!(matches!(
-                locked_result.recv_timeout(Duration::from_millis(30)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            ));
             drop(native_write);
-            assert!(locked_result
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap()
-                .unwrap());
         });
     }
 
     #[test]
-    fn buffered_unlocked_qualification_keeps_the_fd_after_release_and_name_reuse() {
+    fn buffered_qualification_keeps_the_fd_after_release_and_name_reuse() {
         let (root, fs, _unused) = buffered_write_fixture(libc::O_RDWR);
         fs.init(FsOptions::empty()).unwrap();
         let ctx = root_context();
@@ -3331,7 +3297,6 @@ mod tests {
         std::fs::remove_file(root.path().join("file")).unwrap();
         std::fs::create_dir(root.path().join("file")).unwrap();
         assert!(fs.buffered_write_eligible(&lease).unwrap());
-        assert!(fs.buffered_write_eligible_unlocked(&lease).unwrap());
     }
 
     #[test]
@@ -3380,7 +3345,6 @@ mod tests {
             );
         }
         assert!(!fs.buffered_write_eligible(&lease).unwrap());
-        assert!(!fs.buffered_write_eligible_unlocked(&lease).unwrap());
         assert_eq!(
             fs.write_buffered_leased(&lease, &[b"x"], 0, false)
                 .unwrap_err()

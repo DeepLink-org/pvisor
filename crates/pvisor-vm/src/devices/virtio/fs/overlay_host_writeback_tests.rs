@@ -654,7 +654,7 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
         max_delay: Duration::ZERO,
         object_barriers: false,
     };
-    fs.configure_host_writeback_options(true, false, options, true, false)
+    fs.configure_host_writeback_options(true, false, options)
         .unwrap();
     for session in 0..2 {
         let negotiated = fs
@@ -666,8 +666,6 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
         assert_eq!(fs.host_writeback_options.batch_bytes, options.batch_bytes);
         assert_eq!(fs.host_writeback_options.max_chunks, options.max_chunks);
         assert_eq!(fs.host_writeback_options.max_delay, options.max_delay);
-        assert!(fs.host_writeback_qualification_lock);
-        assert!(!fs.host_writeback_synchronous);
         let buffer = fs.buffered_writes().unwrap();
         assert_eq!(
             buffer

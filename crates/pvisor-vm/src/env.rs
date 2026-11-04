@@ -25,7 +25,6 @@ pub(crate) mod fs {
     pub(crate) const PREPARED_COPY_UP: &str = "PVISOR_VM_FS_PREPARED_COPY_UP";
     pub(crate) const OBJECT_READ_BARRIERS: &str = "PVISOR_VM_FS_OBJECT_READ_BARRIERS";
     pub(crate) const LOGICAL_DIRECTORY_CACHE: &str = "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE";
-    pub(crate) const SCOPED_NAMES: &str = "PVISOR_VM_FS_SCOPED_NAMES";
     pub(crate) const LOGICAL_DATA_CACHE: &str = "PVISOR_VM_FS_LOGICAL_DATA_CACHE";
     pub(crate) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
     pub(crate) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
@@ -47,7 +46,6 @@ pub(crate) mod fs {
         pub(crate) prepared_copy_up: bool,
         pub(crate) object_read_barriers: bool,
         pub(crate) logical_directory_cache: bool,
-        pub(crate) scoped_names: bool,
         pub(crate) logical_data_cache: bool,
         pub(crate) writeback: Option<String>,
         pub(crate) shared_open: io::Result<bool>,
@@ -107,7 +105,6 @@ pub(crate) mod fs {
                 logical_directory_cache: logical_directory_cache_enabled(
                     get(LOGICAL_DIRECTORY_CACHE).as_deref(),
                 )?,
-                scoped_names: scoped_names_enabled(get(SCOPED_NAMES).as_deref())?,
                 logical_data_cache: logical_data_cache_enabled(get(LOGICAL_DATA_CACHE).as_deref())?,
                 // Preserve env::var(...).ok(): non-Unicode is unset, all other
                 // strings (including empty/invalid) remain the explicit third state.
@@ -174,7 +171,6 @@ pub(crate) mod fs {
         LOGICAL_DIRECTORY_CACHE,
         false
     );
-    boolean_parser!(scoped_names_enabled, SCOPED_NAMES, false);
     boolean_parser!(logical_data_cache_enabled, LOGICAL_DATA_CACHE, false);
     boolean_parser!(
         shared_open_qualification_enabled,
@@ -191,8 +187,6 @@ pub(crate) mod fs {
         batch_kib: usize,
         chunks: usize,
         delay_us: u64,
-        pub(crate) qualification_lock: bool,
-        pub(crate) synchronous: bool,
     }
 
     impl Default for HostWritebackConfig {
@@ -203,8 +197,6 @@ pub(crate) mod fs {
                 batch_kib: 1024,
                 chunks: 64,
                 delay_us: 10_000,
-                qualification_lock: false,
-                synchronous: false,
             }
         }
     }
