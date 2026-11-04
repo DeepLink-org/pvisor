@@ -309,7 +309,10 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
 
 fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
     let job = crate::cli::host::lock_selected_job(source)?;
-    let (current, _lease) = source.lock_current()?;
+    // Policy inspection does not mutate the Attempt. The execution-operation
+    // lease above fences its identity/config while a live source keeps its RAM
+    // and workspace lease. Restore/fork admission takes its own runtime locks.
+    let current = RunRecord::read(&source.stage_dir())?;
     crate::cli::host::check_selected_record(source, &current)?;
     crate::cli::host_service::check_record(&current)?;
     if let Some(overlay) = &current.overlay {
@@ -537,6 +540,23 @@ mod tests {
             serde_json::to_value(job.current().unwrap()).unwrap(),
             before_job
         );
+    }
+
+    #[tokio::test]
+    async fn execution_fork_policy_check_preserves_the_live_attempt_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let (source, mut job) = fixture(root.path());
+        job.active_attempt = source.attempt_id.clone().unwrap();
+        job.state = JobState::Running;
+        job.write().unwrap();
+        let live_attempt = pvisor::RunLease::acquire(root.path()).unwrap();
+        let before = std::fs::read(root.path().join("run.json")).unwrap();
+
+        reject_ask_restore_source(&source).unwrap();
+
+        assert!(pvisor::RunLease::acquire(root.path()).is_err());
+        assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
+        drop(live_attempt);
     }
 
     #[tokio::test]

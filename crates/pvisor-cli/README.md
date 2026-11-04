@@ -12,6 +12,23 @@ modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
 ownership. Each running Job owns its recorded private control socket; stopped Job operations
 run directly in the caller. Embedded execution publishes the same discovery record.
+Execution-state fork may branch a running source from an immutable checkpoint.
+The runtime's execution-operation lease fences source identity, checkpoint
+references and request replay; the source retains its live Attempt lease.
+The CLI's policy preflight reads under that execution-operation lease without
+claiming mutation ownership of the source Attempt. Workspace fork and stopped
+resume retain the source-directory exclusion required for their mutations.
+Repeated suspend of an already suspended Job resolves its confirmed durable head
+through the runtime, without requiring a live owner. Missing control endpoints
+on running Jobs remain errors, not permission to treat them as suspended.
+On a live Job, ordinary `resume` unpauses the VM. Supplying `--request-id` or
+`--eager-ram` selects durable restore semantics instead: only a matching admitted
+restore request can replay successfully; a fresh request cannot replace a live
+Attempt or silently become an unpause.
+Deleting an unreferenced execution checkpoint uses the runtime Job lease and
+snapshot-store reader fences even while the Job runs; suspended heads and child
+references remain protected. Workspace checkpoint deletion still requires a
+stopped source and its Attempt lease.
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
 Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`

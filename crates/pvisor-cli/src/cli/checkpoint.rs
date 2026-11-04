@@ -111,6 +111,9 @@ impl SuspendArgs {
     }
 }
 impl ResumeArgs {
+    pub(super) fn has_restore_options(&self) -> bool {
+        self.request_id.is_some() || self.eager_ram
+    }
     pub(super) fn selection(&self) -> &Selection {
         &self.selection
     }
@@ -122,18 +125,31 @@ impl ResumeArgs {
     }
 }
 
-fn capture(
+async fn capture(
     record: &RunRecord,
     suspend: bool,
     ram_storage: SnapshotRamStorage,
     request_id: String,
     timeout_ms: u64,
 ) -> anyhow::Result<pvisor::job_service::CaptureResponse> {
-    let endpoint = record
+    let Some(endpoint) = record
         .live_control
         .as_ref()
         .filter(|endpoint| endpoint.is_available())
-        .context("Job has no valid recorded owner; execution capture is unavailable")?;
+    else {
+        // A suspended Job has no live owner. The runtime validates its durable
+        // head and request receipt under the execution-operation lease; a
+        // running Job with a missing endpoint still fails closed there.
+        return pvisor::job_service::RuntimeJobService::capture_selected_execution(
+            &super::host::service_context(),
+            record,
+            suspend,
+            ram_storage,
+            Some(request_id),
+            std::time::Duration::from_millis(timeout_ms),
+        )
+        .await;
+    };
     Ok(serde_json::from_value(
         endpoint.exchange_checked(
             &record.run_id,
@@ -165,7 +181,8 @@ pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
             .unwrap_or(SnapshotRamStorage::Compressed),
         request_id.clone(),
         args.timeout.0,
-    )?;
+    )
+    .await?;
     let checkpoint = response.checkpoint;
     emit(
         args.json,
@@ -215,7 +232,7 @@ enum CheckpointCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Delete an unreferenced savepoint of a stopped Job.
+    /// Delete an unreferenced savepoint; workspace savepoints require a stopped Job.
     Delete {
         #[command(flatten)]
         selection: Selection,
@@ -273,6 +290,15 @@ impl CheckpointArgs {
         }
     }
     pub(super) fn preflight(&self, record: &RunRecord) -> anyhow::Result<()> {
+        // Execution deletion has its own Job/Attempt and retained-reference
+        // fences below. This classification is not mutation authorization:
+        // workspace fallback must still acquire stopped-Attempt ownership.
+        let execution_delete = match &self.command {
+            CheckpointCommand::Delete { id, .. } => {
+                Job::read(record)?.is_some_and(|job| job.checkpoints.contains_key(id))
+            }
+            _ => false,
+        };
         if matches!(
             &self.command,
             CheckpointCommand::Create {
@@ -285,6 +311,7 @@ impl CheckpointArgs {
             .live_control
             .as_ref()
             .is_some_and(|endpoint| endpoint.is_available())
+            && !execution_delete
         {
             anyhow::bail!("Job owner still holds stage; persistent checkpoint mutation refused");
         }
@@ -347,7 +374,8 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                         .unwrap_or(SnapshotRamStorage::Compressed),
                     request_id.clone(),
                     timeout.0,
-                )?;
+                )
+                .await?;
                 let checkpoint = response.checkpoint;
                 return emit(
                     json,

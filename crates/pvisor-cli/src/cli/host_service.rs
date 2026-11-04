@@ -535,9 +535,8 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
             context.command.preflight(&record)?;
             *SOURCE_LOCK
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(
-                pvisor::JobDirectoryLock::acquire(&record, context.command.operation())?,
-            );
+                .unwrap_or_else(|error| error.into_inner()) =
+                context.command.lock_source(&record)?;
         }
         if std::env::var("PVISOR_STARTUP_TIMING").as_deref() == Ok("1") {
             pvisor::diagnostics::diagnostic(format_args!(
@@ -847,6 +846,14 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         .is_some_and(|endpoint| endpoint.is_available());
     if matches!(&command, JobCommand::Resume(_)) && live {
         let record = record.as_ref().unwrap();
+        let JobCommand::Resume(args) = command else {
+            unreachable!();
+        };
+        if args.has_restore_options() {
+            // Durable request replay must retain the runtime's option/Attempt
+            // fences, not be mistaken for an ordinary live-VM unpause.
+            return rt.block_on(super::checkpoint::resume(args));
+        }
         return super::live_vm::resume_record(&rt, record);
     }
     if let Some(record) = &record {
@@ -864,8 +871,9 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
     let _lock = if !live {
         record
             .as_ref()
-            .map(|record| pvisor::JobDirectoryLock::acquire(record, command.operation()))
+            .map(|record| command.lock_source(record))
             .transpose()?
+            .flatten()
     } else {
         None
     };

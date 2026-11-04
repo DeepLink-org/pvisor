@@ -111,6 +111,11 @@ Legacy records without the
 protocol marker retain their original read rules. This is local crash consistency,
 not authentication against another process with unrestricted access as the host UID.
 Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
+Publishing a sealed execution snapshot appends a new immutable object and can
+coexist with readers restoring an earlier snapshot from the same store. Atomic
+no-replace publication keeps partial objects invisible; live writer leases and
+the shared store gate still exclude deletion and garbage collection. Readers
+continue to pin the store against destructive operations until released.
 Completion and Bundle reads reject symlinks/nonregular files and are capped at
 64 MiB each. Very large captured results or file inventories can exceed this bound
 and fail finalization while retaining the stage.

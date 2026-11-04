@@ -77,6 +77,18 @@ impl JobCommand {
         }
         Ok(())
     }
+    /// Workspace mutation/restoration owns the stopped source directory.
+    /// Execution fork instead pins immutable checkpoints under the runtime's
+    /// execution-operation lease; the source Attempt may keep running.
+    pub(super) fn lock_source(
+        &self,
+        record: &pvisor::RunRecord,
+    ) -> anyhow::Result<Option<pvisor::JobDirectoryLock>> {
+        if matches!(self, Self::Fork(args) if args.restores_execution()) {
+            return Ok(None);
+        }
+        pvisor::JobDirectoryLock::acquire(record, self.operation()).map(Some)
+    }
     fn selection(&self) -> Option<(Option<&Path>, &Path)> {
         match self {
             Self::Run(_) => None,
@@ -215,6 +227,47 @@ mod tests {
     use crate::cli::live_vm::vm_request;
     use clap::{CommandFactory, Parser};
     use pvisor_core::host_protocol::HostVmCommand;
+
+    #[test]
+    fn execution_fork_delegates_source_locking_but_workspace_fork_remains_exclusive() {
+        let root = tempfile::tempdir().unwrap();
+        let record: pvisor::RunRecord = serde_json::from_value(serde_json::json!({
+            "schema_version":1, "run_id":"source", "session_id":"source",
+            "agent":"probe", "pid":0, "command":["probe"], "state":"completed",
+            "started_at_unix_ms":1, "finished_at_unix_ms":2,
+            "storage":root.path(), "network":{}, "gateway_listen":null, "overlay":null
+        }))
+        .unwrap();
+        record.write().unwrap();
+        let owner = pvisor::JobDirectoryLock::acquire(&record, "test-owner").unwrap();
+        for (state, checkpoint) in [
+            ("workspace", None),
+            ("execution", None),
+            ("execution", Some("sealed-checkpoint")),
+        ] {
+            let mut argv = vec!["pvisor", "fork", "source", "--state", state];
+            if let Some(checkpoint) = checkpoint {
+                argv.extend(["--checkpoint", checkpoint]);
+            }
+            let parsed = super::super::Cli::try_parse_from(argv).unwrap();
+            let super::super::Command::Fork(args) = parsed.command else {
+                panic!("expected fork");
+            };
+            let command: JobCommand =
+                serde_json::from_value(serde_json::to_value(JobCommand::Fork(args)).unwrap())
+                    .unwrap();
+            let result = command.lock_source(&record);
+            if state == "execution" {
+                assert!(result.unwrap().is_none());
+            } else {
+                assert!(
+                    result.is_err(),
+                    "workspace fork must retain source exclusion"
+                );
+            }
+        }
+        drop(owner);
+    }
 
     #[test]
     fn nested_run_args_roundtrip_as_typed_data() {
