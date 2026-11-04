@@ -488,6 +488,9 @@ class Campaign:
         for name in self.names:
             _, error = self.call("start", name, code=1)
             assert b"connection refused" in error.lower(), error
+            assert b"booterr:" not in error, "startup diagnostic included an older workload"
+            assert b"Linux cold RAM failure" not in error, error
+            assert b"panicked at" not in error, error
         self.call("daemon", "start", "--memory-pool", code=1)
         _, error = self.call(
             "run",

@@ -33,6 +33,14 @@ Pruning takes an exclusive lease, waits for builds, and never removes published
 image pool data. This is not the distributed `pvisor cache` service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
+Native Jobs and Docker-style VM launches authenticate and negotiate a selected
+RAM pool before constructing the VMM, then transfer that same owned session to
+the pager. A dead or invalid pool rejects startup without booting a guest,
+reconnecting, deleting its socket or replacing pool ownership. Pool loss after
+VM entry still terminates dependent runners; it is not automatic recovery.
+Container logs remain cumulative across restarts, while startup errors include
+only the current generation's stderr (up to 32 KiB), not earlier workload or
+pool-loss diagnostics.
 Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Job frontend, not a runtime dependency. Cross-node placement and distributed scheduling

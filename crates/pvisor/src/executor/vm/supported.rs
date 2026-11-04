@@ -2864,6 +2864,11 @@ fn run_linked_krun(
         return Err(std::io::Error::last_os_error().into());
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    let pager = super::pager::prepare(&spec.ram_pager, spec.memory_mib)?;
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
@@ -2900,8 +2905,11 @@ fn run_linked_krun(
 
         }
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
-        super::pager::start_if_requested(handle.clone(), &spec.ram_pager, spec.memory_mib)
-            .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+        {
+            super::pager::start_diagnostics(&handle)?;
+            pager.start(handle.clone())
+                .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+        }
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
             .spawn(move || {

@@ -137,6 +137,10 @@ physical pool through its pidfd. It requires dependent VMs and the manager to
 exit, checks failed restarts and `-M` implicit startup, and retains the stale pool
 socket rather than replacing RAM ownership. This is an explicit expected fault;
 other operation failures remain failures. Use only with disposable test VMs.
+Restart diagnostics must report the refused pool connection for that generation,
+without replaying earlier workload stderr or a previous pool-loss failure.
+Pool authentication and negotiation precede VMM construction; the same prepared
+session is consumed at VM entry rather than replaced by a second connection.
 
 The runner requires its entire process tree in a systemd user service with
 1536 MiB MemoryMax, zero swap, 150% CPU quota and TasksMax=384. It samples host
