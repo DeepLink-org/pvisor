@@ -111,6 +111,47 @@ class CliChaosSafetyTests(unittest.TestCase):
             ]:
                 self.assertTrue(callable(getattr(runner, name)), name)
 
+    def test_health_waits_for_application_marker_before_exact_counter_oracle(self):
+        with workspace() as (root, _):
+            runner = self.runner(root)
+            runner.generation = [2, 1]
+            results = [
+                (b"a\nb\n", b""),
+                (b"boot:1\n", b""),
+                (b"boot:1\nboot:2\n", b""),
+                (b"2\n", b""),
+                (b"boot:1\n", b""),
+                (b"1\n", b""),
+            ]
+            with (
+                mock.patch.object(runner, "call", side_effect=results) as call,
+                mock.patch.object(chaos.time, "sleep"),
+            ):
+                runner.health()
+            self.assertEqual(
+                call.call_args_list,
+                [
+                    mock.call("ps", "-q"),
+                    mock.call("logs", runner.names[0]),
+                    mock.call("logs", runner.names[0]),
+                    mock.call("exec", runner.names[0], "cat", "/boot-count", out=b"2\n", err=b""),
+                    mock.call("logs", runner.names[1]),
+                    mock.call("exec", runner.names[1], "cat", "/boot-count", out=b"1\n", err=b""),
+                ],
+            )
+
+    def test_health_missing_or_prefix_only_marker_is_a_bounded_failure(self):
+        for log in [b"boot:1\n", b"boot:20\n"]:
+            with self.subTest(log=log), workspace() as (root, _):
+                runner = self.runner(root)
+                runner.generation = [2, 1]
+                with (
+                    mock.patch.object(runner, "call", side_effect=[(b"a\nb\n", b""), (log, b"")]),
+                    mock.patch.object(chaos.time, "monotonic", side_effect=[0, 6]),
+                    self.assertRaisesRegex(AssertionError, "application readiness timed out"),
+                ):
+                    runner.health()
+
     def test_audit_rechecks_raw_bytes_instead_of_trusting_passed_flag(self):
         with workspace() as (root, _):
             runner = self.runner(root)

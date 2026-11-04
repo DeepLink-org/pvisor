@@ -197,6 +197,14 @@ class Campaign:
         ids = self.call("ps", "-q")[0].splitlines()
         assert len(ids) == 2, ("expected exactly two owned live containers", ids)
         for i, name in enumerate(self.names):
+            # Container/exec readiness does not promise that the entrypoint has
+            # finished its application initialization. Its marker follows the
+            # counter write; wait for that fact before the unchanged byte oracle.
+            marker = f"boot:{self.generation[i]}".encode()
+            deadline = time.monotonic() + 5
+            while marker not in self.call("logs", name)[0].splitlines():
+                assert time.monotonic() < deadline, (name, "application readiness timed out", marker)
+                time.sleep(0.02)
             self.call(
                 "exec", name, "cat", "/boot-count", out=f"{self.generation[i]}\n".encode(), err=b""
             )

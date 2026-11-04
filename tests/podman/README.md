@@ -131,6 +131,11 @@ network attachment/removal. Calls alternate between two host working directories
 to exercise discovery independently of the current project. It uses an immutable Alpine digest, fresh private
 store and daemon state, frozen adjacent CLI/daemon binaries and retained receipts.
 No Docker daemon is required; this does not claim complete Docker compatibility.
+Health checks wait at most five seconds for the entrypoint's exact generation
+marker before checking `/boot-count` byte-for-byte. `start`/exec readiness is not
+application initialization: the marker follows the fixture's counter write.
+Missing/prefix-only markers, incorrect final bytes, command errors and timeouts
+remain failures; startup commands are not retried.
 
 Optional `--inject-pool-loss` ends the window by killing only the verified owned
 physical pool through its pidfd. It requires dependent VMs and the manager to
