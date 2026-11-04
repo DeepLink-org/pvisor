@@ -8,6 +8,7 @@ use pvisor_guest::{
     control::{self, Reply, Request, StdinFrame, read_frame, write_frame},
 };
 use std::{
+    collections::BTreeMap,
     io::{self, Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
@@ -82,7 +83,11 @@ fn serve(
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     let request: Request = read_frame(&mut stream)?;
     let tracked = matches!(request, Request::Start { .. });
+    let mut replace_env = false;
+    let mut exec_limits = BTreeMap::new();
     let request = if let Request::Start { launch } = request {
+        replace_env = launch.replace_env;
+        exec_limits = launch.limits;
         Request::Exec {
             argv: launch.argv,
             env: launch.env,
@@ -154,14 +159,23 @@ fn serve(
         } => {
             let mut config = config.clone();
             config.argv = argv;
-            for key in unset_env {
-                config.env.remove(&key);
+            if replace_env {
+                config.env = env;
+            } else {
+                for key in unset_env {
+                    config.env.remove(&key);
+                }
+                config.env.extend(env);
             }
-            config.env.extend(env);
             if tracked {
                 config
                     .env
                     .retain(|key, _| !key.starts_with("PVISOR_NATIVE_"));
+            }
+            // OCI exec specs carry the process's complete rlimit set; an
+            // empty override keeps the launch limits, the OCI default.
+            if !exec_limits.is_empty() {
+                config.limits = exec_limits;
             }
             if let Some(cwd) = cwd {
                 config.cwd = cwd;
@@ -227,8 +241,22 @@ fn serve(
                 })
                 .collect();
             let code = process.wait()?;
+            // An output pump that failed before EOF lost stream data; the
+            // host must not read the following Exit as a clean result.
+            let mut drained = true;
             for pump in pumps {
-                let _ = pump.join();
+                if pump.join().is_ok_and(|result| result.is_err()) {
+                    drained = false;
+                }
+            }
+            if !drained {
+                let _ = write_frame(
+                    &mut *output.lock().unwrap(),
+                    &Reply::Failure {
+                        errno: libc::EIO,
+                        message: "exec output could not be delivered".to_string(),
+                    },
+                );
             }
             write_frame(&mut *output.lock().unwrap(), &Reply::Exit { code })?;
             Ok(())
@@ -489,6 +517,8 @@ mod tests {
                             .into(),
                     ],
                     env: BTreeMap::new(),
+                    replace_env: false,
+                    limits: BTreeMap::new(),
                     cwd: None,
                     user: None,
                     tty: None,
@@ -531,6 +561,88 @@ mod tests {
             processes.signal(pid, 9).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+        processes.signal(main_pid, libc::SIGTERM).unwrap();
+        assert_eq!(reaper.join().unwrap(), 143);
+    }
+
+    #[test]
+    fn tracked_exec_replaces_environment_and_limits() {
+        let processes = Processes::default();
+        let config = GuestConfig {
+            argv: vec!["/bin/sleep".into(), "60".into()],
+            cwd: "/".into(),
+            env: BTreeMap::from([
+                ("LAUNCH_ONLY".into(), "1".into()),
+                ("SHARED".into(), "launch".into()),
+                ("PVISOR_NATIVE_GENERATION".into(), "private".into()),
+            ]),
+            limits: BTreeMap::from([("RLIMIT_NOFILE".into(), (4096, 4096))]),
+            ..Default::default()
+        };
+        let main = processes.spawn(&config, false).unwrap().process;
+        let main_pid = main.id();
+        let reaper = processes.clone();
+        let reaper = std::thread::spawn(move || reaper.supervise(main).unwrap());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let guest = processes.clone();
+        let launch_config = config.clone();
+        let worker = std::thread::spawn(move || {
+            serve(
+                server,
+                &launch_config,
+                &guest,
+                main_pid,
+                &Arc::new(Mutex::new(None)),
+            )
+            .unwrap()
+        });
+        write_frame(
+            &mut client,
+            &Request::Start {
+                launch: pvisor_guest::control::ExecLaunch {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf '%s:%s:%s:%s:%s' \"${LAUNCH_ONLY-unset}\" \"${SHARED-unset}\" \"${EXTRA-unset}\" \"${PVISOR_NATIVE_GENERATION-unset}\" \"$(ulimit -Sn)\""
+                            .into(),
+                    ],
+                    env: BTreeMap::from([
+                        ("SHARED".into(), "exec".into()),
+                        ("EXTRA".into(), "1".into()),
+                    ]),
+                    replace_env: true,
+                    limits: BTreeMap::from([("RLIMIT_NOFILE".into(), (64, 128))]),
+                    cwd: None,
+                    user: None,
+                    tty: None,
+                },
+            },
+        )
+        .unwrap();
+        let Reply::Started {
+            pid: _,
+            generation: _,
+        } = read_frame(&mut client).unwrap()
+        else {
+            panic!("missing PID");
+        };
+        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        let mut output = Vec::new();
+        loop {
+            match read_frame::<Reply>(&mut client).unwrap() {
+                Reply::Output { bytes, .. } => output.extend(bytes),
+                Reply::Exit { code } => {
+                    assert_eq!(code, 0);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // replace_env drops the launch environment (including transport
+        // keys), keeps only the exec-supplied variables, and applies the
+        // per-exec rlimits instead of the launch limits.
+        assert_eq!(output, b"unset:exec:1:unset:64");
+        worker.join().unwrap();
         processes.signal(main_pid, libc::SIGTERM).unwrap();
         assert_eq!(reaper.join().unwrap(), 143);
     }

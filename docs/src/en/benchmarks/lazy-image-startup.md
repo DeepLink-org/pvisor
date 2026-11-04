@@ -82,6 +82,10 @@ Milliseconds, N=30. Ready is host-observed; mmap passes use internal instance cl
 
 Remote access is not the entire cost. Local pools also traverse VM file services, path resolution and guest page caches. This comparison includes runtime/filesystem differences: the full gap is not attributable to Zstd. Warm repeated scans do not establish random mmap or write performance.
 
+A later [same-workload engineering retest](../lab-notes/filesystem-performance-analysis.md#docs-workload-retest)
+separately records revision defaults and the opt-in cache tradeoff between short
+tasks and full-library scans. Its samples are not pooled with the cross-runtime results above.
+
 Whole-group memory, median MiB across five fresh product groups; idle shell/sleep only.
 
 | Idle deployment memory | Docker MiB | pVisor MiB | PV−Docker [95% CI] MiB |

@@ -95,8 +95,11 @@ whole launch contract before any side effect. Consumers that omit the field
 keep their existing behavior; JSON serialization omits it when absent.
 `GuestConfig.bridges` optionally adds AF_VSOCK-to-guest-TCP relays (advisory:
 a failed listener is reported and never affects the workload), and
-`GuestConfig.shares` lists extra virtio-fs mounts (read-only shares mount
-`ro,dax=never`; read-write plain passthrough; a failed mount is fatal).
+`GuestConfig.shares` lists extra virtio-fs mounts (read-only shares are
+host-enforced read-only passthrough — the host may keep updating the
+directory and guests observe those updates, unlike the physically immutable
+`payloads_dir` share; read-write shares are plain passthrough; a failed
+mount is fatal).
 
 ## One workload supervisor
 
@@ -169,9 +172,17 @@ The optional control adapter also accepts tracked `Start` requests with explicit
 `Started { pid }` acknowledgements, PID-fenced `Signal`/`Resize`, guest-local
 `File` operations and `Info` observations. These use the same process launcher
 and blocking PID-1 reaper as ordinary exec. Native transport binding variables
-are removed from tracked exec environments. Only a matching live registered
-child can be signalled or resized; exited/reused PIDs fail. Main exit still
-closes admissions and cleans up all descendants.
+are removed from tracked exec environments. A tracked launch carries its own
+rlimits (Linux resource names with soft/hard pairs, replacing the launch
+limits; empty inherits them, the OCI exec default) and may mark its
+environment as complete (`replace_env`) instead of an overlay onto the
+launch environment — callers that already hold a full environment (OCI exec
+specs) use this; HOME keeps its Docker-equivalent defaulting either way.
+Only a matching live registered child can be signalled or resized;
+exited/reused PIDs fail. Main exit still closes admissions and cleans up
+all descendants. An output pump that fails before EOF is reported as a
+`Failure` frame ahead of the exit code, so lost output never reads as a
+clean exit on the host.
 
 File streams use bounded data frames and explicit EOF, preserve binary bytes and
 run as guest root. Read/write reject special files; write may leave partial

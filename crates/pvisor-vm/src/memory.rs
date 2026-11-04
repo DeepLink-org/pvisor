@@ -95,12 +95,13 @@ impl RamAccess for RamBlock {
 pub(crate) fn map_snapshot_ram(
     ram: &[crate::api::RamMappingSnapshot],
     file: std::sync::Arc<std::fs::File>,
+    extents: &[crate::api::RamRestoreExtent],
     ranges: &[(vm_memory::GuestAddress, usize)],
 ) -> Result<vm_memory::GuestMemoryMmap, String> {
     use vm_memory::{
         mmap::MmapRegionBuilder, Address, FileOffset, GuestMemoryMmap, GuestRegionMmap,
     };
-    validate_snapshot_ram(ram, &file)?;
+    validate_snapshot_ram(ram, &file, extents)?;
     if ranges.len() != ram.len()
         || ranges
             .iter()
@@ -120,12 +121,45 @@ pub(crate) fn map_snapshot_ram(
             return Err("RAM snapshot mappings must be host-page aligned".into());
         }
         let size = usize::try_from(mapping.len).map_err(|e| e.to_string())?;
-        let region = MmapRegionBuilder::new(size)
-            .with_file_offset(FileOffset::from_arc(file.clone(), mapping.file_offset))
-            .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
-            .with_mmap_flags(libc::MAP_PRIVATE)
-            .build()
-            .map_err(|e| e.to_string())?;
+        let region = if extents.is_empty() {
+            MmapRegionBuilder::new(size)
+                .with_file_offset(FileOffset::from_arc(file.clone(), mapping.file_offset))
+                .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
+                .with_mmap_flags(libc::MAP_PRIVATE)
+                .build()
+                .map_err(|e| e.to_string())?
+        } else {
+            // Reserve the complete original region once. Zero ranges remain
+            // demand-zero anonymous memory; nonzero runs replace only our own
+            // unpublished reservation. This preserves KVM memory-slot geometry.
+            let region = MmapRegionBuilder::new(size)
+                .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
+                .with_mmap_flags(libc::MAP_PRIVATE | libc::MAP_ANONYMOUS)
+                .build()
+                .map_err(|e| e.to_string())?;
+            for extent in extents {
+                let Some(backing) = extent.backing_offset else { continue };
+                let start = extent.offset.max(mapping.file_offset);
+                let end = (extent.offset + extent.length).min(mapping.file_offset + mapping.len);
+                if start >= end { continue; }
+                use std::os::fd::AsRawFd;
+                // SAFETY: validated aligned intersections lie wholly inside
+                // this exclusively owned reservation. No pointer is exposed
+                // until all replacements succeed; drop unmaps on any error.
+                let mapped = unsafe {
+                    libc::mmap(
+                        region.as_ptr().add((start - mapping.file_offset) as usize).cast(),
+                        (end - start) as usize,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_FIXED,
+                        file.as_raw_fd(),
+                        (backing + start - extent.offset) as libc::off_t,
+                    )
+                };
+                if mapped == libc::MAP_FAILED { return Err(std::io::Error::last_os_error().to_string()); }
+            }
+            region
+        };
         regions.push(std::sync::Arc::new(
             GuestRegionMmap::new(region, vm_memory::GuestAddress(mapping.base))
                 .ok_or("invalid RAM snapshot mapping")?,
@@ -138,6 +172,7 @@ pub(crate) fn map_snapshot_ram(
 pub(crate) fn validate_snapshot_ram(
     ram: &[crate::api::RamMappingSnapshot],
     file: &std::fs::File,
+    extents: &[crate::api::RamRestoreExtent],
 ) -> Result<(), String> {
     if ram.is_empty() {
         return Err("empty RAM snapshot inventory".into());
@@ -155,6 +190,27 @@ pub(crate) fn validate_snapshot_ram(
             .base
             .checked_add(mapping.len)
             .ok_or("RAM address overflow")?;
+    }
+    if !extents.is_empty() {
+        // Bound VMA work well below common process map limits. The host may
+        // select the legacy view before constructing an oversized plan.
+        if extents.len() > 8192 { return Err("too many RAM restore extents".into()); }
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0 { return Err("cannot determine host page size".into()); }
+        let mut logical = 0u64;
+        let mut backing = 0u64;
+        for extent in extents {
+            if extent.offset != logical || extent.length == 0
+                || extent.offset % page as u64 != 0 || extent.length % page as u64 != 0
+            { return Err("invalid RAM restore extent geometry".into()); }
+            logical = logical.checked_add(extent.length).ok_or("RAM extent overflow")?;
+            if let Some(offset) = extent.backing_offset {
+                if offset != backing || offset % page as u64 != 0 { return Err("invalid compact RAM offset".into()); }
+                backing = backing.checked_add(extent.length).ok_or("RAM backing overflow")?;
+            }
+        }
+        if logical != end || backing > i64::MAX as u64 { return Err("RAM restore extent size mismatch".into()); }
+        end = backing;
     }
     if file.metadata().map_err(|e| e.to_string())?.len() != end {
         return Err("RAM snapshot file size mismatch".into());

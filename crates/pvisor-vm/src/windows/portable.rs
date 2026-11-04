@@ -193,6 +193,9 @@ impl FrozenMemory for FrozenMachine<'_> {
 }
 
 impl SnapshotState for MachineSnapshot {
+    fn prepare_protected_workspace_seed(&mut self, tag: &str) -> io::Result<usize> {
+        Err(unsupported("prepare_protected_workspace_seed"))
+    }
     fn cpu_count(&self) -> io::Result<usize> {
         Err(unsupported("cpu_count"))
     }

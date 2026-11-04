@@ -182,11 +182,11 @@ pub struct PortBridge {
     pub tcp_port: u16,
 }
 
-/// One host directory shared into the guest at `path`. Read-only shares
-/// are physically immutable on the host side (DAX-capable); the guest
-/// mounts them `ro,dax=never` — ordinary reads through the single host
-/// page-cache copy, no window-size coupling to dataset size. Read-write
-/// shares are plain writable passthrough.
+/// One host directory shared into the guest at `path`. Read-only shares are
+/// host-enforced read-only passthrough: the host may keep updating the
+/// directory (projected ConfigMap/Secret rotation) and guests observe those
+/// updates; only the payloads share (`payloads_dir`) is physically immutable
+/// and DAX-mapped. Read-write shares are plain writable passthrough.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuestShare {

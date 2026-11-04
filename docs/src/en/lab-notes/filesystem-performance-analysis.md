@@ -6,6 +6,13 @@
 
 ## Current conclusions and measurement coverage {#filesystem-status}
 
+The documentation-workload [revision and opt-in cache retest](#docs-workload-retest)
+detects no default-configuration gain in Python Ready or first/repeated mmap scans.
+The opt-in combination reduces full-library scan time but increases short Python
+Ready latency. It does not support enabling the combination by default or replacing
+cross-runtime rankings. The summaries below preserve their historical baselines;
+“latest” refers to each summary's original measurement scope.
+
 **In the latest independent N30 paired comparison, the current default configuration versus its own cohort baseline: start-to-clean-exit -1.73% (95% CI [-5.70, -0.22]), writing 256 files -14.19% ([-17.58, -9.82]). The historical filesystem regression is not yet fully repaired; write coalescing for new VMs and DAX are both off by default. Percentages below come from their own frozen baselines and cannot be summed across batches.**
 
 Batch coverage and conclusions follow.
@@ -73,6 +80,159 @@ Ordinary rootfs/workspace attachments allocate no DAX window by default; immutab
 The selected frozen source/defaults completed the cross-runtime seven-tool cohort on 2026-10-12: thirty trials for each of eight backends, totaling 240 valid tasks, with DAX disabled and new VM writeback disabled by default; see the local historical N30 statistics. These user data come from independent cohort `fo5a4e7d2b-f`, without pooling history or deriving cross-cohort causal speedups. Earlier accepted and rejected attempts remain in the local acceptance CSV.
 
 macOS [responsiveness during copying and journal locks](#host-concurrency) and Linux HOST [immutable-lower caching](#immutable-lower-cache) have separate valid experiments. [Extended kernel caching](#host-cache-evidence) has passing correctness and request-count evidence, with no accepted formal timing. Cold disks, large repositories and concurrent throughput lack matching new measurements. The local engineering evidence CSV retains each table row's cohort, metric, source and full precision.
+
+## Documentation workloads: revision and opt-in cache retest {#docs-workload-retest}
+
+**The opt-in cache combination improves complete Python library scans but slows
+short standard-library loading; the default configuration shows no detected
+change in these primary metrics.** This is an engineering revision comparison,
+not a new Docker ranking or a sum of earlier small synthetic workload gains.
+
+### Prepared Python and mmap
+
+2026-11-03, Linux x86_64/KVM, Ryzen 7 9700X. The arms are PR #100's base
+`1a4a8dfb`, PR `93f32740` defaults, and that PR with an explicit cache combination.
+Both revisions use the same Rust toolchain, GNU release profile and final
+source-built firmware. These differ from the historical user cohort's static
+musl binaries: only this cohort's revisions are compared, without deriving
+speedups against historical values. The original pinned Python 3.12 OCI manifest
+and prepared V2 pool are copied into private inventories without downloading,
+modifying historical stores, or copying old instances/projections.
+
+The standard-library checks and two-pass mmap/hash scripts match the
+[user workload](../benchmarks/lazy-image-startup.md#local-access).
+Every scan authenticates 1262 files, 25,557,453 bytes and the OCI-derived aggregate
+SHA-256. Each pass includes traversal, mmap and hashing. Host page caches remain;
+the repeated pass reuses same-VM pages, not cold disk or decompression throughput.
+Fresh VMs use 2 vCPU/512 MiB, product groups 4 CPU/4 GiB/swap0, client/helper
+affinity 0–3 and guest application CPUs 0,1. This does not claim equivalent
+whole-product resources with Docker.
+
+Each workload has three warmups and 30 randomized triplets: 180 formal instances
+and 18 warmups, all exiting normally with private-file, empty-instance-list and
+resource checks passing. No valid slow observation is excluded. Sorted gaps above
+`max(5 ms, 10% of the median)` form groups only with at least three points per
+group; none of the metrics below separates. Ready is host-observed; mmap phases
+use the guest's monotonic clock and cannot be added to Ready. Reductions use the
+median paired time ratio with 5,000-draw fixed-seed bootstrap 95% intervals, not
+differences between marginal medians. Intervals are not multiplicity-adjusted.
+
+Default comparison, median ms, N30 per arm; negative reductions mean slower.
+
+| Metric | Base | PR defaults | Paired reduction [95% CI] % |
+| --- | ---: | ---: | --- |
+| Python Ready | 328.48 | 328.77 | -0.06 [-0.50, 0.07] |
+| mmap task Ready | 1292.75 | 1292.81 | 0.01 [-0.08, 0.73] |
+| mmap first pass | 586.14 | 589.43 | -0.18 [-0.74, 0.46] |
+| mmap repeated pass | 443.22 | 443.65 | -0.71 [-1.07, 0.09] |
+
+Opt-in comparison, same units and sample count.
+
+| Metric | PR defaults | PR opt-in combination | Paired reduction [95% CI] % |
+| --- | ---: | ---: | --- |
+| Python Ready | 328.77 | 348.73 | -6.34 [-6.73, -5.86] |
+| mmap task Ready | 1292.81 | 1172.70 | 9.25 [7.90, 9.39] |
+| mmap first pass | 589.43 | 527.74 | 10.09 [9.52, 10.63] |
+| mmap repeated pass | 443.65 | 357.97 | 19.24 [18.79, 19.52] |
+
+The combination enables directory names, prepared copy-up, logical directories,
+resolved lazy-node reuse, logical DATA and direct lazy copy-up. Streaming reads,
+scoped invalidation and object READ barriers remain disabled, as do both
+writeback modes and DAX. Exact switches and reproduction commands are in the
+[engineering manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/filesystem/README.md).
+Multiple mechanisms change together, so their individual contributions are not
+established; read-only tasks do not establish copy-up benefits. Initialization
+cost may offset saved reads for short tasks, but this cohort has no decomposition
+counters establishing that attribution.
+
+Same-invocation normal-exit clocks are retained separately: default Python exit
+time increases 0.16% against the base, 95% CI [0.003%, 2.76%], with marginal
+medians 369.34/369.21 ms. “No detected change” in the primary metrics does not mean
+equivalence of every clock. Opt-in Python exit is also slower, while mmap exit is
+faster. Complete exit statistics and all points remain in the raw analysis;
+exit time does not replace Ready.
+
+### Ordinary directory rootfs: mechanisms and complete tasks
+
+A separate cohort reuses the filesystem user experiment's static payload,
+tool rootfs, fixture and M01–M12/S01–S03 cases. GNU CLIs and the matching musl
+guest companion execute inside private roots with the same final firmware;
+results are not pooled with historical musl user samples. The entry remains
+ordinary `spawn`. Live directories stay Mutable, without lazy or authenticated
+Immutable promotion. PR experimental switches remain absent; only guest
+writeback is explicitly requested off/on for VM and VM+WB. Host writeback and
+DAX remain disabled.
+
+All 180 formal environments and 540 rounds pass: 15 workloads × 2 configurations
+× 2 revisions × 3 fresh environments. Revision order is randomized within each
+case/pair, with three resident rounds per environment. Independent full-byte host
+oracles and staged-output isolation checks remain intact. Parent limits are two
+CPUs/2 GiB/swap0 with affinity 0,1, guest 2 vCPU/512 MiB, and a 90-second timeout
+per environment. There are no warmups, interference exclusions or replacement trials.
+
+Complete-task completion in seconds, median [minimum–maximum]. Work and final
+sync are summed over the three rounds within each environment before aggregating
+N3 environments; resident rounds are not independent samples.
+
+| Complete task | Configuration | Base | PR defaults |
+| --- | --- | ---: | ---: |
+| Repository inspection/search | VM | 2.359 [2.259–2.373] | 2.245 [2.130–2.271] |
+| Repository inspection/search | VM+WB | 2.364 [2.163–2.375] | 2.353 [2.137–2.380] |
+| Edit, incremental build and test | VM | 0.583 [0.572–0.587] | 0.589 [0.513–0.591] |
+| Edit, incremental build and test | VM+WB | 0.360 [0.360–0.370] | 0.365 [0.360–0.399] |
+| Offline extraction/publication | VM | 11.380 [11.065–12.160] | 11.657 [11.389–11.737] |
+| Offline extraction/publication | VM+WB | 6.371 [5.569–6.420] | 6.114 [5.811–6.139] |
+
+There is no consistent default task-speedup trend. The directory path cannot
+directly use logical lazy caches, but added code can still affect default costs:
+disabled switches do not replace measurement. Exploratory N3 establishes neither
+stable causal percentages, tails nor equivalence, and cannot establish that every
+default path is free from regression.
+
+<details markdown="1">
+<summary>All 12 mechanism anchors and Ready, including unfavorable levels</summary>
+
+Median ms [minimum–maximum], N3 per cell, three-round cumulative completion per
+environment. Candidate medians rise in positive lookup and some write anchors;
+those require separately increased samples and investigation, not post-hoc
+slow-value removal or selective presentation.
+
+| Mechanism | Base VM | PR default VM | Base VM+WB | PR default VM+WB |
+| --- | ---: | ---: | ---: | ---: |
+| Positive lookup | 122.565 [104.972–142.273] | 149.443 [91.884–155.171] | 150.992 [82.364–152.582] | 156.048 [121.355–156.092] |
+| Negative lookup | 392.914 [352.612–413.202] | 417.280 [375.654–417.623] | 411.575 [411.277–415.435] | 400.844 [396.886–417.952] |
+| Directory enumeration | 14.042 [13.799–14.775] | 14.469 [13.655–16.273] | 16.251 [14.178–16.697] | 15.865 [13.799–16.614] |
+| Sequential reopen reads | 39.443 [39.247–41.801] | 40.096 [39.870–40.606] | 41.248 [40.477–42.523] | 39.467 [39.388–39.883] |
+| Permuted reads | 142.466 [123.864–159.291] | 132.667 [126.557–158.084] | 159.665 [126.394–161.311] | 156.858 [154.242–157.361] |
+| Sequential 1 KiB writes | 659.195 [641.740–661.931] | 668.259 [641.515–700.382] | 28.865 [28.643–33.473] | 33.126 [33.003–35.566] |
+| Sequential 1 MiB writes | 24.827 [24.510–25.143] | 25.044 [24.443–25.670] | 34.085 [28.215–40.450] | 32.464 [30.875–32.691] |
+| Permuted 4 KiB overwrites | 153.098 [140.052–153.187] | 167.388 [159.940–174.018] | 32.757 [27.306–39.050] | 26.664 [24.737–31.444] |
+| Small-file write/close | 827.821 [816.439–879.626] | 826.981 [807.378–847.554] | 690.780 [659.247–696.586] | 664.294 [661.766–682.849] |
+| Fsync each 4 KiB write | 321.923 [317.902–371.127] | 314.890 [309.805–361.370] | 367.047 [363.027–385.440] | 400.842 [350.860–400.888] |
+| Independent-file concurrent I/O | 178.044 [176.289–205.761] | 200.212 [176.674–201.619] | 48.313 [43.194–49.071] | 47.059 [44.734–48.692] |
+| Create/write/sync/close/rename/unlink | 685.183 [664.336–687.971] | 670.188 [667.507–672.416] | 620.266 [589.081–671.105] | 660.552 [650.056–689.858] |
+
+Positive-metadata Ready, N3 without pooling cases: base VM 96.387
+[96.181–99.267] ms, PR 92.108 [90.745–97.252] ms; base VM+WB 98.317
+[97.790–99.596] ms, PR 100.040 [93.711–102.885] ms. This is not a rerun of
+the startup user page's N60 shell protocol.
+
+</details>
+
+`benchmark/.data/docs-retest-rootfs-01` retains 60 complete N3 cells, commands,
+payload/CLI/firmware receipts, isolation/output witnesses, round records and
+derived levels. The four resource-saturation anchors, other runtimes, networking
+and concurrent Agents were not retested; historical capacity failures remain.
+
+### Scope and evidence
+
+Local scans cannot update remote response volume, compressed inventories, instance
+density, WAN or cold-start claims. Existing nine-mode user tables and historical
+failures remain intact; only a link to this engineering retest is added.
+`benchmark/.data/docs-retest-python-02` retains frozen artifacts/scripts, pinned
+inputs, per-instance logs/resources, triplets and `analysis.json`. Interrupted
+and failed preparation/preflight attempts remain separate, without resuming or
+pooling. All primary metrics are unseparated; no observations are excluded.
 
 ## Linux: scoped automatic read-only FLUSH requests in ordinary CLI execution {#cli-auto-flush}
 

@@ -210,6 +210,9 @@ pub struct Vmm {
     pub(crate) vcpu_observation: Arc<crate::vcpu_observation::Collector>,
     // Guest VM core resources.
     guest_memory: GuestMemoryMmap,
+    // Mixed anonymous/file reservations cannot be classified from vm-memory's
+    // region-level file_offset alone. Retain explicit restore ownership.
+    compact_restore_ram: bool,
     arch_memory_info: ArchMemoryInfo,
 
     kernel_cmdline: KernelCmdline,
@@ -316,6 +319,9 @@ impl Vmm {
         chunk: usize,
     ) -> std::result::Result<Vec<ram::RamBlock>, String> {
         self.require_ram_quiesced()?;
+        if self.compact_restore_ram {
+            return Err("cold RAM preparation cannot replace compact snapshot mappings".into());
+        }
         ram::blocks(&self.guest_memory, chunk)
     }
 
@@ -472,6 +478,9 @@ impl Vmm {
 
     /// Pause and flush/reclaim file-backed RAM. Host device mappings stay valid.
     pub fn offload_ram(&mut self) -> Result<ram::RamReclaim> {
+        if self.compact_restore_ram {
+            return Err(Error::VcpuControl("offload cannot discard private snapshot RAM; save a new snapshot instead".into()));
+        }
         ram::check_reclaim(&self.guest_memory).map_err(Error::VcpuControl)?;
         if self.device_memory_gate.has_prepare() {
             return Err(Error::VcpuControl(
@@ -740,6 +749,10 @@ impl Vmm {
     }
 
     /// Returns a reference to the inner `GuestMemoryMmap` object if present, or `None` otherwise.
+    pub(crate) fn has_compact_restore_ram(&self) -> bool {
+        self.compact_restore_ram
+    }
+
     pub fn guest_memory(&self) -> &GuestMemoryMmap {
         &self.guest_memory
     }

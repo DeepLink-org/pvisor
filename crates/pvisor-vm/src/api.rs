@@ -597,6 +597,15 @@ pub trait SnapshotState {
         copies: &[(PathBuf, PathBuf)],
         shared_lowers: &[PathBuf],
     ) -> io::Result<usize>;
+    /// Normalize a single-lower seed's redundant target/baseline aliases for a
+    /// protected restore. The effective audit baseline is unchanged. The caller
+    /// must verify an empty captured upper, retain an immutable lower owner,
+    /// enforce runner read-only access, and prohibit apply to that lower for the
+    /// entire restored stage lifetime. This grants no writable target binding.
+    /// Rejects distinct targets, overlapping private roots and writable lower
+    /// handles. Returns matching device count; failure leaves state unchanged.
+    /// Unsupported platforms return Unsupported. No filesystem I/O is performed.
+    fn prepare_protected_workspace_seed(&mut self, tag: &str) -> io::Result<usize>;
     /// Replace access policy on the selected captured filesystem atomically.
     /// Missing tags or malformed saved state return errors; caller owns policy authorization.
     fn rebind_filesystem_policy(
@@ -1006,12 +1015,32 @@ pub trait RamDeltaState {
     fn validate(&self) -> Result<(), String>;
 }
 
+/// One caller-authenticated extent of the logical captured RAM file.
+/// A nonempty extent list must cover that file exactly, in order, without gaps.
+/// Extents and backing offsets must be host-page aligned. The caller authenticates
+/// zero extents and keeps nonzero backing bytes immutable for the mapping lifetime.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RamRestoreExtent {
+    /// Byte offset in the original logical captured RAM file (not guest address).
+    pub offset: u64,
+    /// Nonzero length in bytes.
+    pub length: u64,
+    /// Offset in the compact read-only backing, or None for authenticated zeros.
+    /// Nonzero extents consume the backing contiguously, without gaps or aliases.
+    pub backing_offset: Option<u64>,
+}
+
 /// Caller-authorized machine state and retained sealed RAM used for private restore.
 pub struct MachineRestore {
     /// CPU/device/kernel state; still validated against host and RAM topology at restore.
     pub state: MachineSnapshot,
     /// Shared owner of sealed RAM bytes; caller keeps contents immutable for all restored VMs.
     pub ram_file: Arc<File>,
+    /// Empty preserves the original full-file mapping. Otherwise use a compact
+    /// nonzero backing plus private anonymous zero ranges. Validation precedes
+    /// mapping; failure publishes no guest memory. Guest RAM topology is unchanged.
+    pub ram_extents: Vec<RamRestoreExtent>,
 }
 
 /// Immutable block storage supplied by the host's pool/service adapter.

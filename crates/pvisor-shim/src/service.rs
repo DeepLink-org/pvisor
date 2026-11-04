@@ -52,15 +52,19 @@ use log::{info, warn};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-#[cfg(feature = "vm")]
-use crate::agent::{Channel, Control, FrameReader, FrameWriter};
 use crate::child::{self, InternalChild, StdioFds};
 use crate::fifo::ContainerIo;
 #[cfg(feature = "vm")]
 use crate::plan::ExecPlan;
 use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan, build_sandbox_plan};
+use crate::sockets::control_socket_path;
 use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
+
+#[cfg(feature = "vm")]
+use pvisor_guest::control::{
+    ExecLaunch, Reply as GuestReply, Request as GuestRequest, StdinFrame, read_frame, write_frame,
+};
 
 fn notify_exit(sender: &watch::Sender<Option<ExitInfo>>, exit: ExitInfo) {
     sender.send_replace(Some(exit));
@@ -74,11 +78,23 @@ fn already_started_exec_pid(entry: &ExecEntry, vm: bool) -> Option<u32> {
 
 /// One live exec process: bookkeeping lives on the task entry; here we keep
 /// the start pipe and the shim-owned IO.
+/// Identity of a live VM exec inside its guest: the PID and registration
+/// generation the guest control protocol uses to signal and resize the
+/// process without ever touching host PIDs. The exec's IO connection is
+/// owned by its relay threads; control requests open their own short-lived
+/// connections.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(feature = "vm"), allow(dead_code))]
+struct VmExecIdentity {
+    pid: u32,
+    generation: u64,
+}
+
 struct LiveExec {
     exit_tx: watch::Sender<Option<ExitInfo>>,
     internal: Option<InternalChild>,
-    /// VM execs own a duplicate of the agent socket until exit; shutdown is the kill.
-    vm_sock: Option<std::os::unix::net::UnixStream>,
+    /// VM exec identity for signalling through the guest control protocol.
+    vm: Option<VmExecIdentity>,
     io: ContainerIo,
 }
 
@@ -258,7 +274,13 @@ impl PvisorTask {
         if let Some(mut internal) = live_exec.internal.take() {
             internal.close_start();
         }
-        drop(live_exec.vm_sock.take());
+        #[cfg(feature = "vm")]
+        if let Some(identity) = live_exec.vm.take() {
+            // Deleting a still-movable record can only happen after the exit
+            // was recorded; the belt-and-braces SIGKILL covers an exec whose
+            // relay died before publishing the exit.
+            vm_exec_signal(&control_socket_path(&id), identity, 9);
+        }
         let _ = std::fs::remove_file(bundle.join(format!("pvisor-exec-{exec_id}.json")));
 
         let mut response = DeleteResponse::new();
@@ -279,8 +301,9 @@ impl PvisorTask {
 
 #[cfg(feature = "vm")]
 impl PvisorTask {
-    /// Exec inside a libkrun VM task: connect to the guest agent over the
-    /// task's agent socket, run the process there, and relay its IO.
+    /// Exec inside a libkrun VM task through the guest supervisor's
+    /// control protocol (the same protocol the CLI and daemon use), then
+    /// relay its IO between the containerd FIFOs and the vsock connection.
     async fn exec_in_vm(
         &self,
         req: ExecProcessRequest,
@@ -293,12 +316,6 @@ impl PvisorTask {
                 "exec in VMs requires building the shim with --features vm",
             ));
         }
-        if req.terminal {
-            return Err(rpc_error(
-                Code::UNIMPLEMENTED,
-                "tty exec in VMs is not supported yet",
-            ));
-        }
         let process: oci_spec::runtime::Process = serde_json::from_slice(&req.spec().value)
             .map_err(|error| {
                 rpc_error(
@@ -308,6 +325,16 @@ impl PvisorTask {
             })?;
         crate::plan::validate_vm_process(&process, true)
             .map_err(|error| rpc_error(Code::UNIMPLEMENTED, error.to_string()))?;
+        // The PTY for a terminal exec lives inside the guest; the host side
+        // stays plain FIFO plumbing and forwards ResizePty over the control
+        // protocol, so the IO plan itself is never terminal.
+        let tty = req.terminal.then(|| {
+            process
+                .console_size()
+                .map(|size| [size.height() as u16, size.width() as u16])
+                .filter(|[rows, columns]| *rows != 0 && *columns != 0)
+                .unwrap_or([24, 80])
+        });
         let io = io_plan_from(false, &req.stdin, &req.stdout, &req.stderr);
         let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io, true)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
@@ -318,18 +345,16 @@ impl PvisorTask {
             return Err(rpc_error(Code::INTERNAL, "exec io without child fds"));
         };
 
-        let socket_path = crate::agent::agent_socket_path(&plan.container_id);
-        let (pid, stream) = tokio::task::spawn_blocking({
+        let socket_path = control_socket_path(&plan.container_id);
+        let (identity, stream) = tokio::task::spawn_blocking({
             let plan = plan.clone();
             let socket_path = socket_path.clone();
-            move || vm_exec_connect_and_start(&socket_path, &plan)
+            move || vm_exec_connect_and_start(&socket_path, &plan, tty)
         })
         .await
         .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec join: {error}")))?
         .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
-        let owned_socket = stream
-            .try_clone()
-            .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+        let pid = identity.pid;
 
         // The guest process starts immediately (containerd's Start call for
         // VM execs just returns the pid we already know).
@@ -338,7 +363,7 @@ impl PvisorTask {
             plan.io.stdin.clone(),
             plan.io.stdout.clone(),
             plan.io.stderr.clone(),
-            false,
+            req.terminal,
             Some(pid),
         );
         exec_entry.mark_started(pid);
@@ -358,7 +383,7 @@ impl PvisorTask {
                 LiveExec {
                     exit_tx,
                     internal: None,
-                    vm_sock: Some(owned_socket),
+                    vm: Some(identity),
                     io: owned_io,
                 },
             );
@@ -386,20 +411,63 @@ impl PvisorTask {
                 }
             });
         }
-        spawn_vm_exec_relay(stream, stdin, stdout, stderr, events_tx);
+        spawn_vm_exec_relay(
+            &plan.container_id,
+            identity,
+            stream,
+            stdin,
+            stdout,
+            stderr,
+            events_tx,
+        );
 
+        Ok(Empty::new())
+    }
+
+    /// Deliver a signal to a VM exec over its own control connection. The
+    /// exec exiting between the caller's status check and the signal is the
+    /// idempotent-kill case, not a failure.
+    async fn vm_exec_kill(
+        &self,
+        id: &str,
+        identity: VmExecIdentity,
+        signal: i32,
+    ) -> ttrpc::Result<Empty> {
+        let socket_path = control_socket_path(id);
+        let result = tokio::task::spawn_blocking(move || {
+            vm_exec_control(
+                &socket_path,
+                &GuestRequest::Signal {
+                    pid: identity.pid,
+                    generation: identity.generation,
+                    signal,
+                },
+            )
+        })
+        .await
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec kill join: {error}")))?;
+        if let Err(error) = result {
+            let message = format!("{error:#}");
+            if !(message.contains("exited") || message.contains("expired")) {
+                return Err(rpc_error(Code::INTERNAL, message));
+            }
+        }
         Ok(Empty::new())
     }
 }
 
-/// Connect to the agent socket (retrying while the VM boots), send the exec
-/// request, and return the guest pid plus the live connection.
+/// Connect to the task's guest control socket (retrying while the VM
+/// boots), start the tracked exec, and return the guest process identity
+/// plus the live IO connection.
 #[cfg(feature = "vm")]
 fn vm_exec_connect_and_start(
     socket_path: &std::path::Path,
     plan: &ExecPlan,
-) -> Result<(u32, std::os::unix::net::UnixStream)> {
-    crate::plan::guest_config(&plan.process, false)?;
+    tty: Option<[u16; 2]>,
+) -> Result<(VmExecIdentity, std::os::unix::net::UnixStream), anyhow::Error> {
+    // Fail fast on plan shapes the guest would reject (bad env entries,
+    // unknown rlimit names) before any connection is opened.
+    crate::plan::guest_config(&plan.process, true)?;
     let mut stream = None;
     for _ in 0..300 {
         match std::os::unix::net::UnixStream::connect(socket_path) {
@@ -410,35 +478,98 @@ fn vm_exec_connect_and_start(
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
         }
     }
-    let mut stream = stream.context("agent socket never came up")?;
+    let mut stream = stream.context("guest control socket never came up")?;
 
-    let mut writer = FrameWriter::new(stream.try_clone()?);
-    writer.write_control(&Control::ExecStart {
-        argv: plan.process.argv.clone(),
-        env: plan.process.env.clone(),
-        cwd: plan.process.cwd.to_string_lossy().to_string(),
-        limits: plan
-            .process
-            .rlimits
-            .iter()
-            .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
-            .collect(),
-    })?;
-    let message = FrameReader::new(&mut stream)
-        .read_control()?
-        .context("agent closed before starting the process")?;
+    let mut env = std::collections::BTreeMap::new();
+    for entry in &plan.process.env {
+        let (key, value) = entry.split_once('=').context("invalid env entry")?;
+        env.insert(key.to_string(), value.to_string());
+    }
+    write_frame(
+        &mut stream,
+        &GuestRequest::Start {
+            launch: ExecLaunch {
+                argv: plan.process.argv.clone(),
+                // The OCI exec spec carries the process's complete
+                // environment and rlimit set; replace instead of overlaying
+                // the workload launch values.
+                env,
+                replace_env: true,
+                limits: plan
+                    .process
+                    .rlimits
+                    .iter()
+                    .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
+                    .collect(),
+                // The guest validates cwd as absolute; a relative exec cwd
+                // (not sent by containerd/CRI in practice) inherits the
+                // workload's launch directory instead of failing the exec.
+                cwd: plan
+                    .process
+                    .cwd
+                    .is_absolute()
+                    .then(|| plan.process.cwd.clone()),
+                user: None,
+                tty,
+            },
+        },
+    )?;
+    let message =
+        read_frame::<GuestReply>(&mut stream).context("guest control closed before starting")?;
     match message {
-        Control::Started { pid } => Ok((pid, stream)),
-        Control::Error { message } => anyhow::bail!("guest agent: {message}"),
-        other => anyhow::bail!("unexpected agent reply: {other:?}"),
+        GuestReply::Started { pid, generation } => Ok((VmExecIdentity { pid, generation }, stream)),
+        GuestReply::Error { message } => anyhow::bail!("guest exec: {message}"),
+        GuestReply::Failure { errno, message } => {
+            anyhow::bail!("guest exec failed (errno {errno}): {message}")
+        }
+        other => anyhow::bail!("unexpected guest reply: {other:?}"),
     }
 }
 
-/// Pump the exec IO between the task FIFOs and the agent connection; the
-/// exit status (or 137 for a dropped connection, i.e. a kill) flows back
-/// through `events`.
+/// Signal or resize a VM exec over its own short-lived control connection;
+/// the IO connection stays untouched. Guest PIDs are never host signal
+/// targets, and the registration generation fences reuse.
+#[cfg(feature = "vm")]
+fn vm_exec_control(
+    socket_path: &std::path::Path,
+    request: &GuestRequest,
+) -> Result<(), anyhow::Error> {
+    let mut stream = std::os::unix::net::UnixStream::connect(socket_path)?;
+    write_frame(&mut stream, request)?;
+    match read_frame::<GuestReply>(&mut stream)? {
+        GuestReply::Ready => Ok(()),
+        GuestReply::Failure { errno, message } => {
+            anyhow::bail!("guest control failed (errno {errno}): {message}")
+        }
+        GuestReply::Error { message } => anyhow::bail!("guest control: {message}"),
+        other => anyhow::bail!("unexpected guest reply: {other:?}"),
+    }
+}
+
+/// Belt-and-braces signalling helper for teardown paths: errors are the
+/// caller's to log, never fatal to the teardown itself.
+#[cfg(feature = "vm")]
+fn vm_exec_signal(socket_path: &std::path::Path, identity: VmExecIdentity, signal: i32) {
+    let _ = vm_exec_control(
+        socket_path,
+        &GuestRequest::Signal {
+            pid: identity.pid,
+            generation: identity.generation,
+            signal,
+        },
+    );
+}
+
+/// Pump the exec IO between the task FIFOs and the guest control
+/// connection. Exit codes follow container conventions (128+signal for a
+/// signalled process, 126/127 for spawn failures); a dropped connection is
+/// the VM dying or the exec being torn down and reports 137, and output
+/// that cannot be delivered to a FIFO fails the exec with 255 — lost
+/// output is never reported as success.
 #[cfg(feature = "vm")]
 fn spawn_vm_exec_relay(
+    container_id: &str,
+    identity: VmExecIdentity,
     stream: std::os::unix::net::UnixStream,
     stdin: std::fs::File,
     stdout: std::fs::File,
@@ -447,19 +578,30 @@ fn spawn_vm_exec_relay(
 ) {
     use std::io::{Read, Write};
 
-    let writer = stream.try_clone().expect("clone agent stream");
+    let writer = stream.try_clone().expect("clone control stream");
+    let kill_socket_path = control_socket_path(container_id);
     std::thread::spawn(move || {
         let mut stdin = stdin;
-        let mut writer = FrameWriter::new(writer);
+        let mut writer = writer;
         let mut buffer = [0u8; 8192];
         loop {
             match stdin.read(&mut buffer) {
+                // Explicit EOF keeps the process alive after the connection
+                // later drops (detached execs); the guest only kills on an
+                // abrupt disconnect before EOF.
                 Ok(0) | Err(_) => {
-                    let _ = writer.write_frame(Channel::Stdin, b"");
+                    let _ = write_frame(&mut writer, &StdinFrame::Eof {});
                     break;
                 }
                 Ok(n) => {
-                    if writer.write_frame(Channel::Stdin, &buffer[..n]).is_err() {
+                    if write_frame(
+                        &mut writer,
+                        &StdinFrame::Data {
+                            bytes: buffer[..n].to_vec(),
+                        },
+                    )
+                    .is_err()
+                    {
                         break;
                     }
                 }
@@ -470,33 +612,41 @@ fn spawn_vm_exec_relay(
     std::thread::spawn(move || {
         let mut stdout = stdout;
         let mut stderr = stderr;
-        let mut reader = FrameReader::new(stream);
+        let mut stream = stream;
+        let socket_path = kill_socket_path;
+        // The IO consumer is gone: tear the connection down (the guest
+        // kills an exec whose stdin was not yet explicitly closed) and
+        // signal explicitly so an already-EOF'd detached exec ends too —
+        // a headless process must never outlive its reported exit.
+        let io_consumer_gone = |stream: &std::os::unix::net::UnixStream| {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            vm_exec_signal(&socket_path, identity, 9);
+        };
         let status = loop {
-            match reader.read_frame() {
-                Ok(Some(frame)) => match frame.channel {
-                    Channel::Stdout => {
-                        if stdout.write_all(&frame.payload).is_err() {
-                            break 255;
-                        }
+            match read_frame::<GuestReply>(&mut stream) {
+                Ok(GuestReply::Output { stream: 1, bytes }) => {
+                    if stdout.write_all(&bytes).is_err() {
+                        io_consumer_gone(&stream);
+                        break 255;
                     }
-                    Channel::Stderr => {
-                        if stderr.write_all(&frame.payload).is_err() {
-                            break 255;
-                        }
+                }
+                Ok(GuestReply::Output { stream: 2, bytes }) => {
+                    if stderr.write_all(&bytes).is_err() {
+                        io_consumer_gone(&stream);
+                        break 255;
                     }
-                    Channel::Stdin => {}
-                    Channel::Control => {
-                        if let Control::Exited { status } = serde_json::from_slice(&frame.payload)
-                            .unwrap_or(Control::Error {
-                                message: "bad exit frame".to_string(),
-                            })
-                        {
-                            break status;
-                        }
-                    }
-                },
-                // Socket dropped without an exit frame: killed or crashed.
-                Ok(None) => break 137,
+                }
+                Ok(GuestReply::Output { .. }) => {}
+                // The guest reports a failed output pump before the exit
+                // code; output loss fails the exec instead of passing
+                // silently.
+                Ok(GuestReply::Failure { .. }) => break 255,
+                Ok(GuestReply::Exit { code }) => {
+                    break code.clamp(0, 255) as u32;
+                }
+                Ok(_) => continue,
+                // Connection dropped without an exit frame: the VM died or
+                // the exec was killed; report the SIGKILL convention.
                 Err(_) => break 137,
             }
         };
@@ -526,9 +676,6 @@ async fn vm_exec_exited(
             return;
         }
         live.execs.get_mut(exec_id).map(|exec| {
-            if let Some(socket) = exec.vm_sock.take() {
-                let _ = socket.shutdown(std::net::Shutdown::Both);
-            }
             notify_exit(
                 &exec.exit_tx,
                 ExitInfo {
@@ -1244,7 +1391,7 @@ impl Task for PvisorTask {
                 LiveExec {
                     exit_tx,
                     internal: Some(internal),
-                    vm_sock: None,
+                    vm: None,
                     io: owned_io,
                 },
             );
@@ -1266,7 +1413,11 @@ impl Task for PvisorTask {
                 format!("invalid signal {}", req.signal),
             ));
         }
-        let socket = {
+        // Guest PIDs are never host signal targets; the control protocol
+        // delivers the signal to the registered process group, fenced by
+        // the generation against PID reuse. The lock is scoped to the
+        // lookup so no await holds it.
+        let vm_target = {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if req.exec_id.is_empty() {
@@ -1302,17 +1453,28 @@ impl Task for PvisorTask {
                     .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
                 return Ok(Empty::new());
             }
-            exec.vm_sock
-                .as_ref()
-                .ok_or_else(|| rpc_error(Code::FAILED_PRECONDITION, "VM exec has no agent socket"))?
-                .try_clone()
-                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?
+            exec.vm
         };
-        // Guest PIDs are never host signal targets; EOF terminates the guest exec.
-        socket
-            .shutdown(std::net::Shutdown::Both)
-            .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
-        Ok(Empty::new())
+        if !cfg!(feature = "vm") {
+            // VM tasks are rejected at Create without the feature, so a VM
+            // exec here cannot be signalled; report instead of pretending.
+            return Err(rpc_error(
+                Code::UNIMPLEMENTED,
+                "signalling a VM exec requires building the shim with --features vm",
+            ));
+        }
+        #[cfg(feature = "vm")]
+        {
+            let identity = vm_target.ok_or_else(|| {
+                rpc_error(Code::FAILED_PRECONDITION, "VM exec has no guest identity")
+            })?;
+            self.vm_exec_kill(&req.id, identity, signal).await
+        }
+        #[cfg(not(feature = "vm"))]
+        {
+            let _ = vm_target;
+            unreachable!("the feature check returned above")
+        }
     }
 
     async fn delete(
@@ -1351,9 +1513,9 @@ impl Task for PvisorTask {
         }
         let _ = std::fs::remove_file(live.entry.bundle.join("pvisor-plan.json"));
         if live.vm {
-            let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
+            let _ = std::fs::remove_file(control_socket_path(&req.id));
             for port in live.entry.bridge_ports {
-                let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&req.id, port));
+                let _ = std::fs::remove_file(crate::sockets::bridge_socket_path(&req.id, port));
             }
         }
         #[cfg(feature = "vm")]
@@ -1430,6 +1592,62 @@ impl Task for PvisorTask {
     }
 
     async fn resize_pty(&self, _ctx: &TtrpcContext, req: ResizePtyRequest) -> ttrpc::Result<Empty> {
+        if req.height == 0 || req.width == 0 {
+            return Err(rpc_error(
+                Code::INVALID_ARGUMENT,
+                format!("invalid terminal size {}x{}", req.height, req.width),
+            ));
+        }
+        // A VM exec owns its PTY inside the guest; forward the resize over
+        // the control protocol instead of touching host IO plumbing.
+        #[cfg(feature = "vm")]
+        let vm_resize = {
+            let tasks = self.inner.tasks.lock().expect("tasks mutex");
+            let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
+            if !req.exec_id.is_empty() && live.vm {
+                let exec = live
+                    .execs
+                    .get(&req.exec_id)
+                    .ok_or_else(|| not_found(&req.exec_id))?;
+                exec.vm
+            } else {
+                None
+            }
+        };
+        #[cfg(feature = "vm")]
+        if let Some(identity) = vm_resize {
+            let (rows, columns) = (
+                u16::try_from(req.height).map_err(|_| {
+                    rpc_error(
+                        Code::INVALID_ARGUMENT,
+                        format!("invalid rows {}", req.height),
+                    )
+                })?,
+                u16::try_from(req.width).map_err(|_| {
+                    rpc_error(
+                        Code::INVALID_ARGUMENT,
+                        format!("invalid columns {}", req.width),
+                    )
+                })?,
+            );
+            let socket_path = control_socket_path(&req.id);
+            let result = tokio::task::spawn_blocking(move || {
+                vm_exec_control(
+                    &socket_path,
+                    &GuestRequest::Resize {
+                        pid: identity.pid,
+                        generation: identity.generation,
+                        rows,
+                        columns,
+                    },
+                )
+            })
+            .await
+            .map_err(|error| rpc_error(Code::INTERNAL, format!("vm resize join: {error}")))?;
+            return result
+                .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))
+                .map(|_: ()| Empty::new());
+        }
         let tasks = self.inner.tasks.lock().expect("tasks mutex");
         let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
         let io = if req.exec_id.is_empty() {

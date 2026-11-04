@@ -12,11 +12,14 @@ use std::{
 pub(super) struct SharedRam {
     pub file: Arc<File>,
     pub path: PathBuf,
+    pub extents: Vec<pvisor_vm::api::RamRestoreExtent>,
     pub _base: Option<Arc<crate::environment_snapshot::PinnedRamBlocks>>,
     // Drop the file before unmounting. PreparedRestore and its native mappings
     // must keep this entire owner alive until the runner is reaped.
     _mount: Option<SnapshotRamMount>,
     _node: Option<crate::node::Pin>,
+    #[cfg(target_os = "linux")]
+    preparation_cache: Option<Arc<PreparationCache>>,
 }
 
 pub(super) fn acquire(
@@ -39,10 +42,13 @@ pub(super) fn acquire(
         let file = std::fs::OpenOptions::new().read(true).open(pin.path())?;
         return Ok(Arc::new(SharedRam {
             path: pin.path().into(),
+            extents: Vec::new(),
             file: Arc::new(file),
             _base: published.ram_reader()?.compressed_base(),
             _mount: None,
             _node: Some(pin),
+            #[cfg(target_os = "linux")]
+            preparation_cache: None,
         }));
     }
     static MOUNTS: OnceLock<Mounts<(PathBuf, String), SharedRam>> = OnceLock::new();
@@ -54,18 +60,136 @@ pub(super) fn acquire(
         .get((store.clone(), snapshot_id.to_owned()), || {
             // Independent of any one Attempt's directory/lifetime, and never
             // nested in the durable store (which may be an OverlayFS lower).
-            let reader = published.ram_reader()?;
+            let mut reader = published.ram_reader()?;
+            let extents = reader.compact_zero_restore()?;
             let base = reader.compressed_base();
+            #[cfg(target_os = "linux")]
+            let preparation_cache = match reader.raw_preparation_cache() {
+                Ok(file) => file.map(|file| Arc::new(PreparationCache::new(file))),
+                Err(error) => {
+                    tracing::warn!(%error, "skip raw RAM preparation cache advice");
+                    None
+                }
+            };
             let (mut mount, file) = SnapshotRamMount::runtime(reader, &[&store])?;
             mount.watch_native_owner_exit(&std::env::current_exe()?)?;
             Ok(SharedRam {
                 file: Arc::new(file),
                 path: mount.ram_path(),
+                extents,
                 _base: base,
                 _mount: Some(mount),
                 _node: None,
+                #[cfg(target_os = "linux")]
+                preparation_cache,
             })
         })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct ReadyState {
+    last: Option<std::time::Instant>,
+    worker: bool,
+    done: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl ReadyState {
+    fn notify(&mut self, now: std::time::Instant) -> bool {
+        if self.done {
+            return false;
+        }
+        self.last = Some(now);
+        if self.worker {
+            return false;
+        }
+        self.worker = true;
+        true
+    }
+    fn claim(&mut self, now: std::time::Instant) -> bool {
+        if self.done
+            || self
+                .last
+                .is_none_or(|last| now.duration_since(last) < std::time::Duration::from_secs(30))
+        {
+            return false;
+        }
+        self.done = true;
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PreparationCache {
+    file: File,
+    state: Mutex<ReadyState>,
+}
+
+#[cfg(target_os = "linux")]
+impl PreparationCache {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            state: Mutex::new(ReadyState::default()),
+        }
+    }
+
+    fn ready(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.notify(std::time::Instant::now()) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            state.done = true;
+            return;
+        };
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let Some(cache) = weak.upgrade() else {
+                    return;
+                };
+                let claimed = {
+                    let mut state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.claim(std::time::Instant::now())
+                };
+                if !claimed {
+                    continue;
+                }
+                // Timer retains only a weak owner; blocking advice pins only
+                // this exact source FD, not the VM or its FUSE mount.
+                let _ = tokio::task::spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let error = unsafe {
+                        libc::posix_fadvise(cache.file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
+                    };
+                    if error != 0 {
+                        tracing::warn!(error, "raw RAM ready cache advice failed");
+                    } else {
+                        tracing::debug!(
+                            "raw RAM ready cache advice requested (not measured eviction)"
+                        );
+                    }
+                })
+                .await;
+                return;
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SharedRam {
+    pub(super) fn has_preparation_cache(&self) -> bool {
+        self.preparation_cache.is_some()
+    }
+    pub(super) fn restored_ready(&self) {
+        if let Some(cache) = &self.preparation_cache {
+            cache.ready();
+        }
+    }
 }
 
 type Slot<T> = Arc<Mutex<Weak<T>>>;
@@ -129,6 +253,61 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         mpsc,
     };
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ready_advice_waits_for_quiet_and_is_once_per_owner() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut s = ReadyState::default();
+        assert!(!s.claim(now));
+        assert!(s.notify(now));
+        assert!(!s.notify(now + Duration::from_secs(20)));
+        assert!(!s.claim(now + Duration::from_secs(30)));
+        assert!(s.claim(now + Duration::from_secs(50)));
+        assert!(!s.claim(now + Duration::from_secs(100)));
+        assert!(!s.notify(now + Duration::from_secs(100)));
+        assert!(ReadyState::default().notify(now));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn source_advice_preserves_private_cow_and_pins_original_inode() {
+        use std::os::{fd::AsRawFd, unix::fs::FileExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ram");
+        std::fs::write(&path, vec![7u8; 4096]).unwrap();
+        let cache = PreparationCache::new(File::open(&path).unwrap());
+        let fd = cache.file.as_raw_fd();
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                fd,
+                0,
+            )
+        };
+        assert_ne!(ptr, libc::MAP_FAILED);
+        unsafe {
+            *(ptr as *mut u8) = 42;
+        }
+        std::fs::rename(&path, dir.path().join("old")).unwrap();
+        std::fs::write(&path, vec![9u8; 4096]).unwrap();
+        assert_eq!(
+            unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) },
+            0
+        );
+        let mut bytes = [0u8; 1];
+        cache.file.read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(bytes, [7]);
+        assert_eq!(std::fs::read(&path).unwrap()[0], 9);
+        assert_eq!(unsafe { *(ptr as *const u8) }, 42);
+        unsafe {
+            libc::munmap(ptr, 4096);
+        }
+    }
 
     struct Owner(Arc<AtomicUsize>);
     impl Drop for Owner {

@@ -56,6 +56,9 @@ struct Projection {
     reader: Arc<ContentReader>,
     projected: Mutex<HashSet<PathBuf>>,
     complete: Mutex<HashSet<u64>>,
+    reuse_resolved_nodes: bool,
+    stream_reads: bool,
+    direct_copy: bool,
 }
 
 fn io_error(error: anyhow::Error) -> io::Error {
@@ -68,6 +71,15 @@ fn io_error(error: anyhow::Error) -> io::Error {
     io::Error::other(error.to_string())
 }
 
+fn experiment_setting(name: &str, setting: Option<&OsStr>) -> anyhow::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => anyhow::bail!("{name} must be 0 or 1"),
+    }
+}
+
 impl Projection {
     fn source(&self) -> io::Result<std::sync::MutexGuard<'_, RemoteFs>> {
         self.source
@@ -76,6 +88,14 @@ impl Projection {
     }
     fn node(&self, relative: &Path) -> io::Result<Node> {
         pvisor_overlay_core::OverlayCore::validate_rel(relative)?;
+        // `projected` is populated only after a successful full no-symlink
+        // walk and native publication. Never reuse speculative/listed paths or
+        // negative results as traversal/permission proof.
+        let already_validated =
+            self.reuse_resolved_nodes && self.projected.lock().unwrap().contains(relative);
+        if already_validated && let Some(node) = self.source()?.cached_node(relative) {
+            return Ok(node.clone());
+        }
         // Resolve through parent names so a remote symlink is never an ancestor.
         let mut source = self.source()?;
         let mut node = source.node(1).map_err(io_error)?.clone();
@@ -225,6 +245,24 @@ impl ReadOnlyBackend for Projection {
         let node = self.node(relative)?;
         self.read_node(&node, offset, size)
     }
+    fn read_into(
+        &self,
+        relative: &Path,
+        offset: u64,
+        size: u32,
+        sink: &mut dyn io::Write,
+    ) -> io::Result<usize> {
+        let node = self.node(relative)?;
+        if self.stream_reads {
+            self.reader
+                .read_into(&node, offset, size, sink)
+                .map_err(io_error)
+        } else {
+            let bytes = self.read_node(&node, offset, size)?;
+            sink.write_all(&bytes)?;
+            Ok(bytes.len())
+        }
+    }
     fn materialize_file(&self, relative: &Path) -> io::Result<()> {
         let node = self.project(relative)?;
         if node.attr.kind != FileType::RegularFile {
@@ -288,6 +326,33 @@ impl ReadOnlyBackend for Projection {
         self.complete.lock().unwrap().insert(node.object_id);
         Ok(())
     }
+    fn supports_direct_copy(&self) -> bool {
+        self.direct_copy
+    }
+    fn copy_file_direct(&self, relative: &Path, destination: &fs::File) -> io::Result<u64> {
+        if !self.direct_copy {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
+        let node = self.node(relative)?;
+        if node.attr.kind != FileType::RegularFile {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let mut output = destination;
+        let mut offset = 0;
+        while offset < node.attr.size {
+            let size = (node.attr.size - offset).min(u64::from(super::MAX_READ)) as u32;
+            let copied = self
+                .reader
+                .read_into(&node, offset, size, &mut output)
+                .map_err(io_error)?;
+            if copied != size as usize {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            offset += copied as u64;
+        }
+        Ok(offset)
+    }
+
     fn materialize_tree(&self, relative: &Path) -> io::Result<()> {
         let node = self.project(relative)?;
         if node.attr.kind == FileType::Directory {
@@ -363,6 +428,21 @@ impl DirectImage {
 }
 
 fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
+    // Only authenticated V2 revisions grant logical namespace stability.
+    // Legacy/test sources retain their original live projection contract.
+    let stable_namespace = source.digest.starts_with("pvisor-v2:");
+    let reuse_resolved_nodes = experiment_setting(
+        "PVISOR_VM_FS_REUSE_LAZY_NODES",
+        std::env::var_os("PVISOR_VM_FS_REUSE_LAZY_NODES").as_deref(),
+    )? && stable_namespace;
+    let stream_reads = experiment_setting(
+        "PVISOR_VM_FS_STREAM_LAZY_READS",
+        std::env::var_os("PVISOR_VM_FS_STREAM_LAZY_READS").as_deref(),
+    )?;
+    let direct_copy = experiment_setting(
+        "PVISOR_VM_FS_DIRECT_LAZY_COPY",
+        std::env::var_os("PVISOR_VM_FS_DIRECT_LAZY_COPY").as_deref(),
+    )? && stable_namespace;
     let objects = root
         .parent()
         .context("direct lower has no owner")?
@@ -375,9 +455,16 @@ fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
         source: Mutex::new(source),
         projected: Mutex::default(),
         complete: Mutex::default(),
+        reuse_resolved_nodes,
+        stream_reads,
+        direct_copy,
     });
     projection.prepare_metadata(Path::new(""))?;
-    BackendAttachment::new(root, projection).map_err(Into::into)
+    if stable_namespace {
+        BackendAttachment::new_stable_namespace(root, projection).map_err(Into::into)
+    } else {
+        BackendAttachment::new(root, projection).map_err(Into::into)
+    }
 }
 
 pub(crate) struct RunnerLowers {

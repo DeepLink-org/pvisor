@@ -107,6 +107,8 @@ pub(super) struct RestoreLaunch {
     pub copies: Vec<(PathBuf, PathBuf)>,
     #[serde(default)]
     pub shared_readonly_lowers: Vec<PathBuf>,
+    #[serde(default)]
+    pub ram_extents: Vec<pvisor_vm::api::RamRestoreExtent>,
 }
 
 #[cfg(any(
@@ -385,6 +387,7 @@ pub(super) fn publish(
                 "relocated machine payload exceeds limit"
             );
             pvisor_vm::api::MachineRestore {
+                ram_extents: Vec::new(),
                 state: saved.state,
                 ram_file: source_ram.clone(),
             }
@@ -1357,6 +1360,129 @@ pub(super) mod native {
         Ok(())
     }
 
+    // Eligibility is decided from the authenticated captured inventory, never
+    // from a caller's "clean" hint or a live source that may have changed.
+    fn clean_workspace_seed(
+        root_device: &OverlayDeviceSpec,
+        workspace: Option<&OverlayDeviceSpec>,
+        version: u32,
+        inventory: &crate::environment_snapshot::TreeInventory,
+        source: &Path,
+    ) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        if version != 1 || workspace.lowers.len() != 1 {
+            return false;
+        }
+        let baseline = &workspace.lowers[0];
+        if workspace.apply_target.as_ref() != Some(baseline)
+            || workspace
+                .baseline_lower
+                .as_ref()
+                .is_some_and(|path| path != baseline)
+        {
+            return false;
+        }
+        // A different device must not retain a writable alias to this tree.
+        if root_device
+            .lowers
+            .iter()
+            .chain(std::iter::once(&root_device.upper))
+            .chain(root_device.work.iter())
+            .chain(root_device.preimages.iter())
+            .chain(root_device.apply_target.iter())
+            .chain(root_device.baseline_lower.iter())
+            .chain(std::iter::once(&workspace.upper))
+            .chain(workspace.work.iter())
+            .chain(workspace.preimages.iter())
+            .any(|path| path.starts_with(baseline) || baseline.starts_with(path))
+        {
+            return false;
+        }
+        let Ok(relative) = workspace.upper.strip_prefix(source) else {
+            return false;
+        };
+        if relative.components().count() != 1 {
+            return false;
+        }
+        let prefix = relative.as_os_str().as_bytes();
+        let mut root = false;
+        for entry in &inventory.entries {
+            if entry.path == prefix {
+                root = entry.object == crate::environment_snapshot::TreeObject::Directory;
+            } else if entry.path.starts_with(prefix) && entry.path.get(prefix.len()) == Some(&b'/')
+            {
+                // Includes whiteouts, opaque directories and control files.
+                return false;
+            }
+        }
+        root
+    }
+
+    #[test]
+    fn workspace_seed_requires_authenticated_empty_upper_and_disjoint_roles() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().canonicalize().unwrap();
+        let device = |lower: &str, upper: &str| OverlayDeviceSpec {
+            lowers: vec![source.join(lower)],
+            lower_mutability: vec![],
+            upper: source.join(upper),
+            work: None,
+            preimages: None,
+            apply_target: Some(source.join(lower)),
+            baseline_lower: None,
+            excluded: vec![],
+            access_policy: Default::default(),
+        };
+        let root = device("root-lower", "root-upper");
+        let mut workspace = device("app", "app-upper");
+        fs::create_dir(source.join("app-upper")).unwrap();
+        let inventory = crate::environment_snapshot::inventory(&source).unwrap();
+        assert!(clean_workspace_seed(
+            &root,
+            Some(&workspace),
+            1,
+            &inventory,
+            &source
+        ));
+        assert!(!clean_workspace_seed(
+            &root,
+            Some(&workspace),
+            2,
+            &inventory,
+            &source
+        ));
+        workspace.apply_target = Some(source.join("other"));
+        assert!(!clean_workspace_seed(
+            &root,
+            Some(&workspace),
+            1,
+            &inventory,
+            &source
+        ));
+        workspace.apply_target = Some(source.join("app"));
+        let mut overlap = root.clone();
+        overlap.upper = source.join("app/alias");
+        assert!(!clean_workspace_seed(
+            &overlap,
+            Some(&workspace),
+            1,
+            &inventory,
+            &source
+        ));
+        fs::write(source.join("app-upper/.wh.deleted"), b"").unwrap();
+        let dirty = crate::environment_snapshot::inventory(&source).unwrap();
+        assert!(!clean_workspace_seed(
+            &root,
+            Some(&workspace),
+            1,
+            &dirty,
+            &source
+        ));
+    }
+
     pub(in crate::executor::vm) fn prepare_restore(
         checkpoint: ExecutionCheckpoint,
         settings: &crate::VmSettings,
@@ -1389,6 +1515,11 @@ pub(super) mod native {
             Some(pool) => SnapshotStore::with_filesystem_pool(&checkpoint.store, pool)?,
             None => SnapshotStore::new(&checkpoint.store)?,
         };
+        #[cfg(target_os = "linux")]
+        let cache_window = crate::environment_snapshot::RestoreCacheWindow::begin(
+            &checkpoint.store,
+            &checkpoint.snapshot_id,
+        );
         let published = store.open_for_restore(&checkpoint.snapshot_id, &compatibility)?;
         #[cfg(target_os = "linux")]
         let private_files = published.pin_private_files(&restore_binding.snapshot_store()?)?;
@@ -1554,6 +1685,44 @@ pub(super) mod native {
         fs::create_dir(&rootfs)?;
         let references = preparation.join("filesystem-references");
         Persistence::create_dir_all_durable(&references)?;
+        // This is an apply-protected restore, as enforced by OverlayHint below.
+        // Removing redundant aliases preserves the effective audit baseline but
+        // prevents the runner/coordinator from granting it a writable role.
+        // Packed/dirty/composed/otherwise unsupported seeds keep the full copy.
+        let share = cfg!(target_os = "linux") && published.can_share_layers(&references)?;
+        let seed_sharing = match std::env::var("PVISOR_SNAPSHOT_WORKSPACE_SHARING") {
+            Ok(value) if value == "0" => false,
+            Ok(value) if value == "1" => true,
+            Err(std::env::VarError::NotPresent) => true,
+            _ => anyhow::bail!("PVISOR_SNAPSHOT_WORKSPACE_SHARING must be 0 or 1"),
+        };
+        if share
+            && seed_sharing
+            && clean_workspace_seed(
+                &saved.root,
+                saved.workspace.as_ref(),
+                saved.version,
+                &published.manifest().filesystem,
+                &source,
+            )
+            && published.can_share_layer(
+                saved.workspace.as_ref().unwrap().lowers[0]
+                    .strip_prefix(&source)
+                    .context("workspace seed escapes captured tree")?,
+            )?
+        {
+            let mut state = saved.state.clone();
+            match state.prepare_protected_workspace_seed("pvisor-workspace") {
+                Ok(1) => {
+                    saved.state = state;
+                    let workspace = saved.workspace.as_mut().unwrap();
+                    workspace.apply_target = None;
+                    workspace.baseline_lower = None;
+                    tracing::info!("restoring protected clean workspace with shared baseline");
+                }
+                other => tracing::debug!(?other, "workspace seed uses private-copy fallback"),
+            }
+        }
         let mut readonly = std::collections::BTreeSet::new();
         let mut private = std::collections::BTreeSet::new();
         for device in std::iter::once(&saved.root).chain(saved.workspace.iter()) {
@@ -1567,8 +1736,9 @@ pub(super) mod native {
         readonly.retain(|path| !private.contains(path));
         // Linux's runner installs Landlock read-only rules for every lower.
         // Marker links require the same volume; other profiles keep full copies.
-        let share = cfg!(target_os = "linux") && published.can_share_layers(&references)?;
         let mut filesystem_owners = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut cache_sources = Vec::new();
         let mut shared_readonly_lowers = Vec::new();
         let mut copies: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
         let mut relocate = |path: &Path| -> anyhow::Result<PathBuf> {
@@ -1589,9 +1759,12 @@ pub(super) mod native {
                 "invalid owned snapshot layer path"
             );
             let destination = if share && readonly.contains(path) {
-                let owner = published.share_readonly_layer(relative, &references)?;
+                let owner =
+                    std::sync::Arc::new(published.share_readonly_layer(relative, &references)?);
                 let destination = owner.root().to_owned();
-                filesystem_owners.push(std::sync::Arc::new(owner));
+                #[cfg(target_os = "linux")]
+                cache_sources.push((relative.to_owned(), owner.clone()));
+                filesystem_owners.push(owner);
                 shared_readonly_lowers.push(path.to_owned());
                 destination
             } else {
@@ -1698,6 +1871,7 @@ pub(super) mod native {
         )?;
         let ram = ram_owner.file.clone();
         pvisor_vm::api::MachineRestore {
+            ram_extents: ram_owner.extents.clone(),
             state: saved.state.clone(),
             ram_file: ram.clone(),
         }
@@ -1715,6 +1889,7 @@ pub(super) mod native {
                 machine,
                 copies: copies.into_iter().collect(),
                 shared_readonly_lowers,
+                ram_extents: ram_owner.extents.clone(),
             },
             root,
             workspace,
@@ -1727,6 +1902,10 @@ pub(super) mod native {
             _filesystem_owners: filesystem_owners,
             _private_files: private_files,
         };
+        #[cfg(target_os = "linux")]
+        if let Some(window) = &cache_window {
+            window.complete(&published, &cache_sources);
+        }
         drop(published);
         Ok((prepared, overlay))
     }
@@ -1803,6 +1982,7 @@ pub(super) mod native {
             );
         }
         let restore = pvisor_vm::api::MachineRestore {
+            ram_extents: launch.ram_extents.clone(),
             state: saved.state,
             ram_file: std::sync::Arc::new(ram),
         };

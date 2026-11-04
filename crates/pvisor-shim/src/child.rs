@@ -1093,11 +1093,12 @@ fn vm_runner_main() -> Result<i32> {
 
     let result = crate::vm::boot_vm(&plan, network, stdio);
     // Belt and braces next to the delete-path unlink: a task whose delete
-    // never arrives (shim crash, force teardown) still leaves no bridge
-    // sockets behind once its runner exits.
+    // never arrives (shim crash, force teardown) still leaves no control or
+    // bridge sockets behind once its runner exits.
+    let _ = std::fs::remove_file(crate::sockets::control_socket_path(&plan.id));
     for injection in &plan.injections {
         if let Some(port) = injection.bridge {
-            let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&plan.id, port));
+            let _ = std::fs::remove_file(crate::sockets::bridge_socket_path(&plan.id, port));
         }
     }
     result
@@ -2049,7 +2050,7 @@ fn spawn_bridge_proxies(plan: &ContainerPlan) -> Result<()> {
         .and_then(|ns| ns.path.clone())
         .context("VM port bridges need a network namespace to join (CRI pods provide one)")?;
     for port in bridges {
-        let socket = crate::agent::bridge_socket_path(&plan.id, port);
+        let socket = crate::sockets::bridge_socket_path(&plan.id, port);
         let exe = std::env::current_exe().context("current exe")?;
         let mut command = Command::new(exe);
         command
