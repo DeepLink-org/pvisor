@@ -12,6 +12,7 @@ fn restore() -> MachineRestore {
     let file = tempfile::tempfile().unwrap();
     file.set_len(0x2000).unwrap();
     MachineRestore {
+        ram_extents: Vec::new(),
         ram_file: Arc::new(file),
         state: MachineSnapshot {
             version: 1,

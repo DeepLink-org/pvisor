@@ -1009,7 +1009,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let locked = vmm
             .lock()
             .map_err(|_| io::Error::other("VMM lock poisoned"))?;
-        if locked.is_paused()
+        if locked.has_compact_restore_ram() || locked.is_paused()
             || locked.device_memory_gate().has_prepare()
             || locked.device_memory_gate().has_dedup_advice()
         {

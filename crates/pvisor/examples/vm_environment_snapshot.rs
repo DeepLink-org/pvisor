@@ -114,6 +114,7 @@ fn main() -> anyhow::Result<()> {
             "environment requires exactly one root filesystem binding"
         );
         Some(MachineRestore {
+            ram_extents: Vec::new(),
             state: saved.state,
             ram_file: Arc::new(snapshot.ram_file()?),
         })

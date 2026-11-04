@@ -1027,7 +1027,12 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
     let exit_code = Arc::new(AtomicI32::new(i32::MAX));
 
     let device_memory_gate = crate::devices::virtio::memory_gate::register(&guest_memory);
+    #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))]
+    let compact_restore_ram = vm_resources.machine_restore.as_ref().is_some_and(|restore| !restore.ram_extents.is_empty());
+    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64"))))]
+    let compact_restore_ram = false;
     let mut vmm = Vmm {
+        compact_restore_ram,
         device_memory_gate,
         guest_memory,
         arch_memory_info,

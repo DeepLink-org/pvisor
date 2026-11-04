@@ -53,6 +53,7 @@ pub struct MachineSnapshot {
 pub struct MachineRestore {
     pub state: MachineSnapshot,
     pub ram_file: Arc<File>,
+    pub ram_extents: Vec<crate::api::RamRestoreExtent>,
 }
 
 impl MachineRestore {
@@ -76,7 +77,7 @@ impl MachineRestore {
     }
 
     pub fn validate_ram_file(&self) -> Result<(), String> {
-        crate::memory::validate_snapshot_ram(&self.state.ram, &self.ram_file)?;
+        crate::memory::validate_snapshot_ram(&self.state.ram, &self.ram_file, &self.ram_extents)?;
         if let Some(kernel) = self.state.kernel_layout {
             kernel.validate()?;
             if !self.state.ram.iter().any(|region| {
@@ -100,7 +101,7 @@ impl MachineRestore {
     /// file; guest/device writes become private COW pages, never snapshot writes.
     /// The caller must retain any pager serving `ram_file` for the VM lifetime.
     pub fn map_ram(&self, ranges: &[(GuestAddress, usize)]) -> Result<GuestMemoryMmap, String> {
-        crate::memory::map_snapshot_ram(&self.state.ram, self.ram_file.clone(), ranges)
+        crate::memory::map_snapshot_ram(&self.state.ram, self.ram_file.clone(), &self.ram_extents, ranges)
     }
 }
 

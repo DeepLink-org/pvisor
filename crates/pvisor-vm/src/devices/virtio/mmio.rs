@@ -209,6 +209,18 @@ impl MmioSnapshot {
         Ok(false)
     }
 
+    /// Normalize only the protected single-lower workspace seed profile.
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn prepare_protected_workspace_seed(&mut self, tag: &[u8]) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs { tag: saved_tag, server, .. } = &mut self.device.state {
+            if saved_tag == tag {
+                server.prepare_protected_workspace_seed()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Verify original frozen filesystem identities and content without rebinding.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn verify_frozen_filesystem_backing(&self, tag: &[u8]) -> std::io::Result<bool> {

@@ -42,11 +42,15 @@ pub(crate) use store::NativePublication;
 pub(crate) use store::{NativeLayerCapture, PrivateFilesystemOwner};
 mod lazy;
 mod owned;
+#[cfg(target_os = "linux")]
+mod restore_cache;
 mod store;
 pub use blocks::RamBlocks;
 pub(crate) use blocks::{PinnedRamBlocks, RamDelta};
 pub use lazy::{RawRamIndex, SnapshotRamMount, SnapshotRamReader};
 pub(crate) use lazy::{serve_ram, watch_mount};
+#[cfg(target_os = "linux")]
+pub(crate) use restore_cache::RestoreCacheWindow;
 pub use store::{
     Compatibility, EnvironmentManifest, PendingEnvironment, PublishedEnvironment, SnapshotStore,
 };

@@ -170,6 +170,20 @@ impl ServerSnapshot {
         self.rebind_layer_roots(copies, &[], false, &[])
     }
 
+    pub fn prepare_protected_workspace_seed(&mut self) -> io::Result<()> {
+        fn prepare(state: &mut FsSnapshot) -> io::Result<()> {
+            match state {
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => prepare(inner),
+                FsSnapshot::Overlay(state) => state.prepare_protected_workspace_seed(),
+                _ => Err(unsupported("protected workspace seed requires an overlay")),
+            }
+        }
+        let mut rebound = self.fs.clone();
+        prepare(&mut rebound)?;
+        self.fs = rebound;
+        Ok(())
+    }
+
     /// Explicit shared-lower path: callers verify the entire immutable tree,
     /// retain durable references, and enforce read-only access in the runner.
     /// Upper/work/journal/target/baseline roles and writable saved handles may
