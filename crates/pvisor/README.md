@@ -1997,3 +1997,117 @@ protection or `=0` after separately qualifying a backport. The low-level
 `KRUN_ENOMEM_WORKAROUND` is presence-based: setting it to `0` does not disable
 it; the launcher removes it for the off path. KVM error handling, retries,
 resource budgets and timeouts remain unchanged.
+
+## Initial compressed RAM base
+
+A newly zero-initialized compressed backing emits zero-fill entries for blocks
+never written before its first commit, caching checksums by block length. Written
+blocks retain the original path. Generic capture and compaction still read all
+required content, including clean ancestors. The complete index, on-disk format,
+mmap writeback drain, durability and resume barriers remain unchanged.
+
+### Protected clean workspace seeds
+
+Linux native Raw version-1 restore can retain one immutable workspace lower
+instead of copying it for each branch. Eligibility requires an authenticated
+empty upper, one lower, only redundant target/baseline aliases, no overlapping
+backing in another device and no writable saved lower handles. Shared-pool entry/metadata limits are
+preflighted before selecting this path; oversized trees also keep full copies. Other snapshots
+retain the private-copy path. Upper, work and preimage journal remain independent;
+read observations, mutation preimages, sealing and policy checks are unchanged.
+The shared tree uses the existing verified filesystem pool and durable references.
+Native restore still sets `protect_target=true`: review is supported, apply to
+this baseline remains rejected. This does not introduce a writable target binding
+or change ordinary Job apply/conflict/ledger semantics. The private engineering
+control `PVISOR_SNAPSHOT_WORKSPACE_SHARING=0` forces the existing copy path; unset
+or `1` allows qualified seeds, and other values fail restore. No offload or RAM
+mapping contract changes. First publication cost remains and is measured separately
+from reuse; no performance gain is established by eligibility tests alone.
+
+### Raw RAM publication preparation
+
+The host snapshot store computes the sealed Raw RAM whole-file SHA-256 and
+64 KiB block index in one read pass. Capture-source checks, the independent
+sealed inode, snapshot format and authenticated lazy COW restore stay unchanged.
+After syncing and validating a newly created Raw inode, before publishing its
+object, Linux requests `POSIX_FADV_DONTNEED` for preparation-only file cache.
+The request is best-effort (failures are logged), does not discard guest private
+COW pages, and is never repeated when opening an existing snapshot. Other
+platforms retain their existing cache behavior. This is not an offload operation
+or a promise that the kernel will evict all pages; measure residency separately.
+
+### Source-only filesystem preparation cache
+
+On Linux, successful native restores that copy a sealed readonly layer into a
+shared pool can enqueue advisory eviction of the original layer's file cache.
+The original object, its checks and the running shared lower remain unchanged.
+A process-local coordinator coalesces each snapshot's requests until all native
+preparations finish and the snapshot has been quiet for 30 seconds. It holds a
+source-store reference and shared-layer owners until cleanup finishes. A new
+prepare of that snapshot waits only if its cleanup is already executing; unrelated
+snapshots remain independent. Other processes and explicit audit readers are not
+coordinated, so their later reads may refault; no cross-process performance claim
+is made. Advice is not a data deletion or permission change.
+
+There is one worker per owner process, at most eight tracked snapshots, and at
+most 131072 paths / 16 MiB path bytes per pending job; overflow skips advice.
+Already-referenced pool layers, same-inode files and multiply-linked source files
+are skipped. Files are opened beneath pinned directory FDs with no symlinks;
+unsupported kernels/path errors stop optional cleanup rather than weakening
+resolution. Only source files receive POSIX_FADV_DONTNEED; errors are logged and
+cannot fail an otherwise successful restore. No scans of guest writable layers,
+RAM mappings or global cache are involved. Process exit may abandon queued advice.
+
+### Raw RAM preparation cache after native restore
+
+On Linux, local indexed Raw snapshot restores notify the supervisor only after
+native resume succeeds. Notifications for one live shared RAM owner coalesce;
+a timer waits at least 30 seconds without another notification (checked every
+30 seconds), then requests POSIX_FADV_DONTNEED once on the exact retained source
+file descriptor. This is native readiness, not application readiness or a batch
+barrier. Later branches do not rearm that owner. Pending work holds weak ownership
+and is cancelled when the owner disappears. Compressed RAM and node-service RAM
+are excluded. Advice errors do not fail the running VM and are not retried.
+
+This only advises the underlying Raw file cache: it does not invalidate the FUSE
+RAM inode or private VM mappings, change publication or block integrity checks,
+or discard COW modifications. Advice is not proof of eviction; later faults may
+read and verify source blocks again. Other processes are not coordinated and may
+pay additional reads. There is no per-block or continuous eviction policy.
+
+Linux restore preparation also gives newly copied and published immutable
+filesystem pool trees a process-local, single-use cache-advice capability.
+Successful restore preparation submits it to the existing bounded preparation
+window. Once all preparations of that snapshot on this supervisor finish and
+remain quiet for thirty seconds, the worker advises regular single-link files
+under pinned tree descriptors. Later preparations preserve the queued capability;
+reopening an existing pool or retaining a published layer never creates one.
+The owner and GC lease remain live during advice. Descriptor-relative no-symlink
+resolution, metadata limits and conservative multi-link exclusions remain in force.
+Advice errors are best-effort and do not retry or fail a running VM.
+
+This does not delete files, skip content validation, alter apply protection or
+change branch uppers. It is preparation completion rather than a global VM-ready
+barrier. Other supervisors are not coordinated, so readers of a newly published
+tree can incur extra I/O; no promise is made that every advised page was cold.
+Only the first successful publication is eligible, not previously warm pools.
+
+### Authenticated anonymous-zero snapshot RAM
+
+Linux local indexed Raw restore can derive full 64 KiB zero extents from the
+already authenticated block index. The runtime FUSE view contains only nonzero
+blocks; it is a virtual view, not another RAM file. Nonzero reads retain block
+SHA-256 verification and use an independent O_DIRECT descriptor to avoid source
+file readahead into zero ranges. Unsupported direct I/O fails explicitly. Capture,
+publication checks, durable Raw format, filesystem apply and isolation are unchanged.
+
+`MachineRestore.ram_extents` is caller-authenticated runtime geometry. Empty uses
+the original file. A nonempty plan covers logical RAM exactly with aligned zero
+and contiguous compact-file extents. The VM reserves the original memory regions,
+keeps zeros private anonymous, and maps nonzero runs MAP_PRIVATE inside them before
+exposing guest memory; KVM memory-slot topology is unchanged. Invalid plans fail
+before mapping. Nonzero COW writes and anonymous writes remain branch-private.
+Local indexed Raw with a short block tail, no zero blocks, or more than 8192 runs,
+node-owned views, compressed snapshots and other platforms retain their previous
+path. This optimization does not enable offload on restored COW memory and does
+not promise a measured total-memory saving before workload validation.

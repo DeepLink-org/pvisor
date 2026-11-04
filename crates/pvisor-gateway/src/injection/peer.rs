@@ -1,15 +1,22 @@
 //! Resolve the OS process behind an inbound proxy TCP peer (local ephemeral port).
 
 use std::net::SocketAddr;
+#[cfg(all(unix, not(target_os = "linux")))]
 use std::process::Command;
 
-use anyhow::{Context, Result};
+#[cfg(all(unix, not(target_os = "linux")))]
+use anyhow::Context;
+use anyhow::Result;
 
 use crate::session::client::SessionClientMeta;
 
 /// Look up the client process for a proxied connection's peer address.
 pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClientMeta>> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(super::procfs::resolve(peer))
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         if let Some(pid) = lsof_client_pid_for_peer(peer)?
             && let Some(command) = command_line_for_pid(pid)?
@@ -31,13 +38,18 @@ pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClie
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn lsof_client_pid_for_peer(peer: SocketAddr) -> Result<Option<u32>> {
     let spec = lsof_tcp_spec(peer);
-    let output = Command::new("lsof")
-        .args(["-nP", "-F", "pnc", "-i", &spec, "-sTCP:ESTABLISHED"])
-        .output()
-        .with_context(|| format!("lsof peer lookup for {peer}"))?;
+    let output = super::process::output(Command::new("lsof").args([
+        "-nP",
+        "-F",
+        "pnc",
+        "-i",
+        &spec,
+        "-sTCP:ESTABLISHED",
+    ]))
+    .with_context(|| format!("lsof peer lookup for {peer}"))?;
     if !output.status.success() && output.stdout.is_empty() {
         return Ok(None);
     }
@@ -63,13 +75,13 @@ fn lsof_client_pid_for_peer(peer: SocketAddr) -> Result<Option<u32>> {
     Ok(None)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 struct LsofEntry {
     pid: u32,
     names: Vec<String>,
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn parse_lsof_pnc(output: &str) -> Vec<LsofEntry> {
     let mut entries = Vec::new();
     let mut pid = 0u32;
@@ -103,14 +115,14 @@ fn parse_lsof_pnc(output: &str) -> Vec<LsofEntry> {
     entries
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn is_client_outbound_socket(name: &str, peer: SocketAddr) -> bool {
     let local = format_socket_addr(peer);
     name.split_once("->")
         .is_some_and(|(lhs, _rhs)| lhs == local)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn format_socket_addr(addr: SocketAddr) -> String {
     match addr.ip() {
         std::net::IpAddr::V4(v4) => format!("{v4}:{}", addr.port()),
@@ -118,7 +130,7 @@ fn format_socket_addr(addr: SocketAddr) -> String {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn lsof_tcp_spec(peer: SocketAddr) -> String {
     match peer.ip() {
         std::net::IpAddr::V4(v4) => format!("TCP@{}:{}", v4, peer.port()),
@@ -126,27 +138,11 @@ fn lsof_tcp_spec(peer: SocketAddr) -> String {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn command_line_for_pid(pid: u32) -> Result<Option<String>> {
-    #[cfg(target_os = "linux")]
-    {
-        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok();
-        if let Some(raw) = raw {
-            let cmd = raw
-                .split(|b| *b == 0)
-                .filter(|part| !part.is_empty())
-                .map(|part| String::from_utf8_lossy(part).into_owned())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !cmd.is_empty() {
-                return Ok(Some(cmd));
-            }
-        }
-    }
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "args="])
-        .output()
-        .with_context(|| format!("ps args for pid {pid}"))?;
+    let output =
+        super::process::output(Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]))
+            .with_context(|| format!("ps args for pid {pid}"))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -158,7 +154,7 @@ fn command_line_for_pid(pid: u32) -> Result<Option<String>> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix, not(target_os = "linux")))]
 mod tests {
     use super::*;
 

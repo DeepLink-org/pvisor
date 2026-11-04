@@ -1,7 +1,6 @@
 #![cfg(unix)]
 //! Architectural guards and ownership checks; no hypervisor is started.
-use pvisor_vm::api::RestoreState;
-use pvisor_vm::api::{self, VmBuilder, VmConfiguration};
+use pvisor_vm::api::{self, RestoreState, SnapshotState, VmBuilder, VmConfiguration};
 
 #[test]
 fn managed_filesystem_validation_is_atomic_and_excludes_snapshots() {
@@ -207,6 +206,7 @@ fn snapshot_ram_shape_is_portable_and_mapping_is_private() {
     }))
     .unwrap();
     let restore = api::MachineRestore {
+        ram_extents: Vec::new(),
         state,
         ram_file: Arc::new(file),
     };
@@ -363,4 +363,93 @@ fn guest_idle_offer_ordinal_is_optional_observation_on_the_wire() {
         serde_json::to_value(recorded).unwrap()["offer_sequence"],
         42
     );
+}
+
+#[test]
+fn protected_workspace_seed_api_validates_tags_without_mutating_state() {
+    let mut wire = serde_json::json!({"version":1,"cpus":[],"devices":[],"ram":[]});
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        wire["kvm"] = serde_json::Value::Null;
+        wire["pio_devices"] = serde_json::json!([]);
+    }
+    let mut state: api::MachineSnapshot = serde_json::from_value(wire).unwrap();
+    let before = serde_json::to_value(&state).unwrap();
+    assert!(state.prepare_protected_workspace_seed("").is_err());
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    if cfg!(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )) {
+        assert_eq!(state.prepare_protected_workspace_seed("absent").unwrap(), 0);
+    } else {
+        assert!(state.prepare_protected_workspace_seed("absent").is_err());
+    }
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+}
+
+#[test]
+fn compact_ram_zero_extents_preserve_topology_and_private_writes() {
+    use std::{os::unix::fs::FileExt, sync::Arc};
+    use vm_memory::{Bytes, GuestAddress, GuestMemory};
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let block = 65536u64;
+    file.as_file().set_len(block * 2).unwrap();
+    file.as_file().write_all_at(b"first", 0).unwrap();
+    file.as_file().write_all_at(b"last!", block).unwrap();
+    let readonly = std::fs::File::open(file.path()).unwrap();
+    let state = serde_json::from_value(serde_json::json!({
+        "version":1,"cpus":[],"devices":[],
+        "ram":[{"base":0,"len":block*4,"file_offset":0}]
+    }))
+    .unwrap();
+    let mut restore = api::MachineRestore {
+        state,
+        ram_file: Arc::new(readonly),
+        ram_extents: vec![
+            api::RamRestoreExtent {
+                offset: 0,
+                length: block,
+                backing_offset: Some(0),
+            },
+            api::RamRestoreExtent {
+                offset: block,
+                length: block * 2,
+                backing_offset: None,
+            },
+            api::RamRestoreExtent {
+                offset: block * 3,
+                length: block,
+                backing_offset: Some(block),
+            },
+        ],
+    };
+    let ranges = [(GuestAddress(0), (block * 4) as usize)];
+    let a = restore.map_ram(&ranges).unwrap();
+    let b = restore.map_ram(&ranges).unwrap();
+    assert_eq!(a.num_regions(), 1);
+    for (address, expected) in [(0, *b"first"), (block, [0; 5]), (block * 3, *b"last!")] {
+        let mut got = [7; 5];
+        a.read_slice(&mut got, GuestAddress(address)).unwrap();
+        assert_eq!(got, expected);
+        a.write_slice(b"write", GuestAddress(address)).unwrap();
+        b.read_slice(&mut got, GuestAddress(address)).unwrap();
+        assert_eq!(got, expected);
+    }
+    let mut original = [0; 5];
+    restore.ram_file.read_exact_at(&mut original, 0).unwrap();
+    assert_eq!(&original, b"first");
+    // Geometry errors are rejected before exposing any partially mapped region.
+    for (offset, length, backing) in [
+        (block + 1, block * 2, None),
+        (block, 0, None),
+        (block, block * 2, Some(0)),
+        (block, u64::MAX, None),
+    ] {
+        restore.ram_extents[1] = api::RamRestoreExtent {
+            offset,
+            length,
+            backing_offset: backing,
+        };
+        assert!(restore.map_ram(&ranges).is_err());
+    }
 }

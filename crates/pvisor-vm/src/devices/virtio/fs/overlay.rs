@@ -426,6 +426,36 @@ impl OverlaySnapshot {
         let mut copy = self.clone();
         copy.rebind_roots(|root| Ok(root.to_owned()), &[], true, &[])
     }
+    pub(super) fn prepare_protected_workspace_seed(&mut self) -> io::Result<()> {
+        use super::snapshot::invalid;
+        if self.config.lower_dirs.len() != 1 || self.layers.len() != 2
+            || !self.hard_links.is_empty() || !self.hard_link_origins.is_empty()
+        {
+            return Err(invalid("protected workspace seed requires one unmodified lower"));
+        }
+        let baseline = Path::new(&self.config.lower_dirs[0]);
+        for alias in [self.config.apply_target.as_deref(), self.config.baseline_lower.as_deref()].into_iter().flatten() {
+            if Path::new(alias) != baseline {
+                return Err(invalid("protected workspace seed has a distinct target or baseline"));
+            }
+        }
+        for private in std::iter::once(self.config.upper_dir.as_str())
+            .chain(self.config.work_dir.as_deref()).chain(self.config.preimage_dir.as_deref())
+        {
+            if baseline.starts_with(private) || Path::new(private).starts_with(baseline) {
+                return Err(invalid("protected workspace seed overlaps private backing"));
+            }
+        }
+        self.layers[1].validate_readonly_handles()?;
+        // None means the last (here only) lower for both roles. This preserves
+        // the live-baseline observation semantics, including existing journal
+        // entries, rather than changing it into a frozen-baseline layout.
+        // Only the coordinator's protected-apply profile may use this operation.
+        self.config.apply_target = None;
+        self.config.baseline_lower = None;
+        Ok(())
+    }
+
     pub(super) fn validate_shared_readonly_layers(
         &self,
         shared_lowers: &[PathBuf],
@@ -9460,6 +9490,85 @@ mod tests {
             assert_eq!(negotiated & directory, expected);
             fs.destroy();
         }
+    }
+
+    #[test]
+    fn protected_workspace_seed_branches_share_lower_and_isolate_copy_up_and_journal() {
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let source = temp.path().join("seed");
+        std::fs::create_dir_all(source.join("lower")).unwrap();
+        std::fs::write(source.join("lower/file"), b"original").unwrap();
+        let mut config = parent_cache_fixture(&source).snapshot_config.clone();
+        config.apply_target = Some(config.lower_dirs[0].clone());
+        config.preimage_dir = Some(source.join("journal").to_string_lossy().into_owned());
+        let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        fs.core.observe_read(Path::new("file")).unwrap();
+        let observations = pvisor_overlay_core::load_preimages(&source.join("journal")).unwrap();
+        let super::super::snapshot::FsSnapshot::Overlay(mut seed) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        drop(fs);
+        seed.prepare_protected_workspace_seed().unwrap();
+        let baseline = source.join("lower");
+        let mut branches = Vec::new();
+        for name in ["a", "b"] {
+            let branch = temp.path().join(name);
+            std::fs::create_dir(&branch).unwrap();
+            for role in ["upper", "journal"] {
+                pvisor::environment_snapshot::copy_owned_tree(&source.join(role), &branch.join(role)).unwrap();
+            }
+            let mut state = seed.clone();
+            state.validate_shared_readonly_layers(std::slice::from_ref(&baseline)).unwrap();
+            state.rebind_roots(|path| {
+                let path = Path::new(path);
+                Ok(if path == baseline { path.to_owned() } else { branch.join(path.strip_prefix(&source).unwrap()) }.to_string_lossy().into_owned())
+            }, std::slice::from_ref(&baseline), false, &[]).unwrap();
+            let restored = OverlayFs::open_existing(state.config.clone(), Arc::new(InodeAllocator::new())).unwrap();
+            restored.init(FsOptions::empty()).unwrap();
+            restored.restore_state(&super::super::snapshot::FsSnapshot::Overlay(state)).unwrap();
+            assert_eq!(pvisor_overlay_core::load_preimages(&branch.join("journal")).unwrap(), observations);
+            branches.push((branch, restored));
+        }
+        branches[0].1.core.copy_up(Path::new("file")).unwrap();
+        std::fs::write(branches[0].0.join("upper/file"), b"branch-a").unwrap();
+        assert_eq!(std::fs::read(baseline.join("file")).unwrap(), b"original");
+        assert!(!branches[1].0.join("upper/file").exists());
+        branches[1].1.core.copy_up(Path::new("file")).unwrap();
+        assert_eq!(std::fs::read(branches[1].0.join("upper/file")).unwrap(), b"original");
+        assert_eq!(pvisor_overlay_core::load_preimages(&branches[1].0.join("journal")).unwrap(), observations);
+    }
+
+    #[test]
+    fn protected_workspace_seed_preserves_baseline_and_rejects_distinct_targets() {
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap() else { panic!("overlay"); };
+        let baseline = state.config.lower_dirs[0].clone();
+        state.config.apply_target = Some(baseline.clone());
+        state.config.baseline_lower = Some(baseline.clone());
+        state.prepare_protected_workspace_seed().unwrap();
+        state.validate_shared_readonly_layers(&[PathBuf::from(&baseline)]).unwrap();
+        assert!(state.config.apply_target.is_none());
+        assert!(state.config.baseline_lower.is_none());
+        assert_eq!(state.config.lower_dirs.as_slice(), std::slice::from_ref(&baseline));
+        state.config.apply_target = Some(temp.path().join("distinct").to_string_lossy().into_owned());
+        let before = serde_json::to_value(&state).unwrap();
+        assert!(state.prepare_protected_workspace_seed().is_err());
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        state.config.apply_target = Some(baseline.clone());
+        state.config.work_dir = Some(format!("{baseline}/work"));
+        assert!(state.prepare_protected_workspace_seed().is_err());
+        state.config.work_dir = None;
+        let super::super::snapshot::FsSnapshot::Passthrough(lower) = &mut state.layers[1] else { panic!("passthrough"); };
+        lower.handles.push(super::super::snapshot::HandleSnapshot {
+            handle: 42, inode: 1, flags: libc::O_RDWR, offset: 0, entries: vec![], directory_ready: false,
+            #[cfg(target_os = "linux")]
+            directory_entries: None,
+        });
+        let before = serde_json::to_value(&state).unwrap();
+        assert!(state.prepare_protected_workspace_seed().is_err());
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
     }
 
     #[test]

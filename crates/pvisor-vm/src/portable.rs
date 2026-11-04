@@ -471,6 +471,7 @@ impl VmConfiguration for VmBuilder {
                 .machine_restore(crate::vmm::snapshot::MachineRestore {
                     state: serde_json::from_value(restore.state.state).map_err(io::Error::other)?,
                     ram_file: restore.ram_file,
+                    ram_extents: restore.ram_extents,
                 })
         }
         #[cfg(not(any(
@@ -786,6 +787,23 @@ impl SnapshotState for MachineSnapshot {
             Err(unsupported("filesystem snapshot rebinding"))
         }
     }
+    fn prepare_protected_workspace_seed(&mut self, tag: &str) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| device.prepare_protected_workspace_seed(tag))
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = tag;
+            Err(unsupported("protected workspace seed"))
+        }
+    }
     fn rebind_filesystem_policy(
         &mut self,
         tag: &str,
@@ -975,6 +993,7 @@ impl RestoreState for MachineRestore {
         crate::memory::map_snapshot_ram(
             &self.state.ram_mappings().map_err(|e| e.to_string())?,
             self.ram_file.clone(),
+            &self.ram_extents,
             ranges,
         )
     }
@@ -988,6 +1007,7 @@ impl MachineRestore {
         Ok(crate::vmm::snapshot::MachineRestore {
             state: serde_json::from_value(self.state.state.clone()).map_err(|e| e.to_string())?,
             ram_file: self.ram_file.clone(),
+            ram_extents: self.ram_extents.clone(),
         })
     }
 }

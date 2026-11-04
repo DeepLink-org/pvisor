@@ -77,6 +77,21 @@ pVisor uses the current container CLI (`run`, `exec`, `rm -f`):
  "vcpus":2,"memory":"8g","cwd":"/app"}
 ```
 
+To select pVisor's native userspace UKSM-style physical page sharing, add
+`"memory_pool":"/absolute/path/to/pool.sock"` to the pVisor backend configuration.
+The adapter forwards it to the existing `run --memory-pool` option; it does not
+change the sharing algorithm or enable host kernel KSM/UKSM. Omit the field to
+retain the existing unshared behavior. The AgentENV backend rejects this field.
+
+Provision a native physical-page pool externally before execution (not a
+compressed pool); the socket alone does not select or verify the server mode. Only an absolute socket path is
+accepted (`auto` is deliberately rejected to avoid implicit service startup).
+The CLI checks connection availability at execution time; validation-only does
+not contact the pool. The caller owns pool sizing, connection capacity, its CPU
+and memory accounting within the parent budget, and its eventual shutdown after
+all clients exit. Task cleanup removes only the task container, never the pool.
+The runner does not configure offload, backing compression, or guest-idle handoff.
+
 This is a current-main transport, **not the retired `sweeval_resident` offload
 harness**. It does not enable or reproduce historical 50 ms management/backing
 compression. Historical validation numbers must not be attributed to this CLI

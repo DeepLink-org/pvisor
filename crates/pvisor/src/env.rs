@@ -91,6 +91,7 @@ pub(crate) mod runner {
     pub(crate) const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
     pub(crate) const LOGICAL_DIRECTORY_CACHE_ENV: &str = "PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE";
     pub(crate) const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
+    pub(crate) const RAW_READY_FD_ENV: &str = "PVISOR_KRUN_RAW_READY_FD";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) const ENOMEM_OVERRIDE_ENV: &str = "PVISOR_KRUN_ENOMEM_WORKAROUND";
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

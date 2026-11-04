@@ -5,8 +5,8 @@ use crate::env::{
     self,
     ram::POOL_ENV,
     runner::{
-        CONTROL_FD_ENV, IDLE_FD_ENV, LOADER_ENV, NETWORK_FD_ENV, RAM_FD_ENV, READONLY_FLUSH_ENV,
-        RESTORE_RAM_SERVER_ENV, RESTORE_RAM_WATCHDOG_ENV, RUNNER_SPEC_ENV,
+        CONTROL_FD_ENV, IDLE_FD_ENV, LOADER_ENV, NETWORK_FD_ENV, RAM_FD_ENV, RAW_READY_FD_ENV,
+        READONLY_FLUSH_ENV, RESTORE_RAM_SERVER_ENV, RESTORE_RAM_WATCHDOG_ENV, RUNNER_SPEC_ENV,
     },
 };
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
@@ -32,6 +32,7 @@ const NETWORK_CHILD_FD: RawFd = 198;
 const CONTROL_CHILD_FD: RawFd = 199;
 const RAM_CHILD_FD: RawFd = 200;
 const IDLE_CHILD_FD: RawFd = 202;
+const RAW_READY_CHILD_FD: RawFd = 203;
 
 pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
@@ -40,7 +41,7 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
         libc::fcntl(
             fd,
             libc::F_DUPFD_CLOEXEC,
-            IDLE_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
+            RAW_READY_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
         )
     };
     if duplicate < 0 {
@@ -1748,6 +1749,31 @@ impl RunExecutor for VmExecutor {
             None
         };
         let idle_source_fd = idle_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
+        #[cfg(target_os = "linux")]
+        let raw_ready_pair = self
+            .restore
+            .as_ref()
+            .filter(|restore| restore._ram_owner.has_preparation_cache())
+            .and_then(|_| {
+                let pair = std::os::unix::net::UnixStream::pair().and_then(|(host, runner)| {
+                    host.set_nonblocking(true)?;
+                    Ok((
+                        tokio::net::UnixStream::from_std(host)?,
+                        runner_fd(runner.as_raw_fd())?,
+                    ))
+                });
+                match pair {
+                    Ok(pair) => Some(pair),
+                    Err(error) => {
+                        tracing::warn!(%error, "skip raw RAM ready notification");
+                        None
+                    }
+                }
+            });
+        #[cfg(not(target_os = "linux"))]
+        let raw_ready_pair: Option<(tokio::net::UnixStream, OwnedFd)> = None;
+        let raw_ready_source_fd = raw_ready_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
+
         let network_runner = match vm_network
             .as_ref()
             .map(|network| runner_fd(network.guest_stream().as_raw_fd()))
@@ -1792,6 +1818,10 @@ impl RunExecutor for VmExecutor {
         } else {
             command.env_remove(IDLE_FD_ENV);
         }
+        command.env_remove(RAW_READY_FD_ENV);
+        if raw_ready_source_fd.is_some() {
+            command.env(RAW_READY_FD_ENV, RAW_READY_CHILD_FD.to_string());
+        }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
         unsafe {
@@ -1806,6 +1836,13 @@ impl RunExecutor for VmExecutor {
                 if let Some(fd) = idle_source_fd
                     && libc::dup2(fd, IDLE_CHILD_FD) < 0
                 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if let Some(fd) = raw_ready_source_fd
+                    && libc::dup2(fd, RAW_READY_CHILD_FD) < 0
+                {
+                    // Never leave the advertised descriptor unbound: the
+                    // runner could otherwise reuse that number for another FD.
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::dup2(control_source_fd, CONTROL_CHILD_FD) < 0 {
@@ -1858,6 +1895,28 @@ impl RunExecutor for VmExecutor {
         drop(control_runner);
         drop(ram_runner);
         drop(network_runner);
+        #[cfg(target_os = "linux")]
+        if let Some((mut host, runner_fd)) = raw_ready_pair {
+            drop(runner_fd);
+            let owner = std::sync::Arc::downgrade(&self.restore.as_ref().unwrap()._ram_owner);
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut byte = [0u8; 1];
+                if matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        host.read_exact(&mut byte)
+                    )
+                    .await,
+                    Ok(Ok(_))
+                ) && byte == [1]
+                    && let Some(owner) = owner.upgrade()
+                {
+                    owner.restored_ready();
+                }
+            });
+        }
+
         let process_group = child.id();
         // VMM setup configures a terminal inherited on stdout/stderr even with
         // closed stdin. Give its process group the terminal independently of
@@ -2829,6 +2888,17 @@ fn run_linked_krun(
         }
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
+            #[cfg(target_os = "linux")]
+            if env::required_unicode(RAW_READY_FD_ENV).ok().as_deref() == Some("203") {
+                // One byte only after native restore resumed successfully.
+                // Never transmit paths or guest data, or touch the FUSE inode.
+                let byte = [1u8];
+                unsafe {
+                    libc::send(RAW_READY_CHILD_FD, byte.as_ptr().cast(), 1, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
+                    libc::close(RAW_READY_CHILD_FD);
+                }
+            }
+
         }
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
         super::pager::start_if_requested(handle.clone(), &spec.ram_pager, spec.memory_mib)
@@ -3782,6 +3852,7 @@ mod tests {
         assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
         runner.checkpoint = None;
         runner.restore = Some(super::super::checkpoint::RestoreLaunch {
+            ram_extents: Vec::new(),
             machine: "/unused/machine".into(),
             copies: vec![],
             shared_readonly_lowers: vec![],

@@ -18,6 +18,8 @@ pub struct SharedFilesystemLayer {
     // The disk reference survives supervisor exit for retained Run records. This
     // lock additionally fences GC if an active Attempt's reference is removed.
     _active: File,
+    #[cfg(target_os = "linux")]
+    pub(super) preparation_cache: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -27,6 +29,23 @@ struct LayerManifest<'a> {
     logical_root: &'a [u8],
     filesystem: &'a TreeInventory,
 }
+// One source of truth for optional admission and mandatory publication limits.
+// Ineligible trees can use private copies; integrity failures must still fail.
+pub(super) fn shared_manifest(
+    logical_root: &[u8],
+    expected: &TreeInventory,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if expected.entries.len() > 65_536 {
+        return Ok(None);
+    }
+    let bytes = serde_json::to_vec(&LayerManifest {
+        version: 1,
+        logical_root,
+        filesystem: expected,
+    })?;
+    Ok((bytes.len() <= 16 * 1024 * 1024).then_some(bytes))
+}
+
 impl SharedFilesystemLayer {
     pub fn root(&self) -> &Path {
         &self.root
@@ -100,15 +119,8 @@ pub(super) fn share(
     );
     // Equal trees at distinct logical roots must retain distinct inode
     // identities within one overlay; hard-link origin tables depend on it.
-    let manifest = serde_json::to_vec(&LayerManifest {
-        version: 1,
-        logical_root,
-        filesystem: expected,
-    })?;
-    ensure!(
-        expected.entries.len() <= 65_536 && manifest.len() <= 16 * 1024 * 1024,
-        "immutable lower exceeds metadata limit"
-    );
+    let manifest = shared_manifest(logical_root, expected)?
+        .context("immutable lower exceeds metadata limit")?;
     let id = store::digest(&manifest);
     let content = store_root.join("filesystems");
     ensure!(
@@ -139,6 +151,8 @@ pub(super) fn share(
     } else {
         None
     };
+    #[cfg(target_os = "linux")]
+    let mut created_here = false;
     if !object.try_exists()? {
         // The store gate excludes GC throughout preparation/publication. A
         // crash leaves ordinary pending state for the existing collector.
@@ -186,6 +200,10 @@ pub(super) fn share(
                 "shared filesystem publication: {error}"
             );
         }
+        #[cfg(target_os = "linux")]
+        {
+            created_here = rc == 0;
+        }
         File::open(&content)?.sync_all()?;
         File::open(store_root.join("pending"))?.sync_all()?;
     }
@@ -218,6 +236,8 @@ pub(super) fn share(
         root: object.join("tree"),
         pool: store_root.to_owned(),
         _active: active,
+        #[cfg(target_os = "linux")]
+        preparation_cache: std::sync::atomic::AtomicBool::new(created_here),
     })
 }
 
@@ -285,6 +305,8 @@ pub(super) fn retain(
         root: object.join("tree"),
         pool: pool.to_owned(),
         _active: active,
+        #[cfg(target_os = "linux")]
+        preparation_cache: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -550,5 +572,25 @@ impl Drop for StagingCleanup {
         if self.0.try_exists().unwrap_or(false) {
             let _ = super::layers::remove_private_tree(&self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod sharing_admission_tests {
+    use super::*;
+
+    #[test]
+    fn shared_manifest_limits_are_available_before_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut tree = super::super::inventory(temp.path()).unwrap();
+        assert!(shared_manifest(b"layer-003", &tree).unwrap().is_some());
+        let entry = tree.entries[0].clone();
+        tree.entries.resize(65_537, entry);
+        assert!(shared_manifest(b"layer-003", &tree).unwrap().is_none());
+        tree.entries.truncate(1);
+        tree.entries[0]
+            .xattrs
+            .push((b"user.large".to_vec(), vec![255; 5 * 1024 * 1024]));
+        assert!(shared_manifest(b"layer-003", &tree).unwrap().is_none());
     }
 }

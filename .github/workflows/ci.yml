@@ -368,6 +368,16 @@ jobs:
           PY
             go test -json -count=1 -timeout=20m -run "$(cat "$CONTRACT_LOGS/filter.txt")" tests/podman/e2e/*.go 2>&1 | tee "$CONTRACT_LOGS/go.jsonl"
           fi
+      - name: Capture host diagnostics on contract failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/podman-contracts"
+          {
+            uname -a
+            lscpu
+            sudo dmesg --ctime
+          } > "$RUNNER_TEMP/podman-contracts/host-diagnostics.txt" 2>&1
       - name: Upload contract logs
         if: always()
         uses: actions/upload-artifact@v4

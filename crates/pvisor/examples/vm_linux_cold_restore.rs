@@ -105,6 +105,7 @@ fn main() -> anyhow::Result<()> {
             "machine state digest mismatch"
         );
         vm.machine_restore(MachineRestore {
+            ram_extents: Vec::new(),
             state: saved.state,
             ram_file: Arc::new(File::open(base.join("ram.bin"))?),
         })?;
