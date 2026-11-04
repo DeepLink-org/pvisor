@@ -14,9 +14,11 @@ pub mod sys;
 pub use core::{
     BackingIdentity, BackingResolution, DirectoryEntry, LayerMutability, OPAQUE_NAME,
     OVERRIDE_STAT_XATTR, OverlayCore, OverlayLayout, PRIVATE_BACKING_XATTR, PreparedCopyUp,
-    PreparedCopyUps, ROOT_METADATA_NAME, Resolved, ResolvedMetadata, WHITEOUT_PREFIX,
-    fingerprint_at, is_opaque_directory, is_private_metadata_xattr, load_preimages,
-    logical_identity, preimage_journal_is_complete, remove_preimages, validate_guest_xattr,
+    PreparedCopyUps, ROOT_METADATA_NAME, Resolved, ResolvedMetadata,
+    STORED_FUSEOVERLAYFS_XATTR_PREFIX, STORED_OVERLAY_XATTR_PREFIX, WHITEOUT_PREFIX,
+    fingerprint_at, guest_overlay_xattr_name, is_opaque_directory, is_private_metadata_xattr,
+    is_stored_overlay_xattr, load_preimages, logical_identity, preimage_journal_is_complete,
+    remove_preimages, stored_overlay_xattr_name, validate_guest_xattr,
 };
 pub use pvisor_core::overlay::FileAccessPolicy;
 

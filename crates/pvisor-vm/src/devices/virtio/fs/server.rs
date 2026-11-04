@@ -695,8 +695,18 @@ impl<F: FileSystem + Sync> Server<F> {
     fn rename2(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
         let Rename2In { newdir, flags, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
 
-        #[cfg(target_os = "linux")]
-        let flags = flags & (libc::RENAME_EXCHANGE | libc::RENAME_NOREPLACE);
+        // The Linux FUSE client forwards the renameat2 flag set verbatim
+        // (fs/fuse/dir.c allows NOREPLACE, EXCHANGE and WHITEOUT). A guest
+        // kernel mounting overlayfs on the share relies on RENAME_WHITEOUT to
+        // create whiteouts atomically, so it must not be masked away. Reject
+        // unknown bits; the filesystem implementation rejects combinations it
+        // does not support (e.g. EXCHANGE together with WHITEOUT).
+        let known_flags = (bindings::LINUX_RENAME_NOREPLACE
+            | bindings::LINUX_RENAME_EXCHANGE
+            | bindings::LINUX_RENAME_WHITEOUT) as u32;
+        if flags & !known_flags != 0 {
+            return reply_error(einval(), in_header.unique, w);
+        }
 
         self.do_rename(in_header, size_of::<Rename2In>(), newdir, flags, r, w)
     }
