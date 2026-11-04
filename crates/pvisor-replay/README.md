@@ -1,0 +1,38 @@
+# pvisor-replay
+
+Replay preparation, tool execution and agent continuation for the
+`pvisor-replay` companion. The engine validates recorded trajectories and
+workspace boundaries before continuation; protocol-specific adapters remain
+responsible for agent versions, history and resume semantics.
+
+## Local continuation bridges
+
+Claude, Codex and OpenCode use private loopback bridges. Their protocol handlers
+retain separate routing, nonce/manifest validation, sequence state and final
+success checks. A shared private host owns listener startup, cancellation,
+thread/runtime teardown and loopback proxy exclusions. Each bridge gets a fresh
+local credential; upstream clients bypass ambient HTTP proxies. Child credential
+and base-URL environment variables remain agent-specific.
+
+Startup waits at most ten seconds for readiness. Explicit finish and Drop both
+cancel local upstream waits and stop accepting connections. The server allows
+one second for graceful draining, then drops its runtime and reports a
+continuation error if draining failed. The outer worker stop budget remains five
+seconds; an unconfirmed worker is reported as detached, never as a clean finish.
+Drop is best-effort; callers use explicit finish to observe teardown failures.
+Cancellation does not revoke a model request already received by the upstream.
+
+Claude retains its retry/status policy and two-thread runtime. Codex also uses
+two runtime threads; OpenCode keeps its current-thread runtime. A failed or
+cancelled transport exchange does not increment the forwarded-request count;
+protocol-specific finish checks still decide continuation validity.
+
+## Validation
+
+```sh
+mise run test -- pvisor-replay
+```
+
+Local fixtures cover protocol rewriting, credentials, stalled upstreams,
+startup failures, cancellation and bounded teardown. These are not live-model
+or external agent-version acceptance tests.

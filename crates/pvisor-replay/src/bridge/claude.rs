@@ -1,8 +1,5 @@
 use std::collections::BTreeMap;
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -13,10 +10,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use serde_json::{Map, Value, json};
-use tokio::sync::{Notify, oneshot};
+#[cfg(test)]
+use tokio::sync::Notify;
 
+use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
 use crate::bridge::claude_resume::{ResumeTransportManifest, clean_resume_transport_envelope};
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::error::{ReplayError, ReplayErrorKind};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-anthropic-openai-bridge/1";
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 8192;
@@ -25,16 +24,12 @@ const DEFAULT_CONTEXT_SAFETY_TOKENS: usize = 1024;
 const DEFAULT_UPSTREAM_TIMEOUT_SECONDS: f64 = 300.0;
 const DEFAULT_RETRY_DELAYS_SECONDS: &[f64] = &[15.0, 30.0, 60.0];
 const RETRYABLE_UPSTREAM_STATUSES: &[u16] = &[408, 429, 500, 502, 503, 504];
-const BRIDGE_START_TIMEOUT: Duration = Duration::from_secs(10);
-const BRIDGE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ClaudeBridgeHandle {
     pub base_url: String,
     pub api_key: String,
     shared: Arc<BridgeShared>,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker_done: Option<mpsc::Receiver<anyhow::Result<()>>>,
-    worker: Option<JoinHandle<()>>,
+    host: BridgeHost,
 }
 
 struct BridgeShared {
@@ -52,8 +47,7 @@ struct BridgeShared {
     context_safety_tokens: usize,
     upstream_timeout: Duration,
     retry_delays: Vec<Duration>,
-    cancelled: AtomicBool,
-    cancel_notify: Notify,
+    cancellation: Arc<Cancellation>,
 }
 
 struct ResumeState {
@@ -148,27 +142,9 @@ impl ClaudeBridgeHandle {
                 )
             })?;
         let upstream_url = chat_completions_url(&upstream_base)?;
-        let bridge_api_key = format!("pvisor-sandbox-replay-{}", uuid::Uuid::new_v4().simple());
-        let listener = TcpListener::bind(("127.0.0.1", 0)).replay_context(
-            ReplayErrorKind::Continuation,
-            "allocate Claude SandboxReplay bridge port",
-        )?;
-        let address = listener.local_addr().replay_context(
-            ReplayErrorKind::Continuation,
-            "read Claude SandboxReplay bridge address",
-        )?;
-        listener.set_nonblocking(true).replay_context(
-            ReplayErrorKind::Continuation,
-            "configure Claude SandboxReplay bridge listener",
-        )?;
-
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "build Claude SandboxReplay bridge client",
-            )?;
+        let bridge_api_key = host::bridge_api_key();
+        let (listener, address) = host::bind_loopback("Claude")?;
+        let client = host::upstream_client("Claude")?;
         let shared = Arc::new(BridgeShared {
             resume: Mutex::new(ResumeState {
                 manifest,
@@ -207,49 +183,22 @@ impl ClaudeBridgeHandle {
                 0.001,
             )?),
             retry_delays: retry_delays_environment()?,
-            cancelled: AtomicBool::new(false),
-            cancel_notify: Notify::new(),
+            cancellation: Arc::new(Cancellation::default()),
         });
-        let router = router(Arc::clone(&shared));
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (done_tx, done_rx) = mpsc::sync_channel(1);
-        let worker = thread::Builder::new()
-            .name("pvisor-claude-replay-bridge".into())
-            .spawn(move || {
-                let result = run_bridge_worker(listener, router, shutdown_rx, ready_tx);
-                let _ = done_tx.send(result);
-            })
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "start Claude SandboxReplay bridge thread",
-            )?;
-        let mut handle = Self {
+        let host = BridgeHost::start(
+            "Claude",
+            listener,
+            router(Arc::clone(&shared)),
+            shared.cancellation.clone(),
+            WorkerRuntime::TwoThreads,
+            ReplayErrorKind::Continuation,
+        )?;
+        Ok(Self {
             base_url: format!("http://{address}"),
             api_key: bridge_api_key,
             shared,
-            shutdown: Some(shutdown_tx),
-            worker_done: Some(done_rx),
-            worker: Some(worker),
-        };
-        let startup_error = match ready_rx.recv_timeout(BRIDGE_START_TIMEOUT) {
-            Ok(Ok(())) => None,
-            Ok(Err(message)) => Some(message),
-            Err(mpsc::RecvTimeoutError::Timeout) => Some(format!(
-                "Claude SandboxReplay bridge did not become ready within {} seconds",
-                BRIDGE_START_TIMEOUT.as_secs()
-            )),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Some("Claude SandboxReplay bridge worker exited before reporting readiness".into())
-            }
-        };
-        if let Some(mut message) = startup_error {
-            if let Err(error) = handle.stop_worker() {
-                message.push_str(&format!("; cleanup also failed: {error}"));
-            }
-            return Err(ReplayError::continuation(message));
-        }
-        Ok(handle)
+            host,
+        })
     }
 
     pub fn child_environment(&self) -> BTreeMap<String, String> {
@@ -271,7 +220,7 @@ impl ClaudeBridgeHandle {
     }
 
     pub fn finish(mut self) -> Result<usize, ReplayError> {
-        self.stop_worker()?;
+        self.host.stop()?;
         let state = self
             .shared
             .resume
@@ -297,87 +246,6 @@ impl ClaudeBridgeHandle {
             ));
         }
         Ok(state.forwarded_requests)
-    }
-
-    fn stop_worker(&mut self) -> Result<(), ReplayError> {
-        self.shared.cancelled.store(true, Ordering::Release);
-        self.shared.cancel_notify.notify_waiters();
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-
-        let worker_result = match self.worker_done.take() {
-            Some(done) => match done.recv_timeout(BRIDGE_STOP_TIMEOUT) {
-                Ok(result) => Some(result),
-                Err(mpsc::RecvTimeoutError::Disconnected) => None,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.worker.take();
-                    return Err(ReplayError::continuation(format!(
-                        "Claude SandboxReplay bridge did not stop within {} seconds; detached worker",
-                        BRIDGE_STOP_TIMEOUT.as_secs()
-                    )));
-                }
-            },
-            None => None,
-        };
-
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            return Err(ReplayError::continuation(
-                "Claude SandboxReplay bridge thread panicked",
-            ));
-        }
-        if let Some(result) = worker_result {
-            result.replay_context(
-                ReplayErrorKind::Continuation,
-                "stop Claude SandboxReplay bridge",
-            )?;
-        }
-        Ok(())
-    }
-}
-
-fn run_bridge_worker(
-    listener: TcpListener,
-    router: Router,
-    shutdown_rx: oneshot::Receiver<()>,
-    ready_tx: mpsc::SyncSender<std::result::Result<(), String>>,
-) -> anyhow::Result<()> {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = ready_tx.send(Err(format!("build bridge runtime: {error}")));
-            return Err(error.into());
-        }
-    };
-    runtime.block_on(async move {
-        let listener = match tokio::net::TcpListener::from_std(listener) {
-            Ok(listener) => listener,
-            Err(error) => {
-                let _ = ready_tx.send(Err(format!("adopt bridge listener: {error}")));
-                return Err(error.into());
-            }
-        };
-        ready_tx
-            .send(Ok(()))
-            .map_err(|_| anyhow::anyhow!("bridge startup receiver was dropped"))?;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
-            })
-            .await?;
-        anyhow::Ok(())
-    })
-}
-
-impl Drop for ClaudeBridgeHandle {
-    fn drop(&mut self) {
-        let _ = self.stop_worker();
     }
 }
 
@@ -666,7 +534,7 @@ async fn forward_openai_request(
 ) -> anyhow::Result<(u16, Vec<u8>)> {
     let attempts = shared.retry_delays.len() + 1;
     for attempt in 0..attempts {
-        if shared.cancelled.load(Ordering::Acquire) {
+        if shared.cancellation.is_cancelled() {
             anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
         }
         let send = shared
@@ -683,7 +551,7 @@ async fn forward_openai_request(
             .send();
         let result = tokio::select! {
             biased;
-            _ = wait_for_cancellation(shared) => {
+            _ = shared.cancellation.cancelled() => {
                 anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
             }
             result = send => result,
@@ -693,7 +561,7 @@ async fn forward_openai_request(
                 let status = response.status().as_u16();
                 let body_result = tokio::select! {
                     biased;
-                    _ = wait_for_cancellation(shared) => {
+                    _ = shared.cancellation.cancelled() => {
                         anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
                     }
                     result = response.bytes() => result,
@@ -715,28 +583,13 @@ async fn forward_openai_request(
         }
         tokio::select! {
             biased;
-            _ = wait_for_cancellation(shared) => {
+            _ = shared.cancellation.cancelled() => {
                 anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
             }
             _ = tokio::time::sleep(shared.retry_delays[attempt]) => {}
         }
     }
     unreachable!("upstream retry loop always returns")
-}
-
-async fn wait_for_cancellation(shared: &BridgeShared) {
-    loop {
-        let notified = shared.cancel_notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        if shared.cancelled.load(Ordering::Acquire) {
-            return;
-        }
-        notified.await;
-        if shared.cancelled.load(Ordering::Acquire) {
-            return;
-        }
-    }
 }
 
 fn openai_request(
@@ -1268,35 +1121,6 @@ fn chat_completions_url(base: &str) -> Result<String, ReplayError> {
     Ok(url.to_string())
 }
 
-fn merged_no_proxy_environment() -> String {
-    let configured = ["NO_PROXY", "no_proxy"]
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .collect::<Vec<_>>();
-    merge_no_proxy_values(configured.iter().map(String::as_str))
-}
-
-fn merge_no_proxy_values<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
-    let mut entries = Vec::<String>::new();
-    for value in values {
-        for entry in value
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-        {
-            if !entries.iter().any(|existing| existing == entry) {
-                entries.push(entry.to_owned());
-            }
-        }
-    }
-    for required in ["127.0.0.1", "localhost", "::1"] {
-        if !entries.iter().any(|existing| existing == required) {
-            entries.push(required.into());
-        }
-    }
-    entries.join(",")
-}
-
 fn first_nonempty_env(names: &[&'static str]) -> Option<(&'static str, String)> {
     names.iter().find_map(|name| {
         std::env::var(name)
@@ -1570,8 +1394,7 @@ mod tests {
                 context_safety_tokens: 1024,
                 upstream_timeout: Duration::from_secs(5),
                 retry_delays: Vec::new(),
-                cancelled: AtomicBool::new(false),
-                cancel_notify: Notify::new(),
+                cancellation: Arc::new(Cancellation::default()),
             });
             let mut headers = HeaderMap::new();
             headers.insert("x-api-key", HeaderValue::from_static("local-key"));
@@ -1737,8 +1560,7 @@ mod tests {
             context_safety_tokens: 1024,
             upstream_timeout: Duration::from_secs(60),
             retry_delays,
-            cancelled: AtomicBool::new(false),
-            cancel_notify: Notify::new(),
+            cancellation: Arc::new(Cancellation::default()),
         })
     }
 
@@ -1816,16 +1638,6 @@ mod tests {
     }
 
     #[test]
-    fn no_proxy_merge_preserves_values_and_guarantees_loopback() {
-        let merged =
-            merge_no_proxy_values(["example.internal, localhost", "10.0.0.0/8,example.internal"]);
-        assert_eq!(
-            merged,
-            "example.internal,localhost,10.0.0.0/8,127.0.0.1,::1"
-        );
-    }
-
-    #[test]
     fn active_upstream_send_is_cancelled_promptly() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1861,8 +1673,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), started.notified())
                 .await
                 .unwrap();
-            shared.cancelled.store(true, Ordering::Release);
-            shared.cancel_notify.notify_waiters();
+            shared.cancellation.cancel();
             let error = tokio::time::timeout(Duration::from_secs(2), request)
                 .await
                 .expect("cancelled request should return promptly")
@@ -1913,8 +1724,7 @@ mod tests {
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
-            shared.cancelled.store(true, Ordering::Release);
-            shared.cancel_notify.notify_waiters();
+            shared.cancellation.cancel();
             let error = tokio::time::timeout(Duration::from_secs(2), request)
                 .await
                 .expect("retry sleep should stop promptly")

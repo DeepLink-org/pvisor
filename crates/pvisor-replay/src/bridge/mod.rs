@@ -3,7 +3,10 @@
 pub(crate) mod claude;
 pub(crate) mod claude_resume;
 pub(crate) mod codex;
+mod host;
 pub(crate) mod opencode;
+#[cfg(test)]
+mod test_support;
 
 // Buffering preserves agent compatibility; responses are limited to 64 MiB.
 async fn read_response_limited(mut response: reqwest::Response) -> anyhow::Result<Vec<u8>> {

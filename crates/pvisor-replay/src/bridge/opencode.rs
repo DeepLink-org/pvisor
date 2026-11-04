@@ -13,12 +13,10 @@
 //! Responses bodies are streamed through unchanged apart from the JSON
 //! rewrite: OpenCode treats a stalled stream as a dead connection and retries.
 
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
+use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
+use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use anyhow::Context;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -27,22 +25,15 @@ use axum::http::HeaderMap;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
-use tokio::sync::oneshot;
-
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-opencode-responses-bridge/1";
-const START_TIMEOUT: Duration = Duration::from_secs(10);
-const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct OpencodeBridgeHandle {
     pub base_url: String,
     api_key: String,
     shared: Arc<BridgeShared>,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker_done: Option<mpsc::Receiver<anyhow::Result<()>>>,
-    worker: Option<JoinHandle<()>>,
+    host: BridgeHost,
 }
 
 struct BridgeShared {
@@ -56,7 +47,7 @@ struct BridgeShared {
     temperature: Option<f64>,
     top_p: Option<f64>,
     disable_thinking: bool,
-    cancelled: AtomicBool,
+    cancellation: Arc<Cancellation>,
 }
 
 #[derive(Default)]
@@ -102,26 +93,9 @@ impl OpencodeBridgeHandle {
         let upstream_origin = url_origin(&upstream_base)?;
         // Preserve the API prefix; OpenCode appends /responses to this base URL.
         let upstream_prefix = url_path_prefix(&upstream_base)?;
-        let bridge_api_key = format!("pvisor-sandbox-replay-{}", uuid::Uuid::new_v4().simple());
-        let listener = TcpListener::bind(("127.0.0.1", 0)).replay_context(
-            ReplayErrorKind::Continuation,
-            "allocate OpenCode SandboxReplay bridge port",
-        )?;
-        let address = listener.local_addr().replay_context(
-            ReplayErrorKind::Continuation,
-            "read OpenCode SandboxReplay bridge address",
-        )?;
-        listener.set_nonblocking(true).replay_context(
-            ReplayErrorKind::Continuation,
-            "configure OpenCode SandboxReplay bridge listener",
-        )?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "build OpenCode SandboxReplay bridge client",
-            )?;
+        let bridge_api_key = host::bridge_api_key();
+        let (listener, address) = host::bind_loopback("OpenCode")?;
+        let client = host::upstream_client("OpenCode")?;
         let shared = Arc::new(BridgeShared {
             state: Mutex::new(BridgeState::default()),
             client,
@@ -133,46 +107,22 @@ impl OpencodeBridgeHandle {
             temperature,
             top_p,
             disable_thinking,
-            cancelled: AtomicBool::new(false),
+            cancellation: Arc::new(Cancellation::default()),
         });
-        let router = router(Arc::clone(&shared));
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (done_tx, done_rx) = mpsc::sync_channel(1);
-        let worker = thread::Builder::new()
-            .name("pvisor-opencode-replay-bridge".into())
-            .spawn(move || {
-                let result = run_worker(listener, router, shutdown_rx, ready_tx);
-                let _ = done_tx.send(result);
-            })
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "start OpenCode SandboxReplay bridge thread",
-            )?;
-        let mut handle = Self {
+        let host = BridgeHost::start(
+            "OpenCode",
+            listener,
+            router(Arc::clone(&shared)),
+            shared.cancellation.clone(),
+            WorkerRuntime::CurrentThread,
+            ReplayErrorKind::Executor,
+        )?;
+        Ok(Self {
             base_url: format!("http://{address}{upstream_prefix}"),
             api_key: bridge_api_key,
             shared,
-            shutdown: Some(shutdown_tx),
-            worker_done: Some(done_rx),
-            worker: Some(worker),
-        };
-        let startup_error = match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(())) => None,
-            Ok(Err(message)) => Some(message),
-            Err(mpsc::RecvTimeoutError::Timeout) => Some(format!(
-                "OpenCode SandboxReplay bridge did not become ready within {} seconds",
-                START_TIMEOUT.as_secs()
-            )),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Some("OpenCode SandboxReplay bridge exited before reporting readiness".into())
-            }
-        };
-        if let Some(message) = startup_error {
-            let _ = handle.stop_worker();
-            return Err(ReplayError::continuation(message));
-        }
-        Ok(handle)
+            host,
+        })
     }
 
     /// Environment for the OpenCode child so it talks only to this bridge.
@@ -188,7 +138,7 @@ impl OpencodeBridgeHandle {
     }
 
     pub fn finish(mut self) -> Result<usize, ReplayError> {
-        self.stop_worker()?;
+        self.host.stop()?;
         let state = self
             .shared
             .state
@@ -215,77 +165,6 @@ impl OpencodeBridgeHandle {
         }
         Ok(state.forwarded_requests)
     }
-
-    fn stop_worker(&mut self) -> Result<(), ReplayError> {
-        self.shared.cancelled.store(true, Ordering::Release);
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        let worker_result = match self.worker_done.take() {
-            Some(done) => match done.recv_timeout(STOP_TIMEOUT) {
-                Ok(result) => Some(result),
-                Err(mpsc::RecvTimeoutError::Disconnected) => None,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.worker.take();
-                    return Err(ReplayError::continuation(format!(
-                        "OpenCode SandboxReplay bridge did not stop within {} seconds",
-                        STOP_TIMEOUT.as_secs()
-                    )));
-                }
-            },
-            None => None,
-        };
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            return Err(ReplayError::continuation(
-                "OpenCode SandboxReplay bridge thread panicked",
-            ));
-        }
-        if let Some(result) = worker_result {
-            result.replay_context(
-                ReplayErrorKind::Executor,
-                "stop OpenCode SandboxReplay bridge",
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for OpencodeBridgeHandle {
-    fn drop(&mut self) {
-        let _ = self.stop_worker();
-    }
-}
-
-fn run_worker(
-    listener: TcpListener,
-    router: Router,
-    shutdown_rx: oneshot::Receiver<()>,
-    ready_tx: mpsc::SyncSender<std::result::Result<(), String>>,
-) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            let _ = ready_tx.send(Err(format!("build OpenCode bridge runtime: {error}")));
-            error
-        })?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::from_std(listener).map_err(|error| {
-            let _ = ready_tx.send(Err(format!("adopt OpenCode bridge listener: {error}")));
-            error
-        })?;
-        ready_tx
-            .send(Ok(()))
-            .map_err(|_| anyhow::anyhow!("OpenCode bridge startup receiver was dropped"))?;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
-            })
-            .await?;
-        anyhow::Ok(())
-    })
 }
 
 fn router(shared: Arc<BridgeShared>) -> Router {
@@ -389,47 +268,58 @@ async fn forward_handler(
     if !body.is_empty() {
         upstream = upstream.body(reqwest::Body::from(body));
     }
-    let response = match upstream.send().await {
-        Ok(response) => response,
-        Err(error) => {
-            fail(&shared, format!("forward OpenCode request: {error}"));
-            return error_response(StatusCode::BAD_GATEWAY, &error.to_string());
-        }
-    };
-    let status = response.status();
-    let mut response_headers = HeaderMap::new();
-    for (name, value) in response.headers().iter() {
-        if is_hop_by_hop_header(name.as_str()) {
-            continue;
-        }
-        if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
-            response_headers.insert(name.clone(), header_value);
-        }
-    }
-    // Buffer before delivery: OpenCode can hang on an interrupted response stream.
-    let body = match super::read_response_limited(response).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            fail(&shared, format!("read upstream OpenCode response: {error}"));
-            return error_response(StatusCode::BAD_GATEWAY, &error.to_string());
-        }
-    };
-    let mut builder = Response::builder()
-        .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
-    for (name, value) in response_headers.iter() {
-        builder = builder.header(name.clone(), value.clone());
-    }
-    match builder.body(Body::from(body)) {
-        Ok(response) => {
-            if let Ok(mut state) = shared.state.lock() {
-                state.forwarded_requests += 1;
+    let forwarding = async {
+        let response = match upstream.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                fail(&shared, format!("forward OpenCode request: {error}"));
+                return error_response(StatusCode::BAD_GATEWAY, &error.to_string());
             }
-            response
+        };
+        let status = response.status();
+        let mut response_headers = HeaderMap::new();
+        for (name, value) in response.headers().iter() {
+            if is_hop_by_hop_header(name.as_str()) {
+                continue;
+            }
+            if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
+                response_headers.insert(name.clone(), header_value);
+            }
         }
-        Err(error) => {
-            fail(&shared, format!("build OpenCode bridge response: {error}"));
-            error_response(StatusCode::BAD_GATEWAY, "bridge response failure")
+        // Buffer before delivery: OpenCode can hang on an interrupted response stream.
+        let body = match super::read_response_limited(response).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                fail(&shared, format!("read upstream OpenCode response: {error}"));
+                return error_response(StatusCode::BAD_GATEWAY, &error.to_string());
+            }
+        };
+        let mut builder = Response::builder()
+            .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
+        for (name, value) in response_headers.iter() {
+            builder = builder.header(name.clone(), value.clone());
         }
+        match builder.body(Body::from(body)) {
+            Ok(response) => {
+                if let Ok(mut state) = shared.state.lock() {
+                    state.forwarded_requests += 1;
+                }
+                response
+            }
+            Err(error) => {
+                fail(&shared, format!("build OpenCode bridge response: {error}"));
+                error_response(StatusCode::BAD_GATEWAY, "bridge response failure")
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = shared.cancellation.cancelled() => {
+            let message = "OpenCode SandboxReplay bridge was cancelled";
+            fail(&shared, message.into());
+            error_response(StatusCode::BAD_GATEWAY, message)
+        }
+        response = forwarding => response,
     }
 }
 
@@ -603,26 +493,96 @@ fn first_nonempty_env(names: &[&str]) -> Option<String> {
         .find(|value| !value.trim().is_empty())
 }
 
-fn merged_no_proxy_environment() -> String {
-    let mut entries: Vec<String> = ["127.0.0.1", "localhost", "::1"]
-        .iter()
-        .map(|entry| (*entry).to_owned())
-        .collect();
-    for name in ["NO_PROXY", "no_proxy"] {
-        if let Ok(value) = std::env::var(name)
-            && !value.trim().is_empty()
-        {
-            entries.extend(value.split(',').map(|entry| entry.trim().to_owned()));
-        }
-    }
-    entries.join(",")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{BridgeShared, remove_exact_user_input, rewrite_request};
+    use super::{
+        BridgeHost, BridgeShared, OpencodeBridgeHandle, ReplayErrorKind, StatusCode, WorkerRuntime,
+        host, remove_exact_user_input, rewrite_request, router,
+    };
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finish_cancels_stalled_upstreams_and_preserves_failure_state() {
+        for partial_body in [false, true] {
+            let (upstream_url, started, upstream) =
+                super::super::test_support::stalled_upstream(partial_body).await;
+            let key = host::bridge_api_key();
+            let mut state = shared(Some("nonce"), None, None);
+            state.client = host::upstream_client("OpenCode").unwrap();
+            state.upstream_origin = upstream_url;
+            state.upstream_api_key = "upstream-test-key".into();
+            state.bridge_api_key = key.clone();
+            let shared = Arc::new(state);
+            let (listener, address) = host::bind_loopback("OpenCode").unwrap();
+            let bridge = OpencodeBridgeHandle {
+                base_url: format!("http://{address}/v1"),
+                api_key: key.clone(),
+                shared: shared.clone(),
+                host: BridgeHost::start(
+                    "OpenCode",
+                    listener,
+                    router(shared.clone()),
+                    shared.cancellation.clone(),
+                    WorkerRuntime::CurrentThread,
+                    ReplayErrorKind::Executor,
+                )
+                .unwrap(),
+            };
+            let client = host::upstream_client("test").unwrap();
+            let endpoint = format!("{}/responses", bridge.base_url);
+            for credential in [None, Some("foreign-key")] {
+                let mut denied = client.post(&endpoint).body("{}");
+                if let Some(credential) = credential {
+                    denied = denied.bearer_auth(credential);
+                }
+                assert_eq!(
+                    denied.send().await.unwrap().status(),
+                    StatusCode::UNAUTHORIZED
+                );
+            }
+            let request_key = key.clone();
+            let request = tokio::spawn(async move {
+                client
+                    .post(endpoint)
+                    .bearer_auth(request_key)
+                    .header("content-type", "application/json")
+                    .body(
+                        json!({"input":[
+                            {"role":"user","content":"task"},
+                            {"role":"user","content":"nonce"}
+                        ]})
+                        .to_string(),
+                    )
+                    .send()
+                    .await
+            });
+            let headers = tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap();
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.contains("authorization: bearer upstream-test-key"));
+            assert!(!headers.contains(&key));
+            let error = bridge.finish().unwrap_err();
+            assert_eq!(error.kind, ReplayErrorKind::Continuation);
+            assert!(error.message.contains("failed closed"));
+            let response = tokio::time::timeout(Duration::from_secs(2), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert!(response.text().await.unwrap().contains("cancelled"));
+            let state = shared.state.lock().unwrap();
+            assert!(state.failed);
+            assert_eq!(state.forwarded_requests, 0);
+            drop(state);
+            upstream.abort();
+            assert!(std::net::TcpListener::bind(address).is_ok());
+        }
+    }
 
     fn shared(strip: Option<&str>, temperature: Option<f64>, top_p: Option<f64>) -> BridgeShared {
         shared_full(strip, temperature, top_p, false)
@@ -645,7 +605,7 @@ mod tests {
             temperature,
             top_p,
             disable_thinking,
-            cancelled: Default::default(),
+            cancellation: Default::default(),
         }
     }
 

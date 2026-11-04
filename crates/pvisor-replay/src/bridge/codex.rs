@@ -7,12 +7,10 @@
 //! the full conversation history on subsequent requests.
 
 use std::collections::BTreeMap;
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
+use super::host::{self, BridgeHost, Cancellation, WorkerRuntime, merged_no_proxy_environment};
+use crate::error::{ReplayError, ReplayErrorKind};
 use anyhow::Context;
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -22,13 +20,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use serde_json::{Value, json};
-use tokio::sync::{Notify, oneshot};
-
-use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-codex-responses-bridge/1";
-const START_TIMEOUT: Duration = Duration::from_secs(10);
-const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +43,7 @@ pub struct CodexBridgeHandle {
     pub base_url: String,
     api_key: String,
     shared: Arc<BridgeShared>,
-    shutdown: Option<oneshot::Sender<()>>,
-    worker_done: Option<mpsc::Receiver<anyhow::Result<()>>>,
-    worker: Option<JoinHandle<()>>,
+    host: BridgeHost,
 }
 
 struct BridgeShared {
@@ -65,8 +56,7 @@ struct BridgeShared {
     prompt_mode: PromptMode,
     transport_prompt: String,
     explicit_prompt: Option<String>,
-    cancelled: AtomicBool,
-    cancel_notify: Notify,
+    cancellation: Arc<Cancellation>,
 }
 
 struct BridgeState {
@@ -115,26 +105,9 @@ impl CodexBridgeHandle {
         } else {
             PromptMode::TransportNonce
         };
-        let bridge_api_key = format!("pvisor-sandbox-replay-{}", uuid::Uuid::new_v4().simple());
-        let listener = TcpListener::bind(("127.0.0.1", 0)).replay_context(
-            ReplayErrorKind::Continuation,
-            "allocate Codex SandboxReplay bridge port",
-        )?;
-        let address = listener.local_addr().replay_context(
-            ReplayErrorKind::Continuation,
-            "read Codex SandboxReplay bridge address",
-        )?;
-        listener.set_nonblocking(true).replay_context(
-            ReplayErrorKind::Continuation,
-            "configure Codex SandboxReplay bridge listener",
-        )?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "build Codex SandboxReplay bridge client",
-            )?;
+        let bridge_api_key = host::bridge_api_key();
+        let (listener, address) = host::bind_loopback("Codex")?;
+        let client = host::upstream_client("Codex")?;
         let shared = Arc::new(BridgeShared {
             state: Mutex::new(BridgeState {
                 request_sequence: 0,
@@ -152,47 +125,22 @@ impl CodexBridgeHandle {
             prompt_mode,
             transport_prompt,
             explicit_prompt: explicit_prompt.map(str::to_owned),
-            cancelled: AtomicBool::new(false),
-            cancel_notify: Notify::new(),
+            cancellation: Arc::new(Cancellation::default()),
         });
-        let router = router(Arc::clone(&shared));
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (done_tx, done_rx) = mpsc::sync_channel(1);
-        let worker = thread::Builder::new()
-            .name("pvisor-codex-replay-bridge".into())
-            .spawn(move || {
-                let result = run_worker(listener, router, shutdown_rx, ready_tx);
-                let _ = done_tx.send(result);
-            })
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "start Codex SandboxReplay bridge thread",
-            )?;
-        let mut handle = Self {
+        let host = BridgeHost::start(
+            "Codex",
+            listener,
+            router(Arc::clone(&shared)),
+            shared.cancellation.clone(),
+            WorkerRuntime::TwoThreads,
+            ReplayErrorKind::Executor,
+        )?;
+        Ok(Self {
             base_url: format!("http://{address}/v1"),
             api_key: bridge_api_key,
             shared,
-            shutdown: Some(shutdown_tx),
-            worker_done: Some(done_rx),
-            worker: Some(worker),
-        };
-        let startup_error = match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(())) => None,
-            Ok(Err(message)) => Some(message),
-            Err(mpsc::RecvTimeoutError::Timeout) => Some(format!(
-                "Codex SandboxReplay bridge did not become ready within {} seconds",
-                START_TIMEOUT.as_secs()
-            )),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Some("Codex SandboxReplay bridge exited before reporting readiness".into())
-            }
-        };
-        if let Some(message) = startup_error {
-            let _ = handle.stop_worker();
-            return Err(ReplayError::continuation(message));
-        }
-        Ok(handle)
+            host,
+        })
     }
 
     pub fn child_environment(&self) -> BTreeMap<String, String> {
@@ -211,7 +159,7 @@ impl CodexBridgeHandle {
     }
 
     pub fn finish(mut self) -> Result<usize, ReplayError> {
-        self.stop_worker()?;
+        self.host.stop()?;
         let state = self
             .shared
             .state
@@ -244,76 +192,6 @@ impl CodexBridgeHandle {
         }
         Ok(state.forwarded_requests)
     }
-
-    fn stop_worker(&mut self) -> Result<(), ReplayError> {
-        self.shared.cancelled.store(true, Ordering::Release);
-        self.shared.cancel_notify.notify_waiters();
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        let worker_result = match self.worker_done.take() {
-            Some(done) => match done.recv_timeout(STOP_TIMEOUT) {
-                Ok(result) => Some(result),
-                Err(mpsc::RecvTimeoutError::Disconnected) => None,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.worker.take();
-                    return Err(ReplayError::continuation(format!(
-                        "Codex SandboxReplay bridge did not stop within {} seconds",
-                        STOP_TIMEOUT.as_secs()
-                    )));
-                }
-            },
-            None => None,
-        };
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            return Err(ReplayError::continuation(
-                "Codex SandboxReplay bridge thread panicked",
-            ));
-        }
-        if let Some(result) = worker_result {
-            result.replay_context(ReplayErrorKind::Executor, "stop Codex SandboxReplay bridge")?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for CodexBridgeHandle {
-    fn drop(&mut self) {
-        let _ = self.stop_worker();
-    }
-}
-
-fn run_worker(
-    listener: TcpListener,
-    router: Router,
-    shutdown_rx: oneshot::Receiver<()>,
-    ready_tx: mpsc::SyncSender<std::result::Result<(), String>>,
-) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            let _ = ready_tx.send(Err(format!("build Codex bridge runtime: {error}")));
-            error
-        })?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::from_std(listener).map_err(|error| {
-            let _ = ready_tx.send(Err(format!("adopt Codex bridge listener: {error}")));
-            error
-        })?;
-        ready_tx
-            .send(Ok(()))
-            .map_err(|_| anyhow::anyhow!("Codex bridge startup receiver was dropped"))?;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
-            })
-            .await?;
-        anyhow::Ok(())
-    })
 }
 
 fn router(shared: Arc<BridgeShared>) -> Router {
@@ -413,33 +291,39 @@ struct UpstreamResponse {
 }
 
 async fn forward(shared: &BridgeShared, body: Vec<u8>) -> anyhow::Result<UpstreamResponse> {
-    if shared.cancelled.load(Ordering::Acquire) {
-        anyhow::bail!("Codex SandboxReplay bridge was cancelled");
+    let forwarding = async {
+        let request = shared
+            .client
+            .post(&shared.upstream_url)
+            .header(
+                AUTHORIZATION.as_str(),
+                format!("Bearer {}", shared.upstream_api_key),
+            )
+            .header(CONTENT_TYPE.as_str(), "application/json")
+            .header("X-LiteLLM-Session-ID", &shared.routing_session_id)
+            .body(body)
+            .send()
+            .await?;
+        let status = request.status().as_u16();
+        let headers: HeaderMap = request
+            .headers()
+            .iter()
+            .filter(|(name, _)| !is_hop_by_hop_header(name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        anyhow::Ok(UpstreamResponse {
+            status,
+            headers,
+            body: super::read_response_limited(request).await?,
+        })
+    };
+    tokio::select! {
+        biased;
+        _ = shared.cancellation.cancelled() => {
+            anyhow::bail!("Codex SandboxReplay bridge was cancelled");
+        }
+        result = forwarding => result,
     }
-    let request = shared
-        .client
-        .post(&shared.upstream_url)
-        .header(
-            AUTHORIZATION.as_str(),
-            format!("Bearer {}", shared.upstream_api_key),
-        )
-        .header(CONTENT_TYPE.as_str(), "application/json")
-        .header("X-LiteLLM-Session-ID", &shared.routing_session_id)
-        .body(body)
-        .send()
-        .await?;
-    let status = request.status().as_u16();
-    let headers: HeaderMap = request
-        .headers()
-        .iter()
-        .filter(|(name, _)| !is_hop_by_hop_header(name.as_str()))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
-    Ok(UpstreamResponse {
-        status,
-        headers,
-        body: super::read_response_limited(request).await?,
-    })
 }
 
 fn clean_request(shared: &Arc<BridgeShared>, mut payload: Value) -> anyhow::Result<(Value, usize)> {
@@ -638,31 +522,6 @@ fn responses_url(base: &str) -> Result<String, ReplayError> {
     Ok(url.to_string())
 }
 
-fn merged_no_proxy_environment() -> String {
-    let configured = ["NO_PROXY", "no_proxy"]
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .collect::<Vec<_>>();
-    let mut entries = Vec::new();
-    for value in configured {
-        for entry in value
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-        {
-            if !entries.iter().any(|existing| existing == entry) {
-                entries.push(entry.to_owned());
-            }
-        }
-    }
-    for required in ["127.0.0.1", "localhost", "::1"] {
-        if !entries.iter().any(|existing| existing == required) {
-            entries.push(required.into());
-        }
-    }
-    entries.join(",")
-}
-
 fn first_nonempty_env(names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
         std::env::var(name)
@@ -674,6 +533,102 @@ fn first_nonempty_env(names: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finish_cancels_stalled_upstreams_without_counting_them_as_forwarded() {
+        for partial_body in [false, true] {
+            let (upstream_url, started, upstream) =
+                super::super::test_support::stalled_upstream(partial_body).await;
+            let key = host::bridge_api_key();
+            let shared = Arc::new(BridgeShared {
+                state: Mutex::new(BridgeState {
+                    request_sequence: 0,
+                    forwarded_requests: 0,
+                    removed_transport_prompt: false,
+                    pending_forward_sequence: None,
+                    failed: false,
+                    failure: None,
+                }),
+                client: host::upstream_client("Codex").unwrap(),
+                upstream_url,
+                upstream_api_key: "upstream-test-key".into(),
+                routing_session_id: "routing-test".into(),
+                bridge_api_key: key.clone(),
+                prompt_mode: PromptMode::TransportNonce,
+                transport_prompt: "nonce".into(),
+                explicit_prompt: None,
+                cancellation: Arc::new(Cancellation::default()),
+            });
+            let (listener, address) = host::bind_loopback("Codex").unwrap();
+            let bridge = CodexBridgeHandle {
+                base_url: format!("http://{address}/v1"),
+                api_key: key.clone(),
+                shared: shared.clone(),
+                host: BridgeHost::start(
+                    "Codex",
+                    listener,
+                    router(shared.clone()),
+                    shared.cancellation.clone(),
+                    WorkerRuntime::TwoThreads,
+                    ReplayErrorKind::Executor,
+                )
+                .unwrap(),
+            };
+            let client = host::upstream_client("test").unwrap();
+            let endpoint = format!("{}/responses", bridge.base_url);
+            for credential in [None, Some("foreign-key")] {
+                let mut denied = client.post(&endpoint).body("{}");
+                if let Some(credential) = credential {
+                    denied = denied.bearer_auth(credential);
+                }
+                assert_eq!(
+                    denied.send().await.unwrap().status(),
+                    StatusCode::UNAUTHORIZED
+                );
+            }
+            let request_key = key.clone();
+            let request = tokio::spawn(async move {
+                client
+                    .post(endpoint)
+                    .bearer_auth(request_key)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(
+                        json!({"input":[
+                            {"role":"user","content":"task"},
+                            {"role":"user","content":"nonce"}
+                        ]})
+                        .to_string(),
+                    )
+                    .send()
+                    .await
+            });
+            let headers = tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap();
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.contains("authorization: bearer upstream-test-key"));
+            assert!(!headers.contains(&key));
+            let error = bridge.finish().unwrap_err();
+            assert_eq!(error.kind, ReplayErrorKind::Continuation);
+            assert!(error.message.contains("failed closed"));
+            let response = tokio::time::timeout(Duration::from_secs(2), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert!(response.text().await.unwrap().contains("cancelled"));
+            let state = shared.state.lock().unwrap();
+            assert!(state.failed);
+            assert_eq!(state.forwarded_requests, 0);
+            assert!(state.pending_forward_sequence.is_some());
+            drop(state);
+            upstream.abort();
+            assert!(std::net::TcpListener::bind(address).is_ok());
+        }
+    }
 
     #[test]
     fn responses_url_appends_responses_endpoint() {
