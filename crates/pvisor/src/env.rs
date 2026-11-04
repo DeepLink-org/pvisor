@@ -79,6 +79,7 @@ pub(crate) mod ram {
     pub(crate) const METRICS_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_METRICS";
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) const PAGE_INVENTORY_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY";
+    #[cfg(target_os = "macos")]
     pub(crate) const PROCESS_INVENTORY_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY";
 }
 
