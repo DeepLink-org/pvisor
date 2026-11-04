@@ -549,12 +549,12 @@ mod tests {
         job.active_attempt = source.attempt_id.clone().unwrap();
         job.state = JobState::Running;
         job.write().unwrap();
-        let live_attempt = pvisor::RunLease::acquire(root.path()).unwrap();
+        let (_, live_attempt) = source.lock_current().unwrap();
         let before = std::fs::read(root.path().join("run.json")).unwrap();
 
         reject_ask_restore_source(&source).unwrap();
 
-        assert!(pvisor::RunLease::acquire(root.path()).is_err());
+        assert!(source.lock_current().is_err());
         assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
         drop(live_attempt);
     }

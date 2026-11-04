@@ -88,6 +88,7 @@ pub(super) fn project(config: &RunConfig, spec: &mut RunSpec) -> anyhow::Result<
     Ok(())
 }
 
+#[cfg(any(feature = "gateway", test))]
 pub(super) fn routes(config: &RunConfig) -> Vec<pvisor_core::gateway::ModelRoute> {
     config
         .gateway
