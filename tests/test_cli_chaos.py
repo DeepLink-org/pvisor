@@ -94,6 +94,48 @@ class CliChaosSafetyTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 runner.call("-c", "print('wrong')", out=b"correct\n")
 
+    def test_owned_evidence_is_synced_before_cache_advice_and_keeps_exact_bytes(self):
+        with workspace() as (root, _):
+            path = root / "evidence"
+            data = b"raw\x00evidence\xff\n"
+            calls = []
+            with (
+                mock.patch.object(chaos.os, "POSIX_FADV_DONTNEED", 4, create=True),
+                mock.patch.object(
+                    chaos.os,
+                    "fsync",
+                    side_effect=lambda fd: calls.append(("sync", path.read_bytes())),
+                ),
+                mock.patch.object(
+                    chaos.os,
+                    "posix_fadvise",
+                    side_effect=lambda *args: calls.append(("advice", args[1:], path.read_bytes())),
+                    create=True,
+                ),
+            ):
+                chaos.write_evidence(path, data)
+            self.assertEqual(
+                calls,
+                [("sync", data), ("advice", (0, 0, chaos.os.POSIX_FADV_DONTNEED), data)],
+            )
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_evidence_cache_advice_failure_is_not_silently_accepted(self):
+        with workspace() as (root, _):
+            path = root / "evidence"
+            with (
+                mock.patch.object(chaos.os, "POSIX_FADV_DONTNEED", 4, create=True),
+                mock.patch.object(
+                    chaos.os,
+                    "posix_fadvise",
+                    side_effect=OSError("advice failed"),
+                    create=True,
+                ),
+                self.assertRaisesRegex(OSError, "advice failed"),
+            ):
+                chaos.write_evidence(path, b"retained")
+            self.assertEqual(path.read_bytes(), b"retained")
+
     def test_scenarios_are_not_shadowed_by_fixture_state(self):
         with workspace() as (root, _):
             runner = self.runner(root)

@@ -154,6 +154,13 @@ memory/load/PSI and pauses new scenarios when available RAM or disk falls below
 window includes pressure pauses; report them separately from completed rounds.
 It never disables these limits to turn an environment problem into a pass.
 Only exact owned container names and identity-pinned daemon processes are cleaned.
+Raw streams, command receipts and resource records are flushed/synced, then their
+owned file descriptors receive `POSIX_FADV_DONTNEED` where supported. This keeps
+retained evidence from filling the controller's cgroup page cache during long
+runs; bytes remain on disk for the independent audit. It does not evict guest RAM,
+image caches or unrelated host files, move evidence outside accounting, increase
+limits or relax the zero memory-limit/OOM-event assertions. Resource records
+include `memory.stat` to distinguish file cache from anonymous memory.
 Evidence remains after success and failure. For example, after freezing the
 product binaries and any GNU firmware beside them:
 
