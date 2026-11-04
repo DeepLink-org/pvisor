@@ -124,6 +124,63 @@ fn concurrent_start_converges_and_read_only_status_never_starts() {
 }
 
 #[test]
+fn start_waits_for_bootstrap_before_inspecting_the_new_socket() {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+    use std::os::unix::{fs::OpenOptionsExt, net::UnixListener};
+
+    let fixture = Fixture::new();
+    let startup = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(fixture.state().join("startup.lock"))
+        .unwrap();
+    startup.lock_exclusive().unwrap();
+    // Model the real bind-to-chmod interval while another starter owns the
+    // bootstrap lease. Clients must wait, not accept these permissions.
+    let socket = fixture.state().join("control.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = fixture
+        .command("start")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    if child.try_wait().unwrap().is_some() {
+        let output = child.wait_with_output().unwrap();
+        fs::remove_file(&socket).unwrap();
+        panic!(
+            "start inspected an unpublished socket before owning bootstrap: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let worker = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0; 1024];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        stream.write_all(b"{\"Ok\":{\"protocol\":1,\"instance_id\":\"00000000-0000-0000-0000-000000000001\",\"memory_pool\":null}}\n").unwrap();
+    });
+    drop(startup);
+    let status = decode(child.wait_with_output().unwrap());
+    worker.join().unwrap();
+    fs::remove_file(&socket).unwrap();
+    assert_eq!(
+        status["instance_id"],
+        "00000000-0000-0000-0000-000000000001"
+    );
+    assert!(!fixture.state().join("manager.log").exists());
+}
+
+#[test]
 fn implicit_start_and_manager_restart_preserve_pool_identity_and_fixed_mode() {
     let mut fixture = Fixture::new();
     let socket = fixture.pool();

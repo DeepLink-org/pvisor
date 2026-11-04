@@ -30,6 +30,10 @@ keep their existing independent execution. Explicit socket selectors never
 start a daemon or fall back to a private pool. Resolved sockets, rather than the
 `auto` keyword, are saved in Job/container records; container `start` requires
 that original pool to remain available.
+Every `start`, including reuse of a running manager, joins the startup lock
+before inspecting the control socket. A concurrent starter therefore cannot
+observe the manager's bind-to-0600 initialization window. Unsafe endpoints,
+foreign peers and malformed replies still fail closed after that fence.
 
 The default instance directory is canonical `/tmp/pvisor-daemon-<effective-UID>`,
 independent of the working directory. It must be owned by that user with mode
