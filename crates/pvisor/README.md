@@ -1946,6 +1946,14 @@ protection or `=0` after separately qualifying a backport. The low-level
 it; the launcher removes it for the off path. KVM error handling, retries,
 resource budgets and timeouts remain unchanged.
 
+## Initial compressed RAM base
+
+A newly zero-initialized compressed backing emits zero-fill entries for blocks
+never written before its first commit, caching checksums by block length. Written
+blocks retain the original path. Generic capture and compaction still read all
+required content, including clean ancestors. The complete index, on-disk format,
+mmap writeback drain, durability and resume barriers remain unchanged.
+
 ### Protected clean workspace seeds
 
 Linux native Raw version-1 restore can retain one immutable workspace lower

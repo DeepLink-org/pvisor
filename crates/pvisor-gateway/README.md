@@ -193,3 +193,27 @@ wait hook for authorized GET/CONNECT traffic. The native adapter enables it with
 cooldown and delivery barriers, and needs no Agent header. Custom lifecycles
 retain the default no-hook behavior. CONNECT is opaque transport evidence, not
 recognition of model requests or TLS payload semantics.
+
+## Best-effort client identification
+
+Model forwarding uses cached client metadata and schedules missing identification
+on a blocking worker, with four concurrent probes per registry and duplicate
+suppression. A first request can omit client metadata; subsequent requests can use
+a completed lookup. Identification does not authorize requests.
+
+Linux reads `/proc/net/tcp{,6}`, socket links under `/proc/<pid>/fd`, and bounded
+`cmdline`, `stat` and `status` files directly; it never falls back to `lsof` or
+`ps`. Each lookup has a one-second cooperative deadline, at most 8,192 directory
+entries and 65,536 descriptor entries, with 4 MiB TCP-table and 1 MiB command-line
+read limits. These bounds do not interrupt an individual blocked filesystem
+operation. Inaccessible/disappearing processes, exhausted budgets and ambiguous
+socket owners leave identification absent. PID start times are checked around
+command-line reads. Visibility is limited to the Gateway's procfs/network namespace.
+Effective UIDs use local `/etc/passwd` names or numeric UID fallback, avoiding
+potentially blocking NSS/network lookups; this can change fingerprints for users
+known only through NSS.
+
+macOS and other Unix platforms retain bounded `lsof`/`ps` probes: they receive a
+kill after one second and are reaped before releasing their worker slot;
+uninterruptible kernel waits can delay reaping. Read-back metadata is capped at
+1 MiB. Probe failure leaves metadata absent and does not fail model forwarding.

@@ -447,16 +447,18 @@ impl CompressedRam {
                     length: self.logical_bytes,
                 }],
             };
-            let chain = SnapshotChain::capture(
-                &self.directory,
-                &layout,
-                self.chain.as_ref(),
-                &self.dirty.keys().copied().collect::<BTreeSet<_>>(),
-                |block, output| {
-                    output.copy_from_slice(&self.read_block(block)?);
-                    Ok(())
-                },
-            )?;
+            let dirty = self.dirty.keys().copied().collect::<BTreeSet<_>>();
+            let read = |block, output: &mut [u8]| {
+                output.copy_from_slice(&self.read_block(block)?);
+                Ok(())
+            };
+            let chain = if self.chain.is_none() {
+                // New staging starts zeroed; dirty tracks every written block.
+                // Existing generations (including full compaction) never qualify.
+                SnapshotChain::capture_zero_base(&self.directory, &layout, &dirty, read)?
+            } else {
+                SnapshotChain::capture(&self.directory, &layout, self.chain.as_ref(), &dirty, read)?
+            };
             if self.head_id() != Some(chain.head_id()) {
                 let mut record = [0; HEAD_BYTES];
                 record[..8].copy_from_slice(HEAD_MAGIC);
@@ -517,6 +519,38 @@ impl pvisor_vm::api::RamFileStore for CompressedRam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_zero_base_partial_writes_tail_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store = CompressedRam::create(manifest.try_clone().unwrap(), dir.path()).unwrap();
+        let size = BLOCK_BYTES * 4 + 7;
+        store.set_len(size as u64).unwrap();
+        let mut expected = vec![0; size];
+        store.write_at(4093, &[9; 11]).unwrap();
+        expected[4093..4104].fill(9);
+        store.write_at((size - 3) as u64, &[7; 3]).unwrap();
+        expected[size - 3..].fill(7);
+        store
+            .write_at((BLOCK_BYTES * 2) as u64, &[0; 4096])
+            .unwrap();
+        assert!(store.set_len(size as u64 + 1).is_err());
+        store.flush_writes().unwrap();
+        store.sync_all().unwrap();
+        let mut actual = vec![0; size];
+        store.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        // Reopen and validate on-disk state through the original reader.
+        let chain = SnapshotChain::open(dir.path(), store.head_id().unwrap()).unwrap();
+        chain.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        store.write_at(4093, &[0; 11]).unwrap();
+        expected[4093..4104].fill(0);
+        store.sync_all().unwrap();
+        store.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn page_staging_preserves_neighbors_and_flush_does_not_publish() {
         let directory = tempfile::tempdir().unwrap();

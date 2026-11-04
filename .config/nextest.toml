@@ -2,3 +2,11 @@
 [[profile.default.overrides]]
 filter = 'package(=pvisor-overlaynet) & binary(=peer_network) & test(=tcp_guests::tcp_duplex_recovers_from_loss_duplication_and_reordering)'
 threads-required = "num-test-threads"
+
+# This test bounds resolver readiness and cancellation to five seconds each.
+# On macOS, concurrent first execs of copied Mach-O frontends can remain in
+# _dyld_start longer than the readiness budget, before the resolver is invoked.
+# Reserve the runner's slots rather than weakening deadlines or skipping checks.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-cli) & binary(=command_extensions) & test(=job_pool_startup_remains_cancellable_while_the_companion_waits)'
+threads-required = "num-test-threads"

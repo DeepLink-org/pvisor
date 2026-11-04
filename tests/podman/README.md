@@ -82,6 +82,8 @@ is bounded by 30 minutes; Go retains its 20-minute suite timeout and `-count=1`.
 Per-command timeouts and test-owned cleanup remain in effect. Artifacts named
 `podman-contracts-linux-amd64-<suite>` retain TAP or Go JSON, environment/version
 metadata, and the discovered/selected Go test lists, including on failure.
+On failure, CI also captures host CPU information and the kernel log to diagnose
+KVM entry failures. This does not retry or suppress contract failures.
 The required `CI` aggregate depends on all shards and rejects failure,
 cancellation or skipped dependencies. Local macOS acceptance does not establish
 Linux/KVM acceptance.

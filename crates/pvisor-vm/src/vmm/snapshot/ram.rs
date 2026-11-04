@@ -276,8 +276,13 @@ mod tests {
         memory
             .write_slice(b"guest dirty", GuestAddress(0x1000 + 4096))
             .unwrap();
+        // Account for fixture writes before measuring capture. APFS can defer
+        // allocation after set_len/write/mmap; without sync, unrelated fixture
+        // writeback is incorrectly attributed to capture's read-only accesses.
+        source.1.sync_all().unwrap();
         let before = source.1.metadata().unwrap().blocks();
         let mappings = capture_ram(&memory, &output.1).unwrap();
+        source.1.sync_all().unwrap();
         assert_eq!(
             source.1.metadata().unwrap().blocks(),
             before,

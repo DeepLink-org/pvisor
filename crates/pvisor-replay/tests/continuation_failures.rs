@@ -145,10 +145,12 @@ else:
             .env("MODEL_NAME", "openai/audit")
             .output()
             .unwrap();
-        supplier.join().unwrap();
+        let supplier_result = supplier.join();
         assert!(
-            output.status.success(),
-            "case={case}: {} {}",
+            output.status.success() && supplier_result.is_ok(),
+            "case={case}: child_status={} supplier_ok={}\nstdout: {}\nstderr: {}",
+            output.status,
+            supplier_result.is_ok(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
