@@ -56,7 +56,7 @@ Use Claude Code to fix a Python function that mishandles whitespace. After testi
 1. ### Launch the agent and give it the task {#task-agent}
 
     ```bash title="Shell"
-    pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
+    pvisor stage --executor host --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
     Paste this task into the agent:
@@ -133,7 +133,7 @@ On macOS, `--safe` uses a temporary HOME, so any host-side logged-in session sta
 When the agent needs to install dependencies or reach a documentation site, add targets explicitly. `--overlaynet-allow` replaces the preset list, so list the model API alongside them:
 
 ```bash title="Shell"
-pvisor spawn --safe \
+pvisor stage --executor host --safe \
   --overlaynet-allow api.anthropic.com:443 \
   --overlaynet-allow pypi.org:443 \
   --pass-env ANTHROPIC_API_KEY -- claude

@@ -119,11 +119,11 @@ pub use executor::process::landlock_only_runtime_available;
 #[cfg(target_os = "linux")]
 pub use executor::process::rootless_runtime_available;
 pub use runtime::{
-    ApplySelection, ReadOnlyOverlayMount, control_mount_inspect, control_ping,
+    ApplySelection, INSTANCE_KIND_KEY, ReadOnlyOverlayMount, control_mount_inspect, control_ping,
     control_unmount_inspect, default_run_home, is_live, mount_overlay_record_read_only,
-    resolve_run,
+    registered_runs, resolve_run,
 };
 #[cfg(target_os = "linux")]
 pub use runtime::{LEASE_FILENAME, RunLease};
-pub use runtime::{checkpoint, job_execution};
+pub use runtime::{checkpoint, instance, job_execution};
 pub use util::{startup_mark, startup_mark_run, write_private_json};

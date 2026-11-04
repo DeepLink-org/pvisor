@@ -25,7 +25,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
     在要修改的项目根目录执行。例如使用已设置的 `ANTHROPIC_API_KEY`：
 
     ```bash title="Shell"
-    pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
+    pvisor stage --executor host --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
     给出明确目标、允许修改的文件范围和测试要求。等待 Agent 完成任务并退出，回到启动时的终端。若模型连接或依赖下载失败，按下方网络表检查目标与凭据；保留错误和 Job 记录，再调整配置重试。
@@ -68,7 +68,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
 以 aider 为例：先在所选 executor 内安装 aider，并在 Agent 自身配置里选好 provider，然后显式放行它的 API 目标并传入凭据变量（变量名由 Agent 自身文档定义，如 `OPENAI_API_KEY`、`GEMINI_API_KEY`）：
 
 ```bash title="Shell"
-pvisor spawn --safe --overlaynet-allow api.openai.com:443 \
+pvisor stage --executor host --safe --overlaynet-allow api.openai.com:443 \
   --pass-env OPENAI_API_KEY -- aider
 pvisor status --review last
 pvisor apply last --path src

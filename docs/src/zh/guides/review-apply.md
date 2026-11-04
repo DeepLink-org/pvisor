@@ -7,7 +7,7 @@ description: 审查暂存 Job 的文件改动，按路径选择性应用，并�
 在项目目录中启动暂存运行：
 
 ```bash
-pvisor spawn --safe -- codex
+pvisor stage --executor host --safe -- codex
 pvisor status --review last
 pvisor inspect last -- git status --short
 ```

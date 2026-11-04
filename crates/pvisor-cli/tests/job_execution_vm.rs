@@ -266,10 +266,10 @@ int main(void) {
             ),
         )
         .unwrap();
-        cmd.arg("spawn").arg("--config").arg(config);
+        cmd.arg("stage").arg("--config").arg(config);
     }
     if !pooled {
-        cmd.arg("spawn");
+        cmd.arg("stage");
     }
     cmd.current_dir(&workspace)
         .env("JOB_CAPTURE_ENV", "original")

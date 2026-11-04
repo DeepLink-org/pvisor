@@ -38,7 +38,7 @@ Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, 
 for command options.
 
 ```bash
-pvisor spawn --safe -- claude
+pvisor stage --executor host --safe -- claude
 pvisor review last
 pvisor apply last --path src
 ```
@@ -140,7 +140,7 @@ New CLIs read old records without live control as disk state only.
 ## Staged system experiments (Linux preview)
 
 `stage` creates an ordinary Job in a native VM with the host `/` as a live,
-read-only lower. Unlike `spawn --rootfs host`, it retains the **whole rootfs**
+read-only lower by default. Unlike `spawn --rootfs host`, it retains the **whole rootfs**
 upper and preimages after exit, not just workspace edits. No image is needed.
 The lower is not a frozen system snapshot; concurrent host changes remain visible.
 
@@ -150,14 +150,18 @@ pvisor stage --network none --stage ./experiment /bin/sh -c 'echo changed > exam
 pvisor review ./experiment --diff
 pvisor apply ./experiment                # choose project changes in a terminal
 pvisor drop ./experiment
+pvisor rm ./experiment
 ```
 
 The interface follows the container CLI's option spelling and argument boundary:
 `-i/--interactive`, `-t/--tty`, repeated `-e/--env` and `--env-file`,
 `-w/--workdir`, `--name`, `--cpus`, `-m/--memory`, and `--network bridge|none`.
 There is no positional image. Options after COMMAND (or `--`) belong literally
-to the workload. `--name` is the Job label, not a new name-based selector;
-use the printed Job ID, stage path, or `last` in the launching workspace.
+to the workload. Names, IDs and unique ID prefixes select instances; ambiguous
+names fail and require an ID. Stage paths and workspace-local `last` also work.
+Explicit `stage --executor host` or `--config` uses shared Job execution options
+with persistent storage instead of the default host-root VM preset. Host write
+staging still requires `--safe` or `--stage`; direct Host writes cannot be undone.
 
 Defaults are 2 vCPUs, 512 MiB RAM, current host working directory, and controlled
 IPv4 TCP/DNS egress (`bridge` uses the Job's existing VM data plane, not membership
@@ -166,7 +170,8 @@ is closed unless `-i` is supplied; no COMMAND selects a shell with stdin attache
 and uses a PTY when launched from a terminal. `-t` requires a host terminal and
 allocates a guest PTY, combining stdout/stderr; without `-i`, stdin remains
 `/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY streams. Stage uses the ordinary Job owner, cancellation,
-completion receipt, review, and drop; it does not appear in container `ps`.
+completion receipt, review, and drop. It appears alongside containers in `ps`;
+`ps -a` includes stopped stages.
 There is no detach, `--rm`, writable bind mount, image selection or host fallback.
 Personal Agent defaults are not loaded. Existing workspace/network policy defaults
 still apply. `PVISOR_STAGE=1` identifies the environment to scripts.
@@ -180,6 +185,59 @@ visible: this is write staging, not a confidentiality boundary. Cache management
 credentials and implicit loader paths retain the VM's existing environment scrub;
 explicit `-e` values have Docker precedence. Unset entries remain absent, including
 HOME, PATH and TMPDIR.
+
+### Instance lifetime and storage layout
+
+`spawn` always uses temporary storage, including with `--safe` or `--stage PATH`.
+Success, nonzero workload exit and confirmed cancellation remove its instance
+storage after teardown. Missing or uncertain completion retains recovery evidence
+and reports the cleanup refusal. Use `stage` for post-exit review, apply or fork.
+`drop` discards candidates; only `rm` removes a persistent instance. Container
+`run` retains its instance by default and `run --rm` remains temporary.
+
+New CLI Job instances use a stable root, separate from Attempt-owned state:
+
+```text
+<stage-or-run-home/instance-id>/
+  instance.json                 # immutable schema, ID and creation mode
+  job.lock                      # cross-command instance lock
+  execution-job.json            # native VM lifecycle, when present
+  execution-operation/          # native VM operation lease, when present
+  checkpoints/execution/        # instance-owned native execution snapshots
+  attempts/
+    initial/
+      run.json                  # Attempt projection, not another instance identity
+      run-bundle.json
+      completion.json
+      lease.lock
+      upper/                    # private writable files and deletion markers
+      work/                     # temporary overlay bookkeeping
+      merged/                   # mounted view, when present
+      preimages/                # original-file observations and apply recovery
+      checkpoints/              # logical filesystem checkpoints for this Attempt
+    <resume-token>/             # later native execution Attempts
+```
+
+Optional trace and driver artifacts stay with the Attempt that produced them.
+The existing native Job record owns the active-Attempt pointer; `instance.json`
+does not duplicate mutable execution state. `RunRecord::instance_dir()` resolves
+the stable root and `stage_dir()` selects Attempt backing. Resolve either through
+the runtime instead of constructing paths to `upper` or `run.json`. Old flat
+stages remain readable and are not moved or rewritten in place.
+
+`fork SOURCE [--name NAME] [-- COMMAND ...]` creates a persistent branch and
+starts its command (the source command by default). Filesystem fork requires a
+stopped source. Linux uses reflink, macOS uses clonefile; unsupported filesystems
+fail without copying all file contents. Parent and child have independent inodes,
+including their journals. Writes, deletes, renames and metadata changes are
+isolated; removing a filesystem-fork parent does not invalidate the child.
+The host lower remains live, not a time-frozen host snapshot.
+
+Container fork shares its pinned image and read-only mounts. It refuses writable
+binds, staged binds and volumes rather than sharing their mutable state. The
+child gets a new network address and no published ports, and does not inherit
+`--rm`. Execution-state fork remains a separate `--state execution` capability;
+its saved CPU/RAM/device contracts and retained snapshot references still apply.
 
 ### Applying project changes
 

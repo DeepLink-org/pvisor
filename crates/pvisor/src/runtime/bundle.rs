@@ -367,6 +367,8 @@ impl RunBundle {
     }
 
     pub fn read(stage_dir: &Path) -> anyhow::Result<Self> {
+        let stage = super::instance::resolve_stage(stage_dir)?;
+        let stage_dir = stage.as_path();
         let path = Self::path(stage_dir);
         let bytes = super::completion::read_file(&path)?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;

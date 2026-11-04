@@ -34,7 +34,9 @@ fn only_run_dir(run_home: &std::path::Path) -> std::path::PathBuf {
         })
         .collect::<Vec<_>>();
     assert_eq!(runs.len(), 1, "expected exactly one Run directory");
-    runs.into_iter().next().unwrap()
+    pvisor::RunRecord::read(&runs.into_iter().next().unwrap())
+        .unwrap()
+        .stage_dir()
 }
 
 #[test]
@@ -46,7 +48,9 @@ fn unsupported_memory_limit_preserves_observed_file_size_limit() {
         .current_dir(temporary.path())
         .env("PVISOR_RUN_HOME", &runs)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--memory",
             "256MiB",
             "--max-file-size",
@@ -106,7 +110,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     std::fs::write(workspace.join(".env"), "warn-only-fixture").unwrap();
     std::os::unix::fs::symlink(".ssh/id_ed25519", workspace.join("alias")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--safe", "--stage"])
+        .args(["stage", "--executor", "host", "--safe", "--stage"])
         .arg(&stage)
         .args([
             "--",
@@ -169,7 +173,7 @@ fn network_run_uses_the_current_workspace_and_external_run_home() {
     let run_home = temporary.path().join("runs");
     drop(listener);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--overlaynet-listen"])
+        .args(["stage", "--executor", "host", "--overlaynet-listen"])
         .arg(&listen)
         .args(["--overlaynet-deny-all", "--", "/usr/bin/true"])
         .env("PVISOR_RUN_HOME", &run_home)
@@ -215,7 +219,7 @@ fn toml_and_cli_share_one_run_configuration() {
     std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--config"])
+        .args(["stage", "--config"])
         .arg(&config_path)
         .args(["--name", "from-cli", "--", "/usr/bin/true"])
         .current_dir(&workspace)
@@ -272,7 +276,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
 
     for _ in 0..2 {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["spawn", "--", "/usr/bin/true"])
+            .args(["stage", "--executor", "host", "--", "/usr/bin/true"])
             .current_dir(&workspace)
             .env("PVISOR_RUN_HOME", &run_home)
             .output()
@@ -287,7 +291,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
     let records = std::fs::read_dir(&run_home)
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().join("run.json").is_file())
+        .filter(|entry| entry.path().join(pvisor::instance::MANIFEST).is_file())
         .count();
     assert_eq!(records, 2);
 
@@ -409,7 +413,7 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--executor", "container", "--container-runtime"])
+        .args(["stage", "--executor", "container", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .args(["--rootfs"])
@@ -472,7 +476,14 @@ fn container_executor_deadline_stops_the_runtime_client() {
 
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
+        .args([
+            "stage",
+            "--executor",
+            "container",
+            "--timeout",
+            "20ms",
+            "--container-runtime",
+        ])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .arg("--container-rootfs")
@@ -528,7 +539,14 @@ fn container_executor_watchdog_stops_an_unresponsive_runtime() {
     let runtime_pid = temporary.path().join("runtime.pid");
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
+        .args([
+            "stage",
+            "--executor",
+            "container",
+            "--timeout",
+            "20ms",
+            "--container-runtime",
+        ])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .arg("--container-rootfs")

@@ -62,7 +62,7 @@ Access outside the file view still depends on executor boundaries. See [Security
 
 ## Tasks, executions, and records {#task-records}
 
-- **Job**: A unit of work managed persistently in pVisor's native workflow, associating a command and execution records with candidate changes when staging is enabled. After the command finishes, the same Job can still be used to query results, review file changes, and decide how to handle them.
+- **Job**: A managed unit of work associating a command and execution records with candidate changes when staging is enabled. CLI `stage` retains the Job after execution for review, apply and fork until explicitly removed. CLI `spawn` is temporary and removes its stage after exit.
 - **Attempt**: One concrete execution of a Job, distinguishing separate executions. A single Attempt can run an Agent program that makes multiple rounds of tool calls.
 - **Run Bundle**: A record package combining task and execution identities, exit status, output, evidence of controls actually in effect, and file changes when staging is enabled, for review, diagnosis, and consumption by higher-level systems.
 

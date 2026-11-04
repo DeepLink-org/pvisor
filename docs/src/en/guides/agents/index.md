@@ -25,7 +25,7 @@ After the [offline staging demo](../../start/first-run.md#agent-style), connect 
     Run at the root of the project to modify, for example with `ANTHROPIC_API_KEY` already set:
 
     ```bash title="Shell"
-    pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
+    pvisor stage --executor host --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
     Specify the goal, allowed file scope, and required tests. Wait for the agent to finish and exit back to the launching terminal. For model connectivity or dependency-download failures, check destinations and credentials against the network table below. Retain errors and Job records before changing configuration and retrying.
@@ -68,7 +68,7 @@ Unknown commands deny outbound access. `--overlaynet-allow HOST:PORT` grants it 
 Take aider as the example: install it in the selected executor, pick the provider in the agent's own configuration, then explicitly allow its API destination and pass the credential variable (variable names come from the agent's own documentation, such as `OPENAI_API_KEY` or `GEMINI_API_KEY`):
 
 ```bash title="Shell"
-pvisor spawn --safe --overlaynet-allow api.openai.com:443 \
+pvisor stage --executor host --safe --overlaynet-allow api.openai.com:443 \
   --pass-env OPENAI_API_KEY -- aider
 pvisor status --review last
 pvisor apply last --path src

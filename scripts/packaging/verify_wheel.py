@@ -233,7 +233,7 @@ fn main() {
                 return None
             if "--stage" in args:
                 stage_path = Path(args[args.index("--stage") + 1])
-                bundle = stage_path / "run-bundle.json"
+                bundle = stage_path / "attempts/initial/run-bundle.json"
                 if bundle.is_file():
                     shutil.copy2(bundle, log.parent / f"{stage_path.name}-run-bundle.json")
             raise RuntimeError(
@@ -302,7 +302,7 @@ fn main() {
     if rejected.returncode == 0 or (workspace / "forbidden").exists():
         raise RuntimeError("strict admission failed to refuse before workload execution")
     vm = [
-        "spawn",
+        "stage",
         "--executor",
         "vm",
         "--overlaynet",
@@ -340,7 +340,7 @@ fn main() {
                 while time.monotonic() < deadline:
                     if processes[-1].poll() is not None:
                         raise RuntimeError("VM exited before progress; see vm-output.log")
-                    if (stage / "run.json").exists():
+                    if (stage / "attempts/initial/run.json").exists():
                         observed = run(["status", stage, "--json"], busy_ok=True)
                         if observed is None:
                             time.sleep(0.1)

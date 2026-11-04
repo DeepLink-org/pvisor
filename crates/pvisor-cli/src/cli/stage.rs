@@ -1,13 +1,16 @@
 //! Docker-style arguments for staged host-root Jobs, without an image selector.
-use super::{docker, run};
+use super::run;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub(super) const STAGE_LONG_ABOUT: &str = "Run a coding agent stagebox in a Linux VM using host / as a live, read-only lower filesystem, without an image. All rootfs changes are retained for review; workload filesystem writes do not change host files. Use --stage PATH for persistent storage. Review project results, then use pvisor export JOB --output NEWDIR --path src (or --all) for non-root project artifact handoff. Inspect manifest.json and its deletions before accepting results; export does not apply changes or include the experimental environment automatically. It is not a complete patch or dependency closure.\n\nNetworked Agent: --network bridge (the compatible default) enables the existing controlled IPv4 TCP/DNS egress, not a model-API-only allowlist. Host files, HOME, project .env and readable credentials remain visible; review credential sources and explicit -e/--env-file inputs. Sensitive reads can leave in model requests. Choose --cpus and --memory for guest resources; staging does not bound external API cost.\n\nOffline script: --network none disables guest networking, but host files and readable credentials remain visible. Review the same reads, environment inputs and resource limits (--cpus/--memory); offline networking is not a confidentiality boundary. The host lower is live, not a point-in-time snapshot.\n\nAPI calls, database writes and sent messages are external side effects that review/drop cannot undo. Staging does not automatically change the Agent's own approval settings; this help does not claim validation of a real Agent workflow.\n\nAdvanced only: rootfs apply is an explicit, separate operation requiring a root-owned stage and effective root. It is not an atomic upgrade or a multi-file transaction. Linux only: macOS is rejected, with no fallback.";
+pub(super) const STAGE_LONG_ABOUT: &str = "Create a persistent coding agent stagebox. By default, run in a Linux VM using host / as a live, read-only lower filesystem, without an image. All rootfs changes are retained for review; workload filesystem writes do not change host files. --stage PATH selects storage; omission also retains the stage. Exit, including nonzero exit, stops the instance without deleting it. Use ps -a to list it, fork ID to create a persistent filesystem-CoW branch, and rm ID to remove it. drop discards pending changes without deleting the instance.\n\nExplicit --executor host or --config uses shared Job options instead of the default host-root VM preset. Host staging remains explicit (--safe or --stage); ordinary Host writes are direct. The default VM has no host fallback and requires Linux. Filesystem fork requires a stopped source and native filesystem CoW; unsupported filesystems fail without a byte-copy fallback. The live host lower is not frozen by fork.\n\nReview project results, then use pvisor export JOB --output NEWDIR --path src (or --all) for non-root project artifact handoff. Inspect manifest.json and its deletions before accepting results; export does not apply changes or include the experimental environment automatically. It is not a complete patch or dependency closure.\n\nNetworked Agent: --network bridge (the compatible default) enables the existing controlled IPv4 TCP/DNS egress, not a model-API-only allowlist. Host files, HOME, project .env and readable credentials remain visible; review credential sources and explicit -e/--env-file inputs. Sensitive reads can leave in model requests. Choose --cpus and --memory for guest resources; staging does not bound external API cost.\n\nOffline script: --network none disables guest networking, but host files and readable credentials remain visible. Review the same reads, environment inputs and resource limits (--cpus/--memory); offline networking is not a confidentiality boundary. The host lower is live, not a point-in-time snapshot.\n\nAPI calls, database writes and sent messages are external side effects that review/drop cannot undo. Staging does not automatically change the Agent's own approval settings; this help does not claim validation of a real Agent workflow.\n\nAdvanced only: rootfs apply is an explicit, separate operation requiring a root-owned stage and effective root. It is not an atomic upgrade or a multi-file transaction.";
 
 #[derive(Clone, Serialize, Deserialize, Args, Debug)]
 pub(super) struct StageArgs {
+    /// Shared Job policies and executor options; stage always retains its storage.
+    #[command(flatten)]
+    pub(super) job: run::RunArgs,
     /// Keep stdin open for the workload.
     #[arg(short, long)]
     pub(super) interactive: bool,
@@ -23,32 +26,16 @@ pub(super) struct StageArgs {
     /// Working directory inside the staged root filesystem.
     #[arg(short = 'w', long = "workdir", value_name = "PATH")]
     pub(super) cwd: Option<PathBuf>,
-    /// Name the Job.
-    #[arg(long, value_name = "NAME")]
-    pub(super) name: Option<String>,
     /// Native vCPU count (1 through 8); fractional quotas are unsupported.
     #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub(super) cpus: u8,
-    /// Guest memory in Docker units, stored as MiB (minimum 16 MiB).
-    #[arg(short = 'm', long, default_value = "512m", value_parser = docker::memory)]
-    pub(super) memory: u32,
     /// Connect to the bridge, or disable network access.
     #[arg(long, default_value = "bridge", value_parser = ["bridge", "none"])]
     pub(super) network: String,
-    /// Retain changes in the selected persistent stage directory.
-    #[arg(long, value_name = "PATH")]
-    pub(super) stage: Option<PathBuf>,
-    /// Optional executable followed by its literal arguments; no image is needed.
-    #[arg(num_args = 0.., trailing_var_arg = true, value_names = ["COMMAND", "ARG"])]
-    pub(super) command: Vec<String>,
 }
 
 impl StageArgs {
     pub(super) fn into_run(self) -> anyhow::Result<run::RunArgs> {
-        anyhow::ensure!(
-            cfg!(target_os = "linux"),
-            "stage requires Linux host-root VM support; macOS is unsupported (no fallback)"
-        );
         run::RunArgs::for_stage(self)
     }
 }
@@ -78,12 +65,12 @@ mod tests {
         assert!(args.env.is_empty());
         assert!(args.env_files.is_empty());
         assert!(args.cwd.is_none());
-        assert!(args.name.is_none());
         assert_eq!(args.cpus, 2);
-        assert_eq!(args.memory, 512);
         assert_eq!(args.network, "bridge");
-        assert!(args.stage.is_none());
-        assert!(args.command.is_empty());
+        let job = serde_json::to_value(&args.job).unwrap();
+        assert!(job["run"]["name"].is_null());
+        assert!(job["stage"].is_null());
+        assert_eq!(job["command"], serde_json::json!([]));
     }
 
     #[test]
@@ -124,13 +111,14 @@ mod tests {
             [PathBuf::from("first.env"), PathBuf::from("last.env")]
         );
         assert_eq!(args.cwd, Some(PathBuf::from("/work")));
-        assert_eq!(args.name.as_deref(), Some("agent"));
+        let job = serde_json::to_value(&args.job).unwrap();
+        assert_eq!(job["run"]["name"], "agent");
         assert_eq!(args.cpus, 8);
-        assert_eq!(args.memory, 1024);
+        assert_eq!(job["run"]["memory"], 1024 * 1024 * 1024);
         assert_eq!(args.network, "none");
-        assert_eq!(args.stage, Some(PathBuf::from("/stages/agent")));
+        assert_eq!(job["stage"], "/stages/agent");
         assert_eq!(
-            args.command,
+            args.job.command,
             [
                 "sh",
                 "-c",
@@ -148,7 +136,10 @@ mod tests {
     #[test]
     fn explicit_separator_preserves_workload_flags() {
         let args = parse(&["--", "echo", "--cpus", "99", "--network", "host"]);
-        assert_eq!(args.command, ["echo", "--cpus", "99", "--network", "host"]);
+        assert_eq!(
+            args.job.command,
+            ["echo", "--cpus", "99", "--network", "host"]
+        );
         assert_eq!(args.cpus, 2);
         assert_eq!(args.network, "bridge");
     }
@@ -159,7 +150,6 @@ mod tests {
             vec!["--cpus", "0"],
             vec!["--cpus", "9"],
             vec!["--cpus", "1.5"],
-            vec!["-m", "15m"],
             vec!["-m", "bogus"],
             vec!["--network", "host"],
             vec!["--network", "custom"],
@@ -175,12 +165,10 @@ mod tests {
             );
         }
         assert_eq!(parse(&["--cpus", "1"]).cpus, 1);
-        for size in ["16m", "512M", "1gb", "536870912"] {
-            assert_eq!(
-                parse(&["--memory", size]).memory,
-                docker::memory(size).unwrap()
-            );
+        for size in ["16m", "512M", "1GiB", "536870912"] {
+            assert!(Cli::try_parse_from(["stage", "--memory", size]).is_ok());
         }
+        assert!(parse(&["-m", "15m"]).into_run().is_err());
     }
 
     #[cfg(not(target_os = "linux"))]

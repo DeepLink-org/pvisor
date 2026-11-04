@@ -288,10 +288,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Prepare a native CoW test filesystem
+        shell: bash
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends btrfs-progs
+          cow_root="/var/tmp/pvisor-cow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          truncate -s 1G "$RUNNER_TEMP/pvisor-cow.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/pvisor-cow.img"
+          sudo mkdir "$cow_root"
+          sudo mount -o loop "$RUNNER_TEMP/pvisor-cow.img" "$cow_root"
+          sudo chown "$(id -u):$(id -g)" "$cow_root"
+          echo "PVISOR_TEST_COW_DIR=$cow_root" >> "$GITHUB_ENV"
+          echo "PVISOR_TEST_REQUIRE_COW=1" >> "$GITHUB_ENV"
+
+      - name: Require successful native CoW forks
+        run: >-
+          mise run test -- pvisor pvisor-cli pvisor-overlay-core --
+          -E 'test(cow_fork_preserves_raw_state_and_independent_inode_ownership) |
+          test(docker_fork_uses_independent_cow_storage_and_releases_parent_ownership) |
+          test(workspace_fork_clones_files_and_preimages_without_retaining_parent_storage)'
+
       - name: Run CLI tests
         env:
           PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: mise run test -- pvisor-cli
+
+      - name: Unmount native CoW test storage
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${PVISOR_TEST_COW_DIR:-}" ]]; then
+            sudo umount "$PVISOR_TEST_COW_DIR"
+          fi
 
   podman-contracts:
     name: CLI contracts / ${{ matrix.suite }}

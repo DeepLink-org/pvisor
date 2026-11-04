@@ -78,13 +78,14 @@ Run these commands in a new demo directory:
 ```bash
 mkdir pvisor-demo
 cd pvisor-demo
-pvisor spawn --safe --overlaynet-deny-all -- sh -c '
+pvisor stage --executor host --safe --overlaynet-deny-all -- sh -c '
   echo "Hello from pVisor" > hello.txt
   echo "Temporary notes" > scratch.txt
 '
 pvisor review last --diff
 pvisor apply last --path hello.txt
 pvisor drop last
+pvisor rm last
 cat hello.txt
 ```
 
@@ -93,6 +94,12 @@ Expect `Hello from pVisor`. The greeting is now in your project; the notes were 
 [stagebox walkthrough](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style)
 checks the original directory, staged view, and final file state at each step.
 No model account or VM image is needed for this Host example.
+
+`spawn` runs a temporary instance and removes its stage after exit. Use `stage`
+for changes you want to review later; it retains storage until `pvisor rm`.
+`pvisor ps` lists running instances and `ps -a` includes stopped stages and
+containers. `pvisor fork ID` creates a persistent filesystem-CoW branch from a
+stopped stage or container; it requires native CoW support on the backing filesystem.
 
 ### 3. Complete a task with your agent
 
@@ -126,6 +133,7 @@ pvisor review ../pvisor-experiment --diff
 pvisor apply ../pvisor-experiment --path src --dry-run --diff
 pvisor apply ../pvisor-experiment --path src
 pvisor drop ../pvisor-experiment
+pvisor rm ../pvisor-experiment
 ```
 
 Only discard remaining candidates after checking them. If all changes were

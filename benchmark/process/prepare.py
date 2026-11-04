@@ -22,10 +22,17 @@ _spec.loader.exec_module(COMMON)
 
 
 def job_command(binary):
-    # CI baselines can predate the Job run -> spawn rename.
+    # Measure persistent Jobs on both sides of lifecycle changes. Older stage
+    # commands only supported the host-root VM preset, not explicit Host Jobs.
     help_text = subprocess.run(
         [str(binary), "--help"], check=True, capture_output=True, text=True
     ).stdout
+    if re.search(r"^  stage\s+", help_text, re.MULTILINE):
+        stage_help = subprocess.run(
+            [str(binary), "stage", "--help"], check=True, capture_output=True, text=True
+        ).stdout
+        if re.search(r"^\s+--executor\s", stage_help, re.MULTILINE):
+            return "stage"
     for name in ("spawn", "run"):
         if re.search(r"^  " + name + r"\s+", help_text, re.MULTILINE):
             return name
@@ -44,6 +51,8 @@ def prepare_template(template, binary, output=None):
         command = [
             str(binary),
             entry,
+            "--executor",
+            "host",
             "--no-agent-defaults",
             "--overlaynet",
             "off",
@@ -59,7 +68,7 @@ def prepare_template(template, binary, output=None):
         (batch / "preflight.stderr").write_text(result.stderr)
         if result.returncode:
             raise ValueError("process preflight failed; see " + str(batch / "preflight.stderr"))
-        bundles = list((batch / "runs").glob("run-*/run-bundle.json"))
+        bundles = list((batch / "runs").glob("run-*/**/run-bundle.json"))
         if len(bundles) != 1:
             raise ValueError("preflight must create exactly one completed Run Bundle")
         checker = Path(__file__).with_name("check.py")

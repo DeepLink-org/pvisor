@@ -187,6 +187,11 @@ pub fn resolve_overlay_workspace(
     });
 
     let mut backing_paths = vec![stage_dir.clone(), merged.clone()];
+    if let Some(root) = super::instance::owner_root(&stage_dir)
+        .map_err(|error| OverlayError::InvalidConfig(error.to_string()))?
+    {
+        backing_paths.push(root);
+    }
     backing_paths.push(upper.upper_dir.clone());
     backing_paths.push(upper.work_dir.clone());
     backing_paths.extend(resolved_lowers);

@@ -33,7 +33,11 @@ pub(crate) fn snapshot_store(
 ) -> anyhow::Result<PathBuf> {
     let path = match metadata.get(STORE_KEY) {
         Some(value) => PathBuf::from(value.as_str().context("invalid execution store binding")?),
-        None => stage.join("execution-snapshots"),
+        None => match metadata.get(super::instance::ROOT_KEY) {
+            Some(value) => PathBuf::from(value.as_str().context("invalid instance root binding")?)
+                .join("checkpoints/execution"),
+            None => stage.join("execution-snapshots"),
+        },
     };
     ensure!(
         path.is_absolute()
@@ -437,7 +441,7 @@ impl Server {
             None => Job {
                 version: JOB_SCHEMA_VERSION,
                 run_id: record.run_id.clone(),
-                root: stage.clone(),
+                root: record.instance_dir()?,
                 active_stage: stage.clone(),
                 previous_stage: stage.clone(),
                 active_attempt: record

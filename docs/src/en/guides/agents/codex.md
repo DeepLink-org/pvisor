@@ -29,7 +29,7 @@ Run Codex in your project, inspect its staged changes, and accept selected files
     Run from Bash or a compatible host shell:
 
     ```bash title="Shell"
-    pvisor spawn --safe \
+    pvisor stage --executor host --safe \
       --overlaynet-allow api.openai.com:443 \
       --pass-env OPENAI_API_KEY -- sh -c '
       printenv OPENAI_API_KEY | codex login --with-api-key && exec codex
@@ -84,7 +84,7 @@ Under `--safe`, deliver credentials explicitly with `--pass-env OPENAI_API_KEY`,
 For mandatory networking or fixed Linux userspace:
 
 ```bash
-pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor stage --safe --vm --rootfs image=my-agent-image:latest -- codex
 ```
 
 The image must contain Codex. See [libkrun VM](../executors/vm.md) for prerequisites and limits.

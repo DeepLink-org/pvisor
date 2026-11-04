@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn only_run(root: &Path) -> PathBuf {
+    if root.join(pvisor::instance::MANIFEST).is_file() {
+        return pvisor::RunRecord::read(root).unwrap().stage_dir();
+    }
     if root.join("run-bundle.json").is_file() {
         return root.to_path_buf();
     }
@@ -170,7 +173,7 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
         .env("HOME", &home)
         .env_remove("CODEX_HOME")
         .current_dir(&workspace)
-        .args(["spawn", "--safe", "--stage"])
+        .args(["stage", "--executor", "host", "--safe", "--stage"])
         .arg(temporary.path().join("stage"))
         .args([
             "--",
@@ -238,7 +241,9 @@ printf '%s:%s:%s\n' "$PVISOR_SANDBOX_FILESYSTEM" "$PVISOR_SANDBOX_LANDLOCK_ABI" 
         .env("OUTSIDE_SECRET", outside.join("secret.txt"))
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--safe",
             "--stdio",
             "capture",
@@ -344,7 +349,9 @@ printf metadata-denied
         .env("OUTSIDE_FILE", &protected)
         .env("OUTSIDE_DIR", &outside)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--safe",
             "--stdio",
             "capture",
@@ -407,7 +414,15 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
-        .args(["spawn", "--safe", "--stdio", "capture", "--stage"])
+        .args([
+            "stage",
+            "--executor",
+            "host",
+            "--safe",
+            "--stdio",
+            "capture",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args([
@@ -514,7 +529,9 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--stdio",
             "capture",
             "--filesystem",
@@ -600,7 +617,9 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
         .env("PVISOR_LEAKED_FD", leaked_fd.to_string())
         .env("PVISOR_LEAKED_SOCKET_FD", socket_fd.to_string())
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--safe",
             "--stdio",
             "capture",
@@ -702,7 +721,9 @@ printf 'network:%s\n' "$PVISOR_SANDBOX_NETWORK"
         .env("PVISOR_RUN_HOME", &run_home)
         .env("HOST_PORT", host_port)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--stdio",
             "capture",
             "--stage",
@@ -773,7 +794,9 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PVISOR_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--stdio",
             "capture",
             "--filesystem",
@@ -820,7 +843,9 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--stdio",
             "capture",
             "--filesystem",
@@ -910,7 +935,14 @@ fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PVISOR_RUN_HOME", &run_home)
-        .args(["spawn", "--stdio", "capture", "--stage"])
+        .args([
+            "stage",
+            "--executor",
+            "host",
+            "--stdio",
+            "capture",
+            "--stage",
+        ])
         .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "exit 125"])

@@ -29,7 +29,7 @@ description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独�
     使用 Bash 或兼容的宿主 Shell 执行：
 
     ```bash title="Shell"
-    pvisor spawn --safe \
+    pvisor stage --executor host --safe \
       --overlaynet-allow api.openai.com:443 \
       --pass-env OPENAI_API_KEY -- sh -c '
       printenv OPENAI_API_KEY | codex login --with-api-key && exec codex
@@ -84,7 +84,7 @@ description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独�
 需要不可绕过的网络边界或固定的 Linux 用户空间时：
 
 ```bash
-pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor stage --safe --vm --rootfs image=my-agent-image:latest -- codex
 ```
 
 镜像中必须安装 Codex。VM 的准备与限制见 [libkrun VM](../executors/vm.md)。

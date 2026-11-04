@@ -93,7 +93,15 @@ pub fn create_stopped_checkpoint_locked(
     requested_id: Option<&str>,
 ) -> anyhow::Result<LogicalCheckpoint> {
     record.require_stopped()?;
-    create_checkpoint(record, requested_id, CheckpointConsistency::Stopped)
+    create_checkpoint(record, requested_id, CheckpointConsistency::Stopped, false)
+}
+
+/// Capture a stopped source with native filesystem CoW for a workspace fork.
+/// The caller holds the Job and Attempt leases until the child has independent
+/// backing. Unsupported filesystems fail without publishing a checkpoint.
+pub fn create_cow_checkpoint_locked(record: &RunRecord) -> anyhow::Result<LogicalCheckpoint> {
+    record.require_stopped()?;
+    create_checkpoint(record, None, CheckpointConsistency::Stopped, true)
 }
 
 pub(crate) fn create_agent_quiesced_checkpoint(
@@ -104,6 +112,7 @@ pub(crate) fn create_agent_quiesced_checkpoint(
         record,
         Some(checkpoint_id),
         CheckpointConsistency::AgentQuiesced,
+        false,
     )
 }
 
@@ -111,6 +120,7 @@ fn create_checkpoint(
     record: &RunRecord,
     requested_id: Option<&str>,
     consistency: CheckpointConsistency,
+    cow: bool,
 ) -> anyhow::Result<LogicalCheckpoint> {
     let overlay = record
         .overlay
@@ -149,12 +159,26 @@ fn create_checkpoint(
     let result = (|| -> anyhow::Result<LogicalCheckpoint> {
         Persistence::sync_directory(parent)?;
         let upper_snapshot = root.join("upper");
-        snapshot_overlay_upper(overlay, &pending.join("upper"))?;
+        if cow {
+            pvisor_overlay_core::apply::clone_overlay_upper(
+                overlay.upper.path(),
+                &pending.join("upper"),
+            )?;
+        } else {
+            snapshot_overlay_upper(overlay, &pending.join("upper"))?;
+        }
         let preimages_snapshot = root.join("preimages");
         let journal = record.stage_dir().join("preimages");
         if journal.is_dir() {
             pvisor_overlay_core::stage::sync_journal(&journal)?;
-            restore_overlay_upper(&journal, &pending.join("preimages"))?;
+            if cow {
+                pvisor_overlay_core::apply::clone_overlay_upper(
+                    &journal,
+                    &pending.join("preimages"),
+                )?;
+            } else {
+                restore_overlay_upper(&journal, &pending.join("preimages"))?;
+            }
         } else {
             Persistence::create_dir_all_durable(&pending.join("preimages"))?;
         }
@@ -333,6 +357,27 @@ pub fn restore_logical_checkpoint(
     destination_upper: &Path,
     destination_preimages: &Path,
 ) -> anyhow::Result<()> {
+    restore_checkpoint(checkpoint, destination_upper, destination_preimages, false)
+}
+
+/// Fork a sealed checkpoint into absent, independent CoW upper/journal trees.
+/// Source validation and overlap rules match logical restore. Unsupported CoW
+/// fails rather than copying file contents. The caller owns partial child storage
+/// and must remove it if either tree fails.
+pub fn fork_logical_checkpoint(
+    checkpoint: &LogicalCheckpoint,
+    destination_upper: &Path,
+    destination_preimages: &Path,
+) -> anyhow::Result<()> {
+    restore_checkpoint(checkpoint, destination_upper, destination_preimages, true)
+}
+
+fn restore_checkpoint(
+    checkpoint: &LogicalCheckpoint,
+    destination_upper: &Path,
+    destination_preimages: &Path,
+    cow: bool,
+) -> anyhow::Result<()> {
     super::owned_workspace::reject_checkpoint_reconstruction(checkpoint)?;
     let sources = [&checkpoint.upper_snapshot, &checkpoint.preimages_snapshot];
     pvisor_overlay_core::stage::require_sealed(&checkpoint.preimages_snapshot)?;
@@ -356,8 +401,13 @@ pub fn restore_logical_checkpoint(
                 .all(|destination| !overlaps(source, destination))),
         "checkpoint sources and restore destinations must not overlap"
     );
-    restore_overlay_upper(&sources[0], &destinations[0])?;
-    restore_overlay_upper(&sources[1], &destinations[1])?;
+    if cow {
+        pvisor_overlay_core::apply::clone_overlay_upper(&sources[0], &destinations[0])?;
+        pvisor_overlay_core::apply::clone_overlay_upper(&sources[1], &destinations[1])?;
+    } else {
+        restore_overlay_upper(&sources[0], &destinations[0])?;
+        restore_overlay_upper(&sources[1], &destinations[1])?;
+    }
     Ok(())
 }
 
@@ -421,7 +471,8 @@ mod tests {
                 (CheckpointConsistency::AgentQuiesced, OverlayState::Active),
             ] {
                 record.overlay.as_mut().unwrap().state = state;
-                let error = create_checkpoint(&record, Some("ephemeral"), consistency).unwrap_err();
+                let error =
+                    create_checkpoint(&record, Some("ephemeral"), consistency, false).unwrap_err();
                 assert!(error.to_string().contains("EPHEMERAL_STAGE"));
                 assert!(!temp.path().join(CHECKPOINTS_DIR).exists());
             }
@@ -472,8 +523,13 @@ mod tests {
         assert!(stage::require_sealed(&child.join("preimages")).is_err());
         record.overlay.as_mut().unwrap().state = OverlayState::Staged;
         assert!(
-            create_checkpoint(&record, Some("unconfirmed"), CheckpointConsistency::Stopped)
-                .is_err()
+            create_checkpoint(
+                &record,
+                Some("unconfirmed"),
+                CheckpointConsistency::Stopped,
+                false
+            )
+            .is_err()
         );
     }
 

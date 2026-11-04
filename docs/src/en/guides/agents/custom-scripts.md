@@ -26,7 +26,7 @@ Run an offline script, inspect its report, then accept the report and discard te
 1. ### Run and inspect the report {#inspect-script}
 
     ```bash title="Shell"
-    pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
+    pvisor stage --executor host --safe --overlaynet-deny-all -- ./agent.sh
     pvisor status --review last
     pvisor inspect last -- cat output/report.txt
     ```
@@ -49,7 +49,7 @@ Run an offline script, inspect its report, then accept the report and discard te
 ## Behavior
 
 - The command runs in the staged view, which contains the project's current files; writes go to the stage.
-- `pvisor spawn` returns the command's exit code unchanged, so scripts and CI can judge success or failure.
+- `pvisor stage` returns the command's exit code unchanged, so scripts and CI can judge success or failure.
 - If the command exits nonzero, its file changes stay staged for you to review and apply or drop.
 - Everything after `--` is passed through unchanged as the command and arguments.
 

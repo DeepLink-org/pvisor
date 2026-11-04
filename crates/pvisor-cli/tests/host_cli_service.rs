@@ -112,7 +112,9 @@ fn cancellation_is_acknowledged_with_signal_exit_status() {
     let root = tempfile::tempdir().unwrap();
     let mut child = command(root.path())
         .args([
-            "spawn",
+            "stage",
+            "--executor",
+            "host",
             "--no-agent-defaults",
             "--overlaynet",
             "off",
@@ -160,7 +162,9 @@ fn simultaneous_requests_isolate_cwd_and_environment_and_leave_stopped_jobs_addr
         command(root)
             .env("HOST_SERVICE_TEST_MARKER", marker)
             .args([
-                "spawn",
+                "stage",
+                "--executor",
+                "host",
                 "--no-agent-defaults",
                 "--overlaynet",
                 "off",
@@ -230,7 +234,9 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
     let mut running = Running(
         command(root.path())
             .args([
-                "spawn",
+                "stage",
+                "--executor",
+                "host",
                 "--no-agent-defaults",
                 "--overlaynet",
                 "off",
@@ -253,7 +259,8 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
         .unwrap()
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| path.join("run.json").exists())
+        .find(|path| path.join(pvisor::instance::MANIFEST).exists())
+        .map(|path| pvisor::RunRecord::read(&path).unwrap().stage_dir())
         .unwrap();
     let record = pvisor::RunRecord::read(&stage).unwrap();
     let endpoint = record.live_control.as_ref().unwrap();

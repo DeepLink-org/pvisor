@@ -32,7 +32,9 @@ fn documented_ci_failure_and_timeout_keep_reviewable_candidates() {
             .current_dir(&workspace)
             .env("PVISOR_RUN_HOME", root.path().join("runs"))
             .args([
-                "spawn",
+                "stage",
+                "--executor",
+                "host",
                 "--safe",
                 "--overlaynet-deny-all",
                 "--stdio",

@@ -1,6 +1,8 @@
 # `pvisor` 命令参考
 
-`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建 Job，省略子命令也默认进入 `spawn`。
+`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建临时 Job，
+退出后删除 stage，省略子命令也默认进入 `spawn`。`pvisor stage` 创建持久 Job，
+一直保留到显式执行 `pvisor rm`。
 Job 生命周期和变更审查命令直接操作 Job，不新增 `job` 子命令，
 `replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)；现有 Job ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
@@ -8,12 +10,12 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
 根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（兼容 Docker 的容器命令）、
-**Agent Commands**（`spawn`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
+**Agent Commands**（`spawn`、`stage`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
 （已安装的 `replay` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
-pvisor spawn --safe -- claude
+pvisor stage --executor host --safe -- claude
 pvisor review last
 pvisor apply last --path src
 pvisor help suspend
@@ -28,7 +30,7 @@ pvisor help suspend
 `run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`、`network`
 提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
 用 `pvisor COMMAND --help` 查看支持的参数。
-`--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn`，不属于容器 `run`。
+`--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn` 和 `stage`，不属于容器 `run`。
 
 ```bash
 pvisor pull alpine:3.20
@@ -43,7 +45,16 @@ pvisor rm redis
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
 该接口不实现 Docker Engine API、Compose 或 credential helper。
 容器记录使用独立存储；review/apply/drop 也接受下述暂存绑定挂载的实例名称或 ID。
-Job 选择器与 checkpoint 保持原有行为；`spawn` 不变。
+`ps` 和 `rm` 也管理原生 Job 实例。`ps` 列出运行中的实例，`ps -a` 包括已停止的
+持久 stage 和容器。名称与唯一 ID 前缀也可作为选择器；存在歧义时拒绝操作，
+不会隐式选择某个后端。
+
+文件系统 `fork SOURCE [--name NAME] [-- COMMAND ...]` 从已停止的 stage 或容器
+创建并启动持久子实例。Linux 要求底层文件系统支持 reflink，macOS 要求 clonefile，
+不支持时不会退回全量文件复制。删除父实例不会破坏文件 CoW 子实例。容器 fork
+保留固定镜像与只读挂载，拒绝可写 bind、暂存 bind 和 volume，并分配新网络地址、
+清空端口发布。宿主 lower 仍是实时视图；文件系统 fork 不会冻结宿主，也不恢复
+CPU/RAM。执行状态 fork 仍需显式指定 `--state execution`。
 
 ### 容器绑定挂载暂存（仅 Linux） {#container-staged-binds}
 
@@ -222,7 +233,7 @@ pvisor cache --help
 
 ## 按任务查找命令
 
-- **运行命令：** 从[`pvisor spawn`](../start/first-run.md)开始，再用 `status --review`、
+- **退出后审查：** 从[`pvisor stage --executor host --safe`](../start/first-run.md)开始，再用 `status --review`、
   `inspect` 和 `apply` 决定哪些修改进入项目。
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/executors/index.md)。
 - **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/replay.md)。
@@ -230,12 +241,13 @@ pvisor cache --help
 第一次使用时，可以先运行并审查一个 Job：
 
 ```bash
-pvisor spawn --safe -- codex
+pvisor stage --executor host --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
 
-`last` 只解析默认存储中属于当前工作区的 Job；用 `--stage PATH` 时，后续命令传入该路径或 Job ID，见 [Job 与存储](../concepts/jobs.md)。
+`last` 只解析属于当前工作区的 Job，自定义 stage 存储也会登记。后续命令可传
+stage 根目录、名称或 Job ID，见 [Job 与存储](../concepts/jobs.md)。
 
 ### 暂存与存储 {#暂存与存储}
 
@@ -244,15 +256,24 @@ pvisor apply last --path src
 | 运行方式或目录 | 写入去向 | 退出后的处理 |
 | --- | --- | --- |
 | 普通 host，未启用暂存 | 原工作区 | 已写入宿主；不能用 `drop` 撤销 |
-| `--safe` 的工作区 | Job 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
-| 显式 `--stage PATH` 的工作区 | 指定 stage | 默认保留；该选项也启用暂存 |
-| VM 工作区 | 指定 stage 或默认 Job 存储 | 默认保留 |
+| `spawn --safe` 或 `spawn --stage PATH` | 临时工作区 stage | 退出后删除，包括非零退出 |
+| `stage --executor host --safe` 或显式 `--stage PATH` | 持久工作区 stage | 保留供 review/apply/fork，直到 `rm` |
+| 默认 `stage`（Linux host-root VM） | 持久的整个 rootfs stage | 保留直到 `rm` |
+| `run IMAGE` | 容器可写层 | 保留直到 `rm`；`--rm` 在退出后删除 |
 | VM 根目录的其他写入 | 私有临时 upper | VM 退出后丢弃 |
 | `--safe` 的 HOME／`CODEX_HOME` 状态 | 独立私有 stage | 退出后丢弃，不进入工作区 Run Bundle |
 | 显式 `--mount SOURCE:write` | 宿主 SOURCE | 直接持久写入，不经工作区 apply/drop |
 
-Job 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
-不是 `--safe` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
+`--stage PATH` 选择存储位置，创建命令决定生命周期。完成证据缺失或不确定时，
+保留恢复证据而不自动删除。`drop` 只丢弃候选改动，不删除实例。清理与文件审查
+都不会撤销宿主直写或远程副作用。
+
+新的 CLI 实例根目录通过不可变的 `instance.json` 保存身份，Attempt 状态位于
+`attempts/initial/`：包括 `run.json`、`run-bundle.json`、`completion.json`、
+`lease.lock`、`upper/`、`work/`、`merged/`、`preimages/` 和逻辑 `checkpoints/`。
+原生 VM 生命周期元数据与操作锁属于实例根目录，后续执行使用
+`attempts/<resume-token>/`。活动 Attempt 指针由 Job 记录管理。旧的平铺 stage
+仍可读取，不做原地迁移。使用 ID 或 stage 根目录，不依赖内部文件路径。
 
 ### 文件系统参数 {#文件系统参数}
 
@@ -260,9 +281,10 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
 显式配置工作目录或 OverlayFS base 时，以显式配置为准。
 
-普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 默认将工作区
-改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
-`--stage PATH` 仅用于指定存储位置，不是保留改动的前提。
+普通 host Job 默认将工作区写入直接透传到 lower。
+`stage --executor host --safe` 保留工作区改动，退出后用 `status --review`、
+`apply` 或 `drop` 处理；`spawn --safe` 则在退出后删除。
+`--stage PATH` 选择位置，不改变生命周期。
 
 ```bash
 pvisor spawn --stage ../run-stage -- codex
@@ -290,14 +312,15 @@ Commands:
   images      列出本地镜像
   rmi         删除镜像引用
   exec        在容器 VM 中执行命令
-  ps          列出容器
+  ps          列出实例
   start       启动已停止的容器
   stop        停止容器
-  rm          删除容器
+  rm          删除已停止的实例
   logs        查看容器输出
 
 Agent Commands:
-  spawn       启动 Job
+  spawn       临时运行 Job，退出后清理
+  stage       创建持久 stagebox
   status      查看 Job 状态
   kill        终止 Job
   review      审查暂存变化与执行证据
@@ -319,11 +342,16 @@ Tools:
 ## 安全的第一次运行 {#安全的第一次运行}
 
 ```bash
-pvisor spawn --safe -- codex
+pvisor stage --executor host --safe -- codex
 pvisor status --review last
 ```
 
-默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的 synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Job 存储中，退出后可 review/apply/drop。显式 `--stage <PATH>` 会保留 Job 和可写 stage，改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
+默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的
+synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--safe` 暂存工作区，
+并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。
+持久 `stage` 即使没有指定 `--stage`，也保留 changeset 和 Run Bundle。
+显式 `--stage <PATH>` 选择实例根目录；当前 Attempt 下的 `run-bundle.json`
+权限为 `0600`。同样的参数用于 `spawn` 时，退出后不会保留改动。
 
 `--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与 Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以 `UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
 
@@ -337,7 +365,7 @@ pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-`fork` 会先为已停止 Job 的暂存文件系统创建快照，再启动子 Job。
+`fork` 会先为已停止 Job 的暂存文件系统创建 CoW 快照，再启动子 Job。
 传入 `--checkpoint ID` 可复用已有逻辑检查点。嵌入式 host 可以调用
 `RunHandle::checkpoint`：pVisor 发布 AgentCtl quiesce 指令，要求每个被冻进
 checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再发布
@@ -1062,16 +1090,25 @@ project/                         # reusable workspace / default base
 
 ~/.pvisor/runs/
 └── run-<uuid>/                  # one generated Run and default stage
-    ├── run.json
-    ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
-    ├── overlay.json             # when OverlayFS is enabled
-    ├── upper/
-    ├── merged/
-    ├── checkpoints/
-    ├── lease.lock
-    ├── control.sock             # while a live OverlayFS Run is available
-    ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── events.trace.jsonl       # when --record-destination is set
+    ├── instance.json            # immutable identity and creation mode
+    ├── job.lock
+    ├── execution-job.json       # native VM lifecycle, when present
+    ├── checkpoints/execution/   # native execution snapshots, when present
+    └── attempts/
+        ├── initial/
+        │   ├── run.json
+        │   ├── run-bundle.json  # mode 0600; outcome + safety + changes + effects
+        │   ├── completion.json
+        │   ├── overlay.json     # when OverlayFS is enabled
+        │   ├── upper/
+        │   ├── work/
+        │   ├── merged/
+        │   ├── preimages/
+        │   ├── checkpoints/    # logical filesystem checkpoints
+        │   ├── lease.lock
+        │   ├── control.sock    # while a live OverlayFS Run is available
+        │   └── .capture/       # when OverlayNet/Gateway is enabled
+        └── <resume-token>/
 ```
 
 `status`、`inspect` 使用的共享生命周期选择器接受 Run id、Run 目录、项目工作区、

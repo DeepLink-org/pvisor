@@ -69,8 +69,9 @@ pub use registry::LEASE_FILENAME;
 pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, JobDirectoryLock, RunLineage, RunRecord, RunRecordState,
-    control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
-    default_run_home, is_live, resolve_run,
+    EnvironmentProjection, INSTANCE_KIND_KEY, JobDirectoryLock, RunLineage, RunRecord,
+    RunRecordState, control_mount_inspect, control_overlay_status, control_ping,
+    control_unmount_inspect, default_run_home, is_live, registered_runs, resolve_run,
 };
+pub mod instance;
 pub use supervisor::RuntimeCapabilities;

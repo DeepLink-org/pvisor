@@ -59,11 +59,16 @@ flowchart TD
 | Execution placement | Host process, native OCI container executor, or `pvisor-vm` (Linux KVM / macOS HVF) using an OCI image, prepared rootfs, or Linux host rootfs |
 | Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
-With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
+For a persistent CLI `stage`, the product loop is `RunSpec → admission → Attempt →
 RunResult + private Run Bundle + staged Effects → review/apply/drop`. Ordinary
-host Jobs without staging write through to the workspace. `--safe`
-retains the workspace stage in Job storage by default; `--stage PATH` selects
-another location. HOME and VM rootfs writes have separate lifetimes; see
+host Jobs without staging write through to the workspace. `--safe` enables
+workspace staging; `--stage PATH` selects its location. CLI `spawn` removes its
+temporary stage after exit; use `stage --executor host` for a persistent Host Job.
+Embedding retains its existing storage contracts. New CLI roots have immutable
+`instance.json` identity and Attempt backing under `attempts/`;
+`instance::resolve_stage`, `RunRecord::instance_dir` and `RunRecord::stage_dir`
+distinguish the two. Flat embedding/legacy layouts remain readable.
+HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 

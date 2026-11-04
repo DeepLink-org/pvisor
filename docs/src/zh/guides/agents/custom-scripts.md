@@ -26,7 +26,7 @@
 1. ### 运行并检查报告 {#inspect-script}
 
     ```bash title="Shell"
-    pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
+    pvisor stage --executor host --safe --overlaynet-deny-all -- ./agent.sh
     pvisor status --review last
     pvisor inspect last -- cat output/report.txt
     ```
@@ -49,7 +49,7 @@
 ## 行为
 
 - 命令在暂存视图中运行，能看到项目当前的文件，写入进入暂存区。
-- `pvisor spawn` 原样返回命令的退出码，脚本和 CI 可据此判断成败。
+- `pvisor stage` 原样返回命令的退出码，脚本和 CI 可据此判断成败。
 - 命令非零退出时，文件改动仍保留在暂存区，可以审查后决定 apply 或 drop。
 - `--` 之后的内容原样作为命令和参数传递。
 

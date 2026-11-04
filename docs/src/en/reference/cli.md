@@ -1,7 +1,9 @@
 # `pvisor` command reference
 
 `pvisor run` creates a container in its own rootless Linux VM. `pvisor spawn`
-creates a Job; omitting the subcommand also selects `spawn`. Job lifecycle and
+creates a temporary Job whose stage is removed after exit; omitting the subcommand
+also selects `spawn`. `pvisor stage` creates a persistent Job retained until
+`pvisor rm`. Job lifecycle and
 change-review commands operate directly on Jobs without a `job` subcommand, and
 `replay` creates a Job from a trajectory. See the
 [execution model](../design/execution-model.md) for how Job, Run and Attempt
@@ -12,13 +14,13 @@ are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
 Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
-(Docker-compatible container commands), **Agent Commands** (`spawn`, `status`,
+(Docker-compatible container commands), **Agent Commands** (`spawn`, `stage`, `status`,
 `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
 (installed `replay` companion, `cache`, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
-pvisor spawn --safe -- claude
+pvisor stage --executor host --safe -- claude
 pvisor review last
 pvisor apply last --path src
 pvisor help suspend
@@ -33,7 +35,7 @@ not measure the complete process-entry or argument-parsing overhead.
 `run`, `build`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm`, `logs` and `network`
 use a Docker-style option subset with one VM per container and no central daemon.
 Use `pvisor COMMAND --help` for supported options. Job options such
-as `--safe`, `--stage` and `--executor` belong to `spawn`, not container `run`.
+as `--safe`, `--stage` and `--executor` belong to `spawn` and `stage`, not container `run`.
 
 ```bash
 pvisor pull alpine:3.20
@@ -50,7 +52,18 @@ downloads are supported, but `run` and `start` require native images because CPU
 emulation is not implemented. This profile does not implement Docker Engine API,
 Compose or credential helpers. Container records use their own store;
 review/apply/drop also accept staged-bind instance names/IDs as described below.
-Job selectors and checkpoints retain their existing behavior; `spawn` is unchanged.
+`ps` and `rm` also manage native Job instances. `ps` lists running instances,
+and `ps -a` includes stopped persistent stages and containers. Names and unique ID
+prefixes are accepted; ambiguity fails instead of selecting a backend implicitly.
+
+Filesystem `fork SOURCE [--name NAME] [-- COMMAND ...]` creates and starts a
+persistent child from a stopped stage or container. Linux requires reflink and
+macOS requires clonefile on the backing filesystem; there is no byte-copy fallback.
+The parent's removal cannot invalidate filesystem-CoW children. Container fork
+retains its pinned image and read-only mounts, refuses writable/staged binds and
+volumes, allocates a new network address and clears published ports.
+The host lower remains live; filesystem fork does not freeze the host or restore
+CPU/RAM state. Execution-state fork remains explicit with `--state execution`.
 
 ### Staged container binds (Linux only) {#container-staged-binds}
 
@@ -251,7 +264,7 @@ execution.
 
 ## Find the command you need
 
-- **Run a command:** start with [`pvisor spawn`](../start/first-run.md), then use
+- **Review changes after exit:** start with [`pvisor stage --executor host --safe`](../start/first-run.md), then use
   `status --review`, `inspect` and `apply` to decide which changes reach the project.
 - **Understand the execution boundary:** use `status` and `inspect`, then read the
   [executor guides](../guides/executors/index.md).
@@ -261,13 +274,13 @@ execution.
 To get started, run and review a Job:
 
 ```bash
-pvisor spawn --safe -- codex
+pvisor stage --executor host --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
 
-`last` resolves only Jobs that belong to the current workspace in default
-storage. With `--stage PATH`, pass that path or the Job ID to later commands;
+`last` resolves only Jobs that belong to the current workspace. Custom stage
+storage is also registered; pass the stage root, name or Job ID to later commands;
 see [Jobs and storage](../concepts/jobs.md).
 
 ### Staging and storage {#暂存与存储}
@@ -278,16 +291,26 @@ writable shares and application-compatibility policies can change where writes g
 | Mode or directory | Write destination | After exit |
 | --- | --- | --- |
 | Ordinary host, no staging | Original workspace | Written to the host; `drop` cannot undo it |
-| `--safe` workspace | Copy-on-write stage in Job storage | Retained for `status --review`, `apply` and `drop` |
-| Workspace with explicit `--stage PATH` | The named stage | Retained; the option also enables staging |
-| VM workspace | The named stage or default Job storage | Retained |
+| `spawn --safe` or `spawn --stage PATH` | Temporary workspace stage | Removed after exit, including nonzero exit |
+| `stage --executor host --safe` or explicit `--stage PATH` | Persistent workspace stage | Retained for review/apply/fork until `rm` |
+| Default `stage` (Linux host-root VM) | Persistent whole-rootfs stage | Retained until `rm` |
+| `run IMAGE` | Container writable layer | Retained until `rm`; `--rm` removes on exit |
 | Other writes to the VM root | Private temporary upper | Discarded when the VM exits |
 | `--safe` HOME / `CODEX_HOME` state | Separate private stage | Discarded at exit; not part of the workspace Run Bundle |
 | Explicit `--mount SOURCE:write` | Host SOURCE | Written directly and persistently; bypasses workspace apply/drop |
 
-Job records and the Run Bundle are stored in run storage. `--stage PATH` chooses
-the location; it is not a prerequisite for `--safe` to retain workspace
-changes. File review does not undo remote side effects that already happened.
+`--stage PATH` selects storage; the creation command determines its lifetime.
+Missing/uncertain completion retains recovery evidence rather than deleting it.
+`drop` discards pending changes without removing the instance. Neither cleanup
+nor file review undoes host write-through or remote side effects.
+
+New CLI instance roots contain immutable `instance.json` identity and
+Attempt-owned state under `attempts/initial/`: `run.json`, `run-bundle.json`,
+`completion.json`, `lease.lock`, `upper/`, `work/`, `merged/`, `preimages/` and
+logical `checkpoints/`. Native VM lifecycle metadata and operation locks belong
+to the instance root, with later executions under `attempts/<resume-token>/`.
+The Job record owns the active-Attempt pointer. Flat legacy stages stay readable
+without in-place migration. Use IDs or stage roots rather than internal paths.
 
 ### Filesystem parameters {#文件系统参数}
 
@@ -297,10 +320,9 @@ point and contains the files already present in that directory. An explicit
 working directory or OverlayFS base takes precedence.
 
 An ordinary host Job writes workspace changes through to the lower by default.
-`--safe` retains workspace changes in Job storage by default, to be
-handled later with `status --review`, `apply` or `drop`. `--stage PATH` only
-chooses the storage location and is not a prerequisite for retaining
-changes.
+`stage --executor host --safe` retains workspace changes for post-exit
+`status --review`, `apply` or `drop`. `spawn --safe` removes them on exit.
+`--stage PATH` chooses storage without changing that lifetime.
 
 ```bash
 pvisor spawn --stage ../run-stage -- codex
@@ -334,14 +356,15 @@ Commands:
   images      List local images
   rmi         Remove image references
   exec        Execute a command in a container VM
-  ps          List containers
+  ps          List instances
   start       Start stopped containers
   stop        Stop containers
-  rm          Remove containers
+  rm          Remove stopped instances
   logs        Fetch container output
 
 Agent Commands:
-  spawn       Start a Job
+  spawn       Run a temporary Job and clean up after exit
+  stage       Create a persistent stagebox
   status      Show Job status
   kill        Terminate a Job
   review      Review staged changes and execution evidence
@@ -363,7 +386,7 @@ Tools:
 ## Safe first run {#安全的第一次运行}
 
 ```bash
-pvisor spawn --safe -- codex
+pvisor stage --executor host --safe -- codex
 pvisor status --review last
 ```
 
@@ -371,10 +394,10 @@ Host execution preserves the host filesystem view by default; only
 `--filesystem sandbox` enables pVisor's synthetic-root/Landlock or Seatbelt
 filesystem access policy. `--safe` stages the workspace and gives HOME
 (including Codex launched from a shell) a separate copy-on-write view. Without
-`--stage`, the changeset and Run Bundle are retained in Job storage by default
-and can be reviewed, applied or dropped after exit. An explicit
-`--stage <PATH>` retains the Job and a writable stage, keeps the changes
-available for human review, and writes `run-bundle.json` with mode `0600`.
+`--stage`, a persistent `stage` command still retains its changeset and Run
+Bundle. An explicit `--stage <PATH>` selects the instance root;
+`run-bundle.json` is private (`0600`) under the current Attempt.
+The same flags on `spawn` do not retain changes after exit.
 
 `--strict` requires non-bypassable enforcement evidence for every requested
 capability dimension, and otherwise fails closed before the Agent starts. Today
@@ -401,7 +424,7 @@ pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-`fork` snapshots the stopped Job's staged filesystem before launching the child.
+`fork` CoW-snapshots the stopped Job's staged filesystem before launching the child.
 Pass `--checkpoint ID` to reuse an existing logical checkpoint. Embedded hosts
 can call `RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce
 directive, requires every Session frozen into the checkpoint to report the
@@ -1265,16 +1288,25 @@ project/                         # reusable workspace / default base
 
 ~/.pvisor/runs/
 └── run-<uuid>/                  # one generated Run and default stage
-    ├── run.json
-    ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
-    ├── overlay.json             # when OverlayFS is enabled
-    ├── upper/
-    ├── merged/
-    ├── checkpoints/
-    ├── lease.lock
-    ├── control.sock             # while a live OverlayFS Run is available
-    ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── events.trace.jsonl       # when --record-destination is set
+    ├── instance.json            # immutable identity and creation mode
+    ├── job.lock
+    ├── execution-job.json       # native VM lifecycle, when present
+    ├── checkpoints/execution/   # native execution snapshots, when present
+    └── attempts/
+        ├── initial/
+        │   ├── run.json
+        │   ├── run-bundle.json  # mode 0600; outcome + safety + changes + effects
+        │   ├── completion.json
+        │   ├── overlay.json     # when OverlayFS is enabled
+        │   ├── upper/
+        │   ├── work/
+        │   ├── merged/
+        │   ├── preimages/
+        │   ├── checkpoints/    # logical filesystem checkpoints
+        │   ├── lease.lock
+        │   ├── control.sock    # while a live OverlayFS Run is available
+        │   └── .capture/       # when OverlayNet/Gateway is enabled
+        └── <resume-token>/
 ```
 
 Shared lifecycle selectors used by `status` and `inspect` accept a Run id,

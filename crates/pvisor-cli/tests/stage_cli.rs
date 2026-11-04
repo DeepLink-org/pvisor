@@ -205,7 +205,14 @@ fn help_groups_stage_with_jobs_and_is_inert() {
         ] {
             assert!(help.contains(text), "missing {text}: {help}");
         }
-        assert!(!help.contains("<IMAGE>"), "stage must not require an image");
+        let usage = help
+            .lines()
+            .find(|line| line.starts_with("Usage:"))
+            .unwrap();
+        assert!(
+            !usage.contains("<IMAGE>"),
+            "stage must not require an image"
+        );
     }
     fixture.assert_inert();
 }
@@ -226,7 +233,6 @@ fn invalid_options_and_resource_boundaries_have_no_side_effects() {
         vec!["-d"],
         vec!["--detach"],
         vec!["--rm"],
-        vec!["--rootfs", "host"],
         vec!["--cpus"],
         vec!["--stage"],
         vec!["-e"],
@@ -585,7 +591,9 @@ exit 23
     assert_eq!(scope["root"], workspace.to_str().unwrap());
     assert_eq!(scope["device"], workspace_metadata.dev());
     assert_eq!(scope["inode"], workspace_metadata.ino());
-    let stage = fixture.path("stage");
+    let stage = pvisor::RunRecord::read(&fixture.path("stage"))
+        .unwrap()
+        .stage_dir();
     let record_before = fs::read(stage.join("run.json")).unwrap();
     let record: serde_json::Value = serde_json::from_slice(&record_before).unwrap();
     assert_eq!(record["workspace"], workspace.to_str().unwrap());

@@ -28,7 +28,7 @@ try:
     escaped = int(open(marker).read())
     started = time.monotonic()
     if kind in ('kill', 'missing-endpoint'):
-        record = json.load(open(glob.glob(os.path.join(root, 'runs', 'run-*', 'run.json'))[0]))
+        record = json.load(open(glob.glob(os.path.join(root, 'runs', 'run-*', 'attempts', 'initial', 'run.json'))[0]))
         endpoint = record['live_control']['path']
         assert os.path.exists(endpoint), 'CLI Run must have a cooperative endpoint'
         if kind == 'kill':
