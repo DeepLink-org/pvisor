@@ -6,7 +6,7 @@ use crate::{
     vmm::{
         resources::{TsiFlags, VmResources},
         vmm_config::{
-            kernel_cmdline::{KernelCmdlineConfig, DEFAULT_KERNEL_CMDLINE},
+            kernel_cmdline::{DEFAULT_KERNEL_CMDLINE, KernelCmdlineConfig},
             machine_config::VmConfig,
             vsock::VsockDeviceConfig,
         },
@@ -15,9 +15,9 @@ use crate::{
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use crate::{
     devices::virtio::fs::{
+        OverlayConfig,
         passthrough::PermissionSemantics,
         virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent},
-        OverlayConfig,
     },
     vmm::vmm_config::fs::FsDeviceConfig,
 };
@@ -430,6 +430,7 @@ impl<B: Backend> Builder<B> {
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shared_backing_reclaim: Default::default(),
         })?;
         startup = startup.next("vm.start_worker");
         B::start_worker(&self.resources, vm.clone(), receiver)?;

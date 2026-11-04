@@ -358,6 +358,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `vm.cold_ram_compression` | `bool` | `false` | Experimental Linux x86_64 local live pager; kernel-fault userfaultfd authority required; no FUSE/pool; `--vm-cold-ram-compression` selects VM |
 | `vm.ram_dedup` | `bool` | `false` | Opt-in best-effort host RAM dedup advice; `--vm-ram-dedup` selects VM; conflicts with memory pool/compression; accepted advice is not savings |
 | `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental Linux physical/sealed-compressed or macOS legacy pool socket; `--vm-memory-pool` |
+| `vm.shared_backing` | `bool` | `false` | Experimental Linux physical pool over writable RAM backing; requires `vm.memory_pool`; permits offload and `vm.ram_compression` after checked reattachment; incompatible with host dedup, UFFD compression and snapshots |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; `--vm-snapshot-filesystem-pool` |
 | `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; `--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |

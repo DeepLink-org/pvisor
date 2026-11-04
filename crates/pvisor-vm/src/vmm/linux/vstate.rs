@@ -1790,14 +1790,17 @@ impl Vcpu {
         // This loop is here just for optimizing the emulation path.
         // No point in ticking the state machine if there are no external events.
         loop {
+            // The queue is authoritative: the kick can be consumed by the
+            // forced EINTR used to complete an idle PIO. Do not enter KVM
+            // again with a pending control even if immediate_exit was cleared.
+            if !self.event_receiver.is_empty() {
+                break;
+            }
             if self
                 .idle
                 .as_ref()
                 .is_some_and(|idle| idle.parked_cpu(self.id))
             {
-                if !self.event_receiver.is_empty() {
-                    break;
-                }
                 if let Some(idle) = &self.idle {
                     #[cfg(target_arch = "x86_64")]
                     if idle.dual_cpu() {
@@ -2394,6 +2397,87 @@ mod tests {
         let mut byte = [0];
         file.read_exact_at(&mut byte, 0).unwrap();
         assert_eq!(byte, [0x5a]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn pending_control_survives_cleared_kick_without_guest_execution() {
+        use vm_memory::Bytes;
+        for resume_first in [false, true] {
+            // No in-kernel irqchip: a regression reaches a userspace HLT exit
+            // instead of blocking inside KVM waiting for an interrupt.
+            let kvm = KvmContext::new().unwrap();
+            let mut vm = Vm::new(kvm.fd()).unwrap();
+            let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
+            vm.memory_init(&memory, kvm.max_memslots()).unwrap();
+            let mut cpu = Vcpu::new_x86_64(
+                0,
+                vm.fd(),
+                vm.supported_cpuid().clone(),
+                vm.supported_msrs().clone(),
+                crate::devices::Bus::new(),
+                EventFd::new(0).unwrap(),
+            )
+            .unwrap();
+            // A lost request in the old loop enters KVM and hits HLT. No busy
+            // guest or rescue kick is needed, so the regression fails promptly.
+            memory.write_slice(&[0xf4], GuestAddress(0)).unwrap();
+            let mut sregs = cpu.fd.get_sregs().unwrap();
+            sregs.cs.base = 0;
+            sregs.cs.selector = 0;
+            cpu.fd.set_sregs(&sregs).unwrap();
+            cpu.fd
+                .set_regs(&kvm_regs {
+                    rip: 0,
+                    rflags: 2,
+                    ..Default::default()
+                })
+                .unwrap();
+            if resume_first {
+                cpu.event_sender
+                    .as_ref()
+                    .unwrap()
+                    .send(VcpuEvent::Resume)
+                    .unwrap();
+            }
+            cpu.event_sender
+                .as_ref()
+                .unwrap()
+                .send(VcpuEvent::Pause)
+                .unwrap();
+            // Deterministically reproduce the boundary after idle PIO
+            // completion has consumed/cleared a kick; the request still exists.
+            cpu.fd.set_kvm_immediate_exit(1);
+            cpu.fd.set_kvm_immediate_exit(0);
+            if resume_first {
+                let _ = cpu.running();
+                assert_eq!(
+                    cpu.response_receiver.as_ref().unwrap().try_recv().unwrap(),
+                    VcpuResponse::Resumed
+                );
+            }
+            let _ = cpu.running();
+            assert_eq!(
+                cpu.response_receiver.as_ref().unwrap().try_recv().unwrap(),
+                VcpuResponse::Paused
+            );
+            assert_eq!(
+                cpu.fd.get_regs().unwrap().rip,
+                0,
+                "guest ran before pause acknowledgement"
+            );
+            cpu.event_sender
+                .as_ref()
+                .unwrap()
+                .send(VcpuEvent::Resume)
+                .unwrap();
+            let _ = cpu.paused();
+            assert_eq!(
+                cpu.response_receiver.as_ref().unwrap().try_recv().unwrap(),
+                VcpuResponse::Resumed
+            );
+            assert!(cpu.response_receiver.as_ref().unwrap().try_recv().is_err());
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

@@ -169,6 +169,8 @@ pub(super) struct RunnerSpec {
     #[serde(default)]
     pub(super) cold_ram_compression: bool,
     #[serde(default)]
+    pub(super) shared_backing: bool,
+    #[serde(default)]
     pub(super) firmware_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
@@ -789,7 +791,7 @@ impl VmExecutor {
         anyhow::ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64"))
                 && (1..=2).contains(&self.settings.cpus)
-                && !self.settings.cold_pager_requested()
+                && (!self.settings.cold_pager_requested() || self.settings.shared_backing)
                 && !self.settings.ram_dedup
                 && self.vsock_ports.is_empty(),
             "guest idle requires one/two-vCPU Linux/KVM without paging/dedup/vsock ports"
@@ -1020,8 +1022,9 @@ impl RunExecutor for VmExecutor {
         let mut spec = context.spec().clone();
         if self.guest_idle
             && (!self.vsock_ports.is_empty()
-                || self.settings.cold_pager_requested()
-                || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some())
+                || (!self.settings.shared_backing
+                    && (self.settings.cold_pager_requested()
+                        || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some())))
         {
             return failed_to_start("guest idle M1 has incompatible devices/pager".into());
         }
@@ -1573,6 +1576,7 @@ impl RunExecutor for VmExecutor {
                     && self.settings.ram_dedup
                     && self.settings.ram_backing.is_none(),
             cold_ram_compression: self.settings.cold_ram_compression,
+            shared_backing: self.settings.shared_backing,
             firmware_path: self.firmware_path.clone(),
             checkpoint,
             restore: None,
@@ -1851,7 +1855,7 @@ impl RunExecutor for VmExecutor {
         if let Some(pid) = child.id() {
             context.vm_control.track_native_process(
                 pid,
-                (!self.settings.cold_pager_requested()
+                ((!self.settings.cold_pager_requested() || self.settings.shared_backing)
                     && !self.private_ram
                     && !(self.settings.ram_dedup && self.settings.ram_backing.is_none()))
                 .then_some(&ram_backing.file),
@@ -1862,8 +1866,9 @@ impl RunExecutor for VmExecutor {
             !runner.private_ram
                 && !runner.cold_ram_compression
                 && runner.restore.is_none()
-                && self.settings.memory_pool.is_none()
-                && std::env::var_os(super::pager::POOL_ENV).is_none(),
+                && (self.settings.shared_backing
+                    || (self.settings.memory_pool.is_none()
+                        && std::env::var_os(super::pager::POOL_ENV).is_none())),
         );
         context
             .vm_control
@@ -2678,7 +2683,7 @@ fn run_linked_krun(
         !cold_pager || (!spec.ram_dedup && spec.restore.is_none() && spec.checkpoint.is_none()),
         "cold pager is incompatible with dedup, snapshot restore and snapshot capture"
     );
-    if spec.restore.is_none() && !cold_pager && !spec.private_ram {
+    if spec.restore.is_none() && (!cold_pager || spec.shared_backing) && !spec.private_ram {
         vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
     } else if spec.restore.is_none() {
         // Bookkeeping FD is not guest RAM. Close it; dedup/paging uses private
@@ -2790,7 +2795,7 @@ fn run_linked_krun(
             handle.resume().map_err(std::io::Error::other)?;
         }
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
-        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib)
+        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib, spec.shared_backing)
             .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
@@ -2840,7 +2845,7 @@ fn run_linked_krun(
                     }
                     if let Ok(request) = serde_json::from_slice::<super::idle::IdleOffload>(&request) {
                         use pvisor_vm::api::GuestIdleControl;
-                        let result = if cold_pager || spec.private_ram {
+                        let result = if (cold_pager && !spec.shared_backing) || spec.private_ram {
                             Err("whole-VM offload requires writable shared RAM backing".into())
                         } else {
                             handle.offload_guest_idle(request.idle_offload_epoch)
@@ -2870,7 +2875,7 @@ fn run_linked_krun(
                             handle.resume().map(|()| (VmState::Running, None))
                         }
                         Ok(OperationKind::RunOffload { .. }) => {
-                            if cold_pager || spec.private_ram {
+                            if (cold_pager && !spec.shared_backing) || spec.private_ram {
                                 rejection_state = handle.is_paused().ok().map(|paused|
                                     if paused { VmState::Paused } else { VmState::Running });
                                 Err("whole-VM offload requires writable shared RAM backing".into())
@@ -4123,6 +4128,36 @@ mod tests {
         hide_ram_backing(&mut device, &directory).unwrap();
         assert!(device.excluded.contains(&PathBuf::from("private-control")));
         assert!(hide_ram_backing(&mut device, root.path()).is_err());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn guest_idle_allows_only_explicit_shared_backing_pool() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join(pvisor_vm::api::VmPlatform::firmware_name()),
+            b"test firmware",
+        )
+        .unwrap();
+        let socket = directory.path().join("pool.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        for enabled in [false, true] {
+            let vm = VmExecutor::new(VmSettings {
+                memory_pool: Some(socket.clone()),
+                shared_backing: enabled,
+                rootfs: Some(directory.path().to_path_buf()),
+                library_dir: Some(directory.path().to_path_buf()),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(
+                vm.with_guest_idle_handoff_policy(true, std::time::Duration::from_secs(1))
+                    .is_ok(),
+                enabled
+            );
+        }
     }
 
     #[test]

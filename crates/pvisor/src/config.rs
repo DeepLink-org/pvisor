@@ -316,6 +316,10 @@ pub struct VmSettings {
     /// the latter requires kernel-fault userfaultfd and retains local recovery
     /// after service loss. Physical/legacy pools must stay alive. Disabled by default.
     pub memory_pool: Option<PathBuf>,
+    /// Experimental Linux physical pool over live writable backing. Default off.
+    /// Requires memory_pool; permits offload and ram_compression after checked
+    /// reattachment. Does not allow KSM, UFFD compression or snapshot restore.
+    pub shared_backing: bool,
     /// Host-owned immutable filesystem pool for native execution checkpoints.
     /// Must be independent of every VM-writable root and on the Job's volume.
     /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
@@ -365,7 +369,17 @@ impl VmSettings {
             "vm.cold_ram_compression cannot be combined with an external memory pool"
         );
         anyhow::ensure!(
+            !self.shared_backing
+                || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                    && self.memory_pool.is_some()
+                    && !self.cold_ram_compression
+                    && !self.ram_dedup
+                    && self.snapshot_filesystem_pool.is_none()),
+            "vm.shared_backing requires a Linux physical memory pool without dedup, cold compression or snapshots"
+        );
+        anyhow::ensure!(
             !self.cold_pager_requested()
+                || self.shared_backing
                 || (!self.ram_compression
                     && self.ram_backing.is_none()
                     && self.snapshot_filesystem_pool.is_none()),
@@ -399,6 +413,7 @@ impl Default for VmSettings {
             cold_ram_compression: false,
             ram_dedup: false,
             memory_pool: None,
+            shared_backing: false,
             snapshot_filesystem_pool: None,
             node_socket: None,
             rootfs: None,
@@ -1290,6 +1305,30 @@ cpus = 4
             .validate_ram_dedup()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn shared_backing_is_explicit_and_rejects_other_pagers() {
+        assert!(!VmSettings::default().shared_backing);
+        let mut settings = VmSettings {
+            shared_backing: true,
+            ..Default::default()
+        };
+        assert!(settings.validate_ram_dedup().is_err());
+        settings.memory_pool = Some("physical.sock".into());
+        settings.ram_compression = true;
+        settings.ram_backing = Some("live.ram".into());
+        assert_eq!(
+            settings.validate_ram_dedup().is_ok(),
+            cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        );
+        settings.cold_ram_compression = true;
+        assert!(settings.validate_ram_dedup().is_err());
+        settings.cold_ram_compression = false;
+        settings.ram_dedup = true;
+        assert!(settings.validate_ram_dedup().is_err());
+        let decoded: VmSettings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded, settings);
     }
 
     #[test]

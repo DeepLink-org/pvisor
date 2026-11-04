@@ -334,6 +334,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `vm.cold_ram_compression` | `bool` | `false` | 实验性 Linux x86_64 本地 live pager；需内核缺页 userfaultfd 权限；无 FUSE/外部池；`--vm-cold-ram-compression` 选择 VM |
 | `vm.ram_dedup` | `bool` | `false` | 显式启用尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 选择 VM；与内存池/压缩互斥；接受建议不等于节省 |
 | `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 Linux 物理/sealed 压缩或 macOS legacy pool socket；`--vm-memory-pool` |
+| `vm.shared_backing` | `bool` | `false` | 实验性 Linux 可写 RAM backing 物理池；要求 `vm.memory_pool`；经检查重新接回 backing 后允许 offload 和 `vm.ram_compression`；与宿主去重、UFFD 压缩及快照互斥 |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；`--vm-snapshot-filesystem-pool` |
 | `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；`--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `未设置` | Linux 根目录；Linux CLI 默认宿主 `/`；`--rootfs` |

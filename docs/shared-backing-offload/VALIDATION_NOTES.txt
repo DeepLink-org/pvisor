@@ -1,0 +1,47 @@
+Enable UKSM-style page sharing with offload and compressed backing
+
+This change allows pVisor's existing user-space UKSM-style physical page sharing to run together with offload and compressed RAM backing. It adds an opt-in shared_backing profile; defaults, resource budgets and control timeouts stay unchanged. This does not enable Linux kernel UKSM or KSM.
+
+Before reclaim, the VM writes replaced pages, including private COW writes and zero pages, back to their original backing offsets and restores the shared-file mappings under the existing CPU/device barrier. Automatic guest-idle offload uses the same path. The Linux vCPU loop also checks queued controls before re-entering KVM so a consumed kick cannot strand an already-queued request; timeout diagnostics retain the original deadlines and fail-stop behavior.
+
+Validation
+
+- Existing focused dual-VM checks cover compressed offload/restore, private-write isolation and VM B continuing after VM A exits. Automatic 50ms guest-idle validation recorded 6/9 offloads for A/B and safe cleanup.
+- The queue regression fails when only the queue check is removed. The repaired historical runtime build passed 36 related tests.
+- Full s14 and then the first 16 trajectories completed with strict cleanup, no observed vCPU control timeout, zero OOM/swap and no remaining task/pool processes or mounts. The 16-task run recorded 1,373 offloads.
+- All three arms completed 16/16; official tests fully passed for 3/16, with matching per-task test outcomes. Strict execution/cleanup success does not mean all task tests passed.
+
+Engineering observations (one run per arm)
+
+All arms replayed 16 recorded rollout trajectories (four tasks, four trajectories per task), submitted at offset zero and retained recorded model waits, with no real model calls. The parent budget was 32 GiB / 6000% CPU / zero swap; VMs used two vCPUs and a 250% CPU quota with the existing admission rules. Both pVisor arms used 50ms offload and backing compression. AgentENV ran natively using the localhost/Python-preflight corrected adapter.
+
+The table label “pVisor offload + UKSM” means pVisor's user-space UKSM-style sharing. AgentENV is an external comparison, not modified by this PR.
+
+| Arm | Controller elapsed (min) | Mean queue (s) | Parent peak (GiB) | Parent integral (GiB·s) |
+|---|---:|---:|---:|---:|
+| pVisor offload | 59.50 | 35.88 | 20.45 | 49038 |
+| pVisor offload + UKSM | 77.89 | 106.63 | 32.00 | 75487 |
+| AgentENV | 145.48 | 105.88 | 27.47 | 213842 |
+
+Excluding s15 from per-task averages:
+
+| Arm | Mean replay incl. recorded waits (min) | Mean tool execution (s) | Mean queue (s) |
+|---|---:|---:|---:|
+| pVisor offload | 23.74 | 41.78 | 33.98 |
+| pVisor offload + UKSM | 46.14 | 215.44 | 101.94 |
+| AgentENV | 22.13 | 9.41 | 100.89 |
+
+These results establish compatibility, not a performance improvement: the shared implementation was slower and used more charged memory than offload alone in this run. The regression remains unresolved.
+
+Scope and limits
+
+- Measurements use frozen historical experiment builds. The shared runtime includes a backport of this compatibility/queue repair; it is not the identical binary built from the review checkout. The original review checkout was based on a2f6bb81afb86d4a8b69a9fb6459ac5ca3b41ebb; the submission was rebased without conflicts onto 3d6fbc997d0cd1982a4e87507bd95e954398a432. The intervening change only touches replay benchmark files. Do not describe the rollout as testing the latest main build.
+- Controller elapsed is recorded by each finite controller, not a claim that backend lifecycle boundaries are byte-for-byte identical. Queue ends at task launch, not VM readiness. Replay includes waits and excludes queue, setup, official evaluation and shutdown.
+- Parent memory is observed cgroup usage, not guest-only RAM or fair whole-host physical memory. AgentENV includes its service/ublk/template cache; pVisor shared includes its pool. Shared root-cache ownership remains unresolved. The memory columns are accounting observations, not cross-backend savings ratios.
+- pVisor memory integrals were recomputed with one trapezoidal convention; AgentENV retains its recorded final-review integral. Raw samples must be harmonized before stronger cross-backend integral comparisons.
+- Removing s15 from averages does not remove its contention from the original run. s15 remains included in the complete-run table. No hypothetical 15-task parent-memory figure is claimed.
+- Separate dates, different binaries and one run per arm prevent attributing all differences solely to sharing. Cumulative merged-byte counters are not resident savings. A passing run does not prove the absence of all races.
+
+RESULTS.json contains the full-precision values and per-task official outcomes used above. This is engineering evidence, not a replacement for published benchmark results.
+
+Submission checks: clean rebase onto 3d6fbc9, Rust formatting, diff whitespace check, 4×4 dataset consistency, and 36 related tests passed in the minimal-dependency Linux/KVM workspace with the submitted Rust files. This is not a full-workspace build; no new replay experiment was run. See SUBMISSION_CHECKS.json.

@@ -123,6 +123,11 @@ impl VmmHandle {
             .map_err(|_| "VM transition lock poisoned")?;
         let transition_us = started.elapsed().as_micros();
         let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        // Optional sharing scans must not interrupt an idle handoff or claim.
+        // The mandatory offload reattachment runs separately under this transition lock.
+        if self.idle.defer_maintenance() {
+            return Ok(None);
+        }
         let pause_started = std::time::Instant::now();
         let gate = {
             let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
@@ -256,9 +261,14 @@ impl VmmHandle {
             .transition
             .lock()
             .map_err(|_| "VM transition lock poisoned")?;
+        let reattach = self
+            .shared_backing_reclaim
+            .lock()
+            .map_err(|_| "shared backing hook poisoned")?;
         if self
             .cold_pager_started
             .load(std::sync::atomic::Ordering::Acquire)
+            && reattach.is_none()
         {
             return Err("whole-VM offload is incompatible with the experimental cold pager".into());
         }
@@ -288,8 +298,7 @@ impl VmmHandle {
             // A device lease retained across a slow host request is a reason to
             // resume, not to spend the entire guest timer window draining it.
             if !gate.try_close()? {
-                self.idle
-                    .trace_offload(epoch, "device_gate_busy", None);
+                self.idle.trace_offload(epoch, "device_gate_busy", None);
                 return Ok(None);
             }
         } else if let Err(error) = gate.close(std::time::Duration::from_secs(5)) {
@@ -306,6 +315,12 @@ impl VmmHandle {
         // A wake after admission is latched; never interrupt writeback or reopen
         // RAM writers until native reclaim and host publication have completed.
         let reclaim_started = std::time::Instant::now();
+        if let Some(reattach) = reattach.as_ref() {
+            if let Err(error) = reattach() {
+                locked.fail_control();
+                return Err(error);
+            }
+        }
         let result = locked.offload_ram();
         if let Some(epoch) = idle_epoch {
             self.idle.trace_offload(

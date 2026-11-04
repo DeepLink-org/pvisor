@@ -1945,3 +1945,33 @@ protection or `=0` after separately qualifying a backport. The low-level
 `KRUN_ENOMEM_WORKAROUND` is presence-based: setting it to `0` does not disable
 it; the launcher removes it for the off path. KVM error handling, retries,
 resource budgets and timeouts remain unchanged.
+
+## Experimental shared backing offload
+
+Linux x86_64 may opt in with `[vm].shared_backing = true` and an explicit
+physical `memory_pool`. The profile keeps the VM-owned live backing, including
+FUSE `ram_compression`. It does not enable KSM, UFFD compression, snapshot
+restoration or change scan/admission/reclaim policies. Default remains off.
+
+The sharing worker tracks replaced pages independently of pool references.
+Under the existing CPU/device transition barrier, offload invalidates old
+publication generations, copies each replaced page (including COW and zeroed
+pages) to its original backing offset, and remaps it MAP_SHARED before existing
+reclaim. The scratch copy is 4 KiB; per-page ownership metadata and deferred
+references are charged to the VM. Detached pins are released outside VM locks.
+The host still commits compressed generations before reporting success.
+Mapping, writeback or commit failure follows fail-stop; API deletion alone is
+not proof of physical cleanup. This is an experimental correctness path, not a
+claim of performance benefit or completed rollout qualification.
+
+The focused `shared_backing_case` example runs two 8 GiB, two-vCPU guests with
+an in-process physical pool using the production shared-pool protocol. It checks
+pool admission, compressed offload before/after private writes, data isolation,
+and that VM B can offload/resume after VM A exits. It requires a fresh, short
+`CASE_ROOT`, `PVISOR_CASE_ROOTFS`, and optionally `PVISOR_CASE_VM_LIBRARY_DIR`
+and `PVISOR_CASE_VM_PYTHON`. Run it inside the experiment's existing resource
+budget; `CASE_CGROUP`, when set to a delegated empty parent, places each runner
+in a separate 250% CPU subgroup. The pool and coordinator must remain charged
+to the same parent. `result.json` records the checks; independently audit the
+unit's actual exit, OOM/swap counters and remaining mounts. This diagnostic does
+not run rollout trajectories or establish throughput/memory savings.

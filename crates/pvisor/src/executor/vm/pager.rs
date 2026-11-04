@@ -23,6 +23,7 @@ pub(super) fn start_if_requested(
     handle: pvisor_vm::api::VmmHandle,
     local: bool,
     memory_mib: u32,
+    shared_backing: bool,
 ) -> io::Result<()> {
     start_diagnostics(&handle)?;
     let metrics = std::env::var_os(METRICS_ENV).is_some();
@@ -43,6 +44,7 @@ pub(super) fn start_if_requested(
         return handle.start_cold_pager(
             store,
             pvisor_vm::api::ColdRamOptions {
+                shared_backing: false,
                 metrics,
                 page_granular: false,
                 share_resident: false,
@@ -52,7 +54,7 @@ pub(super) fn start_if_requested(
     let Some(_path) = std::env::var_os(POOL_ENV) else {
         return Ok(());
     };
-    start_with_pool(handle, Path::new(&_path), metrics)
+    start_with_pool_profile(handle, Path::new(&_path), metrics, shared_backing)
 }
 
 /// Start opt-in self-query diagnostics independently of cold-pool selection.
@@ -182,6 +184,14 @@ pub(crate) fn start_with_pool(
     path: &Path,
     metrics: bool,
 ) -> io::Result<()> {
+    start_with_pool_profile(handle, path, metrics, false)
+}
+fn start_with_pool_profile(
+    handle: pvisor_vm::api::VmmHandle,
+    path: &Path,
+    metrics: bool,
+    shared_backing: bool,
+) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -210,12 +220,18 @@ pub(crate) fn start_with_pool(
     #[cfg(target_os = "linux")]
     let pool = {
         if pool.enable_shared_mapping().is_err() {
+            if shared_backing {
+                return Err(io::Error::other(
+                    "shared backing requires a physical pool; no compressed fallback",
+                ));
+            }
             // Only the negotiated sealed protocol may fall back to local
             // decode; legacy remote GET ownership is never used on Linux.
             let pool = crate::ram_backing::ipc::SealedClient::new(pool)?;
             return handle.start_cold_pager(
                 pool,
                 pvisor_vm::api::ColdRamOptions {
+                    shared_backing: false,
                     metrics,
                     page_granular: false,
                     share_resident: false,
@@ -227,6 +243,7 @@ pub(crate) fn start_with_pool(
     handle.start_cold_pager(
         pool,
         pvisor_vm::api::ColdRamOptions {
+            shared_backing,
             metrics,
             page_granular: {
                 #[cfg(target_os = "macos")]
