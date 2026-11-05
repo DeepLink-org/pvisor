@@ -13,11 +13,14 @@ fn opencode_continuation_preserves_failure_and_step_budget() {
     if let Ok(root) = std::env::var("PVISOR_REPLAY_TEST_ROOT") {
         let root = std::path::PathBuf::from(root);
         let entry = root.join("opencode");
-        fs::write(&entry,r#"#!/usr/bin/env python3
+        // Keep fixture probes independent of cold Python/network-library startup.
+        fs::write(&entry,r#"#!/bin/sh
+case "$1" in
+    --version) printf '1.17.7\n'; exit 0 ;;
+    import) exit 0 ;;
+esac
+exec python3 - "$@" <<'PY'
 import json, os, sys, urllib.request
-if sys.argv[1]=='--version':
-    print('1.17.7'); sys.exit(0)
-if sys.argv[1]=='import': sys.exit(0)
 url=os.environ['OPENAI_BASE_URL'].rstrip('/')+'/responses'
 payload=json.dumps({'model':'audit','input':[{'role':'user','content':'audit continuation'}]}).encode()
 request=urllib.request.Request(url,data=payload,headers={'Content-Type':'application/json','Authorization':'Bearer '+os.environ['OPENAI_API_KEY']})
@@ -31,6 +34,7 @@ if os.environ['PVISOR_REPLAY_TEST_CASE']=='budget':
 else:
     print('fatal: synthetic failure after one complete turn',file=sys.stderr,flush=True)
     sys.exit(42)
+PY
 "#).unwrap();
         fs::set_permissions(&entry, fs::Permissions::from_mode(0o700)).unwrap();
         let trajectory = root.join("trajectory.jsonl");
@@ -106,6 +110,8 @@ else:
                     Err(error) => panic!("{error}"),
                 }
             };
+            // Accepted sockets inherit nonblocking mode on macOS.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
