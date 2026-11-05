@@ -733,6 +733,11 @@ Job test needs KVM, a static C compiler and (for GNU builds)
 only a static Ready executable ten times each with one and two vCPUs, checks
 unique Ready output and zero exit, and keeps every attempt's logs on failure.
 It covers PID 1's pre-Rust standard-stream repair when the image has no `/dev`.
+Native Job tests pin an immutable CLI copy for each test thread. Its temporary
+directory is removed when that thread exits normally; a process-static temporary
+directory would never be destructed and would leak one executable per test
+process. A regression checks removal after joining the owning thread. Abrupt
+process death can still leave temporary evidence and is not claimed cleaned.
 
 The ignored `native_stage_preserves_device_and_inode_across_ancestor_copy_up`
 stage CLI test requires Linux x86_64/KVM and `/usr/bin/python3`. It stages a
