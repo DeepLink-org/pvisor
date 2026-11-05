@@ -133,10 +133,10 @@ class CliChaosSafetyTests(unittest.TestCase):
                 ),
             ):
                 chaos.write_evidence(path, data)
-            self.assertEqual(
-                calls,
-                [("sync", data), ("advice", (0, 0, chaos.os.POSIX_FADV_DONTNEED), data)],
-            )
+                self.assertEqual(
+                    calls,
+                    [("sync", data), ("advice", (0, 0, chaos.os.POSIX_FADV_DONTNEED), data)],
+                )
             self.assertEqual(path.read_bytes(), data)
 
     def test_evidence_cache_advice_failure_is_not_silently_accepted(self):

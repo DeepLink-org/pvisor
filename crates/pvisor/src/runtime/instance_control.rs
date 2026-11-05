@@ -1851,9 +1851,9 @@ mod tests {
                             .await
                             .ok()
                             .and_then(|reply| reply.result.ok());
-                        if response
-                            .is_some_and(|response| response.status.state == RunState::Running)
-                        {
+                        if response.is_some_and(|response| {
+                            response.status.state == pvisor_core::RunState::Running
+                        }) {
                             return (endpoint.path, request);
                         }
                     }
@@ -1878,7 +1878,7 @@ mod tests {
                 req.target.as_ref().unwrap().attempt_id.as_deref().unwrap()
             );
             if command == (HostVmCommand::Offload { file: None }) {
-                assert_eq!(reply.status.state, RunState::Suspended);
+                assert_eq!(reply.status.state, pvisor_core::RunState::Suspended);
                 assert!(matches!(
                     reply.value,
                     Some(pvisor_core::operation::Value::Vm {
@@ -1888,7 +1888,7 @@ mod tests {
                 ));
             }
             if command == HostVmCommand::Resume {
-                assert_eq!(reply.status.state, RunState::Running);
+                assert_eq!(reply.status.state, pvisor_core::RunState::Running);
             }
         }
         let output = std::process::Command::new(&native.binary)
