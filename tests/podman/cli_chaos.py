@@ -21,6 +21,20 @@ if not __debug__:
     raise RuntimeError("CLI chaos requires assertions enabled; do not use -O or PYTHONOPTIMIZE")
 
 IMAGE = "mirror.gcr.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e"
+SCENARIOS = (
+    "streams",
+    "environment",
+    "volume",
+    "restart",
+    "manager",
+    "logs",
+    "batch",
+    "disconnected_client",
+    "transient",
+    "invalid",
+    "build",
+    "network",
+)
 
 
 def flush_evidence(stream):
@@ -70,6 +84,14 @@ def peer_handle(path):
 class Campaign:
     def __init__(self, args):
         self.args = args
+        selected = getattr(args, "scenario", None)
+        if selected is not None and (
+            not selected
+            or len(set(selected)) != len(selected)
+            or not set(selected) <= set(SCENARIOS)
+        ):
+            raise ValueError("scenarios must be nonempty, unique supported names")
+        self.scenario_names = list(selected or SCENARIOS)
         self.root = args.output.resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
         self.store = self.root / "store"
@@ -100,6 +122,7 @@ class Campaign:
             {
                 "seed": args.seed,
                 "seconds": args.seconds,
+                "scenarios": list(selected) if selected is not None else None,
                 "image": args.image,
                 "binary": str(args.binary),
                 "sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
@@ -606,20 +629,7 @@ class Campaign:
             self.started = time.monotonic()
             self.deadline = self.started + self.args.seconds
             save(self.root / "load-start.json", {"unix": time.time(), "seconds": self.args.seconds})
-            scenarios = [
-                self.streams,
-                self.environment,
-                self.volume,
-                self.restart,
-                self.manager,
-                self.logs,
-                self.batch,
-                self.disconnected_client,
-                self.transient,
-                self.invalid,
-                self.build,
-                self.network,
-            ]
+            scenarios = [getattr(self, name) for name in self.scenario_names]
             while time.monotonic() < self.deadline and not self.stopping.is_set():
                 sample = self.sample()
                 if (
@@ -697,6 +707,12 @@ if __name__ == "__main__":
     parser.add_argument("--seconds", type=int, default=7200)
     parser.add_argument("--seed", type=int, default=10251526)
     parser.add_argument("--interval", type=float, default=3)
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        choices=SCENARIOS,
+        help="Focus on these scenarios (repeatable); omitted runs the complete profile",
+    )
     parser.add_argument(
         "--inject-pool-loss",
         action="store_true",

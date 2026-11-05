@@ -34,7 +34,7 @@ class CliChaosSafetyTests(unittest.TestCase):
             self.assertNotEqual(output.returncode, 0)
             self.assertIn(b"requires assertions enabled", output.stderr)
 
-    def runner(self, root):
+    def runner(self, root, *, scenario=None):
         binary = root / "bin/pvisor"
         binary.parent.mkdir()
         binary.symlink_to(sys.executable)
@@ -47,8 +47,27 @@ class CliChaosSafetyTests(unittest.TestCase):
                 seconds=60,
                 seed=1,
                 interval=1,
+                scenario=scenario,
             )
         )
+
+    def test_focused_scenarios_are_explicit_and_default_profile_stays_complete(self):
+        with workspace() as (root, _):
+            runner = self.runner(root)
+            self.assertEqual(runner.scenario_names, list(chaos.SCENARIOS))
+            self.assertIsNone(json.loads((runner.root / "manifest.json").read_text())["scenarios"])
+        with workspace() as (root, _):
+            names = ["manager", "restart", "volume"]
+            runner = self.runner(root, scenario=names)
+            self.assertEqual(runner.scenario_names, names)
+            self.assertEqual(
+                json.loads((runner.root / "manifest.json").read_text())["scenarios"], names
+            )
+        for names in [[], ["manager", "manager"], ["unsupported"]]:
+            with self.subTest(names=names), workspace() as (root, _):
+                with self.assertRaises(ValueError):
+                    self.runner(root, scenario=names)
+                self.assertFalse((root / "evidence").exists())
 
     def test_wrong_exit_and_both_streams_remain_available_for_diagnosis(self):
         with workspace() as (root, _):
@@ -241,6 +260,17 @@ class CliChaosSafetyTests(unittest.TestCase):
                 + "\n"
             )
             self.assertTrue(audit_cli.audit(runner.root)["passed"])
+            manifest_path = runner.root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["scenarios"] = ["streams"]
+            chaos.save(manifest_path, manifest)
+            self.assertEqual(audit_cli.audit(runner.root)["focused_scenarios"], ["streams"])
+            manifest["scenarios"] = ["streams", "manager"]
+            chaos.save(manifest_path, manifest)
+            with self.assertRaises(AssertionError):
+                audit_cli.audit(runner.root)
+            manifest["scenarios"] = ["streams"]
+            chaos.save(manifest_path, manifest)
             # Legacy receipts have an input checksum but no explicit output
             # checksum; the known cat contract still provides an independent oracle.
             receipt = runner.root / "cmd-000000/command.json"

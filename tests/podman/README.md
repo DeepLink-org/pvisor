@@ -136,6 +136,12 @@ marker before checking `/boot-count` byte-for-byte. `start`/exec readiness is no
 application initialization: the marker follows the fixture's counter write.
 Missing/prefix-only markers, incorrect final bytes, command errors and timeouts
 remain failures; startup commands are not retried.
+Use repeatable `--scenario manager --scenario restart --scenario volume` to focus
+a campaign. Its selected names are recorded and independently audited; this is
+not a complete-profile pass. Omission preserves all twelve default scenarios,
+each executed once before seeded repeats. Invalid/duplicate names fail before
+creating evidence, and focused runs keep every selected scenario's original
+oracle, lifecycle cleanup, resource limits and optional final pool-loss fault.
 
 Optional `--inject-pool-loss` ends the window by killing only the verified owned
 physical pool through its pidfd. It requires dependent VMs and the manager to

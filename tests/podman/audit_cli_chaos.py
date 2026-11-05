@@ -17,6 +17,10 @@ def audit(root):
     outcome = json.loads((root / "outcome.json").read_text())
     assert outcome["passed"] and not outcome["failure"] and not outcome["cleanup_errors"], outcome
     assert sum(outcome["counts"].values()) == outcome["rounds"], outcome
+    selected = manifest.get("scenarios")
+    if selected is not None:
+        assert selected and len(set(selected)) == len(selected), manifest
+        assert all(outcome["counts"].get(name, 0) > 0 for name in selected), outcome
     assert not json.loads((root / "cleanup.json").read_text())["errors"]
     limits = json.loads((root / "limits.json").read_text())
     assert limits["memory.max"] == str(1536 * 1024**2) and limits["memory.swap.max"] == "0", limits
@@ -126,6 +130,7 @@ def audit(root):
         assert all(int(events[key]) == 0 for key in ["max", "oom", "oom_kill"]), sample
     return {
         "passed": True,
+        "focused_scenarios": selected,
         "rounds": outcome["rounds"],
         "commands": len(receipts),
         "elapsed": outcome["elapsed"],
