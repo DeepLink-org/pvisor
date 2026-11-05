@@ -703,7 +703,8 @@ exit 23
     );
     success(&output);
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(status["filesystem"]["state"], "discarded");
+    assert_eq!(status["schema_version"], 2);
+    assert_eq!(status["run"]["overlay"]["state"], "discarded");
     assert_eq!(status["filesystem"]["changed_files"], 0);
 }
 
