@@ -23,10 +23,6 @@ pub mod device;
 pub mod file_traits;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub mod fs;
-#[cfg(feature = "gpu")]
-pub mod gpu;
-#[cfg(feature = "input")]
-pub mod input;
 pub mod linux_errno;
 pub mod memory_gate;
 mod mmio;
@@ -35,8 +31,6 @@ pub mod net;
 mod queue;
 #[cfg(not(feature = "tee"))]
 pub mod rng;
-#[cfg(feature = "snd")]
-pub mod snd;
 pub mod vsock;
 
 #[cfg(not(feature = "tee"))]
@@ -47,8 +41,6 @@ pub use self::console::*;
 pub use self::device::*;
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 pub use self::fs::*;
-#[cfg(feature = "gpu")]
-pub use self::gpu::*;
 pub use self::mmio::*;
 #[cfg(feature = "net")]
 pub use self::net::Net;
@@ -57,8 +49,6 @@ pub(crate) use self::queue::tests::VirtQueue;
 pub use self::queue::{Descriptor, DescriptorChain, Queue, QueueSnapshot};
 #[cfg(not(feature = "tee"))]
 pub use self::rng::*;
-#[cfg(feature = "snd")]
-pub use self::snd::Snd;
 pub use self::vsock::*;
 
 /// When the driver initializes the device, it lets the device know about the

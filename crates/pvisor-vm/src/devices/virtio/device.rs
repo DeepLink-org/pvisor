@@ -223,7 +223,7 @@ pub trait VirtioDevice: AsAny + Send {
     }
 
     /// Device-specific ID of the single advertised shared-memory region.
-    /// virtio-fs uses zero; virtio-gpu's host-visible region uses one.
+    /// virtio-fs uses zero.
     fn shm_region_id(&self) -> u32 {
         0
     }

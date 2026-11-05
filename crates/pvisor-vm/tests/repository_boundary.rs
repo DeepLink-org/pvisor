@@ -16,6 +16,34 @@ const OLD_PACKAGES: &[&str] = &[
     "krun-smbios",
 ];
 
+#[test]
+fn fs_environment_parsing_has_one_private_owner() {
+    let assembly = include_str!("../src/runtime_modules.rs");
+    assert!(assembly.lines().any(|line| line == "mod env;"));
+    let environment = include_str!("../src/env.rs");
+    let lines: Vec<_> = environment.lines().collect();
+    assert!(lines
+        .windows(2)
+        .any(|pair| { pair[0] == "#[cfg(unix)]" && pair[1] == "pub(crate) mod fs {" }));
+    assert!(environment.contains("pub(crate) struct FsProfile"));
+    for source in [
+        include_str!("../src/devices/virtio/fs/worker.rs"),
+        include_str!("../src/devices/virtio/fs/device.rs"),
+        include_str!("../src/devices/virtio/fs/overlay.rs"),
+        include_str!("../src/vmm/builder.rs"),
+    ] {
+        assert!(!source.contains("struct FsProfile"));
+        // Error assertions may spell out the complete diagnostic; lookup keys
+        // must always refer to the environment owner's constants.
+        for line in source.lines() {
+            assert!(
+                !line.contains("\"PVISOR_VM_FS_") || line.contains("must be"),
+                "duplicated FS environment lookup: {line}"
+            );
+        }
+    }
+}
+
 fn inspect_manifest(value: &toml::Value) {
     if let toml::Value::Table(table) = value {
         for (key, value) in table {
@@ -53,6 +81,80 @@ fn workspace_has_no_old_runtime_dependency() {
                 .parse()
                 .unwrap();
         inspect_manifest(&manifest);
+    }
+}
+
+#[test]
+fn retired_optional_devices_are_not_build_profiles() {
+    let manifest: toml::Value = include_str!("../Cargo.toml").parse().unwrap();
+    let features = manifest["features"].as_table().unwrap();
+    for feature in ["gpu", "snd", "input", "virgl_resource_map2"] {
+        assert!(!features.contains_key(feature), "retired feature {feature}");
+    }
+    let dependencies = manifest["dependencies"].as_table().unwrap();
+    for dependency in [
+        "krun_display",
+        "krun_input",
+        "pw",
+        "rutabaga_gfx",
+        "thiserror",
+        "zerocopy",
+    ] {
+        assert!(
+            !dependencies.contains_key(dependency),
+            "retired device dependency {dependency}"
+        );
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for device in ["gpu", "snd", "input"] {
+        assert!(
+            !root
+                .join("src/devices/virtio")
+                .join(device)
+                .join("mod.rs")
+                .exists(),
+            "retired device implementation {device}"
+        );
+    }
+    // Product and validation profiles must remain available.
+    for feature in ["net", "init-blob", "test_utils"] {
+        assert!(features.contains_key(feature), "required feature {feature}");
+    }
+    assert!(root.join("src/windows/vmm/windows/vstate.rs").is_file());
+}
+
+#[test]
+fn byte_order_uses_one_private_source_for_both_backends() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let assembly = std::fs::read_to_string(root.join("src/windows/utils/mod.rs")).unwrap();
+    assert!(has_shared_byte_order_declaration(&assembly));
+    assert!(root.join("src/utils/byte_order.rs").is_file());
+    assert!(!root.join("src/windows/utils/byte_order.rs").exists());
+}
+
+fn has_shared_byte_order_declaration(assembly: &str) -> bool {
+    let mut lines = assembly.lines();
+    let mut previous = lines.next();
+    for line in lines {
+        if previous == Some("#[path = \"../../utils/byte_order.rs\"]")
+            && line == "pub mod byte_order;"
+        {
+            return true;
+        }
+        previous = Some(line);
+    }
+    false
+}
+
+#[test]
+fn byte_order_guard_preserves_paired_declaration_with_windows_line_endings() {
+    for newline in ["\n", "\r\n"] {
+        assert!(has_shared_byte_order_declaration(&format!(
+            "#[path = \"../../utils/byte_order.rs\"]{newline}pub mod byte_order;{newline}"
+        )));
+        assert!(!has_shared_byte_order_declaration(&format!(
+            "#[path = \"../../utils/byte_order.rs\"]{newline}pub mod other;{newline}pub mod byte_order;"
+        )));
     }
 }
 

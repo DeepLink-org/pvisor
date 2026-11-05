@@ -7,10 +7,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use pvisor_gateway::conversion::{
-    ProtocolBridge, StreamTranslator, completions_request_to_gemini,
-    completions_response_to_messages, gemini_response_to_completions,
-    messages_request_to_completions, responses_request_to_completions,
-    translate_request_for_bridge,
+    ProtocolBridge, StreamTranslator, translate_request_for_bridge, translate_response_for_bridge,
 };
 use pvisor_gateway::dialogue_extract::{
     count_visible_user_messages, extract_assistant_text_from_json, extract_assistant_turn_from_sse,
@@ -45,7 +42,14 @@ fn ag_messages_request_matches_completions_snap() {
             let snap_path = messages_completions_snap(case);
             let body = read_fixture_bytes(&format!("requests/messages/{case}.json"));
             let upstream = upstream_model_from_messages_fixture(case);
-            let out = messages_request_to_completions(&body, &upstream).unwrap();
+            let parsed = understand_request(ProtocolKind::Messages, &body).unwrap();
+            let out = translate_request_for_bridge(
+                ProtocolBridge::MessagesToCompletions,
+                &parsed.semantic,
+                &upstream,
+                None,
+            )
+            .unwrap();
             let actual: Value = serde_json::from_slice(&out).unwrap();
             let expected = ag_snap_request(&snap_path);
             assert_json_eq(&actual, &expected, case);
@@ -85,7 +89,14 @@ fn semantic_ir_messages_request_matches_completions_snap() {
 #[test]
 fn ag_messages_tool_history_survives_without_tool_declarations() {
     let body = read_fixture_bytes("requests/messages/tool_history_without_tools.json");
-    let out = messages_request_to_completions(&body, "upstream-model").unwrap();
+    let parsed = understand_request(ProtocolKind::Messages, &body).unwrap();
+    let out = translate_request_for_bridge(
+        ProtocolBridge::MessagesToCompletions,
+        &parsed.semantic,
+        "upstream-model",
+        None,
+    )
+    .unwrap();
     let value: Value = serde_json::from_slice(&out).unwrap();
     assert!(value.get("tools").is_none());
     assert_eq!(value["messages"][0]["role"], "assistant");
@@ -108,9 +119,27 @@ fn ag_completions_response_matches_messages_snap() {
             let snap_path = completions_messages_snap(case);
             let body = read_fixture_bytes(&format!("response/completions/{case}.json"));
             let client_model = client_model_from_completions_fixture(case);
-            let out = completions_response_to_messages(&body, &client_model).unwrap();
+            let out = translate_response_for_bridge(
+                ProtocolBridge::MessagesToCompletions,
+                &body,
+                ProtocolKind::Messages,
+                &client_model,
+            )
+            .unwrap()
+            .body;
             let actual: Value = serde_json::from_slice(&out).unwrap();
-            let expected = ag_snap_response(&snap_path);
+            let mut expected = ag_snap_response(&snap_path);
+            // Reasoning is rendered before the text response. Compare every
+            // golden field and the additional thinking block, including order.
+            if case == "openrouter_reasoning" {
+                expected["content"].as_array_mut().unwrap().insert(
+                    0,
+                    serde_json::json!({
+                        "type":"thinking",
+                        "thinking":"Okay, the user wants me to write a story"
+                    }),
+                );
+            }
             assert_messages_response_eq(&actual, &expected, case);
         },
     );
@@ -127,7 +156,14 @@ fn ag_responses_request_to_completions() {
         ".json",
         |case| {
             let body = read_fixture_bytes(&format!("requests/responses/{case}.json"));
-            let out = responses_request_to_completions(&body, "upstream-model", None).unwrap();
+            let parsed = understand_request(ProtocolKind::Responses, &body).unwrap();
+            let out = translate_request_for_bridge(
+                ProtocolBridge::ResponsesToCompletions,
+                &parsed.semantic,
+                "upstream-model",
+                None,
+            )
+            .unwrap();
             let v: Value = serde_json::from_slice(&out).unwrap();
             assert_eq!(v["model"], "upstream-model", "{case}");
             assert!(
@@ -187,7 +223,14 @@ fn ag_completions_request_matches_gemini_native_goldens() {
                 .get("model")
                 .and_then(Value::as_str)
                 .unwrap_or("gemini-2.5-pro");
-            let out = completions_request_to_gemini(&body, model).unwrap();
+            let parsed = understand_request(ProtocolKind::ChatCompletions, &body).unwrap();
+            let out = translate_request_for_bridge(
+                ProtocolBridge::CompletionsToGemini,
+                &parsed.semantic,
+                model,
+                None,
+            )
+            .unwrap();
             let actual: Value = serde_json::from_slice(&out).unwrap();
             let expected =
                 ag_snap_request(&format!("requests/completions/{case}.vertex-gemini.snap"));
@@ -220,7 +263,14 @@ fn ag_gemini_native_response_matches_completions_goldens() {
         ".vertex-gemini-completions.snap",
         |case| {
             let body = read_fixture_bytes(&format!("response/vertex-gemini/{case}.json"));
-            let out = gemini_response_to_completions(&body, "gemini-2.5-pro").unwrap();
+            let out = translate_response_for_bridge(
+                ProtocolBridge::CompletionsToGemini,
+                &body,
+                ProtocolKind::ChatCompletions,
+                "gemini-2.5-pro",
+            )
+            .unwrap()
+            .body;
             let mut actual: Value = serde_json::from_slice(&out).unwrap();
             actual["id"] = serde_json::json!("[id]");
             actual["created"] = serde_json::json!("[date]");

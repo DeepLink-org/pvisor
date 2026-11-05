@@ -5,13 +5,8 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
-    ToolCall,
+    AgentKind, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
 };
-
-pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
-    build_mini_plan(request).map(AdapterPlan::MiniSweAgent)
-}
 
 pub(super) fn execute(
     plan: &ReplayPlan,
@@ -44,7 +39,7 @@ fn mini_batch_signature(batch: &ToolBatch, message: &Value) -> Value {
     })
 }
 
-fn build_mini_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let value: Value = serde_json::from_slice(&raw).replay_context(
         ReplayErrorKind::Trajectory,

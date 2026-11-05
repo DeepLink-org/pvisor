@@ -1,6 +1,14 @@
 //! libkrun VM process isolation over a pVisor-provided root OverlayFS.
 
 use crate::config::VmSettings;
+use crate::env::{
+    self,
+    ram::POOL_ENV,
+    runner::{
+        CONTROL_FD_ENV, IDLE_FD_ENV, LOADER_ENV, NETWORK_FD_ENV, RAM_FD_ENV, RAW_READY_FD_ENV,
+        READONLY_FLUSH_ENV, RESTORE_RAM_SERVER_ENV, RESTORE_RAM_WATCHDOG_ENV, RUNNER_SPEC_ENV,
+    },
+};
 use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use anyhow::Context as _;
@@ -19,19 +27,12 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-pub(super) const RUNNER_SPEC_ENV: &str = "PVISOR_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
-const NETWORK_FD_ENV: &str = "PVISOR_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
-const CONTROL_FD_ENV: &str = "PVISOR_KRUN_CONTROL_FD";
 const CONTROL_CHILD_FD: RawFd = 199;
-const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
 const RAM_CHILD_FD: RawFd = 200;
-const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
 const IDLE_CHILD_FD: RawFd = 202;
 const RAW_READY_CHILD_FD: RawFd = 203;
-const RAW_READY_FD_ENV: &str = "PVISOR_KRUN_RAW_READY_FD";
-const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
 
 pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep every source descriptor above all fixed destinations, avoiding dup2
@@ -51,7 +52,7 @@ pub(super) fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn needs_krun_enomem_workaround() -> bool {
-    let override_value = std::env::var("PVISOR_KRUN_ENOMEM_WORKAROUND").ok();
+    let override_value = env::required_unicode(env::runner::ENOMEM_OVERRIDE_ENV).ok();
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok();
     krun_workaround_policy(override_value.as_deref(), release.as_deref())
 }
@@ -138,6 +139,43 @@ impl std::fmt::Debug for OwnedRootfsBase {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum RamPager {
+    Disabled,
+    Local,
+    Pool(PathBuf),
+}
+
+impl RamPager {
+    fn requested(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    fn from_settings(settings: &VmSettings) -> Self {
+        if let Some(pool) = &settings.memory_pool {
+            Self::Pool(pool.clone())
+        } else if settings.cold_ram_compression {
+            Self::Local
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+// The caller reads the environment alias once. Resolution and validation do not
+// mutate process-global environment state.
+fn resolve_ram_settings(
+    settings: &mut VmSettings,
+    legacy_pool: Option<std::ffi::OsString>,
+) -> anyhow::Result<()> {
+    settings.memory_pool = settings
+        .memory_pool
+        .take()
+        .or_else(|| legacy_pool.map(PathBuf::from));
+    settings.validate_ram_dedup()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RunnerSpec {
     #[serde(default)]
@@ -168,14 +206,38 @@ pub(super) struct RunnerSpec {
     pub(super) ram_dedup: bool,
     #[serde(default)]
     pub(super) private_ram: bool,
-    #[serde(default)]
-    pub(super) cold_ram_compression: bool,
+    // Required: runner policy is explicit, never inferred from inherited environment.
+    pub(super) ram_pager: RamPager,
     #[serde(default)]
     pub(super) firmware_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
     #[serde(default)]
     pub(super) restore: Option<super::checkpoint::RestoreLaunch>,
+}
+
+impl RunnerSpec {
+    fn validate_ram(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !matches!(self.ram_pager, RamPager::Local)
+                || cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "local cold RAM compression requires Linux x86_64"
+        );
+        anyhow::ensure!(
+            !self.ram_pager.requested()
+                || cfg!(any(
+                    all(target_os = "linux", target_arch = "x86_64"),
+                    all(target_os = "macos", target_arch = "aarch64")
+                )),
+            "cold RAM pager is unsupported on this platform"
+        );
+        anyhow::ensure!(
+            !self.ram_pager.requested()
+                || (!self.ram_dedup && self.restore.is_none() && self.checkpoint.is_none()),
+            "cold pager is incompatible with dedup, snapshot restore and snapshot capture"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -520,6 +582,9 @@ impl VmExecutor {
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        // The host environment alias is consumed once, at admission. Explicit settings
+        // win; the child receives only the normalized descriptor.
+        resolve_ram_settings(&mut settings, env::os(POOL_ENV))?;
         anyhow::ensure!(
             settings.prepared_rootfs.is_none() || settings.snapshot_filesystem_pool.is_none(),
             "CAPABILITY_UNSUPPORTED: prepared rootfs cannot use an execution checkpoint filesystem pool"
@@ -582,13 +647,6 @@ impl VmExecutor {
                     .context("resolve vm.memory_pool socket")?,
             );
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        anyhow::ensure!(
-            !settings.ram_compression
-                || (settings.memory_pool.is_none()
-                    && std::env::var_os(super::pager::POOL_ENV).is_none()),
-            "experimental cold pager cannot use a FUSE RAM backing"
-        );
         anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");
         anyhow::ensure!(settings.cpus > 0, "vm.cpus must be positive");
         anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
@@ -921,11 +979,7 @@ fn configure_runner_firmware(
 fn scrub_runner_loader_environment(command: &mut Command) {
     // Firmware selection travels only in RunnerSpec, never through the host's
     // dynamic-loader search paths (including inherited values).
-    for key in [
-        "LD_LIBRARY_PATH",
-        "DYLD_LIBRARY_PATH",
-        "DYLD_FALLBACK_LIBRARY_PATH",
-    ] {
+    for key in LOADER_ENV {
         command.env_remove(key);
     }
 }
@@ -1020,10 +1074,7 @@ impl RunExecutor for VmExecutor {
     async fn execute(&self, context: &Session) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
-        if self.guest_idle
-            && (!self.vsock_ports.is_empty()
-                || self.settings.cold_pager_requested()
-                || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some())
+        if self.guest_idle && (!self.vsock_ports.is_empty() || self.settings.cold_pager_requested())
         {
             return failed_to_start("guest idle M1 has incompatible devices/pager".into());
         }
@@ -1574,7 +1625,7 @@ impl RunExecutor for VmExecutor {
                 || cfg!(target_os = "linux")
                     && self.settings.ram_dedup
                     && self.settings.ram_backing.is_none(),
-            cold_ram_compression: self.settings.cold_ram_compression,
+            ram_pager: RamPager::from_settings(&self.settings),
             firmware_path: self.firmware_path.clone(),
             checkpoint,
             restore: None,
@@ -1749,11 +1800,10 @@ impl RunExecutor for VmExecutor {
             &mut command,
             self,
             &runner,
-            std::env::var_os(READONLY_FLUSH_ENV).as_deref(),
+            env::os(READONLY_FLUSH_ENV).as_deref(),
         );
-        if let Some(path) = &self.settings.memory_pool {
-            command.env("PVISOR_EXPERIMENTAL_MEMORY_POOL", path);
-        }
+        // Policy is carried in RunnerSpec, never inherited as an alias.
+        command.env_remove(POOL_ENV);
         let diagnostic_runner =
             crate::diagnostics::runner_output().and_then(|file| runner_fd(file.as_raw_fd()).ok());
         let diagnostic_source_fd = diagnostic_runner.as_ref().map(AsRawFd::as_raw_fd);
@@ -1824,9 +1874,9 @@ impl RunExecutor for VmExecutor {
         // diagnostic override still takes precedence.
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if needs_krun_enomem_workaround() {
-            command.env("KRUN_ENOMEM_WORKAROUND", "1");
+            command.env(env::runner::ENOMEM_WORKAROUND_ENV, "1");
         } else {
-            command.env_remove("KRUN_ENOMEM_WORKAROUND");
+            command.env_remove(env::runner::ENOMEM_WORKAROUND_ENV);
         }
 
         scrub_runner_loader_environment(&mut command);
@@ -1919,11 +1969,7 @@ impl RunExecutor for VmExecutor {
         }
         #[cfg(feature = "gateway")]
         context.vm_control.set_automatic_offload_supported(
-            !runner.private_ram
-                && !runner.cold_ram_compression
-                && runner.restore.is_none()
-                && self.settings.memory_pool.is_none()
-                && std::env::var_os(super::pager::POOL_ENV).is_none(),
+            !runner.private_ram && !runner.ram_pager.requested() && runner.restore.is_none(),
         );
         context
             .vm_control
@@ -2300,9 +2346,7 @@ fn capture_checkpoint(
         operation.validate().map_err(|e| e.to_string())?;
         super::checkpoint::native::require_persistent_stages(&spec.root, spec.workspace.as_ref())
             .map_err(|e| format!("{e:#}"))?;
-        if spec.cold_ram_compression
-            || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
-        {
+        if spec.ram_pager.requested() {
             return Err(
                 "CAPABILITY_UNSUPPORTED: snapshot capture is incompatible with the cold pager"
                     .into(),
@@ -2471,15 +2515,15 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if super::cpu_qos::run_anchor_if_requested()? {
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_WATCHDOG") {
+    if let Some(path) = env::os(RESTORE_RAM_WATCHDOG_ENV) {
         crate::environment_snapshot::watch_mount(Path::new(&path))?;
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os("PVISOR_VM_RESTORE_RAM_SERVER") {
+    if let Some(path) = env::os(RESTORE_RAM_SERVER_ENV) {
         crate::environment_snapshot::serve_ram(Path::new(&path))?;
         return Ok(true);
     }
-    if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
+    if let Some(path) = env::os(RUNNER_SPEC_ENV) {
         crate::util::startup_mark("runner.spec_read_begin");
         let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
         crate::util::startup_mark_run("runner.spec_read_ready", &spec.run_id);
@@ -2491,6 +2535,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     spec.features.validate(crate::RunExecutorKind::Vm)?;
+    spec.validate_ram()?;
     let mut lower_span = crate::startup_profile::Span::start("runner.attach_lazy_lowers");
     let _direct_lowers = crate::image::cache::attach_runner_lowers(
         spec.root.lowers.iter().chain(
@@ -2543,7 +2588,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     let restore = if spec.restore.is_some() {
-        let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+        let ram = env::required_unicode(RAM_FD_ENV)?.parse::<RawFd>()?;
         anyhow::ensure!(ram == RAM_CHILD_FD, "invalid restore RAM descriptor");
         if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -2586,9 +2631,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         }
         // Only explicitly opted-in runners may open the host-authorized fault
         // device. Landlock does not replace its administrator-granted ACL.
-        if (spec.cold_ram_compression || std::env::var_os(super::pager::POOL_ENV).is_some())
-            && Path::new("/dev/userfaultfd").exists()
-        {
+        if spec.ram_pager.requested() && Path::new("/dev/userfaultfd").exists() {
             read_write.push(PathBuf::from("/dev/userfaultfd"));
         }
         read_only.extend(firmware_read_only_paths(spec.firmware_path.as_deref()));
@@ -2727,17 +2770,13 @@ fn run_linked_krun(
         )?;
     }
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
-    let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
+    let ram = env::required_unicode(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    let cold_pager =
-        spec.cold_ram_compression || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some();
-    anyhow::ensure!(
-        !cold_pager || (!spec.ram_dedup && spec.restore.is_none() && spec.checkpoint.is_none()),
-        "cold pager is incompatible with dedup, snapshot restore and snapshot capture"
-    );
+    let cold_pager = spec.ram_pager.requested();
+    spec.validate_ram()?;
     if spec.restore.is_none() && !cold_pager && !spec.private_ram {
         vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
     } else if spec.restore.is_none() {
@@ -2776,7 +2815,7 @@ fn run_linked_krun(
             baseline_indexes.get(1).cloned().flatten(),
         )?;
     }
-    if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
+    if let Some(fd) = env::os(NETWORK_FD_ENV) {
         let fd = fd
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid {NETWORK_FD_ENV}"))?
@@ -2815,7 +2854,7 @@ fn run_linked_krun(
     #[cfg(not(target_os = "linux"))]
     attestation.write_all(b"pvisor-vmm-installed-v1\n")?;
     crate::util::startup_mark_run("runner.attestation_ready", &spec.run_id);
-    let control = std::env::var(CONTROL_FD_ENV)
+    let control = env::required_unicode(CONTROL_FD_ENV)
         .with_context(|| format!("missing {CONTROL_FD_ENV}"))?
         .parse::<RawFd>()?;
     anyhow::ensure!(control == CONTROL_CHILD_FD, "invalid VM control descriptor");
@@ -2825,12 +2864,17 @@ fn run_linked_krun(
         return Err(std::io::Error::last_os_error().into());
     }
     let mut control = unsafe { std::os::unix::net::UnixStream::from_raw_fd(control) };
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    let pager = super::pager::prepare(&spec.ram_pager, spec.memory_mib)?;
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
         enable_vcpu_observation(&handle, &spec.features)?;
         if spec.guest_idle {
-            let fd = std::env::var(IDLE_FD_ENV).map_err(std::io::Error::other)?.parse::<RawFd>().map_err(std::io::Error::other)?;
+            let fd = env::required_unicode(IDLE_FD_ENV).map_err(std::io::Error::other)?.parse::<RawFd>().map_err(std::io::Error::other)?;
             if fd != IDLE_CHILD_FD { return Err(std::io::Error::other("invalid idle descriptor")); }
             if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { return Err(std::io::Error::last_os_error()); }
             super::idle::serve(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) }, handle.clone()).map_err(std::io::Error::other)?;
@@ -2849,7 +2893,7 @@ fn run_linked_krun(
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
             #[cfg(target_os = "linux")]
-            if std::env::var(RAW_READY_FD_ENV).ok().as_deref() == Some("203") {
+            if env::required_unicode(RAW_READY_FD_ENV).ok().as_deref() == Some("203") {
                 // One byte only after native restore resumed successfully.
                 // Never transmit paths or guest data, or touch the FUSE inode.
                 let byte = [1u8];
@@ -2861,8 +2905,11 @@ fn run_linked_krun(
 
         }
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
-        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib)
-            .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+        {
+            super::pager::start_diagnostics(&handle)?;
+            pager.start(handle.clone())
+                .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
+        }
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
             .spawn(move || {
@@ -3026,6 +3073,121 @@ fn enable_vcpu_observation(
 }
 
 #[cfg(test)]
+mod ram_policy_tests {
+    use super::*;
+
+    fn runner(pager: serde_json::Value) -> RunnerSpec {
+        serde_json::from_value(serde_json::json!({
+            "setup_attestation": "/tmp/attestation",
+            "root": { "lowers": ["/tmp/root"], "upper": "/tmp/upper" },
+            "guest": pvisor_guest::GuestConfig::default(),
+            "cpus": 1, "memory_mib": 256, "ram_pager": pager
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn ram_alias_priority_and_conflicts() {
+        let mut settings = VmSettings {
+            memory_pool: Some("/explicit".into()),
+            ..Default::default()
+        };
+        resolve_ram_settings(&mut settings, Some("/legacy".into())).unwrap();
+        assert_eq!(
+            settings.memory_pool.as_deref(),
+            Some(Path::new("/explicit"))
+        );
+        let mut settings = VmSettings::default();
+        resolve_ram_settings(&mut settings, Some("/legacy".into())).unwrap();
+        assert_eq!(
+            RamPager::from_settings(&settings),
+            RamPager::Pool("/legacy".into())
+        );
+        for mut settings in [
+            VmSettings {
+                ram_dedup: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_compression: true,
+                ..Default::default()
+            },
+            VmSettings {
+                cold_ram_compression: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_backing: Some("/ram".into()),
+                ..Default::default()
+            },
+            VmSettings {
+                snapshot_filesystem_pool: Some("/snapshots".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(resolve_ram_settings(&mut settings, Some("/legacy".into())).is_err());
+        }
+        let mut defaults = VmSettings::default();
+        resolve_ram_settings(&mut defaults, None).unwrap();
+        assert_eq!(RamPager::from_settings(&defaults), RamPager::Disabled);
+    }
+
+    #[test]
+    fn ram_runner_roundtrip_and_legacy_descriptor_rejection() {
+        for pager in [
+            serde_json::json!("disabled"),
+            serde_json::json!("local"),
+            serde_json::json!({"pool": "/explicit"}),
+        ] {
+            let spec = runner(pager);
+            let value = serde_json::to_value(&spec).unwrap();
+            let decoded: RunnerSpec = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(decoded.ram_pager, spec.ram_pager);
+            let mut old = value;
+            old.as_object_mut().unwrap().remove("ram_pager");
+            assert!(
+                serde_json::from_value::<RunnerSpec>(old)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ram_pager")
+            );
+        }
+        let mut spec = runner(serde_json::json!({"pool": "/explicit"}));
+        spec.ram_dedup = true;
+        assert!(spec.validate_ram().is_err());
+        assert!(serde_json::from_value::<RamPager>(serde_json::json!("unknown")).is_err());
+    }
+
+    #[test]
+    fn ram_child_spec_is_independent_of_inherited_alias() {
+        const CHILD: &str = "PVISOR_TEST_RAM_SPEC_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let name = format!(
+                "{}::ram_child_spec_is_independent_of_inherited_alias",
+                module_path!()
+            );
+            let name = name.strip_prefix("pvisor::").unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("PVISOR_EXPERIMENTAL_MEMORY_POOL", "/must-not-be-consumed")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert!(VmSettings::default().validate_ram_dedup().is_ok());
+        assert!(!VmSettings::default().cold_pager_requested());
+        let spec = runner(serde_json::json!("disabled"));
+        spec.validate_ram().unwrap();
+        assert!(!spec.ram_pager.requested());
+        let spec = runner(serde_json::json!({"pool": "/explicit"}));
+        assert_eq!(spec.ram_pager, RamPager::Pool("/explicit".into()));
+        // The host resolver is deliberately not invoked in the child.
+    }
+}
+
+#[cfg(test)]
 mod feature_tests {
     use super::*;
     use std::cell::Cell;
@@ -3063,6 +3225,7 @@ mod feature_tests {
             "root": { "lowers": ["/tmp/root"], "upper": "/tmp/upper" },
             "guest": pvisor_guest::GuestConfig::default(),
             "cpus": 1, "memory_mib": 256,
+            "ram_pager": "disabled",
         }))
         .unwrap();
         assert!(!runner.features.workload_aware_memory_offloading);
@@ -3070,7 +3233,7 @@ mod feature_tests {
         let wire = serde_json::to_vec(&runner).unwrap();
         let received: RunnerSpec = serde_json::from_slice(&wire).unwrap();
         assert!(received.features.workload_aware_memory_offloading);
-        assert!(!received.cold_ram_compression && !received.ram_dedup);
+        assert!(!received.ram_pager.requested() && !received.ram_dedup);
         enable_vcpu_observation(&observer, &received.features).unwrap();
         assert_eq!(observer.calls.get(), 1);
         let failing = Observer {
@@ -3564,7 +3727,8 @@ mod tests {
         let mut runner: RunnerSpec = serde_json::from_value(serde_json::json!({
             "setup_attestation": directory.path().join("setup"),
             "root": {"lowers": [base.root()], "upper": directory.path().join("upper")},
-            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128
+            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
+            "ram_pager": "disabled"
         }))
         .unwrap();
         runner.root.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
@@ -3767,7 +3931,8 @@ mod tests {
             "run_id": "run", "setup_attestation": "/private/setup.json",
             "root": {"lowers": [root.path()], "upper": root.path()},
             "workspace": null, "workspace_target": null,
-            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128
+            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128,
+            "ram_pager": "disabled"
         }))
         .unwrap();
         spec.firmware_path = executor.firmware_path.clone();
@@ -3922,6 +4087,7 @@ mod tests {
             "guest": pvisor_guest::GuestConfig::default(),
             "cpus": 1,
             "memory_mib": 128,
+            "ram_pager": "disabled",
             "library_dir": null
         });
         let mut spec: RunnerSpec = serde_json::from_value(legacy.clone()).unwrap();

@@ -47,6 +47,49 @@ fn publish(
 }
 
 #[test]
+fn publish_while_another_snapshot_is_open_preserves_readers_and_collection_fences() {
+    for first_compressed in [false, true] {
+        for next_compressed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("source");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("file"), b"immutable source").unwrap();
+            let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
+            let first_bytes = vec![7; 65536];
+            let first_id = publish(&store, &source, &first_bytes, first_compressed);
+            let first = store.open_for_restore(&first_id, &compatibility()).unwrap();
+
+            let next_bytes = vec![9; 65536];
+            let next_id = publish(&store, &source, &next_bytes, next_compressed);
+            assert_ne!(first_id, next_id);
+            let next = store.open_for_restore(&next_id, &compatibility()).unwrap();
+            for (snapshot, expected) in [(&first, &first_bytes), (&next, &next_bytes)] {
+                let mut actual = vec![0; expected.len()];
+                snapshot
+                    .ram_reader()
+                    .unwrap()
+                    .read_at(0, &mut actual)
+                    .unwrap();
+                assert_eq!(&actual, expected);
+                assert_eq!(snapshot.machine_bytes().unwrap(), b"machine");
+            }
+            assert!(store.delete(&first_id).is_err());
+            assert!(store.delete(&next_id).is_err());
+            assert!(store.collect_abandoned().is_err());
+            drop(first);
+            assert!(
+                store.delete(&first_id).is_err(),
+                "remaining reader still pins the store"
+            );
+            drop(next);
+            store.delete(&first_id).unwrap();
+            store.delete(&next_id).unwrap();
+            store.collect_abandoned().unwrap();
+        }
+    }
+}
+
+#[test]
 fn lazy_reads_cross_blocks_and_eof_after_snapshot_deletion_and_gc() {
     for compressed in [false, true] {
         let directory = tempfile::tempdir().unwrap();

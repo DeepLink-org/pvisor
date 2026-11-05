@@ -84,10 +84,6 @@ use crate::vmm::vmm_config::net::NetBuilder;
 use kbs_types::Tee;
 
 use crate::arch::{ArchMemoryInfo, InitrdConfig};
-#[cfg(feature = "gpu")]
-use crate::devices::virtio::display::DisplayInfo;
-#[cfg(feature = "gpu")]
-use crate::devices::virtio::display::NoopDisplayBackend;
 #[cfg(not(feature = "tee"))]
 use crate::devices::virtio::{fs::ExportTable, VirtioShmRegion};
 use crate::polly::event_manager::{Error as EventManagerError, EventManager};
@@ -119,10 +115,6 @@ use crate::vmm::windows::vstate::{WHP_GICD_BASE, WHP_GICD_SIZE, WHP_GICR_BASE, W
 use device_manager::shm::ShmManager;
 #[cfg(not(all(target_arch = "x86_64", target_os = "windows")))]
 use flate2::read::GzDecoder;
-#[cfg(feature = "gpu")]
-use krun_display::DisplayBackend;
-#[cfg(feature = "gpu")]
-use krun_display::IntoDisplayBackend;
 #[cfg(feature = "amd-sev")]
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 #[cfg(not(target_os = "windows"))]
@@ -263,18 +255,12 @@ pub enum StartMicrovmError {
     /// Cannot register SIGWINCH event file descriptor.
     #[cfg(target_os = "linux")]
     RegisterFsSigwinch(kvm_ioctls::Error),
-    /// Cannot initialize a MMIO Gpu device or add a device to the MMIO Bus.
-    RegisterGpuDevice(device_manager::mmio::Error),
-    /// Cannot initialize a MMIO Input device or add a device to the MMIO Bus.
-    RegisterInputDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO Network Device or add a device to the MMIO Bus.
     RegisterNetDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO microsandbox metrics device or add it to the MMIO Bus.
     RegisterMsbMetricsDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO Rng device or add a device to the MMIO Bus.
     RegisterRngDevice(device_manager::mmio::Error),
-    /// Cannot initialize a MMIO Snd device or add a device to the MMIO Bus.
-    RegisterSndDevice(device_manager::mmio::Error),
     /// Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus.
     RegisterVsockDevice(device_manager::mmio::Error),
     /// Cannot attest the VM in the Secure Virtualization context.
@@ -554,22 +540,6 @@ impl Display for StartMicrovmError {
                     "Cannot register SIGWINCH file descriptor for Fs Device. {err_msg}"
                 )
             }
-            RegisterGpuDevice(ref err) => {
-                let mut err_msg = format!("{err}");
-                err_msg = err_msg.replace('\"', "");
-                write!(
-                    f,
-                    "Cannot initialize a MMIO Gpu Device or add a device to the MMIO Bus. {err_msg}"
-                )
-            }
-            RegisterInputDevice(ref err) => {
-                let mut err_msg = format!("{err}");
-                err_msg = err_msg.replace('\"', "");
-                write!(
-                    f,
-                    "Cannot initialize a MMIO Input Device or add a device to the MMIO Bus. {err_msg}"
-                )
-            }
             RegisterNetDevice(ref err) => {
                 let mut err_msg = format!("{err}");
                 err_msg = err_msg.replace('\"', "");
@@ -593,14 +563,6 @@ impl Display for StartMicrovmError {
                 write!(
                     f,
                     "Cannot initialize a MMIO Rng Device or add a device to the MMIO Bus. {err_msg}"
-                )
-            }
-            RegisterSndDevice(ref err) => {
-                let mut err_msg = format!("{err}");
-                err_msg = err_msg.replace('\"', "");
-                write!(
-                    f,
-                    "Cannot initialize a MMIO Snd Device or add a device to the MMIO Bus. {err_msg}"
                 )
             }
             RegisterVsockDevice(ref err) => {
@@ -1779,36 +1741,7 @@ pub fn build_microvm(
     trace.mark("virtio_consoles.ready");
 
     #[cfg(not(feature = "tee"))]
-    let export_table: Option<ExportTable> = if cfg!(feature = "gpu") {
-        Some(Default::default())
-    } else {
-        None
-    };
-
-    #[cfg(feature = "gpu")]
-    if let Some(virgl_flags) = vm_resources.gpu_virgl_flags {
-        let display_backend = vm_resources
-            .display_backend
-            .unwrap_or_else(|| NoopDisplayBackend::into_display_backend(None));
-
-        attach_gpu_device(
-            &mut vmm,
-            &mut _shm_manager,
-            #[cfg(not(feature = "tee"))]
-            export_table.clone(),
-            intc.clone(),
-            virgl_flags,
-            Box::from(&vm_resources.displays[..]),
-            display_backend,
-            #[cfg(target_os = "macos")]
-            _sender.clone(),
-        )?;
-    }
-
-    #[cfg(feature = "input")]
-    if !vm_resources.input_backends.is_empty() {
-        attach_input_devices(&mut vmm, &vm_resources.input_backends, intc.clone())?;
-    }
+    let export_table: Option<ExportTable> = None;
 
     #[cfg(not(feature = "tee"))]
     attach_fs_devices(
@@ -1859,10 +1792,6 @@ pub fn build_microvm(
     attach_net_devices(&mut vmm, &vm_resources.net, intc.clone())?;
     #[cfg(feature = "net")]
     trace.mark("net.ready");
-    #[cfg(feature = "snd")]
-    if vm_resources.snd_device {
-        attach_snd_device(&mut vmm, intc.clone())?;
-    }
 
     if let Some(s) = &vm_resources.kernel_cmdline.epilog {
         vmm.kernel_cmdline.insert_str(s).unwrap();
@@ -2528,13 +2457,6 @@ pub fn create_guest_memory(
             }
         }
     }
-    if vm_resources.gpu_virgl_flags.is_some() {
-        let size = vm_resources.gpu_shm_size.unwrap_or(1 << 33);
-        shm_manager
-            .create_gpu_region(size)
-            .map_err(StartMicrovmError::ShmCreate)?;
-    }
-
     arch_mem_regions.extend(shm_manager.regions());
 
     // Reserve the virtio-mem hotplug region above every other window. The
@@ -3981,91 +3903,6 @@ fn attach_rng_device(
 
     // The device mutex mustn't be locked here otherwise it will deadlock.
     attach_mmio_device(vmm, id, intc.clone(), rng).map_err(RegisterRngDevice)?;
-
-    Ok(())
-}
-
-#[cfg(feature = "gpu")]
-#[allow(clippy::too_many_arguments)]
-fn attach_gpu_device(
-    vmm: &mut Vmm,
-    shm_manager: &mut ShmManager,
-    #[cfg(not(feature = "tee"))] mut export_table: Option<ExportTable>,
-    intc: IrqChip,
-    virgl_flags: u32,
-    displays: Box<[DisplayInfo]>,
-    display_backend: DisplayBackend<'static>,
-    #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
-) -> std::result::Result<(), StartMicrovmError> {
-    use self::StartMicrovmError::*;
-
-    let gpu = Arc::new(Mutex::new(
-        crate::devices::virtio::Gpu::new(
-            virgl_flags,
-            displays,
-            display_backend,
-            #[cfg(target_os = "macos")]
-            map_sender,
-        )
-        .unwrap(),
-    ));
-
-    let id = String::from(gpu.lock().unwrap().id());
-
-    if let Some(shm_region) = shm_manager.gpu_region() {
-        gpu.lock().unwrap().set_shm_region(VirtioShmRegion {
-            host_addr: vmm
-                .guest_memory
-                .get_host_address(shm_region.guest_addr)
-                .map_err(StartMicrovmError::ShmHostAddr)? as u64,
-            guest_addr: shm_region.guest_addr.raw_value(),
-            size: shm_region.size,
-        });
-    }
-
-    #[cfg(not(feature = "tee"))]
-    if let Some(export_table) = export_table.take() {
-        gpu.lock().unwrap().set_export_table(export_table);
-    }
-
-    // The device mutex mustn't be locked here otherwise it will deadlock.
-    attach_mmio_device(vmm, id, intc, gpu).map_err(RegisterGpuDevice)?;
-
-    Ok(())
-}
-
-#[cfg(feature = "input")]
-fn attach_input_devices(
-    vmm: &mut Vmm,
-    input_backends: &[(
-        krun_input::InputConfigBackend<'static>,
-        krun_input::InputEventProviderBackend<'static>,
-    )],
-    intc: IrqChip,
-) -> std::result::Result<(), StartMicrovmError> {
-    use self::StartMicrovmError::*;
-
-    for (index, (config_backend, events_backend)) in input_backends.iter().enumerate() {
-        let input_device = Arc::new(Mutex::new(
-            crate::devices::virtio::input::Input::new(*config_backend, *events_backend).unwrap(),
-        ));
-
-        let id = format!("input{}", index);
-        attach_mmio_device(vmm, id, intc.clone(), input_device).map_err(RegisterInputDevice)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "snd")]
-fn attach_snd_device(vmm: &mut Vmm, intc: IrqChip) -> std::result::Result<(), StartMicrovmError> {
-    use self::StartMicrovmError::*;
-
-    let snd = Arc::new(Mutex::new(crate::devices::virtio::Snd::new().unwrap()));
-    let id = String::from(snd.lock().unwrap().id());
-
-    // The device mutex mustn't be locked here otherwise it will deadlock.
-    attach_mmio_device(vmm, id, intc, snd).map_err(RegisterSndDevice)?;
 
     Ok(())
 }

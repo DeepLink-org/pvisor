@@ -10,20 +10,42 @@ use std::{
 fn command() -> Command {
     // Native compatibility binds the executable contents. Keep this test's
     // binary immutable while unrelated builds may replace target/debug/pvisor.
-    static BINARY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let directory = BINARY.get_or_init(|| {
-        let directory = tempfile::tempdir().unwrap();
-        fs::copy(
-            env!("CARGO_BIN_EXE_pvisor"),
-            directory.path().join("pvisor"),
-        )
-        .unwrap();
-        directory
-    });
-    let mut command = Command::new(directory.path().join("pvisor"));
-    command.env("PVISOR_STARTUP_TIMING", "0");
-    command
+    // Unlike process statics, a test-thread local is dropped when that test
+    // finishes. Keep one pinned copy for all commands in the same test.
+    thread_local! {
+        static BINARY: tempfile::TempDir = {
+            let directory = tempfile::tempdir().unwrap();
+            fs::copy(
+                env!("CARGO_BIN_EXE_pvisor"),
+                directory.path().join("pvisor"),
+            )
+            .unwrap();
+            directory
+        };
+    }
+    BINARY.with(|directory| {
+        let mut command = Command::new(directory.path().join("pvisor"));
+        command.env("PVISOR_STARTUP_TIMING", "0");
+        command
+    })
 }
+
+#[test]
+fn pinned_cli_copy_is_removed_when_its_test_thread_finishes() {
+    let binary = std::thread::spawn(|| {
+        let path = PathBuf::from(command().get_program());
+        assert!(path.is_file());
+        path
+    })
+    .join()
+    .unwrap();
+    assert!(
+        !binary.parent().unwrap().exists(),
+        "test-owned CLI copy leaked: {}",
+        binary.display()
+    );
+}
+
 fn invoke(stage: &Path, args: &[&str]) -> Output {
     let mut cmd = command();
     let offset = if args[0] == "checkpoint" { 2 } else { 1 };

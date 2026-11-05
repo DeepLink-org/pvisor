@@ -430,11 +430,8 @@ impl RunRecord {
         let path = stage.join(RUN_META_FILENAME);
         crate::util::write_run_json(&path, self, &self.run_id, "run_record")?;
 
-        let index_dir = self.storage.join(".pvisor").join("runs");
-        let index_path = index_dir.join(format!(
-            "{}.json",
-            crate::util::encode_hex(self.run_id.as_bytes())
-        ));
+        let index_path = run_index_path(&self.storage, &self.run_id);
+        let index_dir = index_path.parent().expect("Run index has a parent");
         let contents =
             crate::util::persistence_step(&self.run_id, "run_index", "serialize", || {
                 serde_json::to_vec_pretty(&RunIndex {
@@ -459,7 +456,7 @@ impl RunRecord {
                 File::open(&index_path)?.sync_all()
             })?;
             crate::util::persistence_step(&self.run_id, "run_index", "directory_sync", || {
-                Persistence::sync_directory(&index_dir)
+                Persistence::sync_directory(index_dir)
             })?;
         } else {
             crate::util::write_run_bytes(&index_path, &contents, &self.run_id, "run_index")?;
@@ -527,10 +524,7 @@ impl RunRecord {
     }
 
     pub fn remove_index(&self) -> anyhow::Result<()> {
-        let path = self.storage.join(".pvisor").join("runs").join(format!(
-            "{}.json",
-            crate::util::encode_hex(self.run_id.as_bytes())
-        ));
+        let path = run_index_path(&self.storage, &self.run_id);
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -997,6 +991,105 @@ pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
     }
 }
 
+/// Failure to establish a unique Job identity. Never permits container fallback.
+///
+/// Includes corrupt records/indexes, conflicting identities, ambiguity and I/O
+/// failures. The source retains diagnostic context; no discovery state is changed.
+#[derive(Debug)]
+pub struct RunLookupError(anyhow::Error);
+
+impl std::fmt::Display for RunLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cannot safely resolve Job identity: {:#}", self.0)
+    }
+}
+
+impl std::error::Error for RunLookupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// Strictly discover an exact Job ID, without interpreting paths or `last`.
+///
+/// Searches the selected storage and both default roots (including storage
+/// indexes beneath those roots). `Ok(None)` alone establishes absence and
+/// permits a caller to try another namespace. All discoverable records must be
+/// readable; index and record owners must agree. Multiple canonical stages for
+/// one ID are errors, even if selected storage contains a matching index.
+/// This read-only lookup neither locks nor reserves the result against changes.
+pub fn lookup_run_id(id: &Path, storage: &Path) -> Result<Option<RunRecord>, RunLookupError> {
+    let roots = default_run_roots();
+    lookup_run_id_in(id, storage, &roots).map_err(RunLookupError)
+}
+
+fn default_run_roots() -> Vec<PathBuf> {
+    let mut roots = vec![default_run_home(), std::env::temp_dir().join("pvisor-runs")];
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn run_index_path(storage: &Path, id: &str) -> PathBuf {
+    storage
+        .join(".pvisor/runs")
+        .join(format!("{}.json", crate::util::encode_hex(id.as_bytes())))
+}
+
+fn discovery_present(path: &Path) -> anyhow::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
+    }
+}
+
+fn lookup_run_id_in(
+    id: &Path,
+    storage: &Path,
+    roots: &[PathBuf],
+) -> anyhow::Result<Option<RunRecord>> {
+    let id = id.to_str().context("Job ID must be UTF-8")?;
+    anyhow::ensure!(
+        !id.is_empty() && Path::new(id).file_name().and_then(|name| name.to_str()) == Some(id),
+        "expected an exact Job ID"
+    );
+    let mut stores = std::collections::BTreeSet::from([storage.to_path_buf()]);
+    for root in roots {
+        if !discovery_present(root)? {
+            continue;
+        }
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                stores.insert(entry.path());
+            }
+        }
+    }
+    let mut matches = std::collections::BTreeMap::new();
+    for store in stores {
+        let metadata = store.join(RUN_META_FILENAME);
+        if discovery_present(&metadata)? {
+            let record =
+                RunRecord::read(&store).with_context(|| format!("read Job {}", store.display()))?;
+            if record.run_id == id {
+                matches.insert(record.stage_dir().canonicalize()?, record);
+            }
+        }
+        let path = run_index_path(&store, id);
+        if discovery_present(&path)? {
+            let index: RunIndex = serde_json::from_slice(&fs::read(&path)?)
+                .with_context(|| format!("read Job index {}", path.display()))?;
+            anyhow::ensure!(index.run_id == id, "Job index owner mismatch");
+            let record = RunRecord::read(&index.stage_dir)?;
+            anyhow::ensure!(record.run_id == id, "Job record owner mismatch");
+            matches.insert(record.stage_dir().canonicalize()?, record);
+        }
+    }
+    anyhow::ensure!(matches.len() <= 1, "ambiguous existing Job selector: {id}");
+    Ok(matches.into_values().next())
+}
+
 /// Resolve a Run from a run id, stage, upper directory, database, or a path
 /// inside the target/merged workspace.
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
@@ -1008,10 +1101,7 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             return resolve_path(selector);
         }
         let id = selector.to_string_lossy();
-        let index = storage
-            .join(".pvisor")
-            .join("runs")
-            .join(format!("{}.json", crate::util::encode_hex(id.as_bytes())));
+        let index = run_index_path(storage, &id);
         if index.exists() {
             let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
             return RunRecord::read(&index.stage_dir);
@@ -1053,10 +1143,7 @@ fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRec
 
 fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
     let mut records = Vec::new();
-    let mut roots = vec![default_run_home(), std::env::temp_dir().join("pvisor-runs")];
-    roots.sort();
-    roots.dedup();
-    for root in roots {
+    for root in default_run_roots() {
         if !root.is_dir() {
             continue;
         }
@@ -1917,6 +2004,87 @@ mod tests {
                 assert!(control_request(temp.path(), HostOverlayCommand::Ping {}).is_err());
             });
         }
+    }
+
+    #[test]
+    fn strict_job_lookup_rejects_path_inputs_and_unreadable_discovery_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        for id in [
+            "",
+            ".",
+            "..",
+            "/",
+            "/run-test",
+            "run-test/",
+            "nested/run-test",
+        ] {
+            assert!(
+                lookup_run_id_in(Path::new(id), temp.path(), &[]).is_err(),
+                "{id}"
+            );
+        }
+        let root = temp.path().join("not-a-directory");
+        fs::write(&root, b"not a discovery directory").unwrap();
+        assert!(lookup_run_id_in(Path::new("absent"), temp.path(), &[root]).is_err());
+    }
+
+    #[test]
+    fn strict_job_lookup_distinguishes_absence_corruption_and_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path().join("storage");
+        let root = temp.path().join("default");
+        let roots = [root.clone(), root.clone()];
+        let id = Path::new("run-test");
+        assert!(lookup_run_id_in(id, &storage, &roots).unwrap().is_none());
+
+        let stage = storage.join("stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        record(&storage, &stage, &stage.join("upper"))
+            .write()
+            .unwrap();
+        assert_eq!(
+            lookup_run_id_in(id, &storage, &roots)
+                .unwrap()
+                .unwrap()
+                .stage_dir(),
+            stage
+        );
+        let other = root.join("other");
+        fs::create_dir_all(other.join("upper")).unwrap();
+        record(&other, &other, &other.join("upper"))
+            .write()
+            .unwrap();
+        assert!(lookup_run_id_in(id, &storage, &roots).is_err());
+        fs::write(other.join(RUN_META_FILENAME), b"corrupt").unwrap();
+        assert!(lookup_run_id_in(Path::new("absent"), &storage, &roots).is_err());
+    }
+
+    #[test]
+    fn strict_job_lookup_rejects_corrupt_dangling_and_wrong_owner_indexes() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path().join("storage");
+        let path = run_index_path(&storage, "run-test");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let id = Path::new("run-test");
+        fs::write(&path, b"corrupt").unwrap();
+        assert!(lookup_run_id_in(id, &storage, &[]).is_err());
+        let index = RunIndex {
+            run_id: "run-test".into(),
+            stage_dir: temp.path().join("missing"),
+        };
+        fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+        assert!(lookup_run_id_in(id, &storage, &[]).is_err());
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        let mut other = record(&storage, &stage, &stage.join("upper"));
+        other.run_id = "other".into();
+        other.write().unwrap();
+        let index = RunIndex {
+            stage_dir: stage,
+            ..index
+        };
+        fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+        assert!(lookup_run_id_in(id, &storage, &[]).is_err());
     }
 
     #[test]

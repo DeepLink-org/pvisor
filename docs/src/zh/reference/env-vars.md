@@ -27,7 +27,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 `OPEN_SANDBOX_API_KEY` 为独立 `pvisor-daemon serve` 提供生命周期 key。使用至少 32 字节的受保护随机秘密，不放在 argv 中，不投影给工作负载。客户端通过 `OPEN-SANDBOX-API-KEY` HTTP header 发送它；环境变量名称使用下划线，HTTP 名称使用连字符。
 
-默认 daemon 端点在返回的 headers 中提供沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`，客户端必须保留。它不是宿主环境设置，也不是生命周期凭据。见[端点认证](../guides/daemon/index.md#endpoints)。原生 cache/pool 凭据与 Job 环境投影独立保留；已退役的 Cluster token 不是 daemon 凭据。
+默认 daemon 端点在返回的 headers 中提供沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`，客户端必须保留。它不是宿主环境设置，也不是生命周期凭据。见[端点认证](../guides/daemon/index.md#endpoints)。原生 cache/pool 凭据与 Job 环境投影相互独立。
 
 ## 运行时注入
 
@@ -41,19 +41,19 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
 
 `PVISOR_STARTUP_TIMING=1` 启用启动阶段 checkpoint、持久化计时和 frontend/owner 关联日志。默认关闭；`0` 保持关闭。它只影响诊断输出；任务策略、Run 记录、工作负载输出、错误、警告和暂存提示不变。`PVISOR_STARTUP_PROFILE=1` 独立启用详细 JSON 计时 span。
 
-`PVISOR_VM_FS_WRITEBACK` 控制 guest 写回：新建 staged VM 会话默认关闭，`1` 显式请求，`0` 关闭；未覆盖的恢复会话保留原协商模式，显式 `0` 拒绝已开启写回的快照。它与下方 host 写缓存互斥。本次新固件/宿主修复的验证范围为 Linux x86_64/KVM，不能据此外推 macOS。
+`PVISOR_VM_FS_WRITEBACK` 控制 guest 写回：新建 staged VM 会话默认关闭，`1` 显式请求，`0` 关闭；未覆盖的恢复会话保留原协商模式，显式 `0` 拒绝已开启写回的快照。它与下方 host 写缓存互斥。验证范围为 Linux x86_64/KVM，不能据此外推 macOS。
 
-协商 bit 42 的0048固件按实际脏页与临时 FUSE WRITE 页施加背压，不累计 write 字节。每连接/BDI 的软压力目标是内核实际 RAM 的1/8，截在16–256 MiB，最多保留256个句柄 lease；提交与完成使用独立队列。干净页缓存不计入目标，rootfs/workspace独立BDI可各有一份，Linux全局dirty/回收规则继续约束总量。原生BDI另尽力申请16 MiB最低份额，失败有警告，不是固定字节保证。
+固件协商 bit 42，按实际脏页与临时 FUSE WRITE 页施加背压，不累计 write 字节。每连接/BDI 的软压力目标是内核实际 RAM 的1/8，截在16–256 MiB，最多保留256个句柄 lease；提交与完成使用独立队列。干净页缓存不计入目标，rootfs/workspace独立BDI可各有一份，Linux全局dirty/回收规则继续约束总量。原生BDI另尽力申请16 MiB最低份额，失败有警告，不是固定字节保证。
 
-其上的0049将提前提交提示改为压力目标的1/4，截在1–16 MiB；小量写入仍由10 ms timer推进，协商的单次WRITE上限仍为1 MiB。入队在连接锁外只读近似脏页数，不重复逐folio背压检查，也不调度空pending；实际压力检查、完整性回写前后的两次WRITE屏障和错误传播保留。0049v2还在启动request virtqueue前预分配有界scatterlist元数据，按原VQ锁保护并复用；文件页与每请求argbuf保持原有完成期所有权，其他原子分配仍然存在。
+提前提交提示为压力目标的1/4，截在1–16 MiB；小量写入由10 ms timer推进，协商的单次WRITE上限为1 MiB。入队在连接锁外只读近似脏页数，不重复逐folio背压检查，也不调度空pending；实际压力检查、完整性回写前后的两次WRITE屏障和错误传播保留。有界scatterlist元数据在启动request virtqueue前预分配，由VQ锁保护并复用；文件页与每请求argbuf保持完成期所有权，其他原子分配仍然存在。
 
-0048历史证据与0049v2新批次分别保留。新固件已通过Linux x86_64/KVM的FULL/ERROR、7项固件合同、五次原压力历史复跑、独立N5曲线及普通CLI的WB0/1对照；正确性收据保留当时50项Python合同，后续CLI合同另有记录。CLI七工具整体与Ready未检出收益，新会话默认仍关闭。范围、逐工作负载结果与来源见[独立实验](../lab-notes/filesystem-io-performance-analysis.md#guest-writeback-tuning)。
+普通CLI的WB0/1对照中，七工具整体与Ready未检出收益，新会话默认关闭。按版本限定的正确性证据、逐工作负载结果与来源见[独立实验](../lab-notes/filesystem-io-performance-analysis.md#guest-writeback-tuning)。
 
 在 guest 中读取 `/sys/module/fuse/parameters/pvisor_wb_budget_bytes` 可查看生效目标；这是只读诊断参数，不能经 sysfs 或 boot argument 设置。可写close可延迟完成，只读close保留原生FLUSH，fsync/O_SYNC和最终syncfs的错误边界保留。新宿主按FORGET保留unlink/rename覆盖后的upper对象引用或lower逻辑属性；仍有detached/orphan引用时snapshot返回Unsupported，旧快照未知计数的有限节点保守保留到DESTROY。完整Agent IOCP/offload仍未验收。
 
 `PVISOR_VM_FS_HOST_WRITEBACK` 是默认关闭的实验性 host 写缓存：未设置或 `0` 关闭，`1` 启用，其他值拒绝。当前只支持 Linux staged virtio-fs、guest writeback 关闭和 DAX 关闭；每连接 64 MiB payload、1024 个在途项，相邻连续写按最多 1 MiB 或 10 ms 聚合。显式同步与退出仍观察后台错误；完整 Agent IOCP 和自动卸载尚未接通。范围与同步合同见 [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer)。
 
-`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。`qualification_lock` 和 `synchronous` 用于保留旧资格锁或等待 owned worker 完成的消融；不属于稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../lab-notes/filesystem-io-performance-analysis.md)。
+`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON，接受五个字段：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。前台资格检查不获取 native 写 I/O 锁，后台重检资格，同步屏障报告错误。这些不是稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../lab-notes/filesystem-io-performance-analysis.md)。
 
 下面两个变量影响 Linux x86_64 musl 与 macOS ARM64 产品**构建时**嵌入的 guest 内核：
 

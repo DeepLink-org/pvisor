@@ -20,7 +20,7 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Job lifecycle commands, the per-Job owner
 bootstrap, terminal/rendering code and companion discovery.
-Cache storage and node resource protocols remain runtime components; cache
+Cache storage and the optional node resource client remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
 owns the server entry point.
 Dockerfile builds have a separate, user-private RUN checkpoint cache under
@@ -33,11 +33,26 @@ Pruning takes an exclusive lease, waits for builds, and never removes published
 image pool data. This is not the distributed `pvisor cache` service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
+Native Jobs and Docker-style VM launches authenticate and negotiate a selected
+RAM pool before constructing the VMM, then transfer that same owned session to
+the pager. A dead or invalid pool rejects startup without booting a guest,
+reconnecting, deleting its socket or replacing pool ownership. Pool loss after
+VM entry still terminates dependent runners; it is not automatic recovery.
+Container logs remain cumulative across restarts, while startup errors include
+only the current generation's stderr (up to 32 KiB), not earlier workload or
+pool-loss diagnostics.
 Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
 Job frontend, not a runtime dependency. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
+
+The private Agent adapter owns client compatibility policy, preset routes,
+catalog schemas and client-specific proxy environment. Gateway configuration
+keeps its serialized fields and public `GatewayProfile` contract. Attempt
+preparation passes the bound listener to the adapter without interpreting
+provider profiles or catalogs. Catalog copies are Run-local; credentials,
+installed catalogs and personal model selections remain client-owned.
 
 ```mermaid
 flowchart TD
@@ -82,7 +97,7 @@ retains its existing failure semantics.
 Event delivery is separate from committed execution: rejected/unknown terminal
 appends never replace a committed result or publish a contradictory terminal.
 Post-commit audit gaps appear in the returned result's warnings, without rewriting
-the immutable Bundle/receipt. They are not appended to that historical Bundle;
+the immutable Bundle/receipt. They are not appended to the committed Bundle;
 automatic event backfill after a crash is not implemented.
 Readers reject missing/changed Bundles and
 foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
@@ -96,6 +111,11 @@ Legacy records without the
 protocol marker retain their original read rules. This is local crash consistency,
 not authentication against another process with unrestricted access as the host UID.
 Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
+Publishing a sealed execution snapshot appends a new immutable object and can
+coexist with readers restoring an earlier snapshot from the same store. Atomic
+no-replace publication keeps partial objects invisible; live writer leases and
+the shared store gate still exclude deletion and garbage collection. Readers
+continue to pin the store against destructive operations until released.
 Completion and Bundle reads reject symlinks/nonregular files and are capped at
 64 MiB each. Very large captured results or file inventories can exceed this bound
 and fail finalization while retaining the stage.
@@ -181,7 +201,7 @@ non-symlink, non-`/` directory plus its device/inode. The runtime validates it a
 Attempt preparation, requires its root to match the recorded workspace, persists
 `RunRecord.project_apply_scope` and the same optional
 field in the completion-bound Run Bundle, and compares that binding on reads even
-when Bundle semantic validation was memoized. Old records default to no contract;
+when Bundle semantic validation was memoized. An absent field means no contract;
 workspace/cwd does not grant rootstage project apply authority. Ordinary spawn
 never adds this contract. A replaced root or symlink ancestor fails closed.
 
@@ -208,9 +228,9 @@ Explicit project-scope stage preparation initializes the Job-directory and
 ExecutionJob observation locks while holding the new Attempt lease, before
 publishing the Run record. The Attempt lease is already created by launch.
 Ordinary spawn without that explicit scope does not gain lock-initialization side
-effects. Legacy stages missing any required lock fail preview closed with an
-existing-lock error; preview never repairs or upgrades them. Recreate such a stage
-with the explicit launch contract. Ordinary older workspace records keep their
+effects. Stages missing any required lock fail preview closed with an
+existing-lock error; preview never initializes the missing locks. Recreate such a stage
+with the explicit launch contract. Ordinary workspace records keep their
 recorded target contract for execution, but preview still requires existing lock
 inodes. This limitation is not treated as a successful empty preview.
 
@@ -430,15 +450,16 @@ new macOS isolation guarantees.
 
 Lost responses, timeouts and cancellation may follow accepted effects.
 Record-based CLI control reports uncertainty and does not automatically retry.
-The explicit `--vm-socket` debug path still uses the older asynchronous exchange:
+The explicit `--vm-socket` debug path uses a separate asynchronous exchange:
 Ctrl-C does not interrupt its response wait, and disconnect errors may omit that
 warning. Unifying this path is pending. Reconcile state before
 resubmitting; scoped checkpoint receipts are not universal exactly-once delivery.
 
-For upgrade, drain Jobs and stop the old `--pvisor-internal-host` with the old
-binary. New CLIs never connect to `<generation>.sock`. Old records without
-`live_control` expose disk state only; old running VMs are not automatically
-discovered. The daemon supervisor listener, framing and admission are unchanged.
+Before replacing an installation, drain Jobs and stop `--pvisor-internal-host`
+using its owning executable. CLIs never connect to `<generation>.sock`.
+Records without `live_control` expose disk state only; their running VMs are not
+automatically discovered. The daemon supervisor has separate listener, framing
+and admission contracts.
 
 ### Shared runtime implementation
 
@@ -449,6 +470,20 @@ resume/fork operations without CLI argument or rendering dependencies. Request-l
 mutations recheck admission under their leases. Capture rechecks before sending,
 not after an effectful request has been sent. Scoped receipts and lost-response
 ambiguity remain; this is not a universal exactly-once dispatcher.
+
+`lookup_run_id` performs strict, read-only discovery across the selected storage
+and default Job roots. Only `Ok(None)` permits trying another selector namespace;
+corrupt records/indexes, conflicting owners, duplicate IDs and discovery I/O
+failures return `RunLookupError`. The result is not a lock or reservation.
+Ordinary `resolve_run` retains its path, workspace and `last` behavior.
+
+Apply responses retain schema 1 and add `picker`: an optional admitted inventory
+whose `excluded` entries are zero-based indices into that response's `candidates`.
+Indices preserve non-UTF-8 path identities without a second path encoding.
+The inventory remains available when a selected set conflicts, but is absent on
+admission failure, including pending apply and discarded stage. It is not apply
+authorization: every preview and execution repeats validation and execution
+still checks the expected-plan token.
 
 Ordinary Job execution uses `RuntimeJobService::start_managed()` and
 `ManagedJobRun`. The runtime retains the actual Attempt completion task, installs
@@ -607,7 +642,7 @@ Two vCPUs support pause/resume only, retain normal PSI/TX-watchdog behavior,
 and need matching ABI-v3 firmware. Automatic offload remains single-vCPU.
 Overlapping calls keep forwarding but disable automatic transitions for the
 remainder of that Attempt. There is no new CLI/TOML switch, daemon integration,
-or scheduler-budget release. `CooperativeModelWait` is the historical Rust name;
+or scheduler-budget release. The Rust API type is `CooperativeModelWait`;
 cooperation is between pVisor's VMM and guest kernel, not the Agent application.
 
 ```rust,ignore
@@ -817,10 +852,12 @@ window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
 `pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
-`pvisor-daemon serve --cache` serves the cache. Node runtime protocols own immutable mounts and snapshot
-RAM with same-user authorization, compatibility checks and connection pins.
-The daemon has no node acquire/release adapter. Embedded callers retain explicit
-resource ownership and must release consumers before backing owners.
+`pvisor-daemon serve --cache` serves the cache. The optional `vm.node_socket`
+connects to a caller-provided same-host resource service; the runtime retains its
+client protocol and connection pins for restored RAM. No node server, owner
+registry or bounded-warming service is bundled. The daemon has no node
+acquire/release adapter. Embedded callers retain explicit resource ownership and
+must release consumers before backing owners.
 
 Linux x86_64 also has default-off experimental instance-local live cold
 compression: `VmSettings.cold_ram_compression` / `[vm].cold_ram_compression` or
@@ -832,6 +869,16 @@ Kernel-fault syscall or `/dev/userfaultfd` authority is required; compiled suppo
 is not permission, and missing authority fails startup without fallback or global
 sysctl changes. Linux external `memory_pool` negotiates physical-page sharing or
 sealed compression; only the latter uses the 64 KiB userfaultfd pager.
+
+Native executor construction resolves the environment
+`PVISOR_EXPERIMENTAL_MEMORY_POOL` alias once, with explicit `VmSettings.memory_pool`
+taking precedence. Admission validates the resolved settings; the private runner
+descriptor carries an explicit disabled/local/pool selection. Changing the
+parent environment afterwards cannot change that executor's RAM strategy, and
+the child does not inherit the alias. Private runner descriptors without
+this selection are rejected, not inferred from environment variables. These
+descriptors are same-executable launch inputs, not checkpoint compatibility
+records. Host diagnostic environment settings remain independent of this policy.
 
 The store rejects raw/poorly compressed blocks, caps encoded payload at half
 configured RAM and bounds object count by the configured 64 KiB block count.
@@ -1261,6 +1308,18 @@ not depend on `pvisor-cli`; application enums are parsed by app-local Clap
 adapters. Clap is retained only as a development dependency for standalone
 runtime demonstration/measurement examples.
 
+The supervisor retains `GatewayDriverConfig` as one configuration owner rather
+than copying its fields into a second configuration model. Attempt-local bound
+wait adapters and listening endpoints are runtime state. Binding ephemeral ports
+does not rewrite the configured policy or credentials; the diagnostic snapshot
+uses a separate copy with the actual endpoints and existing credential redaction.
+Snapshots remain observations, not inputs that can change an active policy.
+
+RAM/native-runner and image-source environment names and environment-only readers
+are defined in private `src/env.rs`. Domain validation remains with the owning
+configuration/source types. Existing public cache constant import paths remain
+compatible; this is not a global environment registry or a new cross-crate API.
+
 Journal storage and trace production use `pvisor_journal::api::{JournalStore,
 TraceProducer}` alongside the opaque `Journal` and `Trace` owners. The existing
 `trace` module explicitly re-exports these contracts; trace identity is immutable
@@ -1271,8 +1330,8 @@ publication and Run persistence diagnostics retain their own helpers.
 Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
 and two entries in `src/bin/`: `pvisor`
 and `pvisor-replay`. Daemon pool lifecycle belongs in
-`../pvisor-daemon/src/memory_pool.rs`; node protocols remain in `src/node.rs`
-and `src/node/`. Feature listing and cache argument
+`../pvisor-daemon/src/memory_pool.rs`; the node client remains in `src/node.rs`.
+Feature listing and cache argument
 parsing also live in the application. Executable-dependent integration tests
 live in its `tests/`; runtime-only tests remain here. Tests combining command
 execution with runtime APIs link both crates from the application test suite.
@@ -1287,6 +1346,19 @@ handles. Reader and transport capabilities below are independent of the storage
 version; OCI contents, guest commands, copy-up/export ownership and the
 physical-lower stability declaration retain their contracts.
 
+Image preparation resolves environment/configuration, transport validation,
+default-server probing and local-pool fallback in one private source resolver.
+Only an implicit default server's connection refusal or missing socket permits
+fallback; authentication, protocol and explicitly configured source failures
+remain errors. `PVISOR_CACHE_SERVER=off` selects local storage.
+Setting a cache token or read-only override also makes discovery
+explicit; a non-Unicode token is an error rather than an ignored credential.
+Attachment uses capabilities derived from the validated source, without
+reinterpreting address prefixes. Capability parsing starts no transport workers:
+the Linux runner creates the host-network bridge before constructing its final
+Unix client, preserving single-threaded namespace setup. IPFS and the pinned
+private-network bridge remain supported.
+
 - Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
   The client loads authenticated directory radix frames, including permissions,
   ownership and symlink metadata, rather than issuing Stat/List RPCs. COMMIT
@@ -1295,7 +1367,8 @@ physical-lower stability declaration retain their contracts.
   response receipts are neither trusted nor written in this mode. Invalid
   metadata fails without silently falling back to RPC; invalid local encoded
   cache frames may be refetched. Decoded nodes have a 16 MiB/4,096-entry LRU;
-  allocations stay budget-charged through the last active reference. Content
+  evicted allocations held by active readers live until their last `Arc` is
+  released. These caps bound cache retention, not all active-reader memory. Content
   frames have a separate 64 MiB/4,096-entry cache. Same-key misses coalesce with
   bounded concurrent admission. Persistent encoded disk caches have no total
   eviction quota. Initial immutable-object,
@@ -1397,16 +1470,16 @@ identity/order against the final normalized stack; promises cannot silently
 transfer to inserted targets or frozen copies. Host mounts receive the declarations
 through `OverlayMountConfig`; native VM handoff serializes `lower_mutability`
 alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
-`pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
+`pvisor_vm::api::OverlayConfig`. Runner metadata omitting the field defaults
 to mutable. Restored/rebound copies are not automatically promoted. The enum
 lives only in overlay-core; no duplicate runtime contract is introduced.
 New low-level host/VM mount APIs default their lowers to Immutable. The runtime
 expands unspecified transparent rootfs/live workspace declarations to explicit
-Mutable at handoff, preserving external-edit visibility and legacy restoration.
+Mutable at handoff, preserving external-edit visibility on startup and restoration.
 Authenticated prepared bases retain their explicit Immutable declarations.
 When VM networking prepends the attempt-owned synthetic resolver lower, it prepends
 an immutable declaration to an explicit mutability vector as well. Existing
-declarations keep their original physical-layer association. Legacy empty vectors stay empty.
+declarations keep their original physical-layer association. Empty vectors stay empty.
 Resolver preparation tests exercise the production preparation function and VM
 builder validation, including disabled networking and local write failure, without
 booting a guest or requiring firmware.

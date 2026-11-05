@@ -98,7 +98,7 @@ pub struct SnapshotRamReader {
     direct: Option<File>,
     // Small bounded cache avoids repeatedly decoding a block for 4 KiB faults.
     // The kernel page cache is the primary decoded cache.
-    cache: lru::LruCache<usize, (Vec<u8>, Option<crate::cache_budget::Charge>)>,
+    cache: lru::LruCache<usize, Vec<u8>>,
 }
 impl SnapshotRamReader {
     pub(super) fn new(path: &Path, manifest: &EnvironmentManifest) -> anyhow::Result<Self> {
@@ -297,7 +297,6 @@ impl SnapshotRamReader {
                 .as_ref()
                 .map_or(view_index, |blocks| blocks[view_index]);
             let start = (position % BLOCK_BYTES as u64) as usize;
-            let mut uncached = None;
             if !self.cache.contains(&index) {
                 let bytes = match &self.backing {
                     Backing::Compressed(base) => base
@@ -324,21 +323,9 @@ impl SnapshotRamReader {
                         bytes
                     }
                 };
-                match crate::cache_budget::reserve_replacing(bytes.len(), || {
-                    self.cache.pop_lru().is_some()
-                }) {
-                    Ok(charge) => {
-                        self.cache.put(index, (bytes, charge));
-                    }
-                    Err(()) => {
-                        uncached = Some(bytes);
-                    }
-                }
+                self.cache.put(index, bytes);
             }
-            let bytes = match &uncached {
-                Some(bytes) => bytes,
-                None => &self.cache.get(&index).unwrap().0,
-            };
+            let bytes = self.cache.get(&index).unwrap();
             let count = (length - copied).min(bytes.len() - start);
             output[copied..copied + count].copy_from_slice(&bytes[start..start + count]);
             copied += count;
@@ -411,7 +398,10 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .env(
+                crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
+                self.directory.path(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -533,7 +523,7 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_SERVER", spec.path())
+            .env(crate::env::runner::RESTORE_RAM_SERVER_ENV, spec.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -616,7 +606,10 @@ impl SnapshotRamMount {
                 "PATH",
                 std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
             )
-            .env("PVISOR_VM_RESTORE_RAM_WATCHDOG", self.directory.path())
+            .env(
+                crate::env::runner::RESTORE_RAM_WATCHDOG_ENV,
+                self.directory.path(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())

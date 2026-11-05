@@ -21,7 +21,6 @@
 
 ## 测试引用
 
-- `src/conversion/responses_completions.rs`
-- `src/conversion/stream.rs`、`responses_stream.rs`
-- `src/storage/dialogue_extract/completions.rs`
+- `tests/semantic_conversion.rs`（经生产 understanding / bridge 入口）
+- `src/dialogue_extract/completions.rs`、`responses.rs`
 - `tests/ag_fixture_tests.rs`（部分 capture case）

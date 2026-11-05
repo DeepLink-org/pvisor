@@ -55,8 +55,8 @@ impl LocalStore {
     pub(crate) fn discover(root: Option<PathBuf>) -> anyhow::Result<Self> {
         Self::open(resolve_root(
             root,
-            std::env::var_os("PVISOR_IMAGE_STORE").map(PathBuf::from),
-            std::env::var_os("PVISOR_DOCKER_HOME").map(PathBuf::from),
+            crate::env::os(crate::env::cache::IMAGE_STORE_ENV).map(PathBuf::from),
+            crate::env::os(crate::env::cache::DOCKER_HOME_ENV).map(PathBuf::from),
             dirs::data_local_dir(),
         )?)
     }

@@ -21,11 +21,39 @@ if not __debug__:
     raise RuntimeError("CLI chaos requires assertions enabled; do not use -O or PYTHONOPTIMIZE")
 
 IMAGE = "mirror.gcr.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e"
+SCENARIOS = (
+    "streams",
+    "environment",
+    "volume",
+    "restart",
+    "manager",
+    "logs",
+    "batch",
+    "disconnected_client",
+    "transient",
+    "invalid",
+    "build",
+    "network",
+)
+
+
+def flush_evidence(stream):
+    """Keep owned evidence durable without retaining its file pages in the test budget."""
+    stream.flush()
+    os.fsync(stream.fileno())
+    if callable(getattr(os, "posix_fadvise", None)):
+        os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def write_evidence(path, data):
+    with path.open("wb") as stream:
+        stream.write(data)
+        flush_evidence(stream)
 
 
 def save(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    write_evidence(temporary, (json.dumps(value, indent=2) + "\n").encode())
     temporary.replace(path)
 
 
@@ -56,6 +84,14 @@ def peer_handle(path):
 class Campaign:
     def __init__(self, args):
         self.args = args
+        selected = getattr(args, "scenario", None)
+        if selected is not None and (
+            not selected
+            or len(set(selected)) != len(selected)
+            or not set(selected) <= set(SCENARIOS)
+        ):
+            raise ValueError("scenarios must be nonempty, unique supported names")
+        self.scenario_names = list(selected or SCENARIOS)
         self.root = args.output.resolve()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
         self.store = self.root / "store"
@@ -80,12 +116,13 @@ class Campaign:
         self.step = "prepare"
         self.started = time.monotonic()
         driver = Path(__file__).read_bytes()
-        (self.root / "runner.py").write_bytes(driver)
+        write_evidence(self.root / "runner.py", driver)
         save(
             self.root / "manifest.json",
             {
                 "seed": args.seed,
                 "seconds": args.seconds,
+                "scenarios": list(selected) if selected is not None else None,
                 "image": args.image,
                 "binary": str(args.binary),
                 "sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
@@ -146,10 +183,10 @@ class Campaign:
             timed_out = True
             os.killpg(child.pid, signal.SIGKILL)
             stdout, stderr = child.communicate(timeout=5)
-        (directory / "stdout").write_bytes(stdout)
-        (directory / "stderr").write_bytes(stderr)
+        write_evidence(directory / "stdout", stdout)
+        write_evidence(directory / "stderr", stderr)
         if data is not None:
-            (directory / "stdin").write_bytes(data)
+            write_evidence(directory / "stdin", data)
         save(
             directory / "exit.json",
             {"code": child.returncode, "timed_out": timed_out, "seconds": time.monotonic() - start},
@@ -197,6 +234,18 @@ class Campaign:
         ids = self.call("ps", "-q")[0].splitlines()
         assert len(ids) == 2, ("expected exactly two owned live containers", ids)
         for i, name in enumerate(self.names):
+            # Container/exec readiness does not promise that the entrypoint has
+            # finished its application initialization. Its marker follows the
+            # counter write; wait for that fact before the unchanged byte oracle.
+            marker = f"boot:{self.generation[i]}".encode()
+            deadline = time.monotonic() + 5
+            while marker not in self.call("logs", name)[0].splitlines():
+                assert time.monotonic() < deadline, (
+                    name,
+                    "application readiness timed out",
+                    marker,
+                )
+                time.sleep(0.02)
             self.call(
                 "exec", name, "cat", "/boot-count", out=f"{self.generation[i]}\n".encode(), err=b""
             )
@@ -456,6 +505,7 @@ class Campaign:
                 "memory.current",
                 "memory.peak",
                 "memory.events",
+                "memory.stat",
                 "memory.swap.current",
                 "cpu.stat",
                 "pids.current",
@@ -463,6 +513,7 @@ class Campaign:
         }
         with (self.root / "resources.jsonl").open("a") as stream:
             stream.write(json.dumps(sample) + "\n")
+            flush_evidence(stream)
         assert int(sample["cgroup"]["memory.swap.current"]) == 0, sample
         events = dict(line.split() for line in sample["cgroup"]["memory.events"].splitlines())
         assert all(int(events[key]) == 0 for key in ["oom", "oom_kill", "max"]), sample
@@ -488,6 +539,9 @@ class Campaign:
         for name in self.names:
             _, error = self.call("start", name, code=1)
             assert b"connection refused" in error.lower(), error
+            assert b"booterr:" not in error, "startup diagnostic included an older workload"
+            assert b"Linux cold RAM failure" not in error, error
+            assert b"panicked at" not in error, error
         self.call("daemon", "start", "--memory-pool", code=1)
         _, error = self.call(
             "run",
@@ -575,20 +629,7 @@ class Campaign:
             self.started = time.monotonic()
             self.deadline = self.started + self.args.seconds
             save(self.root / "load-start.json", {"unix": time.time(), "seconds": self.args.seconds})
-            scenarios = [
-                self.streams,
-                self.environment,
-                self.volume,
-                self.restart,
-                self.manager,
-                self.logs,
-                self.batch,
-                self.disconnected_client,
-                self.transient,
-                self.invalid,
-                self.build,
-                self.network,
-            ]
+            scenarios = [getattr(self, name) for name in self.scenario_names]
             while time.monotonic() < self.deadline and not self.stopping.is_set():
                 sample = self.sample()
                 if (
@@ -633,7 +674,7 @@ class Campaign:
             passed = not self.stopping.is_set()
         except BaseException:
             failure = traceback.format_exc()
-            (self.root / "failure.txt").write_text(failure)
+            write_evidence(self.root / "failure.txt", failure.encode())
         finally:
             cleanup = self.cleanup()
             try:
@@ -666,6 +707,12 @@ if __name__ == "__main__":
     parser.add_argument("--seconds", type=int, default=7200)
     parser.add_argument("--seed", type=int, default=10251526)
     parser.add_argument("--interval", type=float, default=3)
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        choices=SCENARIOS,
+        help="Focus on these scenarios (repeatable); omitted runs the complete profile",
+    )
     parser.add_argument(
         "--inject-pool-loss",
         action="store_true",

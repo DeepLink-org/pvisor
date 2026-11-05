@@ -2,6 +2,31 @@
 
 pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
+## 设备支持范围
+
+产品构建选择默认 `init-blob` 和可选 `net`，使用 KVM/HVF/WHP、
+virtio-fs/console/vsock、网络和 RAM/快照能力；具体限制见各平台说明。
+不提供 `gpu`、`snd`、`input` 或 `virgl_resource_map2` feature；
+不支持的公开操作返回 `Unsupported`。
+
+`blk`、`tee`、`amd-sev`、`tdx`、`aws-nitro`、`efi` 是内部可选实现，
+不属于已验收的产品 profile。
+
+## Unix FS 环境设置
+
+FS 环境变量名称、默认值和解析规则集中在私有 `src/env.rs`。
+Unix virtio-fs 在 VMM attach 构造边界一次读取并验证 Host FS 环境设置，
+由私有不可变 profile 传给设备、worker 和 overlay；激活和恢复只消费该 profile。
+恢复的请求队列数量仍由快照覆盖构造时的 `PVISOR_VM_FS_WORKERS` 默认拓扑。
+`PVISOR_VM_FS_WRITEBACK` 使用三态规则：仅字符串 `0` 显式关闭，
+其他 UTF-8 值启用；未设置或非 Unicode 在新 session 关闭，但允许恢复快照的 WB 状态。
+共享 OPEN 的非法设置仍仅在创建 OverlayFS 时拒绝，不影响 passthrough/null FS。
+directory-names、prepared-copy-up、object-read-barriers、
+logical-directory-cache 和 logical-data-cache 实验也由同一 profile
+在构造时解析；全部保持默认关闭，显式值仅接受 `0` 或 `1`。
+诊断开关 `PVISOR_FS_PROFILE` 不参与此行为配置，不声称所有 FS 相关环境都被冻结。
+此 profile 不进入公开 API 或快照，也不改变 Windows 独立 FS 的设置读取行为。
+
 ## Windows x86_64 / WHP
 
 Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在本 crate
@@ -9,11 +34,17 @@ Windows 后端参考 microsandbox 使用的 Super Rad libkrun 分支，保留在
 后续时钟修复与本地适配见 [Windows backport 记录](provenance/WINDOWS.md)。
 Unix 后端继续使用原有实现；入口始终是 `pvisor_vm::api`。
 
+纯字节序转换由两套私有组装层共用 `src/utils/byte_order.rs`，Windows
+通过 `#[path]` 复用，调用路径仍为内部 `crate::utils::byte_order`。
+其有符号转换保留 x86_64/test 条件，大端写入只供单测使用；Windows
+支持范围仍为 x86_64。virtio 的 bindings、FUSE、descriptor 和 queue
+使用平台实现，包含宿主 ABI、协议扩展、内存租约和快照语义差异。
+
 支持 `x86_64-pc-windows-msvc`、默认 `init-blob` 或 `--no-default-features`。
 需要启用固件中的硬件虚拟化以及 Windows **Windows Hypervisor Platform**
 可选功能，启用后重启；运行于虚拟机时还需要宿主允许嵌套虚拟化。
 `capabilities()` 返回 `Hypervisor::Whp`，仅描述已编译能力，不检测机器权限。
-本阶段不承诺 Windows ARM64、TEE、GPU、音频或 EFI profile。
+不支持 Windows ARM64、TEE、GPU、音频或 EFI profile。
 
 | 能力 | Windows 实现 |
 | --- | --- |
@@ -288,7 +319,7 @@ THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言�
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
-pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
+pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
 
 Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出，并在锁与屏障外调用 store stats 处理延后的引用释放。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足一个块的尾部之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
 
@@ -587,7 +618,7 @@ filemap_check_errors, then skips only the backend FLUSH RPC. Ordinary RELEASE,
 descriptor leases, local guest lock lifetime, writable handles, data caching and
 metadata validity are unchanged. Eliminating the backend dup/close naturally
 eliminates its internal resource errors such as dup's EMFILE; this is not a claim
-that every historical close errno remains identical. It preserves the guest's
+that backend close errors are identical with and without the capability. It preserves the guest's
 data/locking error boundary and does not fix lower/upper shared-page-cache issues.
 
 Sessions actually negotiating the new capability reject capture with Unsupported;
@@ -670,7 +701,7 @@ contain its negative replies because capture after the first reply is rejected.
 Before any such reply, the prior capture/restore path remains available.
 An enabled negative-cache owner also rejects a saved WB=1 native session under
 that lock before restoring any layer or namespace state, including when an unset
-writeback environment otherwise permits historical WB=1 restoration. Disabling
+writeback environment otherwise permits WB=1 snapshot restoration. Disabling
 this preference retains that existing compatibility; WB=0 restores remain valid.
 Private tests cover qualification, unchanged positive TTLs and errors, real
 exclusions and their existing/missing ancestors, protected subtrees and unrelated
@@ -954,12 +985,8 @@ Immutable 的 overlay 保留最近一个目录的名称/类型快照，供分页
 缓存不序列化；Mutable/lazy 物理投影不扩大资格。该实验默认关闭，性能
 证据必须将目录导入与完整工作负载分开，不以减少枚举次数推导耗时收益。
 
-`PVISOR_VM_FS_SCOPED_NAMES=1` 在上述物理名称缓存已启用、默认访问策略下，
-仅失效create/link/unlink/mkdir/rmdir/symlink/mknod/rename的相关父目录和源/
-目标子树。路径在namespace独占锁内解析；失败也按同范围失效，未知路径、
-属性修改/OPEN/capture及非默认策略仍全失效，避免hardlink策略旁路。
-默认关闭，非法值拒绝；只是名称/类型快照，不保留属性或授权。受控guest
-metadata压力实验未检出收益，因此不默认启用，也不改变guest rename镜像协议。
+名称缓存统一采用上述保守失效规则，不提供按修改范围保留其他目录快照的模式。
+访问策略、guest rename 镜像协议和已打开目录的快照生命周期不变。
 
 在宿主 runner 启动前设置 `PVISOR_VM_GUEST_CACHE=0`，可整体关闭 guest
 目录元数据镜像和惰性只读 open；`1` 或未设置默认开启。该开关对所有
@@ -1272,12 +1299,11 @@ DAX 和恢复 guest-writeback 会话明确不支持。直接共享目录的 pass
 字段为 `capacity_mib`（4–256）、`jobs`（1–4096）、`batch_kib`（4–4096，
 不超过容量）、`chunks`（1–64）和 `delay_us`（0–50000）。单个大请求不为
 满足合批大小而拆分，单独执行；`chunks=1,delay_us=0` 是不合并的异步对照。
-`qualification_lock=true` 恢复前台资格检查等待后台 native I/O 锁的旧路径；
-默认 false 在保留 File 的同一个 HandleLease 中查询固定 FD，实时核对 flags、
-export 和 statx，不缓存可变资格。后台仍持 native 写锁并再次核对资格。
-`synchronous=true` 在相同 host-owned 复制与 worker 路径后等排空才回复，
-用于测量复制、线程调度和异步接管的消融，并非原同步实现。上述控制是会话
-局部实验接口，不写入 snapshot；DESTROY 后 INIT 沿用当前连接的配置。
+资格检查在保留 File 的同一个 HandleLease 中查询固定 FD，不等待后台 native
+I/O 锁；每次实时核对 flags、export 和 statx，不缓存可变资格。后台仍持
+native 写锁并再次核对资格。不提供恢复旧资格锁或在回复前强制排空 worker
+的消融模式；旧 `qualification_lock`、`synchronous` JSON 字段按未知字段拒绝。
+这些参数不写入 snapshot；DESTROY 后 INIT 沿用当前连接的配置。
 队列诊断包含预算内预留/排队/执行项高水位、实际批次数和预算等待；每队列
 退出后只记录一次，跨重连的 peak sum 不能当单次最大值。
 
@@ -1823,9 +1849,8 @@ not promise a measured total-memory saving before workload validation.
 
 ## Shared CLI VM contracts and Windows directory rename
 
-Windows directory rename now updates cached paths for the directory and all
-known descendants, retaining inode IDs and lookup counts. Previously, cached
-children kept obsolete paths and could fail getattr/open after a move. A native
+Windows directory rename updates cached paths for the directory and all
+known descendants, retaining inode IDs and lookup counts. A native
 regression checks nested inodes and a no-op rename; the shared guest workload
 checks the directory move. Full POSIX rename/open-unlinked semantics on Windows
 remain unverified.

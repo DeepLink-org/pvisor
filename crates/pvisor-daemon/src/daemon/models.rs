@@ -337,7 +337,7 @@ pub(super) enum ClaimPhase {
 }
 
 /// Last durable observation; inspection does not perform runtime I/O.
-#[cfg(any(test, feature = "cluster"))]
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ClaimView {
     pub identity: ClaimIdentity,

@@ -34,7 +34,7 @@ class CliChaosSafetyTests(unittest.TestCase):
             self.assertNotEqual(output.returncode, 0)
             self.assertIn(b"requires assertions enabled", output.stderr)
 
-    def runner(self, root):
+    def runner(self, root, *, scenario=None):
         binary = root / "bin/pvisor"
         binary.parent.mkdir()
         binary.symlink_to(sys.executable)
@@ -47,8 +47,27 @@ class CliChaosSafetyTests(unittest.TestCase):
                 seconds=60,
                 seed=1,
                 interval=1,
+                scenario=scenario,
             )
         )
+
+    def test_focused_scenarios_are_explicit_and_default_profile_stays_complete(self):
+        with workspace() as (root, _):
+            runner = self.runner(root)
+            self.assertEqual(runner.scenario_names, list(chaos.SCENARIOS))
+            self.assertIsNone(json.loads((runner.root / "manifest.json").read_text())["scenarios"])
+        with workspace() as (root, _):
+            names = ["manager", "restart", "volume"]
+            runner = self.runner(root, scenario=names)
+            self.assertEqual(runner.scenario_names, names)
+            self.assertEqual(
+                json.loads((runner.root / "manifest.json").read_text())["scenarios"], names
+            )
+        for names in [[], ["manager", "manager"], ["unsupported"]]:
+            with self.subTest(names=names), workspace() as (root, _):
+                with self.assertRaises(ValueError):
+                    self.runner(root, scenario=names)
+                self.assertFalse((root / "evidence").exists())
 
     def test_wrong_exit_and_both_streams_remain_available_for_diagnosis(self):
         with workspace() as (root, _):
@@ -94,6 +113,48 @@ class CliChaosSafetyTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 runner.call("-c", "print('wrong')", out=b"correct\n")
 
+    def test_owned_evidence_is_synced_before_cache_advice_and_keeps_exact_bytes(self):
+        with workspace() as (root, _):
+            path = root / "evidence"
+            data = b"raw\x00evidence\xff\n"
+            calls = []
+            with (
+                mock.patch.object(chaos.os, "POSIX_FADV_DONTNEED", 4, create=True),
+                mock.patch.object(
+                    chaos.os,
+                    "fsync",
+                    side_effect=lambda fd: calls.append(("sync", path.read_bytes())),
+                ),
+                mock.patch.object(
+                    chaos.os,
+                    "posix_fadvise",
+                    side_effect=lambda *args: calls.append(("advice", args[1:], path.read_bytes())),
+                    create=True,
+                ),
+            ):
+                chaos.write_evidence(path, data)
+            self.assertEqual(
+                calls,
+                [("sync", data), ("advice", (0, 0, chaos.os.POSIX_FADV_DONTNEED), data)],
+            )
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_evidence_cache_advice_failure_is_not_silently_accepted(self):
+        with workspace() as (root, _):
+            path = root / "evidence"
+            with (
+                mock.patch.object(chaos.os, "POSIX_FADV_DONTNEED", 4, create=True),
+                mock.patch.object(
+                    chaos.os,
+                    "posix_fadvise",
+                    side_effect=OSError("advice failed"),
+                    create=True,
+                ),
+                self.assertRaisesRegex(OSError, "advice failed"),
+            ):
+                chaos.write_evidence(path, b"retained")
+            self.assertEqual(path.read_bytes(), b"retained")
+
     def test_scenarios_are_not_shadowed_by_fixture_state(self):
         with workspace() as (root, _):
             runner = self.runner(root)
@@ -110,6 +171,47 @@ class CliChaosSafetyTests(unittest.TestCase):
                 "invalid",
             ]:
                 self.assertTrue(callable(getattr(runner, name)), name)
+
+    def test_health_waits_for_application_marker_before_exact_counter_oracle(self):
+        with workspace() as (root, _):
+            runner = self.runner(root)
+            runner.generation = [2, 1]
+            results = [
+                (b"a\nb\n", b""),
+                (b"boot:1\n", b""),
+                (b"boot:1\nboot:2\n", b""),
+                (b"2\n", b""),
+                (b"boot:1\n", b""),
+                (b"1\n", b""),
+            ]
+            with (
+                mock.patch.object(runner, "call", side_effect=results) as call,
+                mock.patch.object(chaos.time, "sleep"),
+            ):
+                runner.health()
+            self.assertEqual(
+                call.call_args_list,
+                [
+                    mock.call("ps", "-q"),
+                    mock.call("logs", runner.names[0]),
+                    mock.call("logs", runner.names[0]),
+                    mock.call("exec", runner.names[0], "cat", "/boot-count", out=b"2\n", err=b""),
+                    mock.call("logs", runner.names[1]),
+                    mock.call("exec", runner.names[1], "cat", "/boot-count", out=b"1\n", err=b""),
+                ],
+            )
+
+    def test_health_missing_or_prefix_only_marker_is_a_bounded_failure(self):
+        for log in [b"boot:1\n", b"boot:20\n"]:
+            with self.subTest(log=log), workspace() as (root, _):
+                runner = self.runner(root)
+                runner.generation = [2, 1]
+                with (
+                    mock.patch.object(runner, "call", side_effect=[(b"a\nb\n", b""), (log, b"")]),
+                    mock.patch.object(chaos.time, "monotonic", side_effect=[0, 6]),
+                    self.assertRaisesRegex(AssertionError, "application readiness timed out"),
+                ):
+                    runner.health()
 
     def test_audit_rechecks_raw_bytes_instead_of_trusting_passed_flag(self):
         with workspace() as (root, _):
@@ -158,6 +260,17 @@ class CliChaosSafetyTests(unittest.TestCase):
                 + "\n"
             )
             self.assertTrue(audit_cli.audit(runner.root)["passed"])
+            manifest_path = runner.root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["scenarios"] = ["streams"]
+            chaos.save(manifest_path, manifest)
+            self.assertEqual(audit_cli.audit(runner.root)["focused_scenarios"], ["streams"])
+            manifest["scenarios"] = ["streams", "manager"]
+            chaos.save(manifest_path, manifest)
+            with self.assertRaises(AssertionError):
+                audit_cli.audit(runner.root)
+            manifest["scenarios"] = ["streams"]
+            chaos.save(manifest_path, manifest)
             # Legacy receipts have an input checksum but no explicit output
             # checksum; the known cat contract still provides an independent oracle.
             receipt = runner.root / "cmd-000000/command.json"

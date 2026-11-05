@@ -74,7 +74,6 @@ enum Data {
 pub(super) struct Cached {
     value: Data,
     reference: Option<FrameRef>,
-    _charge: Option<crate::cache_budget::Charge>,
 }
 pub(super) struct DataCache {
     entries: LruCache<String, Arc<Cached>>,
@@ -194,17 +193,10 @@ pub(super) fn encode_chunk(bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 }
 
 impl PortableCache {
-    fn admit_data(&self, key: String, mut value: Cached) -> Arc<Cached> {
+    fn admit_data(&self, key: String, value: Cached) -> Arc<Cached> {
         let mut cache = self.blobs.lock().unwrap();
-        let charge = crate::cache_budget::reserve_replacing(value.retained_bytes(), || {
-            cache.pop_lru().is_some()
-        });
-        let admitted = charge.is_ok();
-        value._charge = charge.ok().flatten();
         let value = Arc::new(value);
-        if admitted {
-            cache.put(key, value.clone());
-        }
+        cache.put(key, value.clone());
         value
     }
     fn data_frame(&self, blob: &Blob, reference: &FrameRef) -> anyhow::Result<Arc<Cached>> {
@@ -288,7 +280,6 @@ impl PortableCache {
             Cached {
                 value,
                 reference: Some(reference.clone()),
-                _charge: None,
             },
         ))
     }
@@ -368,7 +359,6 @@ impl PortableCache {
                 Cached {
                     value,
                     reference: None,
-                    _charge: None,
                 },
             )
         };

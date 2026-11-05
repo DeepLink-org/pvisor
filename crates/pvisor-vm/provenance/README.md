@@ -6,8 +6,8 @@ and SPDX headers remain in the imported source; the repository Apache-2.0 licens
 applies to those components. This directory preserves original Cargo manifests,
 packaged VCS records and the existing selective-backport ledger.
 
-`libkrun/UPSTREAM.md` describes the import baseline and pre-merge backports; its
-old paths are historical coordinates. It does not describe the current API or
+`libkrun/UPSTREAM.md` records the source baseline and selected backports; paths
+refer to the imported source tree. It does not describe the current API or
 claim that every optional upstream feature has been validated. Firmware v5 data
 loading, Hypervisor FFI and its minimal SIMD shim are private runtime boundaries.
 
@@ -19,4 +19,6 @@ validation scope in [WINDOWS.md](WINDOWS.md).
 Current first-party adapters: `api.rs`, `backend.rs`, `builder.rs`, `firmware.rs`,
 `handle.rs`, `memory.rs`, `portable.rs`, and the owned Rust guest build integration.
 Only `pvisor_vm::api` is public. Core runtime components compile inside this
-crate; optional GPU/input libraries are private optional dependencies.
+crate. Original manifests document source attribution and dependencies, not build
+profiles; current capabilities and platform limits are documented in the crate
+README.

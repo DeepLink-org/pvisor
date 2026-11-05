@@ -182,59 +182,6 @@ impl ReplayPlan {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum AdapterPlan {
-    ClaudeCode(ReplayPlan),
-    Codex(ReplayPlan),
-    MiniSweAgent(ReplayPlan),
-    Openhands(ReplayPlan),
-    Opencode(ReplayPlan),
-    PiAgent(ReplayPlan),
-    SweAgent(ReplayPlan),
-}
-
-impl AdapterPlan {
-    pub(crate) fn agent(&self) -> AgentKind {
-        self.plan().agent
-    }
-
-    pub(crate) fn after_step(&self) -> usize {
-        self.plan().after_step
-    }
-
-    pub(crate) fn prefix_model_turns(&self) -> usize {
-        self.plan().prefix_model_turns
-    }
-
-    pub(crate) fn source_sha256(&self) -> &str {
-        &self.plan().source_sha256
-    }
-
-    pub(crate) fn calls(&self) -> impl Iterator<Item = &ToolCall> {
-        self.plan().calls()
-    }
-
-    pub(crate) fn public_value(&self) -> Value {
-        self.plan().public_value()
-    }
-
-    pub(crate) fn original_next_action(&self) -> Option<&Value> {
-        self.plan().original_next_action.as_ref()
-    }
-
-    fn plan(&self) -> &ReplayPlan {
-        match self {
-            Self::ClaudeCode(plan)
-            | Self::Codex(plan)
-            | Self::MiniSweAgent(plan)
-            | Self::Openhands(plan)
-            | Self::Opencode(plan)
-            | Self::PiAgent(plan)
-            | Self::SweAgent(plan) => plan,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FreshObservation {
     pub call_id: String,
@@ -354,23 +301,23 @@ mod tests {
     }
 
     #[test]
-    fn adapter_plan_exposes_only_common_dispatch_fields() {
+    fn replay_plan_preserves_public_fields_for_every_agent() {
         let plans = [
-            AdapterPlan::ClaudeCode(replay_plan(AgentKind::ClaudeCode, "claude")),
-            AdapterPlan::Codex(replay_plan(AgentKind::Codex, "codex")),
-            AdapterPlan::MiniSweAgent(replay_plan(AgentKind::MiniSweAgent, "mini")),
-            AdapterPlan::Openhands(replay_plan(AgentKind::Openhands, "openhands")),
-            AdapterPlan::Opencode(replay_plan(AgentKind::Opencode, "opencode")),
-            AdapterPlan::PiAgent(replay_plan(AgentKind::PiAgent, "pi")),
-            AdapterPlan::SweAgent(replay_plan(AgentKind::SweAgent, "swe")),
+            replay_plan(AgentKind::ClaudeCode, "claude"),
+            replay_plan(AgentKind::Codex, "codex"),
+            replay_plan(AgentKind::MiniSweAgent, "mini"),
+            replay_plan(AgentKind::Openhands, "openhands"),
+            replay_plan(AgentKind::Opencode, "opencode"),
+            replay_plan(AgentKind::PiAgent, "pi"),
+            replay_plan(AgentKind::SweAgent, "swe"),
         ];
 
         for plan in plans {
-            assert_eq!(plan.after_step(), 1);
-            assert_eq!(plan.prefix_model_turns(), 1);
+            assert_eq!(plan.after_step, 1);
+            assert_eq!(plan.prefix_model_turns, 1);
             assert_eq!(plan.calls().count(), 0);
-            assert_eq!(plan.public_value()["agent"]["name"], plan.agent().as_str());
-            assert!(!plan.source_sha256().is_empty());
+            assert_eq!(plan.public_value()["agent"]["name"], plan.agent.as_str());
+            assert!(!plan.source_sha256.is_empty());
         }
     }
 

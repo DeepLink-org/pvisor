@@ -197,7 +197,6 @@ pub(super) struct Node {
     body: Body,
     reference: FrameRef,
     retained: usize,
-    _charge: Option<crate::cache_budget::Charge>,
 }
 impl Node {
     fn retained_bytes(&self) -> usize {
@@ -367,7 +366,6 @@ impl LoadedImage {
             body,
             reference: reference.clone(),
             retained: 0,
-            _charge: None,
         };
         node.retained = node.allocation_bytes();
         self.validate_body(reference, &node.body)?;
@@ -387,15 +385,8 @@ impl LoadedImage {
                 return Ok(Arc::new(node));
             }
         }
-        let charge = crate::cache_budget::reserve_replacing(node.retained_bytes(), || {
-            cache.pop_lru().is_some()
-        });
-        let admitted = charge.is_ok();
-        node._charge = charge.ok().flatten();
         let node = Arc::new(node);
-        if admitted {
-            cache.put(reference.offset, node.clone());
-        }
+        cache.put(reference.offset, node.clone());
         Ok(node)
     }
     fn validate_body(&self, reference: &FrameRef, body: &Body) -> anyhow::Result<()> {
@@ -1059,7 +1050,6 @@ pub(super) mod malformed_tests {
                     count: 1,
                 },
                 retained: 0,
-                _charge: None,
             };
             node.retained = node.allocation_bytes();
             cache.put(offset, Arc::new(node));

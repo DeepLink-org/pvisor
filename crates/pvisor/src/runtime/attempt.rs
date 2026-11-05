@@ -15,8 +15,6 @@ use pvisor_core::ControlController;
 use pvisor_core::NetworkCapability;
 use pvisor_core::{ProcessInvocation, RunInvocation, RunSpec, RunState};
 #[cfg(feature = "gateway")]
-use pvisor_gateway::config::ProxyConfig;
-#[cfg(feature = "gateway")]
 use pvisor_gateway::injection::{client_gateway_config_args, proxy_environment_with_local_auth};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::lifecycle::{
@@ -144,16 +142,9 @@ impl AttemptSession {
             "network interception: explicit proxy (cooperative; direct sockets remain ambient)"
                 .into(),
         );
-        super::zcode::prepare(
-            spec,
-            &mut plan,
-            &proxy.listen,
-            &self.run_record.storage,
-            None,
-        )?;
+        crate::agent::prepare_proxy(spec, &mut plan, &proxy.listen, &self.run_record.storage)?;
         let RunInvocation::Process(process) = &mut spec.invocation;
         apply_implant(process, &plan);
-        super::zcode::apply_environment(process, &plan);
         self.run_record.overlaynet_listen = Some(proxy.listen.clone());
         self.run_record.network_interception =
             Some(pvisor_overlaynet::InterceptionProfile::explicit_proxy());
@@ -441,17 +432,14 @@ impl AttemptTeardown {
 
 #[cfg(feature = "gateway")]
 pub(crate) struct AttemptPrepareOpts<'a> {
-    pub config: &'a ProxyConfig,
+    pub config: &'a crate::GatewayDriverConfig,
     /// Durable pVisor Run storage and default OverlayFS stage.
     pub storage: &'a Path,
-    /// Gateway capture and session configuration storage.
-    pub capture_storage: &'a Path,
     pub sink: Option<Arc<dyn TrajectoryEventSink>>,
     /// Extra overlay hint from CLI (overrides paths when set).
     pub overlay_override: OverlayHint,
     pub controller: Arc<dyn ControlController>,
-    pub gateway_enabled: bool,
-    pub model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
+    pub bound_model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     pub vm_network: bool,
     pub peers: Option<crate::PeerNetworkSettings>,
     pub attempt_id: &'a str,
@@ -593,16 +581,17 @@ pub(crate) fn prepare_attempt(
     preparation: &super::run::PreparedRun,
     opts: AttemptPrepareOpts<'_>,
 ) -> anyhow::Result<AttemptSession> {
-    let mut config = opts.config.clone();
+    let config = &opts.config.proxy;
     spec.agent.name = config.agent_id.clone();
     let storage = opts
         .storage
         .canonicalize()
         .unwrap_or_else(|_| opts.storage.to_path_buf());
     let capture_storage = opts
-        .capture_storage
+        .config
+        .output_dir
         .canonicalize()
-        .unwrap_or_else(|_| opts.capture_storage.to_path_buf());
+        .unwrap_or_else(|_| opts.config.output_dir.clone());
 
     let sink = opts.sink.unwrap_or_else(|| {
         Arc::new(JournalObserver {
@@ -613,7 +602,7 @@ pub(crate) fn prepare_attempt(
 
     let network_metrics = InterceptionMetrics::default();
     let bandwidth_registry = BandwidthRegistry::default();
-    let client_token = (opts.gateway_enabled
+    let client_token = (opts.config.gateway_enabled
         && config
             .models
             .iter()
@@ -630,13 +619,12 @@ pub(crate) fn prepare_attempt(
             interception_metrics: network_metrics.clone(),
             bandwidth_registry: bandwidth_registry.clone(),
             attempt_id: Some(opts.attempt_id.to_owned()),
-            gateway_enabled: opts.gateway_enabled,
-            model_wait: opts.model_wait,
+            gateway_enabled: opts.config.gateway_enabled,
+            model_wait: opts
+                .bound_model_wait
+                .or_else(|| opts.config.model_wait.clone()),
         },
     )?;
-    config.listen = gateway.listen.clone();
-    config.admin_listen = gateway.admin_listen.clone();
-
     spec.metadata.insert(
         crate::executor::sandbox::SANDBOX_PROXY_KEY.into(),
         gateway.listen.clone().into(),
@@ -646,7 +634,13 @@ pub(crate) fn prepare_attempt(
     // Subagent capture sessions remain separate beneath this root.
     let root_session = spec.run_id.as_str().to_string();
     write_run_session(&capture_storage, &root_session)?;
-    let config_snapshot = snapshot_proxy_config(&capture_storage, &root_session, &config)?;
+    // Listener bindings are observations of this Attempt, not resolved policy.
+    // Only the diagnostic copy carries the actual ports.
+    let mut diagnostic_config = config.clone();
+    diagnostic_config.listen = gateway.listen.clone();
+    diagnostic_config.admin_listen = gateway.admin_listen.clone();
+    let config_snapshot =
+        snapshot_proxy_config(&capture_storage, &root_session, &diagnostic_config)?;
 
     let mut overlay_cfg = config.overlay.clone();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
@@ -686,7 +680,7 @@ pub(crate) fn prepare_attempt(
                     controller: Arc::clone(&opts.controller),
                     attempt_id: opts.attempt_id.to_owned(),
                 },
-                Some((&gateway.listen, opts.gateway_enabled)),
+                Some((&gateway.listen, opts.config.gateway_enabled)),
                 network_metrics.clone(),
                 bandwidth_registry,
             )
@@ -700,7 +694,7 @@ pub(crate) fn prepare_attempt(
     } else {
         pvisor_overlaynet::InterceptionProfile::explicit_proxy()
     });
-    run_record.gateway_listen = opts.gateway_enabled.then(|| gateway.listen.clone());
+    run_record.gateway_listen = opts.config.gateway_enabled.then(|| gateway.listen.clone());
     run_record.network_policy = Some(serde_json::to_value(&config.network)?);
     run_record.overlay = overlay_record.clone();
     run_record.overlay_lowers = overlay_lowers;
@@ -763,7 +757,7 @@ pub(crate) fn prepare_attempt(
                     run_storage: &storage,
                     capture_storage: &capture_storage,
                     config_path: &config_snapshot,
-                    gateway_enabled: opts.gateway_enabled,
+                    gateway_enabled: opts.config.gateway_enabled,
                     vm_network: opts.vm_network,
                     local_gateway_token: client_token.as_deref(),
                 },
@@ -1604,17 +1598,10 @@ fn enrich_with_session(
         plan.notes.push("filesystem: host view (no overlay)".into());
     }
 
-    let profile = spec
-        .metadata
-        .get("pvisor.gateway.profile")
-        .cloned()
-        .map(serde_json::from_value::<crate::config::GatewayProfile>)
-        .transpose()?;
-    super::zcode::prepare(spec, &mut plan, listen, run_storage, profile)?;
+    crate::agent::prepare_capture(spec, &mut plan, listen, run_storage)?;
 
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
-    super::zcode::apply_environment(process, &plan);
     if gateway_enabled {
         inject_gateway_args(process, listen);
     }

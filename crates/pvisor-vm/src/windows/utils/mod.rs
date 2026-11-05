@@ -11,6 +11,8 @@ pub mod errno {
 #[cfg(target_os = "linux")]
 pub use vmm_sys_util::{eventfd, ioctl};
 
+// Pure byte conversions share the Unix source without changing crate::utils paths.
+#[path = "../../utils/byte_order.rs"]
 pub mod byte_order;
 pub mod event;
 #[cfg(target_os = "linux")]

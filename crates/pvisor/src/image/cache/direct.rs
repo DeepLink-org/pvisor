@@ -4,6 +4,12 @@ use super::{
     backend::{ContentReader, Node, RemoteFs},
     client::ClientBinding,
 };
+use crate::env::{
+    self,
+    cache::{
+        DIRECT_LAZY_COPY_ENV, REUSE_LAZY_NODES_ENV, STREAM_LAZY_READS_ENV, experiment_setting,
+    },
+};
 use anyhow::{Context, ensure};
 use fs2::FileExt;
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -69,15 +75,6 @@ fn io_error(error: anyhow::Error) -> io::Error {
         return io::Error::new(error.kind(), error.to_string());
     }
     io::Error::other(error.to_string())
-}
-
-fn experiment_setting(name: &str, setting: Option<&OsStr>) -> anyhow::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => anyhow::bail!("{name} must be 0 or 1"),
-    }
 }
 
 impl Projection {
@@ -432,16 +429,16 @@ fn attach(root: &Path, source: RemoteFs) -> anyhow::Result<BackendAttachment> {
     // Legacy/test sources retain their original live projection contract.
     let stable_namespace = source.digest.starts_with("pvisor-v2:");
     let reuse_resolved_nodes = experiment_setting(
-        "PVISOR_VM_FS_REUSE_LAZY_NODES",
-        std::env::var_os("PVISOR_VM_FS_REUSE_LAZY_NODES").as_deref(),
+        REUSE_LAZY_NODES_ENV,
+        env::os(REUSE_LAZY_NODES_ENV).as_deref(),
     )? && stable_namespace;
     let stream_reads = experiment_setting(
-        "PVISOR_VM_FS_STREAM_LAZY_READS",
-        std::env::var_os("PVISOR_VM_FS_STREAM_LAZY_READS").as_deref(),
+        STREAM_LAZY_READS_ENV,
+        env::os(STREAM_LAZY_READS_ENV).as_deref(),
     )?;
     let direct_copy = experiment_setting(
-        "PVISOR_VM_FS_DIRECT_LAZY_COPY",
-        std::env::var_os("PVISOR_VM_FS_DIRECT_LAZY_COPY").as_deref(),
+        DIRECT_LAZY_COPY_ENV,
+        env::os(DIRECT_LAZY_COPY_ENV).as_deref(),
     )? && stable_namespace;
     let objects = root
         .parent()
@@ -515,18 +512,17 @@ pub(crate) fn attach_runner_lowers<'a>(
         let binding: Binding = serde_json::from_reader(file)?;
         ensure!(binding.version == 1, "unsupported direct image binding");
         let mut client_binding = binding.client;
-        if cfg!(target_os = "linux") && client_binding.needs_host_network() {
+        // Capability parsing must not construct an HTTP/S3 transport: those
+        // start workers, but Linux namespace setup requires a single thread.
+        let source = client_binding.resolved_source()?;
+        if cfg!(target_os = "linux") && source.needs_host_network() {
             let (access, local_binding) =
                 super::network::NetworkAccess::start(parent, client_binding, &binding.handle)?;
             owners._network.push(access);
             client_binding = local_binding;
         }
         let client = CacheClient::from_binding(client_binding)?;
-        if let Some(location) = client
-            .address()
-            .strip_prefix("file://")
-            .or_else(|| client.address().strip_prefix("pool+file://"))
-        {
+        if let Some(location) = client.local_directory() {
             owners.read_only.push(location.into());
         }
         owners.read_write.push(parent.to_owned());

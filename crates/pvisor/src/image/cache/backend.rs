@@ -26,23 +26,16 @@ pub(super) struct Node {
 // File identity is the outer key; 1 MiB block indices only have meaning within it.
 #[derive(Default)]
 struct HotBlocks {
-    files: HashMap<u64, HashMap<u64, HotBlock>>,
+    files: HashMap<u64, HashMap<u64, Arc<[u8]>>>,
     order: VecDeque<(u64, u64)>,
     bytes: usize,
-}
-struct HotBlock {
-    bytes: Arc<[u8]>,
-    _charge: Option<crate::cache_budget::Charge>,
 }
 impl HotBlocks {
     const MAX_BYTES: usize = 64 * 1024 * 1024;
     const MAX_ENTRIES: usize = 4096;
 
     fn get(&self, file: u64, block: u64) -> Option<Arc<[u8]>> {
-        self.files
-            .get(&file)?
-            .get(&block)
-            .map(|entry| entry.bytes.clone())
+        self.files.get(&file)?.get(&block).cloned()
     }
 
     fn insert(&mut self, file: u64, block: u64, bytes: Arc<[u8]>) {
@@ -53,18 +46,8 @@ impl HotBlocks {
         while self.bytes + bytes.len() > Self::MAX_BYTES || self.order.len() >= Self::MAX_ENTRIES {
             assert!(self.evict());
         }
-        let Ok(charge) = crate::cache_budget::reserve_replacing(bytes.len(), || self.evict())
-        else {
-            return;
-        };
         self.bytes += bytes.len();
-        self.files.entry(file).or_default().insert(
-            block,
-            HotBlock {
-                bytes,
-                _charge: charge,
-            },
-        );
+        self.files.entry(file).or_default().insert(block, bytes);
         self.order.push_back((file, block));
     }
     fn evict(&mut self) -> bool {
@@ -72,7 +55,7 @@ impl HotBlocks {
             return false;
         };
         let blocks = self.files.get_mut(&file).unwrap();
-        self.bytes -= blocks.remove(&block).unwrap().bytes.len();
+        self.bytes -= blocks.remove(&block).unwrap().len();
         if blocks.is_empty() {
             self.files.remove(&file);
         }

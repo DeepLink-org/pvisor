@@ -350,6 +350,7 @@ class ProtocolAxesTests(unittest.TestCase):
                 "batch-256k": {"env": {}},
                 "delay-100us": {"env": {}},
                 "async-old": {"env": {}},
+                "owned-sync": {"env": {}},
                 "unmerged": {"env": {}},
             }
         )
@@ -359,6 +360,7 @@ class ProtocolAxesTests(unittest.TestCase):
         self.assertEqual(factors["batch-256k"]["batch_kib"], 256)
         self.assertEqual(factors["delay-100us"]["delay_us"], 100)
         self.assertTrue(factors["async-old"]["qualification_lock"])
+        self.assertTrue(factors["owned-sync"]["synchronous"])
         self.assertEqual((factors["unmerged"]["chunks"], factors["unmerged"]["delay_us"]), (1, 0))
         plan["conditions"]["capacity-4m"]["env"]["PVISOR_VM_FS_HOST_WRITEBACK_CONFIG"] = (
             '{"capacity_mib": 8}'

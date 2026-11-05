@@ -28,7 +28,6 @@ pub(crate) mod run;
 mod supervisor;
 #[cfg(feature = "gateway")]
 mod wait_coordinator;
-pub(crate) mod zcode;
 
 pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use attempt::{AttemptSession, AttemptTeardown};
@@ -38,20 +37,6 @@ pub(crate) use overlay::{
 pub(crate) use registry::RunLease as StagedRunLease;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
-
-/// Apply application-specific process compatibility policies before the
-/// Run's capabilities are validated and the executor prepares its sandbox.
-pub(crate) fn apply_process_policies(
-    spec: &mut pvisor_core::RunSpec,
-    executor: &pvisor_core::ExecutorPlan,
-) -> anyhow::Result<()> {
-    if executor.kind == pvisor_core::ExecutorKind::Process
-        && executor.isolation == pvisor_core::IsolationKind::RootlessProcess
-    {
-        zcode::apply_host_process_policy(spec)?;
-    }
-    Ok(())
-}
 
 pub use implant::{ExecutionOverlayHint, ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
@@ -69,8 +54,8 @@ pub use registry::LEASE_FILENAME;
 pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, JobDirectoryLock, RunLineage, RunRecord, RunRecordState,
+    EnvironmentProjection, JobDirectoryLock, RunLineage, RunLookupError, RunRecord, RunRecordState,
     control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
-    default_run_home, is_live, resolve_run,
+    default_run_home, is_live, lookup_run_id, resolve_run,
 };
 pub use supervisor::RuntimeCapabilities;

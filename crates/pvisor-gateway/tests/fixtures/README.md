@@ -42,12 +42,19 @@ fixtures/
 
 | 测试 | 说明 |
 |------|------|
-| `tests/ag_fixture_tests.rs` | 对照 AG snap 做 messages/responses ↔ completions 与 Gemini native 转换；capture 用户/助手/usage 矩阵（见 `tests/support/ag_capture_cases.rs`） |
+| `tests/ag_fixture_tests.rs` | 经生产 `understanding` 和 `translate_*_for_bridge` 入口对照 AG snap 做 messages/responses ↔ completions 与 Gemini native 转换；capture 用户/助手/usage 矩阵（见 `tests/support/ag_capture_cases.rs`） |
 | `tests/llm_fixtures.rs` | 基础 smoke 回归 |
+| `tests/semantic_conversion.rs` | 生产入口的 Codex 历史、并行 tool call/result 与 Gemini 结果顺序回归 |
 | `src/conversion/*`、`src/dialogue_extract/*` | 部分单元测试通过 `include_str!` 引用本目录 |
 
 协议解析与流式转换还通过 `crates/pvisor-gateway/fuzz/` 下的两个 cargo-fuzz target
 覆盖任意输入、分块边界和不完整 SSE frame。
+请求 fuzz 对所有五种生产 bridge 解析并渲染；非流式响应同样经过生产解析和
+客户端渲染，并检查成功输出的 JSON、模型标识及语义来源协议。
+
+生产语义路径保留 `openrouter_reasoning` 的推理文本，而 AG 旧响应 snap
+只列可见文本，因此测试期望包含有序的 thinking 块和可见文本。
+Messages 字符串 system 在输出中规范化为 text block 数组。
 
 PolicyVisor 当前实现 **Messages ↔ Completions**、**Responses ↔ Completions**，以及
 **Completions/Messages/Responses ↔ Gemini native generateContent** bridge。支持的请求、响应和

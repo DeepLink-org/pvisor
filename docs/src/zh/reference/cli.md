@@ -214,7 +214,7 @@ pvisor cache --help
 
 为 `pvisor-daemon serve --sandbox` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor cache prepare/publish/list/stat/read` 是客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
 
-其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
+其他未知名称按默认执行规则处理。不支持的控制命令 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
 拒绝并给出迁移提示，不会按默认规则运行名为 `ctrl` 的程序。控制 VM
 使用下方 live VM 命令。`pvisor spawn -- ctrl` 仍表达显式工作负载意图，
@@ -277,7 +277,7 @@ Linux 的私有 `/tmp` 内不能使用只读共享。不要共享含秘密的目
 `--mount SOURCE[:TARGET]:stage` 则把 SOURCE 加入工作区写时复制视图的底层，并非独立目录挂载。
 `--access PATH-GLOB:deny|warn` 默认累加配置、预设和 CLI 规则：deny 拒绝、warn 放行并警告。
 清空配置与默认文件保护必须显式使用 `--clear-access`；之后再加入 CLI 规则。deny > warn。
-原先表示警告的 `:read` 已拒绝，改用 `:warn`；真正只读请用 `--mount PATH:read`。
+访问规则不接受 `:read` 动作；警告使用 `:warn`，只读挂载使用 `--mount PATH:read`。
 
 启动前配置静态文件与网络边界。
 执行后用 `review` 审查暂存文件，用 `apply` 接受选定路径，再用 `drop` 丢弃剩余改动。
@@ -480,9 +480,9 @@ pvisor checkpoint gc ./stage/task --json
 创建请求可用 `--request-id` 重试；已经删除的结果不能通过重用同一 key 再捕获。
 分叉保留来源 manifest 的硬链接引用，父子 stage 需要在同一文件系统；引用存在时删除拒绝。
 `drop JOB` 保留 Job、检查点和分支引用，`apply/drop` 必须显式指定 Job，并要求记录已确认停止。
-`review` 的 JSON 区分历史执行证据与当前选定的文件视图；成功 apply/drop 后工作区 generation 递增。
+`review` 的 JSON 区分已记录的执行证据与当前选定的文件视图；成功 apply/drop 后工作区 generation 递增。
 
-工作区历史检查点的查看和分叉仍要求源 Job lease，因此源 Job 正在运行时会拒绝。
+已保存的工作区检查点的查看和分叉要求源 Job lease，因此源 Job 正在运行时会拒绝。
 
 ### 完整 VM 执行检查点 {#full-vm-execution-checkpoints}
 
@@ -566,7 +566,7 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 策略按直接可执行文件名匹配，shell 包装器不会触发。`zcode-bigmodel` Gateway profile
 是独立的路由适配。
 
-预设通过 `--clear-pass-env` 清空配置文件中的 `run.pass_env`；
+类型化预设在内部清空配置文件中的 `run.pass_env`；
 `--clear-pass-env` 也可单独使用，之后的显式 `--pass-env NAME` 仍然生效。
 直接运行 Codex 时保留宿主环境继承，以维持账号与路由配置；其他命令默认关闭继承，
 凭据通过显式 `--pass-env NAME` 授予。
@@ -703,8 +703,7 @@ Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。�
 另带 state/output 位置、artifacts 和可选结构化失败。失败结果保留已经生成的
 日志和原生轨迹；即使 OpenHands 进程返回 0，只要控制器报告 fatal 状态，
 结果仍为失败。
-原先只用 `replay_only = true` 来构造前缀的非 Claude 调用方必须迁移到
-`prepare_only = true`。
+非 Claude 调用方使用 `prepare_only = true` 构造前缀，不执行 replay。
 
 `disable_thinking` 属于 `[replay]`，也暴露为 `--disable-thinking`。Claude Code
 由协议 bridge 将其应用到上游请求；OpenCode 设置后会省略 `--thinking`。该选项

@@ -14,6 +14,27 @@ SPEC.loader.exec_module(SUBJECT)
 
 
 class DirectoryNamesContracts(unittest.TestCase):
+    def test_current_experiments_reject_retired_scope_before_preparation(self):
+        self.assertEqual(
+            SUBJECT.experiment_protocol("directory-names"), ("directory-pages", "directory-pages")
+        )
+        self.assertEqual(
+            SUBJECT.experiment_protocol("prepared-copy-up"), ("copyup-concurrent", "copyup-total")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            batch = Path(directory) / "batch"
+            args = SUBJECT.argparse.Namespace(prepare=batch, experiment="scoped-names")
+            with self.assertRaisesRegex(ValueError, "retired experiment"):
+                SUBJECT.prepare(args)
+            self.assertFalse(batch.exists())
+            batch.mkdir()
+            SUBJECT.save(batch / "manifest.json", {"experiment": "scoped-names"})
+            with patch.object(SUBJECT.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, "retired experiment"):
+                    SUBJECT.measure(batch)
+                run.assert_not_called()
+            self.assertFalse((batch / "records.json").exists())
+
     def test_macos_does_not_claim_linux_host_limits(self):
         with patch.object(SUBJECT.sys, "platform", "darwin"):
             self.assertEqual(SUBJECT.host_cpus(), [])
@@ -72,9 +93,18 @@ class DirectoryNamesContracts(unittest.TestCase):
             (root / "work").mkdir()
             manifest = {"experiment": "directory-names", "cpus": [0, 1]}
             result = type("Result", (), {"returncode": 1})()
-            with patch.object(SUBJECT.subprocess, "run", return_value=result):
+            with (
+                patch.dict(
+                    SUBJECT.os.environ,
+                    {"PVISOR_VM_FS_SCOPED_NAMES": "1", "KEEP_PROBE_ENV": "kept"},
+                ),
+                patch.object(SUBJECT.subprocess, "run", return_value=result) as run,
+            ):
                 with self.assertRaisesRegex(ValueError, "trial failed"):
                     SUBJECT.trial(root, manifest, 0, "directory-pages", 0)
+                environment = run.call_args.kwargs["env"]
+                self.assertFalse(any(key.startswith("PVISOR_") for key in environment))
+                self.assertEqual(environment["KEEP_PROBE_ENV"], "kept")
             scratch = root / "work/directory-pages-0-0-time"
             self.assertTrue(scratch.is_dir())
             command = SUBJECT.json.loads(
@@ -87,6 +117,7 @@ class DirectoryNamesContracts(unittest.TestCase):
                 self.assertNotIn("systemd-run", command)
             self.assertIn("PVISOR_VM_FS_DIRECTORY_NAMES_CACHE=0", command)
             self.assertIn("PVISOR_VM_FS_PREPARED_COPY_UP=0", command)
+            self.assertFalse(any("SCOPED_NAMES" in argument for argument in command))
 
 
 if __name__ == "__main__":

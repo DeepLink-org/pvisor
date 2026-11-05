@@ -1,4 +1,5 @@
 //! Job lifecycle commands and dispatch to first-party companions.
+mod agent;
 mod apply;
 mod cache;
 mod checkpoint;
@@ -15,6 +16,7 @@ mod host_image;
 mod host_process;
 #[cfg(unix)]
 mod host_service;
+mod live_vm;
 mod values;
 use crate::companions;
 mod product;
@@ -395,8 +397,8 @@ pub fn main() -> anyhow::Result<()> {
             "--feature enables apply only to spawn, stage or feature queries"
         );
     }
-    if let Some(command) = host::vm_request(&parsed.command)? {
-        finish(host_service::call(command)?);
+    if let Some(command) = live_vm::vm_request(&parsed.command)? {
+        finish(host_service::call_vm(command)?);
         return Ok(());
     }
     match parsed.command {

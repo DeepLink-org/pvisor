@@ -229,6 +229,7 @@ def condition_factors(protocol: dict) -> tuple[dict, str]:
             "batch_kib": 1024,
             "chunks": 64,
             "delay_us": 10000,
+            # Infer factors from condition names when the batch omits metadata.
             "qualification_lock": name == "async-old",
             "synchronous": name == "owned-sync",
         }

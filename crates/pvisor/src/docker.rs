@@ -9,7 +9,7 @@ use pvisor_guest::control::{self, Reply, Request, read_frame, write_frame};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::{
     fs::{MetadataExt, OpenOptionsExt},
     net::UnixStream,
@@ -436,7 +436,7 @@ impl Store {
     /// then that explicit Docker home's `images`, then the user data directory.
     /// Both roots must be owned private directories.
     pub fn discover() -> anyhow::Result<Self> {
-        let root = std::env::var_os("PVISOR_DOCKER_HOME")
+        let root = crate::env::os(crate::env::cache::DOCKER_HOME_ENV)
             .map(PathBuf::from)
             .unwrap_or(
                 dirs::data_local_dir()
@@ -1595,6 +1595,16 @@ fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
     std::process::exit(0)
 }
 
+// Logs accumulate across restarts, but a startup error belongs only to the
+// current generation. Keep earlier workload output for `logs`, not this error.
+fn generation_stderr(path: &Path, offset: u64) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(32 * 1024).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Result<()> {
     let directory = store.directory(&instance.id);
     let mut stages = Vec::new();
@@ -1621,6 +1631,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             .create(true)
             .mode(0o600)
             .open(directory.join("stderr.log"))?;
+        let stderr_offset = stderr.metadata()?.len();
         let child = Command::new(std::env::current_exe()?)
             .arg("--pvisor-internal-docker-vm")
             .arg(&store.root)
@@ -1644,7 +1655,8 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
                         .join(format!("boot-{}", instance.generation))
                         .is_file(),
                     "VM failed to start: {}",
-                    fs::read_to_string(directory.join("stderr.log")).unwrap_or_default()
+                    generation_stderr(&directory.join("stderr.log"), stderr_offset)
+                        .unwrap_or_default()
                 );
                 return Ok(status.code().unwrap_or(128 + status.signal().unwrap_or(9)));
             }
@@ -1882,6 +1894,21 @@ fn run_vm<Backing>(
     }
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
     let endpoint = socket(&instance)?;
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    let pager = instance
+        .config
+        .memory_pool
+        .as_deref()
+        .map(|pool| {
+            crate::executor::vm::prepare_pool(
+                pool,
+                crate::env::os(crate::env::ram::METRICS_ENV).is_some(),
+            )
+        })
+        .transpose()?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
@@ -1913,7 +1940,7 @@ fn run_vm<Backing>(
         // Opt-in only: this private generation is finished before VM entry and
         // retained unchanged until exit. Keep ordinary launch declarations
         // unchanged when the logical-mirror experiment is not requested.
-        let resolver_mutability = if std::env::var_os("PVISOR_VM_FS_LOGICAL_DIRECTORY_CACHE")
+        let resolver_mutability = if crate::env::os(crate::env::runner::LOGICAL_DIRECTORY_CACHE_ENV)
             .as_deref()
             == Some(std::ffi::OsStr::new("1"))
         {
@@ -2059,12 +2086,8 @@ fn run_vm<Backing>(
         ))]
         {
             crate::executor::vm::start_diagnostics(&handle)?;
-            if let Some(pool) = &instance.config.memory_pool {
-                crate::executor::vm::start_with_pool(
-                    handle,
-                    pool,
-                    std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_METRICS").is_some(),
-                )?;
+            if let Some(pager) = pager {
+                pager.start(handle)?;
             }
         }
         fs::write(ready, b"ready")
@@ -2086,6 +2109,35 @@ pub use pvisor_guest::control::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_diagnostic_excludes_previous_generations_without_truncating_logs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stderr.log");
+        let previous = b"old workload\nold pool-loss failure\n\xff";
+        fs::write(&path, previous).unwrap();
+        let current = b"Error: Connection refused (os error 111)\n";
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(current)
+            .unwrap();
+        assert_eq!(
+            generation_stderr(&path, previous.len() as u64)
+                .unwrap()
+                .as_bytes(),
+            current
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            [previous.as_slice(), current].concat()
+        );
+        assert_eq!(
+            generation_stderr(&path, fs::metadata(&path).unwrap().len()).unwrap(),
+            ""
+        );
+    }
 
     #[test]
     fn docker_shared_liveness_observers_do_not_impersonate_owners() {

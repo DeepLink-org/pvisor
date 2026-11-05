@@ -31,8 +31,7 @@ use super::passthrough::{self, PassthroughFs};
 use super::write_buffer::{Target as BufferedWriteTarget, WriteBuffer, WriteBufferOptions};
 
 const TTL: Duration = Duration::from_secs(1);
-pub(super) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
-pub(super) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
+use crate::env::fs::{DEFAULT_DIRECTORY_CACHE_CAPACITY, MAX_DIRECTORY_CACHE_CAPACITY};
 const MAX_DIRECTORY_NAMES_BYTES: usize = 4 << 20;
 const RENAME_NOREPLACE: u32 = bindings::LINUX_RENAME_NOREPLACE as u32;
 const RENAME_EXCHANGE: u32 = bindings::LINUX_RENAME_EXCHANGE as u32;
@@ -71,18 +70,6 @@ fn buffered_request_flags(flags: u32) -> bool {
 fn stored_overlay_xattr(name: &CStr) -> Option<CString> {
     pvisor_overlay_core::stored_overlay_xattr_name(OsStr::from_bytes(name.to_bytes()))
         .map(|stored| CString::new(stored.as_bytes()).expect("stored xattr name has no NUL"))
-}
-
-fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
-    match setting {
-        None => Ok(false),
-        Some(value) if value == "0" => Ok(false),
-        Some(value) if value == "1" => Ok(true),
-        Some(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION must be 0 or 1",
-        )),
-    }
 }
 
 /// Stack-owned evidence crossing only OPEN's native and response assembly.
@@ -966,15 +953,12 @@ pub struct OverlayFs {
     stable_namespace_leases: HashMap<usize, backend::StableNamespaceLease>,
     logical_data_cache: bool,
     directory_names_cache_enabled: bool,
-    scoped_names_invalidation: bool,
     directory_names_cache: Mutex<Option<DirectoryNames>>,
     io_activity: Arc<IoActivity>,
     // Dropped before Core/layers. The worker owns only native object leases,
     // never guest Readers, descriptor chains, or RAM gate access.
     host_writeback: bool,
     host_writeback_options: WriteBufferOptions,
-    host_writeback_qualification_lock: bool,
-    host_writeback_synchronous: bool,
     write_buffer: RwLock<Option<Arc<WriteBuffer>>>,
     core: FilesystemService,
     // New INITs use the caller's current preference. Restoring an already
@@ -1022,10 +1006,12 @@ pub struct OverlayFs {
 }
 
 impl OverlayFs {
+    #[cfg(test)]
     pub fn new(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, false)
     }
 
+    #[cfg(test)]
     pub fn open_existing(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<Self> {
         Self::build(cfg, inode_alloc, true)
     }
@@ -1036,13 +1022,7 @@ impl OverlayFs {
 
     #[cfg(test)]
     pub(super) fn configure_host_writeback(&mut self, enabled: bool, dax: bool) -> io::Result<()> {
-        self.configure_host_writeback_options(
-            enabled,
-            dax,
-            WriteBufferOptions::default(),
-            false,
-            false,
-        )
+        self.configure_host_writeback_options(enabled, dax, WriteBufferOptions::default())
     }
 
     pub(super) fn configure_host_writeback_options(
@@ -1050,8 +1030,6 @@ impl OverlayFs {
         enabled: bool,
         dax: bool,
         options: WriteBufferOptions,
-        qualification_lock: bool,
-        synchronous: bool,
     ) -> io::Result<()> {
         options.validate()?;
         if !enabled {
@@ -1067,8 +1045,6 @@ impl OverlayFs {
         *self.write_buffer.get_mut().unwrap() = Some(buffer);
         self.host_writeback = true;
         self.host_writeback_options = options;
-        self.host_writeback_qualification_lock = qualification_lock;
-        self.host_writeback_synchronous = synchronous;
         self.profile.add("host_writeback_enabled", 1);
         for name in [
             "host_writeback_accepted_requests",
@@ -1095,11 +1071,6 @@ impl OverlayFs {
                 "host_writeback_delay_us",
                 options.max_delay.as_micros() as u64,
             ),
-            (
-                "host_writeback_qualification_lock",
-                u64::from(qualification_lock),
-            ),
-            ("host_writeback_synchronous", u64::from(synchronous)),
         ] {
             self.profile.add(name, value);
         }
@@ -1341,14 +1312,6 @@ impl OverlayFs {
     }
 
     fn write_operation(&self) -> io::Result<WriteOperation<'_>> {
-        self.write_operation_scoped(None)
-    }
-
-    fn write_operation_for_entries(&self, entries: &[(u64, &CStr)]) -> io::Result<WriteOperation<'_>> {
-        self.write_operation_scoped(self.scoped_names_invalidation.then_some(entries))
-    }
-
-    fn write_operation_scoped(&self, entries: Option<&[(u64, &CStr)]>) -> io::Result<WriteOperation<'_>> {
         let mutation = if self.prepared_copy_up_enabled {
             Some(
                 self.mutation_lock
@@ -1358,17 +1321,13 @@ impl OverlayFs {
         } else {
             None
         };
-        let mut operation = self.write_namespace_operation_scoped(entries)?;
+        let mut operation = self.write_namespace_operation()?;
         operation._mutation = mutation;
         Ok(operation)
     }
 
     // Caller either holds mutation_lock or has preparation disabled.
     fn write_namespace_operation(&self) -> io::Result<WriteOperation<'_>> {
-        self.write_namespace_operation_scoped(None)
-    }
-
-    fn write_namespace_operation_scoped(&self, entries: Option<&[(u64, &CStr)]>) -> io::Result<WriteOperation<'_>> {
         let _wait = self.profile.span("operation_write_lock_wait");
         let operation = self
             .operation_lock
@@ -1377,16 +1336,7 @@ impl OverlayFs {
         // All upper namespace/type/permission changes take this lock. Clear
         // before attempting them, including operations which subsequently fail.
         if self.directory_names_cache_enabled {
-            let mut cache = self.directory_names_cache.lock().unwrap();
-            let invalidate = cache.as_ref().is_some_and(|cached| {
-                entries.is_none_or(|entries| entries.iter().any(|(parent, name)| {
-                    let Ok(parent) = self.path(*parent) else { return true; };
-                    let Ok(child) = OverlayCore::child(&parent, OsStr::from_bytes(name.to_bytes())) else { return true; };
-                    cached.path == parent || cached.path.starts_with(child)
-                }))
-            });
-            if invalidate { cache.take(); }
-            else if cache.is_some() { self.profile.add("directory_names_scoped_retained", 1); }
+            self.directory_names_cache.lock().unwrap().take();
         }
         let _ = self.drain_buffered_writes();
         let upper_namespace = self.core.upper_namespace_mutation();
@@ -1453,20 +1403,54 @@ impl OverlayFs {
         fence
     }
 
+    #[cfg(test)]
     fn build(cfg: Config, inode_alloc: Arc<InodeAllocator>, restoring: bool) -> io::Result<Self> {
-        let writeback_setting = std::env::var("PVISOR_VM_FS_WRITEBACK").ok();
-        Self::build_with_writeback(cfg, inode_alloc, restoring, writeback_setting.as_deref())
+        let profile = crate::env::fs::FsProfile::from_env()?;
+        Self::build_with_profile(cfg, inode_alloc, restoring, &profile)
     }
 
+    pub(super) fn build_with_profile(
+        cfg: Config,
+        inode_alloc: Arc<InodeAllocator>,
+        restoring: bool,
+        profile: &crate::env::fs::FsProfile,
+    ) -> io::Result<Self> {
+        Self::build_with_settings(
+            cfg,
+            inode_alloc,
+            restoring,
+            profile.writeback.as_deref(),
+            *profile
+                .shared_open
+                .as_ref()
+                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?,
+        )
+    }
+
+    #[cfg(test)]
     fn build_with_writeback(
         cfg: Config,
         inode_alloc: Arc<InodeAllocator>,
         restoring: bool,
         writeback_setting: Option<&str>,
     ) -> io::Result<Self> {
-        let shared_open_qualification = shared_open_qualification_enabled(
-            std::env::var_os("PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION").as_deref(),
-        )? && cfg!(target_os = "linux");
+        let shared_open_qualification = crate::env::fs::FsProfile::from_env()?.shared_open?;
+        Self::build_with_settings(
+            cfg,
+            inode_alloc,
+            restoring,
+            writeback_setting,
+            shared_open_qualification,
+        )
+    }
+
+    fn build_with_settings(
+        cfg: Config,
+        inode_alloc: Arc<InodeAllocator>,
+        restoring: bool,
+        writeback_setting: Option<&str>,
+        shared_open_qualification: bool,
+    ) -> io::Result<Self> {
         if cfg.lower_dirs.is_empty() || (cfg.baseline_lower.is_some() && cfg.apply_target.is_none())
         {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -1585,13 +1569,10 @@ impl OverlayFs {
             stable_namespace_leases: HashMap::new(),
             logical_data_cache: false,
             directory_names_cache_enabled: false,
-            scoped_names_invalidation: false,
             directory_names_cache: Mutex::new(None),
             io_activity: Arc::new(IoActivity::default()),
             host_writeback: false,
             host_writeback_options: WriteBufferOptions::default(),
-            host_writeback_qualification_lock: false,
-            host_writeback_synchronous: false,
             write_buffer: RwLock::new(None),
             core,
             new_session_writeback,
@@ -2249,13 +2230,6 @@ impl OverlayFs {
             "directory_names_cache_enabled",
             u64::from(self.directory_names_cache_enabled),
         );
-    }
-
-    pub(super) fn configure_scoped_names(&mut self, requested: bool) {
-        // Restricted hardlink policies can change visibility of source aliases.
-        self.scoped_names_invalidation = requested && self.directory_names_cache_enabled
-            && self.snapshot_config.access_policy == Default::default();
-        self.profile.add("directory_names_scoped_enabled", u64::from(self.scoped_names_invalidation));
     }
 
     pub(super) fn configure_prepared_copy_up(&mut self, requested: bool) {
@@ -3751,7 +3725,7 @@ impl FileSystem for OverlayFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].symlink(ctx, linkname, upper_parent, &upper_name, extensions);
@@ -3773,7 +3747,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
         let created = self.layers[0].mknod(
@@ -3802,7 +3776,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         #[cfg(target_os = "linux")]
         let virtual_parent = if self.virtual_metadata {
@@ -3860,7 +3834,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         self.preserve_other_aliases(&path)?;
@@ -3872,7 +3846,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         self.core.remove(&path, true).map_err(linux_error)?;
@@ -3889,7 +3863,7 @@ impl FileSystem for OverlayFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
-        let _operation = self.write_operation_for_entries(&[(olddir, oldname), (newdir, newname)])?;
+        let _operation = self.write_operation()?;
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         let _io = self.fence_paths(&[&old, &new]);
@@ -3953,7 +3927,7 @@ impl FileSystem for OverlayFs {
     }
 
     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
-        let _operation = self.write_operation_for_entries(&[(newparent, newname)])?;
+        let _operation = self.write_operation()?;
         let source = self.path(inode)?;
         let destination = self.child(newparent, newname)?;
         let _io = self.fence_paths(&[&source, &destination]);
@@ -4041,7 +4015,7 @@ impl FileSystem for OverlayFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
-        let _operation = self.write_operation_for_entries(&[(parent, name)])?;
+        let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
         let exists = self
@@ -4217,11 +4191,7 @@ impl FileSystem for OverlayFs {
         if let Some(buffer) = self.buffered_writes() {
             if lease.handle.layer.0 == 0
                 && buffered_request_flags(flags)
-                && if self.host_writeback_qualification_lock {
-                    self.layers[0].buffered_write_eligible(&lease.native)?
-                } else {
-                    self.layers[0].buffered_write_eligible_unlocked(&lease.native)?
-                }
+                && self.layers[0].buffered_write_eligible(&lease.native)?
                 && size != 0
             {
                 if offset
@@ -4245,11 +4215,6 @@ impl FileSystem for OverlayFs {
                 self.profile.add("host_writeback_accepted_requests", 1);
                 self.profile
                     .add("host_writeback_accepted_bytes", u64::from(size));
-                if self.host_writeback_synchronous {
-                    // Engineering control: identical owned-copy and worker path,
-                    // but wait for its accepted prefix before replying to WRITE.
-                    buffer.flush()?;
-                }
                 return Ok(size as usize);
             }
             // Synchronous/direct/append paths cannot overtake accepted writes.
@@ -4758,6 +4723,7 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    use crate::env::fs::shared_open_qualification_enabled;
     use super::super::filesystem::root_context;
     include!("overlay_correctness_tests.rs");
     #[cfg(target_os = "linux")]
@@ -6058,6 +6024,35 @@ mod tests {
         assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), count);
     }
 
+    #[test]
+    fn directory_names_cache_always_clears_at_namespace_admission() {
+        for policy in [
+            pvisor_overlay_core::FileAccessPolicy::default(),
+            pvisor_overlay_core::FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap(),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(temp.path().join("lower")).unwrap();
+            std::fs::write(temp.path().join("lower/file"), b"retained").unwrap();
+            let mut config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+            config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
+            config.access_policy = policy;
+            let mut fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+            fs.configure_directory_names_cache(true);
+            fs.init(FsOptions::empty()).unwrap();
+            for _ in 0..2 {
+                let names = {
+                    let _read = fs.read_operation().unwrap();
+                    fs.directory_names(Path::new("")).unwrap().names
+                };
+                assert!(names.iter().any(|name| name == b"file"));
+                assert!(fs.directory_names_cache.lock().unwrap().is_some());
+                let _write = fs.write_namespace_operation().unwrap();
+                assert!(fs.directory_names_cache.lock().unwrap().is_none());
+                assert!(names.iter().any(|name| name == b"file"));
+            }
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn directory_names_cache_invalidates_before_successful_and_failed_mutations() {
@@ -6093,11 +6088,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn scoped_names_keep_unrelated_inventory_and_invalidate_rename_subtrees() {
+    fn directory_names_invalidates_unrelated_changes_and_rename_subtrees() {
         let temp = tempfile::tempdir().unwrap();
         let mut fs = negative_entry_fixture(temp.path());
         fs.configure_directory_names_cache(true);
-        fs.configure_scoped_names(true);
         let ctx = root_context();
         let dir = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap().inode;
         let cache = |fs: &OverlayFs| {
@@ -6106,20 +6100,25 @@ mod tests {
         };
         let initial = cache(&fs);
         fs.mkdir(ctx, fuse::ROOT_ID, c"unrelated", 0o755, 0, Extensions::default()).unwrap();
-        assert!(Arc::ptr_eq(&initial, &cache(&fs)));
+        let after_create = cache(&fs);
+        assert!(!Arc::ptr_eq(&initial, &after_create));
         fs.rename(ctx, fuse::ROOT_ID, c"unrelated", fuse::ROOT_ID, c"other", 0).unwrap();
-        assert!(Arc::ptr_eq(&initial, &cache(&fs)));
+        assert!(!Arc::ptr_eq(&after_create, &cache(&fs)));
         fs.mkdir(ctx, dir, c"child", 0o755, 0, Extensions::default()).unwrap();
         let changed = cache(&fs);
         assert!(!Arc::ptr_eq(&initial, &changed));
         assert!(changed.iter().any(|name| name == b"child"));
         fs.rename(ctx, fuse::ROOT_ID, c"dir", fuse::ROOT_ID, c"moved", 0).unwrap();
         assert!(fs.directory_names_cache.lock().unwrap().is_none());
+        {
+            let _guard = fs.read_operation().unwrap();
+            fs.directory_names(Path::new("moved")).unwrap();
+        }
         fs.snapshot_config.access_policy = pvisor_overlay_core::FileAccessPolicy::new(
             vec!["private/**".into()], vec![],
         ).unwrap();
-        fs.configure_scoped_names(true);
-        assert!(!fs.scoped_names_invalidation, "restricted aliases require global invalidation");
+        assert!(fs.unlink(ctx, dir, c"missing").is_err());
+        assert!(fs.directory_names_cache.lock().unwrap().is_none());
     }
 
     #[cfg(target_os = "linux")]
@@ -6748,7 +6747,7 @@ mod tests {
             let saved = source.capture_state().unwrap();
             drop(source);
 
-            // Unset preserves native restoration support for historical WB1,
+            // Unset permits native restoration of a WB1 snapshot,
             // while the preference for a future INIT remains writeback-off.
             let mut restored = OverlayFs::build_with_writeback(
                 config,
@@ -7653,6 +7652,74 @@ mod tests {
         assert!(legacy.getattr(ctx, legacy_inode, None).is_ok());
         legacy.destroy();
         assert!(legacy.detached_writeback.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn frozen_profile_restore_preserves_writeback_unset_and_rejects_explicit_zero() {
+        use std::os::unix::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        let enabled = crate::env::fs::FsProfile::parse(|key| {
+            (key == crate::env::fs::WRITEBACK).then(|| "arbitrary".into())
+        })
+        .unwrap();
+        let source = OverlayFs::build_with_profile(
+            config.clone(),
+            Arc::new(InodeAllocator::new()),
+            false,
+            &enabled,
+        )
+        .unwrap();
+        source
+            .init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
+            .unwrap();
+        let snapshot = source.capture_state().unwrap();
+        drop(source);
+        for value in [
+            None,
+            Some(std::ffi::OsString::from_vec(vec![0xff])),
+            Some("0".into()),
+        ] {
+            let profile = crate::env::fs::FsProfile::parse(|key| {
+                if key == crate::env::fs::WRITEBACK {
+                    value.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+            let restored = OverlayFs::build_with_profile(
+                config.clone(),
+                Arc::new(InodeAllocator::new()),
+                true,
+                &profile,
+            )
+            .unwrap();
+            restored.init(FsOptions::empty()).unwrap();
+            let result = restored.restore_state(&snapshot);
+            assert_eq!(result.is_ok(), profile.writeback.as_deref() != Some("0"));
+        }
+    }
+
+    #[test]
+    fn invalid_shared_open_setting_still_rejects_overlay() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        let profile = crate::env::fs::FsProfile::parse(|key| {
+            (key == crate::env::fs::SHARED_OPEN_QUALIFICATION).then(|| "invalid".into())
+        })
+        .unwrap();
+        let error =
+            OverlayFs::build_with_profile(config, Arc::new(InodeAllocator::new()), false, &profile)
+                .err()
+                .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION must be 0 or 1"
+        );
     }
 
     #[test]

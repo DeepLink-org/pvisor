@@ -15,12 +15,13 @@ mod startup_profile;
 pub mod trace;
 pub use session::Session;
 
-mod cache_budget;
+mod agent;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;
 /// Rootless container VM lifecycle and image catalog.
 pub mod docker;
+mod env;
 mod executor;
 pub mod features;
 mod image;
@@ -119,9 +120,9 @@ pub use executor::process::landlock_only_runtime_available;
 #[cfg(target_os = "linux")]
 pub use executor::process::rootless_runtime_available;
 pub use runtime::{
-    ApplySelection, ReadOnlyOverlayMount, control_mount_inspect, control_ping,
-    control_unmount_inspect, default_run_home, is_live, mount_overlay_record_read_only,
-    resolve_run,
+    ApplySelection, ReadOnlyOverlayMount, RunLookupError, control_mount_inspect, control_ping,
+    control_unmount_inspect, default_run_home, is_live, lookup_run_id,
+    mount_overlay_record_read_only, resolve_run,
 };
 #[cfg(target_os = "linux")]
 pub use runtime::{LEASE_FILENAME, RunLease};

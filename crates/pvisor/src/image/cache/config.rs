@@ -1,11 +1,13 @@
 //! Shared CLI and executor configuration for server and daemonless caches.
-use super::{SERVER_ENV, default_endpoint};
+use super::default_endpoint;
+use crate::env::{
+    self,
+    cache::{IMAGE_STORE_ENV, SERVER_ENV},
+};
 use anyhow::ensure;
 use std::path::PathBuf;
 
-pub const BACKEND_ENV: &str = "PVISOR_CACHE_BACKEND";
-pub const LOCATION_ENV: &str = "PVISOR_CACHE_LOCATION";
-pub const READ_ONLY_ENV: &str = "PVISOR_CACHE_READ_ONLY";
+pub use crate::env::cache::{BACKEND_ENV, LOCATION_ENV, READ_ONLY_ENV};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CacheBackend {
     #[default]
@@ -36,6 +38,66 @@ pub struct CacheConfig {
     pub read_only: bool,
     pub image_store: Option<PathBuf>,
 }
+
+/// Validated host-side capability; never serialized in runner descriptors.
+pub(super) enum ResolvedSource {
+    Pool(PathBuf),
+    Filesystem(PathBuf),
+    S3,
+    Http,
+    Server(super::transport::Endpoint),
+}
+
+impl ResolvedSource {
+    pub(super) fn resolve(
+        address: &str,
+        read_only: bool,
+        token: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        for (prefix, pool) in [("pool+file://", true), ("file://", false)] {
+            if let Some(path) = address.strip_prefix(prefix) {
+                ensure!(
+                    std::path::Path::new(path).is_absolute(),
+                    "cache path must be absolute"
+                );
+                return Ok(if pool {
+                    Self::Pool(path.into())
+                } else {
+                    Self::Filesystem(path.into())
+                });
+            }
+        }
+        if address.starts_with("s3://") {
+            super::storage::s3_location(address)?;
+            return Ok(Self::S3);
+        }
+        if address.starts_with("ipfs+")
+            || address.starts_with("http://")
+            || address.starts_with("https://")
+        {
+            ensure!(read_only, "HTTP/IPFS cache must be read-only");
+            super::http::Http::validate(address)?;
+            return Ok(Self::Http);
+        }
+        ensure!(!read_only, "read-only mode requires an object repository");
+        let endpoint = super::transport::endpoint(address)?;
+        if matches!(endpoint, super::transport::Endpoint::Tcp(_)) {
+            ensure!(
+                token.is_some_and(|value| !value.is_empty()),
+                "TCP requires PVISOR_CACHE_TOKEN"
+            );
+        }
+        Ok(Self::Server(endpoint))
+    }
+
+    pub(super) fn needs_host_network(&self) -> bool {
+        matches!(
+            self,
+            Self::S3 | Self::Http | Self::Server(super::transport::Endpoint::Tcp(_))
+        )
+    }
+}
+
 impl CacheConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_options(None, None, None, None)
@@ -48,47 +110,40 @@ impl CacheConfig {
     ) -> anyhow::Result<Self> {
         let backend = match backend {
             Some(backend) => backend,
-            None => match std::env::var(BACKEND_ENV) {
-                Ok(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
-                Err(std::env::VarError::NotPresent) => CacheBackend::Server,
-                Err(error) => return Err(error.into()),
+            None => match env::unicode(BACKEND_ENV)? {
+                Some(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
+                None => CacheBackend::Server,
             },
         };
         let location = match location {
             Some(location) => location,
-            None => match std::env::var(LOCATION_ENV) {
-                Ok(value) => value,
-                Err(std::env::VarError::NotPresent) if backend == CacheBackend::Server => {
-                    match std::env::var(SERVER_ENV) {
-                        Ok(value) => value,
-                        Err(std::env::VarError::NotPresent) => default_endpoint()?,
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                Err(std::env::VarError::NotPresent) => {
+            None => match env::unicode(LOCATION_ENV)? {
+                Some(value) => value,
+                None if backend == CacheBackend::Server => match env::unicode(SERVER_ENV)? {
+                    Some(value) => value,
+                    None => default_endpoint()?,
+                },
+                None => {
                     anyhow::bail!("{LOCATION_ENV} is required for {backend:?}")
                 }
-                Err(error) => return Err(error.into()),
             },
         };
         let read_only = match read_only {
             Some(read_only) => read_only,
-            None => match std::env::var(READ_ONLY_ENV) {
-                Ok(value) => match value.as_str() {
+            None => match env::unicode(READ_ONLY_ENV)? {
+                Some(value) => match value.as_str() {
                     "1" | "true" => true,
                     "0" | "false" => false,
                     _ => anyhow::bail!("{READ_ONLY_ENV} must be true/false or 1/0"),
                 },
-                Err(std::env::VarError::NotPresent) => backend == CacheBackend::Http,
-                Err(error) => return Err(error.into()),
+                None => backend == CacheBackend::Http,
             },
         };
         Ok(Self {
             backend,
             location,
             read_only,
-            image_store: image_store
-                .or_else(|| std::env::var_os("PVISOR_IMAGE_STORE").map(PathBuf::from)),
+            image_store: image_store.or_else(|| env::os(IMAGE_STORE_ENV).map(PathBuf::from)),
         })
     }
     pub fn address(&self) -> anyhow::Result<String> {
@@ -120,11 +175,6 @@ impl CacheConfig {
             }
         }
     }
-    pub(super) fn explicit() -> bool {
-        [BACKEND_ENV, LOCATION_ENV, SERVER_ENV]
-            .iter()
-            .any(|key| std::env::var_os(key).is_some())
-    }
 }
 
 /// Cache configuration and implicit storage credentials belong to the host.
@@ -135,13 +185,7 @@ pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<Strin
             env.get(*key)
                 .is_some_and(|value| value.starts_with("s3://"))
         });
-    for key in [
-        BACKEND_ENV,
-        LOCATION_ENV,
-        READ_ONLY_ENV,
-        SERVER_ENV,
-        "PVISOR_CACHE_TOKEN",
-    ] {
+    for key in env::cache::SOURCE_ENV {
         env.remove(key);
     }
     if s3 {
@@ -153,6 +197,36 @@ pub(crate) fn scrub_guest_environment(env: &mut std::collections::BTreeMap<Strin
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn resolved_source_validates_capabilities_before_storage_io() {
+        for address in [
+            "file://relative",
+            "pool+file://relative",
+            "unix://relative",
+            "tcp://192.0.2.1:1234",
+            "unknown://source",
+        ] {
+            assert!(
+                ResolvedSource::resolve(address, false, Some("token")).is_err(),
+                "{address}"
+            );
+        }
+        assert!(ResolvedSource::resolve("tcp://127.0.0.1:1234", false, None).is_err());
+        assert!(ResolvedSource::resolve("https://mirror.example/root", false, None).is_err());
+        for (address, read_only, network) in [
+            ("file:///tmp/repository", false, false),
+            ("pool+file:///tmp/pool", false, false),
+            ("unix:///tmp/cache.sock", false, false),
+            ("tcp://127.0.0.1:1234", false, true),
+            ("https://mirror.example/root", true, true),
+            ("s3://bucket/root", false, true),
+        ] {
+            let source = ResolvedSource::resolve(address, read_only, Some("token")).unwrap();
+            assert_eq!(source.needs_host_network(), network, "{address}");
+        }
+    }
+
     #[test]
     fn http_and_s3_repository_options_validate_without_io() {
         for address in ["http://mirror.example/root", "https://mirror.example/root"] {

@@ -6,22 +6,19 @@ use super::{
     select_run_storage, wait_cli_job,
 };
 use crate::cli::trajectory::JournalRecording;
-#[cfg(feature = "gateway")]
-use pvisor::GatewayDriverConfig;
 #[cfg(test)]
 use pvisor::RunExecutorKind;
 #[cfg(test)]
 use pvisor::job_execution::JobState;
 use pvisor::job_service::paths::fork_stage_candidate;
-use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
-use pvisor::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
+use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, RunConfig};
+use pvisor::{RunBundle, restore_logical_checkpoint};
 use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
 use pvisor_journal::api::JournalStore;
 use pvisor_journal::api::{DurableFiles, Persistence};
 
 use clap::Args;
 use pvisor_core::RunState;
-use pvisor_overlaynet::{NetworkConfig, NetworkMode};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -112,7 +109,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
     crate::cli::host_service::check_record(&source)?;
-    // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
+    // Fail before checkpoint/stage mutations when the recorded policy cannot be reconstructed.
     let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
     super::reject_ask_config(&config)?;
     let selected_checkpoint = match args.checkpoint.as_deref() {
@@ -312,7 +309,10 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
 
 fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
     let job = crate::cli::host::lock_selected_job(source)?;
-    let (current, _lease) = source.lock_current()?;
+    // Policy inspection does not mutate the Attempt. The execution-operation
+    // lease above fences its identity/config while a live source keeps its RAM
+    // and workspace lease. Restore/fork admission takes its own runtime locks.
+    let current = RunRecord::read(&source.stage_dir())?;
     crate::cli::host::check_selected_record(source, &current)?;
     crate::cli::host_service::check_record(&current)?;
     if let Some(overlay) = &current.overlay {
@@ -349,43 +349,18 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
             } else {
                 Arc::new(pvisor::trace::Journal::memory())
             };
-            let network = NetworkDriverConfig::new(
-                config.overlaynet.mode,
-                NetworkConfig {
-                    capability: None,
-                    mode: match config.overlaynet.policy {
-                        OverlayNetPolicy::Public => NetworkMode::Public,
-                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                    },
-                    allowed_hosts: config.overlaynet.allow.clone(),
-                    rules: config.overlaynet.rules.clone(),
-                    deny_rules: config.overlaynet.deny.clone(),
-                    limits: config.overlaynet.limits.clone(),
-                },
-            )
-            .listen(&config.overlaynet.listen)
-            .peer_network(config.overlaynet.peers.clone());
-            #[allow(unused_mut)]
-            let mut builder = PVisor::builder()
-                .storage(stage)
-                .overlay(overlay)
-                .executors(vec![report_terminal(Arc::new(executor))])
-                .network(network)
-                .event_sink(event_sink);
             let control_socket = crate::cli::host_service::vm_control_socket(None)?
                 .or_else(|| config.vm.control_socket.clone());
-            if let Some(path) = &control_socket {
-                builder = builder.control_socket(path);
-            }
-            #[cfg(feature = "gateway")]
-            if let Some(proxy) = resolve_proxy(config)? {
-                builder = builder.gateway(
-                    GatewayDriverConfig::new(proxy)
-                        .output_dir(stage)
-                        .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-                );
-            }
+            let builder = super::configured_runtime_builder(
+                config,
+                stage,
+                control_socket.as_deref(),
+                #[cfg(feature = "gateway")]
+                resolve_proxy(config)?,
+            )
+            .overlay(overlay)
+            .executors(vec![report_terminal(Arc::new(executor))])
+            .event_sink(event_sink);
             Ok(builder.build())
         })
         .await?;
@@ -565,6 +540,23 @@ mod tests {
             serde_json::to_value(job.current().unwrap()).unwrap(),
             before_job
         );
+    }
+
+    #[tokio::test]
+    async fn execution_fork_policy_check_preserves_the_live_attempt_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let (source, mut job) = fixture(root.path());
+        job.active_attempt = source.attempt_id.clone().unwrap();
+        job.state = JobState::Running;
+        job.write().unwrap();
+        let (_, live_attempt) = source.lock_current().unwrap();
+        let before = std::fs::read(root.path().join("run.json")).unwrap();
+
+        reject_ask_restore_source(&source).unwrap();
+
+        assert!(source.lock_current().is_err());
+        assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
+        drop(live_attempt);
     }
 
     #[tokio::test]

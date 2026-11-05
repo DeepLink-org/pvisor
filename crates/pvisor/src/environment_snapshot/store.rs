@@ -1354,9 +1354,10 @@ impl PendingEnvironment {
         };
         #[cfg(not(target_os = "linux"))]
         let private_files = None;
-        let _exclusive = gate(&self.store, true)?;
-        // No collector can inspect this directory while publication holds the
-        // store gate. The writer's FD stays locked until this owner is dropped.
+        // Publication only appends an immutable object with NOREPLACE below.
+        // Coexist with readers of earlier checkpoints, but exclude deletion/GC
+        // through their exclusive store gate. The writer FD remains locked.
+        let _publishing = gate(&self.store, false)?;
         fs::remove_file(self.staging.path().join("writer.lock"))?;
         let destination = self.store.join("objects").join(&id);
         let old = native_path(self.staging.path())?;

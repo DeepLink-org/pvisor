@@ -344,12 +344,17 @@ fn default_job_corruption_and_ambiguity_never_fall_back() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains(if corrupt {
-                "corrupt default Job"
+                "read Job"
             } else {
                 "ambiguous existing Job"
             }),
             "{output:?}"
         );
+        assert!(
+            error.contains("cannot safely resolve Job identity"),
+            "{output:?}"
+        );
+        assert!(!error.contains("No such container"), "{output:?}");
         object(
             &f.named(
                 "apply",

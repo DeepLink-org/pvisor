@@ -177,7 +177,7 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
             .map(|tool| {
                 let mut declaration = json!({
                     "name": tool.name,
-                    "parameters": super::gemini_native::normalize_gemini_schema(&tool.input_schema),
+                    "parameters": super::gemini_schema::normalize_gemini_schema(&tool.input_schema),
                 });
                 if let Some(description) = &tool.description {
                     declaration["description"] = json!(description);
@@ -347,7 +347,7 @@ fn render_gemini_generation(request: &LlmRequest, model: &str) -> Option<Value> 
         if let Some(schema) = &format.schema {
             config.insert(
                 "responseSchema".into(),
-                super::gemini_native::normalize_gemini_schema(schema),
+                super::gemini_schema::normalize_gemini_schema(schema),
             );
         }
     }
@@ -385,7 +385,9 @@ pub fn response_to_wire(
 ) -> Result<Bytes> {
     let value = match target {
         LlmProtocol::ChatCompletions => render_chat_response(&semantic.response, client_model),
-        LlmProtocol::Messages => render_messages_response(&semantic.response, client_model),
+        LlmProtocol::Messages => {
+            render_messages_response(&semantic.response, client_model, &semantic.output_format)
+        }
         LlmProtocol::Responses => render_responses_response(&semantic.response, client_model),
         LlmProtocol::Gemini => render_gemini_response(&semantic.response, client_model),
         LlmProtocol::Unknown => anyhow::bail!("cannot render an unknown LLM response protocol"),
@@ -436,11 +438,34 @@ fn render_chat_response(response: &LlmResponse, fallback_model: &str) -> Value {
     });
     if let Some(usage) = &response.usage {
         value["usage"] = render_chat_usage(usage);
+        for (field, present, count) in [
+            (
+                "prompt_tokens_details",
+                "usage.cache_read_present",
+                usage.cache_read_tokens,
+            ),
+            (
+                "completion_tokens_details",
+                "usage.reasoning_present",
+                usage.reasoning_tokens,
+            ),
+        ] {
+            if count == 0 && !response.extensions.contains_key(present) {
+                value["usage"]
+                    .as_object_mut()
+                    .expect("usage object")
+                    .remove(field);
+            }
+        }
     }
     value
 }
 
-fn render_messages_response(response: &LlmResponse, fallback_model: &str) -> Value {
+fn render_messages_response(
+    response: &LlmResponse,
+    fallback_model: &str,
+    source: &LlmProtocol,
+) -> Value {
     let candidate = response.candidates.first();
     let content = candidate
         .map(|candidate| {
@@ -469,7 +494,7 @@ fn render_messages_response(response: &LlmResponse, fallback_model: &str) -> Val
         })
         .unwrap_or_default();
     let usage = response.usage.as_ref().cloned().unwrap_or_default();
-    json!({
+    let mut value = json!({
         "id":response.id.as_deref().unwrap_or("msg_proxy"),
         "type":"message",
         "role":"assistant",
@@ -478,12 +503,35 @@ fn render_messages_response(response: &LlmResponse, fallback_model: &str) -> Val
         "stop_reason":anthropic_finish_reason(candidate.and_then(|c| c.finish_reason.as_deref()), candidate.is_some_and(candidate_has_tools)),
         "stop_sequence":null,
         "usage":{
-            "input_tokens":usage.input_tokens,
+            "input_tokens":messages_input_tokens(&usage, source),
             "output_tokens":usage.output_tokens,
             "cache_read_input_tokens":usage.cache_read_tokens,
             "cache_creation_input_tokens":usage.cache_write_tokens,
         }
-    })
+    });
+    for (field, present, count) in [
+        (
+            "cache_read_input_tokens",
+            "usage.cache_read_present",
+            usage.cache_read_tokens,
+        ),
+        (
+            "cache_creation_input_tokens",
+            "usage.cache_write_present",
+            usage.cache_write_tokens,
+        ),
+    ] {
+        if count == 0 && !response.extensions.contains_key(present) {
+            value["usage"]
+                .as_object_mut()
+                .expect("usage object")
+                .remove(field);
+        }
+    }
+    if let Some(tier) = response.extensions.get("openai.service_tier") {
+        value["usage"]["service_tier"] = tier.clone();
+    }
+    value
 }
 
 fn render_responses_response(response: &LlmResponse, fallback_model: &str) -> Value {
@@ -497,12 +545,13 @@ fn render_responses_response(response: &LlmResponse, fallback_model: &str) -> Va
     let mut output = Vec::new();
     let mut status = "completed";
     for candidate in &response.candidates {
-        if candidate
-            .finish_reason
-            .as_deref()
-            .is_some_and(|reason| matches!(reason, "length" | "max_tokens" | "MAX_TOKENS"))
-        {
-            status = "incomplete";
+        match chat_finish_reason(
+            candidate.finish_reason.as_deref(),
+            candidate_has_tools(candidate),
+        ) {
+            "content_filter" => status = "failed",
+            "length" if status != "failed" => status = "incomplete",
+            _ => {}
         }
         let text = candidate_text(candidate);
         if !text.is_empty() {
@@ -684,6 +733,18 @@ fn candidate_tool_calls(candidate: &LlmCandidate, response_id: &str) -> Vec<Valu
         .collect()
 }
 
+// OpenAI reports cached tokens inside the input total; Anthropic reports them
+// separately. Keep the conversion identical for complete responses and SSE.
+pub(super) fn messages_input_tokens(usage: &LlmUsage, source: &LlmProtocol) -> u64 {
+    match source {
+        LlmProtocol::ChatCompletions | LlmProtocol::Responses => usage
+            .input_tokens
+            .saturating_sub(usage.cache_read_tokens)
+            .saturating_sub(usage.cache_write_tokens),
+        _ => usage.input_tokens,
+    }
+}
+
 pub(super) fn render_chat_usage(usage: &LlmUsage) -> Value {
     json!({
         "prompt_tokens":usage.input_tokens,
@@ -709,6 +770,10 @@ pub(super) fn chat_finish_reason(reason: Option<&str>, has_tools: bool) -> &'sta
 pub(super) fn anthropic_finish_reason(reason: Option<&str>, has_tools: bool) -> &'static str {
     match reason {
         Some("length" | "max_tokens" | "MAX_TOKENS") => "max_tokens",
+        Some(
+            "content_filter" | "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT"
+            | "refusal",
+        ) => "refusal",
         Some("tool_calls" | "tool_use") => "tool_use",
         _ if has_tools => "tool_use",
         _ => "end_turn",

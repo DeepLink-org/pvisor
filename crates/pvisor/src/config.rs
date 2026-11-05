@@ -320,7 +320,8 @@ pub struct VmSettings {
     /// Must be independent of every VM-writable root and on the Job's volume.
     /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
     pub snapshot_filesystem_pool: Option<PathBuf>,
-    /// Optional same-host node resource service. Restore pins a shared read-only
+    /// Optional caller-provided same-host resource service; pVisor ships no node server.
+    /// Restore pins a shared read-only
     /// RAM backing there until native teardown; service loss is not transparent.
     pub node_socket: Option<PathBuf>,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
@@ -348,20 +349,18 @@ pub struct VmSettings {
 
 impl VmSettings {
     pub(crate) fn cold_pager_requested(&self) -> bool {
-        self.cold_ram_compression
-            || self.memory_pool.is_some()
-            || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
+        self.cold_ram_compression || self.memory_pool.is_some()
     }
 
+    /// Validate explicit RAM settings without consulting the process environment.
+    /// Native executor admission resolves legacy environment aliases first.
     pub fn validate_ram_dedup(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.cold_ram_compression || cfg!(all(target_os = "linux", target_arch = "x86_64")),
             "vm.cold_ram_compression requires Linux x86_64 kernel-fault userfaultfd support"
         );
         anyhow::ensure!(
-            !self.cold_ram_compression
-                || (self.memory_pool.is_none()
-                    && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none()),
+            !self.cold_ram_compression || self.memory_pool.is_none(),
             "vm.cold_ram_compression cannot be combined with an external memory pool"
         );
         anyhow::ensure!(
@@ -377,14 +376,6 @@ impl VmSettings {
                     && !self.cold_ram_compression
                     && self.memory_pool.is_none()),
             "vm.ram_dedup cannot be combined with vm.memory_pool, vm.ram_compression or vm.cold_ram_compression"
-        );
-        #[cfg(any(
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(target_os = "macos", target_arch = "aarch64")
-        ))]
-        anyhow::ensure!(
-            !self.ram_dedup || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
-            "vm.ram_dedup cannot be combined with PVISOR_EXPERIMENTAL_MEMORY_POOL"
         );
         Ok(())
     }
@@ -725,22 +716,6 @@ pub enum GatewayProfile {
     ZcodeBigmodel,
 }
 
-impl GatewayProfile {
-    pub fn routes(self) -> Vec<ModelRoute> {
-        match self {
-            Self::ZcodeBigmodel => vec![ModelRoute {
-                name: "*".into(),
-                provider: Some("anthropic".into()),
-                upstream: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
-                upstream_anthropic: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
-                api_key_env: None,
-                api_key: None,
-                forward: None,
-            }],
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordSettings {
@@ -767,6 +742,9 @@ pub enum NativeModelWait {
 }
 
 /// Resolved configuration for the internal OverlayNet + optional Gateway sink.
+///
+/// The supervisor retains this policy as configured. Attempt-bound wait adapters
+/// and actual listener addresses are runtime state, not updates to this policy.
 #[derive(Debug, Clone)]
 #[cfg(feature = "gateway")]
 pub struct GatewayDriverConfig {
@@ -809,7 +787,7 @@ impl Default for ModelWaitRounds {
 }
 
 /// Experimental Host-side model-wait timers. No Agent/client declaration needed.
-/// The historical type name is retained; cooperation is with the guest kernel.
+/// Cooperation is with the guest kernel.
 /// Disabled unless installed on `GatewayDriverConfig`. A request owns its wait
 /// until final delivery, cancellation or stream EOF; each idle round has an
 /// independent, revocable guest permit.

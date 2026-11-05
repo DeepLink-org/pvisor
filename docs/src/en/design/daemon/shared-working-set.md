@@ -1,6 +1,6 @@
 # Shared working sets and lazy loading
 
-Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and node resources provide mechanisms for this direction; the daemon can explicitly enable its own Linux physical pool. It has no general node acquire/release adapter, and density benefits for the complete API path remain unvalidated.
+Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and RAM restore provide mechanisms for this direction; the daemon can explicitly enable its own Linux physical pool. The optional node socket is a client protocol for a caller-provided service, not a bundled node server. The daemon has no general node acquire/release adapter, and density benefits for the complete API path remain unvalidated.
 
 ![Shared raw pages and COW writes in the Linux physical pool](../assets/memory-cow.svg)
 
@@ -16,7 +16,7 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 
 | Component | Mechanism | Boundary |
 | --- | --- | --- |
-| `pvisor/src/node.rs`, `node/registry.rs` | Same-user, same-host immutable owners; identity-based preparation, connection pins, bounded warming | Runtime protocols for native callers; no daemon adapter or transparent live takeover |
+| `pvisor/src/node.rs` | Client protocol and connection pins for caller-provided same-host resource services | No bundled node server, owner registry, bounded warming, daemon adapter or transparent live takeover |
 | Native image cache | Validated demand reads, paged metadata and content reuse | Published FS/S3 objects have paged reads; an uncached ordinary OCI prepare can still fully prepare before returning |
 | Native Linux RAM restore | Authorized sealed identity/compatibility and shared read-only inode, private COW guest mappings | Ordinary fresh boot bypasses RAM restore; compatible native profiles remain required |
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
@@ -25,7 +25,7 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 | Daemon sealed compressed pool | Shared immutable encoded 64 KiB blocks; client-local decode and private restoration | Explicit compressed mode; userfaultfd required; component tests and scoped two-VM correctness probe passed |
 | NativeRuntime daemon | Independent immutable rootfs, private VM writes | Optional daemon-owned pool; no automatic node socket acquisition, RAM restore or lazy snapshot integration |
 
-Additional source areas: `image/cache/lazy.rs`, `image/cache/portable/binary.rs`, `executor/vm/restore_ram.rs`, `environment_snapshot/lazy.rs` and `pvisor-vm/src/memory.rs`. Native node acquisition validates authorized stores, publication and compatibility rather than accepting cache presence as authority.
+Additional source areas: `image/cache/lazy.rs`, `image/cache/portable/binary.rs`, `executor/vm/restore_ram.rs`, `environment_snapshot/lazy.rs` and `pvisor-vm/src/memory.rs`. Native restore validates publication and compatibility before acquiring a pin; an external resource service must enforce its own store authorization rather than accepting cache presence as authority.
 
 ## Working-set accounting {#model}
 
@@ -41,11 +41,11 @@ node memory = service overhead
 
 Count physically shared pages once. Shared costs vary with revisions and access patterns; private costs grow with executions and write ratios. Disjoint accesses and many writes can eliminate gains. File copy-up, transfer blocks, read-ahead and COW may amplify requested bytes.
 
-Keep logical reservations, physical occupancy and reclaimable cache separate. Native node retained-payload accounting covers content blocks, paged metadata and decoded RAM, not complete metadata, scratch, external references or kernel pages. Kernel caps and whole-group observation remain necessary. None of this relaxes daemon [hard-limit admission](index.md#admission).
+Keep logical reservations, physical occupancy and reclaimable cache separate. Native cache retained-payload accounting covers content blocks, paged metadata and decoded RAM, not complete metadata, scratch, external references or kernel pages. External resource services own their additional accounting. Kernel caps and whole-group observation remain necessary. None of this relaxes daemon [hard-limit admission](index.md#admission).
 
 ## Ownership and future connections {#integration}
 
-Connection pins protect active immutable mounts/backing until native runners are reaped. Last release permits teardown or bounded warming. Preparation for the same identity is serialized without holding the global map lock across slow I/O. Refetchable decoded cache may be evicted; active owners or the only remaining copy of private cold RAM cannot be treated as cache.
+Clients retain connection pins until native runners are reaped. External services own preparation, warming and backing teardown; pVisor no longer supplies a node owner registry. Refetchable decoded cache may be evicted; active owners or the only remaining copy of private cold RAM cannot be treated as cache.
 
 Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. The daemon has no node acquire/release adapter. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
 

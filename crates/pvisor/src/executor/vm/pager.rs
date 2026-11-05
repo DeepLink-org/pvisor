@@ -1,5 +1,6 @@
 //! Product-side cold RAM pool authorization and diagnostic destinations.
 //! VM mapping transitions and fault/device recovery live in pvisor-vm.
+use crate::env::{self, ram::METRICS_ENV};
 use crate::ram_backing::ipc::{PoolClient, RemoteObject};
 use pvisor_vm::api::ColdRamControl;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -17,21 +18,48 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Instant;
 
-pub const POOL_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_POOL";
-pub const METRICS_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_METRICS";
-pub(super) fn start_if_requested(
-    handle: pvisor_vm::api::VmmHandle,
-    local: bool,
-    memory_mib: u32,
-) -> io::Result<()> {
-    start_diagnostics(&handle)?;
-    let metrics = std::env::var_os(METRICS_ENV).is_some();
-    if local {
-        if std::env::var_os(POOL_ENV).is_some() {
-            return Err(io::Error::other(
-                "local cold RAM compression cannot use an external memory pool",
-            ));
+/// Owned, negotiated storage prepared before building a VMM. Starting the pager
+/// consumes this connection rather than reconnecting to a possibly replaced pool.
+pub(crate) struct PreparedPager {
+    store: PagerStore,
+    metrics: bool,
+}
+
+enum PagerStore {
+    Disabled,
+    Local(crate::ram_backing::resident::LocalColdRamStore),
+    Physical(PoolClient),
+    #[cfg(target_os = "macos")]
+    Compressed(PoolClient),
+    #[cfg(target_os = "linux")]
+    Sealed(crate::ram_backing::ipc::SealedClient),
+}
+
+impl PreparedPager {
+    pub(crate) fn start(self, handle: pvisor_vm::api::VmmHandle) -> io::Result<()> {
+        let options = |physical| pvisor_vm::api::ColdRamOptions {
+            metrics: self.metrics,
+            page_granular: physical,
+            share_resident: physical,
+        };
+        match self.store {
+            PagerStore::Disabled => Ok(()),
+            PagerStore::Local(store) => handle.start_cold_pager(store, options(false)),
+            PagerStore::Physical(pool) => handle.start_cold_pager(pool, options(true)),
+            #[cfg(target_os = "macos")]
+            PagerStore::Compressed(pool) => handle.start_cold_pager(pool, options(false)),
+            #[cfg(target_os = "linux")]
+            PagerStore::Sealed(pool) => handle.start_cold_pager(pool, options(false)),
         }
+    }
+}
+
+pub(super) fn prepare(
+    selection: &super::supported::RamPager,
+    memory_mib: u32,
+) -> io::Result<PreparedPager> {
+    let metrics = env::os(METRICS_ENV).is_some();
+    if matches!(selection, super::supported::RamPager::Local) {
         // Per-instance ceilings: at most half configured RAM as encoded payload,
         // and one object per 64 KiB RAM block. Index overhead is bounded separately.
         let ram_bytes = usize::try_from(u64::from(memory_mib) * 1024 * 1024)
@@ -40,19 +68,18 @@ pub(super) fn start_if_requested(
             ram_bytes / 2,
             ram_bytes.div_ceil(64 * 1024),
         );
-        return handle.start_cold_pager(
-            store,
-            pvisor_vm::api::ColdRamOptions {
-                metrics,
-                page_granular: false,
-                share_resident: false,
-            },
-        );
+        return Ok(PreparedPager {
+            store: PagerStore::Local(store),
+            metrics,
+        });
     }
-    let Some(_path) = std::env::var_os(POOL_ENV) else {
-        return Ok(());
+    let super::supported::RamPager::Pool(path) = selection else {
+        return Ok(PreparedPager {
+            store: PagerStore::Disabled,
+            metrics,
+        });
     };
-    start_with_pool(handle, Path::new(&_path), metrics)
+    prepare_pool(path, metrics)
 }
 
 /// Start opt-in self-query diagnostics independently of cold-pool selection.
@@ -60,7 +87,7 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     let _ = handle;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY") {
+    if let Some(directory) = env::os(env::ram::PAGE_INVENTORY_ENV) {
         let directory = std::path::PathBuf::from(directory);
         let metadata = directory.metadata()?;
         if !metadata.is_dir()
@@ -72,8 +99,8 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
             ));
         }
         let measured = handle.clone();
-        let process_directory = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY")
-            .map(std::path::PathBuf::from);
+        let process_directory =
+            env::os(env::ram::PROCESS_INVENTORY_ENV).map(std::path::PathBuf::from);
         std::thread::Builder::new().name("pvisor-ram-inventory".into()).spawn(move || {
             // Diagnostic only: one full query during the quiet window. Do not
             // include this run's pauses in production pager performance claims.
@@ -138,7 +165,7 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
         })?;
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if std::env::var_os(METRICS_ENV).is_some() {
+    if env::os(METRICS_ENV).is_some() {
         let measured = handle.clone();
         std::thread::Builder::new()
             .name("pvisor-ram-metrics".into())
@@ -175,13 +202,10 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
     Ok(())
 }
 
-/// Start the existing platform pager with an explicit host-only pool endpoint.
-/// No process environment is changed; the caller owns RAM backing selection.
-pub(crate) fn start_with_pool(
-    handle: pvisor_vm::api::VmmHandle,
-    path: &Path,
-    metrics: bool,
-) -> io::Result<()> {
+/// Authenticate and negotiate an explicit host-only pool before VMM construction.
+/// Failure leaves the socket and pool ownership untouched; dropping the prepared
+/// pager closes the session. No RAM is published until `start` is called.
+pub(crate) fn prepare_pool(path: &Path, metrics: bool) -> io::Result<PreparedPager> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("pool parent missing"))?;
@@ -198,58 +222,26 @@ pub(crate) fn start_with_pool(
     crate::host_transport::authorize_host_peer_sync(&stream).map_err(io::Error::other)?;
     let mut pool = PoolClient::new(stream, Duration::from_secs(5))?;
     #[cfg(target_os = "macos")]
-    let physical = match pool.enable_shared_mapping() {
-        Ok(()) => true,
+    let store = match pool.enable_shared_mapping() {
+        Ok(()) => PagerStore::Physical(pool),
         Err(_) => {
             // Only a fully consumed mode rejection permits legacy compression.
             // A malformed descriptor or dead transport must fail startup.
             pool.stats()?;
-            false
+            PagerStore::Compressed(pool)
         }
     };
     #[cfg(target_os = "linux")]
-    let pool = {
+    let store = {
         if pool.enable_shared_mapping().is_err() {
             // Only the negotiated sealed protocol may fall back to local
             // decode; legacy remote GET ownership is never used on Linux.
-            let pool = crate::ram_backing::ipc::SealedClient::new(pool)?;
-            return handle.start_cold_pager(
-                pool,
-                pvisor_vm::api::ColdRamOptions {
-                    metrics,
-                    page_granular: false,
-                    share_resident: false,
-                },
-            );
+            PagerStore::Sealed(crate::ram_backing::ipc::SealedClient::new(pool)?)
+        } else {
+            PagerStore::Physical(pool)
         }
-        pool
     };
-    handle.start_cold_pager(
-        pool,
-        pvisor_vm::api::ColdRamOptions {
-            metrics,
-            page_granular: {
-                #[cfg(target_os = "macos")]
-                {
-                    physical
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    true
-                }
-            },
-            share_resident: {
-                #[cfg(target_os = "macos")]
-                {
-                    physical
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    true
-                }
-            },
-        },
-    )
+    Ok(PreparedPager { store, metrics })
 }
 
 impl pvisor_vm::api::ColdRamStore for PoolClient {
@@ -274,5 +266,100 @@ impl pvisor_vm::api::ColdRamStore for PoolClient {
             session_references: stats.session_references,
             cross_session_objects: stats.cross_session_objects,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    fn private_directory() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    #[test]
+    fn lost_pool_is_rejected_before_vm_entry_without_replacing_its_socket() {
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let before = std::fs::symlink_metadata(&socket).unwrap();
+        drop(listener);
+
+        for _ in 0..2 {
+            let error = prepare_pool(&socket, false).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+            let after = std::fs::symlink_metadata(&socket).unwrap();
+            assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        }
+    }
+
+    #[test]
+    fn pool_protocol_failure_is_rejected_during_preparation() {
+        use std::io::Write;
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"INVALID!").unwrap();
+        });
+        let error = prepare_pool(&socket, false).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn prepared_physical_pool_owns_one_session_without_publishing_ram() {
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let pool = Arc::new(Mutex::new(
+            crate::ram_backing::shared::SharedPool::new(1 << 20, 256).unwrap(),
+        ));
+        let shared = pool.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            crate::ram_backing::ipc::serve_shared(stream, shared, 256).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        });
+        let prepared = prepare_pool(&socket, true).unwrap();
+        assert!(matches!(&prepared.store, PagerStore::Physical(_)));
+        assert!(prepared.metrics);
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+        drop(prepared);
+        server.join().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_pool_is_negotiated_before_vm_entry() {
+        let directory = private_directory();
+        let socket = directory.path().join("pool.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            crate::ram_backing::ipc::serve_sealed(
+                stream,
+                Arc::new(Mutex::new(crate::ram_backing::sealed::SealedPool::new(
+                    1 << 20,
+                    256,
+                ))),
+                256,
+            )
+            .unwrap();
+        });
+        let prepared = prepare_pool(&socket, false).unwrap();
+        assert!(matches!(&prepared.store, PagerStore::Sealed(_)));
+        drop(prepared);
+        server.join().unwrap();
     }
 }

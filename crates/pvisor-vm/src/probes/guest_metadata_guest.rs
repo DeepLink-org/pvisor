@@ -2254,40 +2254,6 @@ fn main() {
         println!("GUEST_METADATA_PASS copyup-concurrent");
         return;
     }
-    if mode == "scoped-reimport" {
-        mount_share("metadata-stable", "/tmp/metadata-stable");
-        let scan = || {
-            let mut seen = vec![false; 8192];
-            for entry in fs::read_dir("/tmp/metadata-stable/pages").unwrap() {
-                let name = entry.unwrap().file_name();
-                let name = name.to_str().unwrap();
-                let index: usize = name[1..6].parse().unwrap();
-                assert_eq!(name, format!("f{index:05}-{}", "x".repeat(64)));
-                assert!(!seen[index]);
-                seen[index] = true;
-            }
-            assert!(seen.iter().all(|v| *v));
-        };
-        scan();
-        for round in 1..=3 {
-            let cycle = Instant::now();
-            fs::write("/tmp/metadata-stable/scratch/pending", b"edit").unwrap();
-            fs::rename("/tmp/metadata-stable/scratch/pending", "/tmp/metadata-stable/scratch/done").unwrap();
-            fs::remove_file("/tmp/metadata-stable/scratch/done").unwrap();
-            // Drop guest metadata only; never drop host caches or change host
-            // policy. This deliberately exercises reimport under cache pressure.
-            fs::write("/proc/sys/vm/drop_caches", b"2\n").unwrap();
-            let started = Instant::now();
-            scan();
-            let ms = started.elapsed().as_secs_f64() * 1000.0;
-            let cycle_ms = cycle.elapsed().as_secs_f64() * 1000.0;
-            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-reimport\",\"ms\":{ms}}}");
-            println!("SDK_PHASE {{\"round\":{round},\"phase\":\"names-edit-cycle\",\"ms\":{cycle_ms}}}");
-        }
-        assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
-        println!("GUEST_METADATA_PASS scoped-reimport");
-        return;
-    }
     if mode == "directory-pages" {
         for round in 1..=3 {
             // Remount between rounds so the guest must import the directory

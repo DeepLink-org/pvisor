@@ -19,8 +19,7 @@ use crate::io::{
 };
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
-    ToolBatch, ToolCall,
+    FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
 };
 use crate::process::{ProcessSpec, run_process};
 
@@ -44,10 +43,6 @@ fn required_str<'a>(value: &'a Value, field: &str, context: &str) -> Result<&'a 
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ReplayError::trajectory(format!("{context} has no {field}")))
-}
-
-pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
-    build_claude_plan(request).map(AdapterPlan::ClaudeCode)
 }
 
 pub(super) fn execute(
@@ -287,7 +282,7 @@ fn claude_render_text(content: &Value) -> String {
         .join("\n")
 }
 
-fn build_claude_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub(super) fn build(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let text = std::str::from_utf8(&raw).replay_context(
         ReplayErrorKind::Trajectory,
@@ -2118,9 +2113,7 @@ mod tests {
     use crate::bridge::claude_resume::ResumeTransportManifest;
     use crate::io::BoundedFileRead;
     use crate::journal::Journal;
-    use crate::model::{
-        AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ToolCall,
-    };
+    use crate::model::{AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ToolCall};
 
     fn claude_tool_call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {
@@ -2585,9 +2578,8 @@ mod tests {
         if !request.trajectory.exists() {
             return;
         }
-        let AdapterPlan::ClaudeCode(plan) = build_plan(&request).unwrap() else {
-            panic!("Claude fixture produced a non-Claude plan");
-        };
+        let plan = build_plan(&request).unwrap();
+        assert_eq!(plan.agent, AgentKind::ClaudeCode);
         assert_eq!(plan.batches.len(), 1);
         assert_eq!(plan.batches[0].tool_calls[0].name, "Bash");
         let replacements = BTreeMap::from([(
@@ -2692,9 +2684,8 @@ mod tests {
             disable_thinking: false,
             boundary_user_prompt: None,
         };
-        let AdapterPlan::ClaudeCode(plan) = build_plan(&request).unwrap() else {
-            panic!("Claude fixture produced a non-Claude plan");
-        };
+        let plan = build_plan(&request).unwrap();
+        assert_eq!(plan.agent, AgentKind::ClaudeCode);
         assert_eq!(plan.batches.len(), 1);
         assert_eq!(plan.batches[0].tool_calls.len(), 2);
         assert_eq!(

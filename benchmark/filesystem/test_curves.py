@@ -169,24 +169,18 @@ class CurvesPlanContracts(unittest.TestCase):
         ]
         self.assertEqual(pressure, [mib * CURVES.MIB for mib in (8, 64, 128)])
 
-    def test_ablations_have_only_the_intended_private_configuration_changes(self):
+    def test_current_arms_exclude_retired_ablations(self):
         arms = CURVES.conditions("shape")
-        self.assertEqual(
-            set(arms), {"sync", "async", "native", "async-old", "unmerged", "owned-sync"}
-        )
+        self.assertEqual(set(arms), {"sync", "async", "native", "unmerged"})
         self.assertEqual(arms["native"]["env"], {})
         self.assertEqual(arms["sync"]["env"], {"PVISOR_VM_FS_HOST_WRITEBACK": "0"})
         self.assertEqual(arms["async"]["env"], {"PVISOR_VM_FS_HOST_WRITEBACK": "1"})
-        for name, configuration in (
-            ("async-old", {"qualification_lock": True}),
-            ("unmerged", {"chunks": 1, "delay_us": 0}),
-            ("owned-sync", {"synchronous": True}),
-        ):
-            environment = arms[name]["env"]
-            self.assertEqual(environment["PVISOR_VM_FS_HOST_WRITEBACK"], "1")
-            self.assertEqual(
-                json.loads(environment["PVISOR_VM_FS_HOST_WRITEBACK_CONFIG"]), configuration
-            )
+        environment = arms["unmerged"]["env"]
+        self.assertEqual(environment["PVISOR_VM_FS_HOST_WRITEBACK"], "1")
+        self.assertEqual(
+            json.loads(environment["PVISOR_VM_FS_HOST_WRITEBACK_CONFIG"]),
+            {"chunks": 1, "delay_us": 0},
+        )
         self.assertEqual(set(CURVES.conditions("confirm")), {"sync", "async"})
         parameters = CURVES.conditions("parameters")
         self.assertEqual(len(parameters), 10)

@@ -9,7 +9,7 @@ use pvisor_core::{
 };
 use serde_json::Value;
 
-use super::ImplantPlan;
+use crate::ImplantPlan;
 use crate::config::GatewayProfile;
 
 const BUILTIN_ENV: &str = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE";
@@ -21,9 +21,62 @@ const CHROMIUM_SANDBOX_HELPERS: &[&str] = &[
     "chromium-sandbox",
 ];
 
+impl GatewayProfile {
+    pub fn routes(self) -> Vec<pvisor_core::gateway::ModelRoute> {
+        match self {
+            Self::ZcodeBigmodel => vec![pvisor_core::gateway::ModelRoute {
+                name: "*".into(),
+                provider: Some("anthropic".into()),
+                upstream: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                upstream_anthropic: Some("https://open.bigmodel.cn/api/anthropic/v1".into()),
+                api_key_env: None,
+                api_key: None,
+                forward: None,
+            }],
+        }
+    }
+}
+
+pub(crate) fn apply_process_policy(
+    spec: &mut RunSpec,
+    executor: &pvisor_core::ExecutorPlan,
+) -> anyhow::Result<()> {
+    if executor.kind == pvisor_core::ExecutorKind::Process
+        && executor.isolation == pvisor_core::IsolationKind::RootlessProcess
+    {
+        apply_host_process_policy(spec)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_proxy(
+    spec: &mut RunSpec,
+    plan: &mut ImplantPlan,
+    listen: &str,
+    storage: &Path,
+) -> anyhow::Result<()> {
+    prepare(spec, plan, listen, storage, None)
+}
+
+#[cfg(any(feature = "gateway", test))]
+pub(crate) fn prepare_capture(
+    spec: &mut RunSpec,
+    plan: &mut ImplantPlan,
+    listen: &str,
+    storage: &Path,
+) -> anyhow::Result<()> {
+    let profile = spec
+        .metadata
+        .get("pvisor.gateway.profile")
+        .cloned()
+        .map(serde_json::from_value::<GatewayProfile>)
+        .transpose()?;
+    prepare(spec, plan, listen, storage, profile)
+}
+
 /// Apply ZCode's Linux host compatibility policy to the final process
 /// invocation, after CLI/config command resolution has finished.
-pub(crate) fn apply_host_process_policy(spec: &mut RunSpec) -> anyhow::Result<()> {
+fn apply_host_process_policy(spec: &mut RunSpec) -> anyhow::Result<()> {
     if !cfg!(target_os = "linux") {
         return Ok(());
     }
@@ -159,7 +212,7 @@ fn is_zcode(process: &ProcessInvocation) -> bool {
 }
 
 /// Called only after the network listener has bound its Run-specific port.
-pub(super) fn prepare(
+fn prepare(
     spec: &mut RunSpec,
     plan: &mut ImplantPlan,
     listen: &str,
@@ -179,6 +232,8 @@ pub(super) fn prepare(
     plan.env
         .insert("ZCODE_NO_PROXY".into(), "127.0.0.1,localhost".into());
     if profile != Some(GatewayProfile::ZcodeBigmodel) {
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        apply_environment(process, plan);
         return Ok(());
     }
     let source = spec
@@ -219,6 +274,8 @@ pub(super) fn prepare(
     plan.notes.push(
         "ZCode: Run-local BigModel catalog; existing credentials and personal settings".into(),
     );
+    let RunInvocation::Process(process) = &mut spec.invocation;
+    apply_environment(process, plan);
     Ok(())
 }
 
@@ -254,7 +311,7 @@ fn redirect_catalog(catalog: &mut Value, listen: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn apply_environment(process: &mut ProcessInvocation, plan: &ImplantPlan) {
+fn apply_environment(process: &mut ProcessInvocation, plan: &ImplantPlan) {
     if !is_zcode(process) {
         return;
     }
@@ -338,8 +395,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        apply_environment(process, &plan);
+        let RunInvocation::Process(process) = &spec.invocation;
         assert_eq!(process.env["ZCODE_HTTP_PROXY"], "http://127.0.0.1:49231");
         assert_eq!(process.env["ZCODE_NO_PROXY"], "127.0.0.1,localhost");
         assert!(!process.env.contains_key(BUILTIN_ENV));
@@ -377,6 +433,86 @@ mod tests {
         assert_eq!(
             spec.capabilities.filesystem[0].access,
             FilesystemAccess::Read
+        );
+    }
+
+    #[test]
+    fn capture_binding_owns_profile_decoding_and_final_client_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("builtin.json");
+        let original = serde_json::to_vec(&catalog()).unwrap();
+        std::fs::write(&source, &original).unwrap();
+        let mut spec = RunSpec::process("job", "zcode", "zcode");
+        spec.metadata
+            .insert("pvisor.gateway.profile".into(), json!("zcode-bigmodel"));
+        spec.metadata.insert(
+            "pvisor.gateway.zcode_builtin_config".into(),
+            json!(source.to_str().unwrap()),
+        );
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.env.insert("HOME".into(), "/home/example".into());
+        process
+            .env
+            .insert("ZCODE_HTTP_PROXY".into(), "http://external:7890".into());
+        process.env.insert(
+            "ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE".into(),
+            "/stale.json".into(),
+        );
+        let mut plan = ImplantPlan::default();
+        prepare_capture(
+            &mut spec,
+            &mut plan,
+            "127.0.0.1:49231",
+            &root.path().join("run"),
+        )
+        .unwrap();
+        let RunInvocation::Process(process) = &spec.invocation;
+        assert_eq!(process.env["ZCODE_HTTP_PROXY"], "http://127.0.0.1:49231");
+        assert_eq!(
+            process.env[PERSONAL_ENV],
+            "/home/example/.zcode/v2/provider_config.json"
+        );
+        assert!(
+            !process
+                .env
+                .contains_key("ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE")
+        );
+        let copy: Value =
+            serde_json::from_slice(&std::fs::read(&process.env[BUILTIN_ENV]).unwrap()).unwrap();
+        let mut expected = catalog();
+        redirect_catalog(&mut expected, "127.0.0.1:49231").unwrap();
+        assert_eq!(copy, expected);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(plan.env[BUILTIN_ENV], process.env[BUILTIN_ENV]);
+    }
+
+    #[test]
+    fn plain_proxy_does_not_apply_a_capture_catalog_profile() {
+        let mut spec = RunSpec::process("job", "zcode", "zcode");
+        spec.metadata
+            .insert("pvisor.gateway.profile".into(), json!("zcode-bigmodel"));
+        let mut plan = ImplantPlan::default();
+        prepare_proxy(
+            &mut spec,
+            &mut plan,
+            "127.0.0.1:49231",
+            Path::new("/unused"),
+        )
+        .unwrap();
+        let RunInvocation::Process(process) = &spec.invocation;
+        assert_eq!(process.env["ZCODE_HTTP_PROXY"], "http://127.0.0.1:49231");
+        assert!(!process.env.contains_key(BUILTIN_ENV));
+        assert!(spec.capabilities.filesystem.is_empty());
+        spec.metadata
+            .insert("pvisor.gateway.profile".into(), json!("unknown"));
+        assert!(
+            prepare_capture(
+                &mut spec,
+                &mut plan,
+                "127.0.0.1:49231",
+                Path::new("/unused")
+            )
+            .is_err()
         );
     }
 }

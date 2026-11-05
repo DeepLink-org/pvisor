@@ -1,4 +1,6 @@
-pub(super) fn patch() -> Vec<String> {
+use super::super::{FilesystemAccessArg, FilesystemLevel};
+
+pub(super) fn patch() -> Vec<FilesystemAccessArg> {
     let mut args = Vec::new();
     for pattern in [
         "**/.ssh",
@@ -10,7 +12,10 @@ pub(super) fn patch() -> Vec<String> {
         "**/id_ed25519",
         "**/id_ed25519_sk",
     ] {
-        args.extend(["--access".into(), format!("{pattern}:deny")]);
+        args.push(FilesystemAccessArg {
+            path: pattern.into(),
+            level: FilesystemLevel::Deny,
+        });
     }
     for pattern in [
         "**/.env",
@@ -24,7 +29,10 @@ pub(super) fn patch() -> Vec<String> {
         "**/.netrc",
         "**/.npmrc",
     ] {
-        args.extend(["--access".into(), format!("{pattern}:warn")]);
+        args.push(FilesystemAccessArg {
+            path: pattern.into(),
+            level: FilesystemLevel::Warn,
+        });
     }
     args
 }

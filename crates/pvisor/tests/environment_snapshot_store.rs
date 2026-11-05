@@ -660,12 +660,19 @@ fn failed_compressed_publication_keeps_live_objects_and_reaps_orphan_content() {
         .unwrap()
         .write_all(&vec![29; 65536])
         .unwrap();
-    // Conservative store-wide reader gate rejects final publication, after blocks exist.
+    // Fail the final rename after compressed blocks exist. Live readers no
+    // longer block append-only publication, so use an invalid catalog entry.
+    let objects = root.join("objects");
+    let retained_objects = root.join("retained-objects");
+    fs::rename(&objects, &retained_objects).unwrap();
+    fs::write(&objects, b"not an object directory").unwrap();
     assert!(
         pending
             .publish_compressed(&source, b"second", compatibility())
             .is_err()
     );
+    fs::remove_file(&objects).unwrap();
+    fs::rename(&retained_objects, &objects).unwrap();
     assert_eq!(fs::read_dir(root.join("pending")).unwrap().count(), 0);
     assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 1);
     drop(reader);

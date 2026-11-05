@@ -15,6 +15,7 @@
 | [`support/ag_fixtures.rs`](support/ag_fixtures.rs) | 读取 fixture、解析 AG `.snap`、归一化比对 |
 | [`ag_fixture_tests.rs`](ag_fixture_tests.rs) | 基于 AG 数据的 conversion + capture 回归 |
 | [`llm_fixtures.rs`](llm_fixtures.rs) | 基础 smoke 测试 |
+| [`semantic_conversion.rs`](semantic_conversion.rs) | 生产 understanding / bridge 入口的 Codex、工具历史和并行结果顺序回归 |
 | [`model_api_forwarding.rs`](model_api_forwarding.rs) | Chat Completions、Responses、Messages 的文本与 tool call 非流式/SSE 同协议转发测试 |
 | [`capture/apps/claude/`](capture/apps/claude/) | Claude 专有轨迹 fixture（与 AG 无关） |
 

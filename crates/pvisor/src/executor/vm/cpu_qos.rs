@@ -162,7 +162,7 @@ pub(super) fn run_anchor_if_requested() -> anyhow::Result<bool> {
     // diverted into this helper by a coincidentally named environment field.
     if std::env::var(ANCHOR_ENV).as_deref() != Ok("1")
         || std::env::args_os().nth(1).is_some()
-        || std::env::var_os(super::supported::RUNNER_SPEC_ENV).is_some()
+        || crate::env::os(crate::env::runner::RUNNER_SPEC_ENV).is_some()
     {
         return Ok(false);
     }

@@ -13,7 +13,7 @@ pub(super) struct StatusCommandArgs {
     #[command(flatten)]
     pub args: StatusArgs,
     #[command(flatten)]
-    pub vm: super::host::VmOptions,
+    pub vm: super::live_vm::VmOptions,
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
@@ -453,7 +453,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         .spawn()
         .with_context(|| format!("execute inspect command `{program}`"))?;
     let mut tree =
-        super::host_process::OwnedTree::new(child.id() as i32, std::process::id() as i32, true, 0)?;
+        super::host_process::OwnedTree::new(child.id() as i32, std::process::id() as i32, true)?;
     let foreground = super::host_process::TerminalOwner::give_to(child.id() as i32)?;
     let mut deadline = None;
     let status = loop {

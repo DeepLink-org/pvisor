@@ -18,8 +18,7 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, atomic_write_json, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome,
-    ReplayPlan,
+    AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
 };
 use crate::process::{ProcessSpec, run_process};
 pub(crate) use runtime::{LaunchSpec, resolve_launch_spec};
@@ -39,39 +38,35 @@ pub struct RunContext<'a> {
     pub nonce: &'a str,
 }
 
-pub fn build_plan(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
+pub fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     match request.agent {
         AgentKind::ClaudeCode => claude_code::build(request),
-        AgentKind::Codex => {
-            generic::build(request, generic::NativeJsonlAgent::Codex).map(AdapterPlan::Codex)
-        }
+        AgentKind::Codex => generic::build(request, generic::NativeJsonlAgent::Codex),
         AgentKind::MiniSweAgent => mini_swe_agent::build(request),
         AgentKind::Openhands => openhands::build(request),
-        AgentKind::Opencode => {
-            generic::build(request, generic::NativeJsonlAgent::Opencode).map(AdapterPlan::Opencode)
-        }
+        AgentKind::Opencode => generic::build(request, generic::NativeJsonlAgent::Opencode),
         AgentKind::PiAgent => pi_agent::build(request),
         AgentKind::SweAgent => swe_agent::build(request),
     }
 }
 
 pub fn run(
-    plan: &AdapterPlan,
+    plan: &ReplayPlan,
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    match plan {
-        AdapterPlan::ClaudeCode(plan) => claude_code::execute(plan, context, journal),
-        AdapterPlan::Codex(plan) => {
+    match plan.agent {
+        AgentKind::ClaudeCode => claude_code::execute(plan, context, journal),
+        AgentKind::Codex => {
             generic::execute(plan, context, journal, generic::NativeJsonlAgent::Codex)
         }
-        AdapterPlan::MiniSweAgent(plan) => mini_swe_agent::execute(plan, context, journal),
-        AdapterPlan::Openhands(plan) => openhands::execute(plan, context, journal),
-        AdapterPlan::Opencode(plan) => {
+        AgentKind::MiniSweAgent => mini_swe_agent::execute(plan, context, journal),
+        AgentKind::Openhands => openhands::execute(plan, context, journal),
+        AgentKind::Opencode => {
             generic::execute(plan, context, journal, generic::NativeJsonlAgent::Opencode)
         }
-        AdapterPlan::PiAgent(plan) => pi_agent::execute(plan, context, journal),
-        AdapterPlan::SweAgent(plan) => swe_agent::execute(plan, context, journal),
+        AgentKind::PiAgent => pi_agent::execute(plan, context, journal),
+        AgentKind::SweAgent => swe_agent::execute(plan, context, journal),
     }
 }
 

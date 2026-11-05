@@ -131,12 +131,27 @@ network attachment/removal. Calls alternate between two host working directories
 to exercise discovery independently of the current project. It uses an immutable Alpine digest, fresh private
 store and daemon state, frozen adjacent CLI/daemon binaries and retained receipts.
 No Docker daemon is required; this does not claim complete Docker compatibility.
+Health checks wait at most five seconds for the entrypoint's exact generation
+marker before checking `/boot-count` byte-for-byte. `start`/exec readiness is not
+application initialization: the marker follows the fixture's counter write.
+Missing/prefix-only markers, incorrect final bytes, command errors and timeouts
+remain failures; startup commands are not retried.
+Use repeatable `--scenario manager --scenario restart --scenario volume` to focus
+a campaign. Its selected names are recorded and independently audited; this is
+not a complete-profile pass. Omission preserves all twelve default scenarios,
+each executed once before seeded repeats. Invalid/duplicate names fail before
+creating evidence, and focused runs keep every selected scenario's original
+oracle, lifecycle cleanup, resource limits and optional final pool-loss fault.
 
 Optional `--inject-pool-loss` ends the window by killing only the verified owned
 physical pool through its pidfd. It requires dependent VMs and the manager to
 exit, checks failed restarts and `-M` implicit startup, and retains the stale pool
 socket rather than replacing RAM ownership. This is an explicit expected fault;
 other operation failures remain failures. Use only with disposable test VMs.
+Restart diagnostics must report the refused pool connection for that generation,
+without replaying earlier workload stderr or a previous pool-loss failure.
+Pool authentication and negotiation precede VMM construction; the same prepared
+session is consumed at VM entry rather than replaced by a second connection.
 
 The runner requires its entire process tree in a systemd user service with
 1536 MiB MemoryMax, zero swap, 150% CPU quota and TasksMax=384. It samples host
@@ -145,6 +160,13 @@ memory/load/PSI and pauses new scenarios when available RAM or disk falls below
 window includes pressure pauses; report them separately from completed rounds.
 It never disables these limits to turn an environment problem into a pass.
 Only exact owned container names and identity-pinned daemon processes are cleaned.
+Raw streams, command receipts and resource records are flushed/synced, then their
+owned file descriptors receive `POSIX_FADV_DONTNEED` where supported. This keeps
+retained evidence from filling the controller's cgroup page cache during long
+runs; bytes remain on disk for the independent audit. It does not evict guest RAM,
+image caches or unrelated host files, move evidence outside accounting, increase
+limits or relax the zero memory-limit/OOM-event assertions. Resource records
+include `memory.stat` to distinguish file cache from anonymous memory.
 Evidence remains after success and failure. For example, after freezing the
 product binaries and any GNU firmware beside them:
 

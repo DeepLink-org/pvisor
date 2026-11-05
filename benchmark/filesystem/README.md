@@ -17,13 +17,16 @@ VM shutdown 会结束整个 runner，Rust TempDir 析构不能作为清理或 ho
 仅回收成功且校验通过的自有夹具；失败现场和所有日志保留。目录枚举检查
 完整名称与重复项，时钟外核对首/中/末文件。环境准备、验证与退出不进入
 guest phase 时钟；不是冷磁盘、普通 CLI 或完整 Agent 性能结论。
-本轮进度和未验收项见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
+实验结果与验证范围见 `SEQUENTIAL_OPTIMIZATION_REPORT.md`。
 
-后续五项的独立N30结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
-CLI sampler增加`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
-SDK sampler增加`--experiment scoped-names`。每批只改变该项开关，
-其他后续机制关闭；使用原来的prepare→semspec bench→analysis入口。
-流式读与范围失效未检出收益，不能把点估计作为默认开启依据。
+独立N30机制对照结果见`FOLLOWUP_OPTIMIZATION_REPORT.md`。
+CLI sampler支持`--experiment lazy-nodes|read-sink|logical-data|direct-copy`；
+每批只改变该项开关，
+其他待测机制关闭；使用prepare→semspec bench→analysis入口。
+SDK sampler支持目录名称缓存与prepared-copy-up对照。
+报告中其他条件的复现使用对应批次冻结的 harness 和制品。
+当前 sampler 剔除继承的 `PVISOR_*` 覆盖值，只使用记录在命令中的显式实验设置。
+其他候选按各自平台报告判断，不把点估计作为默认开启依据。
 
 ### 文档原始负载的版本复测
 
@@ -46,7 +49,7 @@ python3 benchmark/filesystem/docs_retest_analysis.py ABS_BATCH
 两制品目录均须带`libkrunfw.so.5`。执行前关闭环境中的外部实验覆盖，
 固定同一源码/编译profile/固件，保留build日志和版本摘要。
 显式组合启用名称缓存、prepared copy-up、逻辑目录、已解析节点复用、
-逻辑DATA和直接copy-up；stream、scoped names、object barriers不启用，
+逻辑DATA和直接copy-up；stream、object barriers不启用，
 WB保持关闭。计时不插桩，不宣称组合内各机制独立贡献。
 
 `docs_rootfs_retest.py` 另复用`user_workloads.py`的原目录rootfs路径、

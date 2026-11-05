@@ -9,7 +9,7 @@
 use super::models::{ClaimIdentity, ClaimPhase};
 use super::{ApiError, Record, Sandbox, SandboxStatus};
 use chrono::Utc;
-#[cfg(any(test, feature = "cluster"))]
+#[cfg(test)]
 use {
     super::models::{ClaimRecord, ClaimView},
     super::{CreateRequest, Daemon},
@@ -105,7 +105,7 @@ pub(super) fn tombstone(record: &mut Record) {
     };
 }
 
-#[cfg(any(test, feature = "cluster"))]
+#[cfg(test)]
 fn view(record: &Record) -> ClaimView {
     let claim = record.claim.as_ref().expect("claim view");
     ClaimView {
@@ -117,8 +117,9 @@ fn view(record: &Record) -> ClaimView {
     }
 }
 
-// Internal durable queue payload; never accepted by the public OpenSandbox parser.
-#[cfg(any(test, feature = "cluster"))]
+// Legacy claim fixtures exercise retained registry/lifecycle fences without
+// exposing reservation or launch authorization in the single-node service.
+#[cfg(test)]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(super) enum QueuedCreate {
@@ -128,7 +129,7 @@ pub(super) enum QueuedCreate {
     },
     Open(CreateRequest),
 }
-#[cfg(any(test, feature = "cluster"))]
+#[cfg(test)]
 impl QueuedCreate {
     pub(super) fn validate(self, maximum: u64) -> Result<super::models::Validated, ApiError> {
         match self {
@@ -141,11 +142,10 @@ impl QueuedCreate {
     }
 }
 
-#[cfg(any(test, feature = "cluster"))]
+#[cfg(test)]
 impl Daemon {
     /// Atomically reserve against ordinary/E2B creates, durably before accepting OFFER.
     /// Exact request retries are idempotent; mismatches conflict, even after release.
-    #[cfg(test)]
     pub(super) async fn reserve_claim(
         self: &Arc<Self>,
         identity: ClaimIdentity,

@@ -317,7 +317,7 @@ struct RunOverrides {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
     /// Clear environment names inherited from the TOML pass_env list before applying --pass-env.
-    /// Emitted by the --safe preset; rarely needed by hand.
+    /// The --safe preset clears this list internally; this flag also works on its own.
     #[arg(long, hide = true)]
     clear_pass_env: bool,
     /// Maximum processes/threads admitted for the Job.
@@ -396,7 +396,7 @@ struct VmOverrides {
     #[arg(short = 'M', conflicts_with = "vm_memory_pool")]
     #[serde(default)]
     vm_shared_memory_pool: bool,
-    /// Same-host node resource service for shared immutable images and restored RAM.
+    /// Caller-provided same-host resource service for restored RAM; no bundled node server.
     #[arg(long = "vm-node-socket", value_name = "SOCKET")]
     vm_node_socket: Option<PathBuf>,
     /// Immutable filesystem pool for Linux x86_64 no-network native checkpoints.
@@ -1005,9 +1005,9 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         .result_file
         .clone()
         .context("JSON --spec requires --result-file")?;
-    let stage_spec = Some(args.stage.clone().unwrap_or_else(|| {
+    let stage_path = args.stage.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("pvisor-stage-{}", uuid::Uuid::new_v4()))
-    }));
+    });
     let spec: RunSpec = serde_json::from_slice(
         &std::fs::read(&spec_path)
             .with_context(|| format!("read delegated RunSpec from {}", spec_path.display()))?,
@@ -1015,7 +1015,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     .context("decode delegated RunSpec")?;
     reject_ask_policies(&spec.policies, &Default::default())?;
     let mut stage_guard = None;
-    let (pvisor, config) = if let Some(stage_path) = stage_spec {
+    let (pvisor, config) = {
         let cleanup = args.stage.is_none();
         if cleanup {
             if stage_path.exists() {
@@ -1072,48 +1072,15 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         let storage = resolve_run_storage(&stage_path)?;
         #[cfg(feature = "gateway")]
         let proxy = resolve_proxy(&config)?;
-        #[allow(unused_mut)]
-        let mut builder = PVisor::builder()
-            .storage(&storage)
-            .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
-            .network(
-                NetworkDriverConfig::new(
-                    config.overlaynet.mode,
-                    NetworkConfig {
-                        capability: None,
-                        mode: match config.overlaynet.policy {
-                            OverlayNetPolicy::Public => NetworkMode::Public,
-                            OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                            OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                        },
-                        allowed_hosts: config.overlaynet.allow.clone(),
-                        rules: config.overlaynet.rules.clone(),
-                        deny_rules: config.overlaynet.deny.clone(),
-                        limits: config.overlaynet.limits.clone(),
-                    },
-                )
-                .listen(&config.overlaynet.listen)
-                .peer_network(config.overlaynet.peers.clone()),
-            );
-        if let Some(path) = &config.vm.control_socket {
-            builder = builder.control_socket(path);
-        }
-        #[cfg(feature = "gateway")]
-        if let Some(proxy) = proxy {
-            builder = builder.gateway(
-                GatewayDriverConfig::new(proxy)
-                    .output_dir(&storage)
-                    .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-            );
-        }
-        (builder.build(), config)
-    } else {
-        (
-            PVisor::builder()
-                .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
-                .build(),
-            RunConfig::default(),
+        let builder = configured_runtime_builder(
+            &config,
+            &storage,
+            config.vm.control_socket.as_deref(),
+            #[cfg(feature = "gateway")]
+            proxy,
         )
+        .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))]);
+        (builder.build(), config)
     };
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
@@ -1646,39 +1613,14 @@ async fn execute_config(
         }
     };
     policy_source.validate_executor(&executor.descriptor())?;
-    let mut builder = PVisor::builder()
-        .storage(&storage)
-        .event_sink(event_sink)
-        .network(
-            NetworkDriverConfig::new(
-                config.overlaynet.mode,
-                NetworkConfig {
-                    capability: None,
-                    mode: match config.overlaynet.policy {
-                        OverlayNetPolicy::Public => NetworkMode::Public,
-                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-                    },
-                    allowed_hosts: config.overlaynet.allow.clone(),
-                    rules: config.overlaynet.rules.clone(),
-                    deny_rules: config.overlaynet.deny.clone(),
-                    limits: config.overlaynet.limits.clone(),
-                },
-            )
-            .listen(&config.overlaynet.listen)
-            .peer_network(config.overlaynet.peers.clone()),
-        );
-    if let Some(path) = &config.vm.control_socket {
-        builder = builder.control_socket(path);
-    }
-    #[cfg(feature = "gateway")]
-    if let Some(proxy) = proxy {
-        builder = builder.gateway(
-            GatewayDriverConfig::new(proxy)
-                .output_dir(&storage)
-                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-        );
-    }
+    let mut builder = configured_runtime_builder(
+        &config,
+        &storage,
+        config.vm.control_socket.as_deref(),
+        #[cfg(feature = "gateway")]
+        proxy,
+    )
+    .event_sink(event_sink);
     if let Some(overlay) = overlay {
         builder = builder.overlay(overlay);
     }
@@ -1717,18 +1659,7 @@ async fn execute_config(
     }
     spec.policies = config.policies.clone();
     spec.capabilities.filesystem = resolve_filesystem_grants(&config, &workspace, &storage)?;
-    if let Some(path) = &config.gateway.zcode_builtin_config {
-        spec.metadata.insert(
-            "pvisor.gateway.zcode_builtin_config".into(),
-            serde_json::to_value(path.canonicalize()?)?,
-        );
-    }
-    if let Some(profile) = config.gateway.profile {
-        spec.metadata.insert(
-            "pvisor.gateway.profile".into(),
-            serde_json::to_value(profile)?,
-        );
-    }
+    super::agent::project(&config, &mut spec)?;
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = program_args.to_vec();
     process.stdin = if stage_launch.as_ref().is_none_or(|stage| stage.interactive) {
@@ -2204,18 +2135,8 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         // Resolve the actual command/executor/routes first, without mistaking --name for an Agent.
         let mut requested = config.clone();
         apply_cli(&mut requested, args.clone())?;
-        use clap::Parser;
         let patch = safe::patch(&requested);
-        let super::Command::Spawn(patch) = super::Cli::try_parse_from(
-            ["pvisor".to_owned(), "spawn".to_owned()]
-                .into_iter()
-                .chain(patch),
-        )?
-        .command
-        else {
-            unreachable!("expected run command")
-        };
-        apply_cli_unvalidated(config, *patch)?;
+        apply_cli_unvalidated(config, patch)?;
         // The preset requests the sandboxed filesystem view so the launcher
         // installs the synthetic root/Landlock or Seatbelt write controls.
         // An explicit --filesystem value in `args` still wins below.
@@ -2763,21 +2684,12 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
             };
         }
     }
-    if let Some(profile) = args.gateway.gateway_profile {
-        config.gateway.profile = Some(profile);
-        anyhow::ensure!(
-            args.gateway.gateway_mode != Some(GatewayMode::Off),
-            "--gateway-profile conflicts with --gateway-mode off"
-        );
-        config.gateway.mode = GatewayMode::Capture;
-        if explicit_overlaynet_mode.is_none() {
-            config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
-                OverlayNetMode::Auto
-            } else {
-                OverlayNetMode::Proxy
-            };
-        }
-    }
+    super::agent::apply_profile(
+        config,
+        args.gateway.gateway_profile,
+        args.gateway.gateway_mode,
+        explicit_overlaynet_mode,
+    )?;
     if let Some(value) = args.gateway.gateway_admin_listen {
         config.gateway.admin_listen = value;
     }
@@ -3087,46 +2999,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
             "composed filesystem layers cannot be combined with automatic apply"
         );
     }
-    if let Some(profile) = config.gateway.profile {
-        anyhow::ensure!(
-            config.gateway.mode == GatewayMode::Capture,
-            "Gateway profile requires capture mode"
-        );
-        anyhow::ensure!(
-            config.gateway.routes.is_empty(),
-            "Gateway profile cannot be combined with custom model routes"
-        );
-        anyhow::ensure!(
-            config
-                .run
-                .command
-                .first()
-                .and_then(|program| Path::new(program).file_name())
-                .and_then(|s| s.to_str())
-                == Some("zcode"),
-            "Gateway profile requires a direct zcode command"
-        );
-        if profile == GatewayProfile::ZcodeBigmodel {
-            let path = config
-                .gateway
-                .zcode_builtin_config
-                .as_deref()
-                .context("zcode-bigmodel requires gateway.zcode_builtin_config")?;
-            anyhow::ensure!(
-                path.is_absolute() && path.is_file(),
-                "gateway.zcode_builtin_config must name an existing absolute file"
-            );
-            anyhow::ensure!(
-                config.run.executor == RunExecutorKind::Host,
-                "zcode-bigmodel currently requires the host executor"
-            );
-        }
-    } else {
-        anyhow::ensure!(
-            config.gateway.zcode_builtin_config.is_none(),
-            "gateway.zcode_builtin_config requires the zcode-bigmodel profile"
-        );
-    }
+    super::agent::validate(config)?;
     if safe {
         anyhow::ensure!(
             config.filesystem == FilesystemMode::Sandbox,
@@ -3273,6 +3146,47 @@ fn resolve_execution_workspace(config: &RunConfig, stage_launch: bool) -> anyhow
         .or_else(|| config.run.workspace.clone())
         .unwrap_or(std::env::current_dir()?);
     resolve_workspace(&workspace)
+}
+
+// Only common driver wiring lives here. Callers own admission, resolved owner
+// sockets, proxy resolution timing, recording, executors and stage lifetimes.
+fn configured_runtime_builder(
+    config: &RunConfig,
+    storage: &Path,
+    control_socket: Option<&Path>,
+    #[cfg(feature = "gateway")] proxy: Option<ProxyConfig>,
+) -> pvisor::PVisorBuilder {
+    let mut builder = PVisor::builder().storage(storage).network(
+        NetworkDriverConfig::new(
+            config.overlaynet.mode,
+            NetworkConfig {
+                capability: None,
+                mode: match config.overlaynet.policy {
+                    OverlayNetPolicy::Public => NetworkMode::Public,
+                    OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                    OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                },
+                allowed_hosts: config.overlaynet.allow.clone(),
+                rules: config.overlaynet.rules.clone(),
+                deny_rules: config.overlaynet.deny.clone(),
+                limits: config.overlaynet.limits.clone(),
+            },
+        )
+        .listen(&config.overlaynet.listen)
+        .peer_network(config.overlaynet.peers.clone()),
+    );
+    if let Some(path) = control_socket {
+        builder = builder.control_socket(path);
+    }
+    #[cfg(feature = "gateway")]
+    if let Some(proxy) = proxy {
+        builder = builder.gateway(
+            GatewayDriverConfig::new(proxy)
+                .output_dir(storage)
+                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
+        );
+    }
+    builder
 }
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
@@ -3430,11 +3344,7 @@ fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
         network,
         overlay: OverlayConfig::default(),
         models: if config.gateway.mode == GatewayMode::Capture {
-            config
-                .gateway
-                .profile
-                .map(GatewayProfile::routes)
-                .unwrap_or_else(|| config.gateway.routes.clone())
+            super::agent::routes(config)
         } else {
             Vec::new()
         },

@@ -15,6 +15,9 @@ Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 
+Gateway does not bundle a mock upstream service; HTTP tests own their controlled
+upstream fixtures.
+
 Online network/model policy is fixed in memory at startup. Session `proxy.toml`
 files are diagnostic snapshots, omit inline API keys, and cannot change policy or
 credential routes. Embedded Attempts bind the capture root to a host-owned Run
@@ -39,6 +42,11 @@ and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
 wire formats are never chained through Chat Completions as an intermediate
 protocol. Derived trajectory views are not part of the online
 protocol-conversion path.
+
+Conversion regressions and fuzz targets use the same production path:
+`understanding::understand_request` → `conversion::translate_request_for_bridge`,
+and `conversion::translate_response_for_bridge` for non-streaming replies.
+Gemini schema normalization and provider error envelopes are private helpers.
 
 ## Host-observed inference waits
 
