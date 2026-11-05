@@ -625,7 +625,7 @@ fn preview_conflict_never_publishes_an_apply_ledger() {
 
 const PTY: &str = r#"
 import os, pty, select, signal, subprocess, sys, termios, time
-binary, root, stage, mode = sys.argv[1:]
+binary, root, stage, mode, read_size = sys.argv[1:]
 pid, master = pty.fork()
 if pid == 0:
     os.chdir(root)
@@ -661,16 +661,26 @@ if pid == 0:
 output = bytearray()
 state = 0
 deadline = time.monotonic() + 20
+def picker_ready():
+    # A PTY is a byte stream. The title precedes the rows, and even a row's
+    # exclusion suffix may arrive in a later read. Use complete fixture rows.
+    title = b'Enter preview, q quit'
+    if title not in output: return False
+    rows = output.rsplit(title, 1)[1]
+    return b'"keep.txt"' in rows and b'"skip.txt"' in rows
 try:
     while time.monotonic() < deadline:
         ready, _, _ = select.select([master], [], [], .1)
         if ready:
-            try: chunk = os.read(master, 65536)
+            try: chunk = os.read(master, int(read_size))
             except OSError: break
             if not chunk: break
             output.extend(chunk)
             assert len(output) < 200000, bytes(output)
-            if state == 0 and b'Enter preview, q quit' in output:
+            # All UI assertions and the restoration receipt concern complete
+            # lines, not arbitrary read boundaries (including one-byte reads).
+            if not output.endswith(b'\n'): continue
+            if state == 0 and picker_ready():
                 if mode == 'quit': os.write(master, b'q'); state = 5
                 elif mode == 'exclude':
                     output.clear(); os.write(master, b'n \r'); state = 4
@@ -697,7 +707,7 @@ try:
                     with open(os.path.join(stage, 'upper', 'keep.txt'), 'wb') as f: f.write(b'changed after preview\n')
                     output.clear(); os.write(master, b'a'); state = 3
                 else: os.write(master, b'b'); state = 2; output.clear()
-            if state == 2 and b'Enter preview, q quit' in output:
+            if state == 2 and picker_ready():
                 os.write(master, b'q'); state = 5
             if state == 4 and b'Select at least one path.' in output:
                 output.clear(); os.write(master, b'a\r'); state = 8
@@ -710,14 +720,14 @@ try:
                 assert b'(apply blocked)' not in output, bytes(output)
                 assert b'"keep.txt"' not in output.split(b'selected: 1', 1)[1], bytes(output)
                 os.write(master, b'a'); state = 5
-            if state == 6 and b'Enter preview, q quit' in output and b'fresh.txt' in output:
+            if state == 6 and picker_ready() and b'"fresh.txt"' in output:
                 os.write(master, b'q'); state = 5
-            if state == 7 and b'Enter preview, q quit' in output:
+            if state == 7 and picker_ready():
                 os.write(master, b'q'); state = 5
             if state == 3 and b'plan changed' in output and b'[a] apply' in output:
                 assert not os.path.exists(os.path.join(root, 'project', 'keep.txt')), bytes(output)
                 os.write(master, b'q'); state = 5
-        if b'RESTORED:' in output: break
+        if b'RESTORED:' in output and output.endswith(b'\n'): break
     else: raise AssertionError('PTY timeout: ' + repr(bytes(output)))
     _, status = os.waitpid(pid, 0)
     assert status == 0, (status, bytes(output))
@@ -732,6 +742,15 @@ print(output.decode(errors='replace'))
 "#;
 #[test]
 fn real_pty_quit_back_apply_and_exclusion_restore_terminal() {
+    run_pty_modes(65536);
+}
+
+#[test]
+fn real_pty_fragmented_output_preserves_apply_contracts() {
+    run_pty_modes(1);
+}
+
+fn run_pty_modes(read_size: usize) {
     for mode in [
         "quit",
         "back",
@@ -752,6 +771,7 @@ fn real_pty_quit_back_apply_and_exclusion_restore_terminal() {
             .arg(f.root.path())
             .arg(&f.stage)
             .arg(mode)
+            .arg(read_size.to_string())
             .output()
             .unwrap();
         assert!(output.status.success(), "{mode}: {output:?}");

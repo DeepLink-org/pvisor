@@ -709,6 +709,11 @@ Use `mise run test -- pvisor-cli` for application tests and `mise run test -- pv
 runtime tests. Native VM and ignored environment-dependent gates retain their
 existing prerequisites; compile checks are not real-guest validation.
 
+Interactive apply acceptance treats PTY output as a byte stream: picker checks
+wait for complete candidate rows, and preview/restoration checks wait for complete
+lines. The same nine interaction modes also run with one-byte reads, retaining
+exclusion, conflict, writeback and exact saved-terminal-state assertions.
+
 The pool-startup cancellation integration test reserves nextest's test-thread
 slots while it runs. Concurrent cold execution of copied Mach-O binaries can
 stall before `main` on macOS and consume its resolver readiness budget. Slot
