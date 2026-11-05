@@ -521,6 +521,10 @@ fn control_request(
         .live_control
         .as_ref()
         .context("owning Job control endpoint unavailable")?;
+    anyhow::ensure!(
+        endpoint.pid != std::process::id(),
+        "local Job owner unavailable"
+    );
     endpoint.exchange(
         &record.run_id,
         record
@@ -997,6 +1001,80 @@ mod tests {
             assert!(status.live_attempt.is_none());
             assert_eq!(status.record.state, RunRecordState::Running);
         }
+    }
+
+    #[test]
+    fn an_unregistered_local_owner_never_routes_queries_back_to_its_socket() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        fs::create_dir_all(temp.path().join("target")).unwrap();
+        let directory = allocate_host_directory("orphan-control-").unwrap();
+        let path = directory.path().join("control.sock");
+        let listener = super::super::host_transport::bind_instance_socket(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let mut run = record(temp.path(), &stage, &stage.join("upper"));
+        run.attempt_id = Some("orphan-attempt".into());
+        run.state = RunRecordState::Running;
+        run.finished_at_unix_ms = None;
+        run.live_control = Some(super::super::host_transport::LiveControlRecord {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            pid: std::process::id(),
+            protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            binary: std::env::current_exe().unwrap(),
+            binary_digest: "test".into(),
+        });
+        run.write().unwrap();
+        assert!(run.live_control.as_ref().unwrap().is_available());
+        let stop = AtomicBool::new(false);
+        let connections = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            connections.fetch_add(1, Ordering::Relaxed);
+                            drop(stream);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1))
+                        }
+                        Err(error) => panic!("accept probe: {error}"),
+                    }
+                }
+            });
+            let status = super::super::job_service::RuntimeJobService::status(
+                &Default::default(),
+                super::super::job_service::StatusRequest {
+                    job: super::super::job_service::JobSelection {
+                        selector: Some(stage.clone()),
+                        storage: temp.path().to_owned(),
+                    },
+                },
+            );
+            let ping = control_ping(&stage);
+            let observations = control_observations(&stage);
+            stop.store(true, Ordering::Release);
+            server.join().unwrap();
+            let status = status.unwrap();
+            assert!(!status.live);
+            assert_eq!(status.state, crate::StatusState::Unknown);
+            assert!(!ping);
+            assert!(
+                observations
+                    .unwrap_err()
+                    .to_string()
+                    .contains("local Job owner unavailable")
+            );
+            assert_eq!(connections.load(Ordering::Relaxed), 0);
+        });
     }
 
     #[test]

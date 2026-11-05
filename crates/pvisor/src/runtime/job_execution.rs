@@ -538,6 +538,10 @@ pub(crate) async fn capture(
                     .live_control
                     .clone()
                     .context("EXECUTION_UNKNOWN: owning Job control endpoint unavailable")?;
+                ensure!(
+                    endpoint.pid != std::process::id(),
+                    "local Job owner unavailable"
+                );
                 let job_id = current_record.run_id;
                 let attempt_id = current_record
                     .attempt_id
@@ -937,7 +941,7 @@ mod tests {
             protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
             binary: std::env::current_exe().unwrap(),
             binary_digest: "test".into(),
-            pid: std::process::id(),
+            pid: std::os::unix::process::parent_id(),
         });
         record.write().unwrap();
         (
@@ -954,8 +958,12 @@ mod tests {
         stored["state"] = serde_json::to_value(JobState::Running).unwrap();
         job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
-        for variant in 0..3 {
+        for variant in 0..4 {
             let (listener, directory) = remote_endpoint(&mut record);
+            if variant == 3 {
+                record.live_control.as_mut().unwrap().pid = std::process::id();
+                record.write().unwrap();
+            }
             let mut checkpoint = checkpoint(temp.path());
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -988,19 +996,24 @@ mod tests {
                 };
                 write_host_frame(&mut stream, &response).await.unwrap();
             });
-            assert!(
-                capture(
-                    &super::super::job_service::ServiceContext::default(),
-                    &record,
-                    false,
-                    SnapshotRamStorage::Raw,
-                    Some("capture".into()),
-                    Duration::from_secs(1)
-                )
-                .await
-                .is_err()
-            );
-            server.await.unwrap();
+            let error = capture(
+                &super::super::job_service::ServiceContext::default(),
+                &record,
+                false,
+                SnapshotRamStorage::Raw,
+                Some("capture".into()),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            if variant == 3 {
+                assert!(format!("{error:#}").contains("local Job owner unavailable"));
+                assert!(!server.is_finished());
+                server.abort();
+                let _ = server.await;
+            } else {
+                server.await.unwrap();
+            }
             drop(directory);
         }
     }

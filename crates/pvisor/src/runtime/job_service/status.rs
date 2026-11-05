@@ -309,6 +309,7 @@ impl RuntimeJobService {
             .filter(|endpoint| endpoint.is_available());
         if let Some(endpoint) = endpoint
             && owner.is_none()
+            && endpoint.pid != std::process::id()
         {
             match endpoint.exchange_checked(
                 &record.run_id,
