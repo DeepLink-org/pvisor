@@ -48,7 +48,18 @@ class SafetyTests(unittest.TestCase):
 
     def test_world_writable_sticky_ancestor_rejected(self):
         with workspace() as (root, _):
-            with self.assertRaises(ValueError):
+            real_lstat = Path.lstat
+
+            def metadata(path):
+                info = list(real_lstat(path))
+                if path == root.parent:
+                    info[stat.ST_MODE] |= stat.S_ISVTX | 0o777
+                return os.stat_result(info)
+
+            with (
+                patch.object(Path, "lstat", metadata),
+                self.assertRaisesRegex(ValueError, "unsafe writable ancestor"),
+            ):
                 chaos.safe_ancestors(root)
 
     def test_fresh_directory_and_delete_guards(self):

@@ -2,21 +2,15 @@
 //! A sealed checkpoint is not suspension evidence. Only the terminal native
 //! receipt grants a new Attempt the right to resume.
 use super::RunRecord;
-use super::host_transport::{
-    allocate_host_directory, authorize_host_peer, read_host_frame, validate_host_target,
-    write_host_frame,
-};
+use super::execution::{Execution, JobExecution, JobState, JobTransition};
 use super::registry::RunLease;
-use super::run::{AttemptService, RunControlHandle};
 use crate::config::{RunConfig, RunExecutorKind};
 use anyhow::{Context, ensure};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
-    AgentCtlHostResponse, AgentCtlTarget, HostAttemptCommand,
+    HostAttemptCommand,
 };
-use pvisor_core::operation::{
-    ExecutionCheckpoint, ExecutionSuspension, OperationKind, SnapshotRamStorage, Value,
-};
+use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage, Value};
 use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,9 +41,7 @@ pub(crate) fn snapshot_store(
 
 const STATE: &str = "execution-job.json";
 const ROOT: &str = "execution-job-root.json";
-const SOCKET: &str = "execution.sock";
-const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_CONTROL_CONNECTIONS: usize = 8;
+const JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capture {
@@ -63,30 +55,6 @@ pub struct Request {
     pub ram_storage: SnapshotRamStorage,
     pub checkpoint: Option<String>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Running,
-    Suspending,
-    Suspended,
-    Restoring,
-    Terminal,
-    Unknown,
-}
-
-impl std::fmt::Display for JobState {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Running => "running",
-            Self::Suspending => "suspending",
-            Self::Suspended => "suspended",
-            Self::Restoring => "restoring",
-            Self::Terminal => "terminal",
-            Self::Unknown => "unknown",
-        })
-    }
 }
 
 pub const JOB_SCHEMA_VERSION: u16 = 2;
@@ -117,63 +85,7 @@ pub struct ForkRequest {
     pub checkpoint_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Job {
-    pub version: u16,
-    pub run_id: String,
-    pub root: PathBuf,
-    pub active_stage: PathBuf,
-    pub previous_stage: PathBuf,
-    pub active_attempt: String,
-    pub config: RunConfig,
-    pub spec: pvisor_core::RunSpec,
-    pub state: JobState,
-    pub head: Option<String>,
-    pub checkpoints: BTreeMap<String, Capture>,
-    pub requests: BTreeMap<String, Request>,
-    pub resumes: BTreeMap<String, ResumeRequest>,
-    pub forks: BTreeMap<String, ForkRequest>,
-    pub stores: std::collections::BTreeSet<PathBuf>,
-}
-
-impl Job {
-    pub(crate) fn finish_result(&mut self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
-        ensure!(
-            matches!(
-                result.state,
-                pvisor_core::RunState::Completed
-                    | pvisor_core::RunState::Failed
-                    | pvisor_core::RunState::Cancelled
-                    | pvisor_core::RunState::Hibernated
-            ),
-            "cannot finish a Job with a nonterminal result"
-        );
-        ensure!(
-            self.run_id == result.run_id.as_str()
-                && self.active_attempt == result.attempt_id.as_str(),
-            "terminal Attempt identity mismatch"
-        );
-        if result.state == pvisor_core::RunState::Hibernated {
-            let receipt = ExecutionSuspension::from_result(result)?;
-            let id = receipt.checkpoint.snapshot_id.clone();
-            self.checkpoints.entry(id.clone()).or_insert(Capture {
-                checkpoint: receipt.checkpoint,
-                branches: BTreeMap::new(),
-            });
-            self.requests
-                .get_mut(&receipt.request_id)
-                .context("suspend receipt has no Job request")?
-                .checkpoint = Some(id.clone());
-            self.head = Some(id);
-            self.state = JobState::Suspended;
-        } else {
-            self.state = JobState::Terminal;
-            self.head = None;
-        }
-        self.write()
-    }
-
+impl JobExecution {
     pub fn read(record: &RunRecord) -> anyhow::Result<Option<Self>> {
         Self::read_stage(&record.stage_dir())
     }
@@ -208,7 +120,7 @@ impl Job {
         RunLease::acquire(&self.root.join("execution-operation"))
     }
     async fn lock_wait(&self) -> anyhow::Result<RunLease> {
-        self.lock_wait_until(tokio::time::Instant::now() + CONTROL_IO_TIMEOUT)
+        self.lock_wait_until(tokio::time::Instant::now() + JOB_LOCK_TIMEOUT)
             .await
     }
 
@@ -288,20 +200,20 @@ impl Job {
 }
 
 pub(crate) fn require_mutable(record: &RunRecord) -> anyhow::Result<()> {
-    if let Some(job) = Job::read(record)? {
+    if let Some(job) = JobExecution::read(record)? {
         ensure!(job.run_id == record.run_id, "execution Job owner mismatch");
         ensure!(
-            job.state == JobState::Terminal,
+            job.state() == JobState::Terminal,
             "JOB_BUSY: Job {} is {}; kill a suspended Job before changing its workspace",
             job.run_id,
-            job.state
+            job.state()
         );
     }
     Ok(())
 }
 
-pub fn job(record: &RunRecord) -> anyhow::Result<Job> {
-    let job = Job::read(record)?
+pub fn job(record: &RunRecord) -> anyhow::Result<JobExecution> {
+    let job = JobExecution::read(record)?
         .context("CAPABILITY_UNSUPPORTED: this Job has no native execution handoff")?;
     ensure!(
         job.run_id == record.run_id && job.config.run.executor == RunExecutorKind::Vm,
@@ -310,33 +222,7 @@ pub fn job(record: &RunRecord) -> anyhow::Result<Job> {
     Ok(job)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-enum HostCaptureCommand {
-    Checkpoint { ram_storage: SnapshotRamStorage },
-    Suspend { ram_storage: SnapshotRamStorage },
-}
-
-fn capture_request(
-    request: AgentCtlHostRequest<HostCaptureCommand>,
-    job: &Job,
-) -> anyhow::Result<ControlRequest> {
-    request.validate()?;
-    validate_host_target(request.target.as_ref(), &job.run_id, &job.active_attempt)?;
-    let (suspend, ram_storage) = match request.command {
-        HostCaptureCommand::Checkpoint { ram_storage } => (false, ram_storage),
-        HostCaptureCommand::Suspend { ram_storage } => (true, ram_storage),
-    };
-    Ok(ControlRequest {
-        run_id: job.run_id.clone(),
-        attempt_id: job.active_attempt.clone(),
-        request_id: request.request_id,
-        suspend,
-        ram_storage,
-    })
-}
-
-fn capture_error(error: anyhow::Error) -> AgentCtlHostError {
+pub(crate) fn capture_error(error: anyhow::Error) -> AgentCtlHostError {
     if let Some(error) = error.downcast_ref::<AgentCtlHostError>() {
         return error.clone();
     }
@@ -363,44 +249,17 @@ struct ControlRequest {
     ram_storage: SnapshotRamStorage,
 }
 
-fn bind_control_endpoint(
-    stage: &Path,
-) -> anyhow::Result<(tokio::net::UnixListener, tempfile::TempDir)> {
-    use std::os::unix::fs::PermissionsExt;
-    // Attempt paths include UUIDs beneath user-selected storage. Keep the Unix
-    // address short and discover it through the private stage, as with Run control.
-    let directory = allocate_host_directory("exec-")?;
-    let socket = directory.path().join(SOCKET);
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
-    std::os::unix::fs::symlink(&socket, stage.join(SOCKET))?;
-    Ok((listener, directory))
-}
-
-pub(crate) struct Server {
-    task: tokio::task::JoinHandle<()>,
-    stage: PathBuf,
-    _socket_directory: tempfile::TempDir,
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
-        let _ = std::fs::remove_file(self.stage.join(SOCKET));
-    }
-}
-
-impl Server {
-    pub fn start(
+impl JobExecution {
+    pub(crate) fn attach(
         record: &RunRecord,
         mut config: RunConfig,
         spec: pvisor_core::RunSpec,
-        controls: RunControlHandle,
     ) -> anyhow::Result<Self> {
         let stage = record.stage_dir();
         if let Some(value) = &mut config.vm.library_dir {
             *value = value.canonicalize()?;
         }
-        if Job::read(record)?.is_none()
+        if JobExecution::read(record)?.is_none()
             && let Some(root) = &mut config.vm.rootfs
         {
             *root = root.canonicalize()?;
@@ -418,118 +277,45 @@ impl Server {
             crate::environment_snapshot::SnapshotStore::with_filesystem_pool(&store, pool)?;
             *pool = pool.canonicalize()?;
         }
-        let mut job = match Job::read(record)? {
+        let mut job = match JobExecution::read(record)? {
             Some(mut job) => {
-                ensure!(
-                    job.run_id == record.run_id
-                        && job.active_stage == stage
-                        && job.state == JobState::Restoring,
-                    "invalid resumed Job ownership"
-                );
-                job.active_attempt = record
-                    .attempt_id
-                    .clone()
-                    .context("missing Attempt identity")?;
-                job.state = JobState::Running;
-                job.head = None;
+                job.apply(JobTransition::AttemptStarted { record })?;
                 job
             }
-            None => Job {
-                version: JOB_SCHEMA_VERSION,
-                run_id: record.run_id.clone(),
-                root: stage.clone(),
-                active_stage: stage.clone(),
-                previous_stage: stage.clone(),
-                active_attempt: record
-                    .attempt_id
-                    .clone()
-                    .context("missing Attempt identity")?,
+            None => JobExecution::new(
+                record.run_id.clone(),
+                stage.clone(),
+                Some(
+                    record
+                        .attempt_id
+                        .clone()
+                        .context("missing Attempt identity")?,
+                ),
                 config,
                 spec,
-                state: JobState::Running,
-                head: None,
-                checkpoints: BTreeMap::new(),
-                requests: BTreeMap::new(),
-                resumes: BTreeMap::new(),
-                forks: BTreeMap::new(),
-                stores: Default::default(),
-            },
+            )?,
         };
         job.stores.insert(store);
         job.write()?;
         job.link_stage(&stage)?;
-        let (listener, socket_directory) = bind_control_endpoint(&stage)?;
-        let task = tokio::spawn(async move {
-            let admission =
-                std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONTROL_CONNECTIONS));
-            loop {
-                let (mut stream, _) = match super::host_transport::accept_control(&listener).await {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        tracing::error!(%error, "execution control listener failed");
-                        break;
-                    }
-                };
-                if authorize_host_peer(&stream).is_err() {
-                    continue;
-                }
-                let Ok(permit) = admission.clone().try_acquire_owned() else {
-                    continue;
-                };
-                let job = job.clone();
-                let controls = controls.clone();
-                // Accepted capture handlers outlive endpoint teardown so a terminal
-                // receipt cannot cancel ledger persistence. Disconnect/timeout
-                // does not release admission early.
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    let Ok(Ok(request)) = tokio::time::timeout(
-                        CONTROL_IO_TIMEOUT,
-                        read_host_frame::<AgentCtlHostRequest<HostCaptureCommand>>(&mut stream),
-                    )
-                    .await
-                    else {
-                        return;
-                    };
-                    let request_id = request.request_id.clone();
-                    let result = async {
-                        let request = capture_request(request, &job)?;
-                        handle_request(&job, controls, request).await
-                    }
-                    .await
-                    .map_err(capture_error);
-                    let reply = AgentCtlHostResponse {
-                        version: AGENTCTL_HOST_VERSION,
-                        request_id,
-                        result,
-                    };
-                    let _ = tokio::time::timeout(
-                        CONTROL_IO_TIMEOUT,
-                        write_host_frame(&mut stream, &reply),
-                    )
-                    .await;
-                });
-            }
-        });
-        Ok(Self {
-            task,
-            stage,
-            _socket_directory: socket_directory,
-        })
+        Ok(job)
     }
-    pub async fn finish(&self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
-        let job = Job::read_stage(&self.stage)?.context("execution Job missing at completion")?;
+    pub(crate) async fn finish(&self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
+        let job = self
+            .current()
+            .context("execution Job missing at completion")?;
         // The capture handler releases the metadata lock before awaiting native
         // exit, so terminal receipt persistence cannot deadlock the VM teardown.
         let _lease = job.lock_wait().await?;
         let mut job = job.current()?;
-        job.finish_result(result)
+        job.apply(JobTransition::Completed(result))?;
+        job.write()
     }
 }
 
 fn validate_capture_binding(
-    template: &Job,
-    job: &Job,
+    template: &JobExecution,
+    job: &JobExecution,
     request: &ControlRequest,
 ) -> Result<(), AgentCtlHostError> {
     if request.run_id != job.run_id
@@ -546,8 +332,8 @@ fn validate_capture_binding(
 }
 
 async fn handle_request(
-    template: &Job,
-    mut controls: RunControlHandle,
+    template: &JobExecution,
+    controls: Execution,
     request: ControlRequest,
 ) -> anyhow::Result<ExecutionCheckpoint> {
     ensure!(
@@ -572,11 +358,6 @@ async fn handle_request(
             previous.error.as_deref().unwrap_or("pending")
         );
     }
-    ensure!(
-        job.state == JobState::Running,
-        "JOB_BUSY: execution state is {}",
-        job.state
-    );
     let kind = if request.suspend {
         OperationKind::RunSuspend {
             request_id: request.request_id.clone(),
@@ -588,21 +369,14 @@ async fn handle_request(
             ram_storage: request.ram_storage,
         }
     };
-    job.requests.insert(
-        request.request_id.clone(),
-        Request {
-            suspend: request.suspend,
-            ram_storage: request.ram_storage,
-            checkpoint: None,
-            error: None,
-        },
-    );
-    if request.suspend {
-        job.state = JobState::Suspending;
-    }
+    job.apply(JobTransition::CaptureAdmitted {
+        id: &request.request_id,
+        suspend: request.suspend,
+        ram_storage: request.ram_storage,
+    })?;
     job.write()?;
     drop(lease);
-    let result = AttemptService::new(controls)
+    let result = controls
         .dispatch(HostAttemptCommand::Operation { kind })
         .await
         .map(|result| result.value)
@@ -612,33 +386,19 @@ async fn handle_request(
     validate_capture_binding(template, &job, &request)?;
     match result {
         Ok(Some(Value::ExecutionCheckpoint { checkpoint })) => {
-            ensure!(
-                checkpoint.source_run_id == job.run_id
-                    && checkpoint.source_attempt_id == request.attempt_id,
-                "native capture owner mismatch"
-            );
-            job.checkpoints
-                .entry(checkpoint.snapshot_id.clone())
-                .or_insert(Capture {
-                    checkpoint: checkpoint.clone(),
-                    branches: BTreeMap::new(),
-                });
-            job.requests
-                .get_mut(&request.request_id)
-                .context("request disappeared")?
-                .checkpoint = Some(checkpoint.snapshot_id.clone());
+            job.apply(JobTransition::CaptureAcknowledged {
+                id: &request.request_id,
+                checkpoint: &checkpoint,
+            })?;
             job.write()?;
             Ok(checkpoint)
         }
         Ok(_) => anyhow::bail!("native control returned no execution checkpoint"),
         Err(error) => {
-            job.requests
-                .get_mut(&request.request_id)
-                .context("request disappeared")?
-                .error = Some(format!("{error:#}"));
-            if request.suspend && job.state == JobState::Suspending {
-                job.state = JobState::Unknown;
-            }
+            job.apply(JobTransition::CaptureRejected {
+                id: &request.request_id,
+                message: format!("{error:#}"),
+            })?;
             job.write()?;
             Err(error)
         }
@@ -700,7 +460,7 @@ pub(crate) async fn capture(
                 }
                 ensure!(
                     matches!(
-                        current.state,
+                        current.state(),
                         JobState::Running | JobState::Suspending | JobState::Suspended
                     ),
                     "EXECUTION_UNKNOWN: Attempt ended before capture acknowledgement"
@@ -708,7 +468,7 @@ pub(crate) async fn capture(
                 drop(lease);
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-        } else if job.state == JobState::Suspended {
+        } else if job.state() == JobState::Suspended {
             let _lease = job.lock_wait().await?;
             let mut current = job.current()?;
             current.validate_record_target(record)?;
@@ -716,7 +476,7 @@ pub(crate) async fn capture(
             super::job_service::check_selected_record(record, &current_record)?;
             context.check(&current_record)?;
             ensure!(
-                current.state == JobState::Suspended,
+                current.state() == JobState::Suspended,
                 "JOB_BUSY: suspended head changed during request"
             );
             let checkpoint =
@@ -743,48 +503,69 @@ pub(crate) async fn capture(
             checkpoint
         } else {
             ensure!(
-                job.state == JobState::Running,
+                job.state() == JobState::Running,
                 "JOB_BUSY: Job execution state is {}",
-                job.state
+                job.state()
             );
-            let socket = std::fs::canonicalize(job.active_stage.join(SOCKET))
-                .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
-            let mut stream = tokio::net::UnixStream::connect(socket)
-                .await
-                .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
-            authorize_host_peer(&stream)?;
-            let request = AgentCtlHostRequest {
-                version: AGENTCTL_HOST_VERSION,
-                request_id: request_id.clone(),
-                target: Some(AgentCtlTarget {
-                    job_id: record.run_id.clone(),
-                    attempt_id: record.attempt_id.clone(),
-                    generation: None,
-                }),
-                command: if suspend {
-                    HostCaptureCommand::Suspend { ram_storage }
-                } else {
-                    HostCaptureCommand::Checkpoint { ram_storage }
-                },
-            };
-            request.validate()?;
-            // Connection establishment can wait too. Recheck admission under the
-            // Job lease immediately before sending; do not cancel or revalidate
-            // the caller's context after sending an effectful request.
+            // Recheck caller authority after waiting for the Job lease. Accepted
+            // work owns its task; timeout or disconnect only abandons the reply.
             let lease = job.lock_wait().await?;
             let current = job.current()?;
             current.validate_record_target(record)?;
             let current_record = RunRecord::read(&current.active_stage)?;
             super::job_service::check_selected_record(record, &current_record)?;
             context.check(&current_record)?;
-            write_host_frame(&mut stream, &request).await?;
-            drop(lease);
-            let reply: AgentCtlHostResponse<ExecutionCheckpoint> =
-                read_host_frame(&mut stream).await.context(
-                    "EXECUTION_UNKNOWN: execution control disconnected before acknowledgement",
-                )?;
-            reply.validate(&request_id)?;
-            let checkpoint = reply.result?;
+            let checkpoint = if let Some(owner) = super::instance_control::local_owner(record) {
+                let permit = owner.admit_capture()?;
+                let request = ControlRequest {
+                    run_id: record.run_id.clone(),
+                    attempt_id: record
+                        .attempt_id
+                        .clone()
+                        .context("missing Attempt identity")?,
+                    request_id: request_id.clone(),
+                    suspend,
+                    ram_storage,
+                };
+                let work = tokio::spawn(async move {
+                    let _permit = permit;
+                    handle_request(&current, owner.execution.clone(), request).await
+                });
+                drop(lease);
+                work.await?.map_err(capture_error)?
+            } else {
+                let endpoint = current_record
+                    .live_control
+                    .clone()
+                    .context("EXECUTION_UNKNOWN: owning Job control endpoint unavailable")?;
+                ensure!(
+                    endpoint.pid != std::process::id(),
+                    "local Job owner unavailable"
+                );
+                let job_id = current_record.run_id;
+                let attempt_id = current_record
+                    .attempt_id
+                    .context("missing Attempt identity")?;
+                let command = super::host_transport::InstanceCommand::Capture {
+                    suspend,
+                    ram_storage,
+                    timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
+                    request_id: request_id.clone(),
+                };
+                drop(lease);
+                let reply = tokio::task::spawn_blocking(move || {
+                    endpoint.exchange(&job_id, &attempt_id, command)
+                })
+                .await??;
+                let reply: super::job_service::CaptureResponse = serde_json::from_value(reply)?;
+                ensure!(
+                    reply.job_id == record.run_id
+                        && reply.request_id == request_id
+                        && reply.suspended == suspend,
+                    "execution control capture receipt mismatch"
+                );
+                reply.checkpoint
+            };
             checkpoint.validate()?;
             ensure!(
                 checkpoint.source_run_id == job.run_id
@@ -798,16 +579,16 @@ pub(crate) async fn capture(
                 let lease = job.lock_wait().await?;
                 let current = job.current()?;
                 current.validate_record_target(record)?;
-                if current.state == JobState::Suspended
+                if current.state() == JobState::Suspended
                     && current.head.as_deref() == Some(&checkpoint.snapshot_id)
                     && !super::is_live(&current.active_stage)?
                 {
                     break;
                 }
                 ensure!(
-                    matches!(current.state, JobState::Suspending | JobState::Suspended),
+                    matches!(current.state(), JobState::Suspending | JobState::Suspended),
                     "EXECUTION_UNKNOWN: suspend termination not confirmed ({})",
-                    current.state
+                    current.state()
                 );
                 drop(lease);
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -819,25 +600,26 @@ pub(crate) async fn capture(
 }
 
 pub fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
-    let Some(template) = Job::read(record)? else {
+    let Some(template) = JobExecution::read(record)? else {
         return Ok(false);
     };
     let _lease = template.lock()?;
     let mut job = template.current()?;
     job.validate_record_target(record)?;
-    if job.state != JobState::Suspended {
+    if job.state() != JobState::Suspended {
         return Ok(false);
     }
     let _attempt = RunLease::acquire(&job.active_stage)?;
-    job.head = None;
-    job.state = JobState::Terminal;
+    job.apply(JobTransition::Terminated)?;
     job.write()?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::host_transport::{read_host_frame, write_host_frame};
     use super::*;
+    use pvisor_core::host_protocol::AgentCtlHostResponse;
 
     #[tokio::test(start_paused = true)]
     async fn job_lease_wait_has_a_deadline_and_does_not_steal_a_live_lease() {
@@ -852,60 +634,7 @@ mod tests {
         assert!(job.lock_wait().await.is_ok());
     }
 
-    #[tokio::test]
-    async fn long_attempt_paths_use_a_private_short_socket_and_clean_up() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let stage = temp.path().join("a".repeat(80)).join("b".repeat(80));
-        std::fs::create_dir_all(&stage).unwrap();
-        let locator = stage.join(SOCKET);
-        assert!(locator.as_os_str().as_encoded_bytes().len() > 108);
-        let (listener, directory) = bind_control_endpoint(&stage).unwrap();
-        let address = std::fs::canonicalize(&locator).unwrap();
-        let authority_root = super::super::host_transport::host_authority_root().unwrap();
-        assert_eq!(directory.path().parent(), Some(authority_root.as_path()));
-        assert!(address.starts_with(&authority_root));
-        assert!(address.as_os_str().as_encoded_bytes().len() < 104);
-        assert_eq!(
-            std::fs::metadata(&address).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(directory.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        let client = tokio::net::UnixStream::connect(&address).await.unwrap();
-        let (peer, _) = listener.accept().await.unwrap();
-        drop(client);
-        drop(peer);
-        let directory_path = directory.path().to_owned();
-        let server = Server {
-            task: tokio::spawn(async move { std::future::pending::<()>().await }),
-            stage,
-            _socket_directory: directory,
-        };
-        drop(server);
-        assert!(!locator.is_symlink());
-        assert!(!address.exists());
-        assert!(!directory_path.exists());
-    }
-
-    #[tokio::test]
-    async fn an_existing_stage_endpoint_is_not_replaced() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join(SOCKET), b"existing owner").unwrap();
-        assert!(bind_control_endpoint(temp.path()).is_err());
-        assert_eq!(
-            std::fs::read(temp.path().join(SOCKET)).unwrap(),
-            b"existing owner"
-        );
-    }
-
-    fn fixture(root: &Path) -> (RunRecord, Job) {
+    fn fixture(root: &Path) -> (RunRecord, JobExecution) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "schema_version":1,"run_id":"job","attempt_id":"attempt-original","session_id":"job",
             "agent":"probe","pid":0,"command":["probe"],"state":"hibernated",
@@ -916,23 +645,12 @@ mod tests {
         record.write().unwrap();
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
-        let job = Job {
-            version: JOB_SCHEMA_VERSION,
-            run_id: "job".into(),
-            root: root.into(),
-            active_stage: root.into(),
-            previous_stage: root.into(),
-            active_attempt: "attempt-original".into(),
-            config,
-            spec: pvisor_core::RunSpec::process("job", "probe", "probe"),
-            state: JobState::Suspended,
-            head: None,
-            checkpoints: BTreeMap::new(),
-            requests: BTreeMap::new(),
-            resumes: BTreeMap::new(),
-            forks: BTreeMap::new(),
-            stores: [root.join("execution-snapshots")].into(),
-        };
+        let job: JobExecution = serde_json::from_value(serde_json::json!({
+            "version":JOB_SCHEMA_VERSION,"run_id":"job","root":root,"active_stage":root,
+            "previous_stage":root,"active_attempt":"attempt-original","config":config,
+            "spec":pvisor_core::RunSpec::process("job", "probe", "probe"),"state":"suspended",
+            "head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]
+        })).unwrap();
         job.write().unwrap();
         (record, job)
     }
@@ -958,7 +676,9 @@ mod tests {
             JobState::Restoring,
             JobState::Unknown,
         ] {
-            job.state = state;
+            let mut stored = serde_json::to_value(&job).unwrap();
+            stored["state"] = serde_json::to_value(state).unwrap();
+            job = serde_json::from_value(stored).unwrap();
             job.write().unwrap();
             assert!(
                 record
@@ -968,7 +688,9 @@ mod tests {
                     .contains("JOB_BUSY")
             );
         }
-        job.state = JobState::Terminal;
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Terminal).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
         record.require_stopped().unwrap();
     }
@@ -995,7 +717,7 @@ mod tests {
         variants.push(value);
         for value in variants {
             std::fs::write(job.root.join(STATE), serde_json::to_vec(&value).unwrap()).unwrap();
-            assert!(Job::read(&record).is_err(), "{value}");
+            assert!(JobExecution::read(&record).is_err(), "{value}");
         }
     }
 
@@ -1005,7 +727,9 @@ mod tests {
         let (record, mut job) = fixture(temp.path());
         let stage = temp.path().join("attempts/new");
         job.active_stage = stage.clone();
-        job.state = JobState::Restoring;
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Restoring).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
         assert_eq!(
             RunRecord::read(temp.path()).unwrap().attempt_id.as_deref(),
@@ -1034,7 +758,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (_, mut job) = fixture(temp.path());
         let checkpoint = checkpoint(temp.path());
-        job.state = JobState::Suspending;
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Suspending).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.requests.insert(
             "suspend".into(),
             Request {
@@ -1045,11 +771,7 @@ mod tests {
             },
         );
         job.write().unwrap();
-        let server = Server {
-            task: tokio::spawn(std::future::pending()),
-            stage: temp.path().into(),
-            _socket_directory: tempfile::tempdir().unwrap(),
-        };
+        let server = job.clone();
         let mut result:pvisor_core::RunResult=serde_json::from_value(serde_json::json!({
             "run_id":"job","attempt_id":"attempt-original","state":"hibernated","started_at_unix_ms":1,"finished_at_unix_ms":3,
             "value":{"request_id":"suspend","checkpoint":checkpoint}
@@ -1060,7 +782,7 @@ mod tests {
         result.exit_code = None;
         server.finish(&result).await.unwrap();
         let current = job.current().unwrap();
-        assert_eq!(current.state, JobState::Suspended);
+        assert_eq!(current.state(), JobState::Suspended);
         assert_eq!(
             current.head.as_deref(),
             Some(checkpoint.snapshot_id.as_str())
@@ -1094,7 +816,9 @@ mod tests {
         for state in [JobState::Running, JobState::Suspended, JobState::Restoring] {
             let temp = tempfile::tempdir().unwrap();
             let (record, mut job) = fixture(temp.path());
-            job.state = state;
+            let mut stored = serde_json::to_value(&job).unwrap();
+            stored["state"] = serde_json::to_value(state).unwrap();
+            job = serde_json::from_value(stored).unwrap();
             let checkpoint = checkpoint(temp.path());
             job.head = Some(checkpoint.snapshot_id.clone());
             job.checkpoints.insert(
@@ -1173,53 +897,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_envelopes_reject_version_missing_target_and_stale_attempt() {
-        let temp = tempfile::tempdir().unwrap();
-        let (_, job) = fixture(temp.path());
-        let envelope = || AgentCtlHostRequest {
-            version: AGENTCTL_HOST_VERSION,
-            request_id: "capture".into(),
-            target: Some(AgentCtlTarget {
-                job_id: job.run_id.clone(),
-                attempt_id: Some(job.active_attempt.clone()),
-                generation: None,
-            }),
-            command: HostCaptureCommand::Checkpoint {
-                ram_storage: SnapshotRamStorage::Raw,
-            },
-        };
-        let request = capture_request(envelope(), &job).unwrap();
-        assert!(!request.suspend);
-        for variant in 0..5 {
-            let mut request = envelope();
-            match variant {
-                0 => request.version += 1,
-                1 => request.target = None,
-                2 => request.target.as_mut().unwrap().job_id = "other-job".into(),
-                3 => request.target.as_mut().unwrap().attempt_id = Some("old-attempt".into()),
-                _ => {
-                    request.target.as_mut().unwrap().generation = Some("unknown-generation".into())
-                }
-            }
-            let error = capture_error(capture_request(request, &job).unwrap_err());
-            assert_eq!(
-                error.code,
-                if variant == 0 {
-                    AgentCtlHostErrorCode::VersionMismatch
-                } else {
-                    AgentCtlHostErrorCode::Conflict
-                }
-            );
-        }
-        let mut value = serde_json::to_value(envelope()).unwrap();
-        value["command"]["operation"] = "pause".into();
-        assert!(serde_json::from_value::<AgentCtlHostRequest<HostCaptureCommand>>(value).is_err());
-        let mut value = serde_json::to_value(envelope()).unwrap();
-        value["token"] = "guest-token".into();
-        assert!(serde_json::from_value::<AgentCtlHostRequest<HostCaptureCommand>>(value).is_err());
-    }
-
-    #[test]
     fn old_endpoint_cannot_serve_replacement_attempt_or_replay_its_request() {
         let temp = tempfile::tempdir().unwrap();
         let (_, template) = fixture(temp.path());
@@ -1248,18 +925,49 @@ mod tests {
         assert!(current.requests.is_empty());
     }
 
+    fn remote_endpoint(record: &mut RunRecord) -> (tokio::net::UnixListener, tempfile::TempDir) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory =
+            super::super::host_transport::allocate_host_directory("capture-test-").unwrap();
+        let path = directory.path().join("control.sock");
+        let listener = super::super::host_transport::bind_instance_socket(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        record.live_control = Some(super::super::host_transport::LiveControlRecord {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            binary: std::env::current_exe().unwrap(),
+            binary_digest: "test".into(),
+            pid: std::os::unix::process::parent_id(),
+        });
+        record.write().unwrap();
+        (
+            tokio::net::UnixListener::from_std(listener).unwrap(),
+            directory,
+        )
+    }
+
     #[tokio::test]
     async fn capture_client_rejects_uncorrelated_or_wrong_version_acknowledgement() {
         let temp = tempfile::tempdir().unwrap();
-        let (record, mut job) = fixture(temp.path());
-        job.state = JobState::Running;
+        let (mut record, mut job) = fixture(temp.path());
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Running).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
-        for variant in 0..3 {
-            let (listener, directory) = bind_control_endpoint(&job.active_stage).unwrap();
+        for variant in 0..4 {
+            let (listener, directory) = remote_endpoint(&mut record);
+            if variant == 3 {
+                record.live_control.as_mut().unwrap().pid = std::process::id();
+                record.write().unwrap();
+            }
             let mut checkpoint = checkpoint(temp.path());
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let request: AgentCtlHostRequest<HostCaptureCommand> =
+                let request: AgentCtlHostRequest<super::super::host_transport::InstanceCommand> =
                     read_host_frame(&mut stream).await.unwrap();
                 assert_eq!(
                     request.target.unwrap().attempt_id.as_deref(),
@@ -1279,24 +987,33 @@ mod tests {
                     } else {
                         request.request_id
                     },
-                    result: Ok(checkpoint),
+                    result: Ok(super::super::job_service::CaptureResponse {
+                        job_id: "job".into(),
+                        request_id: "capture".into(),
+                        suspended: false,
+                        checkpoint,
+                    }),
                 };
                 write_host_frame(&mut stream, &response).await.unwrap();
             });
-            assert!(
-                capture(
-                    &super::super::job_service::ServiceContext::default(),
-                    &record,
-                    false,
-                    SnapshotRamStorage::Raw,
-                    Some("capture".into()),
-                    Duration::from_secs(1)
-                )
-                .await
-                .is_err()
-            );
-            server.await.unwrap();
-            std::fs::remove_file(job.active_stage.join(SOCKET)).unwrap();
+            let error = capture(
+                &super::super::job_service::ServiceContext::default(),
+                &record,
+                false,
+                SnapshotRamStorage::Raw,
+                Some("capture".into()),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+            if variant == 3 {
+                assert!(format!("{error:#}").contains("local Job owner unavailable"));
+                assert!(!server.is_finished());
+                server.abort();
+                let _ = server.await;
+            } else {
+                server.await.unwrap();
+            }
             drop(directory);
         }
     }
@@ -1307,17 +1024,19 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let temp = tempfile::tempdir().unwrap();
-        let (record, mut job) = fixture(temp.path());
-        job.state = JobState::Running;
+        let (mut record, mut job) = fixture(temp.path());
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Running).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
-        let (listener, _directory) = bind_control_endpoint(&job.active_stage).unwrap();
+        let (listener, _directory) = remote_endpoint(&mut record);
         let captured = checkpoint(temp.path());
         let expected = captured.snapshot_id.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let server_cancelled = cancelled.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request: AgentCtlHostRequest<HostCaptureCommand> =
+            let request: AgentCtlHostRequest<super::super::host_transport::InstanceCommand> =
                 read_host_frame(&mut stream).await.unwrap();
             server_cancelled.store(true, Ordering::SeqCst);
             write_host_frame(
@@ -1325,7 +1044,12 @@ mod tests {
                 &AgentCtlHostResponse {
                     version: AGENTCTL_HOST_VERSION,
                     request_id: request.request_id,
-                    result: Ok(captured),
+                    result: Ok(super::super::job_service::CaptureResponse {
+                        job_id: "job".into(),
+                        request_id: "admitted-capture".into(),
+                        suspended: false,
+                        checkpoint: captured,
+                    }),
                 },
             )
             .await
@@ -1360,7 +1084,9 @@ mod tests {
         let (record, mut job) = fixture(temp.path());
         let checkpoint = checkpoint(temp.path());
         let id = checkpoint.snapshot_id.clone();
-        job.state = JobState::Terminal;
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Terminal).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.checkpoints.insert(
             id.clone(),
             Capture {

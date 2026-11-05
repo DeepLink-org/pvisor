@@ -346,9 +346,8 @@ pub(super) fn complete(stages: &mut [Stage], code: i32) -> anyhow::Result<()> {
         runtime::bundle::RunBundle::capture(record, &result, snapshot, false)?
             .write(&record.stage_dir())?;
         runtime::completion::Completion::commit(record, &result)?;
-        runtime::completion::Completion::load(record)?
-            .context("completion receipt missing")?
-            .project(record)?;
+        runtime::completion::Completion::observe_record(record)?
+            .context("completion receipt missing")?;
         record.write()?;
     }
     Ok(())

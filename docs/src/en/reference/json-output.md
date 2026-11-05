@@ -56,20 +56,25 @@ Stop reading an unrecognized `schema_version`, and stop a decision when required
 
 ## JSON versions and command envelopes {#envelopes}
 
-The schema number belongs to the output format, not the CLI as a whole. `status --json` has no top-level schema version and is an overview. Do not look for `schema_version = 4` there. Its fields are:
+The schema number belongs to the output format, not the CLI as a whole. `status --json` uses `schema_version = 2` and returns a bounded display summary. Its fields are:
 
 | Field | Meaning |
 | --- | --- |
-| `run` | Stored RunRecord; includes its lifecycle and storage references |
+| `schema_version` | Status summary contract, currently 2 |
+| `state` | Effective execution phase: live `paused`/`cancelling`, confirmed `hibernated`/terminal outcome, or `unknown`; not inferred from liveness |
+| `run` | Display identity, recorded lifecycle, stage and workspace paths; the effective phase is top-level `state`; command limited to 32 arguments of 512 UTF-8 bytes, with `command_truncated` |
 | `live` | Boolean liveness observation |
-| `live_attempt` | Current owner-supplied Attempt observation, including live VM pause state; null for disk-only reads |
+| `live_attempt` | Current owner-supplied Attempt identity, state and update time; null for disk-only reads |
+| `execution_progress` | Applied journal position, queued/in-flight counts, `history_gap` and `outcome_unknown`, sampled atomically with `live_attempt`; null without an owner observation |
 | `checkpoint_capability` | `workspace`, `workspace_capture_requires`, `execution`, `execution_blocker` |
-| `checkpoints` | Array of workspace checkpoint records |
-| `execution` | Native Job state, suspended head, current Attempt, checkpoints, requests and store ownership; null without native handoff |
+| `workspace_checkpoint_count` | Number of workspace checkpoints |
+| `execution` | Durable Job state, suspended head, active Attempt and checkpoint/capture/resume/fork request counts; null without native handoff |
 | `workspace_generation` | Integer, or null without an overlay |
-| `apply_history` | Previous apply transaction records |
-| `observations.filesystem/network` | Available access/traffic observations, or null |
-| `filesystem` | State, changed_files, whiteouts, sample_paths; null without staging |
+| `apply_batch_count` | Number of previous apply batches |
+| `observations.filesystem/network` | Aggregate counters with `source` (`live` or `durable`), overflow counts and at most five bounded denied samples; null when unavailable |
+| `filesystem` | `changed_files`, `whiteouts`, `sample_paths`, `samples_truncated`; null without staging |
+
+Base summaries are limited to 256 KiB. Each path/destination sample is limited to 512 UTF-8 bytes; shortened samples carry a truncation flag. A missing observation means unavailable, not zero traffic. Status no longer embeds full launch settings, checkpoint/apply arrays or request maps. Use checkpoint list/show, review and retained owning records for those details. The instance protocol is `pvisor-instance-control-2`; drain old live Jobs through their owning executable before replacing an installation.
 
 Review outputs add `review_context` to the Bundle: `job_id`, `attempt_id`, nullable `checkpoint_id`, `workspace_generation`, `file_view`, and `execution_evidence`. Execution evidence remains historical; the selected filesystem view is refreshed at review time, including after apply/drop. Reviewing a checkpoint selects its saved files without rerunning its workload.
 

@@ -140,22 +140,16 @@ M0 validates the control loop while M1 advances ownership for large-scale asynch
 
 M0 cannot assume an existing all-participant VM AgentCtl transport. Future safe-wait acknowledgment requires adopted inputs and quiescent participants, without requiring every host task to be completed, which would remove the overlap window.
 
-#### M0: implemented native wait adapter {#native-model-wait}
+#### M0: retired native wait prototype {#native-model-wait}
 
-Embedded callers using the `gateway` Cargo feature can select:
-
-```rust
-let gateway = pvisor::GatewayDriverConfig::new(proxy)
-    .native_model_wait(pvisor::NativeModelWait::Offload);
-```
-
-`Pause` stops vCPUs; `Offload` also uses the existing shared file-backed RAM barrier. Disabled by default, the adapter supports Linux x86_64 VMs, requires an enabled Gateway and conflicts with a custom `model_wait`. Session binds a fresh identity and wait state for each Attempt. There is no CLI or configuration-file toggle.
-
-The first version requires a trusted single workload to declare whole-guest quiescence with `x-pvisor-inference-idle: true`, with no outstanding filesystem or device operations. The declaration neither discovers other runnable processes nor submits dirty guest pages. Ordinary requests retain their existing path. Private COW/pager RAM cannot offload; a device-drain timeout still fails the Attempt.
-
-Each Attempt holds at most one wait, including accepted native operations and cancellation cleanup. Missing or foreign Run/Attempt identities and concurrent waits are rejected before upstream dispatch. Entry and delivery await native pause/offload and resume ACKs respectively. Manual pause/resume/offload shares the control lock and revokes the automatic pause epoch on admission, even if the later native operation fails. Delivery after a manual pause waits for explicit resume or cancellation. Dropped handlers clean up only their own pause; unknown ACKs or failed cleanup cancel the Attempt. Execution checkpoint/suspend is rejected while a wait exists.
-
-This prototype retains existing resource admission and the storage lease throughout; it does not release or reacquire CPU reservations. Control observations add `model_wait_epoch`, null for manual operations. SSE still resumes at the first nonempty network chunk, including a heartbeat. Full inference spooling, the general guest task protocol and the guest transfer fence remain unimplemented.
+The explicit-declaration M0 adapter, its configuration and dedicated driver/tests
+have been removed. Current built-in waits use
+`GatewayDriverConfig::cooperative_model_wait`, guest-kernel idle evidence and the
+single `Execution` control owner. The `x-pvisor-inference-idle` header is ignored
+and stripped; it grants no control authority. See the
+[current contract](../../offload/index.md).
+The dated validation record below describes the historical prototype and is not
+acceptance evidence for the replacement.
 
 ### 2.9 Implemented host write-buffer foundation {#host-write-buffer}
 

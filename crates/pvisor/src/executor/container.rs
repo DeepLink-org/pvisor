@@ -417,10 +417,8 @@ impl RunExecutor for ContainerExecutor {
     async fn execute(&self, context: &Session) -> ExecutorOutput {
         let spec = context.spec().clone();
         context
-            .transition(
-                RunState::Starting,
-                Some("injecting pVisor into OCI container".into()),
-            )
+            .execution()
+            .starting(Some("injecting pVisor into OCI container".into()))
             .await;
 
         let prepared = async {
@@ -465,7 +463,7 @@ impl RunExecutor for ContainerExecutor {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stderr, limit).await })
         });
-        context.transition(RunState::Running, None).await;
+        context.execution().ready().await;
 
         let watchdog_ms = spec.runtime.timeout_ms.map(|timeout| {
             timeout

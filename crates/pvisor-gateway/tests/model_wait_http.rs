@@ -36,7 +36,6 @@ struct Admission {
     entries: AtomicUsize,
     resumes: AtomicUsize,
     cancellations: AtomicUsize,
-    legacy_declaration: bool,
     fail_enter: bool,
     fail_resume: bool,
     stream_buffer: Option<ModelStreamBuffer>,
@@ -57,7 +56,6 @@ impl Default for Admission {
             entries: AtomicUsize::new(0),
             resumes: AtomicUsize::new(0),
             cancellations: AtomicUsize::new(0),
-            legacy_declaration: false,
             fail_enter: false,
             fail_resume: false,
             stream_buffer: None,
@@ -74,9 +72,6 @@ struct Lifecycle(Arc<Admission>);
 struct Wait(Arc<Admission>);
 
 impl ModelWaitLifecycle for Lifecycle {
-    fn requires_idle_declaration(&self) -> bool {
-        self.0.legacy_declaration
-    }
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>> {
         assert_eq!(request.attempt_id.unwrap().as_str(), "wait-attempt");
         assert_eq!(request.client_model, "test-model");
@@ -839,34 +834,4 @@ async fn unmarked_stream_has_multiple_resume_barriers_and_one_final_retirement()
     assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn legacy_adapter_keeps_explicit_declaration_while_host_mode_stays_unmarked() {
-    for (headers, expected) in [(vec![], 0), (vec!["false"], 0), (vec!["true"], 1)] {
-        let mut fixture = Fixture::new(
-            false,
-            StatusCode::OK,
-            Admission {
-                legacy_declaration: true,
-                ..Default::default()
-            },
-            true,
-        )
-        .await;
-        fixture.admission.enter_gate.add_permits(1);
-        fixture.admission.resume_gate.add_permits(1);
-        let response = fixture.request(false, &headers, "test-model");
-        fixture.upstream_received().await;
-        fixture.chunk(REPLY).await;
-        fixture.finish_body();
-        let response = tokio::time::timeout(LIMIT, response)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.text().await.unwrap(), REPLY);
-        assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), expected);
-        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), expected);
-    }
 }

@@ -70,18 +70,11 @@ impl ModelStreamBuffer {
 use async_trait::async_trait;
 use pvisor_core::ModelCallRequest;
 
-/// Legacy declaration, stripped upstream. Only an explicitly configured legacy
-/// lifecycle requires it; it cannot opt in or out of Host observation.
+/// Ignored client header, always stripped upstream. Only Host installation enables observation.
 pub const INFERENCE_IDLE_HEADER: &str = "x-pvisor-inference-idle";
 
 /// Attempt-local factory, called only after model/action authorization.
 pub trait ModelWaitLifecycle: Send + Sync + Debug {
-    /// Compatibility for the legacy native adapter only. New Host observers do
-    /// not require or trust an Agent declaration.
-    fn requires_idle_declaration(&self) -> bool {
-        false
-    }
-
     /// Allocate a cancellation-safe obligation before starting asynchronous
     /// work. Do not perform blocking I/O here. Derive authority from the bound
     /// Attempt, not from caller-supplied session headers.
@@ -146,22 +139,6 @@ pub trait ModelWait: Send {
     /// while either future is pending. Enqueue bounded cleanup; do not block.
     /// Cleanup must preserve fencing and must never override another pause.
     fn cancel(&mut self);
-}
-
-pub(crate) fn cooperative_idle(headers: &axum::http::HeaderMap) -> anyhow::Result<bool> {
-    let mut values = headers.get_all(INFERENCE_IDLE_HEADER).iter();
-    let Some(value) = values.next() else {
-        return Ok(false);
-    };
-    anyhow::ensure!(
-        values.next().is_none(),
-        "duplicate inference-idle declaration"
-    );
-    match value.as_bytes() {
-        b"true" => Ok(true),
-        b"false" => Ok(false),
-        _ => anyhow::bail!("inference-idle declaration must be true or false"),
-    }
 }
 
 pub(crate) struct PendingModelWait {

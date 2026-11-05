@@ -5,12 +5,6 @@
 
 #[cfg(test)]
 use pvisor_journal::api::JournalStore;
-#[path = "attempt_service.rs"]
-pub mod attempt_service;
-pub use attempt_service::AttemptService;
-#[cfg(feature = "gateway")]
-#[path = "legacy_model_wait.rs"]
-pub(crate) mod model_wait;
 
 #[cfg(feature = "gateway")]
 use crate::GatewayDriverConfig;
@@ -31,12 +25,11 @@ use pvisor_core::event::Receipt;
 use pvisor_core::{
     AttemptId, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutorPlan,
     IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunInvocation, RunResult,
-    RunSpec, RunStatus,
+    RunSpec,
 };
 use std::sync::Arc;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PVisorError {
@@ -85,518 +78,18 @@ impl RunEventStream {
     }
 }
 
-/// Cloneable, provider-independent cancellation capability for an in-flight Run.
-#[derive(Clone)]
-pub struct RunCancellation {
-    token: CancellationToken,
-}
-
-impl RunCancellation {
-    pub fn cancel(&self) {
-        self.token.cancel();
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.token.is_cancelled()
-    }
-
-    /// Wait for cancellation without exposing the underlying provider token.
-    pub async fn cancelled(&self) {
-        self.token.cancelled().await;
-    }
-}
-
-/// Handle for one in-flight Run: status, cancel, wait, event subscribe.
+/// Completion and retained-artifact handle for one Run.
+/// Select [`Self::execution`] for status, subscriptions, cancellation and controls.
 pub struct RunHandle {
     pub(crate) run_id: pvisor_core::RunId,
     pub(crate) attempt_id: AttemptId,
-    pub(crate) status: watch::Receiver<RunStatus>,
-    pub(crate) cancellation: CancellationToken,
-    pub(crate) control: RunControlHandle,
+    pub(crate) execution: super::execution::Execution,
     pub(crate) events: RunEventPublisher,
     pub(crate) agentctl: crate::AgentCtlControl,
     pub(crate) record: Option<crate::runtime::RunRecord>,
     pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
     pub(crate) join: JoinHandle<RunResult>,
     pub(crate) instance_control: Option<JoinHandle<()>>,
-}
-
-/// Cloneable VM controls bound to one live Run attempt. Native controls still
-/// require executor support, a live state, and the Run's cancellation authority.
-#[derive(Clone)]
-pub struct RunControlHandle {
-    #[cfg(feature = "gateway")]
-    waits: Arc<model_wait::WaitRegistry>,
-    #[cfg(feature = "gateway")]
-    pub(crate) wait_coordinator: Option<Arc<super::wait_coordinator::WaitCoordinator>>,
-    status: watch::Receiver<RunStatus>,
-    vm_control: crate::executor::vm::control::VmControl,
-    vm_status: watch::Sender<RunStatus>,
-    control_operation: pvisor_core::operation::Operation,
-    events: RunEventPublisher,
-    cancellation: CancellationToken,
-}
-
-impl RunControlHandle {
-    #[cfg(feature = "gateway")]
-    pub(crate) fn for_wait_coordinator(
-        vm_status: watch::Sender<RunStatus>,
-        vm_control: crate::executor::vm::control::VmControl,
-        control_operation: pvisor_core::operation::Operation,
-        events: RunEventPublisher,
-        cancellation: CancellationToken,
-    ) -> Self {
-        Self {
-            status: vm_status.subscribe(),
-            vm_status,
-            vm_control,
-            control_operation,
-            events,
-            cancellation,
-            wait_coordinator: None,
-            waits: Arc::new(model_wait::WaitRegistry::default()),
-        }
-    }
-
-    #[cfg(feature = "gateway")]
-    pub(crate) fn monitor_wait_termination(&self) {
-        let mut status = self.status.clone();
-        let cancellation = self.cancellation.clone();
-        tokio::spawn(async move {
-            loop {
-                if status.borrow().state.is_terminal() {
-                    cancellation.cancel();
-                    return;
-                }
-                tokio::select! {
-                    _ = cancellation.cancelled() => return,
-                    changed = status.changed() => {
-                        if changed.is_err() { cancellation.cancel(); return; }
-                    }
-                }
-            }
-        });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn transition_for_test(&self) -> &tokio::sync::Mutex<()> {
-        &self.vm_control.transition
-    }
-
-    pub(crate) fn for_session(
-        session: &crate::Session,
-        operation: pvisor_core::operation::Operation,
-    ) -> Self {
-        Self {
-            status: session.status.subscribe(),
-            vm_status: session.status.clone(),
-            vm_control: session.vm_control.clone(),
-            cancellation: session.cancel.clone(),
-            control_operation: operation,
-            events: session.events.clone(),
-            #[cfg(feature = "gateway")]
-            waits: Arc::new(model_wait::WaitRegistry::default()),
-            #[cfg(feature = "gateway")]
-            wait_coordinator: None,
-        }
-    }
-
-    pub fn status(&self) -> RunStatus {
-        self.status.borrow().clone()
-    }
-
-    /// Request cancellation; completion and resource release remain Run-owned.
-    pub fn cancel(&self) {
-        self.cancellation.cancel();
-    }
-
-    /// Read-only physical observations never acquire the native control exchange
-    /// lock, modify VM state, or retain snapshot RAM/pager ownership.
-    pub async fn memory_sample(&self) -> pvisor_core::memory::RunMemorySample {
-        let status = self.status.borrow().clone();
-        let started = pvisor_core::unix_now_ms();
-        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
-            || status.state.is_terminal()
-        {
-            Err(anyhow::anyhow!(
-                "memory observation requires a live native VM"
-            ))
-        } else {
-            self.vm_control.memory_usage().await
-        };
-        let (usage, error) = match result {
-            Ok(usage) => (Some(usage), None),
-            Err(error) => {
-                let mut error = format!("{error:#}");
-                let mut end = error.len().min(1024);
-                while !error.is_char_boundary(end) {
-                    end -= 1;
-                }
-                error.truncate(end);
-                (None, Some(error))
-            }
-        };
-        pvisor_core::memory::RunMemorySample {
-            run_id: status.run_id,
-            attempt_id: status.attempt.attempt_id,
-            sampled_at_unix_ms: started,
-            usage,
-            error,
-        }
-    }
-
-    /// Read-only CPU observations never acquire the native control exchange
-    /// lock, modify VM state, or retain snapshot RAM/pager ownership.
-    pub async fn cpu_sample(&self) -> pvisor_core::cpu::RunCpuSample {
-        let status = self.status.borrow().clone();
-        let started = pvisor_core::unix_now_ms();
-        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
-            || status.state.is_terminal()
-        {
-            Err(anyhow::anyhow!("CPU observation requires a live native VM"))
-        } else {
-            self.vm_control.cpu_usage().await
-        };
-        let (usage, error) = match result {
-            Ok(usage) => (Some(usage), None),
-            Err(error) => {
-                let mut error = format!("{error:#}");
-                let mut end = error.len().min(1024);
-                while !error.is_char_boundary(end) {
-                    end -= 1;
-                }
-                error.truncate(end);
-                (None, Some(error))
-            }
-        };
-        pvisor_core::cpu::RunCpuSample {
-            run_id: status.run_id,
-            attempt_id: status.attempt.attempt_id,
-            sampled_at_unix_ms: started,
-            usage,
-            error,
-        }
-    }
-
-    /// Wait through asynchronous attempt startup without issuing a primitive
-    /// before the native control endpoint is usable. Cancellation still fences it.
-    pub async fn wait_ready(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "VM controls require a VM executor"
-        );
-        loop {
-            let state = self.status.borrow().state;
-            anyhow::ensure!(
-                !self.cancellation.is_cancelled()
-                    && !state.is_terminal()
-                    && state != pvisor_core::RunState::Cancelling,
-                "attempt ended before control readiness"
-            );
-            if matches!(
-                state,
-                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-            ) {
-                return Ok(());
-            }
-            tokio::select! {
-                _ = self.cancellation.cancelled() => {
-                    anyhow::bail!("attempt ended before control readiness");
-                }
-                changed = self.status.changed() => {
-                    changed.map_err(|_| anyhow::anyhow!("attempt status closed before control readiness"))?;
-                }
-            }
-        }
-    }
-
-    pub async fn control(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        #[cfg(feature = "gateway")]
-        if let Some(coordinator) = &self.wait_coordinator {
-            return coordinator.control(kind).await;
-        }
-        anyhow::ensure!(
-            self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "live VM controls require a VM executor"
-        );
-        kind.validate()?;
-        anyhow::ensure!(
-            matches!(
-                kind,
-                pvisor_core::operation::OperationKind::RunPause
-                    | pvisor_core::operation::OperationKind::RunResume
-                    | pvisor_core::operation::OperationKind::RunOffload { .. }
-                    | pvisor_core::operation::OperationKind::RunCheckpoint { .. }
-                    | pvisor_core::operation::OperationKind::RunSuspend { .. }
-            ),
-            "unsupported live VM control primitive"
-        );
-        let controls = self.clone();
-        tokio::spawn(async move {
-            let _transition = controls.vm_control.transition.lock().await;
-            controls.ensure_live()?;
-            kind.validate()?;
-            #[cfg(feature = "gateway")]
-            controls.waits.manual_control(&kind)?;
-            controls.control_locked(kind, None).await
-        })
-        .await?
-    }
-
-    fn ensure_live(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.cancellation.is_cancelled(), "attempt is cancelling");
-        anyhow::ensure!(
-            matches!(
-                self.status.borrow().state,
-                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-            ),
-            "attempt is not running or suspended"
-        );
-        Ok(())
-    }
-
-    // Callers hold the Attempt transition lock and retain the task through ACK,
-    // even if their requesting future is dropped.
-    async fn control_locked(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-        model_wait_epoch: Option<u64>,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        Ok(self
-            .control_locked_with_idle(kind, model_wait_epoch, None)
-            .await?
-            .0)
-    }
-
-    #[cfg(feature = "gateway")]
-    async fn native_control(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        self.native_control_with_idle(kind, None).await
-    }
-    #[cfg(feature = "gateway")]
-    async fn native_control_with_idle(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-        idle_epoch: Option<u64>,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        Ok(self.native_control_with_idle_ack(kind, idle_epoch).await?.0)
-    }
-    #[cfg(feature = "gateway")]
-    async fn native_control_with_idle_ack(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-        idle_epoch: Option<u64>,
-    ) -> anyhow::Result<(pvisor_core::operation::Value, Option<u64>)> {
-        let controls = self.clone();
-        tokio::spawn(async move {
-            let _transition = controls.vm_control.transition.lock().await;
-            controls.ensure_live()?;
-            controls
-                .control_locked_with_idle(kind, None, idle_epoch)
-                .await
-        })
-        .await?
-    }
-    async fn control_locked_with_idle(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-        model_wait_epoch: Option<u64>,
-        idle_epoch: Option<u64>,
-    ) -> anyhow::Result<(pvisor_core::operation::Value, Option<u64>)> {
-        use pvisor_core::operation::{OperationKind, Value, VmState};
-        anyhow::ensure!(
-            self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "live VM controls require a VM executor"
-        );
-        kind.validate()?;
-        anyhow::ensure!(
-            matches!(
-                kind,
-                OperationKind::RunPause
-                    | OperationKind::RunResume
-                    | OperationKind::RunOffload { .. }
-                    | OperationKind::RunCheckpoint { .. }
-                    | OperationKind::RunSuspend { .. }
-            ),
-            "unsupported live VM control primitive"
-        );
-        let mut operation = self.control_operation.clone();
-        operation.kind = kind.clone();
-        operation.rules.clear();
-        operation
-            .placements
-            .retain(|placement| matches!(placement, pvisor_core::operation::Placement::Vm { .. }));
-        operation.validate()?;
-        let events = &self.events;
-        anyhow::ensure!(!self.cancellation.is_cancelled(), "attempt is cancelling");
-        anyhow::ensure!(
-            matches!(
-                self.vm_status.borrow().state,
-                pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-            ),
-            "attempt is not running or suspended"
-        );
-        events
-            .publish(
-                "vm.control_requested",
-                "runtime",
-                serde_json::json!({"operation": operation, "model_wait_epoch": model_wait_epoch}),
-            )
-            .await?;
-        self.ensure_live()?;
-        match if idle_epoch.is_some() {
-            self.vm_control.command_with_idle(kind, idle_epoch).await
-        } else {
-            self.vm_control.command(kind).await
-        } {
-            Ok(reply) => {
-                let state = reply
-                    .state
-                    .ok_or_else(|| anyhow::anyhow!("VM control returned no state"))?;
-                let value = if let Some(checkpoint) = reply.checkpoint {
-                    anyhow::ensure!(
-                        checkpoint.source_run_id == operation.run_id
-                            && checkpoint.source_attempt_id
-                                == self.vm_status.borrow().attempt.attempt_id.as_str(),
-                        "checkpoint belongs to another attempt"
-                    );
-                    Value::ExecutionCheckpoint { checkpoint }
-                } else {
-                    Value::Vm {
-                        state,
-                        memory: reply.memory,
-                    }
-                };
-                self.vm_status.send_modify(|status| {
-                    if matches!(operation.kind, OperationKind::RunSuspend { .. })
-                        && matches!(
-                            status.state,
-                            pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-                        )
-                    {
-                        status.state = pvisor_core::RunState::Checkpointing;
-                        status.updated_at_unix_ms = crate::unix_now_ms();
-                        status.message =
-                            Some("snapshot sealed; waiting for native termination".into());
-                    }
-                    if !matches!(value, Value::ExecutionCheckpoint { .. })
-                        && matches!(
-                            status.state,
-                            pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-                        )
-                    {
-                        status.state = if state == VmState::Running {
-                            pvisor_core::RunState::Running
-                        } else {
-                            pvisor_core::RunState::Suspended
-                        };
-                        status.updated_at_unix_ms = crate::unix_now_ms();
-                        status.message = Some(format!("VM {state:?}"));
-                    }
-                });
-                events
-                    .publish(
-                        "vm.control_completed",
-                        "runtime",
-                        serde_json::json!({"operation": operation, "value": value, "model_wait_epoch": model_wait_epoch, "guest_idle_epoch": idle_epoch, "next_guest_idle_epoch": reply.idle_epoch}),
-                    )
-                    .await
-                    .map_err(|error| {
-                        anyhow::anyhow!("VM control completed but observation failed: {error}")
-                    })?;
-                Ok((value, reply.idle_epoch))
-            }
-            Err(error) => {
-                let _ = events
-                    .publish(
-                        "vm.control_failed",
-                        "runtime",
-                        serde_json::json!({"operation": operation, "error": error.to_string(), "model_wait_epoch": model_wait_epoch}),
-                    )
-                    .await;
-                Err(error)
-            }
-        }
-    }
-}
-
-#[cfg(feature = "gateway")]
-#[async_trait::async_trait]
-impl super::wait_coordinator::WaitControl for RunControlHandle {
-    fn supports_resume_rearm(&self) -> bool {
-        true
-    }
-    async fn idle_settled(&self) -> anyhow::Result<()> {
-        self.vm_control.idle.settled().await
-    }
-    async fn idle_resume_rearm(
-        &self,
-        epoch: u64,
-        wake: CancellationToken,
-    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<Option<u64>>> {
-        self.vm_control
-            .idle
-            .resume_prepare(wake, async {
-                let (_, next) = self
-                    .native_control_with_idle_ack(
-                        pvisor_core::operation::OperationKind::RunResume,
-                        Some(epoch),
-                    )
-                    .await?;
-                next.ok_or_else(|| anyhow::anyhow!("missing resume-rearm ACK"))
-            })
-            .await
-    }
-    fn pending_host_reads(&self) -> u64 {
-        self.vm_control.idle.pending_host_reads()
-    }
-    async fn idle_permit(&self, wake: CancellationToken) -> anyhow::Result<Option<u64>> {
-        self.vm_control.idle.prepare(wake).await
-    }
-    async fn idle_pause(&self, epoch: u64) -> anyhow::Result<bool> {
-        let value = self
-            .native_control_with_idle(pvisor_core::operation::OperationKind::RunPause, Some(epoch))
-            .await?;
-        Ok(matches!(
-            value,
-            pvisor_core::operation::Value::Vm {
-                state: pvisor_core::operation::VmState::Paused,
-                ..
-            }
-        ))
-    }
-    async fn idle_offload(&self, epoch: u64) -> anyhow::Result<bool> {
-        let value = self
-            .native_control_with_idle(
-                pvisor_core::operation::OperationKind::RunOffload { file: None },
-                Some(epoch),
-            )
-            .await?;
-        Ok(matches!(
-            value,
-            pvisor_core::operation::Value::Vm {
-                state: pvisor_core::operation::VmState::Offloaded,
-                memory: Some(_),
-            }
-        ))
-    }
-    fn state(&self) -> pvisor_core::RunState {
-        self.status.borrow().state
-    }
-    fn can_offload(&self) -> bool {
-        self.vm_control.automatic_offload_supported()
-    }
-    async fn execute(
-        &self,
-        operation: pvisor_core::operation::OperationKind,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        self.native_control(operation).await
-    }
 }
 
 impl RunHandle {
@@ -607,88 +100,9 @@ impl RunHandle {
         super::instance_control::socket(self)
     }
 
-    /// Capture full native CPU/RAM/devices and owned filesystem copies in one
-    /// freeze/publication transaction. The source resumes after durable seal.
-    /// Requires a no-network VM with durable Run storage. This API does not
-    /// suspend the Job or hand execution to another Attempt.
-    pub async fn capture_execution(
-        &self,
-        request_id: impl Into<String>,
-        ram_storage: pvisor_core::operation::SnapshotRamStorage,
-    ) -> anyhow::Result<pvisor_core::operation::ExecutionCheckpoint> {
-        let value = self
-            .control(pvisor_core::operation::OperationKind::RunCheckpoint {
-                request_id: request_id.into(),
-                ram_storage,
-            })
-            .await?;
-        let pvisor_core::operation::Value::ExecutionCheckpoint { checkpoint } = value else {
-            anyhow::bail!("native capture returned no execution checkpoint")
-        };
-        Ok(checkpoint)
-    }
-
-    /// Pause every VM vCPU and wait for acknowledgement. Device I/O remains
-    /// active and the Run's wall-time deadline continues. Other executors reject
-    /// this operation. An uncertain transition cancels the attempt.
-    pub async fn pause_vm(&self) -> anyhow::Result<()> {
-        self.pause().await
-    }
-
-    /// Resume the paused VM and wait for acknowledgement. Repeated calls are
-    /// idempotent while the VM remains available.
-    pub async fn resume_vm(&self) -> anyhow::Result<()> {
-        self.resume().await
-    }
-
-    pub async fn pause(&self) -> anyhow::Result<()> {
-        self.control(pvisor_core::operation::OperationKind::RunPause)
-            .await
-            .map(|_| ())
-    }
-
-    pub async fn resume(&self) -> anyhow::Result<()> {
-        self.control(pvisor_core::operation::OperationKind::RunResume)
-            .await
-            .map(|_| ())
-    }
-
-    /// Pause and reclaim live file-backed RAM. A new destination must be on the
-    /// same filesystem as the current backing. None retains the existing file.
-    pub async fn offload(
-        &self,
-        file: Option<std::path::PathBuf>,
-    ) -> anyhow::Result<pvisor_core::operation::VmMemory> {
-        let value = self
-            .control(pvisor_core::operation::OperationKind::RunOffload { file })
-            .await?;
-        let pvisor_core::operation::Value::Vm {
-            memory: Some(memory),
-            ..
-        } = value
-        else {
-            anyhow::bail!("offload returned no RAM report")
-        };
-        Ok(memory)
-    }
-
-    /// Clone the attempt-scoped VM control authority while another task waits
-    /// for Run completion. It shares cancellation and native transition ordering.
-    pub fn controls(&self) -> RunControlHandle {
-        self.control.clone()
-    }
-
-    pub fn service(&self) -> AttemptService {
-        AttemptService::new(self.controls())
-    }
-
-    /// Execute an attempt-scoped control primitive using this handle's authority.
-    /// Commands and observations remain intact if the caller stops waiting.
-    pub async fn control(
-        &self,
-        kind: pvisor_core::operation::OperationKind,
-    ) -> anyhow::Result<pvisor_core::operation::Value> {
-        self.controls().control(kind).await
+    /// Execution owner for status, subscriptions, cancellation and live VM controls.
+    pub fn execution(&self) -> &super::execution::Execution {
+        &self.execution
     }
 
     pub fn run_id(&self) -> &pvisor_core::RunId {
@@ -697,15 +111,6 @@ impl RunHandle {
 
     pub fn attempt_id(&self) -> &AttemptId {
         &self.attempt_id
-    }
-
-    pub fn status(&self) -> RunStatus {
-        self.status.borrow().clone()
-    }
-
-    pub async fn status_changed(&mut self) -> Option<RunStatus> {
-        self.status.changed().await.ok()?;
-        Some(self.status())
     }
 
     pub fn subscribe_events(&self) -> RunEventStream {
@@ -739,17 +144,6 @@ impl RunHandle {
                 return Ok(captured);
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }
-
-    /// Cooperative cancel followed by executor-specific termination.
-    pub fn cancel(&self) {
-        self.cancellation.cancel();
-    }
-
-    pub fn cancellation(&self) -> RunCancellation {
-        RunCancellation {
-            token: self.cancellation.clone(),
         }
     }
 
@@ -1359,7 +753,7 @@ impl PVisor {
                     .map_err(|error| PVisorError::Prepare(error.into()))?,
             );
         }
-        let mut handle = crate::Session::start(
+        let (mut handle, owner) = crate::Session::start(
             &self.runtime,
             Arc::clone(&self.event_sink),
             resolved,
@@ -1368,7 +762,7 @@ impl PVisor {
         .await?;
         #[cfg(unix)]
         if let Some(server) = control_server {
-            handle.instance_control = Some(server.start(&handle));
+            handle.instance_control = Some(server.start(&handle, owner));
         }
         Ok(handle)
     }
@@ -1767,228 +1161,6 @@ mod tests {
         }
     }
 
-    fn starting_vm_controls() -> RunControlHandle {
-        let run_id = pvisor_core::RunId::from("control-readiness");
-        let attempt_id = AttemptId::from("attempt-readiness");
-        let (vm_status, status) = watch::channel(RunStatus {
-            run_id: run_id.clone(),
-            state: RunState::Starting,
-            attempt: pvisor_core::AttemptInfo {
-                attempt_id: attempt_id.clone(),
-                number: 1,
-                executor: ExecutorPlan {
-                    name: "readiness-fixture".into(),
-                    kind: ExecutorKind::VirtualMachine,
-                    isolation: IsolationKind::VirtualMachine,
-                    capability_plan: CapabilityEnforcementPlan::default(),
-                    supports_checkpoint: false,
-                    supports_migration: false,
-                },
-                started_at_unix_ms: None,
-                finished_at_unix_ms: None,
-            },
-            updated_at_unix_ms: 0,
-            message: None,
-        });
-        let cancellation = CancellationToken::new();
-        let (live, _) = broadcast::channel(16);
-        RunControlHandle {
-            #[cfg(feature = "gateway")]
-            waits: Arc::new(model_wait::WaitRegistry::default()),
-            #[cfg(feature = "gateway")]
-            wait_coordinator: None,
-            status,
-            vm_status,
-            vm_control: crate::executor::vm::control::VmControl::new(cancellation.clone()),
-            cancellation,
-            control_operation: PVisor::new()
-                .resolve_operation(RunSpec::process("readiness", "test", "/bin/true"))
-                .unwrap(),
-            events: RunEventPublisher::new(
-                run_id,
-                attempt_id,
-                "test",
-                Arc::new(NoopEventSink::default()),
-                live,
-            ),
-        }
-    }
-
-    #[tokio::test]
-    async fn attempt_service_status_and_terminate_work_without_vm_authority() {
-        use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
-        use pvisor_core::operation::{OperationKind, SnapshotRamStorage};
-        let controls = starting_vm_controls();
-        controls.vm_status.send_modify(|status| {
-            status.state = RunState::Running;
-            status.attempt.executor.kind = ExecutorKind::Process;
-        });
-        let service = AttemptService::new(controls.clone());
-        let reply = service.dispatch(HostAttemptCommand::Status).await.unwrap();
-        assert_eq!(reply.status.run_id, controls.status().run_id);
-        assert_eq!(
-            reply.status.attempt.attempt_id,
-            controls.status().attempt.attempt_id
-        );
-        assert!(reply.value.is_none());
-        for kind in [
-            OperationKind::RunPause,
-            OperationKind::RunResume,
-            OperationKind::RunOffload { file: None },
-            OperationKind::RunCheckpoint {
-                request_id: "checkpoint".into(),
-                ram_storage: SnapshotRamStorage::Raw,
-            },
-            OperationKind::RunSuspend {
-                request_id: "suspend".into(),
-                ram_storage: SnapshotRamStorage::Raw,
-            },
-            OperationKind::RunExecute {
-                program: "/bin/true".into(),
-                args: vec![],
-                cwd: None,
-            },
-        ] {
-            let error = service
-                .dispatch(HostAttemptCommand::Operation { kind })
-                .await
-                .unwrap_err();
-            assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
-        }
-        assert!(!controls.cancellation.is_cancelled());
-        let reply = service
-            .dispatch(HostAttemptCommand::Terminate)
-            .await
-            .unwrap();
-        assert!(controls.cancellation.is_cancelled());
-        assert!(reply.value.is_none());
-        // A cancellation acknowledgement must not claim terminal publication.
-        assert_eq!(reply.status.state, RunState::Running);
-        controls
-            .vm_status
-            .send_modify(|status| status.state = RunState::Completed);
-        assert_eq!(
-            service
-                .dispatch(HostAttemptCommand::Status)
-                .await
-                .unwrap()
-                .status
-                .state,
-            RunState::Completed
-        );
-    }
-
-    #[tokio::test]
-    async fn attempt_service_routes_all_native_primitives_through_control_checks() {
-        use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
-        use pvisor_core::operation::{OperationKind, SnapshotRamStorage};
-        let controls = starting_vm_controls();
-        let service = AttemptService::new(controls.clone());
-        for kind in [
-            OperationKind::RunPause,
-            OperationKind::RunResume,
-            OperationKind::RunOffload { file: None },
-            OperationKind::RunCheckpoint {
-                request_id: "checkpoint".into(),
-                ram_storage: SnapshotRamStorage::Raw,
-            },
-            OperationKind::RunSuspend {
-                request_id: "suspend".into(),
-                ram_storage: SnapshotRamStorage::Raw,
-            },
-        ] {
-            let error = service
-                .dispatch(HostAttemptCommand::Operation { kind })
-                .await
-                .unwrap_err();
-            assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
-            assert!(
-                error
-                    .message
-                    .contains("attempt is not running or suspended")
-            );
-        }
-        let error = service
-            .dispatch(HostAttemptCommand::Operation {
-                kind: OperationKind::RunExecute {
-                    program: "/bin/true".into(),
-                    args: vec![],
-                    cwd: None,
-                },
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
-        let error = service
-            .dispatch(HostAttemptCommand::Operation {
-                kind: OperationKind::RunCheckpoint {
-                    request_id: String::new(),
-                    ram_storage: SnapshotRamStorage::Raw,
-                },
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, AgentCtlHostErrorCode::InvalidRequest);
-        controls.cancel();
-        let error = service
-            .dispatch(HostAttemptCommand::Operation {
-                kind: OperationKind::RunPause,
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
-        assert!(error.message.contains("attempt is cancelling"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn vm_control_readiness_waits_for_start_and_is_fenced_by_cancellation() {
-        let controls = starting_vm_controls();
-        let mut pending = controls.clone();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(1), pending.wait_ready())
-                .await
-                .is_err()
-        );
-        controls
-            .vm_status
-            .send_modify(|status| status.state = RunState::Running);
-        pending.wait_ready().await.unwrap();
-        controls
-            .vm_status
-            .send_modify(|status| status.state = RunState::Suspended);
-        pending.wait_ready().await.unwrap();
-        controls.cancellation.cancel();
-        assert!(pending.wait_ready().await.is_err());
-
-        // Cancellation must wake a waiter even before any status update.
-        let controls = starting_vm_controls();
-        let mut pending = controls.clone();
-        let waiter = tokio::spawn(async move { pending.wait_ready().await });
-        tokio::task::yield_now().await;
-        controls.cancellation.cancel();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(1), waiter)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn vm_control_readiness_rejects_terminal_and_non_vm_attempts() {
-        let mut controls = starting_vm_controls();
-        controls
-            .vm_status
-            .send_modify(|status| status.state = RunState::Completed);
-        assert!(controls.wait_ready().await.is_err());
-        controls.vm_status.send_modify(|status| {
-            status.state = RunState::Running;
-            status.attempt.executor.kind = ExecutorKind::Process;
-        });
-        assert!(controls.wait_ready().await.is_err());
-    }
-
     #[test]
     fn preparation_rejects_malformed_provenance_and_ignores_metadata_plans() {
         for key in ["pvisor.lineage", "pvisor.environment", "pvisor.workspace"] {
@@ -2018,11 +1190,11 @@ mod tests {
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["-c".into(), "sleep 30".into()];
         let handle = runtime.run(spec).await.unwrap();
-        assert!(handle.pause().await.is_err());
-        assert!(handle.resume().await.is_err());
-        assert!(handle.offload(None).await.is_err());
-        assert!(!handle.cancellation().is_cancelled());
-        handle.cancel();
+        assert!(handle.execution().pause().await.is_err());
+        assert!(handle.execution().resume().await.is_err());
+        assert!(handle.execution().offload(None).await.is_err());
+        assert!(!handle.execution().cancellation().is_cancelled());
+        handle.execution().cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.wait())
             .await
             .unwrap()
@@ -2425,8 +1597,7 @@ mod tests {
         async fn execute(&self, context: &Session) -> crate::ExecutorOutput {
             let mut output = ProcessExecutor::default().execute(context).await;
             // Backends cannot publish a terminal state or declare a nonzero exit successful.
-            context.transition(RunState::Completed, None).await;
-            assert!(!context.status().state.is_terminal());
+            assert!(!context.execution().status().state.is_terminal());
             output.state = RunState::Completed;
             output.exit_code = Some(7);
             output.failure = None;
@@ -2482,7 +1653,7 @@ mod tests {
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["-c".into(), format!("touch {}", marker.display())];
         let handle = runtime.run(spec).await.unwrap();
-        handle.cancel();
+        handle.execution().cancel();
         let result = handle.wait().await.unwrap();
         assert_eq!(result.state, RunState::Cancelled);
         assert!(!marker.exists());
@@ -2581,7 +1752,7 @@ mod tests {
         process.stderr = StdioMode::Capture;
 
         let handle = runtime.run(spec).await.unwrap();
-        assert_eq!(handle.status().state, RunState::Created);
+        assert_eq!(handle.execution().status().state, RunState::Created);
         let result = handle.wait().await.unwrap();
         assert_eq!(result.state, RunState::Completed);
         assert_eq!(result.output.stdout.as_deref(), Some("pvisor"));
@@ -2900,7 +2071,7 @@ mod tests {
 
         let handle = runtime.run(spec).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        handle.cancel();
+        handle.execution().cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), handle.wait())
             .await
             .expect("process tree did not terminate")

@@ -191,7 +191,7 @@ and inspect run directly in the caller under `job.lock`. Apply/drop refuse a liv
 owner still holding stage. Interactive execution keeps the original terminal,
 allows Ctrl-C to reach the workload, and restores foreground ownership at exit.
 
-The instance protocol is `pvisor-instance-control-1`; compatible caller binaries
+The instance protocol is `pvisor-instance-control-2`; compatible caller binaries
 need not match the owner's digest. Same-UID private sockets use bounded newline
 JSON and never accept terminal descriptors or Guest AgentCtl tokens. Lost replies,
 timeouts and cancellation can follow effects and are never automatically retried.

@@ -57,7 +57,7 @@ Job 的检查点入口与兼容 profile 见[Job 检查点设计](job-checkpoint-
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Job/Attempt/generation 目标由端点 owner 检查；Guest token 不授予 Host 权限 |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | 工作负载 `Hello`/`Sync`、状态与协作；和 Host 是两套协议 |
-| Job owner 实例控制 | `pvisor-instance-control-1`，version-1 Host envelope，精确 Job/Attempt 与记录的 socket device/inode | 同 UID；调用方二进制可不同，按实例协议兼容；不兼容只拒绝该 Job |
+| Job owner 实例控制 | `pvisor-instance-control-2`，version-1 Host envelope，精确 Job/Attempt 与记录的 socket device/inode | 同 UID；调用方二进制可不同，按实例协议兼容；不兼容只拒绝该 Job |
 | CLI owner 启动 | 继承的私有 socketpair、内部 DTO 与同一二进制 BLAKE3 校验 | 仅前端启动自己的 owner；后续命令不使用该 DTO |
 | 持久 Job 操作锁 | `job.lock` 诊断协议 `pvisor-job-lock-1`，PID 与操作名 | 独占 flock、0600、单硬链接；兼容磁盘格式的不同二进制共享该锁，未知格式拒绝修改 |
 | daemon native supervisor | version-1 Host envelope，加 owner/token 与精确目标 | 凭据与准入独立于 Job owner 协议；旧 supervisor 无透明接管兼容 |

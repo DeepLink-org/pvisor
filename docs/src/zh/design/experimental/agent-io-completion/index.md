@@ -140,22 +140,13 @@ M0 验证整个控制闭环，M1 同时推进大规模异步写入的数据所�
 
 M0 不能假设已有 VM AgentCtl 全参与者通道。未来安全等待确认输入已接管和参与者静默，不要求所有 host 任务 completed，否则会消除 I/O 与内存卸载的重叠窗口。
 
-#### M0：已实现的原生等待适配器 {#native-model-wait}
+#### M0：已移除的原生等待原型 {#native-model-wait}
 
-启用 `gateway` Cargo feature 的嵌入式调用方可选择：
-
-```rust
-let gateway = pvisor::GatewayDriverConfig::new(proxy)
-    .native_model_wait(pvisor::NativeModelWait::Offload);
-```
-
-`Pause` 仅停 vCPU，`Offload` 还使用现有共享文件 RAM 卸载屏障。默认关闭；仅接入 Linux x86_64 VM，要求 Gateway 启用，与自定义 `model_wait` 冲突。Session 在每次 Attempt 启动时绑定独立身份与等待状态。没有 CLI 或配置文件开关。
-
-首版要求可信的单一工作负载用 `x-pvisor-inference-idle: true` 声明整个 guest 静默，且没有尚未完成的文件系统或设备操作。声明不自动发现其他 runnable 进程，也不提交尚在 guest 中的脏页。普通请求保留原路径；私有 COW/pager RAM 不支持卸载，设备排空超时仍导致 Attempt 失败。
-
-每个 Attempt 最多保留一个等待，包括已接受的原生操作和取消清理。缺失或不同的 Run/Attempt 身份、并发等待在 upstream dispatch 前拒绝。进入和交付分别等待原生 pause/offload 与 resume ACK。人工 pause/resume/offload 与自动操作共享控制锁，准入后撤销自动暂停 epoch，即使后续原生操作失败也不归还自动所有权。人工暂停后的交付等待显式 resume 或取消；丢弃 handler 只清理自身暂停，未知 ACK 或清理失败会取消 Attempt。等待存在时拒绝执行 checkpoint/suspend。
-
-该原型始终保留现有资源准入和存储 lease，没有释放或重新申请 CPU 配额。控制观察增加 `model_wait_epoch`，人工操作为 null。SSE 仍在第一个非空网络 chunk 恢复，heartbeat 也可触发；完整推理 spool、通用 guest 任务协议与 guest transfer fence 尚未实现。
+显式声明式 M0 适配器、配置及专用驱动与测试已删除。当前内置等待使用
+`GatewayDriverConfig::cooperative_model_wait`、guest 内核 idle 证据与唯一的
+`Execution` 控制 owner。`x-pvisor-inference-idle` 请求头被忽略并剥离，不授予
+任何控制权。见[当前契约](../../offload/index.md)。
+下方带日期的验证记录描述历史原型，不作为替代实现的验收证据。
 
 ### 2.9 已实现的 host 写缓存基础 {#host-write-buffer}
 

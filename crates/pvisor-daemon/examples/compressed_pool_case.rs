@@ -203,12 +203,12 @@ print('daemon-pool-guest-ok', index, flush=True)
                 workers.push((runtime.run(spec).await?, workspace, stage.join("upper")));
             }
             while workers.iter().any(|(_, _, upper)| !upper.join("ready").exists()) {
-                ensure!(workers.iter().all(|(h, _, _)| !h.status().state.is_terminal()), "guest exited before readiness");
+                ensure!(workers.iter().all(|(h, _, _)| !h.execution().status().state.is_terminal()), "guest exited before readiness");
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             if let Some(probe) = &mut physical {
                 loop {
-                    ensure!(workers.iter().all(|(h, _, _)| !h.status().state.is_terminal()), "guest exited before physical sharing");
+                    ensure!(workers.iter().all(|(h, _, _)| !h.execution().status().state.is_terminal()), "guest exited before physical sharing");
                     match probe.put_duplicate(&vec![0x61; 4096]) {
                         Ok(object) => {
                             let stats = probe.stats()?;
@@ -233,7 +233,7 @@ print('daemon-pool-guest-ok', index, flush=True)
             let mut pinned = Vec::new();
             for value in [0x61, 0x41, 0x42] {
                 loop {
-                    ensure!(workers.iter().all(|(h, _, _)| !h.status().state.is_terminal()), "guest exited before pool admission");
+                    ensure!(workers.iter().all(|(h, _, _)| !h.execution().status().state.is_terminal()), "guest exited before pool admission");
                     let object = probe.put(&vec![value; 65536])?;
                     if probe.stats()?.cross_session_objects > pinned.len() as u64 {
                         pinned.push((value, object)); break;
@@ -260,7 +260,7 @@ print('daemon-pool-guest-ok', index, flush=True)
         }).await.context("native compressed-pool deadline").and_then(|result| result);
         if checked.is_err() {
             for (handle, _, _) in &workers {
-                handle.cancel();
+                handle.execution().cancel();
             }
         }
         let mut results = Vec::new();

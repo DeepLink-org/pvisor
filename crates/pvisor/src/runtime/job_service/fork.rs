@@ -2,8 +2,8 @@ use super::{
     JobSelection, RestoredAttempt, RuntimeJobService, ServiceContext, check_selected_record,
     paths::fork_stage_candidate, validate_request_id,
 };
+use crate::JobState;
 use crate::VmExecutor;
-use crate::runtime::job_execution::JobState;
 use crate::runtime::{RunRecord, default_run_home};
 use anyhow::Context;
 use pvisor_core::operation::SnapshotRamStorage;
@@ -83,7 +83,7 @@ impl RuntimeJobService {
         }
         let checkpoint = match args.checkpoint.as_deref() {
             Some(id) => selected.checkpoint(id)?,
-            None if selected.state == JobState::Suspended => {
+            None if selected.state() == JobState::Suspended => {
                 selected.checkpoint(selected.head.as_deref().context("missing suspended head")?)?
             }
             None => {
@@ -186,23 +186,14 @@ where
             serde_json::json!(name),
         );
     }
-    let child = job_execution::Job {
-        version: job_execution::JOB_SCHEMA_VERSION,
-        run_id: run_id.clone(),
-        root: stage.clone(),
-        active_stage: stage.clone(),
-        previous_stage: stage.clone(),
-        active_attempt: String::new(),
-        config: parent.config.clone(),
+    let mut child = crate::JobExecution::new(
+        run_id.clone(),
+        stage.clone(),
+        None,
+        parent.config.clone(),
         spec,
-        state: JobState::Restoring,
-        head: None,
-        checkpoints: Default::default(),
-        requests: Default::default(),
-        resumes: Default::default(),
-        forks: Default::default(),
-        stores: [stage.join("execution-snapshots")].into(),
-    };
+    )?;
+    child.stores.insert(stage.join("execution-snapshots"));
     child.write()?;
     child.link_stage(&stage)?;
     // Pin before launching; a crash cannot leave a child with a deletable source.

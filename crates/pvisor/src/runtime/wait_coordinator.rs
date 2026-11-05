@@ -5,6 +5,7 @@
 //! transitions run to completion under `state`; waking invalidates timers before
 //! acquiring that lock. No scheduler reservation is released here.
 
+use super::execution::ControlOrigin;
 use crate::CooperativeModelWait;
 use async_trait::async_trait;
 use pvisor_core::RunState;
@@ -21,6 +22,9 @@ use tokio_util::sync::CancellationToken;
 #[async_trait]
 pub(super) trait WaitControl: Send + Sync {
     fn state(&self) -> RunState;
+    fn cancellation(&self) -> CancellationToken;
+    /// Report an idle/cleanup failure to the execution owner; it decides failure policy.
+    async fn wait_failed(&self, error: &anyhow::Error);
     fn pending_host_reads(&self) -> u64 {
         0
     }
@@ -47,7 +51,11 @@ pub(super) trait WaitControl: Send + Sync {
         anyhow::bail!("resume-rearm unsupported")
     }
     fn can_offload(&self) -> bool;
-    async fn execute(&self, operation: OperationKind) -> anyhow::Result<Value>;
+    async fn execute(
+        &self,
+        operation: OperationKind,
+        origin: ControlOrigin,
+    ) -> anyhow::Result<Value>;
 }
 
 #[cfg(test)]
@@ -270,11 +278,8 @@ impl WaitEntry {
 }
 
 impl WaitCoordinator {
-    pub(super) fn new(
-        control: Arc<dyn WaitControl>,
-        cancellation: CancellationToken,
-        policy: CooperativeModelWait,
-    ) -> Arc<Self> {
+    pub(super) fn new(control: Arc<dyn WaitControl>, policy: CooperativeModelWait) -> Arc<Self> {
+        let cancellation = control.cancellation();
         Arc::new(Self {
             runtime: tokio::runtime::Handle::current(),
             control,
@@ -495,12 +500,16 @@ impl WaitCoordinator {
                 .store(round.generation, Ordering::Release);
             entry.round_changed.send_replace(());
             let settled = self.control.idle_settled().await;
-            let mut result = result.and(settled);
+            // Failure to retire idle evidence is authoritative even if the control
+            // itself was a known healthy rejection.
+            let mut result = match settled {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
             let rearmed = if result.is_ok() {
                 match self.resume_next(entry, &round).await {
                     Ok(value) => value,
                     Err(error) => {
-                        self.cancellation.cancel();
                         result = Err(error);
                         false
                     }
@@ -520,7 +529,7 @@ impl WaitCoordinator {
                 "model idle round retired"
             );
             if let Err(error) = &result {
-                self.cancellation.cancel();
+                self.control.wait_failed(error).await;
                 entry
                     .current_round()
                     .completion
@@ -605,11 +614,7 @@ impl WaitCoordinator {
                 return Ok(());
             }
             // Native transitions are never dropped on wake; cleanup follows ACK.
-            let paused = self
-                .control
-                .idle_pause(epoch)
-                .await
-                .inspect_err(|_| self.cancellation.cancel())?;
+            let paused = self.control.idle_pause(epoch).await?;
             if !paused || self.control.state() != RunState::Suspended {
                 return Ok(());
             }
@@ -677,11 +682,7 @@ impl WaitCoordinator {
                 };
                 // Do not select against wake: native reclaim and backing
                 // publication must finish before release can reopen RAM writers.
-                let offloaded = self
-                    .control
-                    .idle_offload(epoch)
-                    .await
-                    .inspect_err(|_| self.cancellation.cancel())?;
+                let offloaded = self.control.idle_offload(epoch).await?;
                 if offloaded && let Some(policy) = self.policy.rounds {
                     ownership.next_offload_at = Some(Instant::now() + policy.offload_cooldown);
                 }
@@ -700,7 +701,9 @@ impl WaitCoordinator {
             OperationKind::RunPause
         };
         // Do not drop this future on wake: completion includes backing publication.
-        self.execute(operation).await?;
+        self.control
+            .execute(operation, ControlOrigin::ModelWait)
+            .await?;
         if offload && let Some(policy) = self.policy.rounds {
             ownership.next_offload_at = Some(Instant::now() + policy.offload_cooldown);
         }
@@ -774,7 +777,9 @@ impl WaitCoordinator {
             }
             if !ownership.manual_pause {
                 if ownership.automatic == Some(entry.id) {
-                    self.execute(OperationKind::RunResume).await?;
+                    self.control
+                        .execute(OperationKind::RunResume, ControlOrigin::ModelWait)
+                        .await?;
                     ownership.automatic = None;
                 }
                 anyhow::ensure!(
@@ -791,18 +796,6 @@ impl WaitCoordinator {
             tokio::select! {
                 _ = self.cancellation.cancelled() => anyhow::bail!("attempt cancelled during model wait"),
                 result = changed.changed() => { result?; },
-            }
-        }
-    }
-
-    async fn execute(&self, operation: OperationKind) -> anyhow::Result<Value> {
-        match self.control.execute(operation).await {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                // Generic control errors can follow an effect (including event
-                // publication failure). Never guess that a failed pause did nothing.
-                self.cancellation.cancel();
-                Err(error)
             }
         }
     }
@@ -858,9 +851,11 @@ impl WaitCoordinator {
         if paused {
             ownership.manual_pause = true;
         }
-        let result = self.execute(operation).await;
-        if result.is_ok() {
-            if resumed {
+        let result = self.control.execute(operation, ControlOrigin::Manual).await;
+        // Confirmed running state cannot retain a failed manual-pause claim.
+        let running = self.control.state() == RunState::Running;
+        if result.is_ok() || running {
+            if resumed || running {
                 ownership.manual_pause = false;
             }
             ownership.automatic = None;

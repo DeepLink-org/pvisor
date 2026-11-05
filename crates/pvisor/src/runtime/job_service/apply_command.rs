@@ -539,7 +539,7 @@ fn validate_apply_source(record: &RunRecord, selection: &JobSelection) -> anyhow
         {
             allowed.push(overlay.target.clone());
         }
-        if let Some(job) = crate::runtime::job_execution::Job::read(record)? {
+        if let Some(job) = crate::JobExecution::read(record)? {
             allowed.push(job.root);
         }
         ensure!(
@@ -989,7 +989,7 @@ mod tests {
     }
 
     fn seed_execution_job(record: &RunRecord) {
-        let job: crate::runtime::job_execution::Job = serde_json::from_value(serde_json::json!({
+        let job: crate::JobExecution = serde_json::from_value(serde_json::json!({
             "version":crate::runtime::job_execution::JOB_SCHEMA_VERSION,
             "run_id":record.run_id,"root":record.stage_dir(),"active_stage":record.stage_dir(),
             "previous_stage":record.stage_dir(),"active_attempt":record.attempt_id,
@@ -1334,9 +1334,7 @@ mod tests {
             assert_eq!(run(request(&record, true)).status, "blocked");
         }
         {
-            let job = crate::runtime::job_execution::Job::read(&record)
-                .unwrap()
-                .unwrap();
+            let job = crate::JobExecution::read(&record).unwrap().unwrap();
             let _execution = crate::runtime::registry::RunLease::observe_existing(
                 &job.root.join("execution-operation"),
             )

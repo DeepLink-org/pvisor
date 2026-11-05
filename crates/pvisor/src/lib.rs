@@ -10,6 +10,9 @@
 #[doc(hidden)]
 pub mod environment_snapshot;
 mod runtime;
+pub use runtime::execution::{
+    Execution, ExecutionProgress, ExecutionSnapshot, JobExecution, JobState, StatusState,
+};
 pub mod session;
 mod startup_profile;
 pub mod trace;
@@ -43,7 +46,7 @@ pub use config::{
     RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 #[cfg(feature = "gateway")]
-pub use config::{CooperativeModelWait, GatewayDriverConfig, ModelWaitRounds, NativeModelWait};
+pub use config::{CooperativeModelWait, GatewayDriverConfig, ModelWaitRounds};
 pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
 #[cfg(target_os = "linux")]
@@ -100,10 +103,7 @@ pub use runtime::host_transport;
 #[cfg(unix)]
 pub use runtime::instance_control::exchange as host_vm_exchange;
 pub use runtime::job_service;
-pub use runtime::run::{
-    AttemptService, PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle,
-    RunEventStream, RunHandle,
-};
+pub use runtime::run::{PVisor, PVisorBuilder, PVisorError, RunEventStream, RunHandle};
 pub use runtime::{
     ChangeEntry, ChangeEntryType, ChangeKind, ExecutionOverlayHint, ImplantPlan, OverlayHint,
     RunLineage, RuntimeCapabilities,

@@ -28,6 +28,20 @@ Workspace fork 从逻辑检查点创建文件分支；execution fork 从支持�
 
 持久 Job 服务还负责完成结果的发布。`ManagedJobRun` 将实际 Attempt join 与 `Server::finish` 交给 runtime task，前端只持有等待适配。前端等待失败或被丢弃会请求取消，已接受的完成任务在 Tokio runtime 仍存活时继续核对和发布；runtime 关闭与宿主进程退出仍有自己的恢复边界。
 
+## Attempt 执行时间线
+
+Session 生命周期与在线 VM 控制共享一个 `Execution` owner，通过 `Session::execution()` 或 `RunHandle::execution()` 获取。状态、订阅、取消、SDK 控制和 Host 命令派发均由它负责，RunHandle 负责等待完成。RunControlHandle、RunCancellation、AttemptService 及控制转发别名已删除；执行器直接向 Execution 报告启动与就绪。准入、派发、成功、失败与完成事实通过唯一的状态转移函数；status 与待处理操作是这些事实的投影。原生副作用在状态锁之外执行，继续使用已有的转移锁、模型等待仲裁与 guest idle epoch 排序。最多保留 32 个待处理控制；等待原生结果期间仍可取消。迟到的启动通知与控制响应不能撤销暂停、取消或终态发布。
+
+保留存储的 Attempt 通过 `pvisor-journal` 向 `execution-ATTEMPT_ID.jsonl` 追加事实；无存储运行使用内存日志。调用方停止等待后，已接受的日志追加与状态更新仍会继续。runner 明确拒绝并确认健康在线状态时，记录该状态并允许后续控制；原生结果不明则阻止进一步控制。历史写入失败会标记缺口，同时保留已确认结果并继续清理。重放测试可在不调用后端的情况下重建投影；owner 丢失后不会自动重试未完成操作。完成与检查点回执继续拥有结果确认权。
+
+`status --json` 展示已应用日志位置、有界执行进度、计数与少量观察样本，不包含完整请求历史与启动计划。schema 2 详见[机器可读输出](../reference/json-output.md#envelopes)。
+
+`Execution::snapshot()` 同步读取最近的一致状态／进度投影，`subscribe()` 发布同一个 `ExecutionSnapshot`。日志写入在转移锁下发布投影，因此本地查询无需等待自己的运行时任务或建立 socket 连接。等待协调器复用 Execution 的取消 token，不再把所有控制拒绝都解释为结果不明。明确的人工控制拒绝保留健康执行；无法释放的自动暂停与不明结果仍会触发取消。
+
+`JobExecution` 负责跨 Attempt 的持久阶段，状态字段私有，捕获、恢复、完成与终结均应用带类型的转移。存储模块负责获取 lease 并持久化结果。普通记录读取与持锁恢复共用唯一的完成投影；迟到回执不能覆盖恢复后的后继，也不能恢复已撤销的继续执行权。查询模型统一生成有效 `state`，CLI 文本与 JSON 只负责渲染，不再从存活推断运行。`paused` 表示在线 VM 暂停，`hibernated` 表示原生终止已确认。
+
+每个 Attempt 只保留一个宿主实例控制 socket。同进程的查询、工作区 inspect 与执行捕获直接调用已注册的 owner；Overlay 与捕获监听及其 stage 发现链接已删除。owner 使用唯一的有界 inspect 挂载表，并在清理可写工作区之前关闭挂载。已接受的捕获任务在前端超时后继续运行，请求回执、Job 锁与 suspended head 的终止确认保持有效。Guest AgentCtl 继续使用独立的 guest 协议。
+
 ## Attempt 完成协议 {#attempt-completion}
 
 保留存储的 Attempt 使用 `completion.json` 确认执行结果。回执包含 `RunResult` 和已保存 Bundle 字节的 BLAKE3 摘要，并校验 Run／Attempt 身份、终态、退出码及起止时间。Run 和 execution Job 的状态是这份结果的投影；单独看到终态字段、Bundle 文件或进程退出，都不足以确认完成。

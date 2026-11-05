@@ -56,20 +56,25 @@ jq -e '
 
 ## JSON 版本与命令响应结构 {#envelopes}
 
-schema 数字属于输出格式，而非整个 CLI。`status --json` 没有顶层 schema 版本，它是概况输出；不要在其中寻找 `schema_version = 4`。其字段如下：
+schema 数字属于输出格式，而非整个 CLI。`status --json` 使用 `schema_version = 2`，返回大小有界的展示摘要。其字段如下：
 
 | 字段 | 含义 |
 | --- | --- |
-| `run` | 已存储的 RunRecord，包含生命周期与存储引用 |
+| `schema_version` | status 摘要契约版本，当前为 2 |
+| `state` | 有效执行阶段：在线 `paused`/`cancelling`、已确认的 `hibernated`/终态，或 `unknown`；不从存活推断运行 |
+| `run` | 展示身份、已存储生命周期、stage 与工作区路径；有效阶段以顶层 `state` 为准；command 最多 32 个参数，每个最多 512 UTF-8 字节，以 `command_truncated` 标记截断 |
 | `live` | 布尔值，存活观察 |
-| `live_attempt` | owner 提供的当前 Attempt 观察，包括 VM 暂停状态；只读磁盘状态时为 null |
+| `live_attempt` | owner 提供的当前 Attempt 身份、状态与更新时间；只读磁盘状态时为 null |
+| `execution_progress` | 已应用日志位置、排队/执行中计数、`history_gap` 与 `outcome_unknown`，与 `live_attempt` 原子采样；没有 owner 观察时为 null |
 | `checkpoint_capability` | `workspace`、`workspace_capture_requires`、`execution`、`execution_blocker` |
-| `checkpoints` | workspace checkpoint 记录数组 |
-| `execution` | 原生 Job 状态、suspended head、当前 Attempt、检查点、请求与存储归属；没有原生交接时为 null |
+| `workspace_checkpoint_count` | workspace checkpoint 数量 |
+| `execution` | 持久化 Job 状态、suspended head、当前 Attempt，以及 checkpoint/capture/resume/fork 请求计数；没有原生交接时为 null |
 | `workspace_generation` | 整数；没有 overlay 时为 null |
-| `apply_history` | 之前的 apply 事务记录 |
-| `observations.filesystem/network` | 可用的文件访问/流量观察，或 null |
-| `filesystem` | state、changed_files、whiteouts、sample_paths；没有暂存时为 null |
+| `apply_batch_count` | 之前的 apply 批次数量 |
+| `observations.filesystem/network` | 汇总计数、`source`（`live` 或 `durable`）、溢出计数与最多五条有界拒绝样本；不可用时为 null |
+| `filesystem` | `changed_files`、`whiteouts`、`sample_paths`、`samples_truncated`；没有暂存时为 null |
+
+基础摘要限制为 256 KiB。每条路径/目标样本最多 512 UTF-8 字节，缩短的样本带有截断标记。缺失观察表示不可用，不是零流量。status 不再内嵌完整启动配置、checkpoint/apply 数组或请求映射；通过 checkpoint list/show、review 与保留的归属记录查看详情。实例协议为 `pvisor-instance-control-2`；替换安装前应使用旧 Job 的所属可执行文件结束它们。
 
 审查输出在 Bundle 上增加 `review_context`：`job_id`、`attempt_id`、可为 null 的 `checkpoint_id`、`workspace_generation`、`file_view`、`execution_evidence`。执行证据保留历史结果；所选文件视图会在审查时刷新，包括 apply/drop 之后。审查 checkpoint 选择它保存的文件，不会重跑任务。
 

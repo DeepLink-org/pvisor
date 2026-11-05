@@ -2,7 +2,8 @@
 //!
 //! Transport, terminal ownership and rendering belong to the caller. Context
 //! checks run again under mutation leases; receipts remain scoped to operations.
-use super::{RunRecord, job_execution::Job};
+use super::RunRecord;
+use crate::JobExecution;
 use pvisor_core::host_protocol::{AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlTarget};
 use std::path::{Path, PathBuf};
 
@@ -31,14 +32,14 @@ pub(crate) use lifecycle::preserve_apply_target;
 pub use lifecycle::{RestoredAttempt, ResumeRequest, ResumeResponse};
 mod managed;
 pub use managed::ManagedJobRun;
-/// Compatibility name for managed restored execution.
-pub type ManagedRestoredRun = ManagedJobRun;
 mod restored;
 mod workspace;
 pub use effects::{DropRequest, MutationOutcome, MutationResponse};
-pub use views::{
-    FilesystemSummary, ReviewContext, ReviewRequest, ReviewResponse, ReviewUnavailable,
-    StatusRequest, StatusResponse,
+pub use views::{ReviewContext, ReviewRequest, ReviewResponse, ReviewUnavailable};
+pub(crate) mod status;
+pub use status::{
+    DeniedSample, ExecutionSummary, FilesystemActivity, FilesystemSummary, NetworkActivity,
+    ObservationSource, StatusAttempt, StatusOverlay, StatusRequest, StatusResponse, StatusRun,
 };
 pub use workspace::{
     WorkspaceCreateRequest, WorkspaceCreateResponse, WorkspaceDeleteRequest, WorkspaceGcRequest,
@@ -149,7 +150,7 @@ pub fn validate_request_id(id: &str) -> anyhow::Result<()> {
 pub fn lock_selected_job(
     context: &ServiceContext<'_>,
     record: &RunRecord,
-) -> anyhow::Result<Option<(Job, impl Send + use<>)>> {
+) -> anyhow::Result<Option<(JobExecution, impl Send + use<>)>> {
     lock_selected_job_mode(context, record, false)
 }
 
@@ -159,8 +160,8 @@ fn lock_selected_job_mode(
     context: &ServiceContext<'_>,
     record: &RunRecord,
     observe: bool,
-) -> anyhow::Result<Option<(Job, super::registry::RunLease)>> {
-    let Some(template) = Job::read(record)? else {
+) -> anyhow::Result<Option<(JobExecution, super::registry::RunLease)>> {
+    let Some(template) = JobExecution::read(record)? else {
         return Ok(None);
     };
     let lease = if observe {

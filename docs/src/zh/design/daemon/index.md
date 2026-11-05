@@ -18,7 +18,7 @@
 | Daemon 池组件 | `serve --sandbox --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
 | `pvisor cache` / `pvisor-daemon serve --cache` | OCI 准备／发布／读取与缓存服务 | Sandbox 生命周期 |
 
-Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `RuntimeJobService` 启动；live status/pause/resume/termination 复用进程内 `AttemptService`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
+Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `RuntimeJobService` 启动；live status/pause/resume/termination 复用进程内 `Execution`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
 
 Sandbox 生命周期、不可变 backing 和活动 RAM 分别由各自的所有者管理，具有不同的故障边界。接入新路径时，需要明确获取、取消、终止与 pin 释放的合同，并通过固定预算测量评估。统一打包、启动入口或端口本身不会补齐 runtime 适配器；接管 live VM、仲裁共享 cold-pool 和自动获取 node 资源都需要各自的适配器与验证，启动、内存与密度收益也需单独测量。
 

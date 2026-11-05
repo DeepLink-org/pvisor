@@ -1,4 +1,3 @@
-use super::lifecycle::owns_restore_transition;
 use super::paths::fork_stage_candidate;
 use super::*;
 use std::path::Path;
@@ -173,6 +172,80 @@ fn embedded_status_and_drop_publish_generation_without_cli() {
 }
 
 #[test]
+fn status_is_bounded_independently_of_history_paths_and_launch_configuration() {
+    use pvisor_core::operation::{FilesystemObservation, PathOperationCounters};
+    let root = tempfile::tempdir().unwrap();
+    let mut record = fixture(root.path());
+    record.command = vec!["界".repeat(1024); 128];
+    record.orchestration.insert(
+        "large-private-launch-data".into(),
+        serde_json::json!("x".repeat(2 * 1024 * 1024)),
+    );
+    let observation = FilesystemObservation {
+        paths: (0..8192)
+            .map(|index| {
+                (
+                    format!("{index:05}/{}", "界".repeat(200)),
+                    [(
+                        "read".into(),
+                        PathOperationCounters {
+                            hits: 2,
+                            denied: 1,
+                            ..Default::default()
+                        },
+                    )]
+                    .into(),
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    record.filesystem_observation = Some(observation);
+    record.write().unwrap();
+    let requests: std::collections::BTreeMap<_, _> = (0..4096).map(|index| (
+        format!("{index:08}{}", "a".repeat(248)),
+        serde_json::json!({"suspend":true,"ram_storage":"raw","checkpoint":null,"error":"failed"})
+    )).collect();
+    let job: crate::JobExecution = serde_json::from_value(serde_json::json!({
+        "version":crate::job_execution::JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
+        "active_stage":root.path(),"previous_stage":root.path(),"active_attempt":record.attempt_id,
+        "config":crate::RunConfig::default(),"spec":pvisor_core::RunSpec::process("job-service", "test", "true"),
+        "state":"terminal","head":null,"checkpoints":{},"requests":requests,"resumes":{},"forks":{},"stores":[]
+    })).unwrap();
+    job.write().unwrap();
+    let status = RuntimeJobService::status(
+        &ServiceContext::default(),
+        StatusRequest {
+            job: selection(&record),
+        },
+    )
+    .unwrap();
+    assert_eq!(status.schema_version, 2);
+    assert!(status.record.command_truncated);
+    assert_eq!(
+        status.execution.as_ref().unwrap().capture_request_count,
+        4096
+    );
+    let observation = status.filesystem_observation.as_ref().unwrap();
+    assert_eq!(observation.hits, 16384);
+    assert_eq!(observation.denied, 8192);
+    assert_eq!(observation.observed_paths, 8192);
+    assert_eq!(observation.denied_samples.len(), 5);
+    assert!(
+        observation
+            .denied_samples
+            .iter()
+            .all(|sample| sample.truncated && sample.target.len() <= 512)
+    );
+    let encoded = crate::host_transport::encode_host_frame(&status).unwrap();
+    assert!(encoded.len() < 256 * 1024);
+    let json = serde_json::to_value(status).unwrap();
+    assert!(json["execution"].get("requests").is_none());
+    assert!(json["record"].get("orchestration").is_none());
+    assert!(json["filesystem_observation"].get("paths").is_none());
+}
+
+#[test]
 fn empty_apply_selection_is_rejected_before_target_or_stage_mutation() {
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());
@@ -327,7 +400,12 @@ fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion(
     )
     .unwrap();
     assert_eq!(status.record.state, super::super::RunRecordState::Unknown);
-    assert!(status.record.require_stopped().is_err());
+    assert!(
+        RunRecord::read(root.path())
+            .unwrap()
+            .require_stopped()
+            .is_err()
+    );
     assert!(!root.path().join("completion.json").exists());
     assert!(root.path().join("upper").is_dir());
 }
@@ -566,7 +644,8 @@ fn fencing_and_cancellation_precede_effects() {
 
 #[tokio::test]
 async fn capture_rechecks_request_context_after_waiting_for_job_lease() {
-    use crate::runtime::job_execution::{JOB_SCHEMA_VERSION, Job, JobState};
+    use crate::runtime::job_execution::JOB_SCHEMA_VERSION;
+    use crate::{JobExecution, JobState};
     use pvisor_core::operation::SnapshotRamStorage;
     use std::time::Duration;
 
@@ -577,23 +656,12 @@ async fn capture_rechecks_request_context_after_waiting_for_job_lease() {
             let mut config = crate::RunConfig::default();
             config.run.executor = crate::RunExecutorKind::Vm;
             config.overlaynet.mode = crate::OverlayNetMode::Off;
-            let job = Job {
-                version: JOB_SCHEMA_VERSION,
-                run_id: record.run_id.clone(),
-                root: root.path().into(),
-                active_stage: root.path().into(),
-                previous_stage: root.path().into(),
-                active_attempt: record.attempt_id.clone().unwrap(),
-                config,
-                spec: pvisor_core::RunSpec::process("job-service", "sh", "/bin/sh"),
-                state,
-                head: None,
-                checkpoints: Default::default(),
-                requests: Default::default(),
-                resumes: Default::default(),
-                forks: Default::default(),
-                stores: Default::default(),
-            };
+            let job: JobExecution = serde_json::from_value(serde_json::json!({
+                "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
+                "active_stage":root.path(),"previous_stage":root.path(),"active_attempt":record.attempt_id,
+                "config":config,"spec":pvisor_core::RunSpec::process("job-service", "sh", "/bin/sh"),
+                "state":state,"head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
+            })).unwrap();
             job.write().unwrap();
             let before = serde_json::to_value(&job).unwrap();
             let lease = job.lock().unwrap();
@@ -653,43 +721,28 @@ async fn capture_rechecks_request_context_after_waiting_for_job_lease() {
 
 #[tokio::test]
 async fn resume_replay_is_fenced_before_embedded_launcher() {
-    use crate::runtime::job_execution::{
-        JOB_SCHEMA_VERSION, Job, JobState, ResumeRequest as Receipt,
-    };
+    use crate::runtime::job_execution::{JOB_SCHEMA_VERSION, ResumeRequest as Receipt};
+    use crate::{JobExecution, JobState};
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());
     let mut config = crate::RunConfig::default();
     config.run.executor = crate::RunExecutorKind::Vm;
     config.overlaynet.mode = crate::OverlayNetMode::Off;
-    let job = Job {
-        version: JOB_SCHEMA_VERSION,
-        run_id: record.run_id.clone(),
-        root: root.path().into(),
-        active_stage: root.path().into(),
-        previous_stage: root.path().into(),
-        active_attempt: "new-attempt".into(),
-        config,
-        spec: pvisor_core::RunSpec::process("job-service", "sh", "/bin/sh"),
-        state: JobState::Suspended,
-        head: None,
-        checkpoints: Default::default(),
-        requests: Default::default(),
-        resumes: [(
-            "replay".into(),
-            Receipt {
-                stage: root.path().into(),
-                eager_ram: false,
-            },
-        )]
-        .into(),
-        forks: Default::default(),
-        stores: Default::default(),
-    };
+    let job: JobExecution = serde_json::from_value(serde_json::json!({
+        "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
+        "active_stage":root.path(),"previous_stage":root.path(),"active_attempt":"new-attempt",
+        "config":config,"spec":pvisor_core::RunSpec::process("job-service", "sh", "/bin/sh"),
+        "state":"suspended","head":null,"checkpoints":{},"requests":{},
+        "resumes":{"replay":{"stage":root.path(),"eager_ram":false}},"forks":{},"stores":[]
+    }))
+    .unwrap();
     job.write().unwrap();
     // Callback success alone cannot make a Restoring or unbound Job Finished.
     assert!(super::lifecycle::confirm_restored_completion(root.path(), &record.run_id).is_err());
     let mut finished = job.clone();
-    finished.state = JobState::Terminal;
+    let mut stored = serde_json::to_value(&finished).unwrap();
+    stored["state"] = serde_json::to_value(JobState::Terminal).unwrap();
+    finished = serde_json::from_value(stored).unwrap();
     finished.active_attempt = record.attempt_id.clone().unwrap();
     finished.write().unwrap();
     super::lifecycle::confirm_restored_completion(root.path(), &record.run_id).unwrap();
@@ -735,7 +788,9 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     assert!(!root.path().join("attempts").exists());
 
     let mut admitted = job.clone();
-    admitted.state = JobState::Restoring;
+    let mut stored = serde_json::to_value(&admitted).unwrap();
+    stored["state"] = serde_json::to_value(JobState::Restoring).unwrap();
+    admitted = serde_json::from_value(stored).unwrap();
     admitted.active_stage = root.path().join("attempts/restore");
     admitted.resumes.insert(
         "restore".into(),
@@ -744,7 +799,7 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
             eager_ram: false,
         },
     );
-    assert!(owns_restore_transition(&admitted, &admitted, "restore"));
+    assert!(admitted.owns_restore_transition(&admitted, "restore"));
     for variant in 0..5 {
         let mut current = admitted.clone();
         match variant {
@@ -762,6 +817,6 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
                 );
             }
         }
-        assert!(!owns_restore_transition(&current, &admitted, "restore"));
+        assert!(!current.owns_restore_transition(&admitted, "restore"));
     }
 }

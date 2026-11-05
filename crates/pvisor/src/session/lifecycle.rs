@@ -1,6 +1,7 @@
 //! Executor reports and the single Attempt completion path.
 use super::Session;
 use crate::executor::RunExecutor;
+use crate::runtime::execution::fail_finalization;
 use crate::runtime::run::{PVisorError, ResolvedRun, RunHandle};
 use crate::runtime::{
     RuntimeSupervisor,
@@ -8,14 +9,14 @@ use crate::runtime::{
 };
 use crate::{AGENTCTL_VERSION, AgentCtlServer};
 use pvisor_core::{AttemptInfo, RunInvocation, RunStatus};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::AttemptTeardown;
 use crate::util::unix_now_ms;
 use pvisor_core::{
-    ArtifactRef, AttemptId, ExecutorObservations, PolicyMode, ProcessOutput, RunFailure,
-    RunFailureKind, RunResult, RunSpec, RunState,
+    ArtifactRef, AttemptId, ExecutorObservations, ProcessOutput, RunFailure, RunFailureKind,
+    RunResult, RunSpec, RunState,
 };
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -104,7 +105,7 @@ impl Session {
         event_sink: Arc<dyn EventSink>,
         resolved: ResolvedRun,
         attempt_id: AttemptId,
-    ) -> Result<RunHandle, PVisorError> {
+    ) -> Result<(RunHandle, Arc<crate::runtime::instance_control::Owner>), PVisorError> {
         let mut startup = crate::startup_profile::Span::start("session.start");
         let ResolvedRun {
             preparation,
@@ -158,7 +159,6 @@ impl Session {
             updated_at_unix_ms: now,
             message: None,
         };
-        let (status_tx, status_rx) = watch::channel(initial);
         let (live_tx, _) = broadcast::channel(256);
         let events = RunEventPublisher::new(
             run_id.clone(),
@@ -167,24 +167,28 @@ impl Session {
             event_sink,
             live_tx,
         );
-        #[cfg(feature = "gateway")]
-        let wait_controls = crate::runtime::run::RunControlHandle::for_wait_coordinator(
-            status_tx.clone(),
+        let execution = crate::Execution::new(
+            initial,
             vm_control.clone(),
             operation.clone(),
             events.clone(),
             cancellation.clone(),
-        );
+        )
+        .map_err(PVisorError::Prepare)?;
         #[cfg(feature = "gateway")]
-        let (runtime, wait_coordinator) =
-            runtime.bind_host_model_wait(wait_controls.clone(), cancellation.clone());
+        let (runtime, wait_coordinator) = runtime.bind_model_wait(execution.clone());
+        #[cfg(feature = "gateway")]
+        let execution = {
+            let mut execution = execution;
+            execution.wait_coordinator = wait_coordinator.clone();
+            execution
+        };
         let mut context = Session {
             spec: Arc::new(spec),
             created_at_unix_ms: now,
             attempt_id: attempt_id.clone(),
-            cancel: cancellation.clone(),
             vm_control: vm_control.clone(),
-            status: status_tx,
+            execution,
             events: events.clone(),
             agentctl: agentctl.clone(),
             attachments: Default::default(),
@@ -194,16 +198,8 @@ impl Session {
             network_policy,
         };
         crate::util::startup_mark_run("session.storage_begin", context.spec.run_id.as_str());
-        let control = crate::RunControlHandle::for_session(&context, operation.clone());
-        #[cfg(feature = "gateway")]
-        let control = {
-            let mut control = control;
-            control.wait_coordinator = wait_coordinator.clone();
-            control
-        };
+        let execution = context.execution.clone();
         let prepared = (|| {
-            #[cfg(feature = "gateway")]
-            let runtime = runtime.bind_model_wait(control.clone())?;
             context.drivers = runtime.prepare(
                 Arc::make_mut(&mut context.spec),
                 &preparation,
@@ -219,15 +215,37 @@ impl Session {
             Ok::<_, anyhow::Error>(())
         })();
         if let Err(error) = prepared {
-            context.abort_startup(&error, safe_profile_requested);
+            context.abort_startup(&error, safe_profile_requested).await;
             return Err(PVisorError::Prepare(error));
         }
         crate::util::startup_mark_run("session.storage_ready", context.spec.run_id.as_str());
         let record = context.drivers.as_ref().map(|session| session.record());
+        if let Err(error) = context.execution.retain(record.as_ref()).await {
+            context.abort_startup(&error, safe_profile_requested).await;
+            return Err(PVisorError::Prepare(error));
+        }
         let checkpoint_record = context
             .drivers
             .as_ref()
             .and_then(|session| session.checkpoint_record());
+        let (filesystem, network) = context
+            .drivers
+            .as_ref()
+            .map(|session| session.control_metrics())
+            .unwrap_or_default();
+        let owner = match crate::runtime::instance_control::register(
+            execution.clone(),
+            record.clone(),
+            preparation.live_control.clone(),
+            filesystem,
+            network,
+        ) {
+            Ok(owner) => owner,
+            Err(error) => {
+                context.abort_startup(&error, safe_profile_requested).await;
+                return Err(PVisorError::Prepare(error));
+            }
+        };
         let creation = async {
             events
                 .publish(
@@ -248,37 +266,42 @@ impl Session {
         }
         .await;
         if let Err(error) = creation {
-            context.abort_startup(
-                &anyhow::anyhow!("event sink rejected run creation: {error:#}"),
-                safe_profile_requested,
-            );
+            context
+                .abort_startup(
+                    &anyhow::anyhow!("event sink rejected run creation: {error:#}"),
+                    safe_profile_requested,
+                )
+                .await;
             return Err(PVisorError::EventSink(error));
         }
         crate::util::startup_mark_run("session.events_ready", context.spec.run_id.as_str());
         #[cfg(feature = "gateway")]
         if wait_coordinator.is_some() {
-            wait_controls.monitor_wait_termination();
+            execution.monitor_wait_termination();
         }
+        let controls = owner.owner.clone();
         let join = tokio::spawn(async move {
+            let _owner = owner;
             context
                 .complete(executor, operation, safe_profile_requested)
                 .await
         });
 
         startup.success(None);
-        Ok(RunHandle {
-            run_id,
-            attempt_id,
-            status: status_rx,
-            cancellation,
-            control,
-            events,
-            agentctl,
-            record,
-            checkpoint_record,
-            join,
-            instance_control: None,
-        })
+        Ok((
+            RunHandle {
+                run_id,
+                attempt_id,
+                execution,
+                events,
+                agentctl,
+                record,
+                checkpoint_record,
+                join,
+                instance_control: None,
+            },
+            controls,
+        ))
     }
     /// All backends use the same exit/cancel/deadline ordering and cancellation transition.
     pub(crate) async fn wait_child(
@@ -302,15 +325,15 @@ impl Session {
                 None => std::future::pending().await,
             }
         };
+        let cancellation = self.execution.cancellation();
         let end = tokio::select! {
             biased;
             status = exit => SessionEnd::Exited(status),
-            _ = self.cancel.cancelled() => SessionEnd::Cancelled,
+            _ = cancellation.cancelled() => SessionEnd::Cancelled,
             _ = deadline => SessionEnd::Deadline,
         };
         if matches!(end, SessionEnd::Cancelled) {
-            self.transition(RunState::Cancelling, Some("cancellation requested".into()))
-                .await;
+            self.execution.cancelling().await;
         }
         end
     }
@@ -325,7 +348,7 @@ impl Session {
             policy.arm();
         }
         // Keep the Run-scoped endpoint alive until executor finalization finishes.
-        let invoked = !self.cancel.is_cancelled();
+        let invoked = !self.execution.cancellation().is_cancelled();
         let report = if invoked {
             let report = executor.execute(&self).await;
             if let Some(observer) = &self.output_observer {
@@ -347,8 +370,8 @@ impl Session {
             }
         };
         let started = self
-            .status
-            .borrow()
+            .execution
+            .status()
             .attempt
             .started_at_unix_ms
             .unwrap_or(self.created_at_unix_ms);
@@ -356,58 +379,18 @@ impl Session {
         let teardown = self.finalize(&mut result, invoked).await;
         self.commit(&mut result, teardown, &operation, safe_profile_requested)
             .await;
-        self.publish_finished(&result);
+        self.execution
+            .finish(
+                result.state,
+                result.failure.as_ref().map(|f| f.message.clone()),
+                result.finished_at_unix_ms,
+            )
+            .await;
         result
     }
 
     async fn finalize(&mut self, result: &mut RunResult, invoked: bool) -> Option<AttemptTeardown> {
-        if result.state == RunState::Hibernated
-            && let Err(error) = pvisor_core::operation::ExecutionSuspension::from_result(result)
-        {
-            fail_finalization(
-                result,
-                format!("invalid native suspension evidence: {error:#}"),
-            );
-        }
-        if !result.state.is_terminal()
-            || (result.state == RunState::Completed && result.failure.is_some())
-        {
-            fail_finalization(
-                result,
-                "backend returned an inconsistent terminal outcome".into(),
-            );
-        } else if result.state == RunState::Completed
-            && result.exit_code.is_some_and(|code| code != 0)
-        {
-            result.state = RunState::Failed;
-            result.failure = Some(RunFailure {
-                kind: RunFailureKind::ProcessExit,
-                message: format!("workload exited with code {}", result.exit_code.unwrap()),
-                retryable: false,
-            });
-        }
-        // Cancellation leaves installation unknown without changing its terminal meaning.
-        if self.spec().runtime.policy_mode == PolicyMode::Enforce
-            && result.state != RunState::Cancelled
-        {
-            let missing = result.executor_observations.enforcement.missing_dimensions(
-                &self.spec().capabilities,
-                &self.spec().runtime.resource_limits,
-            );
-            if !missing.is_empty() {
-                fail_finalization(
-                    result,
-                    format!(
-                        "required controls lack executor observations: {}",
-                        missing
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                );
-            }
-        }
+        self.execution.normalize_result(self.spec(), result);
         crate::util::startup_mark_run("attempt.teardown_begin", self.spec().run_id.as_str());
         let teardown = self.drivers.take().map(|session| {
             session.teardown(
@@ -615,15 +598,7 @@ impl Session {
         drop(teardown);
     }
 
-    fn publish_finished(&self, result: &RunResult) {
-        self.finish(
-            result.state,
-            result.failure.as_ref().map(|f| f.message.clone()),
-            result.finished_at_unix_ms,
-        );
-    }
-
-    fn abort_startup(&mut self, error: &anyhow::Error, safe: bool) {
+    async fn abort_startup(&mut self, error: &anyhow::Error, safe: bool) {
         if let Some(drivers) = self.drivers.take()
             && let Err(cleanup_error) = drivers.abort_startup(
                 &self.attempt_id,
@@ -639,7 +614,13 @@ impl Session {
             &self.attempt_id,
             self.created_at_unix_ms,
         );
-        self.publish_finished(&result);
+        self.execution
+            .finish(
+                result.state,
+                result.failure.as_ref().map(|f| f.message.clone()),
+                result.finished_at_unix_ms,
+            )
+            .await;
     }
 }
 
@@ -729,18 +710,6 @@ fn persist_result_blocking(
         }
     }
     crate::util::startup_mark_run("attempt.bundle_ready", result.run_id.as_str());
-}
-
-fn fail_finalization(result: &mut RunResult, message: String) {
-    result.warnings.push(message.clone());
-    result.state = RunState::Failed;
-    result.executor_observations.origin = pvisor_core::event::Origin::Runtime;
-    result.finished_at_unix_ms = unix_now_ms();
-    result.failure = Some(RunFailure {
-        kind: RunFailureKind::Infrastructure,
-        message,
-        retryable: true,
-    });
 }
 
 pub(crate) async fn terminate_process_tree(

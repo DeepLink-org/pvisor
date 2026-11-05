@@ -113,7 +113,7 @@ process-entry or argument-parsing overhead.
 protocol compatibility. `cli/host_process.rs` owns process trees and terminal
 handoff; `cli/host_image.rs` retains macOS loaded/disk Mach-O UUID checks.
 `runtime/host_transport.rs` shares private paths, bounded newline JSON and peer
-checks. Instance control uses `pvisor-instance-control-1`, independently of caller
+checks. Instance control uses `pvisor-instance-control-2`, independently of caller
 binary digest. Internal `JobCommand` DTOs currently cover all commands, but only
 spawn, fork and resume bootstrap the same-binary owner; other commands execute directly or send
 instance-protocol commands to it.

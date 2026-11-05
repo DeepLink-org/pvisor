@@ -412,14 +412,7 @@ pub(super) async fn llm_capture(
     }
 
     pending.phase = "model_wait_entry_failed";
-    let lifecycle = state.model_wait.as_ref();
-    let observe = match lifecycle {
-        Some(owner) if owner.requires_idle_declaration() => {
-            crate::model_wait::cooperative_idle(&parts.headers)?
-        }
-        _ => true,
-    };
-    let mut model_wait = PendingModelWait::reserve(lifecycle.filter(|_| observe), model_request)?;
+    let mut model_wait = PendingModelWait::reserve(state.model_wait.as_ref(), model_request)?;
     if let Some(wait) = &mut model_wait {
         wait.enter(state.stop.clone()).await?;
     }

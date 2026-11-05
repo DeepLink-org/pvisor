@@ -141,12 +141,20 @@ fn killed_owner_reconciles_only_receipts_across_terminal_publication_windows() {
             std::fs::read_to_string(root.path().join("notifications")).unwrap_or_default();
         if phase == "network.observed" {
             assert_eq!(status.record.state, RunRecordState::Unknown);
-            assert!(status.record.require_stopped().is_err());
+            assert!(
+                pvisor::RunRecord::read(&stage)
+                    .unwrap()
+                    .require_stopped()
+                    .is_err()
+            );
             assert!(RunBundle::read(&stage).is_err());
             assert!(notifications.is_empty());
         } else {
             assert_eq!(status.record.state, RunRecordState::Completed);
-            status.record.require_stopped().unwrap();
+            pvisor::RunRecord::read(&stage)
+                .unwrap()
+                .require_stopped()
+                .unwrap();
             assert_eq!(
                 RunBundle::read(&stage).unwrap().run.state,
                 pvisor_core::RunState::Completed

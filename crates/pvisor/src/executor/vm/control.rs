@@ -8,6 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -15,6 +16,17 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub(super) const MAX_FRAME: usize = 16 * 1024;
+
+/// Failures whose native outcome is known; other errors remain uncertain.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ControlFailure {
+    /// Validation/preparation failed before any native bytes were sent.
+    #[error("{0}")]
+    BeforeDispatch(#[source] anyhow::Error),
+    /// The runner rejected the operation and confirmed its healthy live state.
+    #[error("VMM rejected control: {message}")]
+    Rejected { state: VmState, message: String },
+}
 
 fn offload_phase(stage: &str, started: std::time::Instant, complete: bool) {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -482,7 +494,14 @@ impl VmControl {
             "idle permit only supports pause or current-backing offload"
         );
         let control = self.clone();
-        match tokio::spawn(async move { control.exchange(operation, idle_epoch).await }).await {
+        let sent = Arc::new(AtomicBool::new(false));
+        let dispatched = sent.clone();
+        match tokio::spawn(async move { control.exchange(operation, idle_epoch, dispatched).await })
+            .await
+        {
+            Ok(Err(error)) if !sent.load(Ordering::Acquire) => {
+                Err(ControlFailure::BeforeDispatch(error).into())
+            }
             Ok(result) => result,
             Err(error) => {
                 self.cancellation.cancel();
@@ -497,6 +516,7 @@ impl VmControl {
         &self,
         operation: OperationKind,
         idle_epoch: Option<u64>,
+        sent: Arc<AtomicBool>,
     ) -> anyhow::Result<ControlReply> {
         operation.validate()?;
         let mut guard = self.connection.lock().await;
@@ -657,6 +677,8 @@ impl VmControl {
             .filter(|_| capture_directory.is_some())
             .map(|binding| binding.run_id.clone());
         let result = tokio::time::timeout(Duration::from_secs(budget), async {
+            // Any attempted write may have delivered a prefix or the full request.
+            sent.store(true, Ordering::Release);
             connection.stream.write_u32(request.len() as u32).await?;
             connection.stream.write_all(&request).await?;
             if let Some(run_id) = &checkpoint_run_id {
@@ -777,7 +799,11 @@ impl VmControl {
                     && reply.checkpoint.is_none()
                     && reply.capture.is_none()
                 {
-                    return Ok(Err(anyhow::anyhow!("VMM rejected control: {error}")));
+                    return Ok(Err(ControlFailure::Rejected {
+                        state: reply.state.unwrap(),
+                        message: error.clone(),
+                    }
+                    .into()));
                 }
             }
             anyhow::ensure!(
@@ -914,7 +940,11 @@ mod tests {
             "op": "run.checkpoint", "request_id": "unsupported", "ram_storage": "raw"
         }))
         .unwrap();
-        assert!(control.command(operation).await.is_err());
+        let error = control.command(operation).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ControlFailure>(),
+            Some(ControlFailure::BeforeDispatch(_))
+        ));
         assert!(!cancellation.is_cancelled());
         assert!(
             tokio::time::timeout(Duration::from_millis(10), runner.read_u32())
@@ -1639,12 +1669,17 @@ mod tests {
             )
             .await;
         });
-        assert!(
-            control
-                .command(OperationKind::RunOffload { file: None })
-                .await
-                .is_err()
-        );
+        let error = control
+            .command(OperationKind::RunOffload { file: None })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ControlFailure>(),
+            Some(ControlFailure::Rejected {
+                state: VmState::Running,
+                ..
+            })
+        ));
         assert!(!cancellation.is_cancelled());
         assert_eq!(
             control
@@ -1914,7 +1949,3 @@ mod tests {
         assert!(control.command(OperationKind::RunResume).await.is_err());
     }
 }
-
-#[cfg(all(test, feature = "gateway"))]
-#[path = "model_wait_tests.rs"]
-mod model_wait_tests;

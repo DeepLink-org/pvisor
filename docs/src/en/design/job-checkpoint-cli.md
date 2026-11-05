@@ -351,7 +351,7 @@ Ordinary Jobs now integrate native VM capture and restore. Run parsing, defaults
 | Feature | Current implementation |
 | --- | --- |
 | workspace create/fork/review/inspect | Retains stopped-Job upper layers, conflict preimages, generation and hard-link branch references; no process memory capture |
-| execution create | Calls RunControlHandle and native capture through the running Job's private control socket; publication continues the source VM |
+| execution create | Calls Execution and native capture through the running Job's private control socket; publication continues the source VM |
 | suspend | Persists the request and seals the checkpoint; validates Job/Attempt/request against the terminal ExecutionSuspension receipt before creating the suspended head |
 | resume | Continues only the current head, retaining the Job ID while runtime creates a new Attempt; private directories retain leases, records and Bundles, with the original stage selecting the current Attempt |
 | execution fork | Captures and continues a running source, or creates a new Job from explicit history/a suspended head; RAM and upper layers are private, with lineage and durable branch references |

@@ -346,12 +346,9 @@ fn main() {
                             time.sleep(0.1)
                             continue
                         status = json.loads(observed)
-                        upper = (
-                            status.get("run", {})
-                            .get("overlay", {})
-                            .get("upper", {})
-                            .get("upper_dir")
-                        )
+                        if status.get("schema_version") != 2:
+                            raise RuntimeError("status omitted summary schema 2")
+                        upper = status.get("run", {}).get("overlay", {}).get("upper")
                         if upper:
                             try:
                                 counter = int((Path(upper) / "counter").read_text())
@@ -379,8 +376,11 @@ fn main() {
             if not suspended.get("checkpoint_id"):
                 raise RuntimeError("suspend omitted its durable checkpoint")
             source.wait(timeout=60)
-            stopped = json.loads(run(["status", stage, "--json"]))["run"]
-            frozen_upper = Path(stopped["overlay"]["upper"]["upper_dir"])
+            stopped_status = json.loads(run(["status", stage, "--json"]))
+            if stopped_status.get("schema_version") != 2:
+                raise RuntimeError("status omitted summary schema 2")
+            stopped = stopped_status["run"]
+            frozen_upper = Path(stopped["overlay"]["upper"])
             frozen = int((frozen_upper / "counter").read_text())
             resumed = subprocess.Popen(
                 [str(executable), "resume", str(stage), "--request-id", "wheel-resume"],

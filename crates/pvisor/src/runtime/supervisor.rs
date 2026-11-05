@@ -289,40 +289,6 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
-    #[cfg(feature = "gateway")]
-    pub(crate) fn bind_model_wait(
-        &self,
-        controls: crate::RunControlHandle,
-    ) -> anyhow::Result<Self> {
-        let mut bound = self.clone();
-        let Some(gateway) = &self.gateway else {
-            return Ok(bound);
-        };
-        if let Some(mode) = gateway.native_model_wait {
-            anyhow::ensure!(
-                cfg!(all(target_os = "linux", target_arch = "x86_64")),
-                "native model waits require Linux x86_64"
-            );
-            anyhow::ensure!(
-                gateway.gateway_enabled,
-                "native model waits require an enabled Gateway"
-            );
-            anyhow::ensure!(
-                gateway.model_wait.is_none() && self.bound_model_wait.is_none(),
-                "native model waits conflict with a custom model-wait lifecycle"
-            );
-            anyhow::ensure!(
-                controls.status().attempt.executor.kind
-                    == pvisor_core::ExecutorKind::VirtualMachine,
-                "native model waits require a VM executor"
-            );
-            bound.bound_model_wait = Some(Arc::new(super::run::model_wait::NativeLifecycle::new(
-                controls, mode,
-            )));
-        }
-        Ok(bound)
-    }
-
     pub(crate) fn storage_path(&self) -> Option<&std::path::Path> {
         self.storage.as_deref()
     }
@@ -345,10 +311,6 @@ impl RuntimeSupervisor {
         let Some(gateway) = &self.gateway else {
             return Ok(());
         };
-        anyhow::ensure!(
-            gateway.native_model_wait.is_none() || gateway.cooperative_model_wait.is_none(),
-            "legacy and Host-observed model waits are mutually exclusive"
-        );
         if let Some(policy) = gateway.cooperative_model_wait {
             policy.validate()?;
             anyhow::ensure!(
@@ -368,10 +330,9 @@ impl RuntimeSupervisor {
     }
 
     #[cfg(feature = "gateway")]
-    pub(crate) fn bind_host_model_wait(
+    pub(crate) fn bind_model_wait(
         &self,
-        controls: super::run::RunControlHandle,
-        cancellation: tokio_util::sync::CancellationToken,
+        controls: super::execution::Execution,
     ) -> (Self, Option<Arc<super::wait_coordinator::WaitCoordinator>>) {
         let mut runtime = self.clone();
         let coordinator = self
@@ -380,13 +341,10 @@ impl RuntimeSupervisor {
             .and_then(|gateway| gateway.cooperative_model_wait)
             .map(|policy| {
                 let attempt_id = controls.status().attempt.attempt_id;
-                let coordinator = super::wait_coordinator::WaitCoordinator::new(
-                    Arc::new(controls),
-                    cancellation,
-                    policy,
-                );
+                let coordinator =
+                    super::wait_coordinator::WaitCoordinator::new(Arc::new(controls), policy);
                 coordinator.start_host_reads();
-                runtime.bound_model_wait = Some(Arc::new(super::model_wait::NativeModelWait {
+                runtime.bound_model_wait = Some(Arc::new(super::model_wait::ModelWaitAdapter {
                     coordinator: coordinator.clone(),
                     attempt_id,
                 }));
@@ -915,18 +873,6 @@ models = []
                 .is_ok()
         );
         assert!(runtime.validate_model_wait(ExecutorKind::Process).is_err());
-        let mixed = RuntimeSupervisorBuilder::new()
-            .gateway(
-                configured
-                    .clone()
-                    .native_model_wait(crate::NativeModelWait::Pause),
-            )
-            .build();
-        assert!(
-            mixed
-                .validate_model_wait(ExecutorKind::VirtualMachine)
-                .is_err()
-        );
         let disabled = RuntimeSupervisorBuilder::new()
             .gateway(configured.gateway_enabled(false))
             .build();

@@ -162,110 +162,98 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&status_json(&response))?);
         return Ok(());
     }
-    let pvisor::job_service::StatusResponse {
-        record,
-        live,
-        live_attempt,
-        execution_blocker: blocker,
-        checkpoints,
-        apply_history,
-        filesystem: fs,
-        filesystem_observation: file_observed,
-        network_observation: net_observed,
-        execution,
-    } = response;
+    let record = &response.record;
     println!("job: {}", record.run_id);
     println!("session: {}", record.session_id);
-    let state = if live {
-        "running"
-    } else if record.state == pvisor::RunRecordState::Running {
-        "stale"
-    } else {
-        record.state.as_str()
-    };
-    println!("state: {state}");
-    if let Some(attempt) = live_attempt {
+    println!("state: {}", response.state.as_str());
+    if let Some(attempt) = &response.live_attempt {
         println!("attempt: {:?}", attempt.state);
     }
     println!(
         "pid: {}{}",
         record.pid,
-        if live { " (live)" } else { " (offline)" }
+        if response.live {
+            " (live)"
+        } else {
+            " (offline)"
+        }
     );
     println!("agent: {}", record.agent);
-    println!("command: {}", shell_join(&record.command));
-    println!("stage: {}", record.stage_dir().display());
-    println!("checkpoints: {} workspace", checkpoints.len());
-    if let Some(blocker) = blocker {
+    println!(
+        "command: {}{}",
+        shell_join(&record.command),
+        if record.command_truncated {
+            " [excerpt]"
+        } else {
+            ""
+        }
+    );
+    println!("stage: {}", record.stage.display());
+    println!(
+        "checkpoints: {} workspace",
+        response.workspace_checkpoint_count
+    );
+    if let Some(blocker) = &response.execution_blocker {
         println!("execution checkpoint: unsupported ({blocker})");
     } else {
         println!("execution checkpoint: supported");
     }
-    if let Some(job) = execution {
+    if let Some(job) = &response.execution {
         println!(
             "execution: {} ({} checkpoints)",
-            job["state"].as_str().unwrap_or("unknown"),
-            job["checkpoints"].as_object().map_or(0, |v| v.len())
+            job.state, job.checkpoint_count
         );
-        if let Some(head) = job["suspended_head"].as_str() {
+        if let Some(head) = &job.suspended_head {
             println!("suspended head: {head}");
         }
     }
-    if !apply_history.is_empty() {
-        println!("apply batches: {}", apply_history.len());
+    if response.apply_batch_count > 0 {
+        println!("apply batches: {}", response.apply_batch_count);
     }
-    println!("net: {}", serde_json::to_string(&record.network)?);
+    println!("net: {}", record.network);
     println!(
         "overlaynet: {}",
         record.overlaynet_listen.as_deref().unwrap_or("disabled")
     );
-    if let Some(interception) = &record.network_interception {
+    if let Some(observed) = &response.filesystem_observation {
         println!(
-            "network interception: {:?} ({:?}, enforcing={})",
-            interception.driver,
-            interception.strength,
-            interception.is_enforcing()
+            "file accesses observed: {} operations, {} denied across {} paths ({} omitted)",
+            observed.hits, observed.denied, observed.observed_paths, observed.overflow_hits
         );
-    }
-    if let Some(observed) = &file_observed {
-        let (hits, denied) = observed
-            .paths
-            .values()
-            .flat_map(|operations| operations.values())
-            .fold((0u64, 0u64), |sum, counts| {
-                (sum.0 + counts.hits, sum.1 + counts.denied)
-            });
-        println!(
-            "file accesses observed: {hits} operations, {denied} denied across {} paths ({} omitted)",
-            observed.paths.len(),
-            observed.overflow_hits
-        );
-        for (path, operations) in observed
-            .paths
-            .iter()
-            .filter(|(_, operations)| operations.values().any(|counts| counts.denied > 0))
-            .take(5)
-        {
-            let denied: u64 = operations.values().map(|counts| counts.denied).sum();
-            println!("  denied {denied}: {path}");
+        for sample in &observed.denied_samples {
+            println!(
+                "  denied {}: {}{}",
+                sample.denied,
+                sample.target,
+                if sample.truncated { " [excerpt]" } else { "" }
+            );
         }
     }
-    if let Some(observed) = &net_observed {
+    if let Some(observed) = &response.network_observation {
         println!(
             "network accesses observed: {} policy allowed, {} denied, {} transport failures across {} destinations ({} omitted)",
             observed.policy_allowed,
-            observed.policy_denied + observed.tcp_flows_denied,
-            observed.tcp_connect_failures + observed.failures,
-            observed.targets.len(),
-            observed.target_overflow
+            observed.denied,
+            observed.transport_failures,
+            observed.observed_targets,
+            observed.overflow_hits
         );
-        for (target, counts) in observed
-            .targets
-            .iter()
-            .filter(|(_, counts)| counts.denied > 0)
-            .take(5)
-        {
-            println!("  denied {}: {target}", counts.denied);
+        for sample in &observed.denied_samples {
+            println!(
+                "  denied {}: {}{}",
+                sample.denied,
+                sample.target,
+                if sample.truncated { " [excerpt]" } else { "" }
+            );
+        }
+    }
+    if let Some(progress) = &response.execution_progress {
+        println!(
+            "controls: {} queued, {} in flight",
+            progress.queued, progress.in_flight
+        );
+        if progress.history_gap || progress.outcome_unknown {
+            println!("execution evidence: reconciliation required");
         }
     }
     println!(
@@ -273,10 +261,13 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         record.gateway_listen.as_deref().unwrap_or("disabled")
     );
     if let Some(overlay) = &record.overlay {
-        let fs = fs.context("OverlayFS status missing")?;
+        let fs = response
+            .filesystem
+            .as_ref()
+            .context("OverlayFS status missing")?;
         println!("fs: {:?} (read-only inspect available)", overlay.state);
         println!("target: {}", overlay.target.display());
-        println!("upper: {}", overlay.upper.path().display());
+        println!("upper: {}", overlay.upper.display());
         println!(
             "changes: {} paths, {} whiteouts",
             fs.changed_files, fs.whiteouts
@@ -290,13 +281,16 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
 fn status_json(response: &pvisor::job_service::StatusResponse) -> serde_json::Value {
     let record = &response.record;
     serde_json::json!({
+        "schema_version": response.schema_version,
+        "state": response.state,
         "run": record, "live": response.live, "live_attempt": response.live_attempt,
+        "execution_progress": response.execution_progress,
         "checkpoint_capability": {"workspace": record.overlay.is_some(), "workspace_capture_requires": "confirmed_stopped", "execution": response.execution_blocker.is_none(), "execution_blocker": response.execution_blocker},
-        "execution": response.execution, "checkpoints": response.checkpoints,
+        "execution": response.execution, "workspace_checkpoint_count": response.workspace_checkpoint_count,
         "workspace_generation": record.overlay.as_ref().map(|o| o.generation),
-        "apply_history": response.apply_history,
+        "apply_batch_count": response.apply_batch_count,
         "observations": {"filesystem": response.filesystem_observation, "network": response.network_observation},
-        "filesystem": response.filesystem.as_ref().map(|fs| serde_json::json!({"state": record.overlay.as_ref().map(|o| o.state), "changed_files": fs.changed_files, "whiteouts": fs.whiteouts, "sample_paths": fs.sample_paths})),
+        "filesystem": response.filesystem,
     })
 }
 

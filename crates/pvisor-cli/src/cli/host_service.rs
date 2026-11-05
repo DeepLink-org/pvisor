@@ -37,7 +37,7 @@ const INTERNAL_FD: i32 = 3;
 const GRACE: Duration = Duration::from_secs(2);
 // Runtime RAM cleanup allows 10s, and macFUSE graceful unmount allows 30s.
 const FINALIZATION_GRACE: Duration = Duration::from_secs(45);
-static OWNER_RUN: OnceLock<pvisor::RunControlHandle> = OnceLock::new();
+static OWNER_RUN: OnceLock<pvisor::Execution> = OnceLock::new();
 static REQUEST_CANCEL: OnceLock<tokio_util::sync::CancellationToken> = OnceLock::new();
 static REQUEST_TARGET: OnceLock<Option<AgentCtlTarget>> = OnceLock::new();
 static OWNER_EVENTS: OnceLock<Arc<Mutex<UnixStream>>> = OnceLock::new();
@@ -75,7 +75,7 @@ pub(super) fn release_source_lock() {
 }
 pub(super) fn observe_run(handle: &pvisor::RunHandle) {
     // An owner executes one Run; this clone observes status without issuing controls.
-    let _ = OWNER_RUN.set(handle.controls());
+    let _ = OWNER_RUN.set(handle.execution().clone());
 }
 pub(super) fn notify_cleanup() {
     OWNER_FINALIZING.store(true, Ordering::SeqCst);

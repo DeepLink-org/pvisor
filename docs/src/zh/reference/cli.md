@@ -166,7 +166,7 @@ review、apply、drop 和 inspect 在调用方持有 `job.lock` 时直接执行�
 有效 owner 仍持有 stage 时，apply/drop 拒绝执行。交互执行沿用原终端，允许
 Ctrl-C 到达工作负载，并在退出后恢复前台进程组。
 
-实例协议为 `pvisor-instance-control-1`；兼容的调用方二进制不要求摘要与 owner
+实例协议为 `pvisor-instance-control-2`；兼容的调用方二进制不要求摘要与 owner
 相同。同 UID 私有 socket 使用有界换行 JSON，不接收终端描述符或 Guest
 AgentCtl token。响应丢失、超时和取消之后，副作用仍可能已经发生，命令不自动重试。
 

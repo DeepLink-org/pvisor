@@ -1,8 +1,9 @@
 //! Job-scoped workspace and execution checkpoint management.
 use anyhow::Context;
 use clap::{Args, Subcommand, ValueEnum};
+use pvisor::JobExecution;
 use pvisor::checkpoint::{checkpoint_branch_refs, list_checkpoints, resolve_checkpoint};
-use pvisor::job_execution::{self, Job};
+use pvisor::job_execution::{self};
 use pvisor::{RunRecord, resolve_run};
 use pvisor_core::operation::SnapshotRamStorage;
 
@@ -295,7 +296,7 @@ impl CheckpointArgs {
         // workspace fallback must still acquire stopped-Attempt ownership.
         let execution_delete = match &self.command {
             CheckpointCommand::Delete { id, .. } => {
-                Job::read(record)?.is_some_and(|job| job.checkpoints.contains_key(id))
+                JobExecution::read(record)?.is_some_and(|job| job.checkpoints.contains_key(id))
             }
             _ => false,
         };
@@ -412,7 +413,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     .collect::<Result<_, _>>()?
             };
             if kind != Some(Kind::Workspace)
-                && let Some(job) = Job::read(&record)?
+                && let Some(job) = JobExecution::read(&record)?
             {
                 checkpoints.extend(job.checkpoints.values().map(|capture| serde_json::json!({"checkpoint_id":capture.checkpoint.snapshot_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches})));
             }
@@ -428,7 +429,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            if let Some(job) = Job::read(&record)?
+            if let Some(job) = JobExecution::read(&record)?
                 && let Some(capture) = job.checkpoints.get(&id)
             {
                 return emit(
@@ -453,8 +454,8 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let template = Job::read(&record)?;
-            let _job_lease = template.as_ref().map(Job::lock).transpose()?;
+            let template = JobExecution::read(&record)?;
+            let _job_lease = template.as_ref().map(JobExecution::lock).transpose()?;
             let job = template.map(|job| job.current()).transpose()?;
             if let Some(job) = &job {
                 job.validate_record_target(&record)?;
@@ -504,8 +505,8 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             kind,
         } => {
             let record = selection.resolve()?;
-            let template = Job::read(&record)?;
-            let _job_lease = template.as_ref().map(Job::lock).transpose()?;
+            let template = JobExecution::read(&record)?;
+            let _job_lease = template.as_ref().map(JobExecution::lock).transpose()?;
             let job = template.map(|job| job.current()).transpose()?;
             if let Some(job) = &job {
                 job.validate_record_target(&record)?;
@@ -602,7 +603,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
 }
 
 fn checkpoint_store(
-    job: &Job,
+    job: &JobExecution,
     path: &std::path::Path,
 ) -> anyhow::Result<pvisor::environment_snapshot::SnapshotStore> {
     match job.config.vm.snapshot_filesystem_pool.as_deref() {

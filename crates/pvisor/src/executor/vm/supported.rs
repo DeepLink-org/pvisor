@@ -1091,10 +1091,10 @@ impl RunExecutor for VmExecutor {
             );
         }
         context
-            .transition(
-                RunState::Starting,
-                Some("starting libkrun guest over pVisor root OverlayFS".into()),
-            )
+            .execution()
+            .starting(Some(
+                "starting libkrun guest over pVisor root OverlayFS".into(),
+            ))
             .await;
         if !cfg!(any(
             target_os = "linux",
@@ -1979,10 +1979,14 @@ impl RunExecutor for VmExecutor {
             context
                 .vm_control
                 .idle
-                .attach(host, context.cancellation().clone(), context.events.clone())
+                .attach(
+                    host,
+                    context.execution().cancellation(),
+                    context.events.clone(),
+                )
                 .await;
         }
-        context.transition(RunState::Running, None).await;
+        context.execution().ready().await;
 
         crate::util::startup_mark_run("vm.wait_begin", spec.run_id.as_str());
         #[cfg(target_os = "linux")]

@@ -3,11 +3,8 @@ pub(crate) mod lifecycle;
 
 use crate::executor::AttemptAttachments;
 use crate::runtime::event::RunEventPublisher;
-use pvisor_core::{AttemptId, RunSpec, RunState, RunStatus};
-use serde_json::json;
+use pvisor_core::{AttemptId, RunSpec};
 use std::sync::Arc;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 /// Attempt-scoped execution identity, controls, policy and lifecycle owner.
 pub struct Session {
@@ -15,9 +12,8 @@ pub struct Session {
     pub(crate) created_at_unix_ms: u64,
     pub(crate) network_policy: pvisor_core::NetworkPolicy,
     pub(crate) attempt_id: AttemptId,
-    pub(crate) cancel: CancellationToken,
     pub(crate) vm_control: crate::executor::vm::control::VmControl,
-    pub(crate) status: watch::Sender<RunStatus>,
+    pub(crate) execution: crate::runtime::execution::Execution,
     pub(crate) events: RunEventPublisher,
     pub(crate) agentctl: crate::AgentCtlControl,
     pub(crate) attachments: AttemptAttachments,
@@ -43,10 +39,6 @@ impl Session {
         &self.attempt_id
     }
 
-    pub fn cancellation(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-
     pub(crate) fn take_vm_network(
         &self,
     ) -> anyhow::Result<Option<crate::runtime::VmNetworkAttachment>> {
@@ -59,51 +51,12 @@ impl Session {
         Ok(attachment.take())
     }
 
-    pub fn status(&self) -> RunStatus {
-        self.status.borrow().clone()
+    /// The Attempt's sole status and live-control owner.
+    pub fn execution(&self) -> &crate::Execution {
+        &self.execution
     }
 
     pub(crate) fn events(&self) -> &RunEventPublisher {
         &self.events
-    }
-
-    pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {
-        // Terminal publication is reserved for Session completion after resource teardown.
-        if state.is_terminal() {
-            return;
-        }
-        let now = crate::util::unix_now_ms();
-        let message = message.into();
-        self.status.send_modify(|status| {
-            status.state = state;
-            status.updated_at_unix_ms = now;
-            status.message = message.clone();
-            if matches!(state, RunState::Starting | RunState::Running)
-                && status.attempt.started_at_unix_ms.is_none()
-            {
-                status.attempt.started_at_unix_ms = Some(now);
-            }
-        });
-        let _ = self
-            .events
-            .publish(
-                "run.state_changed",
-                "runtime",
-                json!({
-                    "state": state,
-                    "message": message,
-                }),
-            )
-            .await;
-    }
-
-    /// Make a terminal status visible after finalization and terminal-event commit.
-    pub(crate) fn finish(&self, state: RunState, message: Option<String>, now: u64) {
-        self.status.send_modify(|status| {
-            status.state = state;
-            status.updated_at_unix_ms = now;
-            status.message = message.clone();
-            status.attempt.finished_at_unix_ms = Some(now);
-        });
     }
 }

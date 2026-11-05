@@ -57,7 +57,7 @@ Environment manifest versions describe different RAM/filesystem combinations. A 
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Endpoint owners validate Job/Attempt/generation targets; Guest tokens grant no Host authority |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | Workload `Hello`/`Sync`, state and cooperation; a separate protocol from Host |
-| Job owner instance control | `pvisor-instance-control-1`, version-1 Host envelope, exact Job/Attempt and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Job |
+| Job owner instance control | `pvisor-instance-control-2`, version-1 Host envelope, exact Job/Attempt and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Job |
 | CLI owner bootstrap | Inherited private socketpair, internal DTO and same-binary BLAKE3 check | Only the frontend launches its own owner; subsequent commands do not use this DTO |
 | Durable Job operation lock | `job.lock` diagnostic protocol `pvisor-job-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link; different binaries with compatible disk readers share the lock; unknown formats reject mutation |
 | Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Job owner protocol; no transparent legacy-supervisor adoption |

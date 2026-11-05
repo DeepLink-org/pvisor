@@ -7,12 +7,12 @@ use pvisor_gateway::model_wait::{ModelWait, ModelWaitLifecycle};
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub(super) struct NativeModelWait {
+pub(super) struct ModelWaitAdapter {
     pub coordinator: Arc<WaitCoordinator>,
     pub attempt_id: AttemptId,
 }
 
-impl ModelWaitLifecycle for NativeModelWait {
+impl ModelWaitLifecycle for ModelWaitAdapter {
     fn reserve_download(
         &self,
     ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::server::DownloadWait>>> {

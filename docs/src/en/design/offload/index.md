@@ -96,7 +96,7 @@ The runner acknowledgement precedes host storage completion. Callers must wait f
 
 ### State, events and memory reports {#control-state-and-memory}
 
-Host `RunHandle` / `RunControlHandle` pause, resume and offload operations use Core `OperationKind` and return `Value::Vm`. Successful pause/offload sets the outer `RunState` to `Suspended`; successful resume sets it to `Running`. The result's `VmState::{Running,Paused,Offloaded}` distinguishes VM control states. `Suspended` alone does not prove RAM was offloaded and is separate from durable checkpoint/suspend workflows. The lower-level interface is `pvisor_vm::api::VmControl`, implemented by `VmmHandle`, with offload returning `RamReclaim`.
+Host `Execution` pause, resume and offload operations use Core `OperationKind` and return `Value::Vm`. Successful pause/offload sets the outer `RunState` to `Suspended`; successful resume sets it to `Running`. The result's `VmState::{Running,Paused,Offloaded}` distinguishes VM control states. `Suspended` alone does not prove RAM was offloaded and is separate from durable checkpoint/suspend workflows. The lower-level interface is `pvisor_vm::api::VmControl`, implemented by `VmmHandle`, with offload returning `RamReclaim`.
 
 Control transitions are serialized and record `vm.control_requested`, followed by `vm.control_completed` or `vm.control_failed`. Failure to publish the request event prevents control execution. After successful control, Run state is updated before publishing completion. If that event write fails, the call returns `VM control completed but observation failed`; neither the completed control nor its state is rolled back. Callers must not interpret this error as proof that the VM did not execute the operation.
 

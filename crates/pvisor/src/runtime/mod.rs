@@ -10,6 +10,7 @@ pub(crate) mod bundle;
 pub mod checkpoint;
 pub(crate) mod completion;
 pub(crate) mod event;
+pub(crate) mod execution;
 #[cfg(unix)]
 pub mod host_transport;
 mod implant;
@@ -54,8 +55,10 @@ pub use registry::LEASE_FILENAME;
 pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, JobDirectoryLock, RunLineage, RunLookupError, RunRecord, RunRecordState,
+    EnvironmentProjection, JobDirectoryLock, RunLineage, RunLookupError, RunRecord,
     control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
     default_run_home, is_live, lookup_run_id, resolve_run,
 };
 pub use supervisor::RuntimeCapabilities;
+
+pub use execution::RunRecordState;
