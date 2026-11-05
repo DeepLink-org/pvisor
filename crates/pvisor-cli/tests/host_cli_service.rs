@@ -149,6 +149,7 @@ fn cancellation_is_acknowledged_with_signal_exit_status() {
     );
     let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(value["live"], false);
+    assert_eq!(value["state"], value["run"]["state"]);
     assert_ne!(value["run"]["state"], "running");
 }
 
@@ -279,10 +280,10 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["live"],
-        true
-    );
+    let observed: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(observed["live"], true);
+    assert_eq!(observed["state"], "running");
+    assert!(!observed["execution_progress"]["applied"].is_null());
     for operation in ["apply", "drop"] {
         let mut request = command(root.path());
         request.args([operation, "last"]);

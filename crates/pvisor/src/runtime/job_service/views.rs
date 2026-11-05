@@ -1,39 +1,9 @@
-use super::{
-    JobSelection, RuntimeJobService, ServiceContext, check_selected_record, execution_blocker,
-};
+use super::{JobSelection, RuntimeJobService, ServiceContext, check_selected_record};
 use crate::RunBundle;
 
-use crate::runtime::{
-    RunRecord, control_observations, control_overlay_status, control_ping, load_apply_records,
-    overlay_status,
-};
+use crate::runtime::RunRecord;
 use anyhow::Context;
 
-pub struct StatusRequest {
-    pub job: JobSelection,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct FilesystemSummary {
-    pub changed_files: usize,
-    pub whiteouts: usize,
-    pub sample_paths: Vec<String>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct StatusResponse {
-    pub record: RunRecord,
-    pub live: bool,
-    /// Current Attempt observation supplied by its owner; absent for disk-only reads.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub live_attempt: Option<pvisor_core::RunStatus>,
-    pub execution_blocker: Option<String>,
-    pub checkpoints: Vec<crate::LogicalCheckpoint>,
-    pub apply_history: Vec<pvisor_core::overlay::ApplyRecord>,
-    pub filesystem: Option<FilesystemSummary>,
-    pub filesystem_observation: Option<pvisor_core::operation::FilesystemObservation>,
-    pub network_observation: Option<pvisor_overlaynet::InterceptionSnapshot>,
-    /// Versioned durable execution state; not a CLI DTO.
-    pub execution: Option<serde_json::Value>,
-}
 pub struct ReviewRequest {
     pub job: JobSelection,
     pub checkpoint: Option<String>,
@@ -76,115 +46,6 @@ impl ReviewResponse {
     }
 }
 impl RuntimeJobService {
-    pub fn status(
-        context: &ServiceContext<'_>,
-        request: StatusRequest,
-    ) -> anyhow::Result<StatusResponse> {
-        let mut record = Self::resolve(context, &request.job)?;
-        let endpoint = record
-            .live_control
-            .as_ref()
-            .filter(|endpoint| endpoint.is_available());
-        if let Some(endpoint) = endpoint
-            && endpoint.pid != std::process::id()
-        {
-            match endpoint.exchange_checked(
-                &record.run_id,
-                record
-                    .attempt_id
-                    .as_deref()
-                    .context("live Job has no Attempt identity")?,
-                crate::host_transport::InstanceCommand::JobStatus {},
-                context.check_cancelled,
-            ) {
-                Ok(value) => return Ok(serde_json::from_value(value)?),
-                Err(error)
-                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                        )
-                    }) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let live = endpoint.is_some() && super::super::instance_control::owns_record(&record);
-        if !live && record.completion_protocol.is_some() {
-            let _job = super::lock_selected_job(context, &record)?;
-            match record.lock_current() {
-                Ok((mut current, _lease)) => {
-                    context.check(&current)?;
-                    super::super::completion::reconcile(&mut current)?;
-                    record = current;
-                }
-                Err(error)
-                    if error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
-        let blocker = execution_blocker(&record);
-        let apply_history = load_apply_records(&record.stage_dir())?;
-        let fs = record
-            .overlay
-            .as_ref()
-            .map(|overlay| {
-                if live && control_ping(&record.stage_dir()) {
-                    control_overlay_status(&record.stage_dir()).map(|status| FilesystemSummary {
-                        changed_files: status.changed_files,
-                        whiteouts: status.whiteouts,
-                        sample_paths: status.sample_paths,
-                    })
-                } else {
-                    overlay_status(overlay)
-                        .map(|status| FilesystemSummary {
-                            changed_files: status.changed_files,
-                            whiteouts: status.whiteouts,
-                            sample_paths: status.sample_paths,
-                        })
-                        .map_err(Into::into)
-                }
-            })
-            .transpose()?;
-        let observations = if live {
-            control_observations(&record.stage_dir()).ok()
-        } else {
-            None
-        };
-        let file_observed = observations
-            .as_ref()
-            .and_then(|value| value.get("filesystem"))
-            .and_then(|value| {
-                serde_json::from_value::<pvisor_core::operation::FilesystemObservation>(
-                    value.clone(),
-                )
-                .ok()
-            })
-            .or_else(|| record.filesystem_observation.clone());
-        let net_observed = observations
-            .as_ref()
-            .and_then(|value| value.get("network"))
-            .and_then(|value| {
-                serde_json::from_value::<pvisor_overlaynet::InterceptionSnapshot>(value.clone())
-                    .ok()
-            })
-            .or_else(|| record.network_interception_metrics.clone());
-        let execution = crate::runtime::job_execution::Job::read(&record)?.map(|job| serde_json::json!({"state":job.state,"suspended_head":job.head,"active_attempt":job.active_attempt,"job_root":job.root,"checkpoints":job.checkpoints,"requests":job.requests,"resume_requests":job.resumes,"fork_requests":job.forks,"checkpoint_stores":job.stores}));
-        Ok(StatusResponse {
-            record,
-            live,
-            live_attempt: None,
-            execution_blocker: blocker,
-            checkpoints,
-            apply_history,
-            filesystem: fs,
-            filesystem_observation: file_observed,
-            network_observation: net_observed,
-            execution,
-        })
-    }
     pub fn review(
         context: &ServiceContext<'_>,
         request: ReviewRequest,

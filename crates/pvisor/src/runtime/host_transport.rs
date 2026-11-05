@@ -99,6 +99,7 @@ fn create_authority_root(root: &std::path::Path) -> anyhow::Result<()> {
     validate_authority_directory(root)
 }
 
+#[cfg(test)]
 pub(crate) fn allocate_host_directory(prefix: &str) -> anyhow::Result<tempfile::TempDir> {
     use std::os::unix::fs::PermissionsExt;
     let root = host_authority_root()?;
@@ -112,7 +113,7 @@ pub(crate) fn allocate_host_directory(prefix: &str) -> anyhow::Result<tempfile::
 }
 
 /// Wire contract for one running Job owner; independent of its binary digest.
-pub const INSTANCE_CONTROL_PROTOCOL: &str = "pvisor-instance-control-1";
+pub const INSTANCE_CONTROL_PROTOCOL: &str = "pvisor-instance-control-2";
 
 /// Host-only discovery persisted before execution, cleared on terminal publication.
 /// The path is canonical, excluded from guest inputs, and bound to device/inode.
@@ -140,6 +141,14 @@ pub struct LiveControlRecord {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InstanceCommand {
+    /// Confirm that the owner has a live OverlayFS workspace.
+    Ping {},
+    /// Read current workspace counters and bounded paths.
+    OverlayStatus {},
+    /// Read full owner filesystem and network observations.
+    Observations {},
+    /// Read bounded filesystem and network activity summaries.
+    StatusObservations {},
     /// Read native VM status; non-VM executors return Unsupported.
     Status {},
     /// Read Job status and owner observations.

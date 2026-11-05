@@ -116,26 +116,17 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-For compatibility, the existing explicit-declaration adapter remains available.
-pVisor's optional
-`GatewayDriverConfig::native_model_wait(NativeModelWait::Pause | Offload)` binds
-it to a fresh Attempt on Linux x86_64; see the
-[native wait contract](../pvisor/README.md#cooperative-native-model-waits-exp-003-m0).
-That prototype retains resource admission and supports one trusted whole-guest
-wait, with manual pause ownership and native ACK barriers. It does not provide
-distributed wait ownership, CPU reservation release or full inference spooling.
-
-Separately, the `pvisor` runtime supplies an opt-in Attempt-local adapter through
+The `pvisor` runtime supplies one built-in Attempt-local adapter through
 `GatewayDriverConfig::cooperative_model_wait`; see its
 [contract and limits](../pvisor/README.md#cooperative-model-waits-opt-in-rust-api).
 It requires the single-vCPU guest-kernel idle handoff before pause and optional
 offload. Overlapping calls wake an owned pause and permanently disable automatic
 transitions for that Attempt, while forwarding and response barriers continue.
-The two built-in modes are mutually exclusive. The Host-observed mode needs no
-Agent header; the legacy mode alone retains its explicit declaration gate. It
-does not release scheduler reservations. Custom lifecycle implementations receive
-unmarked calls by default and must handle concurrency; legacy embedders may
-explicitly override `requires_idle_declaration`. See [probe scope and measurement limits](../pvisor/README.md#long-reasoning-engineering-probe).
+`Execution` owns status and native controls; the coordinator owns automatic-pause
+arbitration. All authorized calls are observed; client headers cannot select or
+bypass observation. The M0 native adapter, declaration parser and compatibility
+switch are removed. Custom lifecycles must establish idleness and handle concurrency.
+Resource reservations remain held. See [probe scope and measurement limits](../pvisor/README.md#long-reasoning-engineering-probe).
 `pvisor-daemon` does not currently integrate this Gateway lifecycle; its execd
 proxy must not be described as native inference-wait coordination.
 

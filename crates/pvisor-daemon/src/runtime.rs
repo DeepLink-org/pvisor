@@ -1105,11 +1105,11 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             attempt_id: handle.attempt_id().to_string(),
         },
     )?;
-    let service = handle.service();
+    let service = handle.execution().clone();
     // Prove acknowledged live controls before advertising any readiness. This
     // pauses/resumes the SAME attempt briefly; no snapshot/rebuild is involved.
     let controls_ready = timeout(READY_TIMEOUT, async {
-        wait_control_ready(&service).await?;
+        service.wait_ready().await?;
         service
             .dispatch(HostAttemptCommand::Operation {
                 kind: pvisor_core::OperationKind::RunPause,
@@ -1261,36 +1261,13 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     }
 }
 
-async fn wait_control_ready(service: &pvisor::AttemptService) -> Result<()> {
-    loop {
-        let status = service.dispatch(HostAttemptCommand::Status).await?.status;
-        ensure!(
-            status.attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "run is not a VM"
-        );
-        ensure!(
-            !status.state.is_terminal() && status.state != pvisor_core::RunState::Cancelling,
-            "attempt ended before control readiness"
-        );
-        if matches!(
-            status.state,
-            pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
-        ) {
-            return Ok(());
-        }
-        // AttemptService exposes live status, not a readiness subscription. The
-        // startup owner supplies READY_TIMEOUT and still proves native pause/resume.
-        sleep(Duration::from_millis(10)).await;
-    }
-}
-
 fn supervisor_builder() -> pvisor::PVisorBuilder {
     // The daemon owns the authenticated supervisor endpoint and its publication.
     pvisor::PVisor::builder().instance_control(false)
 }
 
 async fn execute_control(
-    service: &pvisor::AttemptService,
+    service: &pvisor::Execution,
     identity: &Identity,
     directory: &Path,
     client: &reqwest::Client,
@@ -1354,7 +1331,7 @@ async fn execute_control(
 }
 
 // The supervisor authenticates each request before this path. Endpoint resolves
-// only from the current AttemptService, never a durable observation; readiness and
+// only from the current Execution, never a durable observation; readiness and
 // hard-limit reconciliation belong to Inspect and lifecycle controls.
 async fn observe_control(
     directory: &Path,
@@ -1386,7 +1363,7 @@ async fn observe_control(
     Ok((state, endpoint))
 }
 
-fn native_state(service: &pvisor::AttemptService) -> Result<RuntimeState> {
+fn native_state(service: &pvisor::Execution) -> Result<RuntimeState> {
     native_status(service.status())
 }
 
@@ -2668,8 +2645,8 @@ mod tests {
         let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
             .await
             .unwrap();
-        let service = handle.service();
-        let ready = timeout(CONTROL_TIMEOUT, wait_control_ready(&service)).await;
+        let service = handle.execution().clone();
+        let ready = timeout(CONTROL_TIMEOUT, service.wait_ready()).await;
         if !matches!(ready, Ok(Ok(()))) {
             service
                 .dispatch(HostAttemptCommand::Terminate)

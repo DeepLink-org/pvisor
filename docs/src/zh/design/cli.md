@@ -129,7 +129,7 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 `cli/host_service.rs` 负责前端/owner 生命周期、按记录路由和协议兼容。
 `cli/host_process.rs` 管理进程树与终端交接；`cli/host_image.rs` 保留 macOS
 已加载/磁盘 Mach-O UUID 校验。`runtime/host_transport.rs` 共享私有路径、
-有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-1`，
+有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-2`，
 独立于调用方二进制摘要。内部 `JobCommand` DTO 目前覆盖全部命令，只有
 spawn、fork、resume 用于启动同一二进制的 owner；其他命令直接执行或向 owner
 发送实例协议命令。

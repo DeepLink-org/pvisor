@@ -261,7 +261,7 @@ struct Worker {
     upper: PathBuf,
     handle: Option<RunHandle>,
     waiter: Option<tokio::task::JoinHandle<Result<pvisor_core::RunResult, pvisor::PVisorError>>>,
-    cancellation: pvisor::RunCancellation,
+    cancellation: tokio_util::sync::CancellationToken,
     startup_heartbeat: u64,
     heartbeat: u64,
     reaped: bool,
@@ -273,7 +273,7 @@ impl Worker {
     fn alive(&self) -> bool {
         self.handle
             .as_ref()
-            .is_some_and(|h| !h.status().state.is_terminal())
+            .is_some_and(|h| !h.execution().status().state.is_terminal())
     }
     async fn command(
         &mut self,
@@ -509,7 +509,7 @@ async fn start(
             if checkpoint.is_some() { 0 } else { id },
         ))
         .await?;
-    let cancellation = handle.cancellation();
+    let cancellation = handle.execution().cancellation();
     Ok(Worker {
         id,
         upper,
@@ -724,7 +724,7 @@ async fn phase(
 ) -> anyhow::Result<()> {
     if !offloaded {
         for w in group.iter() {
-            w.handle()?.pause_vm().await?;
+            w.handle()?.execution().pause().await?;
         }
     }
     // Pause acknowledges CPUs, not all outstanding virtio-fs device writes.
@@ -762,7 +762,7 @@ async fn phase(
     );
     if !offloaded {
         for w in group.iter() {
-            w.handle()?.resume_vm().await?;
+            w.handle()?.execution().resume().await?;
         }
         for w in group.iter_mut() {
             let parked = w.heartbeat;
@@ -804,6 +804,7 @@ async fn experiment(
         check(report, "producer_payload", ack);
         let value = producer
             .handle()?
+            .execution()
             .control(OperationKind::RunSuspend {
                 request_id: "memory-scale-baseline".into(),
                 ram_storage: SnapshotRamStorage::Raw,
@@ -950,6 +951,7 @@ async fn experiment(
         for w in group.iter_mut() {
             let error = w
                 .handle()?
+                .execution()
                 .offload(None)
                 .await
                 .err()
@@ -1017,13 +1019,13 @@ async fn experiment(
         for cycle in 0..2 {
             for w in group.iter() {
                 let t = Instant::now();
-                let memory = w.handle()?.offload(None).await?;
+                let memory = w.handle()?.execution().offload(None).await?;
                 ensure!(
                     memory.backed_bytes >= u64::from(a.memory_mib) * 1024 * 1024,
                     "incomplete RAM offload"
                 );
                 ensure!(
-                    w.handle()?.status().state == RunState::Suspended,
+                    w.handle()?.execution().status().state == RunState::Suspended,
                     "offload did not suspend VM {}",
                     w.id
                 );
@@ -1045,7 +1047,7 @@ async fn experiment(
             for w in group.iter_mut() {
                 let t = Instant::now();
                 let parked = w.heartbeat;
-                w.handle()?.resume_vm().await?;
+                w.handle()?.execution().resume().await?;
                 let ack = w
                     .command(
                         &format!("readback-{cycle}-{}", w.id),

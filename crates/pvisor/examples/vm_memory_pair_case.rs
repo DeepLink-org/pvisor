@@ -31,9 +31,9 @@ async fn heartbeat(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             ensure!(
-                !handle.status().state.is_terminal(),
+                !handle.execution().status().state.is_terminal(),
                 "VM terminated: {:?}",
-                handle.status()
+                handle.execution().status()
             );
             if let Ok(bytes) = std::fs::read(path)
                 && !bytes.is_empty()
@@ -178,12 +178,15 @@ async fn run() -> anyhow::Result<()> {
         stages.push(stage.join("upper"));
         runtimes.push(runtime);
     }
-    let cancellation_handles: Vec<_> = handles.iter().map(RunHandle::cancellation).collect();
+    let cancellation_handles: Vec<_> = handles
+        .iter()
+        .map(|handle| handle.execution().cancellation())
+        .collect();
     let cancellation = aborted.clone();
     let signal_task = tokio::spawn(async move {
         terminate.recv().await;
-        for handle in cancellation_handles {
-            handle.cancel();
+        for cancellation in cancellation_handles {
+            cancellation.cancel();
         }
         cancellation.cancel();
     });
@@ -198,7 +201,7 @@ async fn run() -> anyhow::Result<()> {
             std::io::stdout().flush()?;
         }
         if !mode.starts_with("cold") {
-        handles[0].pause().await?;
+        handles[0].execution().pause().await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let parked = std::fs::read(stages[0].join("heartbeat"))?;
         heartbeat(&handles[1], &stages[1].join("heartbeat"), Some(&second)).await?;
@@ -207,13 +210,13 @@ async fn run() -> anyhow::Result<()> {
             std::fs::read(stages[0].join("heartbeat"))? == parked,
             "paused VM progressed"
         );
-        handles[0].resume().await?;
+        handles[0].execution().resume().await?;
         heartbeat(&handles[0], &stages[0].join("heartbeat"), Some(&parked)).await?;
         }
         if mode == "offload" {
             for cycle in 0..3 {
                 for vm in 0..2 {
-                    let report = handles[vm].offload(None).await?;
+                    let report = handles[vm].execution().offload(None).await?;
                     ensure!(report.backed_bytes >= 256 * 1024 * 1024, "RAM range missing");
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     let parked = std::fs::read(stages[vm].join("heartbeat"))?;
@@ -221,7 +224,7 @@ async fn run() -> anyhow::Result<()> {
                     let before = std::fs::read(stages[other].join("heartbeat"))?;
                     heartbeat(&handles[other], &stages[other].join("heartbeat"), Some(&before)).await?;
                     ensure!(std::fs::read(stages[vm].join("heartbeat"))? == parked, "offloaded VM progressed");
-                    handles[vm].resume().await?;
+                    handles[vm].execution().resume().await?;
                     heartbeat(&handles[vm], &stages[vm].join("heartbeat"), Some(&parked)).await?;
                     println!("offload vm={vm} cycle={cycle} backed={} resident_before={:?} resident_after={:?}", report.backed_bytes, report.resident_before_bytes, report.resident_after_bytes);
                 }
@@ -233,15 +236,15 @@ async fn run() -> anyhow::Result<()> {
             use std::io::Write;
             std::io::stdout().flush()?;
             tokio::time::timeout(Duration::from_secs(10), async {
-                while handles.iter().any(|handle| !handle.status().state.is_terminal()) {
+                while handles.iter().any(|handle| !handle.execution().status().state.is_terminal()) {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
             }).await.context("VMs did not fail promptly after pool loss")?;
         } else if mode.starts_with("cold") {
             tokio::time::sleep(Duration::from_secs(30)).await;
             if !matches!(mode.as_str(), "cold-baseline" | "cold-net-baseline" | "cold-stress-baseline") {
-                ensure!(handles[0].offload(None).await.is_err(), "cold pager accepted incompatible whole-VM offload");
-                ensure!(handles[0].status().state == RunState::Running, "rejected offload changed VM state");
+                ensure!(handles[0].execution().offload(None).await.is_err(), "cold pager accepted incompatible whole-VM offload");
+                ensure!(handles[0].execution().status().state == RunState::Running, "rejected offload changed VM state");
             }
         }
         for stage in &stages {
@@ -252,7 +255,7 @@ async fn run() -> anyhow::Result<()> {
     };
     if check.is_err() {
         for handle in &handles {
-            handle.cancel();
+            handle.execution().cancel();
         }
     }
     let mut results = Vec::new();

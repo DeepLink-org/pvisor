@@ -1,12 +1,13 @@
 //! Attempt-scoped Gateway + OverlayFS session owned by pVisor.
 
+use super::execution::RunRecordState;
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
     OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
     lower_stack_from_config, mount_overlay_record_observed, prepare_execution_overlay_record,
     prepare_overlay_record_mountless, resolve_overlay_workspace, stage_overlay_record,
 };
-use super::registry::{RunControlServer, RunLease, RunRecord, RunRecordState};
+use super::registry::{RunLease, RunRecord};
 #[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
 use anyhow::Context as _;
@@ -59,12 +60,15 @@ pub(crate) struct AttemptSession {
     #[cfg(feature = "gateway")]
     started_at: Instant,
     run_record: RunRecord,
-    _control: Option<RunControlServer>,
     _lease: RunLease,
     _workspace_base: Option<Arc<super::owned_workspace::OwnedWorkspace>>,
 }
 
 impl AttemptSession {
+    pub(crate) fn control_metrics(&self) -> (Option<FsMetrics>, Option<InterceptionMetrics>) {
+        (self.fs_metrics.clone(), self.network_metrics.clone())
+    }
+
     fn finish_preparation(
         mut self,
         attempt_id: &pvisor_core::AttemptId,
@@ -153,12 +157,6 @@ impl AttemptSession {
         self.network_metrics = Some(metrics.clone());
         self.proxy = Some(proxy);
         self.run_record.write()?;
-        self._control.take();
-        self._control = RunControlServer::start_observed(
-            &self.run_record,
-            self.fs_metrics.clone(),
-            Some(metrics),
-        )?;
         let metadata = spec
             .metadata
             .entry("pvisor.runtime.implant".into())
@@ -224,6 +222,9 @@ impl AttemptSession {
         allow_apply: bool,
         preserve_backing: bool,
     ) -> AttemptTeardown {
+        if let Some(attempt) = self.run_record.attempt_id.as_deref() {
+            super::instance_control::close_inspections(&self.run_record.run_id, attempt);
+        }
         let mut errors = Vec::new();
         if let Some(proxy) = self.proxy.take()
             && let Err(error) = proxy.shutdown()
@@ -419,13 +420,7 @@ impl AttemptTeardown {
 
     pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
         self.run_record.live_control = None;
-        self.run_record.state = match state {
-            RunState::Completed => RunRecordState::Completed,
-            RunState::Cancelled => RunRecordState::Cancelled,
-            RunState::Failed => RunRecordState::Failed,
-            RunState::Hibernated => RunRecordState::Hibernated,
-            _ => anyhow::bail!("cannot commit nonterminal Run state {state:?}"),
-        };
+        self.run_record.state = super::execution::record_state(state)?;
         self.run_record.write()
     }
 }
@@ -713,7 +708,6 @@ pub(crate) fn prepare_attempt(
         #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
-        _control: None,
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
@@ -725,11 +719,6 @@ pub(crate) fn prepare_attempt(
             crate::util::startup_mark_run("storage.record_write_begin", spec.run_id.as_str());
             session.run_record.write()?;
             crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
-            session._control = RunControlServer::start_observed(
-                &session.run_record,
-                session.fs_metrics.clone(),
-                session.network_metrics.clone(),
-            )?;
 
             let RunInvocation::Process(ref process) = spec.invocation;
             let program = process.program.clone();
@@ -855,7 +844,6 @@ pub(crate) fn prepare_overlay_attempt(
         #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
-        _control: None,
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
@@ -900,11 +888,6 @@ pub(crate) fn prepare_overlay_attempt(
         crate::util::startup_mark_run("storage.record_write_begin", spec.run_id.as_str());
         session.run_record.write()?;
         crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
-        session._control = RunControlServer::start_observed(
-            &session.run_record,
-            session.fs_metrics.clone(),
-            session.network_metrics.clone(),
-        )?;
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
         inject_krun_overlay_metadata(spec, preparation, &plan.overlay, Some(&overlay_record));
@@ -956,7 +939,6 @@ pub(crate) fn prepare_storage_attempt(
         #[cfg(feature = "gateway")]
         started_at: Instant::now(),
         run_record,
-        _control: None,
         _lease: lease,
         _workspace_base: preparation.workspace_base.clone(),
     };
@@ -983,7 +965,6 @@ pub(crate) fn prepare_storage_attempt(
         crate::util::startup_mark_run("storage.record_write_begin", spec.run_id.as_str());
         session.run_record.write()?;
         crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
-        session._control = RunControlServer::start(&session.run_record)?;
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 

@@ -1,8 +1,9 @@
 use super::{
     JobSelection, RuntimeJobService, ServiceContext, check_selected_record, validate_request_id,
 };
+use crate::JobState;
 use crate::runtime::RunRecord;
-use crate::runtime::job_execution::JobState;
+use crate::runtime::execution::JobTransition;
 use crate::{OverlayHint, RunConfig, VmExecutor};
 use anyhow::Context;
 use std::future::Future;
@@ -60,7 +61,7 @@ impl RuntimeJobService {
                 "REQUEST_ID_CONFLICT: resume RAM policy changed"
             );
             anyhow::ensure!(
-                stage.join("run.json").is_file() && job.state != JobState::Restoring,
+                stage.join("run.json").is_file() && job.state() != JobState::Restoring,
                 "EXECUTION_UNKNOWN: resume request admitted without confirmed successor startup at {}",
                 stage.display()
             );
@@ -69,9 +70,9 @@ impl RuntimeJobService {
             });
         }
         anyhow::ensure!(
-            job.state == JobState::Suspended,
+            job.state() == JobState::Suspended,
             "JOB_BUSY: resume requires a confirmed suspended head (state={})",
-            job.state
+            job.state()
         );
         super::require_execution(&source)?;
         let checkpoint = job.checkpoint(job.head.as_deref().context("missing suspended head")?)?;
@@ -92,16 +93,11 @@ impl RuntimeJobService {
         }
         preserve_apply_target(&source, &mut overlay);
         let previous = job.clone();
-        job.previous_stage = job.active_stage.clone();
-        job.active_stage = stage.clone();
-        job.state = JobState::Restoring;
-        job.resumes.insert(
-            request_id.clone(),
-            job_execution::ResumeRequest {
-                stage: stage.clone(),
-                eager_ram,
-            },
-        );
+        job.apply(JobTransition::RestoreAdmitted {
+            id: &request_id,
+            stage: &stage,
+            eager_ram,
+        })?;
         job.link_stage(&stage)?;
         job.write()?;
         drop(lease);
@@ -119,14 +115,17 @@ impl RuntimeJobService {
         drop(source_lease);
         if result.is_err() {
             let _lease = job.lock()?;
-            let current = job.current()?;
-            if owns_restore_transition(&current, &job, &request_id)
+            let mut current = job.current()?;
+            let no_successor = current.owns_restore_transition(&job, &request_id)
                 && !crate::runtime::is_live(&job.active_stage)?
-                && !job.active_stage.join("run.json").try_exists()?
-            {
-                // An error can occur after RunHandle acceptance too. Roll back only
-                // our unchanged transition with no durable or live successor.
-                previous.write()?;
+                && !job.active_stage.join("run.json").try_exists()?;
+            if current.apply(JobTransition::RestoreAborted {
+                admitted: &job,
+                previous: &previous,
+                id: &request_id,
+                no_successor,
+            })? {
+                current.write()?;
             }
         }
         let exit_code = result?;
@@ -141,7 +140,7 @@ pub(super) fn confirm_restored_completion(
     stage: &std::path::Path,
     job_id: &str,
 ) -> anyhow::Result<()> {
-    let job = crate::runtime::job_execution::Job::read_stage(stage)?
+    let job = crate::JobExecution::read_stage(stage)?
         .context("EXECUTION_UNKNOWN: restored launcher returned without a durable Job")?;
     let _lease = job.lock()?;
     let current = job.current()?;
@@ -153,32 +152,12 @@ pub(super) fn confirm_restored_completion(
             && current.active_stage == stage
             && !current.active_attempt.is_empty()
             && record.attempt_id.as_deref() == Some(current.active_attempt.as_str())
-            && matches!(current.state, JobState::Terminal | JobState::Suspended)
+            && matches!(current.state(), JobState::Terminal | JobState::Suspended)
             && record.state.is_stopped()
             && record.finished_at_unix_ms.is_some(),
         "EXECUTION_UNKNOWN: restored launcher returned without confirmed Job completion"
     );
     Ok(())
-}
-
-pub(crate) fn owns_restore_transition(
-    current: &crate::runtime::job_execution::Job,
-    admitted: &crate::runtime::job_execution::Job,
-    request_id: &str,
-) -> bool {
-    current.state == JobState::Restoring
-        && current.run_id == admitted.run_id
-        && current.root == admitted.root
-        && current.active_attempt == admitted.active_attempt
-        && current.active_stage == admitted.active_stage
-        && current.previous_stage == admitted.previous_stage
-        && current.head == admitted.head
-        && matches!((serde_json::to_value(current), serde_json::to_value(admitted)),
-            (Ok(current), Ok(admitted)) if current == admitted)
-        && current
-            .resumes
-            .get(request_id)
-            .is_some_and(|request| request.stage == admitted.active_stage)
 }
 
 pub(crate) fn preserve_apply_target(source: &RunRecord, overlay: &mut OverlayHint) {

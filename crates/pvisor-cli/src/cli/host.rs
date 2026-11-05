@@ -38,7 +38,7 @@ impl JobCommand {
                 let Some(record) = self.selected_record(&std::env::current_dir()?)? else {
                     return Ok(false);
                 };
-                let Some(job) = pvisor::job_execution::Job::read(&record)? else {
+                let Some(job) = pvisor::JobExecution::read(&record)? else {
                     return Ok(false);
                 };
                 let pvisor_core::RunInvocation::Process(process) = &job.spec.invocation;
@@ -131,7 +131,7 @@ impl JobCommand {
             return Ok(None);
         };
         let record = pvisor::resolve_run(selector, output)?;
-        let root = pvisor::job_execution::Job::read(&record)?
+        let root = pvisor::JobExecution::read(&record)?
             .map(|job| job.root)
             .unwrap_or_else(|| record.stage_dir());
         let root = std::fs::canonicalize(&root)
@@ -187,7 +187,7 @@ pub(super) fn service_context() -> pvisor::job_service::ServiceContext<'static> 
 
 pub(super) fn lock_selected_job(
     record: &pvisor::RunRecord,
-) -> anyhow::Result<Option<(pvisor::job_execution::Job, impl Send)>> {
+) -> anyhow::Result<Option<(pvisor::JobExecution, impl Send)>> {
     pvisor::job_service::lock_selected_job(&service_context(), record)
 }
 pub(super) fn check_selected_record(

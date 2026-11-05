@@ -1,7 +1,9 @@
 //! Attempt completion commits the Bundle before terminal event publication.
 //! The receipt binds the result to immutable Bundle bytes; Run/Job state is a projection.
 
-use super::{RunRecord, RunRecordState};
+use super::RunRecord;
+#[cfg(test)]
+use super::RunRecordState;
 use anyhow::{Context, ensure};
 use pvisor_core::{RunResult, RunState};
 use serde::{Deserialize, Serialize};
@@ -157,29 +159,22 @@ impl Completion {
                 && Some(self.result.attempt_id.as_str()) == record.attempt_id.as_deref(),
             "completion Attempt identity mismatch"
         );
-        record_state(self.result.state)?;
+        super::execution::record_state(self.result.state)?;
         if self.result.state == RunState::Hibernated {
             pvisor_core::operation::ExecutionSuspension::from_result(&self.result)?;
         }
         Ok(())
     }
 
-    pub(crate) fn project(&self, record: &mut RunRecord) -> anyhow::Result<()> {
-        record.state = record_state(self.result.state)?;
-        record.finished_at_unix_ms = Some(self.result.finished_at_unix_ms);
-        record.live_control = None;
-        Ok(())
+    /// Load and validate receipt bytes, then apply the single execution projection.
+    pub(crate) fn observe_record(record: &mut RunRecord) -> anyhow::Result<Option<Self>> {
+        if record.completion_protocol.is_none() {
+            return Ok(None);
+        }
+        let receipt = Self::load(record)?;
+        super::execution::project_record(record, receipt.as_ref().map(|value| &value.result))?;
+        Ok(receipt)
     }
-}
-
-fn record_state(state: RunState) -> anyhow::Result<RunRecordState> {
-    Ok(match state {
-        RunState::Completed => RunRecordState::Completed,
-        RunState::Failed => RunRecordState::Failed,
-        RunState::Cancelled => RunRecordState::Cancelled,
-        RunState::Hibernated => RunRecordState::Hibernated,
-        _ => anyhow::bail!("completion result is not terminal"),
-    })
 }
 
 /// Called only under both the Job metadata lock (if present) and Attempt lease.
@@ -188,39 +183,15 @@ pub(crate) fn reconcile(record: &mut RunRecord) -> anyhow::Result<()> {
         return Ok(());
     }
     let previous = serde_json::to_value(&*record)?;
-    let completion = Completion::load(record).context("read committed Attempt completion")?;
-    match &completion {
-        Some(receipt) => receipt.project(record)?,
-        None => {
-            record.state = RunRecordState::Unknown;
-            record.finished_at_unix_ms = None;
-            record.live_control = None;
-        }
-    }
-    if let Some(mut job) = super::job_execution::Job::read(record)? {
-        // A Job can move beyond this Attempt (kill a suspended head or begin
-        // restore). Completion must never resurrect those later transitions.
-        if job.active_stage == record.stage_dir() {
-            job.validate_record_target(record)?;
-            match &completion {
-                Some(receipt)
-                    if matches!(
-                        job.state,
-                        super::job_execution::JobState::Running
-                            | super::job_execution::JobState::Suspending
-                            | super::job_execution::JobState::Unknown
-                    ) =>
-                {
-                    job.finish_result(&receipt.result)?
-                }
-                Some(_) => {}
-                None => {
-                    if job.state != super::job_execution::JobState::Unknown {
-                        job.state = super::job_execution::JobState::Unknown;
-                        job.write()?;
-                    }
-                }
-            }
+    let completion =
+        Completion::observe_record(record).context("read committed Attempt completion")?;
+    if let Some(mut job) = crate::JobExecution::read(record)? {
+        let changed = job.apply(super::execution::JobTransition::CompletionObserved {
+            record,
+            result: completion.as_ref().map(|receipt| &receipt.result),
+        })?;
+        if changed {
+            job.write()?;
         }
     }
     if serde_json::to_value(&*record)? != previous {
@@ -295,6 +266,24 @@ mod tests {
             .write(root)
             .unwrap();
         (record, result)
+    }
+
+    #[test]
+    fn record_reads_and_locked_reconciliation_share_completion_projection() {
+        for committed in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (record, result) = fixture(root.path());
+            if committed {
+                Completion::commit(&record, &result).unwrap();
+            }
+            let read = RunRecord::read(root.path()).unwrap();
+            let mut reconciled = record;
+            reconcile(&mut reconciled).unwrap();
+            assert_eq!(
+                serde_json::to_value(read).unwrap(),
+                serde_json::to_value(reconciled).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -533,14 +522,15 @@ mod tests {
 
     #[test]
     fn status_reconciles_job_state_from_the_receipt_or_marks_it_unknown() {
-        use super::super::job_execution::{JOB_SCHEMA_VERSION, Job, JobState};
+        use super::super::job_execution::JOB_SCHEMA_VERSION;
         use crate::job_service::{JobSelection, RuntimeJobService, ServiceContext, StatusRequest};
+        use crate::{JobExecution, JobState};
         for committed in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let (record, result) = fixture(root.path());
             let mut config = crate::RunConfig::default();
             config.run.executor = crate::RunExecutorKind::Vm;
-            let job: Job = serde_json::from_value(serde_json::json!({
+            let job: JobExecution = serde_json::from_value(serde_json::json!({
                 "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
                 "active_stage":root.path(),"previous_stage":root.path(),"active_attempt":record.attempt_id,
                 "config":config,"spec":pvisor_core::RunSpec::process("run-completion", "test", "true"),
@@ -570,7 +560,7 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    Job::read(&record).unwrap().unwrap().state,
+                    JobExecution::read(&record).unwrap().unwrap().state(),
                     if committed {
                         JobState::Terminal
                     } else {
@@ -579,8 +569,10 @@ mod tests {
                 );
             }
             if committed {
-                let mut successor = Job::read(&record).unwrap().unwrap();
-                successor.state = JobState::Restoring;
+                let mut successor = JobExecution::read(&record).unwrap().unwrap();
+                let mut stored = serde_json::to_value(&successor).unwrap();
+                stored["state"] = serde_json::to_value(JobState::Restoring).unwrap();
+                successor = serde_json::from_value(stored).unwrap();
                 successor.active_stage = root.path().join("attempts/successor");
                 successor.previous_stage = root.path().into();
                 successor.write().unwrap();
@@ -588,8 +580,8 @@ mod tests {
                 let _attempt = super::super::registry::RunLease::acquire(root.path()).unwrap();
                 let mut original = record.clone();
                 reconcile(&mut original).unwrap();
-                let unchanged = Job::read(&record).unwrap().unwrap();
-                assert_eq!(unchanged.state, JobState::Restoring);
+                let unchanged = JobExecution::read(&record).unwrap().unwrap();
+                assert_eq!(unchanged.state(), JobState::Restoring);
                 assert_eq!(unchanged.active_stage, successor.active_stage);
             }
         }

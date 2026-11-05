@@ -7,9 +7,9 @@ use super::{
 };
 use crate::cli::trajectory::JournalRecording;
 #[cfg(test)]
-use pvisor::RunExecutorKind;
+use pvisor::JobState;
 #[cfg(test)]
-use pvisor::job_execution::JobState;
+use pvisor::RunExecutorKind;
 use pvisor::job_service::paths::fork_stage_candidate;
 use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, RunConfig};
 use pvisor::{RunBundle, restore_logical_checkpoint};
@@ -443,8 +443,9 @@ pub(super) fn execution_store_location(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor::job_execution::{ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, Job, ResumeRequest};
-    fn fixture(root: &Path) -> (RunRecord, Job) {
+    use pvisor::JobExecution;
+    use pvisor::job_execution::{ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, ResumeRequest};
+    fn fixture(root: &Path) -> (RunRecord, JobExecution) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "schema_version":1,"run_id":"job-fence","attempt_id":"attempt-old","session_id":"job-fence",
             "agent":"probe","pid":0,"command":["probe"],"state":"hibernated",
@@ -454,23 +455,12 @@ mod tests {
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
         config.overlaynet.mode = pvisor::OverlayNetMode::Off;
-        let job = Job {
-            version: JOB_SCHEMA_VERSION,
-            run_id: record.run_id.clone(),
-            root: root.into(),
-            active_stage: root.into(),
-            previous_stage: root.into(),
-            active_attempt: "attempt-current".into(),
-            config,
-            spec: pvisor_core::RunSpec::process("job-fence", "probe", "probe"),
-            state: JobState::Suspended,
-            head: None,
-            checkpoints: Default::default(),
-            requests: Default::default(),
-            resumes: Default::default(),
-            forks: Default::default(),
-            stores: [root.join("execution-snapshots")].into(),
-        };
+        let job: JobExecution = serde_json::from_value(serde_json::json!({
+            "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root,
+            "active_stage":root,"previous_stage":root,"active_attempt":"attempt-current",
+            "config":config,"spec":pvisor_core::RunSpec::process("job-fence", "probe", "probe"),
+            "state":"suspended","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]
+        })).unwrap();
         (record, job)
     }
     fn assert_conflict(error: anyhow::Error) {
@@ -547,7 +537,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (source, mut job) = fixture(root.path());
         job.active_attempt = source.attempt_id.clone().unwrap();
-        job.state = JobState::Running;
+        let mut stored = serde_json::to_value(&job).unwrap();
+        stored["state"] = serde_json::to_value(JobState::Running).unwrap();
+        job = serde_json::from_value(stored).unwrap();
         job.write().unwrap();
         let (_, live_attempt) = source.lock_current().unwrap();
         let before = std::fs::read(root.path().join("run.json")).unwrap();

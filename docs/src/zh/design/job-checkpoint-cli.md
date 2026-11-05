@@ -354,7 +354,7 @@ Job与Attempt记录可以增加版本化、兼容读取的能力和生命周期�
 | 功能 | 当前实现 |
 | --- | --- |
 | workspace create/fork/review/inspect | 沿用已停止 Job 的 upper、冲突前像、generation 与硬链接分支引用；不保存进程内存 |
-| execution create | 通过运行 Job 的私有控制 socket 调用 `RunControlHandle` 与 native VM 捕获；发布后继续源 VM |
+| execution create | 通过运行 Job 的私有控制 socket 调用 `Execution` 与 native VM 捕获；发布后继续源 VM |
 | suspend | 持久记录请求，封存检查点；用 `ExecutionSuspension` 终态回执核对 Job/Attempt/request，确认原生退出后才建立 suspended head |
 | resume | 仅从当前 head 恢复；保留 Job ID，runtime 生成新 Attempt；新目录保存 lease、RunRecord 和 Bundle，原 stage 仍可选择当前 Attempt |
 | execution fork | 运行中捕获并继续，或从显式历史检查点/暂停 head 创建新 Job；RAM 与 upper 私有，保存 lineage 和持久分支引用 |

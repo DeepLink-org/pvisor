@@ -463,7 +463,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
         String::from_utf8_lossy(&status.stderr)
     );
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
+    assert_eq!(status["apply_batch_count"].as_u64().unwrap(), 1);
     assert_eq!(status["filesystem"]["state"], "staged");
     assert!(
         status["filesystem"]["sample_paths"]
@@ -497,7 +497,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["filesystem"]["state"], "discarded");
     assert_eq!(status["filesystem"]["changed_files"], 0);
-    assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
+    assert_eq!(status["apply_batch_count"].as_u64().unwrap(), 1);
 }
 
 #[test]

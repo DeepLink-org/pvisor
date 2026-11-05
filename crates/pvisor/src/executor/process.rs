@@ -1486,7 +1486,8 @@ impl RunExecutor for ProcessExecutor {
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
         context
-            .transition(RunState::Starting, Some("spawning local process".into()))
+            .execution()
+            .starting(Some("spawning local process".into()))
             .await;
 
         let PreparedCommand {
@@ -1610,7 +1611,7 @@ impl RunExecutor for ProcessExecutor {
         });
 
         crate::util::startup_mark_run("process.spawn_ready", context.spec().run_id.as_str());
-        context.transition(RunState::Running, None).await;
+        context.execution().ready().await;
 
         let end = context
             .wait_child(&mut child, spec.runtime.timeout_ms)
@@ -2035,18 +2036,16 @@ mod tests {
         process.stdout = StdioMode::Capture;
         process.stderr = StdioMode::Capture;
         spec.runtime.termination_grace_ms = 25;
-        let mut handle = crate::PVisor::new().run(spec).await.unwrap();
+        let handle = crate::PVisor::new().run(spec).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while handle.status().state != RunState::Running {
-                handle
-                    .status_changed()
-                    .await
-                    .expect("Run ended before startup");
+            let mut status = handle.execution().subscribe();
+            while status.borrow_and_update().status.state != RunState::Running {
+                status.changed().await.expect("Run ended before startup");
             }
         })
         .await
         .expect("process did not start");
-        handle.cancel();
+        handle.execution().cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait())
             .await
             .expect("cancelled process did not finish")

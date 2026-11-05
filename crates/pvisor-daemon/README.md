@@ -747,7 +747,7 @@ on this crate. The VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PViso
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
 daemon restart. Execution starts through pVisor's `RuntimeJobService`; live
 status/pause/resume/termination dispatch through the shared in-process
-`AttemptService`. The supervisor disables pVisor's default HostVm endpoint with
+`Execution`. The supervisor disables pVisor's default HostVm endpoint with
 `instance_control(false)`, retaining only its authenticated `control.sock` rather
 than two management endpoints for one VM. It still owns readiness, boot/generation
 identity, cgroup reconciliation, deletion fencing and confirmed teardown. Shared
@@ -801,7 +801,7 @@ Create, Running inspection and resume check real service readiness through those
 bridges. Readiness is not manufactured; a sleeping process alone does not satisfy
 this contract.
 
-Endpoint lookup authenticates the live supervisor, requires the current RunHandle
+Endpoint lookup authenticates the live supervisor, requires the current Execution
 Running state, checks deletion fences and resolves a live publication. It does
 not repeat service health probes or full cgroup-limit reconciliation per data
 request; connection failures belong to the API adapter. Native `observation.json`

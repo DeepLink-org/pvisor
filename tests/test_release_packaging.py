@@ -1259,13 +1259,14 @@ class ReleasePackagingTests(unittest.TestCase):
                         else:
                             output = json.dumps(
                                 {
+                                    "schema_version": 2,
                                     "run": {
                                         "run_id": "same-job",
                                         "attempt_id": "same"
                                         if fault == "same-attempt"
                                         else str(state["attempt"]),
-                                        "overlay": {"upper": {"upper_dir": str(upper)}},
-                                    }
+                                        "overlay": {"upper": str(upper)},
+                                    },
                                 }
                             )
                     elif args[1] == "suspend":

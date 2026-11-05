@@ -109,7 +109,9 @@ macro_rules! run_log {
 fn announce_job_started(handle: &pvisor::RunHandle) {
     super::host_service::observe_run(handle);
     super::host_service::release_source_lock();
-    if handle.status().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine {
+    if handle.execution().status().attempt.executor.kind
+        == pvisor_core::ExecutorKind::VirtualMachine
+    {
         let job = handle.run_id();
         eprintln!(
             "VM controls: pvisor status {job}; pvisor suspend {job} --vm-pause; pvisor resume {job}"
@@ -1244,7 +1246,7 @@ pub(super) async fn wait_cli_job(
 pub(super) async fn wait_cli_run(
     handle: pvisor::RunHandle,
 ) -> anyhow::Result<pvisor_core::RunResult> {
-    let cancellation = handle.cancellation();
+    let cancellation = handle.execution().cancellation();
     let wait = handle.wait();
     tokio::pin!(wait);
     tokio::select! {

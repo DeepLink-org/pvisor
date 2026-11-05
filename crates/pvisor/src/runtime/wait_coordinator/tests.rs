@@ -16,6 +16,7 @@ pub(super) struct FakeControl {
     idle_wake: SyncMutex<Option<CancellationToken>>,
     idle_epoch: AtomicU64,
     host_reads: AtomicU64,
+    cancellation: CancellationToken,
 }
 
 impl FakeControl {
@@ -32,6 +33,7 @@ impl FakeControl {
             idle_wake: SyncMutex::new(None),
             idle_epoch: AtomicU64::new(0),
             host_reads: AtomicU64::new(0),
+            cancellation: CancellationToken::new(),
         })
     }
     fn block(&self, operation: &'static str) -> Arc<Semaphore> {
@@ -56,6 +58,12 @@ impl FakeControl {
 
 #[async_trait]
 impl WaitControl for FakeControl {
+    async fn wait_failed(&self, _error: &anyhow::Error) {
+        self.cancellation.cancel();
+    }
+    fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
     fn supports_resume_rearm(&self) -> bool {
         self.rearm.load(Ordering::Acquire)
     }
@@ -68,7 +76,8 @@ impl WaitControl for FakeControl {
         let next = self.idle_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         *self.idle_wake.lock().unwrap() = Some(wake.clone());
         self.calls.send_modify(|calls| calls.push("arm.next"));
-        self.execute(OperationKind::RunResume).await?;
+        self.execute(OperationKind::RunResume, ControlOrigin::ModelWait)
+            .await?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         tx.send((!wake.is_cancelled()).then_some(next)).unwrap();
         Ok(rx)
@@ -91,7 +100,8 @@ impl WaitControl for FakeControl {
         if !self.idle.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        self.execute(OperationKind::RunPause).await?;
+        self.execute(OperationKind::RunPause, ControlOrigin::ModelWait)
+            .await?;
         Ok(true)
     }
     async fn idle_offload(&self, epoch: u64) -> anyhow::Result<bool> {
@@ -100,14 +110,21 @@ impl WaitControl for FakeControl {
         if !self.idle_offload_allowed.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        self.execute(OperationKind::RunOffload { file: None })
-            .await?;
+        self.execute(
+            OperationKind::RunOffload { file: None },
+            ControlOrigin::ModelWait,
+        )
+        .await?;
         Ok(true)
     }
     fn can_offload(&self) -> bool {
         self.offload.load(Ordering::Relaxed)
     }
-    async fn execute(&self, operation: OperationKind) -> anyhow::Result<Value> {
+    async fn execute(
+        &self,
+        operation: OperationKind,
+        _origin: ControlOrigin,
+    ) -> anyhow::Result<Value> {
         let name = operation.name();
         self.calls.send_modify(|calls| calls.push(name));
         let gate = self
@@ -120,10 +137,11 @@ impl WaitControl for FakeControl {
         if let Some(gate) = gate {
             gate.acquire().await.unwrap().forget();
         }
-        anyhow::ensure!(
-            *self.fail.lock().unwrap() != Some(name),
-            "uncertain native transition"
-        );
+        if *self.fail.lock().unwrap() == Some(name) {
+            // Model the Execution contract for uncertain native effects.
+            self.cancellation.cancel();
+            anyhow::bail!("uncertain native transition");
+        }
         let state = match operation {
             OperationKind::RunPause => VmState::Paused,
             OperationKind::RunOffload { .. } => VmState::Offloaded,
@@ -151,7 +169,6 @@ fn fixture() -> (Arc<WaitCoordinator>, Arc<FakeControl>) {
     let control = FakeControl::new();
     let coordinator = WaitCoordinator::new(
         control.clone(),
-        CancellationToken::new(),
         CooperativeModelWait {
             require_guest_idle: false,
             downloads: false,
@@ -386,10 +403,10 @@ async fn snapshot_conflict_does_not_override_wait_ownership() {
 
 #[tokio::test(start_paused = true)]
 async fn gateway_adapter_binds_attempt_and_cancel_uses_same_resume_barrier() {
-    use crate::runtime::model_wait::NativeModelWait;
+    use crate::runtime::model_wait::ModelWaitAdapter;
     use pvisor_gateway::model_wait::ModelWaitLifecycle;
     let (coordinator, control) = fixture();
-    let adapter = NativeModelWait {
+    let adapter = ModelWaitAdapter {
         coordinator,
         attempt_id: pvisor_core::AttemptId::new("attempt-a"),
     };
@@ -440,7 +457,7 @@ async fn cancellation_unblocks_delivery_held_by_human_pause() {
 
 #[tokio::test]
 async fn actual_gateway_http_delivery_waits_for_native_adapter_resume() {
-    use crate::runtime::model_wait::NativeModelWait;
+    use crate::runtime::model_wait::ModelWaitAdapter;
     use axum::{
         Router,
         body::Body,
@@ -478,7 +495,6 @@ async fn actual_gateway_http_delivery_waits_for_native_adapter_resume() {
         let gate = control.block("run.resume");
         let coordinator = WaitCoordinator::new(
             control.clone(),
-            CancellationToken::new(),
             CooperativeModelWait {
                 require_guest_idle: true,
                 downloads: false,
@@ -489,7 +505,7 @@ async fn actual_gateway_http_delivery_waits_for_native_adapter_resume() {
                 offload_after: Some(Duration::from_millis(20)),
             },
         );
-        let adapter = Arc::new(NativeModelWait {
+        let adapter = Arc::new(ModelWaitAdapter {
             coordinator,
             attempt_id: pvisor_core::AttemptId::new("http-attempt"),
         });
@@ -586,7 +602,6 @@ fn idle_fixture() -> (Arc<WaitCoordinator>, Arc<FakeControl>) {
     let control = FakeControl::new();
     let coordinator = WaitCoordinator::new(
         control.clone(),
-        CancellationToken::new(),
         CooperativeModelWait {
             require_guest_idle: true,
             downloads: false,
@@ -645,7 +660,6 @@ fn idle_offload_fixture() -> (Arc<WaitCoordinator>, Arc<FakeControl>) {
     control.idle.store(true, Ordering::Relaxed);
     let coordinator = WaitCoordinator::new(
         control.clone(),
-        CancellationToken::new(),
         CooperativeModelWait {
             require_guest_idle: true,
             downloads: false,
@@ -815,10 +829,10 @@ fn guest_idle_policy_allows_offload_but_retains_timer_ordering() {
 
 #[tokio::test(start_paused = true)]
 async fn host_observed_overlap_forwards_after_cleanup_and_disables_future_pauses() {
-    use crate::runtime::model_wait::NativeModelWait;
+    use crate::runtime::model_wait::ModelWaitAdapter;
     use pvisor_gateway::model_wait::ModelWaitLifecycle;
     let (coordinator, control) = idle_offload_fixture();
-    let adapter = NativeModelWait {
+    let adapter = ModelWaitAdapter {
         coordinator: coordinator.clone(),
         attempt_id: pvisor_core::AttemptId::new("host-observed"),
     };
@@ -1098,11 +1112,11 @@ async fn host_filesystem_read_uses_the_same_offload_and_resume_path() {
 
 #[tokio::test(start_paused = true)]
 async fn download_wait_uses_common_ownership_and_cancels_safely() {
-    use crate::runtime::model_wait::NativeModelWait;
+    use crate::runtime::model_wait::ModelWaitAdapter;
     use pvisor_gateway::model_wait::ModelWaitLifecycle;
     let (mut coordinator, control) = rounds_fixture();
     Arc::get_mut(&mut coordinator).unwrap().policy.downloads = true;
-    let adapter = NativeModelWait {
+    let adapter = ModelWaitAdapter {
         coordinator: coordinator.clone(),
         attempt_id: pvisor_core::AttemptId::new("download-test"),
     };

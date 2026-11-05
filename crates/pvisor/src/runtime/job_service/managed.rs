@@ -1,12 +1,14 @@
 use super::RuntimeJobService;
-use crate::runtime::{RunRecord, job_execution::Server};
-use crate::{PVisor, RunCancellation, RunConfig, RunHandle};
+use crate::JobExecution;
+use crate::runtime::RunRecord;
+use crate::{PVisor, RunConfig, RunHandle};
 use anyhow::Context;
 use pvisor_core::{ExecutorKind, RunResult, RunSpec};
 #[cfg(test)]
 use pvisor_journal::api::JournalStore;
 use std::future::Future;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 /// Owns Attempt completion and durable Job publication independently of the frontend.
 /// Drop requests cancellation; publication continues while the Tokio runtime lives.
@@ -14,7 +16,7 @@ use tokio::task::JoinHandle;
 pub struct ManagedJobRun {
     handle: Option<RunHandle>,
     completion: Option<JoinHandle<anyhow::Result<RunResult>>>,
-    cancellation: RunCancellation,
+    cancellation: CancellationToken,
 }
 
 impl RuntimeJobService {
@@ -38,13 +40,13 @@ impl RuntimeJobService {
             owner.check_selector(selected, config.vm.prepared_rootfs.as_ref())?;
         }
         let mut handle = visor.run(spec.clone()).await?;
-        let cancellation = handle.cancellation();
+        let cancellation = handle.execution().cancellation();
         // No await between acceptance and completion ownership installation.
         let server = (|| {
             if let Some(record) = &handle.record {
                 super::policy::persist(record, &resolved_policy)?;
             }
-            if handle.status().attempt.executor.kind != ExecutorKind::VirtualMachine {
+            if handle.execution().status().attempt.executor.kind != ExecutorKind::VirtualMachine {
                 return Ok(None);
             }
             let prepared = handle
@@ -58,7 +60,7 @@ impl RuntimeJobService {
                     && record.attempt_id.as_deref() == Some(handle.attempt_id().as_str()),
                 "managed Job handoff Attempt identity mismatch"
             );
-            Server::start(&record, config, spec, handle.controls()).map(Some)
+            JobExecution::attach(&record, config, spec).map(Some)
         })();
         let server = match server {
             Ok(server) => server,
@@ -103,8 +105,8 @@ impl RuntimeJobService {
 }
 
 impl ManagedJobRun {
-    /// Frontend announcement and cancellation registration happen after the Job
-    /// server has taken ownership, and before invoking the wait adapter.
+    /// Frontend announcement and cancellation registration happen after the durable
+    /// completion owner has taken ownership, and before invoking the wait adapter.
     pub fn handle(&self) -> &RunHandle {
         self.handle.as_ref().expect("managed wait has not started")
     }
@@ -137,7 +139,7 @@ impl ManagedJobRun {
             .await
             .context("Job completion task failed")?;
         // Await by reference: dropping this future detaches, rather than aborts,
-        // the task that owns Server::finish. Drop also requests cancellation.
+        // the task that owns JobExecution::finish. Drop also requests cancellation.
         self.completion.take();
         reconcile_wait(frontend, completed)
     }
@@ -184,12 +186,8 @@ fn reconcile_wait(
 mod tests {
     use super::*;
 
-    use crate::runtime::{
-        RunRecordState,
-        job_execution::{Job, JobState},
-        registry::RunLease,
-    };
-    use crate::{ProcessExecutor, RunExecutor, Session};
+    use crate::runtime::{RunRecordState, registry::RunLease};
+    use crate::{JobExecution, JobState, ProcessExecutor, RunExecutor, Session};
     use async_trait::async_trait;
     use pvisor_core::{ExecutorPlan, IsolationKind, RunInvocation, RunState};
     use std::{path::Path, sync::Arc};
@@ -245,7 +243,7 @@ mod tests {
 
         async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
             self.0.entered.send_replace(true);
-            let cancellation = session.cancellation();
+            let cancellation = session.execution().cancellation();
             let cancelled = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => true,
@@ -329,11 +327,11 @@ mod tests {
         let _lease = RunLease::acquire(stage).expect("Attempt must release the stage lease");
         if execution {
             assert_eq!(
-                Job::read(&record).unwrap().unwrap().state,
+                JobExecution::read(&record).unwrap().unwrap().state(),
                 JobState::Terminal
             );
         } else {
-            assert!(Job::read(&record).unwrap().is_none());
+            assert!(JobExecution::read(&record).unwrap().is_none());
             assert!(!stage.join("execution-job.json").exists());
         }
     }
@@ -374,17 +372,80 @@ mod tests {
         assert_eq!(run.handle().record.as_ref().unwrap().stage_dir(), stage);
         assert!(run.handle().checkpoint_record.is_none());
         let record = RunRecord::read(&stage).unwrap();
-        let job = Job::read(&record).unwrap().unwrap();
-        assert_eq!(job.state, JobState::Running);
+        let job = JobExecution::read(&record).unwrap().unwrap();
+        assert_eq!(job.state(), JobState::Running);
         assert_eq!(job.active_attempt, run.handle().attempt_id().as_str());
-        let socket = std::fs::read_link(stage.join("execution.sock")).unwrap();
-        assert!(socket.exists());
+        assert!(!stage.join("execution.sock").exists());
+        assert!(crate::runtime::instance_control::local_owner(&record).is_some());
         gates.release.send_replace(true);
         gates.teardown.send_replace(true);
         let completed = bounded(run.wait()).await.unwrap();
         assert_eq!(completed.state, RunState::Completed);
         assert_terminal(&stage, RunState::Completed, true);
-        assert!(!socket.exists());
+        assert!(crate::runtime::instance_control::local_owner(&record).is_none());
+    }
+
+    #[tokio::test]
+    async fn local_capture_outlives_timeout_without_creating_an_execution_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let stage = directory.path().join("stage");
+        let gates = Gates::new();
+        gates.teardown.send_replace(true);
+        let runtime = visor(&stage, &gates, ExecutorKind::VirtualMachine);
+        let run = RuntimeJobService::start_managed(
+            &runtime,
+            spec(),
+            config(ExecutorKind::VirtualMachine),
+        )
+        .await
+        .unwrap();
+        bounded(signal(gates.entered.subscribe())).await;
+        let record = RunRecord::read(&stage).unwrap();
+        assert!(record.live_control.is_none());
+        let error = RuntimeJobService::capture_selected_execution(
+            &Default::default(),
+            &record,
+            false,
+            pvisor_core::operation::SnapshotRamStorage::Raw,
+            Some("local-capture".into()),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("timed out waiting for request"));
+        assert!(!stage.join("execution.sock").exists());
+        let owner = crate::runtime::instance_control::local_owner(&record).unwrap();
+        let permits = (0..7)
+            .map(|_| owner.admit_capture().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            owner.admit_capture().is_err(),
+            "timeout must not release an unfinished capture's admission"
+        );
+        drop(permits);
+        // The detached request is waiting for readiness, not for the abandoned frontend.
+        run.handle().execution().ready().await;
+        bounded(async {
+            loop {
+                let job = JobExecution::read(&record).unwrap().unwrap();
+                if job
+                    .requests
+                    .get("local-capture")
+                    .is_some_and(|request| request.error.is_some())
+                {
+                    assert_eq!(job.state(), JobState::Running);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(!run.handle().execution().cancellation().is_cancelled());
+        run.cancel();
+        assert_eq!(
+            bounded(run.wait()).await.unwrap().state,
+            RunState::Cancelled
+        );
     }
 
     #[tokio::test]
@@ -419,7 +480,7 @@ mod tests {
             }
             bounded(signal(gates.cancelled.subscribe())).await;
             assert_eq!(
-                Job::read_stage(&stage).unwrap().unwrap().state,
+                JobExecution::read_stage(&stage).unwrap().unwrap().state(),
                 JobState::Running
             );
             assert!(RunLease::acquire(&stage).is_err());
@@ -465,7 +526,7 @@ mod tests {
             bounded(signal(gates.cancelled.subscribe())).await;
             assert!(!waiting.is_finished());
             assert_eq!(
-                Job::read_stage(&stage).unwrap().unwrap().state,
+                JobExecution::read_stage(&stage).unwrap().unwrap().state(),
                 JobState::Running
             );
             gates.teardown.send_replace(true);
@@ -566,8 +627,19 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let stage = temp.path().join("stage");
             std::fs::create_dir(&stage).unwrap();
-            // Server::start publishes its ledger before discovering this conflict.
-            std::fs::write(stage.join("execution.sock"), b"reserved").unwrap();
+            // A corrupt discovery record must fail handoff without rewriting retained evidence.
+            JobExecution::new(
+                "managed-job".into(),
+                stage.clone(),
+                Some("previous-attempt".into()),
+                config(ExecutorKind::VirtualMachine),
+                spec(),
+            )
+            .unwrap()
+            .write()
+            .unwrap();
+            let retained = std::fs::read(stage.join("execution-job.json")).unwrap();
+            std::fs::create_dir(stage.join("execution-job-root.json")).unwrap();
             let sink = Arc::new(TerminalGate {
                 entered: watch::channel(false).0,
                 release: watch::channel(false).0,
@@ -601,7 +673,11 @@ mod tests {
             .await;
             assert!(RunLease::acquire(&stage).is_err());
             assert_eq!(
-                Job::read_stage(&stage).unwrap().unwrap().state,
+                serde_json::from_slice::<JobExecution>(
+                    &std::fs::read(stage.join("execution-job.json")).unwrap()
+                )
+                .unwrap()
+                .state(),
                 JobState::Running
             );
             if discard {
@@ -632,12 +708,17 @@ mod tests {
             );
             // A partially published ledger is not forged into a terminal receipt.
             assert_eq!(
-                Job::read_stage(&stage).unwrap().unwrap().state,
+                serde_json::from_slice::<JobExecution>(
+                    &std::fs::read(stage.join("execution-job.json")).unwrap()
+                )
+                .unwrap()
+                .state(),
                 JobState::Running
             );
+            assert!(stage.join("execution-job-root.json").is_dir());
             assert_eq!(
-                std::fs::read(stage.join("execution.sock")).unwrap(),
-                b"reserved"
+                std::fs::read(stage.join("execution-job.json")).unwrap(),
+                retained
             );
         }
     }

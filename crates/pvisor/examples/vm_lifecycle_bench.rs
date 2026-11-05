@@ -91,7 +91,10 @@ async fn changed(
 ) -> anyhow::Result<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            ensure!(!handle.status().state.is_terminal(), "guest exited early");
+            ensure!(
+                !handle.execution().status().state.is_terminal(),
+                "guest exited early"
+            );
             if let Ok(bytes) = std::fs::read(path)
                 && !bytes.is_empty()
                 && bytes != previous
@@ -114,7 +117,7 @@ async fn read_check(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             ensure!(
-                !handle.status().state.is_terminal(),
+                !handle.execution().status().state.is_terminal(),
                 "guest exited during read"
             );
             if let Ok(bytes) = std::fs::read(upper.join("ack"))
@@ -180,45 +183,45 @@ async fn run(args: Args) -> anyhow::Result<()> {
             if args.stress {
                 let occupied = root.join("occupied.ram");
                 std::fs::write(&occupied, b"must survive rejected offload")?;
-                ensure!(handle.offload(Some(occupied.clone())).await.is_err(), "occupied destination accepted");
+                ensure!(handle.execution().offload(Some(occupied.clone())).await.is_err(), "occupied destination accepted");
                 ensure!(std::fs::read(&occupied)? == b"must survive rejected offload", "rejection overwrote destination");
-                let (first, second, third) = tokio::join!(handle.pause(), handle.resume(), handle.pause());
+                let (first, second, third) = tokio::join!(handle.execution().pause(), handle.execution().resume(), handle.execution().pause());
                 first?; second?; third?;
                 // Pin the resulting state after an intentionally unordered race.
-                handle.resume().await?;
+                handle.execution().resume().await?;
                 let old = std::fs::read(&heartbeat)?;
                 changed(&handle, &heartbeat, &old).await?;
                 // Dropping a waiting caller must not misalign the control reply
                 // stream. A later resume must consume its own acknowledgement.
-                let mut abandoned = Box::pin(handle.offload(None));
+                let mut abandoned = Box::pin(handle.execution().offload(None));
                 tokio::select! {
                     result = &mut abandoned => { result?; }
                     _ = sleep(Duration::from_millis(1)) => {}
                 }
                 drop(abandoned);
-                handle.resume().await?;
+                handle.execution().resume().await?;
                 read_check(&handle, &upper, &format!("after-abandoned-{cycle}")).await?;
             }
             let baseline_read = read_check(&handle, &upper, &format!("before-{cycle}")).await?;
             let start = Instant::now();
-            handle.pause().await?;
+            handle.execution().pause().await?;
             let pause_ms = ms(start);
-            ensure!(handle.status().state == RunState::Suspended, "pause state");
-            handle.pause().await?;
+            ensure!(handle.execution().status().state == RunState::Suspended, "pause state");
+            handle.execution().pause().await?;
             sleep(Duration::from_millis(100)).await;
             let parked = std::fs::read(&heartbeat)?;
             sleep(Duration::from_millis(if cycle == 0 { args.long_pause_seconds * 1000 } else { 100 })).await;
             ensure!(std::fs::read(&heartbeat)? == parked, "paused guest progressed");
             let start = Instant::now();
-            handle.resume().await?;
+            handle.execution().resume().await?;
             let resume_ms = ms(start);
-            handle.resume().await?;
+            handle.execution().resume().await?;
             changed(&handle, &heartbeat, &parked).await?;
             let start = Instant::now();
-            let memory = handle.offload(None).await?;
+            let memory = handle.execution().offload(None).await?;
             let offload_ms = ms(start);
             ensure!(memory.backed_bytes >= u64::from(args.memory) * 1024 * 1024, "missing RAM range");
-            ensure!(handle.status().state == RunState::Suspended, "offload state");
+            ensure!(handle.execution().status().state == RunState::Suspended, "offload state");
             sleep(Duration::from_millis(100)).await;
             let parked = std::fs::read(&heartbeat)?;
             sleep(Duration::from_millis(100)).await;
@@ -227,7 +230,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 pvisor::ram_backing::CompressedRam::open(std::fs::File::open(&backing)?)?.allocated_bytes()?
             } else { std::fs::metadata(&backing)?.blocks() * 512 };
             let start = Instant::now();
-            handle.resume().await?;
+            handle.execution().resume().await?;
             let offload_resume_ms = ms(start);
             changed(&handle, &heartbeat, &parked).await?;
             let wake_heartbeat_ms = ms(start);
@@ -242,15 +245,15 @@ async fn run(args: Args) -> anyhow::Result<()> {
         if let Some(state) = args.cancel_while {
             match state {
                 CancelState::Running => {},
-                CancelState::Paused => handle.pause().await?,
-                CancelState::Offloaded => { handle.offload(None).await?; },
+                CancelState::Paused => handle.execution().pause().await?,
+                CancelState::Offloaded => { handle.execution().offload(None).await?; },
             }
-            handle.cancel();
+            handle.execution().cancel();
         } else { std::fs::write(upper.join("release"), "go")?; }
         Ok::<_, anyhow::Error>(rows)
     }.await;
     if check.is_err() {
-        handle.cancel();
+        handle.execution().cancel();
     }
     let result = tokio::time::timeout(Duration::from_secs(30), handle.wait())
         .await

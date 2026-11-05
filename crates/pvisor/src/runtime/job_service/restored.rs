@@ -1,4 +1,4 @@
-use super::{ManagedRestoredRun, RestoredAttempt};
+use super::{ManagedJobRun, RestoredAttempt};
 use crate::{OverlayHint, PVisor, RunConfig, VmExecutor};
 use anyhow::Context;
 use pvisor_core::{RunInvocation, RunSpec};
@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::Path};
 impl RestoredAttempt {
     /// Project captured execution inputs before handing executor configuration to
     /// the frontend. The frontend builds the visor, not the restored RunSpec.
-    pub async fn start_with<F>(self, build: F) -> anyhow::Result<ManagedRestoredRun>
+    pub async fn start_with<F>(self, build: F) -> anyhow::Result<ManagedJobRun>
     where
         F: FnOnce(&RunConfig, &Path, VmExecutor, OverlayHint) -> anyhow::Result<PVisor>,
     {

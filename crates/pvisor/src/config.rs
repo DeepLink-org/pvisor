@@ -723,24 +723,6 @@ pub struct RecordSettings {
     pub destination: Option<PathBuf>,
 }
 
-/// Experimental whole-guest cooperative model-wait behavior (EXP-003 M0).
-/// Enabled explicitly on a Gateway driver; each declared wait belongs to one
-/// Attempt. Linux x86_64 native VMs are supported. Other platforms are rejected.
-/// The caller must ensure the declaring workload is the guest's only runnable
-/// work and has no outstanding guest filesystem/device operations. This is a
-/// trusted cooperation contract, not automatic guest-idleness detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(feature = "gateway")]
-pub enum NativeModelWait {
-    /// Stop vCPUs until a response is ready, retaining RAM and resource admission.
-    Pause,
-    /// Stop vCPUs and reclaim shared file-backed RAM before upstream dispatch.
-    /// Requires ordinary writable file-backed RAM; private/COW/pager modes fail.
-    /// Device RAM references must drain; timeout fails the Attempt. Resource
-    /// reservations stay held, so recovery needs no new scheduler admission.
-    Offload,
-}
-
 /// Resolved configuration for the internal OverlayNet + optional Gateway sink.
 ///
 /// The supervisor retains this policy as configured. Attempt-bound wait adapters
@@ -752,11 +734,8 @@ pub struct GatewayDriverConfig {
     pub output_dir: PathBuf,
     pub gateway_enabled: bool,
     pub model_wait: Option<std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
-    /// Optional native Attempt adapter. Defaults off; conflicts with `model_wait`.
-    /// One declared wait is admitted per Attempt; concurrent declarations fail.
-    pub native_model_wait: Option<NativeModelWait>,
     /// Opt-in Host observation and native coordination of model calls per Attempt.
-    /// Mutually exclusive with `model_wait` and `native_model_wait`; does not
+    /// Mutually exclusive with `model_wait`; does not
     /// change scheduler reservations.
     pub cooperative_model_wait: Option<CooperativeModelWait>,
 }
@@ -939,7 +918,6 @@ impl GatewayDriverConfig {
             output_dir: PathBuf::from(".pvisor/run"),
             gateway_enabled: true,
             model_wait: None,
-            native_model_wait: None,
             cooperative_model_wait: None,
         }
     }
@@ -951,18 +929,6 @@ impl GatewayDriverConfig {
 
     pub fn gateway_enabled(mut self, enabled: bool) -> Self {
         self.gateway_enabled = enabled;
-        self
-    }
-
-    /// Enable the native EXP-003 M0 adapter for each fresh Attempt. Requires an
-    /// enabled Gateway and a Linux x86_64 VM; custom `model_wait` is incompatible.
-    /// Calls must explicitly declare whole-guest quiescence. Ordinary calls are
-    /// unchanged. Entry/delivery are serialized with manual controls; manual pause
-    /// takes ownership and delivery waits for explicit resume or cancellation.
-    /// Dropped requests release only their own pause. Checkpoints are refused
-    /// while a wait is reserved. This provides no task spool or crash recovery.
-    pub fn native_model_wait(mut self, mode: NativeModelWait) -> Self {
-        self.native_model_wait = Some(mode);
         self
     }
 

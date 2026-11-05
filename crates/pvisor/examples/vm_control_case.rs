@@ -46,16 +46,16 @@ async fn await_heartbeat(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             ensure!(
-                !handle.status().state.is_terminal(),
+                !handle.execution().status().state.is_terminal(),
                 "guest exited before heartbeat: {:?}",
-                handle.status()
+                handle.execution().status()
             );
             if let Ok(bytes) = std::fs::read(path)
                 && !bytes.is_empty()
                 && previous != Some(bytes.as_slice())
             {
                 ensure!(
-                    handle.status().state == RunState::Running,
+                    handle.execution().status().state == RunState::Running,
                     "resumed VM must be running"
                 );
                 return Ok(bytes);
@@ -69,7 +69,7 @@ async fn await_heartbeat(
 
 async fn parked(handle: &RunHandle, heartbeat: &Path) -> anyhow::Result<Vec<u8>> {
     ensure!(
-        handle.status().state == RunState::Suspended,
+        handle.execution().status().state == RunState::Suspended,
         "VM must be suspended"
     );
     // Let already submitted virtio-fs writes finish before sampling. This checks
@@ -146,7 +146,7 @@ async fn run() -> anyhow::Result<()> {
         serde_json::json!("/workspace"),
     );
     let handle = runtime.run(spec).await?;
-    let cancellation = handle.cancellation();
+    let cancellation = handle.execution().cancellation();
     let heartbeat = stage.join("upper/heartbeat");
     let check = async {
         await_heartbeat(&handle, &heartbeat, None).await?;
@@ -155,24 +155,24 @@ async fn run() -> anyhow::Result<()> {
             std::fs::write(&occupied, b"keep")?;
             let before = std::fs::read(&heartbeat)?;
             ensure!(
-                handle.offload(Some(occupied.clone())).await.is_err(),
+                handle.execution().offload(Some(occupied.clone())).await.is_err(),
                 "existing file accepted"
             );
             ensure!(std::fs::read(occupied)? == b"keep", "existing file changed");
             ensure!(
-                handle.status().state == RunState::Running,
+                handle.execution().status().state == RunState::Running,
                 "rejection changed state"
             );
             ensure!(!cancellation.is_cancelled(), "rejection cancelled VM");
             await_heartbeat(&handle, &heartbeat, Some(&before)).await?;
-            handle.pause().await?;
-            handle.resume().await?;
+            handle.execution().pause().await?;
+            handle.execution().resume().await?;
         } else {
-            handle.pause().await?;
-            handle.pause().await?;
+            handle.execution().pause().await?;
+            handle.execution().pause().await?;
             let before = parked(&handle, &heartbeat).await?;
-            handle.resume().await?;
-            handle.resume().await?;
+            handle.execution().resume().await?;
+            handle.execution().resume().await?;
             await_heartbeat(&handle, &heartbeat, Some(&before)).await?;
             let selected = root.join("offloaded.ram");
             let cycles = if mode == "compressed" { COMPRESSED_CYCLES } else { 2 };
@@ -181,7 +181,7 @@ async fn run() -> anyhow::Result<()> {
             let mut compacted = false;
             for cycle in 0..cycles {
                 let offload_started = Instant::now();
-                let report = handle
+                let report = handle.execution()
                     .offload((cycle == 0 && !explicit).then(|| selected.clone()))
                     .await?;
                 let offload_ms = offload_started.elapsed().as_millis();
@@ -220,7 +220,7 @@ async fn run() -> anyhow::Result<()> {
                 }
                 let before = parked(&handle, &heartbeat).await?;
                 let resume_started = Instant::now();
-                handle.resume().await?;
+                handle.execution().resume().await?;
                 let resume_ms = resume_started.elapsed().as_millis();
                 if let Some((depth, files, allocated)) = compressed_metrics {
                     println!("compressed-cycle={} depth={depth} layers={files} allocated={allocated} backed={} offload_ms={offload_ms} resume_ms={resume_ms} resident_before={:?} resident_after={:?}", cycle + 1, report.backed_bytes, report.resident_before_bytes, report.resident_after_bytes);
@@ -234,7 +234,7 @@ async fn run() -> anyhow::Result<()> {
     }
     .await;
     if check.is_err() {
-        handle.cancel();
+        handle.execution().cancel();
     }
     let result = handle.wait().await?;
     check.with_context(|| format!("VM run result: {result:?}"))?;

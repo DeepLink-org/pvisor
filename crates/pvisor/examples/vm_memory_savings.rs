@@ -323,10 +323,10 @@ async fn run() -> anyhow::Result<()> {
         let transition = Instant::now();
         match a.mode {
             Mode::Pause => {
-                handle.pause_vm().await?;
+                handle.execution().pause().await?;
             }
             Mode::Raw | Mode::Compressed => {
-                let memory = handle.offload(None).await?;
+                let memory = handle.execution().offload(None).await?;
                 ensure!(
                     memory.backed_bytes >= u64::from(a.memory_mib) * 1024 * 1024,
                     "missing RAM backing"
@@ -363,7 +363,7 @@ async fn run() -> anyhow::Result<()> {
         }
         let restore = Instant::now();
         if matches!(a.mode, Mode::Pause | Mode::Raw | Mode::Compressed) {
-            handle.resume_vm().await?;
+            handle.execution().resume().await?;
         }
         report["resume_ack_ms"] = json!(restore.elapsed().as_secs_f64() * 1000.);
         let op = if a.mode == Mode::Release {
@@ -387,7 +387,7 @@ async fn run() -> anyhow::Result<()> {
     .context("experiment timeout")
     .and_then(|r| r);
     if result.is_err() {
-        handle.cancellation().cancel();
+        handle.execution().cancellation().cancel();
     }
     let end = timeout(Duration::from_secs(20), handle.wait()).await;
     if let Ok(Ok(done)) = &end {

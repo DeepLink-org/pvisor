@@ -260,7 +260,7 @@ print('daemon-pool-guest-ok', index, flush=True)
         }).await.context("native compressed-pool deadline").and_then(|result| result);
         if checked.is_err() {
             for (handle, _, _) in &workers {
-                handle.cancel();
+                handle.execution().cancel();
             }
         }
         let mut results = Vec::new();

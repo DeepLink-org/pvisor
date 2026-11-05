@@ -337,51 +337,6 @@ reclamation, or automatic offload. Embedded callers query observations through
 flags are independent and are not implicitly enabled. Parser/config/control unit tests are not
 real-guest, macOS platform, energy/density, or upstream validation evidence.
 
-## Cooperative native model waits (EXP-003 M0)
-
-With the `gateway` Cargo feature, embedded callers can enable
-`GatewayDriverConfig::native_model_wait(NativeModelWait::Pause)` or
-`NativeModelWait::Offload`. The default is off. Session creates a fresh adapter
-bound to the actual Run/Attempt before starting Gateway. Linux x86_64 VM execution
-and an enabled Gateway are required; a custom `model_wait` lifecycle conflicts.
-There is no CLI/config-file toggle for this prototype.
-
-The trusted workload declares whole-guest quiescence with
-`x-pvisor-inference-idle: true`. It must be the guest's only runnable work and
-have no outstanding filesystem/device operations. Ordinary model calls retain
-normal forwarding. This declaration does not discover other runnable processes
-or transfer dirty guest pages. Pause stops vCPUs; Offload also uses the existing
-shared file-backed RAM/device barrier. Private COW/pager RAM remains unsupported
-for offload. A failed device drain fails the Attempt instead of probing idleness.
-
-At most one declared wait is reserved per Attempt, including accepted controls
-and cancellation cleanup. Foreign/missing Run or Attempt identities and parallel
-waits are rejected before upstream dispatch. Entry waits for native ACK; delivery
-waits for resume ACK. Buffered bodies and supplier failures use the existing
-Gateway barrier; SSE resumes on its first nonempty network chunk, which may be a
-heartbeat. Full inference spooling and the guest submit/wait/cancel/ack protocol
-remain unimplemented.
-
-Manual pause, resume and offload share the native transition lock and revoke the
-automatic pause epoch when admitted, even if the later native operation fails.
-Delivery after manual pause waits for an explicit resume or Attempt cancellation.
-Dropped handlers enqueue bounded cleanup of only their own pause; uncertain
-native ACKs or failed cleanup cancel the Attempt. Execution capture/suspend is
-rejected while a reservation exists. The existing runtime retains resource
-admission and its storage lease; this prototype does not release/reacquire CPU
-reservations or introduce a scheduler lease. Control observations include
-`model_wait_epoch` (null for manual operations).
-
-`native_model_wait_case` drives a real guest through Gateway and a gated local
-model supplier, with an 8 MiB guest-memory digest checked after delivery. Build
-with `cargo build --locked -p pvisor --features gateway --example
-native_model_wait_case`; pass `running`, `pause`, `offload`, `manual` or `cancel`
-and a fresh output directory. Dynamic builds require
-`PVISOR_CASE_VM_LIBRARY_DIR`; optional `PVISOR_CASE_ROOTFS` and
-`PVISOR_CASE_VM_PYTHON` select guest inputs (defaults `/` and `/usr/bin/python3`).
-Each run writes `result.json` with final status and control observations. These
-are correctness checks, not memory-saving, throughput or density measurements.
-
 ## Job owners and AgentCtl
 
 `pvisor spawn` starts a terminal frontend and one owner over an inherited private
@@ -398,7 +353,7 @@ resource teardown to finish before forced exit and Job completion publication.
 
 Each running Job publishes `live_control` in its host-only Run record before
 executor entry. It contains the canonical path, device/inode, protocol
-`pvisor-instance-control-1`, owner PID, executable path and BLAKE3 digest:
+`pvisor-instance-control-2`, owner PID, executable path and BLAKE3 digest:
 
 ```text
 /tmp/pvisor-host-<UID>/jobs/<job-id>/<attempt-id>/control.sock
@@ -421,13 +376,18 @@ an incompatible Job protocol reports that owner's binary without blocking other
 Jobs. The socket accepts no terminal descriptors. It uses the existing correlated
 Host envelopes and newline JSON codec, with a 1 MiB frame limit and at most eight
 accepted connections. Existing native operation locks serialize transitions.
-The process-local endpoint table is only an owner cache.
+The process-local owner table holds weak references keyed by exact Job/Attempt identity.
+The actual Attempt task registers and unregisters its owner; retained handles do
+not prolong discovery after completion.
 
-The runtime still retains `RunControlServer` for Overlay status/observations and
-legacy inspect, plus `execution.sock` for native capture. Owner requests can still
-call these internal sockets in their own process.
-Consolidating them requires migrating callers and preserving
-capture receipts/locks. See [existing channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
+The instance socket is the only host control listener. Same-process status,
+workspace observations/inspect and native capture call that Attempt's owner
+objects directly, including when external instance control is disabled. The old
+Overlay listener, stage `control.sock` discovery link and `execution.sock` listener
+are removed. Both local and external inspect share one bounded mount table,
+closed before writable workspace teardown. Capture retains request receipts,
+Job locks and detached operation ownership after frontend timeout. Guest
+AgentCtl retains its separate guest-facing trust boundary.
 
 Stopped status, review, apply, drop and inspect execute in the calling process.
 Checkpoint restoration/fork starts a new owner directly. Durable operations take
@@ -462,6 +422,72 @@ automatically discovered. The daemon supervisor has separate listener, framing
 and admission contracts.
 
 ### Shared runtime implementation
+
+`Execution` owns Attempt status, cancellation, history and live VM controls.
+`Session::execution()` and `RunHandle::execution()` select that same owner;
+RunHandle retains completion, checkpoint and event-subscription ownership.
+Executors report `starting`/`ready` directly to Execution, and frontends use its
+status, subscription and control methods. There are no RunControlHandle,
+RunCancellation or AttemptService compatibility types or RunHandle control aliases.
+The old M0 native-wait adapter and header-declaration switch are removed; built-in
+model waits use the single Host-observed coordinator.
+
+Session lifecycle and live VM controls share that Attempt-local execution owner.
+One transition function applies typed lifecycle, queued/dispatched control,
+success/failure and completion facts. The watch snapshot is its projection; no
+executor or control adapter writes that channel directly. Existing VM transition
+locks, model-wait arbitration and guest idle epochs still order native effects.
+The state retains at most 32 unfinished controls, not completed request history.
+Cancellation remains latched and does not wait behind an unfinished VM operation.
+
+`Execution::snapshot()` synchronously reads the last coherent projection of status,
+pending controls, uncertainty and applied journal position. `subscribe()` publishes
+that same `ExecutionSnapshot`; subscribers read its `status` field. Publication
+occurs under the transition lock, so local queries need neither socket I/O nor
+waiting on journal writes. The independently sampled progress accessor is removed. Controls record their manual/model-wait origin. Only Execution decides
+failure policy: known manual rejection preserves the live Attempt; uncertain
+effects or an automatic pause that cannot be released latch cancellation. The
+wait coordinator retains arbitration, not a second generic-error cancellation rule.
+
+`JobExecution` owns durable continuation transitions across Attempts. Its phase
+is private and queried with `state()`; capture admission/acknowledgement/failure,
+restore admission/start/rollback, completion recovery and continuation withdrawal
+apply typed transitions before storage writes. The old storage-owned Job type and
+mutable phase field are removed. Journal, metadata and Attempt lease boundaries
+are unchanged. Run record reads and locked reconciliation both validate completion
+receipts then use the same pure execution projection; missing receipts remain
+Unknown and an old Attempt cannot overwrite a successor or withdrawn continuation.
+
+Retained Attempts write `execution-ATTEMPT_ID.jsonl` through `pvisor-journal`;
+unstored Attempts use a memory journal. Each record has its own event identity
+and ordered journal position. Accepted commits retain both append and projection
+ownership after their caller stops waiting. Replaying transition facts rebuilds
+state without invoking a backend. Incomplete operations are not automatically
+retried after owner loss. Existing completion and capture receipts remain the
+authority for durable outcomes; this journal is not a replacement receipt or an
+automatic VM recovery engine. A failed native exchange with possible effects
+blocks further controls until reconciliation or cancellation. Preparation errors
+before native transmission retain a known non-dispatched result. A complete
+runner rejection with a confirmed healthy live state records that state and
+allows later controls.
+Failed history writes do not prevent resource teardown or replace a confirmed
+native result; local progress explicitly marks the history gap.
+
+Job status is schema 2 and uses a dedicated summary rather than RunRecord and
+historical maps. Its top-level `state` is projected by the execution query model:
+`paused` means a live vCPU pause, `hibernated` means confirmed native termination,
+and missing authoritative observations remain `unknown`. Liveness is separate;
+CLI text and JSON render the same projected state. It returns checkpoint/request/apply counts, at most five path
+or destination samples of 512 UTF-8 bytes each, and a command excerpt of at most
+32 arguments / 512 bytes each. Shortened samples and commands are marked.
+Observations identify live versus durable sources; absence means unavailable,
+not zero. Owner responses include bounded execution progress and the applied
+journal position. Base summaries are capped at 256 KiB before the 1 MiB Host
+envelope limit. Text/JSON rendering uses the same summary. Full launch settings,
+request receipts and per-path observations remain in their owning records.
+Protocol 2 rejects old live owners explicitly; offline record/completion schemas
+are unchanged. Status still reads existing Job/checkpoint/apply storage to count
+records; this step bounds the response, not all collection/recovery work.
 
 `runtime/job_service.rs::RuntimeJobService` provides typed persisted-Job status,
 review, apply/drop, workspace checkpoint mutations, native capture and execution
@@ -548,7 +574,7 @@ The lower-level `PVisor::run()` and `RuntimeJobService::start()` still return a 
 own lifecycle and resource ownership; they are not implicitly enrolled in the
 managed Job/checkpoint server.
 
-`AttemptService` is the shared in-process dispatcher for live status, termination
+`Execution` is the shared state owner and in-process dispatcher for live status, termination
 and native controls. Host VM and daemon supervisor endpoints adapt their own
 command/authentication contracts to it. Termination requests cancellation, not
 reaping, cgroup absence or resource-release proof. CLI `JobCommand` and daemon
@@ -679,13 +705,12 @@ nonzero for pause and at most one day. `CooperativeModelWait::default()` uses a
 and repeated rounds with a 100 ms recheck interval and five-second offload cooldown. Setting
 `require_guest_idle: false` is rejected; an Agent promise is not an alternative.
 Enabled policy requires a VM and an enabled Gateway; a simultaneous custom
-`model_wait` lifecycle or legacy `native_model_wait` selection is rejected before startup.
+`model_wait` lifecycle is rejected before startup.
 
 The Host enables observation per Attempt. Gateway recognizes authorized model
 requests and reports their lifecycle automatically. No client header or explicit
 rollout wait/resume call is required; this mode ignores and strips the legacy
-`x-pvisor-inference-idle` header. The separate `native_model_wait` adapter keeps
-its old explicit-declaration behavior; it cannot be combined with this mode. Model JSON/SSE is unchanged. Model waiting alone cannot
+`x-pvisor-inference-idle` header. Model JSON/SSE is unchanged. Model waiting alone cannot
 authorize pause: the patched guest kernel must hand off an idle vCPU and timer.
 On overlap the old wait is woken and native cleanup finishes before responses
 are delivered; new calls are not rejected for being concurrent. Automatic
@@ -771,7 +796,7 @@ policy choices, not measured performance thresholds. `rounds: None` retains
 single-round behavior for comparison. Manual control, overlap and request
 cancellation stop automatic rounds, rather than permitting an automatic retry.
 
-Explicit controls through Run handles, AttemptService and the Host VM endpoint
+Explicit controls through Execution and the Host VM endpoint
 share the coordinator. Human pause/offload holds delivery until explicit resume;
 resume invalidates the old wait timers. Checkpoint/save-and-stop conflicts with
 an active wait or a manual pause. Invalid primitives are rejected before effects.

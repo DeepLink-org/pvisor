@@ -96,7 +96,7 @@ runner ack 后 host 仍有存储工作，所以调用者应以完整 operation o
 
 ### 状态、事件与内存报告 {#control-state-and-memory}
 
-宿主 `RunHandle` / `RunControlHandle` 的 pause、resume、offload 操作使用 Core 的 `OperationKind`，结果为 `Value::Vm`。pause/offload 成功将外层 `RunState` 设为 `Suspended`，resume 成功设为 `Running`；结果中的 `VmState::{Running,Paused,Offloaded}` 细分实际 VM 控制状态。`Suspended` 本身不证明 RAM 已 offload，也不同于持久 checkpoint/suspend 流程。底层接口为 `pvisor_vm::api::VmControl`，由 `VmmHandle` 实现，offload 返回 `RamReclaim`。
+宿主 `Execution` 的 pause、resume、offload 操作使用 Core 的 `OperationKind`，结果为 `Value::Vm`。pause/offload 成功将外层 `RunState` 设为 `Suspended`，resume 成功设为 `Running`；结果中的 `VmState::{Running,Paused,Offloaded}` 细分实际 VM 控制状态。`Suspended` 本身不证明 RAM 已 offload，也不同于持久 checkpoint/suspend 流程。底层接口为 `pvisor_vm::api::VmControl`，由 `VmmHandle` 实现，offload 返回 `RamReclaim`。
 
 控制转换串行执行，记录 `vm.control_requested`，再记录 `vm.control_completed` 或 `vm.control_failed`。请求事件发布失败时不会执行控制。控制成功后先更新 Run 状态，再发布完成事件；若此时事件写入失败，调用返回 `VM control completed but observation failed` 错误，已完成的控制和状态不回滚。调用方不能把这个错误解释成 VM 未执行操作。
 

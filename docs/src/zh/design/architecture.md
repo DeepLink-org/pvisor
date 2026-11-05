@@ -24,7 +24,7 @@ pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在�
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
-[Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `AttemptService` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
+[Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `Execution` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端；嵌入调用方提供 Core 审批通道。驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway 或 replay，捕获通过 `gateway` feature 启用。
 
@@ -115,26 +115,28 @@ owner 二进制执行。已停止 Job 的 status、review、apply、drop 和 ins
 stage 声明的 lower 可变性；声明缺失或 lower 已重绑定时使用 Mutable，读取
 不保证时效性。
 
-### 现存内部通道与清理顺序 {#owner-internal-control}
+### owner 控制与保留的适配入口 {#owner-internal-control}
 
-运行时仍保留以下内部通道；它们属于 Job 所在进程，没有新增用户级常驻进程。
+每个 Attempt 只有一个宿主实例监听。本地调用按精确 Job／Attempt 与 stage
+身份选择 owner，无需连接该监听。Attempt 任务持有注册；即使调用方仍保留
+owner 引用，退出清理也会移除发现记录。Guest AgentCtl 保留独立的信任边界。
 
-| 通道 | 当前调用方与实现 | 后续收敛 |
-| --- | --- | --- |
-| Overlay 控制 | `registry.rs::RunControlServer` 使用 stage 中的 `control.sock` 链接发现私有端点；owner status 通过它查询自己，旧 inspect 挂载表与新 owner inspect 重复 | 先迁移 SDK 调用，再删除旧 inspect 分支、监听和链接发现 |
-| 原生 execution capture | `job_execution.rs::Server` 保留 `execution.sock`；owner 接到 capture 后，runtime 仍通过此端点调用自己 | 改为 owner 内直接调用，保留请求回执、操作锁、冻结和 suspended head 的终态确认 |
-| 显式 VM 调试路径 | `--vm-socket` 与嵌入式 `host_vm_exchange` 使用另一套异步交换；记录发现路径使用 `LiveControlRecord::exchange_checked` | 共用有界、可取消的传输，保留 SDK 对外接口适配 |
+| 路径 | 实现与所有权 |
+| --- | --- |
+| 工作区控制 | `instance_control.rs` 持有观察数据与唯一的有界 inspect 挂载表；`registry.rs` 对本地直接调用，对外经记录中的实例 socket 调用。旧 Overlay 监听与 stage 发现链接已删除。 |
+| 原生执行捕获 | `job_execution.rs` 持有持久回执与 Job 锁；本地请求直接调用执行 owner，已接受任务在前端超时后继续运行。外部请求使用同一个实例 socket，不再创建 `execution.sock` 监听。 |
+| 显式 VM 调试 | `--vm-socket` 与嵌入式 `host_vm_exchange` 继续提供面向同一宿主实例监听的异步适配，复用 Host envelope 与有界 codec。 |
 
-清理先统一调试传输，再把 owner 启动消息收窄到 run、fork、resume。
+后续可把 owner 启动消息收窄到 run、fork、resume。
 当前 `JobCommand` 仍序列化全部命令，只有这三个命令实际经 socketpair 启动；
 其他命令的序列化、owner 终端分支和对应往返测试可以随之移除。
 `OwnedTree.excluded` 的生产调用均为零，`Completion.signal` 没有读取方，
 恢复路径的 `vm_control_socket(None)` 恒为空，也属于可删除的遗留。
-这些清理尚未实现；内部通道合并必须同步迁移调用方和合同测试。
+这些启动消息清理尚未实现。
 
 ### 线上契约与升级 {#host-wire}
 
-实例契约名为 `pvisor-instance-control-1`。Core 的 version-1 Host envelope
+实例契约名为 `pvisor-instance-control-2`。Core 的 version-1 Host envelope
 携带关联信息、精确 Job/Attempt 目标及类型化结果/错误。
 `runtime/host_transport.rs` 保留换行 JSON framing，单帧上限 1 MiB。
 同一 owner 最多接纳八个连接，修改复用已有操作锁。公共 socket 不接收终端
@@ -180,7 +182,7 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 
 当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理；Job、Run 与 Attempt 的身份区分见[执行模型](../design/execution-model.md)。
 
-Session 负责驱动准备、Guest AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 提供状态、取消、checkpoint 和事件订阅；取消请求不等于执行已经停止。
+Session 负责驱动准备、Guest AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 保留完成等待、checkpoint 和事件订阅；`RunHandle::execution()` 提供统一的 Execution owner，用于状态、取消与控制；取消请求不等于执行已经停止。
 
 Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接口。进程组之外的后代和各平台隔离缺口见[隔离设计](isolation.md)。Guest AgentCtl 负责工作负载协作和 checkpoint 静默点，本身不是强制控制；Host AgentCtl 则是上方描述的独立宿主权限路径。
 

@@ -97,6 +97,23 @@ This read-only diagnostic exits successfully; it does not authorize apply/drop.
 `status <selector> --json` reconciles available receipts under the existing locks;
 a missing receipt keeps the outcome unknown. Corrupt evidence remains an error.
 
+Status JSON and text share the runtime's projected `state`; liveness does not
+imply running. Live pause is `paused`, cancellation teardown is `cancelling`, and
+confirmed native suspension is `hibernated`. The selected Attempt and applied
+history position come from one atomic `Execution::snapshot()` observation.
+
+Status JSON uses `schema_version: 2`: `run` is a display summary, with an explicit
+`stage` and a possibly shortened `command` (`command_truncated`). Historical
+`checkpoints` and `apply_history` arrays are replaced by
+`workspace_checkpoint_count` and `apply_batch_count`; `execution` contains counts
+rather than capture/resume/fork receipt maps. Observations contain aggregate
+counters, their live/durable source and at most five bounded denied samples.
+Full Run records and per-path tables are not returned. Live owners also provide
+`execution_progress` (applied position, queued/in-flight counts and uncertainty).
+Use checkpoint list/review and the retained owning records for details. Live
+protocol 2 reports an incompatible old owner instead of guessing its schema;
+drain old Jobs through their owning executable before replacing an installation.
+
 `review --diff` and apply preview read regular files through component-wise
 no-follow descriptors, including ancestors of the recorded roots. Symlinks,
 special/unreadable files and files exceeding the per-file budget are skipped
@@ -127,7 +144,7 @@ owner remains in the original session, owns descendant cleanup, and installs
 signal handlers before unblocking signals. Interactive Jobs use the original
 controlling terminal and may receive Ctrl-C directly; foreground ownership is
 restored at exit. Other commands never start a worker. Live commands execute
-inside the starting owner binary through `pvisor-instance-control-1`; compatible
+inside the starting owner binary through `pvisor-instance-control-2`; compatible
 caller binaries need not have matching digests. Stopped operations take the Job
 root's `job.lock`. Apply/drop refuse an owner still holding stage. See the runtime
 README for socket validation, lost-response ambiguity and platform limitations.

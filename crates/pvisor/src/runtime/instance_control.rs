@@ -1,13 +1,14 @@
-//! Host-only, attempt-scoped live VM control. One JSON line per connection.
+//! Host-only, attempt-scoped Job control. One JSON line per connection.
 //!
 //! This is not snapshot restart: `resume` resumes the same live Attempt. Endpoint
 //! discovery lives in the host Job record; no endpoint is projected into a guest.
 
+use super::execution::Execution;
 use super::host_transport::{
     authorize_host_peer, host_authority_root, read_host_frame, validate_host_target,
     write_host_frame,
 };
-use super::run::{AttemptService, RunControlHandle, RunHandle};
+use super::run::RunHandle;
 #[cfg(test)]
 use pvisor_core::AttemptId;
 use pvisor_core::RunStatus;
@@ -19,6 +20,7 @@ use pvisor_core::host_protocol::{
 };
 #[cfg(test)]
 use pvisor_core::operation::OperationKind;
+use pvisor_overlayfs::api::FilesystemMetrics;
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -36,45 +38,121 @@ use tokio::task::JoinSet;
 /// filesystem lower projections (the same way they exclude live RAM backing).
 pub const INSTANCE_CONTROL_DIRECTORY_METADATA: &str = "pvisor.instance_control.directory";
 const MAX_CONNECTIONS: usize = 8;
+const MAX_INSPECT_MOUNTS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(310);
 
-// RunHandle is constructed by Session outside this module. Keep only discovery
-// paths here, never control authority or backing ownership; the server guard
-// removes its entry even when the Tokio runtime aborts its task.
-type Endpoints = HashMap<(String, String), PathBuf>;
-fn endpoints() -> &'static Mutex<Endpoints> {
-    static ENDPOINTS: OnceLock<Mutex<Endpoints>> = OnceLock::new();
-    ENDPOINTS.get_or_init(|| Mutex::new(HashMap::new()))
+// Discovery borrows the Attempt owner; it never extends resource lifetime.
+type Owners = HashMap<(String, String), std::sync::Weak<Owner>>;
+fn owners() -> &'static Mutex<Owners> {
+    static OWNERS: OnceLock<Mutex<Owners>> = OnceLock::new();
+    OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn owns_record(record: &super::RunRecord) -> bool {
-    let (Some(endpoint), Some(attempt)) = (&record.live_control, &record.attempt_id) else {
-        return false;
-    };
-    endpoint.pid == std::process::id()
-        && endpoints()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&(record.run_id.clone(), attempt.clone()))
-            .is_some_and(|path| path == &endpoint.path)
+pub(crate) struct Owner {
+    pub(crate) execution: Execution,
+    record: Option<super::RunRecord>,
+    endpoint: Option<super::host_transport::LiveControlRecord>,
+    filesystem: Option<pvisor_overlayfs::api::FsMetrics>,
+    network: Option<pvisor_overlaynet::InterceptionMetrics>,
+    mounts: Mutex<HashMap<String, super::ReadOnlyOverlayMount>>,
+    inspections_open: AtomicBool,
+    capture_admission: Arc<tokio::sync::Semaphore>,
+}
+
+pub(crate) struct Registration {
+    pub(crate) owner: Arc<Owner>,
+}
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.owner.close_inspections();
+        let status = self.owner.execution.status();
+        let key = (
+            status.run_id.to_string(),
+            status.attempt.attempt_id.to_string(),
+        );
+        let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
+        if owners
+            .get(&key)
+            .is_some_and(|entry| entry.ptr_eq(&Arc::downgrade(&self.owner)))
+        {
+            owners.remove(&key);
+        }
+    }
+}
+
+pub(crate) fn register(
+    execution: Execution,
+    record: Option<super::RunRecord>,
+    endpoint: Option<super::host_transport::LiveControlRecord>,
+    filesystem: Option<pvisor_overlayfs::api::FsMetrics>,
+    network: Option<pvisor_overlaynet::InterceptionMetrics>,
+) -> anyhow::Result<Registration> {
+    let status = execution.status();
+    let key = (
+        status.run_id.to_string(),
+        status.attempt.attempt_id.to_string(),
+    );
+    let owner = Arc::new(Owner {
+        execution,
+        record,
+        endpoint,
+        filesystem,
+        network,
+        mounts: Mutex::new(HashMap::new()),
+        inspections_open: AtomicBool::new(true),
+        capture_admission: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
+    });
+    let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
+    anyhow::ensure!(
+        owners
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+            .is_none(),
+        "Attempt owner already registered"
+    );
+    owners.insert(key, Arc::downgrade(&owner));
+    Ok(Registration { owner })
+}
+
+fn find(job: &str, attempt: &str) -> Option<Arc<Owner>> {
+    owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(job.into(), attempt.into()))
+        .and_then(std::sync::Weak::upgrade)
+}
+
+pub(crate) fn local_owner(record: &super::RunRecord) -> Option<Arc<Owner>> {
+    let owner = find(&record.run_id, record.attempt_id.as_deref()?)?;
+    let saved = owner.record.as_ref()?;
+    (saved.stage_dir() == record.stage_dir()).then_some(owner)
 }
 
 pub(crate) fn socket(handle: &RunHandle) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(
-        handle.status().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
+        handle.execution().status().attempt.executor.kind
+            == pvisor_core::ExecutorKind::VirtualMachine,
         "live VM controls require a VM executor"
     );
     anyhow::ensure!(
-        !handle.status().state.is_terminal(),
+        !handle.execution().status().state.is_terminal(),
         "attempt control endpoint is no longer available"
     );
-    endpoints()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&(handle.run_id().to_string(), handle.attempt_id().to_string()))
-        .cloned()
+    find(handle.run_id().as_str(), handle.attempt_id().as_str())
+        .and_then(|owner| {
+            owner
+                .endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.path.clone())
+        })
         .ok_or_else(|| anyhow::anyhow!("attempt control endpoint is unavailable"))
+}
+
+pub(crate) fn close_inspections(job: &str, attempt: &str) {
+    if let Some(owner) = find(job, attempt) {
+        owner.close_inspections();
+    }
 }
 
 struct OwnedSocket {
@@ -107,7 +185,6 @@ impl Drop for OwnedSocket {
 pub(crate) struct InstanceControlServer {
     listener: UnixListener,
     socket: OwnedSocket,
-    identity: Option<(String, String)>,
     exclusion_directory: PathBuf,
 }
 
@@ -138,7 +215,6 @@ impl InstanceControlServer {
         Ok(Self {
             listener,
             socket,
-            identity: None,
             exclusion_directory,
         })
     }
@@ -176,21 +252,16 @@ impl InstanceControlServer {
         &self.exclusion_directory
     }
 
-    pub(crate) fn start(mut self, handle: &RunHandle) -> tokio::task::JoinHandle<()> {
-        let identity = (handle.run_id().to_string(), handle.attempt_id().to_string());
-        endpoints()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(identity.clone(), self.socket.path.clone());
-        self.identity = Some(identity);
-        let controls = handle.controls();
-        let mut status = handle.status.clone();
+    pub(crate) fn start(
+        self,
+        handle: &RunHandle,
+        owner: Arc<Owner>,
+    ) -> tokio::task::JoinHandle<()> {
+        let mut status = owner.execution.subscribe();
         let attempt_task = handle.join.abort_handle();
-        let record = handle.record.clone();
         tokio::spawn(async move {
             let mut clients = JoinSet::new();
             let mut replies: Vec<(tokio::task::AbortHandle, Arc<AtomicBool>)> = Vec::new();
-            let mounts = Arc::new(Mutex::new(HashMap::new()));
             // A panic can finish the attempt without publishing terminal status.
             // Our control authority holds a status sender, so channel closure
             // cannot detect that path. Observe task completion without joining
@@ -198,7 +269,7 @@ impl InstanceControlServer {
             let mut completion_check = tokio::time::interval(Duration::from_secs(1));
             completion_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                if status.borrow().state.is_terminal() {
+                if status.borrow().status.state.is_terminal() {
                     break;
                 }
                 tokio::select! {
@@ -219,14 +290,11 @@ impl InstanceControlServer {
                             }
                         };
                         if clients.len() >= MAX_CONNECTIONS { continue; }
-                        let controls = controls.clone();
-                        let status = status.clone();
-                        let record = record.clone();
-                        let mounts = mounts.clone();
+                        let owner = owner.clone();
                         let retain = Arc::new(AtomicBool::new(false));
                         let pending = retain.clone();
                         let task = clients.spawn(async move {
-                            serve(stream, controls, status, record, mounts, pending, OPERATION_TIMEOUT).await;
+                            serve(stream, owner, pending, OPERATION_TIMEOUT).await;
                         });
                         replies.push((task, retain));
                     }
@@ -245,17 +313,6 @@ impl InstanceControlServer {
             })
             .await;
         })
-    }
-}
-
-impl Drop for InstanceControlServer {
-    fn drop(&mut self) {
-        if let Some(identity) = &self.identity {
-            let mut registry = endpoints().lock().unwrap_or_else(|e| e.into_inner());
-            if registry.get(identity) == Some(&self.socket.path) {
-                registry.remove(identity);
-            }
-        }
     }
 }
 
@@ -280,10 +337,7 @@ fn host_operation(
 
 async fn serve(
     mut stream: UnixStream,
-    controls: RunControlHandle,
-    status: tokio::sync::watch::Receiver<RunStatus>,
-    record: Option<super::RunRecord>,
-    mounts: Arc<Mutex<HashMap<String, super::ReadOnlyOverlayMount>>>,
+    owner: Arc<Owner>,
     retain_reply: Arc<AtomicBool>,
     operation_timeout: Duration,
 ) {
@@ -308,7 +362,7 @@ async fn serve(
         Ordering::Release,
     );
     let request_id = request.request_id.clone();
-    let operation = dispatch(request, controls, status.borrow().clone(), record, mounts);
+    let operation = dispatch(request, owner);
     tokio::pin!(operation);
     let result = match tokio::time::timeout(operation_timeout, &mut operation).await {
         Ok(result) => result,
@@ -332,12 +386,11 @@ async fn serve(
 
 async fn dispatch(
     request: AgentCtlHostRequest<super::host_transport::InstanceCommand>,
-    controls: RunControlHandle,
-    status: RunStatus,
-    record: Option<super::RunRecord>,
-    mounts: Arc<Mutex<HashMap<String, super::ReadOnlyOverlayMount>>>,
+    owner: Arc<Owner>,
 ) -> Result<serde_json::Value, AgentCtlHostError> {
     use super::host_transport::InstanceCommand;
+    let controls = &owner.execution;
+    let status = controls.status();
     request.validate()?;
     validate_host_target(
         request.target.as_ref(),
@@ -352,22 +405,10 @@ async fn dispatch(
                 AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, format!("{error:#}"))
             })
     };
-    let record = || -> anyhow::Result<super::RunRecord> {
-        let saved = record
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Job has no durable storage"))?;
-        let current = super::RunRecord::read(&saved.stage_dir())?;
-        anyhow::ensure!(
-            current.run_id == status.run_id.as_str()
-                && current.attempt_id.as_deref() == Some(status.attempt.attempt_id.as_str()),
-            "stale Job/Attempt control record"
-        );
-        Ok(current)
-    };
     let value = match request.command {
         InstanceCommand::JobStatus {} => {
-            let record = record().map_err(error)?;
-            let mut result = super::job_service::RuntimeJobService::status(
+            let record = owner.current_record().map_err(error)?;
+            let result = super::job_service::RuntimeJobService::status(
                 &Default::default(),
                 super::job_service::StatusRequest {
                     job: super::job_service::JobSelection {
@@ -377,7 +418,6 @@ async fn dispatch(
                 },
             )
             .map_err(error)?;
-            result.live_attempt = Some(controls.status());
             serde_json::to_value(result)
         }
         InstanceCommand::Capture {
@@ -386,7 +426,7 @@ async fn dispatch(
             timeout_ms,
             request_id,
         } => {
-            let record = record().map_err(error)?;
+            let record = owner.current_record().map_err(error)?;
             let result = super::job_service::RuntimeJobService::capture_selected_execution(
                 &Default::default(),
                 &record,
@@ -396,56 +436,17 @@ async fn dispatch(
                 Duration::from_millis(timeout_ms),
             )
             .await
-            .map_err(error)?;
+            .map_err(super::job_execution::capture_error)?;
             serde_json::to_value(result)
         }
-        InstanceCommand::Inspect { checkpoint } => {
-            let mut record = record().map_err(error)?;
-            if let Some(id) = checkpoint {
-                let checkpoint =
-                    super::checkpoint::resolve_checkpoint(&record, &id).map_err(error)?;
-                record = super::checkpoint::workspace_view(&record, &checkpoint).map_err(error)?;
-            }
-            let overlay = record
-                .overlay
-                .as_ref()
-                .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
-            let lowers = if record.overlay_lowers.is_empty() {
-                vec![overlay.target.clone()]
-            } else {
-                record.overlay_lowers.clone()
-            };
-            let mut mounts = mounts.lock().unwrap_or_else(|error| error.into_inner());
-            if mounts.len() >= MAX_CONNECTIONS {
-                return Err(AgentCtlHostError::new(
-                    AgentCtlHostErrorCode::Unavailable,
-                    "inspect session limit reached",
-                ));
-            }
-            let id = uuid::Uuid::new_v4().to_string();
-            let mount = super::mount_overlay_record_read_only(
-                overlay,
-                &lowers,
-                &overlay.stage_dir.join("inspect").join(&id).join("merged"),
-            )
-            .map_err(|failure| error(failure.into()))?;
-            let mountpoint = mount.mountpoint().to_owned();
-            mounts.insert(id.clone(), mount);
-            Ok(serde_json::json!({ "id": id, "mountpoint": mountpoint }))
-        }
-        InstanceCommand::UnmountInspect { id } => {
-            let mount = mounts
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&id)
-                .ok_or_else(|| error(anyhow::anyhow!("unknown inspect session {id}")))?;
-            mount.unmount().map_err(error)?;
-            Ok(serde_json::Value::Null)
-        }
+        command @ (InstanceCommand::Ping {}
+        | InstanceCommand::OverlayStatus {}
+        | InstanceCommand::Observations {}
+        | InstanceCommand::StatusObservations {}
+        | InstanceCommand::Inspect { .. }
+        | InstanceCommand::UnmountInspect { .. }) => return owner.workspace(command),
         InstanceCommand::Terminate {} => {
-            let result = AttemptService::new(controls)
-                .dispatch(HostAttemptCommand::Terminate)
-                .await?;
+            let result = controls.dispatch(HostAttemptCommand::Terminate).await?;
             serde_json::to_value(result)
         }
         command => {
@@ -463,12 +464,155 @@ async fn dispatch(
                 command,
             };
             let command = host_operation(&request, &status)?;
-            let result = AttemptService::new(controls).dispatch(command).await?;
+            let result = controls.dispatch(command).await?;
             serde_json::to_value(HostVmResult::from(result))
         }
     };
     value
         .map_err(|error| AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, error.to_string()))
+}
+
+impl Owner {
+    pub(crate) fn admit_capture(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, AgentCtlHostError> {
+        self.capture_admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::Unavailable,
+                    "capture request limit reached",
+                )
+            })
+    }
+
+    fn close_inspections(&self) {
+        let mut mounts = self
+            .mounts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.inspections_open.store(false, Ordering::Release);
+        mounts.clear();
+    }
+
+    fn current_record(&self) -> anyhow::Result<super::RunRecord> {
+        let saved = self
+            .record
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Job has no durable storage"))?;
+        let current = super::RunRecord::read(&saved.stage_dir())?;
+        anyhow::ensure!(
+            current.run_id == saved.run_id
+                && current.attempt_id == saved.attempt_id
+                && current.stage_dir() == saved.stage_dir(),
+            "stale Job/Attempt control record"
+        );
+        Ok(current)
+    }
+
+    pub(crate) fn workspace(
+        &self,
+        command: super::host_transport::InstanceCommand,
+    ) -> Result<serde_json::Value, AgentCtlHostError> {
+        use super::host_transport::InstanceCommand;
+        let error = |error: anyhow::Error| {
+            AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, format!("{error:#}"))
+        };
+        let value = match command {
+            InstanceCommand::Ping {} => {
+                self.current_record()
+                    .map_err(error)?
+                    .overlay
+                    .as_ref()
+                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                Ok(serde_json::Value::Null)
+            }
+            InstanceCommand::OverlayStatus {} => {
+                let record = self.current_record().map_err(error)?;
+                let overlay = record
+                    .overlay
+                    .as_ref()
+                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                serde_json::to_value(super::overlay_status(overlay).map_err(|e| error(e.into()))?)
+            }
+            InstanceCommand::Observations {} => Ok(serde_json::json!({
+                "filesystem": self.filesystem.as_ref().map(|metrics| metrics.snapshot()),
+                "network": self.network.as_ref().map(|metrics| metrics.snapshot()),
+            })),
+            InstanceCommand::StatusObservations {} => {
+                use super::job_service::status::{
+                    Activity, ObservationSource, filesystem_activity, network_activity,
+                };
+                serde_json::to_value(Activity {
+                    filesystem: self.filesystem.as_ref().map(|metrics| {
+                        filesystem_activity(&metrics.snapshot(), ObservationSource::Live)
+                    }),
+                    network: self.network.as_ref().map(|metrics| {
+                        network_activity(&metrics.snapshot(), ObservationSource::Live)
+                    }),
+                })
+            }
+            InstanceCommand::Inspect { checkpoint } => {
+                let mut record = self.current_record().map_err(error)?;
+                if let Some(id) = checkpoint {
+                    let checkpoint =
+                        super::checkpoint::resolve_checkpoint(&record, &id).map_err(error)?;
+                    record =
+                        super::checkpoint::workspace_view(&record, &checkpoint).map_err(error)?;
+                }
+                let overlay = record
+                    .overlay
+                    .as_ref()
+                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                let lowers = if record.overlay_lowers.is_empty() {
+                    vec![overlay.target.clone()]
+                } else {
+                    record.overlay_lowers.clone()
+                };
+                let mut mounts = self
+                    .mounts
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !self.inspections_open.load(Ordering::Acquire)
+                    || mounts.len() >= MAX_INSPECT_MOUNTS
+                {
+                    return Err(AgentCtlHostError::new(
+                        AgentCtlHostErrorCode::Unavailable,
+                        "inspect session limit reached",
+                    ));
+                }
+                let id = uuid::Uuid::new_v4().to_string();
+                let mount = super::mount_overlay_record_read_only(
+                    overlay,
+                    &lowers,
+                    &overlay.stage_dir.join("inspect").join(&id).join("merged"),
+                )
+                .map_err(|failure| error(failure.into()))?;
+                let mountpoint = mount.mountpoint().to_owned();
+                mounts.insert(id.clone(), mount);
+                Ok(serde_json::json!({ "id": id, "mountpoint": mountpoint }))
+            }
+            InstanceCommand::UnmountInspect { id } => {
+                let mut mounts = self
+                    .mounts
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let mount = mounts
+                    .remove(&id)
+                    .ok_or_else(|| error(anyhow::anyhow!("unknown inspect session {id}")))?;
+                mount.unmount().map_err(error)?;
+                Ok(serde_json::Value::Null)
+            }
+            _ => {
+                return Err(AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::Unsupported,
+                    "not a workspace operation",
+                ));
+            }
+        };
+        value.map_err(|e| error(e.into()))
+    }
 }
 
 async fn respond(
@@ -542,9 +686,7 @@ mod tests {
     use crate::executor::process::ProcessExecutor;
     use crate::host_transport::allocate_host_directory;
     use crate::{PVisor, RunExecutor, Session};
-    use pvisor_core::{
-        ExecutorKind, ExecutorPlan, IsolationKind, RunInvocation, RunSpec, RunState,
-    };
+    use pvisor_core::{ExecutorKind, ExecutorPlan, IsolationKind, RunInvocation, RunSpec};
     use std::sync::Arc;
 
     async fn connect(path: &Path) -> anyhow::Result<UnixStream> {
@@ -561,6 +703,78 @@ mod tests {
         let native = record.connect()?;
         native.set_nonblocking(true)?;
         Ok(UnixStream::from_std(native)?)
+    }
+
+    #[tokio::test]
+    async fn local_queries_use_the_exact_owner_even_without_a_working_socket() {
+        for external in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let stage = directory.path().join("stage");
+            let mut spec = pvisor_core::RunSpec::process("local-query", "test", "/bin/sleep");
+            let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
+            process.args = vec!["60".into()];
+            let handle = crate::PVisor::builder()
+                .storage(&stage)
+                .instance_control(external)
+                .network(crate::NetworkDriverConfig {
+                    mode: crate::OverlayNetMode::Off,
+                    ..Default::default()
+                })
+                .build()
+                .run(spec)
+                .await
+                .unwrap();
+            let mut status = handle.execution().subscribe();
+            while status.borrow_and_update().status.state != pvisor_core::RunState::Running {
+                status.changed().await.unwrap();
+            }
+            let record = crate::RunRecord::read(&stage).unwrap();
+            let owner = local_owner(&record).unwrap();
+            if let Some(endpoint) = &record.live_control {
+                std::fs::remove_file(&endpoint.path).unwrap();
+                assert!(!endpoint.is_available());
+            }
+            assert!(!stage.join("execution.sock").exists());
+            assert!(!stage.join("control.sock").exists());
+            let response = super::super::job_service::RuntimeJobService::status(
+                &Default::default(),
+                super::super::job_service::StatusRequest {
+                    job: super::super::job_service::JobSelection {
+                        selector: Some(stage.clone()),
+                        storage: stage.clone(),
+                    },
+                },
+            )
+            .unwrap();
+            assert!(response.live);
+            assert_eq!(response.state, crate::StatusState::Running);
+            assert!(response.execution_progress.is_some());
+            assert_eq!(
+                crate::control_observations(&stage).unwrap(),
+                serde_json::json!({"filesystem":null,"network":null})
+            );
+            let mut foreign = record.clone();
+            foreign.attempt_id = Some("other-attempt".into());
+            assert!(local_owner(&foreign).is_none());
+            foreign = record.clone();
+            foreign.storage = directory.path().join("other-stage");
+            assert!(local_owner(&foreign).is_none());
+            assert!(
+                register(
+                    handle.execution().clone(),
+                    Some(record.clone()),
+                    None,
+                    None,
+                    None
+                )
+                .is_err()
+            );
+            assert!(Arc::ptr_eq(&owner, &local_owner(&record).unwrap()));
+            handle.execution().cancel();
+            handle.wait().await.unwrap();
+            assert!(local_owner(&record).is_none());
+            assert!(!owner.inspections_open.load(Ordering::Acquire));
+        }
     }
 
     struct PublishedVm;
@@ -665,7 +879,76 @@ mod tests {
             error.contains("/previous/pvisor") && error.contains("future-owner-2"),
             "{error}"
         );
-        handle.cancel();
+        handle.execution().cancel();
+        handle.wait().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_job_status_projects_large_records_before_host_framing() {
+        use pvisor_core::operation::{FilesystemObservation, PathOperationCounters};
+        let root = tempfile::tempdir().unwrap();
+        let runtime = PVisor::builder()
+            .storage(root.path())
+            .executors(vec![Arc::new(MockVm)])
+            .network(crate::NetworkDriverConfig {
+                mode: crate::OverlayNetMode::Off,
+                ..Default::default()
+            })
+            .build();
+        let mut spec = RunSpec::process(
+            format!("bounded-{}", uuid::Uuid::new_v4()),
+            "test",
+            "/bin/sleep",
+        );
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["30".into()];
+        let handle = runtime.run(spec).await.unwrap();
+        handle.execution().wait_ready().await.unwrap();
+        let mut record = crate::RunRecord::read(root.path()).unwrap();
+        record.filesystem_observation = Some(FilesystemObservation {
+            paths: (0..8192)
+                .map(|index| {
+                    (
+                        format!("src/{index:05}/file.rs"),
+                        [(
+                            "read".into(),
+                            PathOperationCounters {
+                                hits: 1,
+                                ..Default::default()
+                            },
+                        )]
+                        .into(),
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        });
+        record.orchestration.insert(
+            "diagnostic-details".into(),
+            serde_json::json!("x".repeat(2 * 1024 * 1024)),
+        );
+        record.write().unwrap();
+        let endpoint = record.live_control.unwrap();
+        let job = handle.run_id().to_string();
+        let attempt = handle.attempt_id().to_string();
+        let value = tokio::task::spawn_blocking(move || {
+            endpoint.exchange(
+                &job,
+                &attempt,
+                super::super::host_transport::InstanceCommand::JobStatus {},
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(serde_json::to_vec(&value).unwrap().len() < 256 * 1024);
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["live"], true);
+        assert_eq!(value["filesystem_observation"]["observed_paths"], 8192);
+        assert!(value["record"].get("orchestration").is_none());
+        assert!(value["filesystem_observation"].get("paths").is_none());
+        assert!(value["execution_progress"]["applied"].is_object());
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 
@@ -716,6 +999,39 @@ mod tests {
     }
 
     async fn mock_at(path: Option<&Path>) -> RunHandle {
+        mock_with_sink(path, None).await
+    }
+
+    struct ControlGate {
+        release: tokio_util::sync::CancellationToken,
+        sink: crate::NoopEventSink,
+    }
+    impl Default for ControlGate {
+        fn default() -> Self {
+            Self {
+                release: tokio_util::sync::CancellationToken::new(),
+                sink: Default::default(),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::EventSink for ControlGate {
+        async fn append(
+            &self,
+            event: &pvisor_core::Event,
+        ) -> anyhow::Result<pvisor_core::event::Receipt> {
+            if matches!(&event.data, pvisor_core::Fact::Observation { name, .. } if name == "vm.control_requested")
+            {
+                self.release.cancelled().await;
+            }
+            self.sink.append(event).await
+        }
+    }
+
+    async fn mock_with_sink(
+        path: Option<&Path>,
+        sink: Option<Arc<dyn crate::EventSink>>,
+    ) -> RunHandle {
         let mut spec = RunSpec::process("control-test", "test", "/bin/sleep");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["60".into()];
@@ -730,6 +1046,9 @@ mod tests {
         );
         if let Some(path) = path {
             builder = builder.control_socket(path);
+        }
+        if let Some(sink) = sink {
+            builder = builder.event_sink(sink);
         }
         builder.build().run(spec).await.unwrap()
     }
@@ -799,7 +1118,7 @@ mod tests {
             true
         }
         async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
-            session.transition(RunState::Running, None).await;
+            session.execution().ready().await;
             self.trigger.notified().await;
             panic!("intentional mock attempt panic");
         }
@@ -965,7 +1284,7 @@ mod tests {
                 .to_string()
                 .contains("identity")
         );
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
         tokio::time::timeout(IO_TIMEOUT, async {
             while path.exists() {
@@ -979,19 +1298,16 @@ mod tests {
 
     #[tokio::test]
     async fn response_timeout_and_disconnect_keep_the_control_waiter_admitted() {
-        let handle = mock().await;
-        handle.controls().wait_ready().await.unwrap();
-        let transition = handle.control.transition_for_test().lock().await;
+        let gate = Arc::new(ControlGate::default());
+        let handle = mock_with_sink(None, Some(gate.clone())).await;
+        handle.execution().wait_ready().await.unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Resume)).unwrap();
         bytes.push(b'\n');
         client.write_all(&bytes).await.unwrap();
         let waiter = tokio::spawn(serve(
             server,
-            handle.controls(),
-            handle.status.clone(),
-            None,
-            Arc::new(Mutex::new(HashMap::new())),
+            find(handle.run_id().as_str(), handle.attempt_id().as_str()).unwrap(),
             Arc::new(AtomicBool::new(false)),
             Duration::from_millis(1),
         ));
@@ -1006,21 +1322,21 @@ mod tests {
         drop(client);
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
-        drop(transition);
+        gate.release.cancel();
         tokio::time::timeout(IO_TIMEOUT, waiter)
             .await
             .unwrap()
             .unwrap();
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 
     #[tokio::test]
     async fn disconnected_operation_storm_cannot_exceed_eight_pending_controls() {
-        let handle = mock().await;
-        handle.controls().wait_ready().await.unwrap();
+        let gate = Arc::new(ControlGate::default());
+        let handle = mock_with_sink(None, Some(gate.clone())).await;
+        handle.execution().wait_ready().await.unwrap();
         let path = handle.control_socket().unwrap();
-        let transition = handle.control.transition_for_test().lock().await;
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Pause)).unwrap();
         bytes.push(b'\n');
         for _ in 0..MAX_CONNECTIONS {
@@ -1028,7 +1344,7 @@ mod tests {
             client.write_all(&bytes).await.unwrap();
             drop(client);
         }
-        // All preceding accepted operations are blocked on the transition lock.
+        // All preceding accepted operations are blocked on the control-event sink.
         // Closing their clients must not permit this ninth connection to enter.
         let mut ninth = connect(&path).await.unwrap();
         let rejected = tokio::time::timeout(
@@ -1036,8 +1352,8 @@ mod tests {
             read_host_frame::<serde_json::Value>(&mut ninth),
         )
         .await;
-        drop(transition);
-        handle.cancel();
+        gate.release.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
         assert!(rejected.unwrap().is_err());
         removed(&path).await;
@@ -1086,18 +1402,18 @@ mod tests {
             .unwrap();
         assert!(handle.control_socket().is_err());
         let identity = (handle.run_id().to_string(), handle.attempt_id().to_string());
-        assert!(!endpoints().lock().unwrap().contains_key(&identity));
+        assert!(find(&identity.0, &identity.1).is_some_and(|owner| owner.endpoint.is_none()));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-        let service = handle.service();
+        let service = handle.execution().clone();
         assert_eq!(service.status().attempt.attempt_id, *handle.attempt_id());
         // Wait for execution so the fixture's metadata assertion is exercised.
-        handle.controls().wait_ready().await.unwrap();
+        handle.execution().wait_ready().await.unwrap();
         service
             .dispatch(HostAttemptCommand::Terminate)
             .await
             .unwrap();
         handle.wait().await.unwrap();
-        assert!(!endpoints().lock().unwrap().contains_key(&identity));
+        assert!(find(&identity.0, &identity.1).is_none());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
@@ -1153,7 +1469,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_protocol_identity_errors_permissions_and_terminal_cleanup() {
-        let mut handle = mock().await;
+        let handle = mock().await;
         let path = handle.control_socket().unwrap();
         assert_eq!(
             std::fs::metadata(path.parent().unwrap())
@@ -1202,11 +1518,11 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                host_operation(&request(&handle, command), &handle.status()).unwrap(),
+                host_operation(&request(&handle, command), &handle.execution().status()).unwrap(),
                 HostAttemptCommand::Operation { kind }
             );
         }
-        handle.controls().wait_ready().await.unwrap();
+        handle.execution().wait_ready().await.unwrap();
         let mut events = handle.subscribe_events();
         // No native endpoint is attached to the mock. Failure is explicit and
         // still follows the existing serialized lifecycle/event path.
@@ -1242,9 +1558,10 @@ mod tests {
         })
         .await
         .unwrap();
-        handle.cancel();
-        while !handle.status().state.is_terminal() {
-            handle.status_changed().await.unwrap();
+        handle.execution().cancel();
+        let mut status = handle.execution().subscribe();
+        while !status.borrow_and_update().status.state.is_terminal() {
+            status.changed().await.unwrap();
         }
         assert!(handle.control_socket().is_err());
         handle.wait().await.unwrap();
@@ -1267,7 +1584,7 @@ mod tests {
         for _ in 0..MAX_CONNECTIONS + 2 {
             idle.push(connect(&path).await.unwrap());
         }
-        handle.cancel();
+        handle.execution().cancel();
         tokio::time::timeout(IO_TIMEOUT, handle.wait())
             .await
             .unwrap()
@@ -1313,7 +1630,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 
@@ -1351,7 +1668,7 @@ mod tests {
                 .is_err()
             );
         }
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 
@@ -1368,7 +1685,7 @@ mod tests {
             }
             assert!(super::exchange(&path, &request).await.is_err());
         }
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 
@@ -1381,7 +1698,7 @@ mod tests {
             let path = directory.path().join("fake.sock");
             let listener = UnixListener::bind(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            let mut status = handle.status();
+            let mut status = handle.execution().status();
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request: AgentCtlHostRequest<HostVmCommand> =
@@ -1412,7 +1729,7 @@ mod tests {
             assert!(super::exchange(&path, &request).await.is_err());
             server.await.unwrap();
         }
-        handle.cancel();
+        handle.execution().cancel();
         handle.wait().await.unwrap();
     }
 

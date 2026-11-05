@@ -24,7 +24,7 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
-The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `RuntimeJobService` in independent supervisors and reuses in-process `AttemptService` for controls on the same live Attempt. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Job stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
+The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `RuntimeJobService` in independent supervisors and reuses in-process `Execution` for controls on the same live Attempt. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Job stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers; embedding callers supply Core approval channels. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway or replay; the `gateway` feature enables capture.
 
@@ -120,29 +120,30 @@ metadata can be cleared only after its process dies and no valid control endpoin
 remains. Read-only inspect uses stage-declared lower mutability, defaulting to
 Mutable for missing or rebound declarations; freshness is not guaranteed.
 
-### Existing internal channels and cleanup order {#owner-internal-control}
+### Owner control and remaining adapters {#owner-internal-control}
 
-The runtime still retains these internal channels inside the Job's process. They
-add no user-wide persistent process.
+Each Attempt has one host instance listener. Local calls select its owner by exact
+Job/Attempt and stage identity without connecting to that listener. The Attempt
+task owns registration; its teardown removes discovery even if callers retain
+owner references. Guest AgentCtl retains its separate trust boundary.
 
-| Channel | Current callers and implementation | Planned consolidation |
-| --- | --- | --- |
-| Overlay control | `registry.rs::RunControlServer` discovers its private endpoint through the stage's `control.sock` link; owner status queries itself, and the old inspect mount table duplicates owner inspect | Migrate SDK callers before removing old inspect branches, the listener and link discovery |
-| Native execution capture | `job_execution.rs::Server` retains `execution.sock`; after receiving capture, the owner still calls itself through this runtime endpoint | Call directly inside the owner while preserving request receipts, operation locks, freezing and suspended-head terminal confirmation |
-| Explicit VM debugging | `--vm-socket` and embedded `host_vm_exchange` use a separate asynchronous exchange; record discovery uses `LiveControlRecord::exchange_checked` | Share bounded, cancellable transport while retaining the public SDK adapter |
+| Path | Implementation and ownership |
+| --- | --- |
+| Workspace control | `instance_control.rs` owns observations and one bounded inspect mount table; `registry.rs` routes local calls directly and external calls through the recorded instance socket. The old Overlay listener and stage discovery link are removed. |
+| Native execution capture | `job_execution.rs` owns durable receipts and Job locks; local requests call the execution owner directly. Accepted tasks outlive frontend timeout. External requests use the same instance socket. There is no `execution.sock` listener. |
+| Explicit VM debugging | `--vm-socket` and embedded `host_vm_exchange` remain asynchronous adapters to the same host instance listener, using the shared Host envelope and bounded codec. |
 
-Cleanup first unifies debug transport, then narrows owner bootstrap messages to
+Further cleanup can narrow owner bootstrap messages to
 run, fork and resume. `JobCommand` currently serializes all commands although
 only those three cross the socketpair; other commands' serialization, owner
 terminal branches and round-trip tests can then be removed. Production callers
 always pass zero for `OwnedTree.excluded`; `Completion.signal` has no reader,
 and restoration's `vm_control_socket(None)` always returns None. These cleanups
-are pending. Channel consolidation must migrate callers and contract tests
-together.
+are pending for the bootstrap path.
 
 ### Wire contract and upgrades {#host-wire}
 
-The instance contract is named `pvisor-instance-control-1`. Core's version-1 Host
+The instance contract is named `pvisor-instance-control-2`. Core's version-1 Host
 envelopes carry correlation, exact Job/Attempt targets and typed results/errors.
 `runtime/host_transport.rs` retains newline JSON framing with a 1 MiB frame limit.
 The owner admits at most eight connections and uses existing operation locks for
@@ -196,7 +197,7 @@ For example, the network driver narrows requested Ambient capability to Deny. Re
 
 Each current `PVisor::run` creates one Attempt owned and managed by pvisor's `Session`. See [Execution model](execution-model.md) for Job, Run and Attempt identities.
 
-Session owns driver preparation, the Guest AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Job/Attempt identities nor publish terminal state. `RunHandle` exposes status, cancellation, checkpoints and event subscriptions. Requesting cancellation does not mean execution has stopped.
+Session owns driver preparation, the Guest AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Job/Attempt identities nor publish terminal state. `RunHandle` retains completion, checkpoints and event subscriptions; `RunHandle::execution()` supplies the shared Execution owner for status, cancellation and controls. Requesting cancellation does not mean execution has stopped.
 
 Process/VM executors clean up their managed process groups; containers use the runtime termination interface. See [Isolation design](isolation.md) for descendants outside the group and platform gaps. Guest AgentCtl provides workload cooperation and checkpoint quiescence, not mandatory enforcement; Host AgentCtl is the separate host-authority path described above.
 
