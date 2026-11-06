@@ -161,3 +161,65 @@ fn canonical_leaf_approval_cannot_override_an_explicit_deny() {
     .unwrap();
     assert!(policy.one_time_grant(&request("blocked.example")).is_err());
 }
+
+#[test]
+fn approval_request_hosts_cannot_be_interpreted_as_multi_destination_rules() {
+    // Fixed-seed, bounded cases exercise both policy grammars that widen a host.
+    let mut seed = 0xc1_2026_u32;
+    for _ in 0..16 {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let octet = 1 + seed % 222;
+        let suffix = format!("service-{seed:x}.example");
+        for capability in [
+            None,
+            Some(NetworkCapability::AllowList {
+                hosts: vec![],
+                rules: vec![],
+            }),
+            Some(NetworkCapability::Policy {
+                default_action: NetworkDefaultAction::Deny,
+                allow: vec![],
+                deny: vec![],
+                limits: vec![],
+            }),
+            Some(NetworkCapability::Scoped {
+                layers: vec![(pvisor_core::PolicyScope::Session, Default::default())],
+                fallback: Box::new(NetworkCapability::Ambient),
+            }),
+        ] {
+            let config = NetworkConfig {
+                mode: pvisor_core::NetworkMode::Allowlist,
+                capability,
+                ..Default::default()
+            };
+            let restored: NetworkConfig =
+                serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+            let policy = NetworkPolicy::compile(&restored).unwrap();
+            for host in [
+                format!("*.{suffix}"),
+                format!("  *.{suffix}.  "),
+                format!("{octet}.0.0.0/8"),
+                format!("2001:4860:{:x}::/48", seed as u16),
+            ] {
+                let input: NetworkAccessRequest =
+                    serde_json::from_slice(&serde_json::to_vec(&request(&host)).unwrap()).unwrap();
+                let grant = policy.one_time_grant(&input);
+                assert!(
+                    grant.is_err(),
+                    "approval must reject multi-destination request host {host:?}"
+                );
+            }
+            for host in [
+                suffix.clone(),
+                format!("{octet}.1.2.3"),
+                "2001:4860::8888".into(),
+            ] {
+                let input = request(&host);
+                let granted = policy.one_time_grant(&input).unwrap();
+                assert!(granted.preflight(&input).is_ok(), "{host}");
+                assert!(granted.preflight(&request("unrelated.example")).is_err());
+                assert!(policy.preflight(&input).is_err());
+            }
+        }
+    }
+}
