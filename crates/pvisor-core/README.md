@@ -74,6 +74,13 @@ An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.
 
+Network evaluation normalizes the logical host and parses its IP once per
+controller evaluation, sharing the result across allow/deny rules and scopes.
+Rule filtering uses one pass without intermediate collections and preserves
+host/port/transport/address denial precedence. `NetworkPolicy::authorize` still
+enforces preflight before the injected controller; no decision is cached across
+requests or DNS addresses.
+
 ## Stage durability
 
 `overlay::StageDurability` defaults to `Checkpoint`; `Strict` additionally persists
