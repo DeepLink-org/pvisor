@@ -69,6 +69,108 @@ fn native_controls() -> [OperationKind; 5] {
 }
 
 #[tokio::test]
+async fn requested_event_failure_or_cancellation_never_dispatches_an_admitted_control() {
+    use super::super::event::{EventSink, NoopEventSink};
+
+    struct RequestGate {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        reject: bool,
+        sink: NoopEventSink,
+    }
+
+    #[async_trait::async_trait]
+    impl EventSink for RequestGate {
+        async fn append(&self, event: &Event) -> anyhow::Result<pvisor_core::event::Receipt> {
+            if matches!(&event.data, Fact::Observation { name, .. } if name == "vm.control_requested")
+            {
+                self.entered.notify_one();
+                self.release.notified().await;
+                if self.reject {
+                    anyhow::bail!("injected requested-event rejection");
+                }
+            }
+            self.sink.append(event).await
+        }
+    }
+
+    for reject in [true, false] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut execution = execution_with(RunState::Running, ExecutorKind::VirtualMachine);
+            let gate = Arc::new(RequestGate {
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                reject,
+                sink: NoopEventSink::default(),
+            });
+            execution.events = RunEventPublisher::new(
+                execution.status().run_id,
+                execution.status().execution.execution_id,
+                "request-gate",
+                gate.clone(),
+                tokio::sync::broadcast::channel(16).0,
+            );
+            let caller = execution.clone();
+            let pending = tokio::spawn(async move { caller.pause().await });
+            gate.entered.notified().await;
+            assert_eq!(execution.snapshot().progress.queued, 1);
+            assert_eq!(execution.snapshot().progress.in_flight, 0);
+            if !reject {
+                execution.cancel();
+            }
+            gate.release.notify_one();
+            let error = pending.await.unwrap().unwrap_err();
+            assert!(error.to_string().contains(if reject {
+                "injected requested-event rejection"
+            } else {
+                "execution is cancelling"
+            }));
+            let snapshot = execution.snapshot();
+            assert_eq!(snapshot.status.state, RunState::Running);
+            assert_eq!(snapshot.progress.queued, 0);
+            assert_eq!(snapshot.progress.in_flight, 0);
+            assert!(!snapshot.progress.outcome_unknown);
+            assert!(!snapshot.progress.history_gap);
+            assert_eq!(execution.cancellation.is_cancelled(), !reject);
+            let history = records(&execution).await;
+            let inputs: Vec<Input> = history
+                .iter()
+                .map(|record| match &record.event.data {
+                    Fact::Observation { payload, .. } => {
+                        serde_json::from_value(payload.clone()).unwrap()
+                    }
+                    _ => panic!("unexpected execution fact"),
+                })
+                .collect();
+            assert!(matches!(
+                inputs.as_slice(),
+                [
+                    Input::Initialized { .. },
+                    Input::Queued { .. },
+                    Input::Failed {
+                        effect_unknown: true,
+                        ..
+                    }
+                ]
+            ));
+            assert!(!replay(&history).unwrap().outcome_unknown);
+            if reject {
+                // Failure before native dispatch does not poison later admission.
+                let id = execution
+                    .enqueue(OperationKind::RunPause, ControlOrigin::Manual)
+                    .await
+                    .unwrap();
+                execution
+                    .failed(&id, &anyhow::anyhow!("not dispatched"))
+                    .await;
+            }
+        })
+        .await
+        .expect("requested-event boundary exceeded five seconds");
+    }
+}
+
+#[tokio::test]
 async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
     use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostExecutionCommand};
     let controls = execution_with(RunState::Created, ExecutorKind::Process);
