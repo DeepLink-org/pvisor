@@ -131,6 +131,83 @@ fn first_content_read_protects_before_and_after_copy_up_for_live_and_frozen_layo
 }
 
 #[test]
+fn prepared_lower_fallthrough_keeps_target_baseline_through_reopen_and_apply() {
+    use pvisor_overlay_core::service::FilesystemService;
+    for compact in [false, true] {
+        for target_changed in [false, true] {
+            let mut stage = Stage::new(false, true);
+            let core = stage.core(false);
+            let core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
+            let service = FilesystemService::new(core);
+            let path = Path::new("value");
+            let original = fingerprint_at(&stage.record.target, path).unwrap();
+            assert_ne!(fingerprint_at(&stage.lowers[0], path).unwrap(), original);
+            let copies = service.prepare_copy_ups(&[path.into()], false).unwrap();
+            let journal = stage.record.stage_dir.join("preimages");
+            let observed = || {
+                load_preimages(&journal)
+                    .unwrap()
+                    .into_iter()
+                    .find(|entry| entry.relative_path() == path)
+                    .unwrap()
+                    .state
+            };
+            assert_eq!(observed(), original);
+            fs::remove_file(stage.lowers[0].join(path)).unwrap();
+            let guard = service.use_prepared_copy_ups(copies).unwrap();
+            // The path still exists, but its selected backing changed. The
+            // receipt cannot publish bytes from the now-missing higher layer.
+            assert_eq!(
+                service.copy_up(path).unwrap_err().raw_os_error(),
+                Some(libc::EAGAIN)
+            );
+            assert!(!stage.record.upper.upper_dir.join(path).exists());
+            drop(guard);
+            assert_eq!(
+                fs::read_dir(&stage.record.upper.work_dir).unwrap().count(),
+                0
+            );
+            assert_eq!(observed(), original);
+            drop(service);
+
+            if target_changed {
+                fs::write(stage.record.target.join(path), b"host edit").unwrap();
+            }
+            let service = FilesystemService::new(stage.core(true));
+            let copies = service.prepare_copy_ups(&[path.into()], false).unwrap();
+            let guard = service.use_prepared_copy_ups(copies).unwrap();
+            let upper = service.copy_up(path).unwrap();
+            assert_eq!(
+                fs::read(&upper).unwrap(),
+                if target_changed {
+                    b"host edit".as_slice()
+                } else {
+                    b"original".as_slice()
+                }
+            );
+            assert_eq!(observed(), original);
+            fs::write(&upper, b"agent mutation").unwrap();
+            drop(guard);
+            drop(service);
+            if target_changed {
+                stage.rejected();
+                assert_eq!(fs::read(&upper).unwrap(), b"agent mutation");
+            } else {
+                apply_overlay(&mut stage.record).unwrap();
+                assert_eq!(
+                    fs::read(stage.record.target.join(path)).unwrap(),
+                    b"agent mutation"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn frozen_mutation_uses_target_baseline_even_without_a_prior_observation() {
     for composed in [false, true] {
         let mut stage = Stage::new(true, composed);
