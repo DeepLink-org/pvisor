@@ -595,6 +595,141 @@ mod tests {
         release: watch::Sender<bool>,
     }
 
+    struct AcceptedTerminalGate {
+        entered: watch::Sender<bool>,
+        release: watch::Sender<bool>,
+        sink: crate::MemoryEventSink,
+    }
+
+    #[async_trait]
+    impl crate::EventSink for AcceptedTerminalGate {
+        async fn append(
+            &self,
+            event: &pvisor_core::Event,
+        ) -> anyhow::Result<pvisor_core::event::Receipt> {
+            let receipt = crate::EventSink::append(&self.sink, event).await?;
+            if event.name() == "run.completed" {
+                self.entered.send_replace(true);
+                signal(self.release.subscribe()).await;
+            }
+            Ok(receipt)
+        }
+    }
+
+    struct CompletedVm;
+
+    #[async_trait]
+    impl RunExecutor for CompletedVm {
+        fn descriptor(&self) -> ExecutorPlan {
+            let mut plan = ProcessExecutor::default().descriptor();
+            plan.kind = ExecutorKind::VirtualMachine;
+            plan.isolation = IsolationKind::VirtualMachine;
+            plan
+        }
+
+        fn supports(&self, _: &RunInvocation) -> bool {
+            true
+        }
+
+        async fn execute(&self, _: &ExecutionContext) -> crate::ExecutorOutput {
+            result(0).into()
+        }
+    }
+
+    #[tokio::test]
+    async fn public_wait_abandonment_after_terminal_acceptance_preserves_completion() {
+        for discard in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let stage = temp.path().join("stage");
+            let sink = Arc::new(AcceptedTerminalGate {
+                entered: watch::channel(false).0,
+                release: watch::channel(false).0,
+                sink: Default::default(),
+            });
+            let runtime = PVisor::builder()
+                .storage(&stage)
+                .network(crate::NetworkDriverConfig::new(
+                    crate::OverlayNetMode::Off,
+                    Default::default(),
+                ))
+                .instance_control(false)
+                .event_sink(sink.clone())
+                .executors(vec![Arc::new(CompletedVm)])
+                .build();
+            let mut run = SessionService::start_managed(
+                &runtime,
+                spec(),
+                config(ExecutorKind::VirtualMachine),
+            )
+            .await
+            .unwrap();
+            let execution = run.handle().execution().clone();
+            let publication = observe_completion(&mut run);
+            let mut waiting = Some(Box::pin(run.wait()));
+            bounded(async {
+                tokio::select! {
+                    _ = waiting.as_mut().unwrap() => panic!("wait must retain terminal publication"),
+                    _ = signal(sink.entered.subscribe()) => {},
+                }
+            })
+            .await;
+
+            // The terminal audit follows executor/driver teardown and immutable
+            // completion publication, but precedes managed Session completion.
+            let receipt = std::fs::read(stage.join("completion.json")).unwrap();
+            let bundle = std::fs::read(stage.join(crate::RUN_BUNDLE_FILENAME)).unwrap();
+            assert_eq!(
+                crate::RunBundle::read(&stage).unwrap().run.state,
+                RunState::Completed
+            );
+            let record = RunRecord::read(&stage).unwrap();
+            assert_eq!(
+                Session::read_stage(&stage).unwrap().unwrap().state(),
+                SessionState::Running
+            );
+            assert!(RunLease::acquire(&stage).is_err());
+            assert!(crate::runtime::instance_control::local_owner(&record).is_some());
+
+            if discard {
+                waiting.take();
+            } else {
+                execution.cancel();
+            }
+            assert!(execution.cancellation().is_cancelled());
+            assert!(RunLease::acquire(&stage).is_err());
+            sink.release.send_replace(true);
+            if let Some(waiting) = waiting {
+                assert_eq!(bounded(waiting).await.unwrap().state, RunState::Completed);
+            }
+            let completed = bounded(publication).await.unwrap().unwrap();
+            assert_eq!(completed.state, RunState::Completed);
+            assert_eq!(execution.status().state, RunState::Completed);
+            assert_terminal(&stage, RunState::Completed, true);
+            assert!(crate::runtime::instance_control::local_owner(&record).is_none());
+            assert_eq!(
+                std::fs::read(stage.join("completion.json")).unwrap(),
+                receipt
+            );
+            assert_eq!(
+                std::fs::read(stage.join(crate::RUN_BUNDLE_FILENAME)).unwrap(),
+                bundle
+            );
+            let terminals: Vec<_> = sink
+                .sink
+                .events()
+                .into_iter()
+                .filter(|event| {
+                    matches!(
+                        event.name(),
+                        "run.completed" | "run.cancelled" | "run.failed"
+                    )
+                })
+                .map(|event| event.name().to_owned())
+                .collect();
+            assert_eq!(terminals, ["run.completed"]);
+        }
+    }
+
     #[async_trait]
     impl crate::EventSink for TerminalGate {
         async fn append(
