@@ -127,11 +127,13 @@ async fn external_executor_installs_workspace_service_and_owns_network_teardown(
     std::fs::write(project.join("input.txt"), "original").unwrap();
     std::fs::write(project.join("blocked.txt"), "secret").unwrap();
     let stage = root.path().join("stage");
-    let mut overlay = pvisor::OverlayHint::default();
-    overlay.lower_dirs = vec![project.clone()];
-    overlay.stage_dir = Some(stage.clone());
-    overlay.access_policy =
-        pvisor_core::FileAccessPolicy::new(vec!["blocked.txt".into()], vec![]).unwrap();
+    let overlay = pvisor::OverlayHint {
+        lower_dirs: vec![project.clone()],
+        stage_dir: Some(stage.clone()),
+        access_policy: pvisor_core::FileAccessPolicy::new(vec!["blocked.txt".into()], vec![])
+            .unwrap(),
+        ..Default::default()
+    };
     let runtime = PVisor::builder()
         .storage(&stage)
         .overlay(overlay)

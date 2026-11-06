@@ -171,7 +171,7 @@ fn lock_selected_session_mode(
     };
     let current = template.current()?;
     current.validate_record_target(record)?;
-    let current_record = RunRecord::read(&current.active_stage())?;
+    let current_record = RunRecord::read(current.active_stage())?;
     check_selected_record(record, &current_record)?;
     context.check(&current_record)?;
     Ok(Some((current, lease)))

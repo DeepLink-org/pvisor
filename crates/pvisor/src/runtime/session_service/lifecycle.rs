@@ -75,12 +75,7 @@ impl SessionService {
             session.state()
         );
         super::require_execution(&source)?;
-        let checkpoint = session.checkpoint(
-            session
-                .head()
-                .as_deref()
-                .context("missing suspended head")?,
-        )?;
+        let checkpoint = session.checkpoint(session.head().context("missing suspended head")?)?;
         let (current_source, source_lease) = source.lock_current()?;
         check_selected_record(&source, &current_source)?;
         let source = current_source;
@@ -136,7 +131,7 @@ impl SessionService {
         let exit_code = result?;
         // A launcher returning success without starting/draining the managed run
         // is not a completed restore. Do not turn an empty callback into Finished.
-        confirm_restored_completion(session.active_stage(), &session.run_id())?;
+        confirm_restored_completion(session.active_stage(), session.run_id())?;
         Ok(ResumeResponse::Finished { exit_code })
     }
 }

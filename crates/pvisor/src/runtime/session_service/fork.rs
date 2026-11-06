@@ -83,12 +83,9 @@ impl SessionService {
         }
         let checkpoint = match args.checkpoint.as_deref() {
             Some(id) => selected.checkpoint(id)?,
-            None if selected.state() == SessionState::Suspended => selected.checkpoint(
-                selected
-                    .head()
-                    .as_deref()
-                    .context("missing suspended head")?,
-            )?,
+            None if selected.state() == SessionState::Suspended => {
+                selected.checkpoint(selected.head().context("missing suspended head")?)?
+            }
             None => {
                 // Capture acquires the same Session lease internally and fences the
                 // selected record there. Never await capture while holding it.
@@ -161,7 +158,7 @@ where
             .unwrap_or_else(|| default_run_home().join(&run_id)),
     )?;
     anyhow::ensure!(
-        !paths_overlap(&stage, &parent.root()) && !paths_overlap(&stage, &checkpoint.store),
+        !paths_overlap(&stage, parent.root()) && !paths_overlap(&stage, &checkpoint.store),
         "execution fork stage overlaps its source Session"
     );
     anyhow::ensure!(

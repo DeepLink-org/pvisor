@@ -102,10 +102,12 @@ fn continuation_captures_selected_executor_and_runtime_settings() {
     let root = tempfile::tempdir().unwrap();
     let stage = root.path().join("stage");
     let selections = Arc::new(AtomicUsize::new(0));
-    let mut actual = VmSettings::default();
-    actual.cpus = 3;
-    actual.memory_mib = 512;
-    actual.rootfs = Some(root.path().to_owned());
+    let actual = VmSettings {
+        cpus: 3,
+        memory_mib: 512,
+        rootfs: Some(root.path().to_owned()),
+        ..Default::default()
+    };
     let visor = runtime(&stage, &selections, Some(actual.clone()));
     let mut unrelated = RunConfig::default();
     unrelated.run.executor = RunExecutorKind::Vm;
