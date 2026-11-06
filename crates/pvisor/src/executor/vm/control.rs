@@ -1952,4 +1952,136 @@ mod tests {
         assert!(cancellation.is_cancelled());
         assert!(control.command(OperationKind::RunResume).await.is_err());
     }
+
+    #[tokio::test]
+    async fn queued_control_cannot_dispatch_after_cancellation_or_terminal_completion() {
+        use pvisor_core::{ExecutionInfo, ExecutorKind, IsolationKind, RunState, RunStatus};
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for (cancel, terminal) in [
+                (true, None),
+                (true, Some(RunState::Cancelled)),
+                (false, Some(RunState::Completed)),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let cancellation = CancellationToken::new();
+                let control = VmControl::new(cancellation.clone());
+                let (host, mut runner) = UnixStream::pair().unwrap();
+                control
+                    .attach(
+                        host,
+                        RamBacking::create(Some(&directory.path().join("ram"))).unwrap(),
+                    )
+                    .await;
+                let spec = pvisor_core::RunSpec::process("queued-control", "test", "unused");
+                let mut descriptor =
+                    crate::RunExecutor::descriptor(&crate::ProcessExecutor::default());
+                descriptor.kind = ExecutorKind::VirtualMachine;
+                descriptor.isolation = IsolationKind::VirtualMachine;
+                let sink = Arc::new(crate::MemoryEventSink::default());
+                let execution_id = pvisor_core::ExecutionId::from("queued-execution");
+                let events = crate::runtime::event::RunEventPublisher::new(
+                    spec.run_id.clone(),
+                    execution_id.clone(),
+                    "test",
+                    sink.clone(),
+                    tokio::sync::broadcast::channel(16).0,
+                );
+                let execution = crate::Execution::new(
+                    RunStatus {
+                        run_id: spec.run_id.clone(),
+                        state: RunState::Created,
+                        execution: ExecutionInfo {
+                            execution_id,
+                            number: 1,
+                            executor: descriptor,
+                            started_at_unix_ms: None,
+                            finished_at_unix_ms: None,
+                        },
+                        updated_at_unix_ms: 1,
+                        message: None,
+                    },
+                    control.clone(),
+                    crate::PVisor::new().resolve_operation(spec).unwrap(),
+                    events,
+                    cancellation,
+                )
+                .unwrap();
+                execution.ready().await;
+                let pause = tokio::spawn({
+                    let execution = execution.clone();
+                    async move { execution.pause().await }
+                });
+                assert_eq!(read_request(&mut runner).await, OperationKind::RunPause);
+                let resume = tokio::spawn({
+                    let execution = execution.clone();
+                    async move { execution.resume().await }
+                });
+                let mut status = execution.subscribe();
+                status
+                    .wait_for(|snapshot| {
+                        snapshot.progress.in_flight == 1 && snapshot.progress.queued == 1
+                    })
+                    .await
+                    .unwrap();
+                let admitted = execution.snapshot().progress.applied;
+                if cancel {
+                    execution.cancel();
+                    execution.cancelling().await;
+                }
+                if let Some(state) = terminal {
+                    execution.finish(state, None, 50).await;
+                }
+                // Pause was dispatched before stopping. Its acknowledgement
+                // may settle, but must not revive the owner or authorize resume.
+                send_reply(
+                    &mut runner,
+                    ControlReply {
+                        idle_epoch: None,
+                        state: Some(VmState::Paused),
+                        memory: None,
+                        error: None,
+                        checkpoint: None,
+                        capture: None,
+                    },
+                )
+                .await;
+                pause.await.unwrap().unwrap();
+                assert!(resume.await.unwrap().is_err());
+                let snapshot = execution.snapshot();
+                assert_eq!(
+                    snapshot.status.state,
+                    terminal.unwrap_or(RunState::Cancelling)
+                );
+                assert_eq!(execution.cancellation().is_cancelled(), cancel);
+                assert_eq!(snapshot.progress.queued, 0);
+                assert_eq!(snapshot.progress.in_flight, 0);
+                assert!(!snapshot.progress.history_gap);
+                assert!(!snapshot.progress.outcome_unknown);
+                assert_ne!(snapshot.progress.applied, admitted);
+                // Both owned control tasks have drained, so a nonblocking read
+                // checks absence of a second command without a timing window.
+                let error = runner.try_read(&mut [0; 1]).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                let requests = sink
+                    .events()
+                    .into_iter()
+                    .filter(|event| event.name() == "vm.control_requested")
+                    .count();
+                assert_eq!(requests, 1);
+                execution.finish(RunState::Cancelled, None, 100).await;
+                assert_eq!(
+                    execution.status().state,
+                    terminal.unwrap_or(RunState::Cancelled)
+                );
+                assert_eq!(
+                    execution.status().execution.finished_at_unix_ms,
+                    Some(if terminal.is_some() { 50 } else { 100 })
+                );
+                control.detach().await;
+            }
+        })
+        .await
+        .expect("queued native control scenario timed out");
+    }
 }
