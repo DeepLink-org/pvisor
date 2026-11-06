@@ -59,6 +59,7 @@ pub(crate) async fn handle_connect_authorized(
         let Ok(upgraded) = on_upgrade.await else {
             return;
         };
+        let disconnected = upgraded.on_h2_disconnect();
         let client = TokioIo::new(upgraded);
         let (client_read, client_write) = tokio::io::split(client);
         let (destination_read, destination_write) = destination.split();
@@ -67,7 +68,15 @@ pub(crate) async fn handle_connect_authorized(
         // A successful EOF only half-closes the tunnel: keep draining the
         // opposite direction. An error is terminal and must release both
         // copies (including a companion blocked on I/O or bandwidth).
-        let _ = tokio::try_join!(upload, download);
+        tokio::select! {
+            _ = async {
+                match disconnected {
+                    Some(disconnected) => disconnected.await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
+            _ = async { let _ = tokio::try_join!(upload, download); } => {}
+        }
     });
     Ok(Response::builder()
         .status(StatusCode::OK)

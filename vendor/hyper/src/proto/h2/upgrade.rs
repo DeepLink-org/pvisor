@@ -17,9 +17,15 @@ pub(super) fn pair<B>(
     send_stream: SendStream<SendBuf<B>>,
     recv_stream: RecvStream,
     ping: Recorder,
-) -> (H2Upgraded, UpgradedSendStreamTask<B>) {
+) -> (
+    H2Upgraded,
+    UpgradedSendStreamTask<B>,
+    tokio::sync::watch::Receiver<bool>,
+) {
     let (tx, rx) = mpsc::channel(1);
     let (error_tx, error_rx) = oneshot::channel();
+    let (read_closed_tx, read_closed_rx) = oneshot::channel();
+    let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(false);
 
     (
         H2Upgraded {
@@ -27,12 +33,18 @@ pub(super) fn pair<B>(
             recv_stream,
             ping,
             buf: Bytes::new(),
+            read_closed: Some(read_closed_tx),
         },
         UpgradedSendStreamTask {
             h2_tx: send_stream,
             rx,
             error_tx: Some(error_tx),
+            read_closed: read_closed_rx,
+            read_eof: false,
+            send_closed: false,
+            disconnect_tx,
         },
+        disconnect_rx,
     )
 }
 
@@ -41,6 +53,7 @@ pub(super) struct H2Upgraded {
     send_stream: UpgradedSendStreamBridge,
     recv_stream: RecvStream,
     buf: Bytes,
+    read_closed: Option<oneshot::Sender<()>>,
 }
 
 struct UpgradedSendStreamBridge {
@@ -56,6 +69,11 @@ pin_project! {
         #[pin]
         rx: mpsc::Receiver<Cursor<Box<[u8]>>>,
         error_tx: Option<oneshot::Sender<crate::Error>>,
+        #[pin]
+        read_closed: oneshot::Receiver<()>,
+        read_eof: bool,
+        send_closed: bool,
+        disconnect_tx: tokio::sync::watch::Sender<bool>,
     }
 }
 
@@ -73,6 +91,29 @@ where
         // one of the sides hanging up, so the task doesn't live around
         // longer than it's meant to.
         loop {
+            if !*me.read_eof && me.read_closed.as_mut().poll(cx).is_ready() {
+                *me.read_eof = true;
+            }
+            if *me.send_closed && *me.read_eof {
+                return Poll::Ready(Ok(()));
+            }
+            // Keep watching resets after local END_STREAM. The application
+            // may still be waiting on upstream I/O, bandwidth or a resume gate.
+            match me.h2_tx.poll_reset(cx) {
+                Poll::Ready(Ok(reason)) => {
+                    trace!("stream received RST_STREAM: {:?}", reason);
+                    return Poll::Ready(Err(crate::Error::new_body_write(::h2::Error::from(
+                        reason,
+                    ))));
+                }
+                Poll::Ready(Err(err)) => {
+                    return Poll::Ready(Err(crate::Error::new_body_write(err)))
+                }
+                Poll::Pending => (),
+            }
+            if *me.send_closed {
+                return Poll::Pending;
+            }
             // we don't have the next chunk of data yet, so just reserve 1 byte to make
             // sure there's some capacity available. h2 will handle the capacity management
             // for the actual body chunk.
@@ -100,19 +141,6 @@ where
                 }
             }
 
-            match me.h2_tx.poll_reset(cx) {
-                Poll::Ready(Ok(reason)) => {
-                    trace!("stream received RST_STREAM: {:?}", reason);
-                    return Poll::Ready(Err(crate::Error::new_body_write(::h2::Error::from(
-                        reason,
-                    ))));
-                }
-                Poll::Ready(Err(err)) => {
-                    return Poll::Ready(Err(crate::Error::new_body_write(err)))
-                }
-                Poll::Pending => (),
-            }
-
             match me.rx.as_mut().poll_next(cx) {
                 Poll::Ready(Some(cursor)) => {
                     me.h2_tx
@@ -123,7 +151,10 @@ where
                     me.h2_tx
                         .send_data(SendBuf::None, true)
                         .map_err(crate::Error::new_body_write)?;
-                    return Poll::Ready(Ok(()));
+                    *me.send_closed = true;
+                    // Acknowledge graceful write shutdown now, independently
+                    // of the reset monitor's lifetime or the opposite half.
+                    me.error_tx.take();
                 }
                 Poll::Pending => {
                     return Poll::Pending;
@@ -143,6 +174,7 @@ where
         match self.as_mut().tick(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(()),
             Poll::Ready(Err(err)) => {
+                self.disconnect_tx.send_replace(true);
                 if let Some(tx) = self.error_tx.take() {
                     let _oh_well = tx.send(err);
                 }
@@ -155,6 +187,14 @@ where
 
 // ===== impl H2Upgraded =====
 
+impl H2Upgraded {
+    fn read_eof(&mut self) {
+        if let Some(tx) = self.read_closed.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 impl Read for H2Upgraded {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -164,7 +204,10 @@ impl Read for H2Upgraded {
         if self.buf.is_empty() {
             self.buf = loop {
                 match ready!(self.recv_stream.poll_data(cx)) {
-                    None => return Poll::Ready(Ok(())),
+                    None => {
+                        self.read_eof();
+                        return Poll::Ready(Ok(()));
+                    }
                     Some(Ok(buf)) if buf.is_empty() && !self.recv_stream.is_end_stream() => {
                         continue
                     }
@@ -183,6 +226,9 @@ impl Read for H2Upgraded {
                     }
                 }
             };
+        }
+        if self.buf.is_empty() {
+            self.read_eof();
         }
         let cnt = std::cmp::min(self.buf.len(), read_buf.remaining());
         read_buf.put_slice(&self.buf[..cnt]);

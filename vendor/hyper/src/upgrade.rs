@@ -64,6 +64,7 @@ use crate::common::io::Rewind;
 /// into its parts.
 pub struct Upgraded {
     io: Rewind<Box<dyn Io + Send>>,
+    h2_disconnect: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// A future for a possible HTTP upgrade.
@@ -141,7 +142,43 @@ impl Upgraded {
     {
         Upgraded {
             io: Rewind::new_buffered(Box::new(io), read_buf),
+            h2_disconnect: None,
         }
+    }
+
+    #[cfg(feature = "http2")]
+    pub(super) fn with_h2_disconnect(
+        mut self,
+        disconnected: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        self.h2_disconnect = Some(disconnected);
+        self
+    }
+
+    /// Observe abnormal HTTP/2 stream termination independently of reads/writes.
+    ///
+    /// Returns `None` for HTTP/1 upgrades. The returned owned future is latched:
+    /// it completes after a stream reset or connection/stream transport failure,
+    /// even if that failure preceded this call or a read half already saw EOF.
+    /// Graceful END_STREAM, write shutdown and destruction of the internal
+    /// monitor after clean completion do not resolve it. It never consumes data,
+    /// writes probe bytes, or changes either half's shutdown semantics.
+    ///
+    /// This is a pVisor-local extension; see the vendored PATCHES.md.
+    pub fn on_h2_disconnect(&self) -> Option<impl Future<Output = ()> + Send + 'static> {
+        let mut disconnected = self.h2_disconnect.as_ref()?.clone();
+        Some(async move {
+            loop {
+                if *disconnected.borrow_and_update() {
+                    return;
+                }
+                if disconnected.changed().await.is_err() {
+                    // A clean monitor exit is not a reset. Do not spin on a
+                    // closed watch channel or mistake normal EOF for failure.
+                    std::future::pending::<()>().await;
+                }
+            }
+        })
     }
 
     /// Tries to downcast the internal trait object to the type passed.
@@ -149,6 +186,7 @@ impl Upgraded {
     /// On success, returns the downcasted parts. On error, returns the
     /// `Upgraded` back.
     pub fn downcast<T: Read + Write + Unpin + 'static>(self) -> Result<Parts<T>, Self> {
+        let h2_disconnect = self.h2_disconnect;
         let (io, buf) = self.io.into_inner();
         match io.__hyper_downcast() {
             Ok(t) => Ok(Parts {
@@ -157,6 +195,7 @@ impl Upgraded {
             }),
             Err(io) => Err(Upgraded {
                 io: Rewind::new_buffered(io, buf),
+                h2_disconnect,
             }),
         }
     }
@@ -371,6 +410,42 @@ mod tests {
             .unwrap_err();
 
         upgraded.downcast::<Mock>().unwrap();
+    }
+
+    #[cfg(feature = "http2")]
+    #[test]
+    fn h2_disconnect_is_owned_latched_and_preserved_by_failed_downcast() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let upgraded = Upgraded::new(Mock, Bytes::new()).with_h2_disconnect(receiver);
+        let mut before = Box::pin(upgraded.on_h2_disconnect().unwrap());
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(before.as_mut().poll(&mut cx).is_pending());
+        sender.send_replace(true);
+        assert!(before.as_mut().poll(&mut cx).is_ready());
+        let upgraded = upgraded
+            .downcast::<crate::common::io::Compat<std::io::Cursor<Vec<u8>>>>()
+            .unwrap_err();
+        let mut after = Box::pin(upgraded.on_h2_disconnect().unwrap());
+        drop(upgraded);
+        drop(sender);
+        assert!(after.as_mut().poll(&mut cx).is_ready());
+    }
+
+    #[cfg(feature = "http2")]
+    #[test]
+    fn clean_monitor_exit_does_not_report_disconnect() {
+        assert!(Upgraded::new(Mock, Bytes::new())
+            .on_h2_disconnect()
+            .is_none());
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let upgraded = Upgraded::new(Mock, Bytes::new()).with_h2_disconnect(receiver);
+        let mut waiting = Box::pin(upgraded.on_h2_disconnect().unwrap());
+        drop(sender);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
     }
 
     // TODO: replace with tokio_test::io when it can test write_buf

@@ -538,23 +538,56 @@ mod tests {
 
     #[tokio::test]
     async fn http2_connect_upstream_half_close_preserves_upload_and_admission() {
+        http2_connect_ownership("download_eof").await;
+        http2_connect_ownership("upload_eof").await;
+    }
+
+    #[tokio::test]
+    async fn http2_reset_releases_tunnel_without_discarding_half_close() {
+        for phase in [
+            "reset",
+            "throttled_reset",
+            "reset_after_upload_eof",
+            "reset_after_download_eof",
+            "reset_during_resume",
+        ] {
+            http2_connect_ownership(phase).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn http2_cancel_and_no_error_resets_release_before_and_after_upload_eof() {
+        for reason in [h2::Reason::CANCEL, h2::Reason::NO_ERROR] {
+            for after_eof in [false, true] {
+                http2_explicit_reset(reason, after_eof).await;
+            }
+        }
+    }
+
+    async fn http2_explicit_reset(reason: h2::Reason, after_eof: bool) {
+        use bytes::Bytes;
         use hyper_util::rt::{TokioExecutor, TokioIo};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncReadExt;
         use tokio::time::{Duration, timeout};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let counter = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
         let slots = Arc::new(tokio::sync::Semaphore::new(1));
-        let service_counter = counter.clone();
+        let service_active = active.clone();
         let service_slots = slots.clone();
         let service =
             hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                let counter = service_counter.clone();
+                let active = service_active.clone();
                 let slots = service_slots.clone();
                 async move {
+                    if request.method() == Method::GET {
+                        return Ok::<_, std::io::Error>(
+                            axum::body::Body::from("healthy").into_response(),
+                        );
+                    }
                     let mut request = request.map(axum::body::Body::new);
-                    let mut guard = ActiveRequestGuard::new(counter);
+                    let mut guard = ActiveRequestGuard::new(active);
                     guard._permit = Some(slots.try_acquire_owned().unwrap());
                     request.extensions_mut().insert(Arc::new(guard));
                     handle_connect_authorized(
@@ -566,6 +599,170 @@ mod tests {
                         },
                         BandwidthRegistry::default().session(vec![]).await,
                         None,
+                    )
+                    .await
+                    .map_err(std::io::Error::other)
+                }
+            });
+        let (client, server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(server), service)
+                .await
+        });
+        let (mut sender, connection) = h2::client::handshake(client).await.unwrap();
+        let client_task = tokio::spawn(connection);
+        let (response, mut upload) = sender
+            .send_request(
+                Request::builder()
+                    .method(Method::CONNECT)
+                    .uri(address.to_string())
+                    .body(())
+                    .unwrap(),
+                false,
+            )
+            .unwrap();
+        let response = timeout(Duration::from_secs(2), response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (mut upstream, _) = timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        upload
+            .send_data(Bytes::from_static(b"upload"), after_eof)
+            .unwrap();
+        let mut received = [0; 6];
+        timeout(Duration::from_secs(2), upstream.read_exact(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&received, b"upload");
+        if after_eof {
+            let mut remainder = Vec::new();
+            timeout(Duration::from_secs(2), upstream.read_to_end(&mut remainder))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(remainder.is_empty());
+        }
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+        assert_eq!(slots.available_permits(), 0);
+        // Keep the receive half and connection alive: this is an explicit wire
+        // RST_STREAM, not dropping the response body or the whole connection.
+        upload.send_reset(reason);
+        let released = timeout(Duration::from_secs(2), async {
+            while active.load(Ordering::Relaxed) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if released.is_ok() {
+            assert_eq!(slots.available_permits(), 1);
+            let (healthy, _) = sender
+                .send_request(
+                    Request::builder()
+                        .uri("http://localhost/healthy")
+                        .body(())
+                        .unwrap(),
+                    true,
+                )
+                .unwrap();
+            let healthy = timeout(Duration::from_secs(2), healthy)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(healthy.status(), StatusCode::OK);
+        }
+        drop(response);
+        drop(upload);
+        drop(upstream);
+        drop(sender);
+        client_task.abort();
+        let _ = client_task.await;
+        server_task.abort();
+        let _ = server_task.await;
+        assert!(released.is_ok(), "{reason:?}, after_eof={after_eof}");
+    }
+
+    async fn http2_connect_ownership(phase: &'static str) {
+        use futures_util::FutureExt as _;
+        use http_body_util::BodyExt as _;
+        use hyper_util::rt::{TokioExecutor, TokioIo};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{Duration, timeout};
+
+        struct BlockedResume {
+            entered: Arc<tokio::sync::Notify>,
+            cancelled: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl DownloadWait for BlockedResume {
+            async fn waiting(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn ready(&mut self) -> anyhow::Result<()> {
+                self.entered.notify_one();
+                std::future::pending().await
+            }
+
+            fn cancel(&mut self) {
+                self.cancelled.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let resume_entered = Arc::new(tokio::sync::Notify::new());
+        let wait_cancelled = Arc::new(AtomicUsize::new(0));
+        let bandwidth = BandwidthRegistry::default()
+            .session(if phase == "throttled_reset" {
+                vec![crate::policy::NetworkBandwidthLimit {
+                    host: None,
+                    port: None,
+                    bytes_per_second: 1,
+                }]
+            } else {
+                vec![]
+            })
+            .await;
+        let service_counter = counter.clone();
+        let service_slots = slots.clone();
+        let service_resume = resume_entered.clone();
+        let service_cancelled = wait_cancelled.clone();
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let counter = service_counter.clone();
+                let slots = service_slots.clone();
+                let bandwidth = bandwidth.clone();
+                let entered = service_resume.clone();
+                let cancelled = service_cancelled.clone();
+                async move {
+                    if request.method() == Method::GET {
+                        return Ok::<_, std::io::Error>(
+                            axum::body::Body::from("healthy").into_response(),
+                        );
+                    }
+                    let mut request = request.map(axum::body::Body::new);
+                    let mut guard = ActiveRequestGuard::new(counter);
+                    guard._permit = Some(slots.try_acquire_owned().unwrap());
+                    request.extensions_mut().insert(Arc::new(guard));
+                    handle_connect_authorized(
+                        request,
+                        parse_connect_target(&address.to_string()).unwrap(),
+                        &AuthorizedTarget {
+                            host: address.ip().to_string(),
+                            addresses: vec![address],
+                        },
+                        bandwidth,
+                        (phase == "reset_during_resume")
+                            .then(|| DownloadGuard(Box::new(BlockedResume { entered, cancelled }))),
                     )
                     .await
                     .map_err(std::io::Error::other)
@@ -596,6 +793,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let mut disconnect = Box::pin(upgraded.on_h2_disconnect().unwrap());
         // Hyper's HTTP/2 CONNECT body is empty; the tunnel belongs to the
         // stream-level upgrade, not the response body.
         drop(response);
@@ -604,43 +802,118 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        upstream.write_all(b"accepted response").await.unwrap();
-        upstream.shutdown().await.unwrap();
-        let mut downloaded = Vec::new();
-        timeout(Duration::from_secs(2), tunnel.read_to_end(&mut downloaded))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(downloaded, b"accepted response");
-        assert_eq!(counter.load(Ordering::Relaxed), 1);
-        assert_eq!(slots.available_permits(), 0);
-        // Response EOF is only a half-close. Upload is still usable after
-        // the accepted response has been drained.
-        tunnel
-            .write_all(b"upload after response EOF")
-            .await
-            .unwrap();
-        tunnel.shutdown().await.unwrap();
-        let mut uploaded = Vec::new();
-        timeout(Duration::from_secs(2), upstream.read_to_end(&mut uploaded))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(uploaded, b"upload after response EOF");
-        timeout(Duration::from_secs(2), async {
+        if phase == "download_eof" {
+            upstream.write_all(b"accepted response").await.unwrap();
+            upstream.shutdown().await.unwrap();
+            let mut downloaded = Vec::new();
+            timeout(Duration::from_secs(2), tunnel.read_to_end(&mut downloaded))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(downloaded, b"accepted response");
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+            assert_eq!(slots.available_permits(), 0);
+            // Response EOF is only a half-close. Upload remains usable.
+            tunnel
+                .write_all(b"upload after response EOF")
+                .await
+                .unwrap();
+            tunnel.shutdown().await.unwrap();
+            let mut uploaded = Vec::new();
+            timeout(Duration::from_secs(2), upstream.read_to_end(&mut uploaded))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(uploaded, b"upload after response EOF");
+        } else {
+            tunnel.write_all(&[b'u'; 64]).await.unwrap();
+            if matches!(phase, "upload_eof" | "reset_after_upload_eof") {
+                timeout(Duration::from_secs(2), tunnel.shutdown())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut uploaded = Vec::new();
+                timeout(Duration::from_secs(2), upstream.read_to_end(&mut uploaded))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(uploaded, [b'u'; 64]);
+                assert_eq!(slots.available_permits(), 0);
+                if phase == "upload_eof" {
+                    upstream.write_all(b"delayed response").await.unwrap();
+                    upstream.shutdown().await.unwrap();
+                    let mut response = Vec::new();
+                    timeout(Duration::from_secs(2), tunnel.read_to_end(&mut response))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(response, b"delayed response");
+                }
+            }
+            if phase == "reset_after_download_eof" {
+                upstream.shutdown().await.unwrap();
+                let mut response = Vec::new();
+                timeout(Duration::from_secs(2), tunnel.read_to_end(&mut response))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(response.is_empty());
+                assert_eq!(slots.available_permits(), 0);
+            }
+            if phase == "reset_during_resume" {
+                upstream.write_all(b"held by resume").await.unwrap();
+                timeout(Duration::from_secs(2), resume_entered.notified())
+                    .await
+                    .unwrap();
+            }
+        }
+        if matches!(phase, "download_eof" | "upload_eof") {
+            assert!(disconnect.as_mut().now_or_never().is_none());
+        }
+        // Drop the whole upgraded stream, not the empty HTTP response body.
+        drop(tunnel);
+        let released = timeout(Duration::from_secs(2), async {
             while counter.load(Ordering::Relaxed) != 0 {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
-        assert_eq!(slots.available_permits(), 1);
-        drop(tunnel);
+        .await;
+        // Even the failing reproduction must release its peers and drivers.
+        drop(upstream);
+        if released.is_ok() {
+            assert_eq!(slots.available_permits(), 1);
+            assert_eq!(
+                wait_cancelled.load(Ordering::SeqCst),
+                usize::from(phase == "reset_during_resume")
+            );
+            // A reset must not tear down other streams on this connection.
+            let healthy = timeout(
+                Duration::from_secs(2),
+                sender.send_request(
+                    Request::builder()
+                        .uri("http://localhost/healthy")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                timeout(Duration::from_secs(2), healthy.into_body().collect())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_bytes(),
+                "healthy"
+            );
+        }
         drop(sender);
         client_task.abort();
         let _ = client_task.await;
         server_task.abort();
         let _ = server_task.await;
+        assert!(released.is_ok(), "{phase} retained tunnel admission");
     }
 
     async fn connect_forwarding_ownership(fail_resume: bool) {

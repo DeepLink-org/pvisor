@@ -492,14 +492,14 @@ where
                                 warn!("successful response to CONNECT request disallows content-length header");
                             }
                             let send_stream = reply!(me, res, false);
-                            let (h2_up, up_task) = super::upgrade::pair(
+                            let (h2_up, up_task, disconnected) = super::upgrade::pair(
                                 send_stream,
                                 connect_parts.recv_stream,
                                 connect_parts.ping,
                             );
-                            connect_parts
-                                .pending
-                                .fulfill(Upgraded::new(h2_up, Bytes::new()));
+                            connect_parts.pending.fulfill(
+                                Upgraded::new(h2_up, Bytes::new()).with_h2_disconnect(disconnected),
+                            );
                             self.exec.execute_upgrade(up_task);
                             return Poll::Ready(Ok(()));
                         }

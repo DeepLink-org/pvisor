@@ -634,9 +634,11 @@ where
 
                     let (pending, on_upgrade) = crate::upgrade::pending();
 
-                    let (h2_up, up_task) = super::upgrade::pair(send_stream, recv_stream, ping);
+                    let (h2_up, up_task, disconnected) =
+                        super::upgrade::pair(send_stream, recv_stream, ping);
                     self.exec.execute_upgrade(up_task);
-                    let upgraded = Upgraded::new(h2_up, Bytes::new());
+                    let upgraded =
+                        Upgraded::new(h2_up, Bytes::new()).with_h2_disconnect(disconnected);
 
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);

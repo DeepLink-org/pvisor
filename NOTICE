@@ -19,6 +19,17 @@ https://github.com/cberner/fuser
 Copyright its authors and contributors. It is distributed under the MIT
 License; see `vendor/fuser/LICENSE.md`.
 
+hyper
+-----
+
+`vendor/hyper` contains a modified copy of hyper 1.9.0:
+
+https://github.com/hyperium/hyper
+
+Copyright its upstream authors and contributors. Distributed under the MIT
+License; see `vendor/hyper/LICENSE`. Local changes expose independently
+awaitable HTTP/2 upgraded-stream termination; see `vendor/hyper/PATCHES.md`.
+
 libkrun runtime components
 --------------------------
 

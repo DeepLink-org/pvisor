@@ -29,3 +29,6 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[patch.crates-io]
+hyper = { path = "../../../vendor/hyper" }

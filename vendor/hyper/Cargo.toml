@@ -9,6 +9,9 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# Keep the focused upstream unit runner independent of enclosing workspaces.
+[workspace]
+
 [package]
 edition = "2021"
 rust-version = "1.63"
