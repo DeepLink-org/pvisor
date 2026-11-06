@@ -1718,6 +1718,17 @@ mise run test -- pvisor-cli        # application/executable tests
 mise run examples
 ```
 
+The cache bridge subprocess regression re-executes the real private bridge for
+all four legacy environment-switch combinations, rejects V1 and verifies V2
+payloads and metrics after killing the child. Its libtest child uses terse output
+so harness progress cannot prefix the exact readiness marker. Readiness is bounded
+to five seconds; failure kills/reaps the owned child and joins the pipe reader.
+Run it without KVM using:
+
+```bash
+mise run test -- pvisor -- --lib -E 'test(subprocess_always_uses_v2_and_killed_bridge_leaves_metrics)'
+```
+
 On macOS, source builds that use HVF must be signed. `mise run build -- release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedded
 `pvisor-guest` supervisor is built as a static Linux musl ELF

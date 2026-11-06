@@ -1125,7 +1125,9 @@ mod v2_tests {
                 );
                 let mut child = ChildOwner(
                     Command::new(std::env::current_exe().unwrap())
-                        .args(["--exact", &test, "--ignored", "--nocapture"])
+                        // Pretty libtest output prefixes the marker with
+                        // "test NAME ... " without a newline.
+                        .args(["--exact", &test, "--ignored", "--nocapture", "--quiet"])
                         .env(INTERNAL_ENV, descriptor.path())
                         .env("PVISOR_LAZY_BRIDGE_V2", bridge)
                         .env("PVISOR_LAZY_IMAGE_V2", upstream)
@@ -1137,17 +1139,38 @@ mod v2_tests {
                         .spawn()
                         .unwrap(),
                 );
-                let mut ready = io::BufReader::new(child.0.stdout.take().unwrap());
-                loop {
-                    let mut line = String::new();
-                    assert!(
-                        ready.read_line(&mut line).unwrap() > 0,
-                        "bridge exited before ready"
-                    );
-                    if line == "ready\n" {
-                        break;
+                let stdout = child.0.stdout.take().unwrap();
+                let (ready_tx, ready_rx) = mpsc::channel();
+                let reader = std::thread::spawn(move || {
+                    let mut ready = io::BufReader::new(stdout);
+                    loop {
+                        let mut line = String::new();
+                        match ready.read_line(&mut line) {
+                            Ok(0) => {
+                                let _ = ready_tx.send(Err("bridge exited before ready".to_owned()));
+                                break;
+                            }
+                            Ok(_) if line == "ready\n" => {
+                                let _ = ready_tx.send(Ok(()));
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                let _ = ready_tx.send(Err(error.to_string()));
+                                break;
+                            }
+                        }
                     }
+                });
+                let ready = ready_rx.recv_timeout(Duration::from_secs(5));
+                if !matches!(ready, Ok(Ok(()))) {
+                    // Closing the owned child's pipe also unblocks the reader
+                    // before reporting a failed readiness handshake.
+                    drop(child);
+                    reader.join().unwrap();
+                    panic!("bridge readiness failed: {ready:?}");
                 }
+                reader.join().unwrap();
                 let mut guest = UnixStream::connect(&socket).unwrap();
                 guest
                     .set_read_timeout(Some(Duration::from_secs(5)))
