@@ -606,6 +606,12 @@ runs skip their bodies because root would mask the permission failures.
 
 ## Directory enumeration
 
+Visibility enforcement validates the path and runs the file access check once,
+then checks excluded prefixes without reevaluating the same access policy.
+Directory filtering still hides denied entries; Ask/Warn enforcement, hardlink
+checks and error precedence remain unchanged. No authorization decision is
+cached between operations.
+
 Host FUSE uses the service's names/type directory candidates and loads
 attributes on demand for READDIRPLUS. Protected directory views validate
 children at snapshot creation to hide denied hardlink aliases. See the host

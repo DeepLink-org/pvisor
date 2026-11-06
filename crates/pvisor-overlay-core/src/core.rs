@@ -1832,17 +1832,19 @@ impl OverlayCore {
     }
 
     fn is_excluded(&self, rel: &Path) -> bool {
-        self.access.denied(rel)
-            || self
-                .excluded
-                .iter()
-                .any(|prefix| path_has_prefix(rel, prefix))
+        self.access.denied(rel) || self.has_excluded_prefix(rel)
+    }
+
+    fn has_excluded_prefix(&self, rel: &Path) -> bool {
+        self.excluded
+            .iter()
+            .any(|prefix| path_has_prefix(rel, prefix))
     }
 
     fn require_visible(&self, rel: &Path) -> io::Result<()> {
         Self::validate_rel(rel)?;
         self.access.check(rel).map_err(|_| error(libc::EACCES))?;
-        if self.is_excluded(rel) {
+        if self.has_excluded_prefix(rel) {
             return Err(error(libc::ENOENT));
         }
         Ok(())
@@ -5281,6 +5283,49 @@ mod tests {
         lower2: PathBuf,
         upper: PathBuf,
         core: OverlayCore,
+    }
+
+    #[test]
+    fn visibility_keeps_access_errors_and_directory_hiding() {
+        let mut fixture = Fixture::new();
+        for name in ["ordinary", "warned", "asked", "denied", "excluded"] {
+            fs::write(fixture.lower1.join(name), b"content").unwrap();
+        }
+        fixture.core.excluded = ["excluded".into(), "denied".into()].into_iter().collect();
+        fixture.core = fixture.core.with_access_policy(
+            &crate::FileAccessPolicy::new_with_ask(
+                vec!["denied".into()],
+                vec!["asked".into()],
+                vec!["warned".into()],
+            )
+            .unwrap(),
+        );
+        let core = &fixture.core;
+        for name in ["ordinary", "warned"] {
+            assert!(core.metadata(Path::new(name)).is_ok(), "{name}");
+        }
+        for (name, errno) in [
+            ("asked", libc::EACCES),
+            ("denied", libc::EACCES),
+            ("excluded", libc::ENOENT),
+        ] {
+            assert_eq!(
+                core.metadata(Path::new(name)).unwrap_err().raw_os_error(),
+                Some(errno),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            core.list_names(Path::new("")).unwrap(),
+            ["asked", "ordinary", "warned"].map(OsString::from),
+        );
+        for name in ["denied", "excluded"] {
+            assert!(
+                core.directory_entry(Path::new(""), OsStr::new(name))
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]

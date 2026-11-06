@@ -192,31 +192,40 @@ impl ControlController for PolicyControlController {
 }
 
 fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> ControlTransition {
-    if policy.denied(request) {
+    let host = NetworkHost::new(&request.host);
+    authorize_network_with_host(policy, request, &host)
+}
+
+fn authorize_network_with_host(
+    policy: &NetworkGuard,
+    request: &NetworkAccessRequest,
+    host: &NetworkHost,
+) -> ControlTransition {
+    if policy.denied(request, host) {
         return ControlTransition::denied(ControlReason::ExplicitlyDenied);
     }
     if let Some(fallback) = &policy.fallback {
         for (_, guard) in &policy.scopes {
-            let decision = authorize_network(guard, request);
+            let decision = authorize_network_with_host(guard, request, host);
             if !decision.is_allowed() {
                 return decision;
             }
         }
-        let decision = authorize_network(fallback, request);
+        let decision = authorize_network_with_host(fallback, request, host);
         return if decision.is_allowed() && !policy.scopes.is_empty() {
             ControlTransition::allowed(ControlReason::NetworkAllowList)
         } else {
             decision
         };
     }
-    if policy.is_trusted(&request.host) {
+    if policy.is_trusted(host) {
         return ControlTransition::allowed(ControlReason::TrustedLocal);
     }
     match policy.capability() {
         NetworkCapability::Scoped { .. } => unreachable!("selected guard is a leaf"),
         NetworkCapability::Ambient => ControlTransition::allowed(ControlReason::AmbientNetwork),
         NetworkCapability::Deny => ControlTransition::denied(ControlReason::NetworkDenied),
-        NetworkCapability::AllowList { .. } => match policy.evaluate(request) {
+        NetworkCapability::AllowList { .. } => match policy.evaluate(request, host) {
             Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
             Err(NetworkMatchFailure::Empty) => {
                 ControlTransition::denied(ControlReason::NetworkAllowListEmpty)
@@ -238,8 +247,12 @@ fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> C
             default_action: NetworkDefaultAction::Allow,
             ..
         } => {
-            if host_matches(&request.host, &policy.rules) {
-                match policy.evaluate(request) {
+            if policy
+                .rules
+                .iter()
+                .any(|rule| rule.matches_host(host, None))
+            {
+                match policy.evaluate(request, host) {
                     Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
                     Err(NetworkMatchFailure::Port) => {
                         ControlTransition::denied(ControlReason::PortNotAllowed)
@@ -259,7 +272,7 @@ fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> C
         NetworkCapability::Policy {
             default_action: NetworkDefaultAction::Deny,
             ..
-        } => match policy.evaluate(request) {
+        } => match policy.evaluate(request, host) {
             Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
             Err(NetworkMatchFailure::Empty) => {
                 ControlTransition::denied(ControlReason::NetworkAllowListEmpty)
@@ -322,6 +335,20 @@ enum NetworkMatchFailure {
     Port,
     Transport,
     ResolvedAddress,
+}
+
+// One normalized host and IP parse per evaluation, shared by all rules/scopes.
+struct NetworkHost {
+    name: String,
+    ip: Option<IpAddr>,
+}
+
+impl NetworkHost {
+    fn new(host: &str) -> Self {
+        let name = normalize_host(host);
+        let ip = name.parse().ok();
+        Self { name, ip }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -426,81 +453,89 @@ impl NetworkGuard {
         &self.rules
     }
 
-    fn evaluate(&self, request: &NetworkAccessRequest) -> Result<(), NetworkMatchFailure> {
-        evaluate_rules(&self.rules, request, true)
+    fn evaluate(
+        &self,
+        request: &NetworkAccessRequest,
+        host: &NetworkHost,
+    ) -> Result<(), NetworkMatchFailure> {
+        evaluate_rules(&self.rules, request, host, true)
     }
 
-    fn denied(&self, request: &NetworkAccessRequest) -> bool {
-        evaluate_rules(&self.deny_rules, request, false).is_ok()
-            || self.scopes.iter().any(|(_, guard)| guard.denied(request))
+    fn denied(&self, request: &NetworkAccessRequest, host: &NetworkHost) -> bool {
+        evaluate_rules(&self.deny_rules, request, host, false).is_ok()
+            || self
+                .scopes
+                .iter()
+                .any(|(_, guard)| guard.denied(request, host))
             || self
                 .fallback
                 .as_ref()
-                .is_some_and(|guard| guard.denied(request))
+                .is_some_and(|guard| guard.denied(request, host))
     }
 
-    fn is_trusted(&self, host: &str) -> bool {
-        let host = normalize_host(host);
-        self.trusted_hosts.iter().any(|trusted| trusted == &host)
+    fn is_trusted(&self, host: &NetworkHost) -> bool {
+        self.trusted_hosts
+            .iter()
+            .any(|trusted| trusted == &host.name)
     }
 }
 
 fn evaluate_rules(
     rules: &[NetworkRule],
     request: &NetworkAccessRequest,
+    host: &NetworkHost,
     enforce_resolved_address_safety: bool,
 ) -> Result<(), NetworkMatchFailure> {
     if rules.is_empty() {
         return Err(NetworkMatchFailure::Empty);
     }
-    let host_rules: Vec<&NetworkRule> = rules
-        .iter()
-        .filter(|rule| rule.matches_host(&request.host, request.resolved_ip))
-        .collect();
-    if host_rules.is_empty() {
-        return Err(if request.resolved_ip.is_some() {
+    let mut host_matched = false;
+    let mut port_matched = false;
+    let mut transport_matched = false;
+    for rule in rules {
+        if !rule.matches_host(host, request.resolved_ip) {
+            continue;
+        }
+        host_matched = true;
+        if !rule.matches_port(request.port) {
+            continue;
+        }
+        port_matched = true;
+        if !rule.matches_transport(request.transport) {
+            continue;
+        }
+        transport_matched = true;
+        if !enforce_resolved_address_safety || rule.allows_resolved_address(request.resolved_ip) {
+            return Ok(());
+        }
+    }
+    // Preserve the furthest matching stage across rules for denial diagnostics.
+    Err(if !host_matched {
+        if request.resolved_ip.is_some() {
             NetworkMatchFailure::ResolvedAddress
         } else {
             NetworkMatchFailure::Host
-        });
-    }
-    let port_rules: Vec<&NetworkRule> = host_rules
-        .into_iter()
-        .filter(|rule| rule.matches_port(request.port))
-        .collect();
-    if port_rules.is_empty() {
-        return Err(NetworkMatchFailure::Port);
-    }
-    let transport_rules: Vec<&NetworkRule> = port_rules
-        .into_iter()
-        .filter(|rule| rule.matches_transport(request.transport))
-        .collect();
-    if transport_rules.is_empty() {
-        return Err(NetworkMatchFailure::Transport);
-    }
-    if enforce_resolved_address_safety
-        && request.resolved_ip.is_some()
-        && !transport_rules
-            .iter()
-            .any(|rule| rule.allows_resolved_address(request.resolved_ip))
-    {
-        return Err(NetworkMatchFailure::ResolvedAddress);
-    }
-    Ok(())
+        }
+    } else if !port_matched {
+        NetworkMatchFailure::Port
+    } else if !transport_matched {
+        NetworkMatchFailure::Transport
+    } else {
+        NetworkMatchFailure::ResolvedAddress
+    })
 }
 
 impl NetworkRule {
-    fn matches_host(&self, host: &str, resolved_ip: Option<IpAddr>) -> bool {
-        let host = normalize_host(host);
-        let host_ip = IpAddr::from_str(&host).ok();
+    fn matches_host(&self, host: &NetworkHost, resolved_ip: Option<IpAddr>) -> bool {
         match &self.host {
-            NetworkHostRule::Exact(allowed) => host == *allowed,
+            NetworkHostRule::Exact(allowed) => host.name == *allowed,
             NetworkHostRule::WildcardSuffix(suffix) => {
-                host.ends_with(suffix)
-                    && host.len() > suffix.len()
-                    && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+                host.name.ends_with(suffix)
+                    && host.name.len() > suffix.len()
+                    && host.name.as_bytes()[host.name.len() - suffix.len() - 1] == b'.'
             }
-            NetworkHostRule::Ip(_) | NetworkHostRule::Cidr(_) => host_ip
+            NetworkHostRule::Ip(_) | NetworkHostRule::Cidr(_) => host
+                .ip
                 .into_iter()
                 .chain(resolved_ip)
                 .any(|ip| self.matches_ip(ip)),
@@ -558,11 +593,12 @@ fn is_opt_in_private_ip(ip: IpAddr) -> bool {
 }
 
 pub fn normalize_host(host: &str) -> String {
-    host.trim()
+    let mut host = host
+        .trim()
         .trim_matches(|character| character == '[' || character == ']')
-        .to_ascii_lowercase()
-        .trim_end_matches('.')
-        .to_string()
+        .to_ascii_lowercase();
+    host.truncate(host.trim_end_matches('.').len());
+    host
 }
 
 pub fn parse_network_rule(raw: &str) -> anyhow::Result<NetworkRule> {
@@ -644,7 +680,11 @@ fn parse_network_host_rule(raw: &str) -> anyhow::Result<NetworkHostRule> {
 }
 
 pub fn host_matches(host: &str, rules: &[NetworkRule]) -> bool {
-    rules.iter().any(|rule| rule.matches_host(host, None))
+    if rules.is_empty() {
+        return false;
+    }
+    let host = NetworkHost::new(host);
+    rules.iter().any(|rule| rule.matches_host(&host, None))
 }
 
 /// Whether an address is suitable as the destination of a hostname rule
@@ -729,6 +769,155 @@ mod tests {
             transport: NetworkTransport::TcpTunnel,
             resolved_ip: None,
         }
+    }
+
+    #[test]
+    fn mixed_rules_preserve_denial_stages_without_combining_grants() {
+        let rule = |host: &str, port, transport, allow_private_ips| NetworkAccessRule {
+            host: host.into(),
+            ports: vec![port],
+            transports: vec![transport],
+            allow_private_ips,
+        };
+        let rules = [
+            rule("other.example", 443, NetworkTransport::TcpTunnel, true),
+            rule("api.example.com", 8443, NetworkTransport::Https, true),
+            rule("api.example.com", 443, NetworkTransport::Https, true),
+            rule("api.example.com", 443, NetworkTransport::TcpTunnel, false),
+            rule("api.example.com", 443, NetworkTransport::TcpTunnel, true),
+        ];
+        let expected = [
+            ControlReason::NetworkAllowListEmpty,
+            ControlReason::ResolvedAddressNotAllowed,
+            ControlReason::PortNotAllowed,
+            ControlReason::TransportNotAllowed,
+            ControlReason::ResolvedAddressNotAllowed,
+            ControlReason::NetworkAllowList,
+        ];
+        let mut request = network_request(" API.EXAMPLE.COM... ");
+        request.resolved_ip = Some("127.0.0.1".parse().unwrap());
+        for (count, reason) in expected.into_iter().enumerate() {
+            for reverse in [false, true] {
+                let mut rules = rules[..count].to_vec();
+                if reverse {
+                    rules.reverse();
+                }
+                let guard = NetworkGuard::compile(
+                    NetworkCapability::AllowList {
+                        hosts: vec![],
+                        rules,
+                    },
+                    Vec::new(),
+                )
+                .unwrap();
+                let decision = authorize_network(&guard, &request);
+                assert_eq!(decision.reason, reason, "count={count}, reverse={reverse}");
+                assert_eq!(decision.is_allowed(), count == 5);
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_hosts_keep_wildcard_boundaries_and_ip_equivalence() {
+        let rules = ["*.example.com", "127.0.0.1"].map(|host| parse_network_rule(host).unwrap());
+        for (host, expected) in [
+            (" API.Example.COM... ", true),
+            ("example.com", false),
+            ("badexample.com", false),
+            ("example.com.evil", false),
+            (" [::FFFF:127.0.0.1] ", true),
+            ("[::1]", false),
+        ] {
+            assert_eq!(host_matches(host, &rules), expected, "{host}");
+        }
+        assert!(!host_matches("api.example.com", &[]));
+    }
+
+    #[test]
+    fn default_allow_restricts_logical_hosts_but_not_resolution_only_matches() {
+        let guard = NetworkGuard::compile(
+            NetworkCapability::Policy {
+                default_action: NetworkDefaultAction::Allow,
+                allow: vec![NetworkAccessRule {
+                    host: "8.8.8.8".into(),
+                    ports: vec![8443],
+                    transports: vec![NetworkTransport::Https],
+                    allow_private_ips: false,
+                }],
+                deny: vec![],
+                limits: vec![],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let mut request = network_request("unlisted.example");
+        request.resolved_ip = Some("8.8.8.8".parse().unwrap());
+        assert_eq!(
+            authorize_network(&guard, &request).reason,
+            ControlReason::AmbientNetwork
+        );
+        request.host = "8.8.8.8".into();
+        assert_eq!(
+            authorize_network(&guard, &request).reason,
+            ControlReason::PortNotAllowed
+        );
+    }
+
+    #[test]
+    fn network_policy_keeps_controller_restrictions_and_preflight() {
+        use crate::network::{DenyReason, NetworkConfig, NetworkPolicy};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Controller {
+            calls: AtomicUsize,
+            transition: ControlTransition,
+        }
+        impl ControlController for Controller {
+            fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
+                let ControlRequest::Network { request, .. } = request else {
+                    panic!("expected network request");
+                };
+                assert_eq!(request.host, " API.EXAMPLE.COM. ");
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.transition.clone()
+            }
+        }
+        let request = network_request(" API.EXAMPLE.COM. ");
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            capability: Some(NetworkCapability::AllowList {
+                hosts: vec!["api.example.com".into()],
+                rules: vec![],
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut controller = Controller {
+            calls: AtomicUsize::new(0),
+            transition: ControlTransition::denied(ControlReason::NetworkDenied),
+        };
+        assert_eq!(
+            policy.authorize(&controller, &request),
+            Err(DenyReason::NoNetwork)
+        );
+        assert_eq!(controller.calls.load(Ordering::Relaxed), 1);
+        controller.transition = ControlTransition::allowed(ControlReason::AmbientNetwork)
+            .applied()
+            .unwrap();
+        assert_eq!(
+            policy.authorize(&controller, &request),
+            Err(DenyReason::InvalidController)
+        );
+        let denied = NetworkPolicy::compile(&NetworkConfig {
+            capability: Some(NetworkCapability::Deny),
+            ..Default::default()
+        })
+        .unwrap();
+        controller.transition = ControlTransition::allowed(ControlReason::AmbientNetwork);
+        assert_eq!(
+            denied.authorize(&controller, &request),
+            Err(DenyReason::NoNetwork)
+        );
+        assert_eq!(controller.calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]
