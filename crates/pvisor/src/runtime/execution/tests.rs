@@ -568,6 +568,125 @@ async fn execution_termination_remains_available_during_a_native_wait() {
 }
 
 #[tokio::test]
+async fn confirmed_control_result_survives_rejected_execution_history_append() {
+    for reject in [false, true] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let execution = execution_with(RunState::Running, ExecutorKind::VirtualMachine);
+            let id = execution
+                .enqueue(OperationKind::RunPause, ControlOrigin::Manual)
+                .await
+                .unwrap();
+            execution.mark_dispatched(&id).await.unwrap();
+            let dispatched = execution.snapshot();
+            assert_eq!(dispatched.progress.in_flight, 1);
+
+            // Keep the real journal and its committed prefix. Invalid producer
+            // identity deterministically rejects the next append, without I/O
+            // failure or exposing a production fault-injection interface.
+            let original = {
+                let mut owner = execution.owner.lock().await;
+                let original = owner.trace.clone();
+                if reject {
+                    owner.trace = Trace::with_id(original.journal().clone(), original.id(), "");
+                }
+                original
+            };
+            // This is the confirmed-result handoff used after native ACK;
+            // the mock result deliberately carries no RAM or VM resources.
+            let result = execution
+                .succeeded(
+                    &id,
+                    Value::Vm {
+                        state: VmState::Paused,
+                        memory: None,
+                    },
+                )
+                .await;
+            if reject {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error.downcast_ref::<pvisor_journal::api::AppendError>(),
+                    Some(pvisor_journal::api::AppendError::Rejected(_))
+                ));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("VM control completed but execution history failed")
+                );
+                // exchange() passes this error through control_error(). The
+                // already-observed effect must not become an unknown failure.
+                execution
+                    .control_error(&id, &error, ControlOrigin::Manual)
+                    .await;
+            } else {
+                result.unwrap();
+            }
+            let observed = execution.snapshot();
+            assert_eq!(observed.status.state, RunState::Suspended);
+            assert_eq!(observed.progress.queued, 0);
+            assert_eq!(observed.progress.in_flight, 0);
+            assert_eq!(observed.progress.history_gap, reject);
+            assert!(!observed.progress.outcome_unknown);
+            assert!(!execution.cancellation.is_cancelled());
+            assert!(observed.status.execution.finished_at_unix_ms.is_none());
+
+            let history = original.journal().records().unwrap();
+            assert_eq!(history.len(), if reject { 3 } else { 4 });
+            let replayed = replay(&history).unwrap();
+            assert_eq!(
+                replayed.status.state,
+                if reject {
+                    RunState::Running
+                } else {
+                    RunState::Suspended
+                }
+            );
+            assert_eq!(replayed.snapshot().progress.in_flight, usize::from(reject));
+            if reject {
+                assert_eq!(observed.progress.applied, dispatched.progress.applied);
+            } else {
+                assert_ne!(observed.progress.applied, dispatched.progress.applied);
+            }
+
+            // Remove the test fault. A real history gap remains a fence even
+            // when the journal can accept writes again; it cannot be healed by
+            // silently re-executing the effect or by admitting another control.
+            execution.owner.lock().await.trace = original;
+            let next = execution
+                .enqueue(OperationKind::RunResume, ControlOrigin::Manual)
+                .await;
+            if reject {
+                assert!(
+                    next.unwrap_err()
+                        .to_string()
+                        .contains("execution outcome requires reconciliation")
+                );
+                assert_eq!(records(&execution).await.len(), 3);
+            } else {
+                execution
+                    .failed(&next.unwrap(), &anyhow::anyhow!("not dispatched"))
+                    .await;
+            }
+            // Missing control history cannot prevent cancellation or terminal
+            // publication after the separate completion owner finishes teardown.
+            execution.cancel();
+            execution.finish(RunState::Cancelled, None, 50).await;
+            let terminal = execution.snapshot();
+            assert_eq!(terminal.status.state, RunState::Cancelled);
+            assert_eq!(terminal.status.execution.finished_at_unix_ms, Some(50));
+            assert_eq!(terminal.progress.history_gap, reject);
+            assert!(!terminal.progress.outcome_unknown);
+            assert_eq!(
+                replay(&records(&execution).await).unwrap().status.state,
+                RunState::Cancelled
+            );
+        })
+        .await
+        .expect("confirmed-result history boundary exceeded five seconds");
+    }
+}
+
+#[tokio::test]
 async fn execution_commit_outlives_its_waiter_and_projects_the_committed_fact() {
     use std::{future::Future, task::Poll};
     for rejected in [false, true] {
