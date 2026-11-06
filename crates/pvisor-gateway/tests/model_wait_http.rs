@@ -40,6 +40,7 @@ struct Admission {
     fail_resume: bool,
     stream_buffer: Option<ModelStreamBuffer>,
     wake: Notify,
+    buffering: Notify,
     repeat_batches: bool,
     batches: AtomicUsize,
     drained: Notify,
@@ -60,6 +61,7 @@ impl Default for Admission {
             fail_resume: false,
             stream_buffer: None,
             wake: Notify::new(),
+            buffering: Notify::new(),
             repeat_batches: false,
             batches: AtomicUsize::new(0),
             drained: Notify::new(),
@@ -100,6 +102,7 @@ impl ModelWait for Wait {
         self.0.stream_buffer
     }
     async fn wait_for_wake(&mut self) {
+        self.0.buffering.notify_one();
         self.0.wake.notified().await;
     }
     async fn enter(&mut self) -> anyhow::Result<()> {
@@ -759,6 +762,114 @@ fn assert_no_message_terminal(events: &[serde_json::Value]) {
         event["type"].as_str(),
         Some("content_block_stop" | "message_delta" | "message_stop")
     )));
+}
+
+#[tokio::test]
+async fn socket_disconnect_before_headers_cancels_pending_handler_without_shutdown() {
+    use tokio::io::AsyncWriteExt;
+
+    for repeat in [false, true] {
+        for phase in ["entry", "buffering", "resume"] {
+            let mut fixture = Fixture::new(
+                true,
+                StatusCode::OK,
+                Admission {
+                    repeat_batches: repeat,
+                    stream_buffer: Some(ModelStreamBuffer {
+                        max_bytes: 1,
+                        max_wait: Duration::from_secs(30),
+                    }),
+                    ..Default::default()
+                },
+                true,
+            )
+            .await;
+            let address = fixture.proxy.as_ref().unwrap().listen.clone();
+            let mut socket = tokio::time::timeout(LIMIT, tokio::net::TcpStream::connect(&address))
+                .await
+                .unwrap()
+                .unwrap();
+            let body = r#"{"model":"test-model","stream":true,"messages":[{"role":"user","content":"hello"}]}"#;
+            let request = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            tokio::time::timeout(LIMIT, socket.write_all(request.as_bytes()))
+                .await
+                .unwrap()
+                .unwrap();
+            notified(&fixture.admission.entered).await;
+            if phase != "entry" {
+                fixture.admission.enter_gate.add_permits(1);
+                fixture.upstream_received().await;
+                // This notification comes from read_prefix's polled wake future,
+                // so supplier receipt alone cannot masquerade as active buffering.
+                notified(&fixture.admission.buffering).await;
+                if phase == "resume" {
+                    fixture.chunk(FIRST).await;
+                    notified(&fixture.admission.delivery).await;
+                }
+            }
+            // Drop the actual TCP connection, not merely a request JoinHandle.
+            // Entry/resume gates remain closed and no supplier EOF/error is sent.
+            drop(socket);
+            notified(&fixture.admission.cancelled).await;
+            if phase == "entry" {
+                assert!(fixture.received.try_recv().is_err());
+            } else {
+                tokio::time::timeout(LIMIT, fixture.body.closed())
+                    .await
+                    .unwrap();
+            }
+            tokio::time::timeout(LIMIT, async {
+                loop {
+                    if fixture
+                        .captured
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|event| event.name() == "llm.call.cancelled")
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // Cancellation and supplier release above must happen while Gateway
+            // is still running. Only now perform separately bounded teardown.
+            let proxy = fixture.proxy.take().unwrap();
+            tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || proxy.shutdown()))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 0);
+            assert_eq!(fixture.admission.batches.load(Ordering::SeqCst), 0);
+            {
+                let events = fixture.captured.lock().unwrap();
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| event.name() == "llm.call.cancelled")
+                        .count(),
+                    1,
+                    "repeat={repeat}, phase={phase}"
+                );
+                assert!(
+                    !events.iter().any(|event| matches!(
+                        event.name(),
+                        "llm.response" | "llm.response.stream"
+                    ))
+                );
+            }
+            fixture.upstream.abort();
+            assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+        }
+    }
 }
 
 impl Drop for Fixture {

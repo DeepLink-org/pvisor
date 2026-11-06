@@ -70,3 +70,10 @@ Messages bridge 的 tool stream 用例在上述三种 lifecycle 模式下分别�
 安装 lifecycle 时还验证首批 headers 等待 resume，transport 错误/断连
 取消多轮 wait，正常 HTTP EOF 经过最终交付屏障后再进行语义终止校验。
 每种组合顺序执行，译后输出限制在 4 KiB 内，使用相同的五秒超时和清理。
+
+响应 headers 之前的断连用例直接关闭发送完整 HTTP 请求的 TCP socket，
+分别定位到 lifecycle entry、首批读取和首次 resume 的阻塞点；单次与多轮
+lifecycle 都须在 Gateway 仍运行时取消一次、释放已建立的上游 body、
+记录取消而非响应完成。首批读取由实际 poll 的 wake future 通知确认，
+不是仅凭供应商收到请求推断。随后才执行单独限时的 Gateway shutdown；
+测试不靠 shutdown、供应商 EOF 或放开 admission gate 来触发取消。
