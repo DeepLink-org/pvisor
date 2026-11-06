@@ -135,6 +135,44 @@ struct Fixture {
     admission: Arc<Admission>,
 }
 
+#[derive(Default)]
+struct CaptureGate {
+    entered: Notify,
+    held: std::sync::atomic::AtomicBool,
+    committed: std::sync::Mutex<Option<pvisor_core::event::Event>>,
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+
+impl CaptureGate {
+    fn observe(&self, event: &pvisor_core::event::Event) -> anyhow::Result<()> {
+        if event.name() == "llm.request" && !self.held.swap(true, Ordering::SeqCst) {
+            *self.committed.lock().unwrap() = Some(event.clone());
+            self.entered.notify_one();
+            let released = self.released.lock().unwrap();
+            let (released, _) = self
+                .wake
+                .wait_timeout_while(released, LIMIT, |released| !*released)
+                .unwrap();
+            anyhow::ensure!(*released, "capture observer gate timed out");
+        }
+        Ok(())
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+}
+
+struct ReleaseCaptureOnDrop(Arc<CaptureGate>);
+
+impl Drop for ReleaseCaptureOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 impl Fixture {
     async fn new(stream: bool, status: StatusCode, admission: Admission, install: bool) -> Self {
         Self::with_controller(
@@ -153,6 +191,17 @@ impl Fixture {
         admission: Admission,
         install: bool,
         controller: Arc<dyn pvisor_core::ControlController>,
+    ) -> Self {
+        Self::with_capture_gate(stream, status, admission, install, controller, None).await
+    }
+
+    async fn with_capture_gate(
+        stream: bool,
+        status: StatusCode,
+        admission: Admission,
+        install: bool,
+        controller: Arc<dyn pvisor_core::ControlController>,
+        capture_gate: Option<Arc<CaptureGate>>,
     ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -212,6 +261,9 @@ impl Fixture {
             config,
             storage.path().to_owned(),
             Arc::new(CallbackObserver::new(move |event| {
+                if let Some(gate) = &capture_gate {
+                    gate.observe(event)?;
+                }
                 observed.lock().unwrap().push(event.clone());
                 Ok(())
             })),
@@ -291,6 +343,162 @@ impl Fixture {
     fn stop(&mut self) {
         self.proxy.take().unwrap().shutdown().unwrap();
     }
+}
+
+#[tokio::test]
+async fn http_disconnect_preserves_accepted_capture_behind_observer_gate() {
+    use pvisor_journal::api::{Journal, JournalStore};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let gate = Arc::new(CaptureGate::default());
+    let mut fixture = Fixture::with_capture_gate(
+        false,
+        StatusCode::OK,
+        Admission::default(),
+        true,
+        Arc::new(pvisor_core::PolicyControlController),
+        Some(gate.clone()),
+    )
+    .await;
+    // Drop before the fixture so assertion failures cannot strand its observer.
+    let _release = ReleaseCaptureOnDrop(gate.clone());
+    let address = fixture.proxy.as_ref().unwrap().listen.clone();
+    let body = r#"{"model":"test-model","messages":[{"role":"user","content":"hello"}]}"#;
+    let mut socket = tokio::time::timeout(LIMIT, tokio::net::TcpStream::connect(&address))
+        .await
+        .unwrap()
+        .unwrap();
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nx-pvisor-session-id: accepted-capture\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    tokio::time::timeout(LIMIT, socket.write_all(request.as_bytes()))
+        .await
+        .unwrap()
+        .unwrap();
+    notified(&gate.entered).await;
+    notified(&fixture.admission.entered).await;
+    let journal_path = fixture._storage.path().join(".capture/events.trace.jsonl");
+    // Observers run after a Journal receipt; do not reopen the active writer.
+    let committed = gate.committed.lock().unwrap().clone().unwrap();
+    assert_eq!(committed.name(), "llm.request");
+    assert!(fixture.captured.lock().unwrap().is_empty());
+    assert!(fixture.received.try_recv().is_err());
+    // The HTTP handler is waiting at lifecycle entry while the accepted capture
+    // owner is blocked after commit. Disconnect must cancel only the HTTP wait.
+    drop(socket);
+    notified(&fixture.admission.cancelled).await;
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
+
+    fixture.admission.enter_gate.add_permits(1);
+    fixture.admission.resume_gate.add_permits(1);
+    let healthy = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(LIMIT)
+        .build()
+        .unwrap()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .header("x-pvisor-session-id", "accepted-capture")
+        .header("content-type", "application/json")
+        .body(body);
+    let healthy = tokio::spawn(async move { healthy.send().await.unwrap() });
+    fixture.upstream_received().await;
+    fixture.chunk(REPLY).await;
+    fixture.finish_body();
+    let healthy = tokio::time::timeout(LIMIT, healthy).await.unwrap().unwrap();
+    assert_eq!(healthy.status(), StatusCode::OK);
+    assert_eq!(
+        tokio::time::timeout(LIMIT, healthy.text())
+            .await
+            .unwrap()
+            .unwrap(),
+        REPLY
+    );
+    // Healthy HTTP completion is not a receipt for capture queued behind the
+    // first observer. No cancellation/response can bypass that story owner.
+    assert!(fixture.captured.lock().unwrap().is_empty());
+    // Establish a fourth and final loopback connection. Its closure witnesses
+    // shutdown reaching transport teardown, rather than merely spawning a task.
+    let mut admin = tokio::time::timeout(
+        LIMIT,
+        tokio::net::TcpStream::connect(&fixture.proxy.as_ref().unwrap().admin_listen),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::timeout(
+        LIMIT,
+        admin.write_all(b"GET /admin/status HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut first_byte = [0];
+    tokio::time::timeout(LIMIT, admin.read_exact(&mut first_byte))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_byte, *b"H");
+    let proxy = fixture.proxy.take().unwrap();
+    let stopping = tokio::task::spawn_blocking(move || proxy.shutdown());
+    let mut remaining = Vec::new();
+    let closed = tokio::time::timeout(LIMIT, (&mut admin).take(4096).read_to_end(&mut remaining))
+        .await
+        .unwrap();
+    if let Err(error) = closed {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    assert!(
+        remaining.len() < 4096,
+        "must observe closure, not a read cap"
+    );
+    drop(admin);
+    assert!(
+        !stopping.is_finished(),
+        "shutdown must await accepted capture"
+    );
+    gate.release();
+    tokio::time::timeout(LIMIT, stopping)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    fixture.upstream.abort();
+    assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+    assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
+    let records = Journal::read(&journal_path).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.event.name())
+            .collect::<Vec<_>>(),
+        [
+            "llm.request",
+            "llm.call.cancelled",
+            "llm.request",
+            "llm.response"
+        ]
+    );
+    assert_eq!(records[0].event.id, committed.id);
+    for (request, terminal) in [(0, 1), (2, 3)] {
+        assert_eq!(
+            records[terminal].event.caused_by,
+            vec![records[request].event.id.clone()]
+        );
+    }
+    let observed = fixture.captured.lock().unwrap();
+    assert_eq!(
+        observed
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<Vec<_>>(),
+        records
+            .iter()
+            .map(|record| record.event.id.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

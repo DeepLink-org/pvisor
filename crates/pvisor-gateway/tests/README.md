@@ -83,3 +83,12 @@ lifecycle 都须在 Gateway 仍运行时取消一次、释放已建立的上游 
 取消或完成记录；随后同一 Gateway 的正常请求须成功并只生成一次完成。
 私有 body reader 用小字节上限检查精确边界、超限 413、读取错误 400，
 并检查失败会释放仍未 EOF 的输入 owner。
+
+HTTP/capture 交叉用例在首个请求的 Journal commit 之后阻塞 observer，
+再关闭正在等待 lifecycle entry 的真实客户端 socket。该 HTTP wait 只取消
+一次，已接受的 capture 不回滚；同 story 的后续健康 HTTP 请求仍可完成，
+但其 capture 不能越过先前 owner。关闭已确认接入的 admin 连接用于确认
+shutdown 已进入 transport teardown，此时 shutdown 仍须等待 capture gate。
+释放后检查 Journal 与 observer 的四条记录及因果 ID 完全一致：
+首个请求及取消、后续请求及完成。此用例最多四条 loopback 连接，gate、
+HTTP 操作和清理均使用五秒上限，且 unwind 会释放 observer。
