@@ -60,3 +60,13 @@ Linux 的相关测试选择中通过；真实 VM 交付与回收验证范围见
 每个场景顺序执行，仅使用 loopback、少于 1 KiB 的载荷和五秒操作超时；
 测试结束关闭 Gateway 并 abort/join 自己的上游任务。这些测试不模拟 VM、
 真实供应商或主机级故障。
+
+Messages bridge 的 tool stream 用例在上述三种 lifecycle 模式下分别覆盖
+帧中途 EOF、只有 `[DONE]` 而没有 `finish_reason`、body 读取错误、
+供应商终止标记之后的 transport 错误、客户端断连，以及完整成功的对照流。
+测试先收到译后的 `tool_use` 与不完整参数，再注入故障；失败不得产生
+`content_block_stop`、成功的 `message_delta` 或 `message_stop`。
+成功对照检查参数精确重组、`tool_use` stop reason 和各终止事件只出现一次。
+安装 lifecycle 时还验证首批 headers 等待 resume，transport 错误/断连
+取消多轮 wait，正常 HTTP EOF 经过最终交付屏障后再进行语义终止校验。
+每种组合顺序执行，译后输出限制在 4 KiB 内，使用相同的五秒超时和清理。

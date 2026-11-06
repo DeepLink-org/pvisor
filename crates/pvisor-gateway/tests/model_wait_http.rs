@@ -518,6 +518,249 @@ async fn receive_first(response: &mut reqwest::Response) {
     assert_eq!(prefix, FIRST.as_bytes());
 }
 
+#[tokio::test]
+async fn messages_bridge_tool_stream_interruptions_never_fabricate_success() {
+    const TOOL_FIRST: &str = concat!(
+        "data: {\"id\":\"tool-reply\",\"model\":\"test-model\",\"choices\":[",
+        "{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",",
+        "\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\"}}]}}]}\n\n"
+    );
+    const TOOL_LAST: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,",
+        "\"function\":{\"arguments\":\"\\\"pwd\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    for (install, repeat) in [(false, false), (true, false), (true, true)] {
+        for outcome in [
+            "truncated",
+            "done_without_finish",
+            "transport_error",
+            "terminal_then_error",
+            "disconnect",
+            "complete",
+        ] {
+            let mut fixture = Fixture::new(
+                true,
+                StatusCode::OK,
+                Admission {
+                    repeat_batches: repeat,
+                    stream_buffer: Some(ModelStreamBuffer {
+                        max_bytes: 1,
+                        max_wait: Duration::from_millis(100),
+                    }),
+                    ..Default::default()
+                },
+                install,
+            )
+            .await;
+            let mut request = fixture.request_path(
+                "/v1/messages",
+                serde_json::json!({
+                    "model":"test-model", "stream":true, "max_tokens":64,
+                    "messages":[{"role":"user","content":"run pwd"}],
+                    "tools":[{"name":"shell","input_schema":{
+                        "type":"object","properties":{"cmd":{"type":"string"}}
+                    }}]
+                }),
+                &[],
+            );
+            fixture.admission.enter_gate.add_permits(1);
+            fixture.upstream_received().await;
+            fixture.chunk(TOOL_FIRST).await;
+            if install {
+                notified(&fixture.admission.delivery).await;
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(25), &mut request)
+                        .await
+                        .is_err(),
+                    "headers escaped the initial resume barrier"
+                );
+                fixture.admission.resume_gate.add_permits(20);
+            }
+            let mut response = tokio::time::timeout(LIMIT, request).await.unwrap().unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut wire = Vec::new();
+            tokio::time::timeout(LIMIT, async {
+                while !message_events(&wire)
+                    .iter()
+                    .any(|event| event["delta"]["partial_json"].as_str() == Some("{\"cmd\":"))
+                {
+                    wire.extend(response.chunk().await.unwrap().unwrap());
+                    assert!(wire.len() < 4096);
+                }
+            })
+            .await
+            .unwrap();
+            let prefix = message_events(&wire);
+            assert!(prefix.iter().any(|event| {
+                event["content_block"]["type"] == "tool_use"
+                    && event["content_block"]["id"] == "call-1"
+                    && event["content_block"]["name"] == "shell"
+            }));
+            assert_no_message_terminal(&prefix);
+
+            if outcome == "disconnect" {
+                drop(response);
+                if install && repeat {
+                    notified(&fixture.admission.cancelled).await;
+                }
+                tokio::time::timeout(LIMIT, fixture.body.closed())
+                    .await
+                    .unwrap();
+            } else {
+                match outcome {
+                    "truncated" => {
+                        fixture.chunk("data: {\"choices\":[").await;
+                        fixture.finish_body();
+                    }
+                    "done_without_finish" => {
+                        fixture.chunk("data: [DONE]\n\n").await;
+                        fixture.finish_body();
+                    }
+                    "transport_error" => fixture
+                        .body
+                        .send(Err(std::io::Error::other("injected tool stream failure")))
+                        .await
+                        .unwrap(),
+                    "terminal_then_error" => {
+                        fixture.chunk(TOOL_LAST).await;
+                        tokio::time::timeout(LIMIT, async {
+                            while !message_events(&wire).iter().any(|event| {
+                                event["delta"]["partial_json"].as_str() == Some("\"pwd\"}")
+                            }) {
+                                wire.extend(response.chunk().await.unwrap().unwrap());
+                                assert!(wire.len() < 4096);
+                            }
+                        })
+                        .await
+                        .unwrap();
+                        // A supplier finish_reason/[DONE] does not substitute for
+                        // clean HTTP EOF. The renderer must still withhold success.
+                        assert_no_message_terminal(&message_events(&wire));
+                        fixture
+                            .body
+                            .send(Err(std::io::Error::other(
+                                "failure after protocol terminal",
+                            )))
+                            .await
+                            .unwrap();
+                    }
+                    "complete" => {
+                        fixture.chunk(TOOL_LAST).await;
+                        fixture.finish_body();
+                    }
+                    _ => unreachable!(),
+                }
+                let failed = tokio::time::timeout(LIMIT, async {
+                    loop {
+                        match response.chunk().await {
+                            Ok(Some(chunk)) => {
+                                wire.extend(chunk);
+                                assert!(wire.len() < 4096);
+                            }
+                            Ok(None) => break false,
+                            Err(_) => break true,
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(failed, outcome != "complete", "{outcome}");
+                let events = message_events(&wire);
+                if outcome == "complete" {
+                    for kind in ["content_block_stop", "message_delta", "message_stop"] {
+                        assert_eq!(
+                            events.iter().filter(|event| event["type"] == kind).count(),
+                            1,
+                            "{kind}: {events:?}"
+                        );
+                    }
+                    let arguments: String = events
+                        .iter()
+                        .filter_map(|event| event["delta"]["partial_json"].as_str())
+                        .collect();
+                    assert_eq!(arguments, "{\"cmd\":\"pwd\"}");
+                    assert!(
+                        events
+                            .iter()
+                            .any(|event| event["delta"]["stop_reason"] == "tool_use")
+                    );
+                } else {
+                    assert_no_message_terminal(&events);
+                }
+            }
+            // Shutdown drains accepted capture work before checking exact totals.
+            tokio::time::timeout(LIMIT, async {
+                loop {
+                    if fixture.captured.lock().unwrap().iter().any(|event| {
+                        matches!(event.name(), "llm.call.cancelled" | "llm.response.stream")
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            fixture.stop();
+            let complete = outcome == "complete";
+            {
+                let events = fixture.captured.lock().unwrap();
+                for (kind, expected) in [
+                    ("llm.response.stream", usize::from(complete)),
+                    ("llm.call.cancelled", usize::from(!complete)),
+                ] {
+                    assert_eq!(
+                        events.iter().filter(|event| event.name() == kind).count(),
+                        expected,
+                        "install={install}, repeat={repeat}, outcome={outcome}, kind={kind}"
+                    );
+                }
+            }
+            let cancelled = install
+                && repeat
+                && matches!(
+                    outcome,
+                    "transport_error" | "terminal_then_error" | "disconnect"
+                );
+            assert_eq!(
+                fixture.admission.entries.load(Ordering::SeqCst),
+                usize::from(install)
+            );
+            assert_eq!(
+                fixture.admission.batches.load(Ordering::SeqCst) > 0,
+                install && repeat
+            );
+            assert_eq!(
+                fixture.admission.cancellations.load(Ordering::SeqCst),
+                usize::from(cancelled)
+            );
+            assert_eq!(
+                fixture.admission.resumes.load(Ordering::SeqCst),
+                usize::from(install && !cancelled)
+            );
+            fixture.upstream.abort();
+            assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
+fn message_events(wire: &[u8]) -> Vec<serde_json::Value> {
+    std::str::from_utf8(wire)
+        .unwrap()
+        .split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .filter_map(|data| serde_json::from_str(data).ok())
+        .collect()
+}
+
+fn assert_no_message_terminal(events: &[serde_json::Value]) {
+    assert!(!events.iter().any(|event| matches!(
+        event["type"].as_str(),
+        Some("content_block_stop" | "message_delta" | "message_stop")
+    )));
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Some(proxy) = self.proxy.take() {
