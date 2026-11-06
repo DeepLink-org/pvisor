@@ -51,3 +51,12 @@ cargo nextest run -p pvisor-gateway --test model_api_forwarding --locked
 确实在 body 消费该标记时发出。上述用例已于 2026-10-17 在 macOS 和
 Linux 的相关测试选择中通过；真实 VM 交付与回收验证范围见
 [`vm_reasoning_rounds` 工程探针](../../pvisor/README.md#long-reasoning-engineering-probe)。
+
+`model_wait_http` 的有界故障用例先确认客户端收到完整 SSE 前缀，再让本地
+上游在帧中途 EOF 或返回 body 读取错误。无 lifecycle、单次交付和多轮
+交付三种模式都必须向客户端报告 body 错误，且只记录一次取消，不得记录
+完整响应。断连用例分别在下一批上游读取期间和下一批 resume 屏障阻塞期间
+关闭客户端，验证多轮 wait 只取消一次、上游 body 被释放且没有完整响应。
+每个场景顺序执行，仅使用 loopback、少于 1 KiB 的载荷和五秒操作超时；
+测试结束关闭 Gateway 并 abort/join 自己的上游任务。这些测试不模拟 VM、
+真实供应商或主机级故障。

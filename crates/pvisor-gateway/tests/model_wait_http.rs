@@ -358,6 +358,166 @@ async fn repeated_stream_capture_requires_protocol_terminal_even_after_done() {
     }
 }
 
+#[tokio::test]
+async fn partial_supplier_stream_failure_never_commits_a_completed_response() {
+    for (install, repeat) in [(false, false), (true, false), (true, true)] {
+        for transport_error in [false, true] {
+            let mut fixture = Fixture::new(
+                true,
+                StatusCode::OK,
+                Admission {
+                    repeat_batches: repeat,
+                    stream_buffer: Some(ModelStreamBuffer {
+                        max_bytes: 1,
+                        max_wait: Duration::from_millis(100),
+                    }),
+                    ..Default::default()
+                },
+                install,
+            )
+            .await;
+            fixture.admission.enter_gate.add_permits(1);
+            fixture.admission.resume_gate.add_permits(20);
+            let response = fixture.request(true, &[], "test-model");
+            fixture.upstream_received().await;
+            fixture.chunk(FIRST).await;
+            let mut response = tokio::time::timeout(LIMIT, response)
+                .await
+                .unwrap()
+                .unwrap();
+            // Force an actual delivered prefix before the supplier fails. Without
+            // this handshake Hyper can discard queued bytes with the body error.
+            receive_first(&mut response).await;
+            if transport_error {
+                fixture
+                    .body
+                    .send(Err(std::io::Error::other("injected mid-stream failure")))
+                    .await
+                    .unwrap();
+            } else {
+                fixture.chunk("data: {\"choices\":[").await;
+                fixture.finish_body();
+            }
+            assert!(
+                tokio::time::timeout(LIMIT, response.text())
+                    .await
+                    .unwrap()
+                    .is_err(),
+                "install={install}, repeat={repeat}, transport_error={transport_error}"
+            );
+            tokio::time::timeout(LIMIT, async {
+                loop {
+                    if fixture
+                        .captured
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e.name() == "llm.call.cancelled")
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            fixture.stop();
+            {
+                let events = fixture.captured.lock().unwrap();
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|e| e.name() == "llm.call.cancelled")
+                        .count(),
+                    1
+                );
+                assert!(!events.iter().any(|e| e.name() == "llm.response.stream"));
+            }
+            fixture.upstream.abort();
+            assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
+#[tokio::test]
+async fn disconnect_after_stream_prefix_cancels_repeated_wait_and_supplier_read() {
+    for blocked_resume in [false, true] {
+        disconnect_after_prefix(blocked_resume).await;
+    }
+}
+
+async fn disconnect_after_prefix(blocked_resume: bool) {
+    let mut fixture = Fixture::new(
+        true,
+        StatusCode::OK,
+        Admission {
+            repeat_batches: true,
+            stream_buffer: Some(ModelStreamBuffer {
+                max_bytes: 1,
+                max_wait: Duration::from_secs(1),
+            }),
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+    fixture.admission.enter_gate.add_permits(1);
+    fixture.admission.resume_gate.add_permits(1);
+    let response = fixture.request(true, &[], "test-model");
+    fixture.upstream_received().await;
+    fixture.chunk(FIRST).await;
+    let mut response = tokio::time::timeout(LIMIT, response)
+        .await
+        .unwrap()
+        .unwrap();
+    receive_first(&mut response).await;
+    notified(&fixture.admission.delivery).await;
+    notified(&fixture.admission.drained).await;
+    if blocked_resume {
+        // Put the next batch inside its native resume callback, not merely
+        // inside the supplier read, before closing the downstream connection.
+        fixture.chunk(FIRST).await;
+        notified(&fixture.admission.delivery).await;
+    }
+    drop(response);
+    notified(&fixture.admission.cancelled).await;
+    // No EOF or supplier error is sent: dropping the client must release the
+    // upstream body on its own, not wait for the read-inactivity timeout.
+    tokio::time::timeout(LIMIT, fixture.body.closed())
+        .await
+        .unwrap();
+    fixture.stop();
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 0);
+    {
+        let events = fixture.captured.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.name() == "llm.call.cancelled")
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|e| e.name() == "llm.response.stream"));
+    }
+    fixture.upstream.abort();
+    assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+}
+
+async fn receive_first(response: &mut reqwest::Response) {
+    let prefix = tokio::time::timeout(LIMIT, async {
+        let mut prefix = Vec::new();
+        while prefix.len() < FIRST.len() {
+            prefix.extend(response.chunk().await.unwrap().unwrap());
+            assert!(prefix.len() <= FIRST.len());
+        }
+        prefix
+    })
+    .await
+    .unwrap();
+    assert_eq!(prefix, FIRST.as_bytes());
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Some(proxy) = self.proxy.take() {
