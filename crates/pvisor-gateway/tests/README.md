@@ -77,3 +77,9 @@ lifecycle 都须在 Gateway 仍运行时取消一次、释放已建立的上游 
 记录取消而非响应完成。首批读取由实际 poll 的 wake future 通知确认，
 不是仅凭供应商收到请求推断。随后才执行单独限时的 Gateway shutdown；
 测试不靠 shutdown、供应商 EOF 或放开 admission gate 来触发取消。
+
+请求上传故障用例发送有效首个 chunk 后再发送非法 chunk size，检查返回
+400 而不是 413。拒绝发生在 capture/model-wait admission 之前，不产生
+取消或完成记录；随后同一 Gateway 的正常请求须成功并只生成一次完成。
+私有 body reader 用小字节上限检查精确边界、超限 413、读取错误 400，
+并检查失败会释放仍未 EOF 的输入 owner。

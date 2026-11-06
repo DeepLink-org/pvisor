@@ -37,6 +37,11 @@ capture work. Partial request uploads, ordinary proxy upstream waits and clients
 that stop reading cannot retain a connection indefinitely during Execution teardown.
 Normal response framing, trailers and backpressure are unchanged.
 
+Request uploads are bounded before capture admission. Exceeding the request-body
+byte limit returns 413; a transport/body read failure returns 400 instead of
+claiming an oversized payload. Neither rejection dispatches upstream nor creates
+a capture or model-wait obligation. Failed readers release the incoming body.
+
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
 wire formats are never chained through Chat Completions as an intermediate

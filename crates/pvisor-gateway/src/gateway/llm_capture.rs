@@ -5,10 +5,11 @@ use crate::config::{effective_provider, resolve_upstream_url};
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::body::{Body, to_bytes};
+use axum::body::Body;
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use pvisor_core::{ModelCallRequest, RunId};
 use serde_json::Value;
@@ -88,6 +89,35 @@ impl Drop for PendingCall {
     }
 }
 
+// Distinguish upload/transport failures from the request byte ceiling. Read
+// through Body's production stream without copying a chunk beyond the ceiling.
+async fn read_request_body(body: Body, limit: usize) -> Result<Bytes, (StatusCode, String)> {
+    let mut stream = body.into_data_stream();
+    let mut bytes = BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            tracing::warn!(target: "pvisor_gateway", %error, "failed to read LLM request body");
+            (
+                StatusCode::BAD_REQUEST,
+                "failed to read LLM request body".to_owned(),
+            )
+        })?;
+        if chunk.len() > limit - bytes.len() {
+            tracing::warn!(
+                target: "pvisor_gateway",
+                limit,
+                "rejecting oversized LLM request body"
+            );
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("LLM request body exceeds {limit} bytes"),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes.freeze())
+}
+
 pub(super) async fn llm_capture(
     state: GatewayState,
     req: Request,
@@ -128,21 +158,9 @@ pub(super) async fn llm_capture(
         Err(reason) => return Ok((StatusCode::FORBIDDEN, reason).into_response()),
     };
 
-    let body_bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+    let body_bytes = match read_request_body(body, MAX_REQUEST_BODY_BYTES).await {
         Ok(body) => body,
-        Err(error) => {
-            tracing::warn!(
-                target: "pvisor_gateway",
-                %error,
-                limit = MAX_REQUEST_BODY_BYTES,
-                "rejecting oversized LLM request body"
-            );
-            return Ok((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("LLM request body exceeds {MAX_REQUEST_BODY_BYTES} bytes"),
-            )
-                .into_response());
-        }
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
@@ -600,4 +618,54 @@ async fn read_response_body_limited(
         body.extend_from_slice(&chunk);
     }
     Ok(body.freeze())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn request_body_limit_and_read_failure_release_the_upload() {
+        let limit = Duration::from_secs(5);
+        for oversized in [false, true] {
+            let (sender, receiver) = tokio::sync::mpsc::channel(2);
+            sender.send(Ok(Bytes::from_static(b"ab"))).await.unwrap();
+            sender
+                .send(if oversized {
+                    Ok(Bytes::from_static(b"cde"))
+                } else {
+                    Err(std::io::Error::other("injected upload failure"))
+                })
+                .await
+                .unwrap();
+            // Keep the sender open: rejection must not wait for EOF, and must
+            // release the incoming body owner without polling it again.
+            let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(receiver));
+            let response = tokio::time::timeout(limit, read_request_body(body, 4))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                response.0,
+                if oversized {
+                    StatusCode::PAYLOAD_TOO_LARGE
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            );
+            tokio::time::timeout(limit, sender.closed()).await.unwrap();
+        }
+        let chunks = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(Bytes::from_static(b"ab")),
+            Ok(Bytes::from_static(b"cd")),
+        ]);
+        assert_eq!(
+            tokio::time::timeout(limit, read_request_body(Body::from_stream(chunks), 4))
+                .await
+                .unwrap()
+                .unwrap(),
+            b"abcd"[..]
+        );
+    }
 }

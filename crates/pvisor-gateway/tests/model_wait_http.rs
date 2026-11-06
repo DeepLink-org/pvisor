@@ -294,6 +294,81 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn malformed_request_upload_is_bad_request_without_capture_and_recovers() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut fixture = Fixture::new(false, StatusCode::OK, Admission::default(), true).await;
+    let address = fixture.proxy.as_ref().unwrap().listen.clone();
+    let mut socket = tokio::time::timeout(LIMIT, tokio::net::TcpStream::connect(&address))
+        .await
+        .unwrap()
+        .unwrap();
+    // A valid first chunk followed by an invalid chunk size fails the actual
+    // request body reader, rather than the JSON parser or a response stream.
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\nnot-a-size\r\n"
+    );
+    tokio::time::timeout(LIMIT, socket.write_all(request.as_bytes()))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(LIMIT, (&mut socket).take(4096).read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(socket);
+    // Finish owned tasks before asserting the failure classification.
+    assert!(fixture.received.try_recv().is_err());
+    assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 0);
+    assert!(fixture.captured.lock().unwrap().is_empty());
+    fixture.admission.enter_gate.add_permits(1);
+    fixture.admission.resume_gate.add_permits(1);
+    let healthy = fixture.request(false, &[], "test-model");
+    fixture.upstream_received().await;
+    fixture.chunk(REPLY).await;
+    fixture.finish_body();
+    let healthy = tokio::time::timeout(LIMIT, healthy).await.unwrap().unwrap();
+    assert_eq!(healthy.status(), StatusCode::OK);
+    assert_eq!(
+        tokio::time::timeout(LIMIT, healthy.text())
+            .await
+            .unwrap()
+            .unwrap(),
+        REPLY
+    );
+    let proxy = fixture.proxy.take().unwrap();
+    tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || proxy.shutdown()))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    fixture.upstream.abort();
+    assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+    assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
+    let events = fixture.captured.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.name() == "llm.response")
+            .count(),
+        1
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.name() == "llm.call.cancelled")
+    );
+    assert!(
+        response.starts_with(b"HTTP/1.1 400 "),
+        "body read failure must not be reported as oversized: {}",
+        String::from_utf8_lossy(&response)
+    );
+}
+
+#[tokio::test]
 async fn repeated_stream_capture_requires_protocol_terminal_even_after_done() {
     for valid in [false, true] {
         let mut fixture = Fixture::new(
