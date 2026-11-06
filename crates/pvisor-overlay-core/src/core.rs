@@ -3026,13 +3026,16 @@ impl OverlayCore {
             || self.temporary_path(parent),
             |copy| copy.temporary.with_extension("publication"),
         );
+        let mut temporary_owned = false;
         let result = (|| {
             let kind = metadata.file_type();
             let mut reused_upper_inode = false;
             if kind.is_dir() {
                 fs::create_dir(&temporary)?;
+                temporary_owned = true;
             } else if kind.is_symlink() {
                 std::os::unix::fs::symlink(crate::backend::read_link(&resolved.path)?, &temporary)?;
+                temporary_owned = true;
             } else if kind.is_file() {
                 let identity = (metadata.dev(), metadata.ino());
                 let existing = if crate::backend::link_count(&resolved.path, metadata.nlink())? > 1
@@ -3049,9 +3052,11 @@ impl OverlayCore {
                 };
                 if let Some(existing) = existing {
                     fs::hard_link(existing, &temporary)?;
+                    temporary_owned = true;
                     reused_upper_inode = true;
                 } else if let Some(prepared) = &prepared {
                     fs::rename(&prepared.temporary, &temporary)?;
+                    temporary_owned = true;
                 } else {
                     let mut options = OpenOptions::new();
                     options
@@ -3059,6 +3064,7 @@ impl OverlayCore {
                         .create_new(true)
                         .mode(metadata.mode() & 0o7777);
                     let mut destination = options.open(&temporary)?;
+                    temporary_owned = true;
                     // The preimage is already ordered before upper publication.
                     // Do not discard data shared with another lower alias: its
                     // later copy-up must still see the original inode contents.
@@ -3087,6 +3093,7 @@ impl OverlayCore {
                 }
             } else {
                 sys::mknod(&temporary, metadata.mode(), metadata.rdev() as u32)?;
+                temporary_owned = true;
             }
             if !reused_upper_inode && prepared.is_none() {
                 self.copy_metadata(&resolved.path, &temporary, &metadata)?;
@@ -3108,9 +3115,11 @@ impl OverlayCore {
             }
             Ok(())
         })();
-        if result.is_err() {
-            let _ = if temporary.is_dir() {
-                fs::remove_dir_all(&temporary)
+        // A reserved-looking name is not ownership. Failed creation (notably
+        // EEXIST) must never authorize cleanup of an earlier operation's entry.
+        if result.is_err() && temporary_owned {
+            let _ = if metadata.is_dir() {
+                fs::remove_dir(&temporary)
             } else {
                 fs::remove_file(&temporary)
             };
@@ -3756,6 +3765,72 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copy_up_collision_preserves_unowned_temporary_entries() {
+        use super::*;
+        const CHILD: &str = "PVISOR_COPY_UP_COLLISION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Isolate the private temporary-name counter from other unit tests.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "core::tests::copy_up_collision_preserves_unowned_temporary_entries",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        for kind in ["directory", "file", "symlink"] {
+            let root = tempfile::tempdir().unwrap();
+            let core = upper_absence_fixture(root.path());
+            fs::write(core.layout.lowers()[0].join("file"), b"original").unwrap();
+            let temporary = core.upper().join(format!(
+                "{TEMP_PREFIX}{}-{}",
+                std::process::id(),
+                TEMP_ID.load(Ordering::Relaxed)
+            ));
+            let sentinel = root.path().join("sentinel");
+            fs::create_dir(&sentinel).unwrap();
+            fs::write(sentinel.join("keep"), b"unowned").unwrap();
+            match kind {
+                "directory" => {
+                    fs::create_dir(&temporary).unwrap();
+                    fs::write(temporary.join("keep"), b"unowned").unwrap();
+                }
+                "file" => fs::write(&temporary, b"unowned").unwrap(),
+                "symlink" => std::os::unix::fs::symlink(&sentinel, &temporary).unwrap(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                core.copy_up(Path::new("file")).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert!(
+                fs::symlink_metadata(&temporary).is_ok(),
+                "failed copy-up removed an unowned {kind}"
+            );
+            assert_eq!(fs::read(sentinel.join("keep")).unwrap(), b"unowned");
+            match kind {
+                "directory" => assert_eq!(fs::read(temporary.join("keep")).unwrap(), b"unowned"),
+                "file" => assert_eq!(fs::read(&temporary).unwrap(), b"unowned"),
+                "symlink" => assert_eq!(fs::read_link(&temporary).unwrap(), sentinel),
+                _ => unreachable!(),
+            }
+            assert!(!core.upper().join("file").exists());
+            assert_eq!(
+                fs::read(core.copy_up(Path::new("file")).unwrap()).unwrap(),
+                b"original"
+            );
+            assert_eq!(
+                fs::read(core.layout.lowers()[0].join("file")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
     fn upper_absence_fixture(root: &Path) -> OverlayCore {
         let lower = root.join("lower");
         fs::create_dir_all(&lower).unwrap();
