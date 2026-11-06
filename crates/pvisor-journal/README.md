@@ -16,6 +16,9 @@ remain owned by Core, not duplicated or re-exported here.
 - `src/persistence.rs`: Unix filesystem durability and private barrier tests.
 - `tests/api_contract.rs`: external lifecycle, validation and persistence tests
   plus recursive AST guards for the API boundary.
+- `tests/chaos_state_machine.rs`: 16 fixed-seed sequences compare memory and
+  durable appends with an independent graph model through retries, identity
+  conflicts, cycle rejection and 128 close/validate/read/reopen checks.
 
 ## Contracts
 
