@@ -325,7 +325,7 @@ api_key = "injected-credential"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn attempt_gateway_auth_rejects_foreign_tokens_and_never_forwards_the_local_token() {
+async fn execution_gateway_auth_rejects_foreign_tokens_and_never_forwards_the_local_token() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -362,7 +362,7 @@ api_key = "supplier-secret"
         storage.path().into(),
         Arc::new(NoopCaptureObserver::new()),
         InProcessRuntime {
-            client_token: Some("attempt-private-token".into()),
+            client_token: Some("execution-private-token".into()),
             ..Default::default()
         },
     )
@@ -375,8 +375,8 @@ api_key = "supplier-secret"
     let url = format!("http://{}/v1/chat/completions", gateway.listen);
     for token in [
         None,
-        Some("foreign-attempt-token"),
-        Some("attempt-private-token"),
+        Some("foreign-execution-token"),
+        Some("execution-private-token"),
     ] {
         let mut request = client
             .post(&url)
@@ -387,7 +387,7 @@ api_key = "supplier-secret"
         let response = request.send().await.unwrap();
         assert_eq!(
             response.status(),
-            if token == Some("attempt-private-token") {
+            if token == Some("execution-private-token") {
                 StatusCode::OK
             } else {
                 StatusCode::UNAUTHORIZED

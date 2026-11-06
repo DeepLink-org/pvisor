@@ -1,5 +1,5 @@
 //! Native process CPU observations. These never reduce admission reservations.
-use crate::{AttemptId, RunId};
+use crate::{ExecutionId, RunId};
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ impl ProcessCpuUsage {
             self.pid == previous.pid
                 && self.start_time_ticks == previous.start_time_ticks
                 && self.clock_ticks_per_second == previous.clock_ticks_per_second,
-            "CPU process identity or clock changed within Attempt"
+            "CPU process identity or clock changed within Execution"
         );
         ensure!(
             self.sampled_monotonic_ns > previous.sampled_monotonic_ns
@@ -112,7 +112,7 @@ impl TerminalCpuUsage {
 #[serde(deny_unknown_fields)]
 pub struct RunCpuSample {
     pub run_id: RunId,
-    pub attempt_id: AttemptId,
+    pub execution_id: ExecutionId,
     pub sampled_at_unix_ms: u64,
     pub usage: Option<ProcessCpuUsage>,
     pub error: Option<String>,
@@ -121,9 +121,9 @@ impl RunCpuSample {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(
             !self.run_id.is_empty()
-                && !self.attempt_id.is_empty()
+                && !self.execution_id.is_empty()
                 && self.run_id.as_str().len() <= 256
-                && self.attempt_id.as_str().len() <= 256
+                && self.execution_id.as_str().len() <= 256
                 && self.sampled_at_unix_ms > 0,
             "invalid CPU sample identity"
         );
@@ -205,7 +205,7 @@ mod tests {
     fn cpu_samples_keep_errors_explicit_and_reject_unknown_fields() {
         let mut sample = RunCpuSample {
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
             sampled_at_unix_ms: 1,
             usage: Some(usage()),
             error: None,

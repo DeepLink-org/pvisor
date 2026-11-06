@@ -361,7 +361,7 @@ def collect(protocol: dict, records: list) -> tuple[list, list, list, list]:
             {
                 **identity,
                 "ready_ms": finite_number(record.get("ready_ms")),
-                "job_ms": finite_number(record.get("job_ms")),
+                "session_ms": finite_number(record.get("session_ms")),
                 "resource_json": resource,
                 "resource_before_json": record.get("resource_before", {}),
                 "sampled_memory_current_peak_bytes": finite_number(

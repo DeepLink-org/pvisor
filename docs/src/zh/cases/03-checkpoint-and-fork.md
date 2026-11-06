@@ -30,7 +30,7 @@ json_expect "$CASE_ROOT/show.json" /branch_references 0
 
 对当前提案做决定之前保存 checkpoint，接受后仍可以审查原提案。
 
-**语义**：apply 后当前改动为空；checkpoint review 仍列出 report.txt，已全部 apply 的 Job 拒绝 drop，checkpoint 保持。
+**语义**：apply 后当前改动为空；checkpoint review 仍列出 report.txt，已全部 apply 的 Session 拒绝 drop，checkpoint 保持。
 
 **违反示例**：apply/drop 改写不可变保存点。
 
@@ -53,7 +53,7 @@ pvisor checkpoint show "$CASE_ROOT/source" "$checkpoint" --json > "$CASE_ROOT/sh
 
 ### S-USE-011：从同一提案启动两个分支
 
-比较两种实现方案时，从相同 checkpoint 启动两次 fork。源提案和每个子 Job 都各自保留。
+比较两种实现方案时，从相同 checkpoint 启动两次 fork。源提案和每个子 Session 都各自保留。
 
 **语义**：两个分支都读到 seed，分别写成 branch-a/branch-b，源仍为 seed，宿主仍无 report.txt；删除被引用 checkpoint 明确失败。
 

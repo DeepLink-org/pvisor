@@ -6,7 +6,7 @@ use std::io;
 pub struct ProcessInventory {
     pub timestamp_ns: u128,
     pub query_us: u128,
-    pub query_attempts: u32,
+    pub query_executions: u32,
     pub page_bytes: u64,
     pub regions: u64,
     pub scanned_pages: u64,
@@ -81,14 +81,14 @@ fn identity(address: u64) -> io::Result<[u64; 4]> {
 /// publish partial coverage. Caller must separately account unmapped backing.
 pub fn process_inventory() -> io::Result<ProcessInventory> {
     let started = std::time::Instant::now();
-    for attempt in 1..=3 {
+    for execution in 1..=3 {
         match process_inventory_once() {
             Ok(mut inventory) => {
-                inventory.query_attempts = attempt;
+                inventory.query_executions = execution;
                 inventory.query_us = started.elapsed().as_micros();
                 return Ok(inventory);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock && attempt < 3 => {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && execution < 3 => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             Err(error) => return Err(error),
@@ -133,7 +133,7 @@ fn process_inventory_once() -> io::Result<ProcessInventory> {
     let mut result = ProcessInventory {
         timestamp_ns,
         query_us: 0,
-        query_attempts: 1,
+        query_executions: 1,
         page_bytes: page,
         regions: 0,
         scanned_pages: 0,

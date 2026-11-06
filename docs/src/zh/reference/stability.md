@@ -9,8 +9,8 @@
 | 接口 | 当前规则 |
 | --- | --- |
 | CLI / Run TOML | 以当前版本 `--help` 与配置类型为准；未知字段拒绝；版本间变动应核对变更日志 |
-| Run 记录 / 完成协议 | 新 Run schema 2 要求完成协议 1；owner 退出后缺少已提交回执的记录为 Unknown；schema 1 保留旧读取规则 |
-| Run Bundle | 新 schema 5 要求匹配 Run/Attempt 的完成回执和 Bundle 摘要；schema 4 按旧规则读取；未知版本拒绝；没有自动迁移承诺 |
+| Run 记录 / 完成协议 | 新 Run schema 3 要求完成协议 2；owner 退出后缺少已提交回执的记录为 Unknown；schema 1 保留旧读取规则 |
+| Run Bundle | 新 schema 6 要求匹配 Run/Execution 的完成回执和 Bundle 摘要；schema 4 按旧规则读取；未知版本拒绝；没有自动迁移承诺 |
 | Event / Journal | 正式 Event 与 Journal 版本 5；旧 JSONL 不兼容读取 |
 | Operation | schema 1；未知版本拒绝 |
 | replay | `sandbox-playback.result/v3`；适配器使用指南中的固定版本 |
@@ -21,6 +21,6 @@
 ## 升级前后
 
 1. 保留原有 Bundle、Journal 和捕获产物；不要覆盖旧记录。
-2. 用新版本运行一个独立的新 Job，验证策略准入、输出读取与 apply 冲突路径。
+2. 用新版本运行一个独立的新 Session，验证策略准入、输出读取与 apply 冲突路径。
 3. 旧记录需要读取时，保留能够读取它的旧工具；不要手工删除 schema 字段绕过校验。
 4. 在变更日志中明确标注 CLI、配置、记录格式与平台要求的变化。以所升级版本的发布说明为准。

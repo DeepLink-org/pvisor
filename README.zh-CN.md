@@ -24,7 +24,7 @@ Agent style stagebox 是 pVisor 独创的 Agent 模式：文件改动先暂存�
 | 模式 | 使用方式 | 隔离与结果管理 |
 | --- | --- | --- |
 | Docker style sandbox | 使用熟悉的镜像、run、exec、stop 和删除命令 | 每个容器对应独立 Linux VM；管理容器生命周期和文件操作 |
-| Agent style stagebox | 让 Agent 尝试方案，审查暂存改动，再选择接收 | 原生 Job 显式启用暂存，通过 review/apply/drop 处理改动；隔离取决于所选执行器 |
+| Agent style stagebox | 让 Agent 尝试方案，审查暂存改动，再选择接收 | 原生 Session 显式启用暂存，通过 review/apply/drop 处理改动；隔离取决于所选执行器 |
 
 ### 沉浸式氛围编程
 
@@ -83,7 +83,7 @@ cat hello.txt
 ```
 
 预期输出 `Hello from pVisor`。问候文件已进入项目，临时笔记已丢弃。
-`last` 选择当前工作区最近一次登记的 Job。
+`last` 选择当前工作区最近一次登记的 Session。
 [Stagebox 上手教程](https://deeplink-org.github.io/pvisor/zh/start/first-run/#agent-style)
 会逐步检查原目录、暂存视图和最终文件状态。这个 Host 示例不需要模型账号或 VM 镜像。
 
@@ -97,7 +97,7 @@ cat hello.txt
 > Agent 指南列出了已有的受控客户端测试，以及仍待验证的云模型和审批行为。
 > pVisor 不会自动关闭 Agent 或 IDE 的审批。
 
-`--safe` 无法落实所需控制时会拒绝启动。普通 Host Job 默认直接写入工作区。
+`--safe` 无法落实所需控制时会拒绝启动。普通 Host Session 默认直接写入工作区。
 接收或丢弃文件不会撤销远端 API 调用、数据库写入、费用，也不会撤销已经合入的文件。
 详见[安全边界](https://deeplink-org.github.io/pvisor/zh/security/)。
 
@@ -141,12 +141,12 @@ pvisor rm edit
 pVisor 也为 Agent 推理、评测和 RL 后训练提供执行环境。资源共享和空闲内存回收用于管理机器容量，
 执行记录和暂存改动用于检查结果。具体能力取决于接口、执行器和平台。
 
-- 原生 Job：使用 `pvisor spawn` 选择 Host、OCI 或 VM 执行，显式启用暂存后进行 review/apply。
+- 原生 Session：使用 `pvisor spawn` 选择 Host、OCI 或 VM 执行，显式启用暂存后进行 review/apply。
 - 嵌入式运行时：集成 [Rust runtime](crates/pvisor/README.md)。
 - 平台 API：使用[本地 daemon](crates/pvisor-daemon/README.md)接入 Linux/KVM 上部分 OpenSandbox/E2B SDK profile，或使用 [containerd shim](crates/pvisor-shim/README.md)。
 - 容器工作流：实验性的 [Docker 风格 CLI](crates/pvisor-cli/README.md#docker-command-profile-experimental)为每个容器运行一个 VM。
 
-这些接口分别定义生命周期和能力范围。Daemon 不提供原生 Job 的 stage/apply 语义；容器暂存挂载有独立的 review/apply/drop 契约。
+这些接口分别定义生命周期和能力范围。Daemon 不提供原生 Session 的 stage/apply 语义；容器暂存挂载有独立的 review/apply/drop 契约。
 需要调用脚本示例时，从 [VM 工具执行教程](https://deeplink-org.github.io/pvisor/zh/start/infrastructure/)开始；
 各接口的区别见[接入矩阵](https://deeplink-org.github.io/pvisor/zh/guides/infrastructure/integration/)。
 

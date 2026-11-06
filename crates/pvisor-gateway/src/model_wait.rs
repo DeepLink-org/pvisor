@@ -1,6 +1,6 @@
 //! Host-observed model calls and the response-delivery barrier.
 //!
-//! Installing an Attempt-bound lifecycle observes all authorized model calls.
+//! Installing an Execution-bound lifecycle observes all authorized model calls.
 //! No guest/client declaration is needed or trusted. A model request is only a
 //! scheduling hint; the native owner separately requires guest-kernel idle
 //! evidence. The lifecycle owns fencing and pause ownership; Gateway does not
@@ -73,13 +73,13 @@ use pvisor_core::ModelCallRequest;
 /// Ignored client header, always stripped upstream. Only Host installation enables observation.
 pub const INFERENCE_IDLE_HEADER: &str = "x-pvisor-inference-idle";
 
-/// Attempt-local factory, called only after model/action authorization.
+/// Execution-local factory, called only after model/action authorization.
 pub trait ModelWaitLifecycle: Send + Sync + Debug {
     /// Allocate a cancellation-safe obligation before starting asynchronous
     /// work. Do not perform blocking I/O here. Derive authority from the bound
-    /// Attempt, not from caller-supplied session headers.
+    /// Execution, not from caller-supplied session headers.
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>>;
-    /// Optional authorized HTTP GET/CONNECT lifecycle, bound to this same Attempt.
+    /// Optional authorized HTTP GET/CONNECT lifecycle, bound to this same Execution.
     /// Disabled by default. No client header enables it; CONNECT remains opaque.
     fn reserve_download(
         &self,

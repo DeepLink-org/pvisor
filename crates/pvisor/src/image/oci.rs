@@ -498,7 +498,7 @@ impl ImageStore {
                 None,
             )?;
             let total = descriptor.size.or(response.content_length());
-            // Each attempt owns its temporary file and hasher. Failed partial
+            // Each execution owns its temporary file and hasher. Failed partial
             // bytes are discarded; only a complete verified blob is published.
             self.save_blob(&mut response, descriptor, total, progress)
         })
@@ -1395,15 +1395,15 @@ mod tests {
             .timeout(Duration::from_millis(250))
             .build()
             .unwrap();
-        let mut attempts = 0;
+        let mut executions = 0;
         let path = retry_blob_transfer(|| {
-            attempts += 1;
+            executions += 1;
             let mut response = client.get(format!("http://{address}/blob")).send()?;
             store.save_blob(&mut response, &descriptor, descriptor.size, &mut |_| {})
         })
         .unwrap();
         server.join().unwrap();
-        assert_eq!(attempts, 2);
+        assert_eq!(executions, 2);
         assert_eq!(fs::read(path).unwrap(), payload);
         assert_eq!(
             fs::read_dir(temp.path().join("blobs/sha256"))
@@ -1427,10 +1427,10 @@ mod tests {
             size: Some(payload.len() as u64),
             platform: None,
         };
-        let mut attempts = 0;
+        let mut executions = 0;
         assert!(
             retry_blob_transfer(|| {
-                attempts += 1;
+                executions += 1;
                 store.save_blob(
                     &mut std::io::Cursor::new(b"wrong"),
                     &descriptor,
@@ -1440,13 +1440,13 @@ mod tests {
             })
             .is_err()
         );
-        assert_eq!(attempts, 1);
+        assert_eq!(executions, 1);
         let mut wrong_size = descriptor;
         wrong_size.size = Some(payload.len() as u64 + 1);
-        attempts = 0;
+        executions = 0;
         assert!(
             retry_blob_transfer(|| {
-                attempts += 1;
+                executions += 1;
                 store.save_blob(
                     &mut std::io::Cursor::new(payload),
                     &wrong_size,
@@ -1456,7 +1456,7 @@ mod tests {
             })
             .is_err()
         );
-        assert_eq!(attempts, 1);
+        assert_eq!(executions, 1);
         assert_eq!(
             fs::read_dir(temp.path().join("blobs/sha256"))
                 .unwrap()
@@ -1468,13 +1468,13 @@ mod tests {
             std::io::ErrorKind::TimedOut,
             std::io::ErrorKind::ConnectionReset,
         ] {
-            attempts = 0;
+            executions = 0;
             let failure = retry_blob_transfer::<()>(|| {
-                attempts += 1;
+                executions += 1;
                 Err(std::io::Error::from(kind).into())
             });
             assert!(failure.is_err());
-            assert_eq!(attempts, 1);
+            assert_eq!(executions, 1);
         }
     }
 
@@ -1490,14 +1490,14 @@ mod tests {
             .connect_timeout(Duration::from_millis(250))
             .build()
             .unwrap();
-        let mut attempts = 0;
+        let mut executions = 0;
         let failure = retry_blob_transfer::<()>(|| {
-            attempts += 1;
+            executions += 1;
             client.get(format!("http://{address}/blob")).send()?;
             Ok(())
         })
         .unwrap_err();
-        assert_eq!(attempts, 2);
+        assert_eq!(executions, 2);
         assert!(
             failure
                 .to_string()

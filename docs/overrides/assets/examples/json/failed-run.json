@@ -1,6 +1,6 @@
 {
   "agentctl": {
-    "attempt_id": "failed-run-attempt_id",
+    "execution_id": "failed-run-execution_id",
     "clients": [],
     "directive": {
       "kind": "continue"
@@ -113,7 +113,7 @@
   "filesystem": {
     "access_policy": {
       "context": {
-        "attempt_id": "failed-run-attempt_id",
+        "execution_id": "failed-run-execution_id",
         "audit_socket": null,
         "run_id": "failed-run-run_id",
         "view": "workspace"
@@ -609,16 +609,16 @@
     "requested": {}
   },
   "review_context": {
-    "attempt_id": "failed-run-attempt_id",
+    "execution_id": "failed-run-execution_id",
     "checkpoint_id": null,
     "execution_evidence": "historical_bundle",
     "file_view": "staged_upper_with_external_lowers",
-    "job_id": "failed-run-run_id",
+    "session_id": "failed-run-run_id",
     "workspace_generation": 0
   },
   "run": {
     "agent": "sh",
-    "attempt_id": "failed-run-attempt_id",
+    "execution_id": "failed-run-execution_id",
     "command": [
       "/bin/sh",
       "-c",

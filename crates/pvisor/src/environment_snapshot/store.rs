@@ -475,7 +475,7 @@ impl SnapshotStore {
     }
 
     /// An explicitly configured, host-owned pool permits checkpoints belonging
-    /// to different Jobs to retain the same immutable lower without data copies.
+    /// to different Sessions to retain the same immutable lower without data copies.
     /// Wire manifests cannot select this location. Both directories must be on
     /// the same filesystem for hard-linked immutable markers/encoded frames;
     /// guest filesystem data inodes are never linked across stores.
@@ -498,7 +498,7 @@ impl SnapshotStore {
 
     /// Native supervisor only: the producer remains frozen and the caller
     /// has authenticated this source as a read-only launch role. First users
-    /// create one pool tree; later Jobs reuse it without temporary data copies.
+    /// create one pool tree; later Sessions reuse it without temporary data copies.
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn retain_live_lower(
         &self,
@@ -1802,10 +1802,10 @@ impl PublishedEnvironment {
         )
     }
 
-    /// Share a fully verified tree through persistent per-Attempt marker links.
+    /// Share a fully verified tree through persistent per-Execution marker links.
     /// The consumer MUST enforce read-only access. Writable backing must use
     /// materialize/materialize_layer instead. Dropping this owner preserves
-    /// the disk reference until the retained Attempt itself is collected.
+    /// the disk reference until the retained Execution itself is collected.
     pub fn share_readonly_layer(
         &self,
         relative: &Path,
@@ -1839,7 +1839,7 @@ impl PublishedEnvironment {
         use std::os::unix::fs::MetadataExt;
         ensure!(
             fs::symlink_metadata(references)?.is_dir(),
-            "invalid Attempt filesystem references"
+            "invalid Execution filesystem references"
         );
         Ok(
             fs::metadata(self.filesystem_pool.join("filesystems"))?.dev()
@@ -2038,12 +2038,12 @@ mod preparation_cache_tests {
 
 #[cfg(target_os = "linux")]
 impl PublishedEnvironment {
-    pub(super) fn source_cache_job(
+    pub(super) fn source_cache_session(
         &self,
         layers: &[(PathBuf, std::sync::Arc<super::SharedFilesystemLayer>)],
-    ) -> anyhow::Result<Option<super::restore_cache::Job>> {
+    ) -> anyhow::Result<Option<super::restore_cache::Task>> {
         use super::TreeObject;
-        use super::restore_cache::{Job, MAX_FILES, MAX_PATH_BYTES, SourceLayer};
+        use super::restore_cache::{MAX_FILES, MAX_PATH_BYTES, Session, SourceLayer};
         use std::os::unix::fs::MetadataExt;
         if layers.is_empty() {
             return Ok(None);
@@ -2053,8 +2053,8 @@ impl PublishedEnvironment {
         let mut count = 0usize;
         let mut bytes = 0usize;
         for (relative, owner) in layers {
-            if let Some(job) = owner.take_preparation_cache()? {
-                new_pools.push(job);
+            if let Some(session) = owner.take_preparation_cache()? {
+                new_pools.push(session);
             }
             // Already referenced pool layers must never have their hot cache evicted.
             if self
@@ -2101,7 +2101,7 @@ impl PublishedEnvironment {
         if result.is_empty() && new_pools.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Job {
+        Ok(Some(Session {
             layers: result,
             new_pools,
             _reference: self._reference.try_clone()?,
@@ -2147,15 +2147,15 @@ mod source_cache_tests {
             original_inode,
             fs::metadata(owner.root().join("single")).unwrap().ino()
         );
-        let job = snapshot
-            .source_cache_job(&[(PathBuf::from("layer"), owner.clone())])
+        let session = snapshot
+            .source_cache_session(&[(PathBuf::from("layer"), owner.clone())])
             .unwrap()
             .unwrap();
-        assert_eq!(job.new_pools.len(), 1);
-        // Later successful preparation replaces source jobs but must retain the
+        assert_eq!(session.new_pools.len(), 1);
+        // Later successful preparation replaces source sessions but must retain the
         // first publication's one-shot pool capability.
         let mut later = snapshot
-            .source_cache_job(&[(PathBuf::from("layer"), owner.clone())])
+            .source_cache_session(&[(PathBuf::from("layer"), owner.clone())])
             .unwrap()
             .unwrap();
         assert!(later.new_pools.is_empty());
@@ -2165,9 +2165,9 @@ mod source_cache_tests {
                 .unwrap(),
         );
         assert!(reused.take_preparation_cache().unwrap().is_none());
-        later.absorb_new_pools(job);
+        later.absorb_new_pools(session);
         assert_eq!(later.new_pools.len(), 1);
-        let job = later;
+        let session = later;
         let private = temp.path().join("private");
         fs::create_dir(&private).unwrap();
         fs::write(private.join("data"), b"private changes").unwrap();
@@ -2176,7 +2176,7 @@ mod source_cache_tests {
             store.delete(&id).is_err(),
             "cleanup must pin the source object"
         );
-        job.release();
+        session.release();
         verify_tree(&original, &inventory).unwrap();
         verify_tree(owner.root(), &inventory).unwrap();
         assert_eq!(

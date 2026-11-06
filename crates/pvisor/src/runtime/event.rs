@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use pvisor_core::event::{Durability, Event, Fact, Position, Receipt};
-use pvisor_core::{AttemptId, RunId};
+use pvisor_core::{ExecutionId, RunId};
 use pvisor_journal::api::{AppendError, Journal, JournalStore, Trace, TraceProducer};
 use serde_json::Value;
 use std::sync::Arc;
@@ -127,7 +127,7 @@ pub struct RunEventPublisher {
 impl RunEventPublisher {
     pub(crate) fn new(
         run_id: RunId,
-        attempt_id: AttemptId,
+        execution_id: ExecutionId,
         producer: impl Into<String>,
         sink: Arc<dyn EventSink>,
         live: broadcast::Sender<Event>,
@@ -138,8 +138,8 @@ impl RunEventPublisher {
             scope: vec![
                 "run".into(),
                 run_id.to_string(),
-                "attempt".into(),
-                attempt_id.to_string(),
+                "execution".into(),
+                execution_id.to_string(),
             ],
             context_id: uuid::Uuid::new_v4().to_string(),
             operation_id: uuid::Uuid::new_v4().to_string(),
@@ -298,7 +298,7 @@ mod tests {
         let (live, _) = broadcast::channel(4);
         let publisher = RunEventPublisher::new(
             "run".into(),
-            "attempt".into(),
+            "execution".into(),
             "runtime",
             Arc::new(journal.clone()),
             live,

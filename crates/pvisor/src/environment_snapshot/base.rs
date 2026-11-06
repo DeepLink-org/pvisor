@@ -275,7 +275,7 @@ impl SnapshotStore {
     /// The source and store must be independent canonical trees. Import verifies
     /// content and native metadata before publication; special objects and
     /// external hardlinks are rejected. The persistent catalog pin survives all
-    /// processes and GC, including stopped Jobs, until a future controlled
+    /// processes and GC, including stopped Sessions, until a future controlled
     /// removal API is provided. External store modifications are unsupported.
     /// A failed import/pin never returns an unretained base as success; an
     /// unreferenced imported generation may remain for normal GC.

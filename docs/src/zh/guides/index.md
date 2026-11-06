@@ -6,13 +6,13 @@
 
 1. ### 准备一个可检查的任务 {#prepare}
 
-    先完成[安装与平台准备](../start/installation.md)，再用[第一次运行](../start/first-run.md)中的离线任务验证暂存和审查。演示不需要模型账号，可以直接比较宿主工作区与 Job 中的候选文件。
+    先完成[安装与平台准备](../start/installation.md)，再用[第一次运行](../start/first-run.md)中的离线任务验证暂存和审查。演示不需要模型账号，可以直接比较宿主工作区与 Session 中的候选文件。
 
     接入真实 Agent 时，按[Agent 接入指南](agents/index.md)确认程序安装位置、凭据和所需网络目标。准备好这些条件后，再把离线命令换成 Agent 或自己的脚本。
 
     给任务明确的目标和接受条件，例如“修复这个测试，允许修改源码和测试，保留其他文件”。记录开始时的仓库状态，后续审查才有可比较的基线。
 
-    原生 Job 使用 `pvisor spawn` 启动；`pvisor run` 用于独立容器命令，不沿用原生 Job 的暂存与审查入口。具体用法见[CLI 参考](../reference/cli.md)。
+    原生 Session 使用 `pvisor spawn` 启动；`pvisor run` 用于独立容器命令，不沿用原生 Session 的暂存与审查入口。具体用法见[CLI 参考](../reference/cli.md)。
 
 1. ### 选择执行边界 {#boundaries}
 
@@ -20,7 +20,7 @@
 
     需要事后接受文件改动时，显式选择暂存：`--safe` 请求预设控制并暂存工作区，`--stage PATH` 指定暂存位置。普通 host 执行默认直写。各位置的写入与清理规则见[CLI 暂存与存储](../reference/cli.md#暂存与存储)。
 
-    使用自定义 stage 时，为每次任务选项目外的新目录。后续命令通过该路径或明确的 Job 身份定位结果；`last` 的查找范围见[Job 与存储](../concepts/jobs.md)。
+    使用自定义 stage 时，为每次任务选项目外的新目录。后续命令通过该路径或明确的 Session 身份定位结果；`last` 的查找范围见[Session 与存储](../concepts/sessions.md)。
 
 1. ### 运行一个有明确验收条件的任务 {#run-task}
 
@@ -83,7 +83,7 @@
 
 ## 扩展到并行任务与 CI {#automation}
 
-并行任务分别使用独立工作区、stage 和 Job 身份。按[并行 Agent 流程](parallel-agents.md#batch)收集各任务结果，再协调合入同一个目标树；任务数增加后，接受条件仍由你或评审流程确定。
+并行任务分别使用独立工作区、stage 和 Session 身份。按[并行 Agent 流程](parallel-agents.md#batch)收集各任务结果，再协调合入同一个目标树；任务数增加后，接受条件仍由你或评审流程确定。
 
 [CI 工作流](ci.md)把运行结果、产物上传和接受改动分开处理。保留失败与超时的证据，使评审步骤能判断是否重跑、修复或丢弃。
 

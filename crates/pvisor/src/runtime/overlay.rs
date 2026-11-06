@@ -7,7 +7,7 @@
 //!    →
 //! staging/merged  (Agent cwd)
 //!
-//! After the Attempt: unmount, keep staging.
+//! After the Execution: unmount, keep staging.
 //! Review → apply_overlay (upper → target) | discard_overlay
 //! ```
 //!
@@ -632,8 +632,8 @@ fn embedded_mount_error(error: anyhow::Error) -> OverlayError {
 
 fn wait_merged_ready(merged: &Path, session: &OverlaySession) -> Result<(), OverlayError> {
     // FSKit activates volumes asynchronously; concurrent mounts can exceed 2.5s.
-    let attempts = if cfg!(target_os = "macos") { 600 } else { 50 };
-    for _ in 0..attempts {
+    let executions = if cfg!(target_os = "macos") { 600 } else { 50 };
+    for _ in 0..executions {
         if session.has_exited() {
             return Err(OverlayError::Mount(
                 "embedded FUSE request loop exited before mount became ready".into(),

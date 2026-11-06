@@ -1,4 +1,4 @@
-import { CHAPTERS, DURATION, EVENTS, INITIAL_FILES, INITIAL_TIME, JOBS, counters, label, stateAt } from './home-scenario.js';
+import { CHAPTERS, DURATION, EVENTS, INITIAL_FILES, INITIAL_TIME, SESSIONS, counters, label, stateAt } from './home-scenario.js';
 import { escapeHTML as esc, historySVG, WINDOW } from './home-history.js';
 
 function mountDemo(root) {
@@ -32,40 +32,40 @@ function mountDemo(root) {
     $('[data-action="fit"]').setAttribute('aria-pressed', String(fit));
     $('[data-action="follow"]').disabled = following && !fit;
   }
-  function renderJobs() {
-    preserveFocus($('[data-jobs]'), JOBS.map((info, n) => {
-      const j = state.jobs[info.id];
-      if (!j) return `<div class="pv-job-placeholder">${bot(info.color, n)}<span>${info.code} · ${esc(label(info.title, locale))}</span><small>${tr('等待前序任务', 'waiting')}</small></div>`;
+  function renderSessions() {
+    preserveFocus($('[data-sessions]'), SESSIONS.map((info, n) => {
+      const j = state.sessions[info.id];
+      if (!j) return `<div class="pv-session-placeholder">${bot(info.color, n)}<span>${info.code} · ${esc(label(info.title, locale))}</span><small>${tr('等待前序任务', 'waiting')}</small></div>`;
       const pending = Object.keys(j.upper).length;
       const progress = j.end === null ? Math.min(90, 12 + (time - j.start) * 2) : 100;
-      return `<button type="button" class="pv-sim-job" data-pick="${j.id}" data-state="${j.status}" aria-pressed="${selected === j.id}" style="--job-color:${j.color}">
-        <span class="pv-job-top">${bot(j.color, n)}<strong>${j.code}</strong><span>${esc(j.agent)}</span></span>
-        <span class="pv-job-name">${esc(label(j.title, locale))}</span>
-        <span class="pv-job-status">${esc(status(j))}${j.tests ? ` · ${j.tests.passed}/${j.tests.total}` : ''}</span>
-        <span class="pv-job-bottom">${pending} ${tr('暂存', 'staged')} · ${j.applied.length} ${tr('接收', 'kept')}</span>
-        <span class="pv-job-progress"><i style="width:${progress}%"></i></span>
+      return `<button type="button" class="pv-sim-session" data-pick="${j.id}" data-state="${j.status}" aria-pressed="${selected === j.id}" style="--session-color:${j.color}">
+        <span class="pv-session-top">${bot(j.color, n)}<strong>${j.code}</strong><span>${esc(j.agent)}</span></span>
+        <span class="pv-session-name">${esc(label(j.title, locale))}</span>
+        <span class="pv-session-status">${esc(status(j))}${j.tests ? ` · ${j.tests.passed}/${j.tests.total}` : ''}</span>
+        <span class="pv-session-bottom">${pending} ${tr('暂存', 'staged')} · ${j.applied.length} ${tr('接收', 'kept')}</span>
+        <span class="pv-session-progress"><i style="width:${progress}%"></i></span>
       </button>`;
     }).join(''));
   }
   function logHTML(entries) {
-    return `<div class="pv-activity-log">${entries.map((e, i) => `<div class="pv-log-entry" data-kind="${e.type}"><span class="pv-log-time">${clock(e.t)} ${e.job ? state.jobs[e.job].code : 'you'}</span><span ${i === entries.length - 1 ? 'data-typing' : ''}>${esc(label(e.message, locale))}</span></div>`).join('')}</div>`;
+    return `<div class="pv-activity-log">${entries.map((e, i) => `<div class="pv-log-entry" data-kind="${e.type}"><span class="pv-log-time">${clock(e.t)} ${e.session ? state.sessions[e.session].code : 'you'}</span><span ${i === entries.length - 1 ? 'data-typing' : ''}>${esc(label(e.message, locale))}</span></div>`).join('')}</div>`;
   }
   function renderInspector() {
-    const job = state.jobs[selected];
-    $('[data-inspector-title]').textContent = job ? label(job.title, locale) : tr('协调记录', 'Coordination');
-    $('[data-inspector-code]').textContent = job ? `${job.code} · ${job.agent}` : 'checkout';
-    if (!job) {
+    const session = state.sessions[selected];
+    $('[data-inspector-title]').textContent = session ? label(session.title, locale) : tr('协调记录', 'Coordination');
+    $('[data-inspector-code]').textContent = session ? `${session.code} · ${session.agent}` : 'checkout';
+    if (!session) {
       const significant = state.log.filter(e => !['read', 'write'].includes(e.type));
-      $('[data-inspector]').innerHTML = `<p class="pv-panel-summary">${tr('先检查候选，再接收文件。工作区的变化始终留在主线上。', 'Review proposals before accepting files. Changes to your workspace stay on the main line.')}</p>${logHTML(significant.slice(-9))}<div class="pv-panel-hint">${bot('#81b8ff', 0)}${tr('点选一个任务，查看它的差异和执行记录。', 'Select a Job to inspect its diff and activity.')}</div>`;
+      $('[data-inspector]').innerHTML = `<p class="pv-panel-summary">${tr('先检查候选，再接收文件。工作区的变化始终留在主线上。', 'Review proposals before accepting files. Changes to your workspace stay on the main line.')}</p>${logHTML(significant.slice(-9))}<div class="pv-panel-hint">${bot('#81b8ff', 0)}${tr('点选一个任务，查看它的差异和执行记录。', 'Select a Session to inspect its diff and activity.')}</div>`;
       return;
     }
     // Keep accepted files available for inspection, with their original proposal.
-    const writes = job.log.filter(e => e.type === 'write');
-    const files = [...new Set([...Object.keys(job.upper), ...writes.map(e => e.path), ...job.applied])];
+    const writes = session.log.filter(e => e.type === 'write');
+    const files = [...new Set([...Object.keys(session.upper), ...writes.map(e => e.path), ...session.applied])];
     if (!files.includes(chosenFile)) chosenFile = files[0] || null;
     const path = chosenFile;
-    const proposed = path ? job.upper[path] ?? [...writes].reverse().find(e => e.path === path)?.content : null;
-    const before = path ? job.baseline[path] : null;
+    const proposed = path ? session.upper[path] ?? [...writes].reverse().find(e => e.path === path)?.content : null;
+    const before = path ? session.baseline[path] : null;
     let diff = '';
     if (proposed !== null && proposed !== undefined) {
       const oldLines = (before || '').split('\n');
@@ -73,14 +73,14 @@ function mountDemo(root) {
       diff = oldLines.filter(l => l && !newLines.includes(l)).map(l => `<span class="pv-diff-removed">− ${esc(l)}</span>`).join('');
       diff += newLines.map(l => `<span class="${oldLines.includes(l) ? 'pv-diff-context' : 'pv-diff-added'}">${oldLines.includes(l) ? '  ' : '+ '}${esc(l)}</span>`).join('');
     }
-    const conflict = job.conflicts.includes(path);
-    const disposition = job.applied.includes(path) ? tr('已接收', 'accepted') : job.status === 'dropped' ? tr('已丢弃 · 历史记录', 'discarded · history') : tr('候选差异', 'proposed diff');
-    $('[data-inspector]').innerHTML = `<p class="pv-panel-summary">${esc(label(job.task, locale))}</p>
+    const conflict = session.conflicts.includes(path);
+    const disposition = session.applied.includes(path) ? tr('已接收', 'accepted') : session.status === 'dropped' ? tr('已丢弃 · 历史记录', 'discarded · history') : tr('候选差异', 'proposed diff');
+    $('[data-inspector]').innerHTML = `<p class="pv-panel-summary">${esc(label(session.task, locale))}</p>
       ${files.length ? `<label class="pv-file-picker"><span>${tr('查看文件', 'Inspect file')}</span><select data-file>${files.map(p => `<option value="${esc(p)}" ${p === path ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></label>
       <div class="pv-diff-panel"><div class="pv-diff-label">${disposition}</div><pre><code>${diff}</code></pre></div>` : `<div class="pv-panel-empty">${tr('尚无候选修改', 'No proposed edits yet')}</div>`}
       ${conflict ? `<p class="pv-conflict-note">${tr('原像与当前文件不同，拒绝覆盖。你的说明仍在原项目里。', 'The baseline differs from the current file. Apply refuses to overwrite your note.')}</p>` : ''}
-      ${job.tests ? `<p class="pv-test-badge" data-pass="${job.tests.passed === job.tests.total}">${job.tests.passed}/${job.tests.total} ${tr('示例测试', 'example tests')}</p>` : ''}
-      <div class="pv-terminal-heading">${tr('任务记录', 'Job activity')} · Host</div>${logHTML(job.log.slice(-4))}`;
+      ${session.tests ? `<p class="pv-test-badge" data-pass="${session.tests.passed === session.tests.total}">${session.tests.passed}/${session.tests.total} ${tr('示例测试', 'example tests')}</p>` : ''}
+      <div class="pv-terminal-heading">${tr('任务记录', 'Session activity')} · Host</div>${logHTML(session.log.slice(-4))}`;
   }
   function renderProject() {
     const price = state.files['shop/pricing.py'];
@@ -101,7 +101,7 @@ function mountDemo(root) {
         [c.running, tr('正在执行', 'running')], [c.staged, tr('候选文件', 'staged files')],
         [c.accepted, tr('已接收文件', 'accepted files')], [c.conflicts, tr('冲突拦截', 'conflict caught')],
       ].map(([n, name]) => `<div><strong>${n}</strong><span>${name}</span></div>`).join('');
-      renderJobs(); renderProject(); renderInspector();
+      renderSessions(); renderProject(); renderInspector();
     }
     renderHistory();
     const chapter = CHAPTERS.findLastIndex(c => c.t <= time);
@@ -110,7 +110,7 @@ function mountDemo(root) {
     root.querySelectorAll('[data-chapter]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.chapter) === chapter)));
     $('[data-time-range]').value = time;
     $('[data-clock]').textContent = `${clock(time)} / ${clock(DURATION)}`;
-    const recent = selected ? state.jobs[selected]?.log.at(-1) : state.log.filter(e => !['read', 'write'].includes(e.type)).at(-1);
+    const recent = selected ? state.sessions[selected]?.log.at(-1) : state.log.filter(e => !['read', 'write'].includes(e.type)).at(-1);
     const typing = $('[data-typing]');
     if (typing && recent) {
       const full = label(recent.message, locale);
@@ -147,7 +147,7 @@ function mountDemo(root) {
   }
   function seek(next) {
     pause(); time = Math.max(0, Math.min(DURATION, next)); following = true;
-    if (selected && !stateAt(time).jobs[selected]) selected = null;
+    if (selected && !stateAt(time).sessions[selected]) selected = null;
     render(true);
     $('[data-announcement]').textContent = label(CHAPTERS.findLast(c => c.t <= time).note, locale);
   }

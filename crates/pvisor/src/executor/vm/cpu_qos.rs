@@ -42,7 +42,7 @@ pub(super) struct GroupBinding {
     cookie: u64,
 }
 
-/// One sleeping, credential-free owner pins the LS group across Attempts.
+/// One sleeping, credential-free owner pins the LS group across Executions.
 /// Each VMM inherits its selected policy/cookie before creating any threads.
 #[derive(Debug)]
 pub struct CpuQosGroup {

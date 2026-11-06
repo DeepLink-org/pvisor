@@ -1,6 +1,6 @@
 {
   "agentctl": {
-    "attempt_id": "timeout-run-attempt_id",
+    "execution_id": "timeout-run-execution_id",
     "clients": [],
     "directive": {
       "kind": "continue"
@@ -113,7 +113,7 @@
   "filesystem": {
     "access_policy": {
       "context": {
-        "attempt_id": "timeout-run-attempt_id",
+        "execution_id": "timeout-run-execution_id",
         "audit_socket": null,
         "run_id": "timeout-run-run_id",
         "view": "workspace"
@@ -609,16 +609,16 @@
     "requested": {}
   },
   "review_context": {
-    "attempt_id": "timeout-run-attempt_id",
+    "execution_id": "timeout-run-execution_id",
     "checkpoint_id": null,
     "execution_evidence": "historical_bundle",
     "file_view": "staged_upper_with_external_lowers",
-    "job_id": "timeout-run-run_id",
+    "session_id": "timeout-run-run_id",
     "workspace_generation": 0
   },
   "run": {
     "agent": "sh",
-    "attempt_id": "timeout-run-attempt_id",
+    "execution_id": "timeout-run-execution_id",
     "command": [
       "/bin/sh",
       "-c",
@@ -632,7 +632,7 @@
     },
     "failure": {
       "kind": "deadline_exceeded",
-      "message": "attempt exceeded 100 ms deadline",
+      "message": "execution exceeded 100 ms deadline",
       "retryable": false
     },
     "finished_at_unix_ms": 0,
@@ -747,7 +747,7 @@
           "exit_code": null,
           "failure": {
             "kind": "deadline_exceeded",
-            "message": "attempt exceeded 100 ms deadline",
+            "message": "execution exceeded 100 ms deadline",
             "retryable": false
           }
         },

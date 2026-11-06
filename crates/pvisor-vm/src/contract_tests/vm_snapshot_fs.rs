@@ -561,7 +561,7 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     assert_eq!(serde_json::to_vec(server).unwrap(), pristine);
     let mut rebound = server.clone();
     let mut policy = pvisor_overlay_core::FileAccessPolicy::default();
-    policy.bind_session("restored-run", "restored-attempt", "rootfs");
+    policy.bind_session("restored-run", "restored-execution", "rootfs");
     rebound.rebind_overlay_policy(&policy).unwrap();
     let rebound = serde_json::to_value(&rebound).unwrap();
     let rebound_policy: pvisor_overlay_core::FileAccessPolicy = serde_json::from_value(
@@ -571,8 +571,8 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     assert!(rebound_policy.same_rules(&pvisor_overlay_core::FileAccessPolicy::default()));
     assert_eq!(rebound_policy.context().unwrap().run_id, "restored-run");
     assert_eq!(
-        rebound_policy.context().unwrap().attempt_id,
-        "restored-attempt"
+        rebound_policy.context().unwrap().execution_id,
+        "restored-execution"
     );
     assert!(server.rebind_owned_copy(&copied, &copied).is_err());
     assert_eq!(serde_json::to_vec(server).unwrap(), pristine);

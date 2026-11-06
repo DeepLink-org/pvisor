@@ -65,12 +65,12 @@ feedback = execute(task, EXAMPLE / "candidate.patch")
 
 `execute` is an example adapter, not an official SDK. It takes a task dictionary
 and patch path, then returns a JSON-serializable dictionary with `task_id`,
-`sample_id`, `job_id`, `attempt_id`, `records_dir` and `steps`. Each step preserves
+`sample_id`, `session_id`, `execution_id`, `records_dir` and `steps`. Each step preserves
 its command and tool-call ID alongside stdout, stderr, exit code and timeout status.
 It saves the same feedback in `sample.json` before discarding successful stages.
 
 `execute` 是示例适配函数，不是官方 SDK。输入为任务字典和补丁路径，返回可序列化为
-JSON 的字典，包含任务、样本、Job／Attempt 身份、记录目录及 `steps`。每一步保留
+JSON 的字典，包含任务、样本、Session／Execution 身份、记录目录及 `steps`。每一步保留
 命令与工具调用 ID，以及输出、退出码和超时状态；清理成功任务的 stage 前，先将
 同样的反馈保存为 `sample.json`。
 
@@ -88,7 +88,7 @@ Worker 属于框架；跨节点调度和评分不由此适配函数负责。
 
 Expected feedback: step 42 exits 0 with `7 passed`; step 43 exits 0 with `Syntax OK`.
 The printed `Records` directory under `.work/` contains `sample.json` (task,
-Job/Attempt IDs and each call's stdout/stderr/exit code/timeout status) and
+Session/Execution IDs and each call's stdout/stderr/exit code/timeout status) and
 `bundle.json` (VM execution record). No fixed elapsed time is promised.
 
 预期反馈：第 42 步退出码为 0、显示 `7 passed`；第 43 步退出码为 0、显示 `Syntax OK`。
@@ -142,13 +142,13 @@ This example runs independently of `mise run examples`.
 
 Verified on 2026-10-25 on gpu03 (Linux x86_64/KVM), CLI
 `0.3.0+g35.b318715`: both original calls exited 0, with `7 passed` and `Syntax OK`;
-the caller script received both observations and Job/Attempt IDs.
+the caller script received both observations and Session/Execution IDs.
 The prepared base repository stayed clean.
 This run used an offline copy of the recorded task image's initialized rootfs.
 A fresh registry download was not verified because gpu03 could not resolve Docker Hub.
 
 2026-10-25 在 gpu03（Linux x86_64/KVM）、CLI `0.3.0+g35.b318715` 上验证：两条原始
-命令退出码均为 0，分别输出 `7 passed` 与 `Syntax OK`；调用脚本收到两条反馈和 Job／Attempt ID，
+命令退出码均为 0，分别输出 `7 passed` 与 `Syntax OK`；调用脚本收到两条反馈和 Session／Execution ID，
 基础代码仓库保持未修改。本次使用原任务镜像已初始化 rootfs 的离线副本；
 gpu03 无法解析 Docker Hub，未验证首次在线拉取。
 

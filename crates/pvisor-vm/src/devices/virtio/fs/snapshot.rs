@@ -137,7 +137,7 @@ impl ServerSnapshot {
     pub fn verify_frozen_backing(&self) -> io::Result<()> {
         self.fs.verify_frozen_backing()
     }
-    /// Change only the audit/Attempt binding, preserving every authorization rule.
+    /// Change only the audit/Execution binding, preserving every authorization rule.
     pub fn rebind_overlay_policy(
         &mut self,
         policy: &pvisor_overlay_core::FileAccessPolicy,

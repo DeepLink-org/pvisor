@@ -648,7 +648,7 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
     .unwrap();
     let options = WriteBufferOptions {
         budget_bytes: 4 * 1024 * 1024,
-        max_jobs: 3,
+        max_tasks: 3,
         batch_bytes: 4096,
         max_chunks: 1,
         max_delay: Duration::ZERO,
@@ -662,7 +662,7 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
             .unwrap();
         assert!(!negotiated.intersects(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK));
         assert_eq!(fs.host_writeback_options.budget_bytes, options.budget_bytes);
-        assert_eq!(fs.host_writeback_options.max_jobs, options.max_jobs);
+        assert_eq!(fs.host_writeback_options.max_tasks, options.max_tasks);
         assert_eq!(fs.host_writeback_options.batch_bytes, options.batch_bytes);
         assert_eq!(fs.host_writeback_options.max_chunks, options.max_chunks);
         assert_eq!(fs.host_writeback_options.max_delay, options.max_delay);
@@ -693,10 +693,10 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
         // One blocking control target plus two accepted native writes. The
         // custom one-chunk limit must apply after both INITs, rather than
         // silently returning to default coalescing after DESTROY.
-        assert_eq!(buffer.stats().peak_jobs, 3);
+        assert_eq!(buffer.stats().peak_sessions, 3);
         gate.release();
         fs.flush(host_buffer_context(), inode, handle, 0).unwrap();
-        assert_eq!((buffer.stats().total_jobs, buffer.stats().batches), (3, 3));
+        assert_eq!((buffer.stats().total_sessions, buffer.stats().batches), (3, 3));
         assert_eq!(
             std::fs::read(temp.path().join("upper/file")).unwrap(),
             b"aabb"

@@ -25,7 +25,7 @@ pub(super) struct LaunchBinding {
     pub private_roots: Vec<LowerBinding>,
     pub compatibility: Compatibility,
     pub run_id: String,
-    pub attempt_id: String,
+    pub execution_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +89,7 @@ pub(super) struct CaptureRequest {
 pub(crate) struct CaptureReady {
     pub directory: PathBuf,
     pub run_id: String,
-    pub attempt_id: String,
+    pub execution_id: String,
     pub created_at_unix_ms: u64,
 }
 
@@ -147,7 +147,7 @@ impl std::fmt::Debug for PreparedRestore {
 pub(super) fn binding(
     store: PathBuf,
     run_id: String,
-    attempt_id: String,
+    execution_id: String,
     firmware: Option<&Path>,
     filesystem_pool: Option<&Path>,
 ) -> anyhow::Result<LaunchBinding> {
@@ -163,7 +163,7 @@ pub(super) fn binding(
             let pool = pool.canonicalize()?;
             ensure!(
                 pool != store,
-                "native filesystem pool cannot be the Job's writable store"
+                "native filesystem pool cannot be the Session's writable store"
             );
             SnapshotStore::with_filesystem_pool(&store, &pool)?;
             Ok(pool)
@@ -180,7 +180,7 @@ pub(super) fn binding(
         private_roots: vec![],
         compatibility: compatibility(firmware)?,
         run_id,
-        attempt_id,
+        execution_id,
     })
 }
 
@@ -220,7 +220,7 @@ fn compatibility_with(firmware: Option<&Path>, parallel: bool) -> anyhow::Result
             host_boot,
             build,
             firmware,
-            profile: "pvisor-job-owned-overlay-v1".into(),
+            profile: "pvisor-session-owned-overlay-v1".into(),
         })
     })
 }
@@ -297,7 +297,7 @@ pub(super) enum Publication {
 /// Rejected preparation receives CommitReply and a final acknowledgement.
 /// An outer error is an uncertain seal: publication may have renamed an object
 /// before a directory fsync failed. The supervisor must close IPC and terminate
-/// the frozen attempt without allowing a second capture under the same key.
+/// the frozen execution without allowing a second capture under the same key.
 pub(super) fn publish(
     binding: &LaunchBinding,
     ready: CaptureReady,
@@ -310,7 +310,7 @@ pub(super) fn publish(
         ensure!(
             ready.directory == directory
                 && ready.run_id == binding.run_id
-                && ready.attempt_id == binding.attempt_id
+                && ready.execution_id == binding.execution_id
                 && ready.created_at_unix_ms > 0,
             "native checkpoint capture binding mismatch"
         );
@@ -343,12 +343,12 @@ pub(super) fn publish(
                 (saved.version == 1 && saved.private_sources.is_empty()
                     || saved.version == 2 && binding.filesystem_pool.is_some())
                     && saved.run_id == binding.run_id
-                    && saved.attempt_id == binding.attempt_id
+                    && saved.execution_id == binding.execution_id
                     && saved.created_at_unix_ms == ready.created_at_unix_ms
                     && saved.ram_storage == storage
                     && (1..=8).contains(&saved.cpus)
                     && saved.memory_mib > 0,
-                "captured machine belongs to another Job/Attempt or RAM contract"
+                "captured machine belongs to another Session/Execution or RAM contract"
             );
             native::validate_private_sources(&saved, binding)?;
             let source_references =
@@ -512,8 +512,8 @@ pub(super) fn publish(
                 filesystem_capture_stats: None,
             })
     };
-    let publication =
-        publication.context("checkpoint seal outcome is uncertain; terminating frozen attempt")?;
+    let publication = publication
+        .context("checkpoint seal outcome is uncertain; terminating frozen execution")?;
     #[cfg(target_os = "linux")]
     if let Some(stats) = publication.filesystem_capture_stats {
         crate::util::startup_detail_run(
@@ -560,7 +560,7 @@ pub(super) fn publish(
         snapshot_id: publication.id,
         store: binding.store.clone(),
         source_run_id: binding.run_id.clone(),
-        source_attempt_id: binding.attempt_id.clone(),
+        source_execution_id: binding.execution_id.clone(),
         created_at_unix_ms: ready.created_at_unix_ms,
         ram_storage: storage,
     };
@@ -576,7 +576,7 @@ fn receipt_path(binding: &LaunchBinding, request: &str) -> anyhow::Result<PathBu
     use sha2::{Digest, Sha256};
     let key = crate::util::encode_hex(&Sha256::digest(serde_json::to_vec(&(
         &binding.run_id,
-        &binding.attempt_id,
+        &binding.execution_id,
         request,
     ))?));
     Ok(binding.store.join("requests").join(format!("{key}.json")))
@@ -611,7 +611,7 @@ pub(super) fn lookup_request(
     ensure!(
         checkpoint.store == binding.store
             && checkpoint.source_run_id == binding.run_id
-            && checkpoint.source_attempt_id == binding.attempt_id
+            && checkpoint.source_execution_id == binding.execution_id
             && checkpoint.ram_storage == storage,
         "checkpoint request id conflicts with its original capture binding"
     );
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_rejects_another_attempt_before_creating_objects() {
+    fn publication_rejects_another_execution_before_creating_objects() {
         let temp = tempfile::tempdir().unwrap();
         let store = temp.path().join("store");
         SnapshotStore::new(&store).unwrap();
@@ -702,15 +702,15 @@ mod tests {
                 host_boot: "boot".into(),
                 build: "build".into(),
                 firmware: "firmware".into(),
-                profile: "pvisor-job-owned-overlay-v1".into(),
+                profile: "pvisor-session-owned-overlay-v1".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         };
         let ready = CaptureReady {
             directory: directory.clone(),
             run_id: binding.run_id.clone(),
-            attempt_id: "another-attempt".into(),
+            execution_id: "another-execution".into(),
             created_at_unix_ms: 1,
         };
         let Publication::Rejected(error) = publish(
@@ -737,7 +737,7 @@ mod tests {
                 request_id: "checkpoint".into(),
                 ram_storage: SnapshotRamStorage::Compressed,
             },
-            directory: PathBuf::from("/private/job/execution-snapshots/captures/capture-run"),
+            directory: PathBuf::from("/private/session/execution-snapshots/captures/capture-run"),
             filesystem_reuse: (0..128)
                 .map(|slot| FilesystemReuse {
                     slot,
@@ -771,7 +771,7 @@ mod tests {
         let pool = make("pool");
         let pool_child = make("pool/tree");
         let binding = LaunchBinding {
-            store: make("job/snapshots"),
+            store: make("session/snapshots"),
             filesystem_pool: Some(pool.clone()),
             readonly_lowers: vec![],
             private_roots: vec![],
@@ -782,7 +782,7 @@ mod tests {
                 profile: "pool-boundary-test".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         };
         let device = OverlayDeviceSpec {
             lower_mutability: Vec::new(),
@@ -851,7 +851,7 @@ mod tests {
                 profile: "receipt-test".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         };
         let store = SnapshotStore::new(&binding.store).unwrap();
         let pending = store.begin().unwrap();
@@ -863,7 +863,7 @@ mod tests {
             snapshot_id,
             store: binding.store.clone(),
             source_run_id: binding.run_id.clone(),
-            source_attempt_id: binding.attempt_id.clone(),
+            source_execution_id: binding.execution_id.clone(),
             created_at_unix_ms: 1,
             ram_storage: SnapshotRamStorage::Raw,
         };
@@ -879,7 +879,7 @@ mod tests {
                 .is_none()
         );
         let mut foreign = checkpoint.clone();
-        foreign.source_attempt_id = "foreign".into();
+        foreign.source_execution_id = "foreign".into();
         remember_request(&binding, "foreign", &foreign).unwrap();
         assert!(lookup_request(&binding, "foreign", SnapshotRamStorage::Raw).is_err());
         store.delete(&checkpoint.snapshot_id).unwrap();
@@ -911,7 +911,7 @@ pub(super) mod native {
         pub cpu_qos: Option<pvisor_core::CpuQosClass>,
         pub version: u32,
         pub run_id: String,
-        pub attempt_id: String,
+        pub execution_id: String,
         pub created_at_unix_ms: u64,
         pub ram_storage: SnapshotRamStorage,
         pub root: OverlayDeviceSpec,
@@ -1501,7 +1501,7 @@ pub(super) mod native {
         let storage = storage.canonicalize()?;
         ensure!(
             !storage.starts_with(&checkpoint.store) && !checkpoint.store.starts_with(&storage),
-            "restored Attempt and source snapshot store must be independent"
+            "restored Execution and source snapshot store must be independent"
         );
         let restore_binding = binding(
             storage.join("execution-snapshots"),
@@ -1532,7 +1532,7 @@ pub(super) mod native {
                     && published.manifest().version == 5
                     && !saved.private_sources.is_empty())
                 && saved.run_id == checkpoint.source_run_id
-                && saved.attempt_id == checkpoint.source_attempt_id
+                && saved.execution_id == checkpoint.source_execution_id
                 && saved.created_at_unix_ms == checkpoint.created_at_unix_ms
                 && saved.ram_storage == checkpoint.ram_storage
                 && saved.cpus == settings.cpus as u8
@@ -1653,10 +1653,10 @@ pub(super) mod native {
             "invalid snapshot filesystem root"
         );
         let preparation = storage.join("execution-restore");
-        fs::create_dir(&preparation).context("Attempt restore preparation already exists")?;
-        // V5 captures retain authenticated original backing paths. A Job stage
+        fs::create_dir(&preparation).context("Execution restore preparation already exists")?;
+        // V5 captures retain authenticated original backing paths. A Session stage
         // inside those roots cannot also contain their independent restored
-        // copies. Keep control metadata in the Attempt and place this owned
+        // copies. Keep control metadata in the Execution and place this owned
         // forest beside sealed objects, outside every original source. Retain
         // it after VM exit for review/apply, just like ordinary stage uppers.
         let rootfs = if std::iter::once(&saved.root)
@@ -1675,7 +1675,7 @@ pub(super) mod native {
         {
             let forest = checkpoint
                 .store
-                .join("restored-attempts")
+                .join("restored-executions")
                 .join(uuid::Uuid::new_v4().to_string());
             Persistence::create_dir_all_durable(&forest)?;
             forest.join("rootfs")
@@ -1837,7 +1837,7 @@ pub(super) mod native {
         }
         let recorded = workspace.as_ref().unwrap_or(&root);
         // This private copy comes from a verified, durably published native
-        // checkpoint. Seal the copy before the Attempt admits its writers.
+        // checkpoint. Seal the copy before the Execution admits its writers.
         pvisor_overlay_core::stage::seal(&recorded.upper, &recorded_preimages)?;
         let target = recorded
             .apply_target
@@ -2040,7 +2040,7 @@ pub(super) mod native {
                 profile: "direct-source".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         };
         let capture = make("capture/rootfs");
         let mut collected = CaptureLayers {
@@ -2202,7 +2202,7 @@ pub(super) mod native {
         let binding = spec
             .checkpoint
             .as_ref()
-            .context("Job has no durable checkpoint binding")?;
+            .context("Session has no durable checkpoint binding")?;
         ensure!(
             filesystem_reuse.len() <= 128
                 && filesystem_reuse.iter().all(|reuse| reuse.slot < 128
@@ -2246,7 +2246,7 @@ pub(super) mod native {
         ensure!(
             directory.parent() == Some(binding.store.join("captures").as_path())
                 && directory.canonicalize()? == directory,
-            "capture directory is outside Job checkpoint store"
+            "capture directory is outside Session checkpoint store"
         );
         let ram = OpenOptions::new()
             .create_new(true)
@@ -2339,7 +2339,7 @@ pub(super) mod native {
                 1
             },
             run_id: binding.run_id.clone(),
-            attempt_id: binding.attempt_id.clone(),
+            execution_id: binding.execution_id.clone(),
             created_at_unix_ms,
             ram_storage: storage,
             root,
@@ -2354,7 +2354,7 @@ pub(super) mod native {
         Ok(CaptureReady {
             directory: directory.to_owned(),
             run_id: binding.run_id.clone(),
-            attempt_id: binding.attempt_id.clone(),
+            execution_id: binding.execution_id.clone(),
             created_at_unix_ms,
         })
     }

@@ -149,7 +149,7 @@ def github_publish(directory: Path, version: str, repository: str, tag: str) -> 
 
 
 def prepare_pypi(directory: Path, version: str) -> bool:
-    """Remove only checksum-identical wheel copies from this job's staging area."""
+    """Remove only checksum-identical wheel copies from the publication staging area."""
     existing = pypi_existing(directory, version)
     for path in existing:
         path.unlink()

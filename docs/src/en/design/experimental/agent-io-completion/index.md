@@ -1,11 +1,11 @@
 # Agent asynchronous I/O and completion queues (EXP-003)
 
-Let pVisor own the inputs, execution and results of downloads, model calls and bulk writes. After submitting work, the guest can compute further or offload memory when the whole guest is waiting. The host continues I/O, retains completion results, and lets the existing Attempt owner resume the guest and deliver them.
+Let pVisor own the inputs, execution and results of downloads, model calls and bulk writes. After submitting work, the guest can compute further or offload memory when the whole guest is waiting. The host continues I/O, retains completion results, and lets the existing Execution owner resume the guest and deliver them.
 
 | Item | Current status |
 |---|---|
 | Stage | **Restricted PoC, 2026-10-18; M0 native wait loop and host write-buffer foundation implemented, complete Agent IOCP pending implementation and validation** |
-| Initial profile | Linux x86_64/KVM, shared file RAM, one Attempt exclusively owning its stage; disabled by default |
+| Initial profile | Linux x86_64/KVM, shared file RAM, one Execution exclusively owning its stage; disabled by default |
 | Filesystem path | Initial Linux host write buffer: WB=0, DAX=0; guest batch transfer and larger caches follow later |
 | Agent path | Proposed scoped submit / wait / cancel / ack; the first version assumes a thin adapter is allowed, with compatibility choice pending |
 | Resource objective | Reduce host interactions and guest resident time; improve useful throughput under fixed CPU/memory budgets |
@@ -31,7 +31,7 @@ The pipeline needs an explicit ownership handoff: the host must own the input by
 | VM pause/offload/resume | CPU stop, device RAM gate, reclamation and restoration | M0 now owns pauses and fences stale waits; resource reservations are not released or reacquired |
 | AgentCtl cooperative quiescence | Fixed participants, generation, matching ACKs | Scoped VM guest transport and I/O task protocol |
 
-These observations refer to current `feature/emb_meta`: `fw/patches/0042-fuse-batched-writeback.patch`, `crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`, `crates/pvisor-gateway/src/model_wait.rs`, `crates/pvisor-overlaynet/src/vm.rs` and `crates/pvisor/src/runtime/agentctl.rs`. Embedded Gateway configuration can now explicitly install an Attempt-bound native model-wait prototype, disabled by default. AgentCtl currently uses a host Unix socket; the VM executor removes its environment variables, so Host credentials cannot simply be forwarded to the guest.
+These observations refer to current `feature/emb_meta`: `fw/patches/0042-fuse-batched-writeback.patch`, `crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`, `crates/pvisor-gateway/src/model_wait.rs`, `crates/pvisor-overlaynet/src/vm.rs` and `crates/pvisor/src/runtime/agentctl.rs`. Embedded Gateway configuration can now explicitly install an Execution-bound native model-wait prototype, disabled by default. AgentCtl currently uses a host Unix socket; the VM executor removes its environment variables, so Host credentials cannot simply be forwarded to the guest.
 
 Ordinary HTTPS retains TLS state in the guest. The current TCP bridge gives each flow 64 KiB of host receive credits, plus a separate 64 KiB smoltcp buffer. Guest inactivity eventually causes backpressure. A full download needs a host-owned application request and result destination to continue while the guest is offloaded.
 
@@ -49,9 +49,9 @@ flowchart LR
     A --> R[Retire guest descriptors]
     A --> W[Host workers and spool]
     R --> Q[Whole guest quiescence]
-    Q --> O[Attempt owner offloads RAM]
+    Q --> O[Execution owner offloads RAM]
     W --> C[Host completion record]
-    C --> F[Attempt and pause epoch checks]
+    C --> F[Execution and pause epoch checks]
     F --> L[Admit resources and resume]
     L --> D[Deliver completion to guest]
 ```
@@ -80,7 +80,7 @@ Initial background entries hold only host bytes, stable object FDs/references, o
 
 Dirty guest pagecache bytes that have not produced a FUSE WRITE are not transferred by draining host queues. Pausing vCPUs also stops guest writeback timers.
 
-Add a proposed transfer fence: the guest stops producing new writes for the batch, submits dirty data through the target cut, and waits until those bytes reach host accepted. It then enters cooperative quiescence; the Attempt owner pauses CPUs and drains short-lived device RAM references. The fence allows backend writes to continue and does not wait for completed/durable. Without guest cooperation, only already transferred requests can proceed; untransferred dirty pages remain part of saved guest RAM.
+Add a proposed transfer fence: the guest stops producing new writes for the batch, submits dirty data through the target cut, and waits until those bytes reach host accepted. It then enters cooperative quiescence; the Execution owner pauses CPUs and drains short-lived device RAM references. The fence allows backend writes to continue and does not wait for completed/durable. Without guest cooperation, only already transferred requests can proceed; untransferred dirty pages remain part of saved guest RAM.
 
 An early WRITE reply alone does not complete this handoff. The current guest worker can next submit timestamp SETATTR; READ/FLUSH can also wait for completed while retaining RAM leases. Later work must adopt delayed metadata and prove no such requests remain before parking, or add host-owned requests with deferred reply tickets. During offload those tickets retain results only; restoration reacquires RAM access before replying and publishing used rings. This changes existing descriptor/freeze contracts and is not provided by the current host buffer.
 
@@ -90,7 +90,7 @@ Guest buffers serve short coalescing windows. Longer backlogs use bounded host m
 
 Pin the file object before asynchronous acceptance. Background workers must not reopen an old pathname. Object retention must cover pending data, delayed inode metadata, LOOKUP/FORGET, open handles and queue references, handling unlink, same-name replacement, hardlinks and copy-up correctly.
 
-The historical close → unlink → first syncfs ENOENT is fixed by host object retirement: guest WB sessions retain the original nodeid after unlink or overwrite-rename, pin an upper native O_PATH reference or keep logical lower attributes, and release it at final FORGET. Delayed MTIME/CTIME after last-handle close still targets the original object, without ignoring unknown ENOENT or modifying a replacement name or immutable lower. The VM crate already contains this fix and independent SDK evidence; M1 still needs joint validation of blocked writes, RAM offload and Attempt teardown.
+The historical close → unlink → first syncfs ENOENT is fixed by host object retirement: guest WB sessions retain the original nodeid after unlink or overwrite-rename, pin an upper native O_PATH reference or keep logical lower attributes, and release it at final FORGET. Delayed MTIME/CTIME after last-handle close still targets the original object, without ignoring unknown ENOENT or modifying a replacement name or immutable lower. The VM crate already contains this fix and independent SDK evidence; M1 still needs joint validation of blocked writes, RAM offload and Execution teardown.
 
 The legacy VM virtio-fs host server path returns ENOSYS for FUSE_SYNCFS; the guest may treat that as success and disable subsequent calls. New host-buffer sessions add a real synchronization/error barrier. Disabled sessions retain legacy behavior, so guest syncfs success in those sessions alone does not prove host storage durability. Per-file fsync/fdatasync retain their existing path.
 
@@ -98,31 +98,31 @@ The first version covers explicitly supported ordinary cached writes. Validate a
 
 ### 2.5 Agent tasks and a scoped guest channel
 
-Initial tasks describe complete work: download to a private blob/stage, model call to a result, and bulk writes from an adopted blob. Submit first copies or seals inputs. Task references bind Job, Attempt, generation, operation ID, parameter digest and capability scope. Wait/poll reads completion state, cancel returns cancellation outcome, and ack releases result references eligible for reclamation.
+Initial tasks describe complete work: download to a private blob/stage, model call to a result, and bulk writes from an adopted blob. Submit first copies or seals inputs. Task references bind Session, Execution, generation, operation ID, parameter digest and capability scope. Wait/poll reads completion state, cancel returns cancellation outcome, and ack releases result references eligible for reclamation.
 
-Ack can release blob/spool data, while lightweight operation ID, parameter digest and dispatch/result records remain until the Attempt ends. Collected or unknown results do not cause redispatch, preserving deduplication facts.
+Ack can release blob/spool data, while lightweight operation ID, parameter digest and dispatch/result records remain until the Execution ends. Collected or unknown results do not cause redispatch, preserving deduplication facts.
 
-A new guest channel grants only the current Attempt's task capabilities; existing explicit vsock support is a possible transport. It does not forward Host control credentials. Within one Attempt, retries with identical operation IDs and parameters deduplicate; conflicting parameters fail. A disconnected waiter does not prove the task never executed. Cross-Attempt retries of remote POST/LLM effects require provider idempotency keys or reconciliation. Pending cancellation and unknown outcome are recorded separately.
+A new guest channel grants only the current Execution's task capabilities; existing explicit vsock support is a possible transport. It does not forward Host control credentials. Within one Execution, retries with identical operation IDs and parameters deduplicate; conflicting parameters fail. A disconnected waiter does not prove the task never executed. Cross-Execution retries of remote POST/LLM effects require provider idempotency keys or reconciliation. Pending cancellation and unknown outcome are recorded separately.
 
 Downloads reuse OverlayNet egress authorization and reauthorize every redirect. LLM tasks reuse Gateway credentials, protocol conversion and capture. Results enter bounded memory/spool first. Bulk filesystem tasks pass through the existing filesystem owner, Core operation locks, preimage/Journal handling, dirty tracking and cache invalidation. The supervisor cannot directly modify an active upper.
 
 LLM integration can initially reuse enter / before_delivery for one waiting interval. Existing SSE restoration happens on the first nonempty network chunk, which may be a heartbeat. Sleeping through a full inference requires independent result spool, byte/deadline limits, a deliverable-data condition and disconnect semantics. Avoid restoring the VM for every heartbeat or token.
 
-### 2.6 Attempt control and restoration ownership
+### 2.6 Execution control and restoration ownership
 
-Task tables and spool belong to the existing Attempt; existing runtime retains ownership of Run terminal state. Automatic waits hold an invalidatable pause epoch. The same control owner arbitrates manual pause, cancellation, termination and lease loss. Current stage RunLease is a storage ownership lock, not existing CPU admission.
+Task tables and spool belong to the existing Execution; existing runtime retains ownership of Run terminal state. Automatic waits hold an invalidatable pause epoch. The same control owner arbitrates manual pause, cancellation, termination and lease loss. Current stage RunLease is a storage ownership lock, not existing CPU admission.
 
-Record completion in host state first. Check Attempt/generation, wait epoch, valid ownership and manual pause reasons; reacquire required runtime resources, restore through existing native control, and wait for ACK before guest delivery. Old completions cannot revive a new Attempt, and automatic resume cannot remove manual pause. When completion races with offload, latch the event first; the same owner decides whether to skip reclamation or finish it and then restore, preventing lost wakeups.
+Record completion in host state first. Check Execution/generation, wait epoch, valid ownership and manual pause reasons; reacquire required runtime resources, restore through existing native control, and wait for ACK before guest delivery. Old completions cannot revive a new Execution, and automatic resume cannot remove manual pause. When completion races with offload, latch the event first; the same owner decides whether to skip reclamation or finish it and then restore, preventing lost wakeups.
 
 VM offload closes and drains the RAM gate; its current timeout causes control failure, so it cannot probe whether the guest is idle. Establish quiescence and input adoption before reclamation. An intentionally parked participant is represented by its wait epoch instead of being declared dead by ordinary heartbeat expiry.
 
 RAM offload retains the same host process and independent queues, allowing background work to continue. Machine checkpoint/fork/migration must drain queues or completely capture recoverable task state. The first version drains or explicitly rejects pending work, keeping a RAM-only snapshot from masquerading as a complete task snapshot.
 
-Attempt exit stops submissions, cancels cancellable tasks, drains adopted stage writes, fixes result/unknown remote-effect records, seals the stage, generates the Bundle, and releases its lease, in that order. Background tasks cannot write after stage sealing or publication of Run terminal state.
+Execution exit stops submissions, cancels cancellable tasks, drains adopted stage writes, fixes result/unknown remote-effect records, seals the stage, generates the Bundle, and releases its lease, in that order. Background tasks cannot write after stage sealing or publication of Run terminal state.
 
 ### 2.7 Memory budgets and asynchronous errors
 
-Bound guest dirty bytes, host pending bytes, spool bytes, FD/object counts, task counts and completion size, plus per-Attempt/runner/node totals. Apply backpressure at data admission limits. Reserve capacity for fsync, cancellation, exit and control messages so full queues can still drain. Adopt large tasks in chunks. Retain short-write, ENOSPC/EIO and worker-failure state by object and sequence; later synchronization and final Job completion must observe failures.
+Bound guest dirty bytes, host pending bytes, spool bytes, FD/object counts, task counts and completion size, plus per-Execution/runner/node totals. Apply backpressure at data admission limits. Reserve capacity for fsync, cancellation, exit and control messages so full queues can still drain. Adopt large tasks in chunks. Retain short-write, ENOSPC/EIO and worker-failure state by object and sequence; later synchronization and final Session completion must observe failures.
 
 Trading memory for performance requires comparing actually reclaimed guest memory against host pools, spool pagecache, guest/host duplicate peaks and offload backing. Bounded queues absorb bursts; sustained input above backend throughput requires backpressure. Estimate backlog bytes from input rate times permitted backlog duration, then constrain it by the total budget.
 
@@ -130,7 +130,7 @@ Trading memory for performance requires comparing actually reclaimed guest memor
 
 | Stage | Reviewable increment | Validation focus |
 |---|---|---|
-| M0 | Attempt wait ownership and real Gateway/native adapter | One controlled workload declares whole-guest waiting with x-pvisor-inference-idle; delayed LLM running/pause/offload, delivery and control races |
+| M0 | Execution wait ownership and real Gateway/native adapter | One controlled workload declares whole-guest waiting with x-pvisor-inference-idle; delayed LLM running/pause/offload, delivery and control races |
 | M1 | Fix object retention after unlink, define host sync barriers, add a host-owned WRITE queue | Guest offloads while backing writes block and host continues writing; read/write dependencies, cross-FD/hardlink ordering, errors and complete exit |
 | M2 | Guest transfer fence, larger coalescing budgets, batch submission/completion | Candidate 16/64/256 MiB budgets and multiple concurrency windows; requests, throughput, peaks and tail latency; values are experimental points |
 | M3 | Scoped guest task channel, complete download/LLM spool, bulk writes from blobs | Download/save avoids guest data round trips; reclaim throughout LLM waits; correct results, authorization and stage state |
@@ -159,11 +159,11 @@ The cache accepts eligible upper regular-file writes; synchronous, direct, appen
 
 With WB=0, close still drains through FLUSH. The initial benefit targets continuously written open files; many small write-close files do not automatically merge across files. This foundation does not implement complete offload, Agent task protocols, guest transfer fences or per-object parallelism. The guest WB=1 unlink error is fixed by independent object retirement; the new host mode still excludes guest WB=1.
 
-Quick experiments retain five fresh environments, three internal rounds per task, and a separate Ready metric excluding exit, without host-interference gates. Also measure accepted, completed, durable and Job completion times, total CPU, memory across controlled processes/cgroups and kernel caches, resident-memory time integral, offload/load latency, wake count and backing requests. Work deferred to exit must remain visible. Follow benchmark/README.md to register or reuse a protocol before measurement; raw evidence stays in benchmark .data/, separate from user rankings.
+Quick experiments retain five fresh environments, three internal rounds per task, and a separate Ready metric excluding exit, without host-interference gates. Also measure accepted, completed, durable and Session completion times, total CPU, memory across controlled processes/cgroups and kernel caches, resident-memory time integral, offload/load latency, wake count and backing requests. Work deferred to exit must remain visible. Follow benchmark/README.md to register or reuse a protocol before measurement; raw evidence stays in benchmark .data/, separate from user rankings.
 
 ### 2.10 Current validation record {#validation}
 
-2026-10-17: static review of existing writeback, Gateway, OverlayNet, VM RAM gates and Attempt control is complete, and the host write-buffer foundation is implemented. At that point guest transport, automatic restoration and new performance experiments remained unimplemented; subsequent M0 progress appears below. Pending complete-IOCP checks include offload without RAM access during blocked writes, unlink/syncfs after last-handle close, completion holes, short writes/ENOSPC, synchronization/exit with full queues, and completion racing with manual pause/cancellation.
+2026-10-17: static review of existing writeback, Gateway, OverlayNet, VM RAM gates and Execution control is complete, and the host write-buffer foundation is implemented. At that point guest transport, automatic restoration and new performance experiments remained unimplemented; subsequent M0 progress appears below. Pending complete-IOCP checks include offload without RAM access during blocked writes, unlink/syncfs after last-handle close, completion holes, short writes/ENOSPC, synchronization/exit with full queues, and completion racing with manual pause/cancellation.
 
 Linux foundation validation: mise run test -- pvisor-vm -- --test-threads=8 passed 486 tests and skipped 8, including 25 new cache/protocol checks; the filesystem/API/snapshot subset passed 192. Hardware checks failed where the sandbox hid /dev/kvm; the complete suite passed with access to actual KVM. CLI and VM shim consumer compilation checks passed. The existing guest_writeback_case on real KVM passed normal and fault modes with host buffering enabled and guest WB=0: 256 files and a continuous 32 MiB write, close/read/rename/delete/unmount checks passed; after a file-size limit caused an actual 64 KiB short write, final guest status was 125. These are correctness results, not throughput or latency improvement measurements.
 
@@ -181,4 +181,4 @@ On real KVM, `native_model_wait_case` passed `running`, `pause`, `offload`, `man
 | io_uring or worker-thread backend | Reduce thread/syscall costs and increase backend concurrency | Compare after host input adoption; ordering, buffer lifetime and completion handling still apply |
 | Guest exclusively owning a writable execution view | More metadata operations complete locally and replicate in batches | Highest authorization, Journal, copy-up, recovery and failure-semantic cost; deferred to M4 |
 
-Establish host input adoption and the Attempt completion loop first, then measure buffer capacities and backend executors. Complete tasks can connect download-to-blob and subsequent stage writes within the host, creating room to remove guest protocol processing and data round trips. The general filesystem path retains transparency and expands asynchronous coverage according to dependencies.
+Establish host input adoption and the Execution completion loop first, then measure buffer capacities and backend executors. Complete tasks can connect download-to-blob and subsequent stage writes within the host, creating room to remove guest protocol processing and data round trips. The general filesystem path retains transparency and expands asynchronous coverage according to dependencies.

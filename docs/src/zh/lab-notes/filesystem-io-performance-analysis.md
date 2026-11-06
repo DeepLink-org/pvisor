@@ -75,13 +75,13 @@ rootfs 沿用 caller-owned prepared 目录，保留 Mutable 声明，本轮不�
 | 缓存与字节 | fresh guest、未控制的热宿主 backing；确定性 SplitMix64 高熵字节，完整核对 |
 | SDK 预算 | guest 2 vCPU、512 MiB；整组 CPU 0、1、两核 quota、2 GiB、swap 0 |
 | 样本 | 每条件 5 个新环境；每环境 3 个依赖的 resident rounds；seeded 随机配对条件和 cell 顺序 |
-| host 缓存默认参数 | 64 MiB payload 容量、1,024 jobs、1 MiB batch、最多 64 chunks、10 ms 等待窗口 |
+| host 缓存默认参数 | 64 MiB payload 容量、1,024 sessions、1 MiB batch、最多 64 chunks、10 ms 等待窗口 |
 | 正确性 | guest 与 host 全字节校验、正常退出；shape 30/30、parameters 50/50 环境有效，失败均为 0 |
 | 干扰 | 没有安静期、外部构建/测试扫描或逐轮全量清单门禁；保留全部有效慢样本和团队并行活动影响 |
 
 shape 与 parameters 使用相同冻结的 host、payload、firmware 制品，完整源码和制品摘要随原始批次保存。分析使用独立的 post-collection v2；原冻结 harness 和原始记录保留。Btrfs 的挂载压缩选项不代表测得了物理压缩率，fresh guest 不代表冷磁盘。
 
-本轮实现了 host 缓存容量、batch、jobs 和等待窗口的严格配置与队列高水位/背压计数，并把前台资格检查从后台文件 I/O 锁中解耦。固定 handle lease 保证 fd 生命周期，原生写入时仍重新检查可变 flags；这些候选保留排序和错误边界，下面用消融验证收益。
+本轮实现了 host 缓存容量、batch、sessions 和等待窗口的严格配置与队列高水位/背压计数，并把前台资格检查从后台文件 I/O 锁中解耦。固定 handle lease 保证 fd 生命周期，原生写入时仍重新检查可变 flags；这些候选保留排序和错误边界，下面用消融验证收益。
 
 | shape 条件 | 改变的机制 |
 | --- | --- |
@@ -510,7 +510,7 @@ native 保留在绝对吞吐面板，VM 配对面板只展示 VM 条件，避免
 
 流写的 64:1 合并符合 64-chunk 上限；1 KiB 请求下每批 64 KiB，尚未达到 1 MiB 的字节上限。host 合批没有减少这两项负载的 FUSE WRITE、OPEN、READ、FLUSH、RELEASE 请求库存，逐文件 close 的排序边界也限制跨文件积攒。
 
-整个 CLI workspace owner 接受 25,393 次写、76,273,228 字节，执行 1,180 批；accepted 与 backing 字节一致，backing error 为 0。队列高水位为 401,288 字节、65 jobs，reserve wait 为 0。它属于整个 owner 生命周期，没有逐工具高水位；rootfs owner 接受的写入为 0。这个诊断不支持通过扩大 64 MiB 队列解决已测瓶颈。
+整个 CLI workspace owner 接受 25,393 次写、76,273,228 字节，执行 1,180 批；accepted 与 backing 字节一致，backing error 为 0。队列高水位为 401,288 字节、65 sessions，reserve wait 为 0。它属于整个 owner 生命周期，没有逐工具高水位；rootfs owner 接受的写入为 0。这个诊断不支持通过扩大 64 MiB 队列解决已测瓶颈。
 
 后续优化优先核对每次 FUSE WRITE 的固定协议成本、资格检查和 worker 分派成本，并在保留文件排序、延迟错误和显式同步边界的前提下验证候选。较慢 backing 和真正并发生产者可能改变合批价值，需新批次验证。
 

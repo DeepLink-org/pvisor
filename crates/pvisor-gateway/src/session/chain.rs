@@ -25,7 +25,7 @@ pub fn extract_claude_parent_agent_id(headers: &HeaderMap) -> Option<String> {
     header_value(headers, CLAUDE_PARENT_AGENT_ID_HEADER)
 }
 
-/// Session id from request headers only (no job fallback).
+/// Session id from request headers only (no session fallback).
 ///
 /// Priority:
 /// 1. Configured `session_header` (e.g. `x-pvisor-session-id`)

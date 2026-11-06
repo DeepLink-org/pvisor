@@ -1,7 +1,7 @@
 //! Public runtime project handoff contracts; no VM, FUSE or root privileges needed.
 #![cfg(target_os = "linux")]
 
-use pvisor::job_service::{ExportRequest, RuntimeJobService, ServiceContext};
+use pvisor::session_service::{ExportRequest, ServiceContext, SessionService};
 use pvisor::{RunBundle, RunRecord};
 use serde_json::json;
 use std::fs;
@@ -34,10 +34,10 @@ impl Fixture {
         };
         fs::create_dir_all(&upper).unwrap();
         let record: RunRecord = serde_json::from_value(json!({
-            "schema_version":1,"run_id":"handoff-job","session_id":"handoff-session","attempt_id":"handoff-attempt",
+            "schema_version":1,"run_id":"handoff-session","session_id":"handoff-session","execution_id":"handoff-execution",
             "agent":"test","pid":0,"command":["/bin/true"],"state":"completed",
             "started_at_unix_ms":10,"finished_at_unix_ms":20,"storage":stage,"workspace":project,"network":{},
-            "overlay":{"id":"handoff-job","generation":7,"target":if rootfs { Path::new("/") } else { &project },
+            "overlay":{"id":"handoff-session","generation":7,"target":if rootfs { Path::new("/") } else { &project },
                 "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
                 "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
         })).unwrap();
@@ -60,11 +60,11 @@ impl Fixture {
     }
     fn bundle_outcome(&self, state: &str, exit_code: Option<i32>) -> serde_json::Value {
         let result = serde_json::from_value(json!({
-            "run_id":"handoff-job","attempt_id":"handoff-attempt","state":state,
+            "run_id":"handoff-session","execution_id":"handoff-execution","state":state,
             "started_at_unix_ms":10,"finished_at_unix_ms":20,"exit_code":exit_code
         }))
         .unwrap();
-        let agentctl = serde_json::from_value(json!({"run_id":"handoff-job","attempt_id":"handoff-attempt","directive":{"kind":"continue"},"clients":[]})).unwrap();
+        let agentctl = serde_json::from_value(json!({"run_id":"handoff-session","execution_id":"handoff-execution","directive":{"kind":"continue"},"clients":[]})).unwrap();
         RunBundle::capture(&self.record, &result, agentctl, false)
             .unwrap()
             .write(&self.stage)
@@ -83,7 +83,7 @@ impl Fixture {
     }
     fn request(&self, paths: &[&str], all: bool) -> ExportRequest {
         ExportRequest {
-            job: pvisor::job_service::JobSelection {
+            session: pvisor::session_service::SessionSelection {
                 selector: Some(self.stage.clone()),
                 storage: self.stage.clone(),
             },
@@ -96,8 +96,8 @@ impl Fixture {
         &self,
         paths: &[&str],
         all: bool,
-    ) -> anyhow::Result<pvisor::job_service::ExportResponse> {
-        RuntimeJobService::export(&ServiceContext::default(), self.request(paths, all))
+    ) -> anyhow::Result<pvisor::session_service::ExportResponse> {
+        SessionService::export(&ServiceContext::default(), self.request(paths, all))
     }
     fn no_output(&self) {
         assert!(!self.root.path().join("export").exists());
@@ -139,9 +139,9 @@ fn root_stage_exports_only_project_files_and_logical_manifest_without_consuming(
     );
     let before = fs::read(f.stage.join("run.json")).unwrap();
     let response = f.export(&[], true).unwrap();
-    assert_eq!(response.job_id, "handoff-job");
+    assert_eq!(response.session_id, "handoff-session");
     assert_eq!(response.schema_version, 1);
-    assert_eq!(response.attempt_id.as_deref(), Some("handoff-attempt"));
+    assert_eq!(response.execution_id.as_deref(), Some("handoff-execution"));
     assert_eq!(response.state, pvisor_core::RunState::Completed);
     assert_eq!(response.exit_code, Some(0));
     assert!(!response.partial_results);
@@ -294,7 +294,7 @@ fn existing_outputs_aliases_and_protected_overlap_are_refused() {
         let mut request = f.request(&[], true);
         request.output = output.clone();
         assert!(
-            RuntimeJobService::export(&ServiceContext::default(), request).is_err(),
+            SessionService::export(&ServiceContext::default(), request).is_err(),
             "{}",
             output.display()
         );
@@ -304,7 +304,7 @@ fn existing_outputs_aliases_and_protected_overlap_are_refused() {
     symlink(&f.project, &alias).unwrap();
     let mut request = f.request(&[], true);
     request.output = alias.join("new");
-    assert!(RuntimeJobService::export(&ServiceContext::default(), request).is_err());
+    assert!(SessionService::export(&ServiceContext::default(), request).is_err());
     f.no_output();
 }
 
@@ -374,7 +374,7 @@ fn cancellation_cleans_pending_output_and_stage_is_retryable() {
         check_cancelled: Some(&cancel),
         ..Default::default()
     };
-    assert!(RuntimeJobService::export(&context, f.request(&[], true)).is_err());
+    assert!(SessionService::export(&context, f.request(&[], true)).is_err());
     f.no_output();
     assert!(
         f.export(&[], true)
@@ -414,7 +414,7 @@ fn committed_failed_cancelled_results_export_but_missing_or_changed_receipts_do_
         let response = f.export(&[], true).unwrap();
         assert!(response.destination.join("files/file").is_file());
         assert_eq!(response.schema_version, 1);
-        assert_eq!(response.attempt_id.as_deref(), Some("handoff-attempt"));
+        assert_eq!(response.execution_id.as_deref(), Some("handoff-execution"));
         assert_eq!(serde_json::to_value(response.state).unwrap(), state);
         assert_eq!(response.exit_code, exit_code);
         assert_eq!(response.partial_results, partial);
@@ -454,7 +454,7 @@ fn output_races_never_replace_a_winner_or_write_into_rebound_parent() {
             check_cancelled: Some(&callback),
             ..Default::default()
         };
-        assert!(RuntimeJobService::export(&context, request).is_err());
+        assert!(SessionService::export(&context, request).is_err());
         if race == "winner" {
             assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"winner");
             assert!(!output.join("files").exists());
@@ -491,7 +491,7 @@ fn private_backing_never_falls_back_to_packaging_permissions() {
 }
 
 #[test]
-fn existing_job_and_attempt_fences_are_not_bypassed() {
+fn existing_session_and_execution_fences_are_not_bypassed() {
     use std::os::fd::AsRawFd;
     let f = Fixture::new(false);
     fs::write(f.upper.join("file"), b"artifact").unwrap();
@@ -499,9 +499,13 @@ fn existing_job_and_attempt_fences_are_not_bypassed() {
         .read(true)
         .write(true)
         .create_new(true)
-        .open(f.stage.join("job.lock"))
+        .open(f.stage.join("session.lock"))
         .unwrap();
-    fs::set_permissions(f.stage.join("job.lock"), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(
+        f.stage.join("session.lock"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     assert_eq!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
@@ -516,12 +520,12 @@ fn existing_job_and_attempt_fences_are_not_bypassed() {
     f.export(&[], true).unwrap();
 }
 
-// Lease/Job lock files are retained coordination artifacts, not stage contents.
+// Lease/Session lock files are retained coordination artifacts, not stage contents.
 fn stage_contents(stage: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
     fn collect(root: &Path, path: &Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
         for entry in fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
-            if path == root.join("job.lock") || path == root.join("lease.lock") {
+            if path == root.join("session.lock") || path == root.join("lease.lock") {
                 continue;
             }
             let relative = path.strip_prefix(root).unwrap().to_path_buf();
@@ -670,12 +674,12 @@ fn no_selected_project_inventory_never_publishes_environment_or_empty_success() 
 }
 
 #[test]
-fn all_and_paths_conflict_before_resolving_a_job() {
+fn all_and_paths_conflict_before_resolving_a_session() {
     let f = Fixture::new(false);
     let before = stage_contents(&f.stage);
     let mut request = f.request(&["valid"], true);
-    request.job.selector = Some(f.root.path().join("nonexistent-job"));
-    let error = RuntimeJobService::export(&ServiceContext::default(), request).unwrap_err();
+    request.session.selector = Some(f.root.path().join("nonexistent-session"));
+    let error = SessionService::export(&ServiceContext::default(), request).unwrap_err();
     assert!(error.to_string().contains("conflicts"), "{error:#}");
     f.no_output();
     assert_eq!(stage_contents(&f.stage), before);

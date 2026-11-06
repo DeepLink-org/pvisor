@@ -132,7 +132,7 @@ def audit_observer(unit, stop, root):
             inputs = Path(cfg["inputs"])
             mode, hints = details(cfg)
             wanted = json.loads(request.read_text())
-            # Bind every inspected PID to this attempt's actual systemd cgroup.
+            # Bind every inspected PID to this execution's actual systemd cgroup.
             before = json.loads((root / "before.json").read_text())
             actual_group = subprocess.check_output(
                 ["systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value"],

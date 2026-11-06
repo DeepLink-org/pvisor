@@ -464,7 +464,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
     );
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["apply_batch_count"].as_u64().unwrap(), 1);
-    assert_eq!(status["schema_version"], 2);
+    assert_eq!(status["schema_version"], 3);
     assert_eq!(status["run"]["overlay"]["state"], "staged");
     assert!(
         status["filesystem"]["sample_paths"]
@@ -496,7 +496,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
         .unwrap();
     assert!(status.status.success());
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["schema_version"], 2);
+    assert_eq!(status["schema_version"], 3);
     assert_eq!(status["run"]["overlay"]["state"], "discarded");
     assert_eq!(status["filesystem"]["changed_files"], 0);
     assert_eq!(status["apply_batch_count"].as_u64().unwrap(), 1);

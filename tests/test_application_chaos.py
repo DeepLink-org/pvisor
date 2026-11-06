@@ -76,7 +76,7 @@ class ApplicationChaosTests(unittest.TestCase):
             first.assert_called_once()
             second.assert_called_once()
 
-    def test_cleanup_attempts_all_owned_resources_after_failure(self):
+    def test_cleanup_executions_all_owned_resources_after_failure(self):
         with workspace() as (directory, _):
             runner = self.runner(directory)
             calls = []

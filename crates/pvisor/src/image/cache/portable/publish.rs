@@ -405,7 +405,7 @@ impl PortableCache {
         {
             // SDK retries can turn a lost successful PUT response into a
             // precondition failure. The unique publication ID proves whether
-            // this attempt committed, even when its revision matches a rival.
+            // this execution committed, even when its revision matches a rival.
             if self.storage.get(&key)?.as_ref() != Some(&bytes) {
                 return Err(error.context(
                     "HEAD commit outcome unresolved; re-observe source and HEAD before retrying",

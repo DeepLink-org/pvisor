@@ -1,7 +1,7 @@
 //! Kill the owner before the receipt and at both terminal publication boundaries.
 
 use async_trait::async_trait;
-use pvisor::job_service::{JobSelection, RuntimeJobService, ServiceContext, StatusRequest};
+use pvisor::session_service::{ServiceContext, SessionSelection, SessionService, StatusRequest};
 use pvisor::{EventSink, PVisor, RunBundle, RunRecordState};
 use pvisor_core::RunSpec;
 use pvisor_core::event::{Event, Receipt};
@@ -127,10 +127,10 @@ fn killed_owner_reconciles_only_receipts_across_terminal_publication_windows() {
             stage.join("completion.json").exists(),
             phase != "network.observed"
         );
-        let status = RuntimeJobService::status(
+        let status = SessionService::status(
             &ServiceContext::default(),
             StatusRequest {
-                job: JobSelection {
+                session: SessionSelection {
                     selector: Some(stage.clone()),
                     storage: stage.clone(),
                 },

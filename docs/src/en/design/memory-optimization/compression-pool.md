@@ -98,7 +98,7 @@ requires positive discarded bytes and increasing restored bytes after the
 service-loss diagnostic, plus both guests completing their digest, private-write
 and file checks. File writes precede full payload digest reads. The 2026-10-18
 run passed after host authorization; the earlier permission failure remains a
-separate failed attempt. The driver runs at most two 256 MiB/one-vCPU VMs and a
+separate failed execution. The driver runs at most two 256 MiB/one-vCPU VMs and a
 32 MiB pool. It does not validate the OpenSandbox API/bootstrap or measure
 physical savings. The five permission-dependent Linux pager tests also passed,
 including real KVM, kernel I/O and balloon reporting:

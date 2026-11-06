@@ -1,8 +1,8 @@
 #[cfg(feature = "gateway")]
-use super::attempt::{AttemptPrepareOpts, prepare_attempt};
-use super::attempt::{
-    AttemptSession, OverlayAttemptPrepareOpts, apply_implant, prepare_overlay_attempt,
-    prepare_storage_attempt,
+use super::drivers::{ExecutionPrepareOpts, prepare_execution};
+use super::drivers::{
+    OverlayExecutionPrepareOpts, SessionDrivers, apply_implant, prepare_overlay_execution,
+    prepare_storage_execution,
 };
 use super::implant::{ImplantPlan, OverlayHint};
 #[cfg(feature = "gateway")]
@@ -10,8 +10,8 @@ use crate::GatewayDriverConfig;
 #[cfg(feature = "gateway")]
 use crate::TrajectoryEventSink;
 use crate::{NetworkDriverConfig, OverlayNetMode};
-use pvisor_core::{AttemptId, NetworkCapability, RunSpec};
 use pvisor_core::{ControlController, PolicyControlController};
+use pvisor_core::{ExecutionId, NetworkCapability, RunSpec};
 #[cfg(feature = "gateway")]
 use pvisor_journal::api::JournalStore;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ pub struct RuntimeCapabilities {
     pub network: bool,
     pub filesystem: bool,
     pub providers: Vec<&'static str>,
-    /// Network interception support available to a VM Attempt. This is not a
+    /// Network interception support available to a VM Execution. This is not a
     /// claim that every configured executor is currently enforcing it.
     pub vm_network: bool,
 }
@@ -107,7 +107,7 @@ fn network_config_from_capability(
     }
 }
 
-/// Builder for Attempt prepare options (capture / overlay). Crate-private;
+/// Builder for Execution prepare options (capture / overlay). Crate-private;
 /// public configuration goes through [`crate::PVisorBuilder`].
 #[derive(Clone, Default)]
 pub struct RuntimeSupervisorBuilder {
@@ -137,10 +137,10 @@ struct SharedJournalObserver {
     journal: crate::trace::Journal,
     observer: Option<Arc<dyn TrajectoryEventSink>>,
 }
-/// Gateway lifecycle and capture must commit into the same Attempt journal.
+/// Gateway lifecycle and capture must commit into the same Execution journal.
 /// A live-only observer must not cause a journal to survive across Runs.
 #[cfg(feature = "gateway")]
-pub(crate) fn attempt_observer(
+pub(crate) fn execution_observer(
     observer: Arc<dyn TrajectoryEventSink>,
 ) -> Arc<dyn TrajectoryEventSink> {
     if observer.journal().is_some() {
@@ -264,12 +264,12 @@ impl RuntimeSupervisorBuilder {
     }
 }
 
-/// Capture / network / overlay prepare options for one Attempt.
+/// Capture / network / overlay prepare options for one Execution.
 #[derive(Clone)]
 pub struct RuntimeSupervisor {
     #[cfg(feature = "gateway")]
     gateway: Option<GatewayDriverConfig>,
-    /// Attempt-bound adapter, separate from the immutable configured policy.
+    /// Execution-bound adapter, separate from the immutable configured policy.
     #[cfg(feature = "gateway")]
     bound_model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     storage: Option<PathBuf>,
@@ -340,13 +340,13 @@ impl RuntimeSupervisor {
             .as_ref()
             .and_then(|gateway| gateway.cooperative_model_wait)
             .map(|policy| {
-                let attempt_id = controls.status().attempt.attempt_id;
+                let execution_id = controls.status().execution.execution_id;
                 let coordinator =
                     super::wait_coordinator::WaitCoordinator::new(Arc::new(controls), policy);
                 coordinator.start_host_reads();
                 runtime.bound_model_wait = Some(Arc::new(super::model_wait::ModelWaitAdapter {
                     coordinator: coordinator.clone(),
-                    attempt_id,
+                    execution_id,
                 }));
                 coordinator
             });
@@ -406,17 +406,17 @@ impl RuntimeSupervisor {
         &self,
         mut network: pvisor_overlaynet::NetworkConfig,
         supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
-        attempt_id: &AttemptId,
-    ) -> super::attempt::VmNetworkPrepareOpts {
+        execution_id: &ExecutionId,
+    ) -> super::drivers::VmNetworkPrepareOpts {
         network.limits.extend_from_slice(supervisor_limits);
-        super::attempt::VmNetworkPrepareOpts {
+        super::drivers::VmNetworkPrepareOpts {
             peers: self
                 .network
                 .as_ref()
                 .and_then(|network| network.peers.clone()),
             network,
             controller: Arc::clone(&self.controller),
-            attempt_id: attempt_id.to_string(),
+            execution_id: execution_id.to_string(),
         }
     }
 
@@ -431,10 +431,10 @@ impl RuntimeSupervisor {
         preparation: &super::run::PreparedRun,
         limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
-        attempt_id: &AttemptId,
-    ) -> anyhow::Result<Option<AttemptSession>> {
+        execution_id: &ExecutionId,
+    ) -> anyhow::Result<Option<SessionDrivers>> {
         let mut session =
-            self.prepare_drivers(spec, preparation, limits, vm_executor, attempt_id)?;
+            self.prepare_drivers(spec, preparation, limits, vm_executor, execution_id)?;
         if self.network_mode() == OverlayNetMode::Proxy {
             #[cfg(feature = "gateway")]
             if self.gateway.is_some() {
@@ -448,28 +448,28 @@ impl RuntimeSupervisor {
                     super::registry::default_run_home().join(spec.run_id.as_str())
                 });
                 std::fs::create_dir_all(&storage)?;
-                session = Some(prepare_storage_attempt(
+                session = Some(prepare_storage_execution(
                     spec,
                     preparation,
                     &storage,
-                    attempt_id,
+                    execution_id,
                     None,
                 )?);
             }
             let session_ref = session.as_mut().unwrap();
             if let Err(error) =
-                session_ref.start_proxy(spec, &network, Arc::clone(&self.controller), attempt_id)
+                session_ref.start_proxy(spec, &network, Arc::clone(&self.controller), execution_id)
             {
                 if let Some(session) = session.take() {
                     // Startup failed before execution; release the owned drivers and durable lease.
                     let snapshot = crate::AgentCtlSnapshot {
                         run_id: spec.run_id.to_string(),
-                        attempt_id: attempt_id.to_string(),
+                        execution_id: execution_id.to_string(),
                         directive: pvisor_core::AgentDirective::Continue,
                         clients: Vec::new(),
                     };
                     if let Err(cleanup) = session.abort_startup(
-                        attempt_id,
+                        execution_id,
                         snapshot,
                         spec.runtime.profile == pvisor_core::RunProfile::Safe,
                         format!("OverlayNet proxy startup failed: {error:#}"),
@@ -519,15 +519,17 @@ impl RuntimeSupervisor {
         preparation: &super::run::PreparedRun,
         supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
         vm_executor: bool,
-        attempt_id: &AttemptId,
-    ) -> anyhow::Result<Option<AttemptSession>> {
+        execution_id: &ExecutionId,
+    ) -> anyhow::Result<Option<SessionDrivers>> {
         let mut overlay = OverlayHint {
             access_policy: spec.policies.filesystem(&self.overlay.access_policy),
             ..self.overlay.clone()
         };
-        overlay
-            .access_policy
-            .bind_session(spec.run_id.as_str(), attempt_id.as_str(), "workspace");
+        overlay.access_policy.bind_session(
+            spec.run_id.as_str(),
+            execution_id.as_str(),
+            "workspace",
+        );
         let network_mode = self.network_mode();
         let network = preparation.network.clone();
         let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
@@ -547,11 +549,11 @@ impl RuntimeSupervisor {
         #[cfg(feature = "gateway")]
         if let Some(gateway) = &self.gateway {
             let mut gateway = gateway.clone();
-            // The admitted preparation is the one Attempt policy source. ProxyConfig
+            // The admitted preparation is the one Execution policy source. ProxyConfig
             // retains its field for standalone Gateway use only.
             if vm_network {
                 gateway.proxy.network = self
-                    .vm_network_options(network, supervisor_limits, attempt_id)
+                    .vm_network_options(network, supervisor_limits, execution_id)
                     .network;
             } else {
                 gateway.proxy.network = network;
@@ -565,10 +567,10 @@ impl RuntimeSupervisor {
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".pvisor/capture"));
-            let session = prepare_attempt(
+            let session = prepare_execution(
                 spec,
                 preparation,
-                AttemptPrepareOpts {
+                ExecutionPrepareOpts {
                     config: &gateway,
                     storage: &storage,
                     #[cfg(feature = "gateway")]
@@ -582,7 +584,7 @@ impl RuntimeSupervisor {
                         .network
                         .as_ref()
                         .and_then(|network| network.peers.clone()),
-                    attempt_id: attempt_id.as_str(),
+                    execution_id: execution_id.as_str(),
                 },
             )?;
             return Ok(Some(session));
@@ -598,27 +600,28 @@ impl RuntimeSupervisor {
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".pvisor/capture"));
-            let session = prepare_overlay_attempt(
+            let session = prepare_overlay_execution(
                 spec,
                 preparation,
-                OverlayAttemptPrepareOpts {
+                OverlayExecutionPrepareOpts {
                     storage: &storage,
                     overlay: overlay.clone(),
-                    attempt_id,
+                    execution_id,
                     vm_network: vm_network
-                        .then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
+                        .then(|| self.vm_network_options(network, supervisor_limits, execution_id)),
                 },
             )?;
             return Ok(Some(session));
         }
 
         if let Some(storage) = &self.storage {
-            let session = prepare_storage_attempt(
+            let session = prepare_storage_execution(
                 spec,
                 preparation,
                 storage,
-                attempt_id,
-                vm_network.then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
+                execution_id,
+                vm_network
+                    .then(|| self.vm_network_options(network, supervisor_limits, execution_id)),
             )?;
             return Ok(Some(session));
         }
@@ -626,12 +629,12 @@ impl RuntimeSupervisor {
         if vm_network {
             let storage = super::registry::default_run_home().join(spec.run_id.as_str());
             std::fs::create_dir_all(&storage)?;
-            let session = prepare_storage_attempt(
+            let session = prepare_storage_execution(
                 spec,
                 preparation,
                 &storage,
-                attempt_id,
-                Some(self.vm_network_options(network, supervisor_limits, attempt_id)),
+                execution_id,
+                Some(self.vm_network_options(network, supervisor_limits, execution_id)),
             )?;
             return Ok(Some(session));
         }
@@ -789,7 +792,7 @@ mod tests {
         );
         let observer = builder.sink.unwrap();
         assert!(observer.journal().is_none());
-        let observer = attempt_observer(observer);
+        let observer = execution_observer(observer);
         let journal = observer.journal().unwrap();
         JournalStore::append(&journal, event.clone()).unwrap();
         observer.observe(&event).unwrap();
@@ -933,7 +936,7 @@ models = []
 
     #[test]
     #[cfg(feature = "gateway")]
-    fn explicit_network_config_is_the_attempt_policy_source() {
+    fn explicit_network_config_is_the_execution_policy_source() {
         let mut proxy = test_proxy();
         proxy.network.mode = pvisor_overlaynet::NetworkMode::Public;
         let supervisor = RuntimeSupervisorBuilder::new()
@@ -1044,7 +1047,7 @@ api_key = "test-frozen-key"
                 &preparation,
                 &[],
                 false,
-                &AttemptId::new("attempt-binding"),
+                &ExecutionId::new("execution-binding"),
             )
             .unwrap()
             .unwrap();
@@ -1094,7 +1097,7 @@ api_key = "test-frozen-key"
             &preparation,
             &[],
             true,
-            &AttemptId::new("attempt-offline"),
+            &ExecutionId::new("execution-offline"),
         ) {
             Ok(_) => panic!("offline VM accepted Gateway configuration"),
             Err(error) => error,

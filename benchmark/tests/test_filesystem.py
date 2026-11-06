@@ -43,7 +43,7 @@ SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug
 
 
 class FilesystemContracts(unittest.TestCase):
-    def test_user_jobs_use_spawn_with_workspace_relative_payload(self):
+    def test_user_sessions_use_spawn_with_workspace_relative_payload(self):
         from user_workloads_backends import _host_argv
         from user_workloads_vm import vm_payload_argv
 

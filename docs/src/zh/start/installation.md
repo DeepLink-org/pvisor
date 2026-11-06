@@ -96,7 +96,7 @@ brew install --cask macfuse
 
 在“系统设置 → 通用 → 登录项与扩展 → 文件系统扩展”中启用 macFUSE，按系统提示完成后续操作。pVisor 使用 FSKit，无需加载内核扩展或降低启动安全级别。若 FSKit 不可用，暂存启动会失败。
 
-普通 Host Job 默认直接写入工作区。教程使用 `--safe` 启用暂存；不要通过移除它绕过挂载失败。
+普通 Host Session 默认直接写入工作区。教程使用 `--safe` 启用暂存；不要通过移除它绕过挂载失败。
 
 ??? note "可选：Linux VM 工具执行环境"
 
@@ -157,7 +157,7 @@ python -m pip install --upgrade pvisor-sandbox
 python -m pip uninstall pvisor-sandbox
 ```
 
-升级前检查发布说明和部署中的 `PVISOR_*` 设置。卸载不会清理 Job 状态与用户缓存。
+升级前检查发布说明和部署中的 `PVISOR_*` 设置。卸载不会清理 Session 状态与用户缓存。
 
 <a id="homebrew"></a>
 
@@ -176,7 +176,7 @@ tap 仓库名为 `Formula`，而不是 `homebrew-formula`，因此添加时需�
 
 Homebrew tap 的发布条件与配置见[发布指南](../community/releasing.md#one-time-setup)。
 
-Job 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；
+Session 启动要求可执行文件及其祖先目录属于当前用户或 root，且其他用户不能写入；
 root 拥有、带 sticky bit 的目录（如 `/tmp`）除外。Homebrew 的 Cellar 可能带有
 组写权限。如果启动报 `unsafe owner executable ancestor`，先检查错误中指明的目录。
 对于当前用户独占、Cellar 允许组写入的 Homebrew 安装，可先去掉组和其他用户的写权限：

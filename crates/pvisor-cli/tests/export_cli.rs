@@ -48,7 +48,7 @@ fn export_help_is_grouped_and_inert_and_stage_explains_both_network_choices() {
     let direct = help(root.path(), &["export", "--help"]);
     assert_eq!(direct, help(root.path(), &["help", "export"]));
     for text in [
-        "[JOB]",
+        "[SESSION]",
         "--output",
         "--storage",
         "--path",
@@ -175,20 +175,20 @@ mod linux {
         fs::write(project.join("old"), "keep").unwrap();
         fs::write(upper.join(".wh.old"), "").unwrap();
         let record: RunRecord = serde_json::from_value(json!({
-            "schema_version":1,"run_id":"handoff-job","session_id":"handoff-session","attempt_id":"handoff-attempt",
+            "schema_version":1,"run_id":"handoff-session","session_id":"handoff-session","execution_id":"handoff-execution",
             "agent":"test","pid":0,"command":["/bin/true"],"state":state,
             "started_at_unix_ms":10,"finished_at_unix_ms":20,"storage":stage,"workspace":project,"network":{},
-            "overlay":{"id":"handoff-job","generation":7,"target":if rootfs { Path::new("/") } else { &project },
+            "overlay":{"id":"handoff-session","generation":7,"target":if rootfs { Path::new("/") } else { &project },
                 "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
                 "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
         })).unwrap();
         record.write().unwrap();
         let result = serde_json::from_value(json!({
-            "run_id":"handoff-job","attempt_id":"handoff-attempt","state":state,
+            "run_id":"handoff-session","execution_id":"handoff-execution","state":state,
             "started_at_unix_ms":10,"finished_at_unix_ms":20,"exit_code":exit_code
         }))
         .unwrap();
-        let agentctl = serde_json::from_value(json!({"run_id":"handoff-job","attempt_id":"handoff-attempt","directive":{"kind":"continue"},"clients":[]})).unwrap();
+        let agentctl = serde_json::from_value(json!({"run_id":"handoff-session","execution_id":"handoff-execution","directive":{"kind":"continue"},"clients":[]})).unwrap();
         RunBundle::capture(&record, &result, agentctl, false)
             .unwrap()
             .write(&stage)
@@ -226,7 +226,7 @@ mod linux {
                 serde_json::from_slice(&fs::read(root.path().join("out/manifest.json")).unwrap())
                     .unwrap();
             assert_eq!(response, manifest);
-            assert_eq!(response["job_id"], "handoff-job");
+            assert_eq!(response["session_id"], "handoff-session");
             assert_eq!(response["deletions"][0]["path"], "old");
             assert_eq!(
                 fs::read_to_string(root.path().join("out/files/src/result")).unwrap(),
@@ -285,16 +285,16 @@ mod linux {
             let root = tempfile::tempdir().unwrap();
             let (mut record, _) = fixture_with_outcome(root.path(), false, state, exit_code);
             let stage = record.stage_dir();
-            record.schema_version = 2;
-            record.completion_protocol = Some(1);
+            record.schema_version = 3;
+            record.completion_protocol = Some(2);
             record.write().unwrap();
             let result = json!({
-                "run_id": "handoff-job", "attempt_id": "handoff-attempt", "state": state,
+                "run_id": "handoff-session", "execution_id": "handoff-execution", "state": state,
                 "started_at_unix_ms": 10, "finished_at_unix_ms": 20, "exit_code": exit_code
             });
             let run_result = serde_json::from_value(result.clone()).unwrap();
             let agentctl = serde_json::from_value(json!({
-                "run_id": "handoff-job", "attempt_id": "handoff-attempt",
+                "run_id": "handoff-session", "execution_id": "handoff-execution",
                 "directive": {"kind": "continue"}, "clients": []
             }))
             .unwrap();
@@ -335,7 +335,7 @@ mod linux {
                 )
                 .unwrap();
                 assert_eq!(manifest["schema_version"], 1);
-                assert_eq!(manifest["attempt_id"], "handoff-attempt");
+                assert_eq!(manifest["execution_id"], "handoff-execution");
                 assert_eq!(manifest["state"], state);
                 assert_eq!(manifest["exit_code"], json!(exit_code));
                 assert_eq!(manifest["partial_results"], partial);
@@ -375,7 +375,7 @@ mod linux {
             let output = cli(&stage, &args);
             assert!(output.status.success(), "{output:?}");
             let response: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(response["job_id"], "handoff-job");
+            assert_eq!(response["session_id"], "handoff-session");
             assert!(destination.join("manifest.json").exists());
         }
     }

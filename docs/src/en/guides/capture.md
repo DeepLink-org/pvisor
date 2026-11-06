@@ -1,6 +1,6 @@
 # Capture agent trajectories
 
-Enable Gateway capture on a Job to inspect the requests an agent sends to a model and the responses it receives. Capture records traffic passing through Gateway and starts and stops with the Run; it needs no standalone Gateway command or daemon. See [capabilities and evidence](../concepts/capabilities-and-evidence.md) for the distinction between capture coverage and enforcement.
+Enable Gateway capture on a Session to inspect the requests an agent sends to a model and the responses it receives. Capture records traffic passing through Gateway and starts and stops with the Run; it needs no standalone Gateway command or daemon. See [capabilities and evidence](../concepts/capabilities-and-evidence.md) for the distinction between capture coverage and enforcement.
 
 Install `pvisor` with the [installation guide](../start/installation.md). A real agent can be configured directly through `pvisor spawn`:
 

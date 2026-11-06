@@ -162,7 +162,7 @@ mod tests {
                 "api_key_env": null, "api_key": null, "forward": null
             }])
         );
-        let mut spec = RunSpec::process("job", "zcode", "zcode");
+        let mut spec = RunSpec::process("session", "zcode", "zcode");
         project(&config, &mut spec).unwrap();
         assert_eq!(spec.metadata["pvisor.gateway.profile"], "zcode-bigmodel");
         assert_eq!(

@@ -1,6 +1,6 @@
 # Image and memory optimization
 
-Agent attempts and concurrent tasks often use similar tools, dependencies and initial state, while accessing only part of that content. pVisor uses demand loading, sharing and compression to reduce repeated preparation and resource residency across these environments.
+Agent executions and concurrent tasks often use similar tools, dependencies and initial state, while accessing only part of that content. pVisor uses demand loading, sharing and compression to reduce repeated preparation and resource residency across these environments.
 
 ## The Host manages content; the guest executes tasks {#resource-layers}
 
@@ -15,7 +15,7 @@ The three mechanisms address untouched content, repeated content and cold conten
 | Mechanism | How it reduces overhead | Relevance to Agent execution |
 | --- | --- | --- |
 | **Demand loading** | Reads or decodes image content and [checkpoint RAM](resource-reuse.md#execution-checkpoints) when accessed, reducing upfront preparation | Tool calls use only part of an environment; restoration or branching need not immediately read all saved state |
-| **Sharing and deduplication** | Reuses immutable image content or shares identical pages on supported RAM paths, preserving private modifications on writes | Tasks and attempts can reuse similar environments and starting points with fewer duplicate copies |
+| **Sharing and deduplication** | Reuses immutable image content or shares identical pages on supported RAM paths, preserving private modifications on writes | Tasks and executions can reuse similar environments and starting points with fewer duplicate copies |
 | **Compression** | Stores compressible cold content in fewer bytes and decodes it when needed | Temporarily inactive state that must be retained may occupy less space even when it cannot be shared |
 
 Image-content sharing and guest RAM sharing operate at different layers: using the same image does not establish shared RAM. Demand loading shifts some cost to first access, while compression requires CPU and recovery buffers. See [Shared image cache](../reference/shared-image-cache.md) for image loading and [Memory architecture and mechanisms](../design/memory-optimization/index.md) for supported memory paths.

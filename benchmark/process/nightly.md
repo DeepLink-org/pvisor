@@ -34,7 +34,7 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=host-run -->
 ```toml
-argv = ["@BINARY@", "@JOB_COMMAND@", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
+argv = ["@BINARY@", "@SESSION_COMMAND@", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
 conclude = ["python3", "@REPO@/benchmark/process/check.py", "new-bundle", "@BATCH@/runs"]
 warmup = 10
 runs = 50
@@ -47,8 +47,8 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=status -->
 ```toml
-argv = ["@BINARY@", "status", "--json", "@JOB@"]
-conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@JOB@/run-bundle.json"]
+argv = ["@BINARY@", "status", "--json", "@SESSION@"]
+conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@SESSION@/run-bundle.json"]
 warmup = 10
 runs = 50
 timeout = 120
@@ -60,8 +60,8 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=review -->
 ```toml
-argv = ["@BINARY@", "review", "--json", "@JOB@"]
-conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@JOB@/run-bundle.json"]
+argv = ["@BINARY@", "review", "--json", "@SESSION@"]
+conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@SESSION@/run-bundle.json"]
 warmup = 10
 runs = 50
 timeout = 120

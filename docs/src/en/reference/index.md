@@ -2,7 +2,7 @@
 
 When integrating a task into a script, handle launch arguments, execution results, and file acceptance separately. Ordinary host execution writes directly to the workspace; use `--safe` or an explicit `--stage` to review files before accepting them.
 
-## From execution to file acceptance
+## From try to file acceptance
 
 ```bash
 pvisor spawn --safe --overlaynet-deny-all --stage ../stage-reference-001 -- /bin/sh -c 'printf proposal > report.txt'
@@ -17,7 +17,7 @@ After execution, `report.txt` stays in staging; `inspect` reads the proposal and
 
 `status --json` provides a status overview; `status --review --json` provides the complete Run Bundle. Automation first checks format versions and required fields, then execution state, installed controls, and net file changes. Missing observations must not become zero or acceptance. See [Run Bundle](run-bundle.md) and [Machine-readable output](json-output.md) for fields and queries.
 
-Shared image cache handles, authentication, and failures follow the [cache protocol](shared-image-cache.md), separately from Job staging and apply. Saving and restoring full machine state also requires the corresponding capability. A workspace checkpoint saves file proposals without continuing old process memory; check prerequisites against the [CLI execution-checkpoint contract](cli.md#full-vm-execution-checkpoints) before use.
+Shared image cache handles, authentication, and failures follow the [cache protocol](shared-image-cache.md), separately from Session staging and apply. Saving and restoring full machine state also requires the corresponding capability. A workspace checkpoint saves file proposals without continuing old process memory; check prerequisites against the [CLI execution-checkpoint contract](cli.md#full-vm-execution-checkpoints) before use.
 
 ## Check executable behavior
 
@@ -224,7 +224,7 @@ assert_content() {
 }
 assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi; }
 
-# Public CLI only; all personal settings and Job records stay in CASE_ROOT.
+# Public CLI only; all personal settings and Session records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" "$SUBJECT_BIN" "$@"; }
 stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {

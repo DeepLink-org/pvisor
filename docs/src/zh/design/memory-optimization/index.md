@@ -23,7 +23,7 @@ GVA 是 guest 进程地址，guest 页表将它转成 GPA；KVM/HVF 注册 guest
 
 `MAP_PRIVATE` 让多个实例读取同一不可变 backing，并把写入分离到自己的物理页。GPA 和 HVA 可以保持不变，背后的宿主物理页却已经不同；这正是 COW 的隔离点。guest 页表转换、宿主映射与文件内容共享是不同层次，不能用每个进程 RSS 的总和直接计算实际物理占用。
 
-VM runtime 拥有地址映射和 CPU/设备一致性，Job 与 snapshot store 拥有完整状态发布和持久引用。Linux physical page pool 保管被引用的共享槽位，local compressed store 保管实例冷页的编码内容；两者有不同的恢复与故障合同。
+VM runtime 拥有地址映射和 CPU/设备一致性，Session 与 snapshot store 拥有完整状态发布和持久引用。Linux physical page pool 保管被引用的共享槽位，local compressed store 保管实例冷页的编码内容；两者有不同的恢复与故障合同。
 
 在撤销原映射或回收原 RAM 前，先固定可靠的 backing 或恢复来源。Private COW 保持写入独立；活跃 pool reference 保证槽位不能被复用。运行态共享不是持久机器 checkpoint，pool 存活也不替代 durable state。
 
@@ -75,7 +75,7 @@ Linux 实例内冷压缩以 64 KiB 块工作。第一次短静止窗口捕获候
 
 Linux sandbox serving 通过 `--memory-pool` 显式启用物理页共享，默认关闭；该模式不需要 userfaultfd。Linux 实例内 live compression 与池的 `compressed` 模式依赖内核缺页 userfaultfd，sealed 客户端可在服务丢失后恢复已交付内容。
 
-Apple Silicon 可独立运行 daemon 池，再由 `pvisor run --memory-pool SOCKET` 或 Job 的 `--vm-memory-pool` 接入，不需要开启 Linux sandbox API。默认 `compressed` 使用 HVF 冷块池；显式 `physical-pages` 共享 16 KiB 宿主页并保留 COW，基于私有未链接文件而非 Linux memfd。临时文件系统必须支持映射与 hole punching；池的文件缓存和磁盘占用需要单独入账。macOS 没有 Linux sealed-local 的服务丢失恢复：这两种池模式都要求 owner 存活。
+Apple Silicon 可独立运行 daemon 池，再由 `pvisor run --memory-pool SOCKET` 或 Session 的 `--vm-memory-pool` 接入，不需要开启 Linux sandbox API。默认 `compressed` 使用 HVF 冷块池；显式 `physical-pages` 共享 16 KiB 宿主页并保留 COW，基于私有未链接文件而非 Linux memfd。临时文件系统必须支持映射与 hole punching；池的文件缓存和磁盘占用需要单独入账。macOS 没有 Linux sealed-local 的服务丢失恢复：这两种池模式都要求 owner 存活。
 
 物理共享已有 Apple Silicon 原生验收入口，见[共享内存验收记录](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/tests/MACOS_SHARED_MEMORY.md)。它不建立生产密度、扫描 CPU 或尾延迟结论。Snapshot、file backing、offload、KSM 与冷页模式有显式互斥约束；配置不自动热切换。
 

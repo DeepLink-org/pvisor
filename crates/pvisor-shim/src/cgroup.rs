@@ -125,7 +125,7 @@ pub mod device_bpf {
                 prog_fd
             } else {
                 // Retry with the verifier log enabled to surface the
-                // rejection reason (the logless attempt is the fast path).
+                // rejection reason (the logless execution is the fast path).
                 let error = std::io::Error::last_os_error();
                 let mut log_buf = [0u8; 65536];
                 load_attr[24..28].copy_from_slice(&1u32.to_ne_bytes()); // log_level

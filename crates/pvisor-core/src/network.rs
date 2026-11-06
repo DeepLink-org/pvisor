@@ -468,7 +468,7 @@ mod tests {
         .unwrap();
         let mut request = NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: "new.example".into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
@@ -543,7 +543,7 @@ mod tests {
             }).unwrap();
             let request = NetworkAccessRequest {
                 run_id: None,
-                attempt_id: None,
+                execution_id: None,
                 host,
                 port,
                 transport,
@@ -576,7 +576,7 @@ mod tests {
             }).unwrap();
             let request = |port| NetworkAccessRequest {
                 run_id: None,
-                attempt_id: None,
+                execution_id: None,
                 host: "api.example.com".into(),
                 port: Some(port),
                 transport: NetworkTransport::TcpTunnel,
@@ -660,7 +660,7 @@ mod tests {
         .unwrap();
         let request = |host: &str| NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
@@ -749,7 +749,7 @@ mod tests {
         .unwrap();
         let mut request = NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: "service.example.com".into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,

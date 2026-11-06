@@ -30,7 +30,7 @@ Full statistics, distributions, paired intervals, artifact and provenance record
 
 **The trimmed configuration passes these staged-workspace, development-tool, IPv4 HTTP and execution-snapshot restoration checks.** Tests use the current CLI and two firmware variants rebuilt from identical Linux 6.12.109 sources, patches and compact packaging implementation. Complete digests verify all 79 frozen source inputs and both actual build input trees before and after; the CLI's 1,063 product source/dependency files match the current worktree. Measured on 2026-10-06, Linux/KVM, host CPUs 0,1 and 2 configured vCPUs. Tool preflights sample resources; these capability checks do not provide formal timings.
 
-The table gives passes/attempts per configuration: 60 independent VM executions, zero failures. Shell, seven-tool and fixed-repair checks run twice per variant; every network/restore condition runs three times, with seeded randomized alternating order.
+The table gives passes/executions per configuration: 60 independent VM executions, zero failures. Shell, seven-tool and fixed-repair checks run twice per variant; every network/restore condition runs three times, with seeded randomized alternating order.
 
 | Capability check | Generic config | Trimmed config | Actual validation |
 | --- | ---: | ---: | --- |
@@ -345,7 +345,7 @@ Linux / KVM, 2 vCPU / 2 GiB, the same two-core host budget, 30 samples for each 
 
 Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/index.md#full-ubuntu-qemu)
 
-**Selection meaning:** Creating environments for one or two commands benefits from avoiding seconds of OS boot. Complete Ubuntu provides distribution services and an independent Ubuntu environment at that startup cost. These are deployment paths with different kernels, initialization and storage; the table does not establish a roughly 50-times VMM advantage for libkrun. For longer jobs, compare [task and internal tool time](../benchmarks/agent-tasks.md#full-ubuntu), where boot cost is amortized.
+**Selection meaning:** Creating environments for one or two commands benefits from avoiding seconds of OS boot. Complete Ubuntu provides distribution services and an independent Ubuntu environment at that startup cost. These are deployment paths with different kernels, initialization and storage; the table does not establish a roughly 50-times VMM advantage for libkrun. For longer sessions, compare [task and internal tool time](../benchmarks/agent-tasks.md#full-ubuntu), where boot cost is amortized.
 
 Exit includes normal shutdown: pVisor P50 is 174 ms, Firecracker/Ubuntu about 9.23 / 12.86 seconds. Firecracker/Ubuntu uses default MMIO devices and the stock initrd, with zero VMM exit after guest reboot. Every trial retains full OS proof with no failed units. Workspace copying or private disk cloning is recorded as `prepare_ms`, with medians around 37 / 29 ms outside Ready. The chart uses a logarithmic axis, bars P50 and ticks P95. With N=30, P99 is near the maximum and describes this batch only.
 

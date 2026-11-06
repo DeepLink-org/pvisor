@@ -97,7 +97,7 @@ touch finish
 
 恢复后计数继续；`finish` 使任务检查内存、写入 `result.json` 并退出。等待第一个终端的命令结束，再收集结果。
 
-以上操作继续**同一个 VM Attempt**，依赖原 owner／VMM 存活；普通 `suspend` 则保存执行检查点，语义见[与检查点的区别](../../concepts/lifecycle.md#checkpoint-boundary)。演示使用普通文件 backing，不启用压缩、去重或共享池。驻留页观测不等于整个服务的内存占用，也不保证回收量。
+以上操作继续**同一个 VM Execution**，依赖原 owner／VMM 存活；普通 `suspend` 则保存执行检查点，语义见[与检查点的区别](../../concepts/lifecycle.md#checkpoint-boundary)。演示使用普通文件 backing，不启用压缩、去重或共享池。驻留页观测不等于整个服务的内存占用，也不保证回收量。
 
 ## 5. 收集结果 {#collect-results}
 
@@ -116,13 +116,13 @@ bundle = json.loads((root / 'result.bundle.json').read_text())
 result = json.loads((root / 'result.json').read_text())
 assert bundle['run']['state'] == 'completed'
 assert bundle['run']['exit_code'] == 0
-assert bundle['run']['attempt_id'] == before['run']['attempt_id']
+assert bundle['run']['execution_id'] == before['run']['execution_id']
 assert result['memory_ok'] is True and result['steps'] > 0
-print('PASS: same Attempt, memory intact, task completed')
+print('PASS: same Execution, memory intact, task completed')
 PY
 ```
 
-**预期结果：**输出 `PASS: same Attempt, memory intact, task completed`。`memory_ok` 为 `true`，`steps` 随操作时间变化。调用方可将自己的任务 ID 与 Bundle 中的 Job／Attempt ID 关联，再进行评分或调度。
+**预期结果：**输出 `PASS: same Execution, memory intact, task completed`。`memory_ok` 为 `true`，`steps` 随操作时间变化。调用方可将自己的任务 ID 与 Bundle 中的 Session／Execution ID 关联，再进行评分或调度。
 
 任务结束后 VM 已退出。保留需要的记录与结果，再丢弃未合入的候选：
 
@@ -132,4 +132,4 @@ pvisor drop ../stage
 
 显式指定的 `guest.ram` 是调用方保存的 backing 文件，确认 VM 已退出且不再需要后自行清理。中途终止用 `pvisor kill ../stage`；5 分钟任务超时在暂停期间仍计时。
 
-此流程于 2026-10-24 在 Linux x86_64/KVM、CLI `0.3.0+g35.b318715` 上验证：pause／offload 后计数停止，恢复后继续，Attempt 不变，内存校验通过且退出码为 0。这是单 VM 功能验证，不是并发密度或自动模型等待管理测试。
+此流程于 2026-10-24 在 Linux x86_64/KVM、CLI `0.3.0+g35.b318715` 上验证：pause／offload 后计数停止，恢复后继续，Execution 不变，内存校验通过且退出码为 0。这是单 VM 功能验证，不是并发密度或自动模型等待管理测试。

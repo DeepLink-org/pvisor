@@ -202,7 +202,7 @@ deny = ["generated/private/**"]
 任一层显式 deny、端口／协议限制或解析地址安全检查失败都会拒绝请求，各层
 匹配的带宽限制全部叠加。
 文件策略跨层按 deny、warn、allow 取最严格决策；allow 不能覆盖其他层限制。
-文件 glob 相对于暂存工作区视图。策略在 Attempt 内固定，修改文件只影响后续 Session。
+文件 glob 相对于暂存工作区视图。策略在 Execution 内固定，修改文件只影响后续 Session。
 
 网络层策略会为 host/container 的 `auto` 启用显式 proxy，该边界仍是协作式。
 文件层策略在未配置暂存工作区时创建暂存视图。VM `auto` 使用不可绕过的网络

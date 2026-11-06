@@ -152,7 +152,7 @@ From pVisor:
 ```sh
 mise run test-semspec
 mise run semspec -- lint docs/src/zh/cases
-mise run semspec -- run docs/src/zh/cases/01-first-job.md --subject-bin target/release/pvisor
+mise run semspec -- run docs/src/zh/cases/01-first-session.md --subject-bin target/release/pvisor
 mise run cases -- --suite use               # builds product; semspec requires every selected case to PASS
 mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
 mise run semspec -- review docs/src/zh/cases --strict         # fails until human review

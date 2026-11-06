@@ -101,7 +101,7 @@ and rootfs; `report.json` records failures. Timeouts terminate and reap the comm
 tree. Existing output directories are refused. `test_vm_cli_contract.py` checks
 supervision and false-pass rejection without virtualization.
 
-The Linux pvisor CI shard and Windows WHP job run the driver. Hosted macOS CI
+The Linux pvisor CI shard and Windows WHP session run the driver. Hosted macOS CI
 keeps builds and conventional tests; real HVF execution remains a manual check
 on a capable Apple Silicon host. Ordinary unit tests do not start VMs.
 Linux CI writes evidence under `RUNNER_TEMP`,

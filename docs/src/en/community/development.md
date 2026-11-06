@@ -26,7 +26,7 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 
 | Directory | Responsibility |
 | --- | --- |
-| `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
+| `crates/pvisor/` | Embeddable runtime, Session/Execution orchestration, executors, durable Session service, image preparation and cache mechanisms |
 | `crates/pvisor-cli/` | Two application binaries, CLI commands, terminal adapters and replay companion dispatch |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox API, native guest protocol adapters and cross-platform cache/pool components |
@@ -74,23 +74,23 @@ core, guest ──> no other workspace crates
 | Implementation entry | Ownership |
 | --- | --- |
 | `pvisor-cli/src/cli/mod.rs` | Build parsing/dispatch for the selected command; root help describes command groups |
-| `pvisor-cli/src/cli/host*.rs`, `run/` | Frontend/owner startup, terminal, signals and Job command adaptation |
-| `pvisor/src/runtime/job_service/` | Durable Job lifecycle, workspace, forks, capture, views and policy |
-| `pvisor/src/runtime/attempt_service.rs` | In-process live Attempt status/pause/resume/termination shared by Jobs and daemon |
-| `pvisor/src/session*`, `runtime/attempt.rs` | Per-Attempt driver preparation, execution and finalization |
+| `pvisor-cli/src/cli/host*.rs`, `run/` | Frontend/owner startup, terminal, signals and Session command adaptation |
+| `pvisor/src/runtime/session_service/` | Durable Session lifecycle, workspace, forks, capture, views and policy |
+| `pvisor/src/runtime/execution_service.rs` | In-process live Execution status/pause/resume/termination shared by Sessions and daemon |
+| `pvisor/src/session*`, `runtime/execution/mod.rs` | Per-Execution driver preparation, execution and finalization |
 | `pvisor/src/runtime/completion.rs` | Commit and validate completion binding Bundle bytes to terminal results |
 | `pvisor/src/docker.rs`, `image/` | Per-container VMs, image catalog and shared compressed image pool; ordinary OCI execution remains separate |
 | `pvisor-daemon/src/daemon/`, `runtime.rs` | APIs, admission, records, supervisors and cgroup/VM ownership |
 | `pvisor-daemon/src/native/`, `prepared_image.rs` | OpenSandbox/E2B guest protocol adaptation and template publication |
 | `pvisor-replay/src/adapter/`, `bridge/` | Trajectory planning, agent selection and native continuation bridges |
 
-The CLI owns arguments/display; the runtime owns execution and durable Jobs. VM, filesystem and network implementations stay in their owning crates. Core defines shared policies and wire DTOs. Jobs and daemon reuse in-process control while retaining their own authentication, admission, storage and confirmed cleanup.
+The CLI owns arguments/display; the runtime owns execution and durable Sessions. VM, filesystem and network implementations stay in their owning crates. Core defines shared policies and wire DTOs. Sessions and daemon reuse in-process control while retaining their own authentication, admission, storage and confirmed cleanup.
 
 See [Core architecture](../design/architecture.md#api-boundaries) for public interfaces and migration status. Only VM, OverlayFS and Journal currently use a sole `api` entry. Other crates retain their actual exports; this logical table does not imply unified Rust visibility or stability.
 
 ### Core implementation boundaries
 
-Core defines Operation, Event and shared policies; pvisor implements admission, actual rewrites, Placement and scheduling. Session owns Attempt resources/terminal states; executors execute and return observations; OverlayCore owns file application/recovery. AgentCtl I/O remains in pvisor; embedding callers supply Core approval channels. See [Core architecture](../design/architecture.md) for ownership and [Operation and Event](../design/operations-events.md) for fields/order.
+Core defines Operation, Event and shared policies; pvisor implements admission, actual rewrites, Placement and scheduling. Session owns Execution resources/terminal states; executors execute and return observations; OverlayCore owns file application/recovery. AgentCtl I/O remains in pvisor; embedding callers supply Core approval channels. See [Core architecture](../design/architecture.md) for ownership and [Operation and Event](../design/operations-events.md) for fields/order.
 
 ## Core metrics and dependency boundaries {#core-reduction-budget}
 
@@ -146,7 +146,7 @@ For a specific Rust integration test/filter, pass nextest arguments after `--`, 
 | Nightly Build | Daily or manually on `main`: build/validate two-platform wheels and update nightly release |
 | Publish PyPI | Stable tag: check version, lockfile and main ancestry before publishing; manual runs build/validate only |
 
-Keep required status `CI`: any failed, canceled or skipped dependency fails it. Linux Rust tests shard into core/Gateway/pVisor; macOS runs the same package set once. The separate Linux isolation job requires user namespaces/FUSE and cannot skip isolation checks. Filesystem examples/documentation cases share its release build/isolation environment. Network/Gateway examples run separately.
+Keep required status `CI`: any failed, canceled or skipped dependency fails it. Linux Rust tests shard into core/Gateway/pVisor; macOS runs the same package set once. The separate Linux isolation session requires user namespaces/FUSE and cannot skip isolation checks. Filesystem examples/documentation cases share its release build/isolation environment. Network/Gateway examples run separately.
 
 The shared setup action installs the same mise tools and Python development dependencies as local development. Its `native-firmware` input prepares macOS native firmware tools, and `static-musl` installs Linux system build libraries; tool versions come from `mise.toml`. A reusable workflow owns the two-platform wheel matrix, including mise with the same configuration inside manylinux. PR documentation builds do not cancel Pages deployments.
 
@@ -154,7 +154,7 @@ The shared setup action installs the same mise tools and Python development depe
 
 `pvisor-guest` provides the shared `GuestConfig` library and the `pvisor-guest` executable. With `pvisor-vm`'s `init-blob` feature, `crates/pvisor-vm/build.rs` uses Rust's `rust-lld` to build a release Linux musl ELF for the VM architecture. Separate `target/pvisor-guest/` avoids competing with the outer Cargo artifact lock. `pvisor-vm` embeds the ELF as `/init.krun`, which becomes guest PID 1.
 
-CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Attempt; normal VM shutdown without a reported code fails with 125.
+CLI/shim inject `/.pvisor-guest.json` containing argv, environment, cwd, workspace mounts, limits, optional networking and shim agent arguments. The supervisor initializes guest filesystems/console I/O, mounts the workspace, configures networking, launches the workload directly and reaps children. On exit, it reports the workload exit code using libkrun's private rootfs ioctl `0x7602`, then syncs/reboots. Nonzero exit fails the Execution; normal VM shutdown without a reported code fails with 125.
 
 See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon) for measurements and scope.
 

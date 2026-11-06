@@ -418,7 +418,7 @@ pub enum RamDedupStatus {
         /// Human-readable unsupported-operation detail, not a stable error code.
         reason: String,
     },
-    /// The advice attempt failed; the original RAM mapping remains in place.
+    /// The advice execution failed; the original RAM mapping remains in place.
     Error {
         /// Host errno when an OS advice call failed.
         errno: Option<i32>,
@@ -613,7 +613,7 @@ pub trait SnapshotState {
         tag: &str,
         policy: &pvisor_core::overlay::FileAccessPolicy,
     ) -> io::Result<usize>;
-    /// Add current Attempt host-authority exclusions to a restored overlay.
+    /// Add current Execution host-authority exclusions to a restored overlay.
     /// Existing exclusions must remain; absolute/escaping paths and additions
     /// hiding saved inode paths are rejected. Other topology remains unchanged.
     fn rebind_filesystem_exclusions(
@@ -803,7 +803,7 @@ pub enum VcpuObservationRejection {
 }
 
 /// Consistent bounded snapshot: one record per configured CPU, no event backlog.
-/// Sequence and epoch are VM-local; the caller must bind its own Attempt/source
+/// Sequence and epoch are VM-local; the caller must bind its own Execution/source
 /// identity. A new enable session invalidates old records. All-waiting is only
 /// an opportunity, never authorization to pause/offload. No timer completeness
 /// or wake delivery guarantee is provided in M0.
@@ -1191,7 +1191,7 @@ pub struct GuestIdleStatus {
     pub pending_host_reads: u64,
     /// Configured minimum remaining timer budget for reclaim admission, in ns.
     pub offload_minimum_ns: u64,
-    /// Lifetime count of reclaim attempts skipped solely for insufficient budget.
+    /// Lifetime count of reclaim executions skipped solely for insufficient budget.
     /// A skip keeps the claimed pause and its original wake deadline intact.
     pub offload_deadline_skips: u64,
 }

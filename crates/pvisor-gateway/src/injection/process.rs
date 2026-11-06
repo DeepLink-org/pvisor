@@ -26,7 +26,7 @@ fn output_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<O
             result => {
                 // A kernel-uninterruptible child may delay wait() after SIGKILL.
                 // Keep this background slot occupied until it is actually reaped;
-                // no gateway request awaits this job.
+                // no gateway request awaits this session.
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(match result {

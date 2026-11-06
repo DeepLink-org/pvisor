@@ -2,7 +2,7 @@
 
 These specifications describe design promises. Passing checks remain separate from human approval.
 
-### S-STAGE-001: Staged Jobs preserve the workspace
+### S-STAGE-001: Staged Sessions preserve the workspace
 
 **Semantics**: After successful execution, a nonzero exit, or signal termination, paths, types, complete contents, permission bits and symlink targets before apply are identical to the initial state.
 
@@ -21,9 +21,9 @@ expect_refused stage "$CASE_ROOT/signal" 'printf changed > edit; rm -rf d; kill 
 assert_unchanged before "$WS"
 ```
 
-### S-STAGE-002: Jobs read their own changes
+### S-STAGE-002: Sessions read their own changes
 
-**Semantics**: Reads inside the Job observe its writes, deletions and renames; the host workspace remains unchanged before apply.
+**Semantics**: Reads inside the Session observe its writes, deletions and renames; the host workspace remains unchanged before apply.
 
 **Violation example**: Reading returns old content after a write, a deleted path remains visible, or a renamed file cannot be found.
 
@@ -38,7 +38,7 @@ assert_unchanged before "$WS"
 
 ### S-STAGE-003: Review describes the exact net effect
 
-**Semantics**: The review inventory exactly matches net file additions, deletions and modifications; a temporary file created and deleted during the Job is absent.
+**Semantics**: The review inventory exactly matches net file additions, deletions and modifications; a temporary file created and deleted during the Session is absent.
 
 **Violation example**: Temporary files leak into review, deletions are missing, or touched paths with no net effect are reported.
 
@@ -262,7 +262,7 @@ mise run cases -- --suite stage --case S-STAGE-008 --keep
 <!-- semspec: setup -->
 ````bash
 export RUST_LOG=warn
-# Public CLI only; all personal settings and Job records stay in CASE_ROOT.
+# Public CLI only; all personal settings and Session records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" command "${SUBJECT_BIN:-pvisor}" "$@"; }
 stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {

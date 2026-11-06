@@ -11,8 +11,8 @@ Use JSON to connect tasks to scripts: check the outcome, inspect the actual boun
 | `status --json` | Status and optional filesystem/network summaries | Liveness/stage overview; not complete control evidence |
 | `status --review --json` | Complete versioned Run Bundle | Post-run review and machine consumers |
 | `review --json` | Schema-5 Bundle plus `review_context` | Same review path; `--checkpoint ID` selects a saved workspace |
-| `kill --json` | Schema 1, operation `kill` | Distinguish a termination request from an already stopped Job |
-| `checkpoint create/list/show/delete/gc --json` | Schema 1, operation `checkpoint.*` | Job-scoped workspace and execution checkpoint management |
+| `kill --json` | Schema 1, operation `kill` | Distinguish a termination request from an already stopped Session |
+| `checkpoint create/list/show/delete/gc --json` | Schema 1, operation `checkpoint.*` | Session-scoped workspace and execution checkpoint management |
 
 `--review --json` and `--diff` are mutually exclusive. Do not parse human review text.
 
@@ -56,29 +56,29 @@ Stop reading an unrecognized `schema_version`, and stop a decision when required
 
 ## JSON versions and command envelopes {#envelopes}
 
-The schema number belongs to the output format, not the CLI as a whole. `status --json` uses `schema_version = 2` and returns a bounded display summary. Its fields are:
+The schema number belongs to the output format, not the CLI as a whole. `status --json` uses `schema_version = 3` and returns a bounded display summary. Its fields are:
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | Status summary contract, currently 2 |
+| `schema_version` | Status summary contract, currently 3 |
 | `state` | Effective execution phase: live `paused`/`cancelling`, confirmed `hibernated`/terminal outcome, or `unknown`; not inferred from liveness |
 | `run` | Display identity, recorded lifecycle, stage and workspace paths; the effective phase is top-level `state`; command limited to 32 arguments of 512 UTF-8 bytes, with `command_truncated` |
 | `live` | Boolean liveness observation |
-| `live_attempt` | Current owner-supplied Attempt identity, state and update time; null for disk-only reads |
-| `execution_progress` | Applied journal position, queued/in-flight counts, `history_gap` and `outcome_unknown`, sampled atomically with `live_attempt`; null without an owner observation |
+| `live_execution` | Current owner-supplied Execution identity, state and update time; null for disk-only reads |
+| `execution_progress` | Applied journal position, queued/in-flight counts, `history_gap` and `outcome_unknown`, sampled atomically with `live_execution`; null without an owner observation |
 | `checkpoint_capability` | `workspace`, `workspace_capture_requires`, `execution`, `execution_blocker` |
 | `workspace_checkpoint_count` | Number of workspace checkpoints |
-| `execution` | Durable Job state, suspended head, active Attempt and checkpoint/capture/resume/fork request counts; null without native handoff |
+| `execution` | Durable Session state, suspended head, active Execution and checkpoint/capture/resume/fork request counts; null without native handoff |
 | `workspace_generation` | Integer, or null without an overlay |
 | `apply_batch_count` | Number of previous apply batches |
 | `observations.filesystem/network` | Aggregate counters with `source` (`live` or `durable`), overflow counts and at most five bounded denied samples; null when unavailable |
 | `filesystem` | `changed_files`, `whiteouts`, `sample_paths`, `samples_truncated`; null without staging |
 
-Base summaries are limited to 256 KiB. Each path/destination sample is limited to 512 UTF-8 bytes; shortened samples carry a truncation flag. A missing observation means unavailable, not zero traffic. Status no longer embeds full launch settings, checkpoint/apply arrays or request maps. Use checkpoint list/show, review and retained owning records for those details. The instance protocol is `pvisor-instance-control-2`; drain old live Jobs through their owning executable before replacing an installation.
+Base summaries are limited to 256 KiB. Each path/destination sample is limited to 512 UTF-8 bytes; shortened samples carry a truncation flag. A missing observation means unavailable, not zero traffic. Status no longer embeds full launch settings, checkpoint/apply arrays or request maps. Use checkpoint list/show, review and retained owning records for those details. The instance protocol is `pvisor-instance-control-3`; drain old live Sessions through their owning executable before replacing an installation.
 
-Review outputs add `review_context` to the Bundle: `job_id`, `attempt_id`, nullable `checkpoint_id`, `workspace_generation`, `file_view`, and `execution_evidence`. Execution evidence remains historical; the selected filesystem view is refreshed at review time, including after apply/drop. Reviewing a checkpoint selects its saved files without rerunning its workload.
+Review outputs add `review_context` to the Bundle: `session_id`, `execution_id`, nullable `checkpoint_id`, `workspace_generation`, `file_view`, and `execution_evidence`. Execution evidence remains historical; the selected filesystem view is refreshed at review time, including after apply/drop. Reviewing a checkpoint selects its saved files without rerunning its workload.
 
-All checkpoint success envelopes include `schema_version = 1`, `operation`, and `job_id`:
+All checkpoint success envelopes include `schema_version = 1`, `operation`, and `session_id`:
 
 | Operation | Additional fields |
 | --- | --- |
@@ -88,6 +88,6 @@ All checkpoint success envelopes include `schema_version = 1`, `operation`, and 
 | `checkpoint.delete` | `checkpoint_id`, `deleted = true` |
 | `checkpoint.gc` | `scope`, `root`, `removed_transactions`, `execution_removed_transactions`, `published_checkpoints_deleted = 0` |
 
-`kill --json` returns `already_stopped = true` with the stored state for a stopped Job. Otherwise it returns `state = "stopping"`, `termination_requested = true`; this confirms the request, not completed shutdown. Poll status for the resulting state.
+`kill --json` returns `already_stopped = true` with the stored state for a stopped Session. Otherwise it returns `state = "stopping"`, `termination_requested = true`; this confirms the request, not completed shutdown. Poll status for the resulting state.
 
-Companion commands such as replay own their output formats. Ordinary `run`, `resume`, `fork`, `apply`, and `drop` do not emit a JSON success envelope; read status/the Bundle and preserve exit status. `suspend --json` succeeds only after checkpoint publication and native termination: it returns `schema_version = 1`, `operation = "suspend"`, `job_id`, `state = "suspended"`, `request_id`, `checkpoint_id`, `kind = "execution"`, and `checkpoint`. Unsupported profiles report errors on stderr without a checkpoint success object. `pvisor --help` lists the commands available in the current installation.
+Companion commands such as replay own their output formats. Ordinary `run`, `resume`, `fork`, `apply`, and `drop` do not emit a JSON success envelope; read status/the Bundle and preserve exit status. `suspend --json` succeeds only after checkpoint publication and native termination: it returns `schema_version = 1`, `operation = "suspend"`, `session_id`, `state = "suspended"`, `request_id`, `checkpoint_id`, `kind = "execution"`, and `checkpoint`. Unsupported profiles report errors on stderr without a checkpoint success object. `pvisor --help` lists the commands available in the current installation.

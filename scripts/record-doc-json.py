@@ -83,7 +83,7 @@ def main():
     replacements = {str(work): "/tmp/pvisor-example"}
     for name in commands:
         run = outputs[name]["run"]
-        for key in ("run_id", "attempt_id", "session_id"):
+        for key in ("run_id", "execution_id", "session_id"):
             replacements.setdefault(run[key], f"{name}-{key}")
 
     def normalize(value):

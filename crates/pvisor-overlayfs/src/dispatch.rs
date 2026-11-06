@@ -325,7 +325,7 @@ fn prepare(core: &FilesystemService, plan: CopyPlan) -> io::Result<Vec<PreparedC
     )
 }
 
-struct Job {
+struct Task {
     preparation: CopyRequest,
     bytes: usize,
     inodes: Vec<u64>,
@@ -393,7 +393,7 @@ fn complete_preparation(
 #[derive(Debug)]
 pub(crate) struct DispatchControl {
     stopped: AtomicBool,
-    senders: Mutex<Vec<mpsc::SyncSender<Job>>>,
+    senders: Mutex<Vec<mpsc::SyncSender<Task>>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -431,17 +431,17 @@ impl DispatchFs {
         let io_activity = Arc::new(IoActivity::default());
         let worker_state = state.clone();
         let mutation_activity = io_activity.clone();
-        let (sender, receiver) = mpsc::sync_channel::<Job>(REQUEST_LIMIT);
+        let (sender, receiver) = mpsc::sync_channel::<Task>(REQUEST_LIMIT);
         let worker = std::thread::Builder::new()
             .name("overlay-mutations".into())
             .spawn(move || {
-                while let Ok(job) = receiver.recv() {
-                    let callback = match job.work {
+                while let Ok(task) = receiver.recv() {
+                    let callback = match task.work {
                         Work::Callback(callback) => callback,
                         Work::Io(request) => {
                             request.run(&worker_state, &mutation_activity);
                             if let Ok(mut fs) = worker_state.lock() {
-                                fs.finish_request(job.bytes, &job.inodes);
+                                fs.finish_request(task.bytes, &task.inodes);
                             }
                             continue;
                         }
@@ -450,7 +450,7 @@ impl DispatchFs {
                         let (core, plan, mutation) = {
                             let fs = worker_state.lock().map_err(|_| libc::EIO)?;
                             let (core, plan) = fs
-                                .copy_plan(&job.preparation)
+                                .copy_plan(&task.preparation)
                                 .map_err(|error| error.raw_os_error().unwrap_or(libc::EIO))?;
                             let needed =
                                 !matches!(&plan, CopyPlan::Files(paths, _) if paths.is_empty());
@@ -472,7 +472,7 @@ impl DispatchFs {
                                 }
                                 Err(error) => callback(Err(error)),
                             }
-                            fs.finish_request(job.bytes, &job.inodes);
+                            fs.finish_request(task.bytes, &task.inodes);
                         }
                         Err(_) => callback(Err(libc::EIO)),
                     }
@@ -480,12 +480,12 @@ impl DispatchFs {
             })?;
         let read_state = state.clone();
         let read_activity = io_activity.clone();
-        let (read_sender, read_receiver) = mpsc::sync_channel::<Job>(REQUEST_LIMIT);
+        let (read_sender, read_receiver) = mpsc::sync_channel::<Task>(REQUEST_LIMIT);
         let read_worker = match std::thread::Builder::new()
             .name("overlay-reads".into())
             .spawn(move || {
-                while let Ok(job) = read_receiver.recv() {
-                    match job.work {
+                while let Ok(task) = read_receiver.recv() {
+                    match task.work {
                         Work::Io(request) => request.run(&read_state, &read_activity),
                         Work::Callback(callback) => {
                             let _permit = read_activity.enter();
@@ -497,7 +497,7 @@ impl DispatchFs {
                     }
                     if let Ok(mut fs) = read_state.lock() {
                         fs.pending_read_requests -= 1;
-                        fs.finish_request(job.bytes, &job.inodes);
+                        fs.finish_request(task.bytes, &task.inodes);
                     }
                 }
             }) {
@@ -638,21 +638,21 @@ impl DispatchFs {
         }
         // Copy only an admitted, actually queued WRITE. Rejections and idle
         // inline writes never allocate a payload or a boxed callback.
-        let job = Job {
+        let task = Task {
             preparation: CopyRequest::None,
             bytes,
             inodes: vec![ino],
             work: Work::Io(request.into_owned()),
         };
-        if let Err(error) = sender.try_send(job) {
-            let (job, errno) = match error {
-                mpsc::TrySendError::Full(job) => (job, libc::EAGAIN),
-                mpsc::TrySendError::Disconnected(job) => (job, libc::EIO),
+        if let Err(error) = sender.try_send(task) {
+            let (task, errno) = match error {
+                mpsc::TrySendError::Full(task) => (task, libc::EAGAIN),
+                mpsc::TrySendError::Disconnected(task) => (task, libc::EIO),
             };
             fs.pending_read_requests -= usize::from(reading);
             fs.finish_request(bytes, &[ino]);
             drop(fs);
-            job.work.fail(errno);
+            task.work.fail(errno);
         }
     }
 
@@ -665,26 +665,26 @@ impl DispatchFs {
         inodes: &[u64],
         callback: Callback,
     ) {
-        let job = Job {
+        let task = Task {
             preparation,
             bytes,
             inodes: inodes.to_owned(),
             work: Work::Callback(callback),
         };
         let Ok(senders) = self.control.senders.lock() else {
-            job.work.fail(libc::EIO);
+            task.work.fail(libc::EIO);
             return;
         };
         if self.control.stopped.load(Ordering::Acquire) {
-            job.work.fail(libc::EIO);
+            task.work.fail(libc::EIO);
             return;
         }
         let Some(sender) = senders.get(usize::from(reading)) else {
-            job.work.fail(libc::EIO);
+            task.work.fail(libc::EIO);
             return;
         };
         let Ok(mut fs) = self.state.lock() else {
-            job.work.fail(libc::EIO);
+            task.work.fail(libc::EIO);
             return;
         };
         let pending = if reading {
@@ -694,10 +694,10 @@ impl DispatchFs {
         };
         if pending >= REQUEST_LIMIT || bytes > BYTE_LIMIT - fs.pending_bytes {
             drop(fs);
-            job.work.fail(libc::EAGAIN);
+            task.work.fail(libc::EAGAIN);
             return;
         }
-        for ino in &job.inodes {
+        for ino in &task.inodes {
             *fs.pending_inodes.entry(*ino).or_default() += 1;
         }
         fs.pending_requests += 1;
@@ -711,7 +711,7 @@ impl DispatchFs {
         // shutdown must also wait for an inline callback. Reads may be inline
         // only when *both* lanes were idle: any accepted mutation, including
         // off-lock copy preparation, keeps the receive thread free for metadata.
-        // Never overtake an accepted job in the same lane.
+        // Never overtake an accepted task in the same lane.
         if short && pending == 0 && (!reading || fs.pending_requests == 1) {
             drop(fs);
             let (read_permit, namespace_permit) = if reading {
@@ -722,33 +722,33 @@ impl DispatchFs {
             let mut fs = match self.state.lock() {
                 Ok(fs) => fs,
                 Err(_) => {
-                    job.work.fail(libc::EIO);
+                    task.work.fail(libc::EIO);
                     return;
                 }
             };
-            if let Work::Callback(callback) = job.work {
+            if let Work::Callback(callback) = task.work {
                 callback(Ok(&mut fs));
             }
             if reading {
                 fs.pending_read_requests -= 1;
             }
-            fs.finish_request(bytes, &job.inodes);
+            fs.finish_request(bytes, &task.inodes);
             drop(fs);
             drop(read_permit);
             drop(namespace_permit);
             return;
         }
-        if let Err(error) = sender.try_send(job) {
-            let (job, errno) = match error {
-                mpsc::TrySendError::Full(job) => (job, libc::EAGAIN),
-                mpsc::TrySendError::Disconnected(job) => (job, libc::EIO),
+        if let Err(error) = sender.try_send(task) {
+            let (task, errno) = match error {
+                mpsc::TrySendError::Full(task) => (task, libc::EAGAIN),
+                mpsc::TrySendError::Disconnected(task) => (task, libc::EIO),
             };
             if reading {
                 fs.pending_read_requests -= 1;
             }
-            fs.finish_request(bytes, &job.inodes);
+            fs.finish_request(bytes, &task.inodes);
             drop(fs);
-            job.work.fail(errno);
+            task.work.fail(errno);
         }
     }
 }

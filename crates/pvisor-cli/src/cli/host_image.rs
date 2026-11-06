@@ -62,7 +62,7 @@ fn image_uuid(bytes: &[u8], cpu: u32) -> anyhow::Result<[u8; 16]> {
         offset += size;
     }
     ensure!(offset == end, "Mach-O command size mismatch");
-    uuid.context("loaded executable has no LC_UUID; refusing unattested Job admission")
+    uuid.context("loaded executable has no LC_UUID; refusing unattested Session admission")
 }
 
 fn disk_uuid(file: &mut (impl Read + Seek), cpu: u32) -> anyhow::Result<[u8; 16]> {
@@ -150,7 +150,7 @@ pub(super) fn attest(file: &mut std::fs::File) -> anyhow::Result<()> {
     let cpu = word(loaded, 4, little)?;
     ensure!(
         image_uuid(bytes, cpu)? == disk_uuid(file, cpu)?,
-        "on-disk executable differs from loaded Mach-O UUID; no Job admitted"
+        "on-disk executable differs from loaded Mach-O UUID; no Session admitted"
     );
     file.seek(SeekFrom::Start(0))?;
     Ok(())

@@ -14,11 +14,11 @@ pVisor 的研究问题是：在保持任务正确性和审查能力的前提下�
 
 pVisor 拥有单次执行的边界与观察；单节点 daemon 拥有本机 sandbox 归属与生命周期。外部编排（Kubernetes、Ray 或训练框架）拥有主机选择、队列、依赖与业务重试；训练器拥有模型、采样、奖励和评估器版本。pVisor 不用分布式产品控制面替代它们。
 
-[Daemon API](../daemon/index.md) 尚未暴露原生 Job 暂存、execution checkpoint 和 Run Bundle 导出，因此研究接入需要显式的执行／证据交接。各层的当前职责与待验证项：
+[Daemon API](../daemon/index.md) 尚未暴露原生 Session 暂存、execution checkpoint 和 Run Bundle 导出，因此研究接入需要显式的执行／证据交接。各层的当前职责与待验证项：
 
 | 层 | 当前职责 | 待集成／验证 |
 | --- | --- | --- |
-| 原生 pVisor 执行 | Job 生命周期、执行器控制、暂存、可选 Gateway 与记录 | 编排适配器和代表性工作负载验收 |
+| 原生 pVisor 执行 | Session 生命周期、执行器控制、暂存、可选 Gateway 与记录 | 编排适配器和代表性工作负载验收 |
 | Sandbox daemon | VM 准入、持久 supervisor、镜像准备与已测试的 OpenSandbox/E2B 核心流程 | 完整协议和生产密度验收；stage/checkpoint API 未接入 |
 | 可选 node 资源客户端 | 面向调用方自备同主机服务的连接 pin；不提供服务端或有界 warming | 外部 owner 实现、Daemon 接入、完整瞬时记账和工作负载测量 |
 | 外部编排 | 主机选择、队列、依赖、重试与租户 | 显式执行／证据交接及业务副作用核对 |
@@ -38,9 +38,9 @@ pVisor 拥有单次执行的边界与观察；单节点 daemon 拥有本机 sand
 
 ## 一次 rollout 的执行契约 {#rollout-contract}
 
-输入包含 task ID、attempt ID、仓库提交或镜像摘要、工作区、Agent 命令、策略、资源预算与随机种子；输出包含结束状态、退出码、文件候选、Run Bundle、原生轨迹，以及启用捕获时的 Gateway Journal。训练器把这些产物与模型版本、采样参数、reward 和 evaluator 版本关联。环境准备失败、权限拒绝和上游请求失败有自己的类别；评价模型解题能力时，按预先确定的规则处理这些基础设施失败。
+输入包含 task ID、execution ID、仓库提交或镜像摘要、工作区、Agent 命令、策略、资源预算与随机种子；输出包含结束状态、退出码、文件候选、Run Bundle、原生轨迹，以及启用捕获时的 Gateway Journal。训练器把这些产物与模型版本、采样参数、reward 和 evaluator 版本关联。环境准备失败、权限拒绝和上游请求失败有自己的类别；评价模型解题能力时，按预先确定的规则处理这些基础设施失败。
 
-最小集成顺序：先按 [rollout 指南](../../guides/rl-rollouts.md) 完成一个离线任务的候选收集与评分；再用独立工作区增加并发，确保每个 attempt 的文件和记录相互独立；最后接入原生 Agent 轨迹，分别验证前缀准备、工具重执行和模型续跑。回放工具会产生新观察，replay 的新观察与旧会话文字不能简单视为相同实验输入。
+最小集成顺序：先按 [rollout 指南](../../guides/rl-rollouts.md) 完成一个离线任务的候选收集与评分；再用独立工作区增加并发，确保每个 execution 的文件和记录相互独立；最后接入原生 Agent 轨迹，分别验证前缀准备、工具重执行和模型续跑。回放工具会产生新观察，replay 的新观察与旧会话文字不能简单视为相同实验输入。
 
 需要实验证明的部分：每秒完成的 rollout、尾延迟、每个候选的磁盘与驻留内存、fork/checkpoint 成本、工具重执行成本和 reward delta。固定模型服务容量，区分执行底座与模型服务瓶颈。异步队列、跨节点容错、奖励去重、共享前缀收益和大规模采样尚需集成与测量。
 

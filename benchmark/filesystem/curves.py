@@ -105,7 +105,7 @@ def conditions(suite):
             result[f"batch-{kib}k"] = arm({"batch_kib": kib}, description=f"{kib} KiB batch limit")
         for us in (0, 100, 1000, 50000):
             result[f"delay-{us}us"] = arm(
-                {"delay_us": us}, description=f"{us} us oldest-job deadline"
+                {"delay_us": us}, description=f"{us} us oldest-session deadline"
             )
         return result
     result = {
@@ -241,7 +241,7 @@ def prepare(args):
                 subprocess.run(command, cwd=REPO, stdout=log, stderr=subprocess.STDOUT, check=True)
         shutil.copy2(REPO / "target/performance/pvisor-fs-curves-subject", batch / "bin/subject")
     if any(sha(REPO / name) != expected for name, expected in source_hashes.items()):
-        raise ValueError("source changed during build; retain attempt, prepare a fresh batch")
+        raise ValueError("source changed during build; retain execution, prepare a fresh batch")
     plan, arms = cells(args.suite), conditions(args.suite)
     if args.conditions:
         requested = args.conditions.split(",")
@@ -469,7 +469,7 @@ def one_trial(batch, protocol, pair, condition):
         result.update(
             returncode=returncode,
             ready_ms=None if ready is None else (ready - started) / 1e6,
-            job_ms=(ended - started) / 1e6,
+            session_ms=(ended - started) / 1e6,
         )
         expected = {(c["id"], r) for c in protocol["cells"] for r in (1, 2, 3)}
         observed = {(r["id"], r["round"]) for r in parsed}
@@ -584,7 +584,7 @@ def campaign(batch):
                         "pair": order["pair"],
                         "condition": condition,
                         "valid": record["valid"],
-                        "job_ms": record.get("job_ms"),
+                        "session_ms": record.get("session_ms"),
                         "error": record.get("error"),
                     }
                 ),

@@ -22,7 +22,7 @@ For example, a compose lower contains `config` B while the host target contains 
 | `apply.rs` | Changeset, dependency-closed selection, apply ledger | Review, conflicts, target installation, recovery and drop |
 | `sys.rs` | Syscall wrappers, POSIX metadata and xattrs | Unix differences and concentrated unsafe boundaries |
 | `pvisor-core::overlay` | `OverlayRecord`, `ApplyRecord`, fingerprints and path encoding | Shared serialization contracts |
-| Runtime/filesystem adapters | Attempt lease, mount, handles, requests and observations | Stop writers, manage mounts and call the shared core |
+| Runtime/filesystem adapters | Execution lease, mount, handles, requests and observations | Stop writers, manage mounts and call the shared core |
 
 OverlayCore does not own FUSE mounts, Run scheduling or the public Event Journal. It uses `pvisor-journal::atomic_write` for metadata, but `apply-ledger.json` is distinct from the [Event Journal](journal.md): the former replaces complete JSON documents; the latter appends event lines.
 
@@ -49,7 +49,7 @@ do not enter this service merely because of this structure.
 |---|---|
 | Entry adapters | FUSE or virtqueue transport, argument/credential conversion, errno/attribute encoding, mount and queue lifecycle; retain Linux guest and host-platform capability differences |
 | Shared filesystem service | Share path resolution, directory merging, permission/alias policy, preimages and copy-up through OverlayCore; provide one contract for local and remote reads |
-| Local and remote backends | Local file I/O; immutable image stat/list/read, symlinks, object identity, block verification and caching; mutations remain in each Attempt's private local upper |
+| Local and remote backends | Local file I/O; immutable image stat/list/read, symlinks, object identity, block verification and caching; mutations remain in each Execution's private local upper |
 
 The public interface expresses capabilities through file operations, metadata,
 object identities and I/O results rather than `fuser::Reply*`, guest descriptors
@@ -265,7 +265,7 @@ Selective completion leaves the Overlay Staged when changes remain and Applied w
 
 ### Drop and adapter boundaries {#adapters}
 
-Pending apply prevents drop from destroying recovery data. Drop is idempotent for Discarded and cannot undo Applied. It clears upper/work and saves Discarded; merged cleanup only removes an empty placeholder rather than recursively traversing a possible mount. Callers must stop writers and unmount first. The Core API's Active branch does not replace Attempt leases and lifecycle coordination.
+Pending apply prevents drop from destroying recovery data. Drop is idempotent for Discarded and cannot undo Applied. It clears upper/work and saves Discarded; merged cleanup only removes an empty placeholder rather than recursively traversing a possible mount. Callers must stop writers and unmount first. The Core API's Active branch does not replace Execution leases and lifecycle coordination.
 
 Host `pvisor-overlayfs` adapts FUSE requests, inode/handle ownership and permissions to the shared core. Its adapter handles Linux FUSE and macFUSE kernel/FSKit mounting restrictions. The repository defaults to fskit on its FSKit entry path and rejects macFUSE versions below 5.4.0 through the implemented guard. VM `crates/pvisor-vm/src/devices/virtio/fs/overlay.rs` uses the same Core through guest virtio-fs, without a host FUSE union mount. Guest errno translation, queues and handle lifetime belong to that adapter.
 

@@ -191,7 +191,7 @@ impl PvisorTask {
                 .filter(|metadata| metadata.is_file() && metadata.len() > 0);
             if already_delivered.is_some() {
                 // A real installer (or an earlier delivery) already put the
-                // payload there. Zero-byte stubs from an aborted attempt do
+                // payload there. Zero-byte stubs from an aborted execution do
                 // not count.
                 injection.staged = true;
                 continue;

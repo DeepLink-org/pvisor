@@ -1,33 +1,34 @@
 //! Native control effects; state changes are committed through the execution owner.
 use super::{ControlOrigin, Execution, error_message};
 use pvisor_core::host_protocol::{
-    AgentCtlHostError, AgentCtlHostErrorCode, HostAttemptCommand, HostAttemptResult,
+    AgentCtlHostError, AgentCtlHostErrorCode, HostExecutionCommand, HostExecutionResult,
 };
 use pvisor_core::operation::{OperationKind, Value};
 use tokio_util::sync::CancellationToken;
 
 impl Execution {
-    /// Dispatch against this handle's Attempt only. Terminate requests cancellation;
+    /// Dispatch against this handle's Execution only. Terminate requests cancellation;
     /// its reply is not evidence of reaping or resource release. Native transitions
     /// retain Execution's ordering and survive cancellation of the waiter.
     pub async fn dispatch(
         &self,
-        command: HostAttemptCommand,
-    ) -> Result<HostAttemptResult, AgentCtlHostError> {
+        command: HostExecutionCommand,
+    ) -> Result<HostExecutionResult, AgentCtlHostError> {
         let value = match command {
-            HostAttemptCommand::Status => None,
-            HostAttemptCommand::Terminate => {
+            HostExecutionCommand::Status => None,
+            HostExecutionCommand::Terminate => {
                 self.cancel();
                 None
             }
-            HostAttemptCommand::Operation { kind } => {
+            HostExecutionCommand::Operation { kind } => {
                 if matches!(kind, OperationKind::RunExecute { .. }) {
                     return Err(AgentCtlHostError::new(
                         AgentCtlHostErrorCode::Unsupported,
-                        "run.execute cannot control an existing Attempt",
+                        "run.execute cannot control an existing Execution",
                     ));
                 }
-                if self.status().attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
+                if self.status().execution.executor.kind
+                    != pvisor_core::ExecutorKind::VirtualMachine
                 {
                     return Err(AgentCtlHostError::new(
                         AgentCtlHostErrorCode::Unsupported,
@@ -45,7 +46,7 @@ impl Execution {
                 })?)
             }
         };
-        Ok(HostAttemptResult {
+        Ok(HostExecutionResult {
             status: self.status(),
             value,
         })
@@ -53,7 +54,7 @@ impl Execution {
     /// Capture full native CPU/RAM/devices and owned filesystem copies in one
     /// freeze/publication transaction. The source resumes after durable seal.
     /// Requires a no-network VM with durable Run storage. This API does not
-    /// suspend the Job or hand execution to another Attempt.
+    /// suspend the Session or hand execution to another Execution.
     pub async fn capture_execution(
         &self,
         request_id: impl Into<String>,
@@ -79,7 +80,7 @@ impl Execution {
             .map(|_| ())
     }
 
-    /// Resume the same live Attempt and await native acknowledgement. Repeated calls
+    /// Resume the same live Execution and await native acknowledgement. Repeated calls
     /// are idempotent while available; this does not restore a terminated VM.
     pub async fn resume(&self) -> anyhow::Result<()> {
         self.control(pvisor_core::operation::OperationKind::RunResume)
@@ -141,7 +142,7 @@ impl Execution {
     pub async fn memory_sample(&self) -> pvisor_core::memory::RunMemorySample {
         let status = self.status();
         let started = pvisor_core::unix_now_ms();
-        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
+        let result = if status.execution.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
             || status.state.is_terminal()
         {
             Err(anyhow::anyhow!(
@@ -156,7 +157,7 @@ impl Execution {
         };
         pvisor_core::memory::RunMemorySample {
             run_id: status.run_id,
-            attempt_id: status.attempt.attempt_id,
+            execution_id: status.execution.execution_id,
             sampled_at_unix_ms: started,
             usage,
             error,
@@ -168,7 +169,7 @@ impl Execution {
     pub async fn cpu_sample(&self) -> pvisor_core::cpu::RunCpuSample {
         let status = self.status();
         let started = pvisor_core::unix_now_ms();
-        let result = if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
+        let result = if status.execution.executor.kind != pvisor_core::ExecutorKind::VirtualMachine
             || status.state.is_terminal()
         {
             Err(anyhow::anyhow!("CPU observation requires a live native VM"))
@@ -181,18 +182,18 @@ impl Execution {
         };
         pvisor_core::cpu::RunCpuSample {
             run_id: status.run_id,
-            attempt_id: status.attempt.attempt_id,
+            execution_id: status.execution.execution_id,
             sampled_at_unix_ms: started,
             usage,
             error,
         }
     }
 
-    /// Wait through asynchronous attempt startup without issuing a primitive
+    /// Wait through asynchronous execution startup without issuing a primitive
     /// before the native control endpoint is usable. Cancellation still fences it.
     pub async fn wait_ready(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.status().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
+            self.status().execution.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
             "VM controls require a VM executor"
         );
         let mut status = self.subscribe();
@@ -202,7 +203,7 @@ impl Execution {
                 !self.cancellation.is_cancelled()
                     && !state.is_terminal()
                     && state != pvisor_core::RunState::Cancelling,
-                "attempt ended before control readiness"
+                "execution ended before control readiness"
             );
             if matches!(
                 state,
@@ -212,10 +213,10 @@ impl Execution {
             }
             tokio::select! {
                 _ = self.cancellation.cancelled() => {
-                    anyhow::bail!("attempt ended before control readiness");
+                    anyhow::bail!("execution ended before control readiness");
                 }
                 changed = status.changed() => {
-                    changed.map_err(|_| anyhow::anyhow!("attempt status closed before control readiness"))?;
+                    changed.map_err(|_| anyhow::anyhow!("execution status closed before control readiness"))?;
                 }
             }
         }
@@ -232,13 +233,13 @@ impl Execution {
     }
 
     fn ensure_live(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.cancellation.is_cancelled(), "attempt is cancelling");
+        anyhow::ensure!(!self.cancellation.is_cancelled(), "execution is cancelling");
         anyhow::ensure!(
             matches!(
                 self.status().state,
                 pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
             ),
-            "attempt is not running or suspended"
+            "execution is not running or suspended"
         );
         Ok(())
     }
@@ -302,9 +303,9 @@ impl Execution {
                 let value = if let Some(checkpoint) = reply.checkpoint {
                     anyhow::ensure!(
                         checkpoint.source_run_id == operation.run_id
-                            && checkpoint.source_attempt_id
-                                == self.status().attempt.attempt_id.as_str(),
-                        "checkpoint belongs to another attempt"
+                            && checkpoint.source_execution_id
+                                == self.status().execution.execution_id.as_str(),
+                        "checkpoint belongs to another execution"
                     );
                     Value::ExecutionCheckpoint { checkpoint }
                 } else {

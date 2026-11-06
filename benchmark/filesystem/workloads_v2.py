@@ -559,7 +559,7 @@ def make_plan(
             measurements=[
                 "protocol RPC/bytes",
                 "eligible paths",
-                "backing attempts",
+                "backing executions",
                 "CPU",
                 "memory",
                 "dirty/writeback",

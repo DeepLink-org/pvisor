@@ -317,7 +317,7 @@ def one_trial(batch, protocol, case, pair, backend, *, preflight=False):
             timed_out=timed_out.is_set(),
             ready_ns=ready - launch if ready is not None and launch is not None else None,
             wrapper_prepare_ns=launch - started if launch is not None else None,
-            job_ns=ended - started,
+            session_ns=ended - started,
             exit_after_done_ns=ended - done if done else None,
             resource=dict(
                 before=before,
@@ -464,7 +464,7 @@ def campaign(batch):
                         case_id=order["case_id"],
                         pair=order["pair"],
                         backend=backend,
-                        reason="first attempt for this backend/case failed; not executed",
+                        reason="first execution for this backend/case failed; not executed",
                     )
                 )
                 save(batch / "skipped.json", skipped)

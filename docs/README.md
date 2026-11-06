@@ -19,8 +19,8 @@ Use 沙箱 / sandbox for the framework and execution isolation. Use 沙盘模式
 stagebox mode only for Agent style stagebox, not as a synonym for the whole
 product or every sandbox. Use 暂存区 / stage for stored candidate file changes.
 Stagebox names a workflow, not an executor or a stronger isolation guarantee:
-its native Jobs can select Host, OCI or VM execution. Container staged binds have a separate review/apply/drop contract, including
-mount selection; daemon identities do not inherit Job apply semantics. Keep package and CLI names.
+its native Sessions can select Host, OCI or VM execution. Container staged binds have a separate review/apply/drop contract, including
+mount selection; daemon identities do not inherit Session apply semantics. Keep package and CLI names.
 
 Within the Agent style stagebox tutorial, present a complete local experiment
 and selective result handoff. Move
@@ -64,7 +64,7 @@ runtime architecture before their first command.
   optional installation methods and uncommon troubleshooting into native
   collapsible notes; do not hide required platform setup or remove safety flags
   to make an example look simpler.
-- Use only supported commands and verified examples. Distinguish host Jobs,
+- Use only supported commands and verified examples. Distinguish host Sessions,
   container instances and daemon SDK access; avoid invented APIs, universal
   isolation claims or performance promises without workload-specific evidence.
 - Preserve published anchors when shortening headings. Keep Chinese and English
@@ -279,7 +279,7 @@ Quick start owns shared CLI installation, complete Docker style sandbox and Agen
 local workflows, Agent integration, executors, policies, task operations, platform
 integration, daemon setup, trajectories and command/configuration reference.
 Basic concepts owns the product overview, core concepts, the four core capabilities,
-evidence and security boundaries. Job usage and storage belongs in the reference group. Benchmarks owns measured results. System design owns architecture,
+evidence and security boundaries. Session usage and storage belongs in the reference group. Benchmarks owns measured results. System design owns architecture,
 subsystems, research, experimental designs and lab notes. Contributing owns the
 development and release workflow, regression cases and semantic specifications.
 
@@ -307,9 +307,9 @@ tab, keep the sidebar to two levels: topic group → article.
 The canonical Chinese documentation uses these sections:
 
 - `why/`: product scope, the two workflows, independent supervision and scale axes, and fit checks with comparisons.
-- `start/`: installation and the first reproducible Job, ending with where to go next.
+- `start/`: installation and the first reproducible Session, ending with where to go next.
 - `guides/`: the local workflow overview and task guides; `infrastructure/` owns the platform overview and integration matrix, with shared policies and executors linked from both routes.
-- `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
+- `concepts/`: the user mental model — sessions, staging, evidence and policy layering.
 - `benchmarks/`: reproducible measurements and dated comparisons.
 - `security/`: what is protected, what is not, and how to report issues.
 - `reference/`: CLI, configuration, schemas and platform support matrices.
@@ -352,7 +352,7 @@ implemented behavior from design goals; describe a guarantee only with its
 executor and scope. Review/apply examples must enable staging with `--safe`
 or `--stage`. If a path is specified, put it outside the project.
 
-The integration matrix distinguishes native CLI Jobs, embedded Rust Runtime,
+The integration matrix distinguishes native CLI Sessions, embedded Rust Runtime,
 daemon Sandbox API and containerd shim identities and exposed capabilities.
 It summarizes the owning references and source contracts; it must not promote
 underlying VM or pool tests into daemon SDK conformance or deployment evidence.
@@ -718,9 +718,9 @@ charter and conduct reporting channel are not yet established.
 
 **Requirements**
 
-- Metrics: number of concurrent Jobs, CPU/memory cost per Job, tail latency.
+- Metrics: number of concurrent Sessions, CPU/memory cost per Session, tail latency.
 - Control: sequential runs; Docker at the same density.
-- Workload: a fixed task set at 8/32/128 concurrent Jobs.
+- Workload: a fixed task set at 8/32/128 concurrent Sessions.
 - Environment: one set each for Linux (KVM/FUSE) and macOS (HVF/macFUSE).
 
 **Acceptance criteria**
@@ -773,7 +773,7 @@ charter and conduct reporting channel are not yet established.
 **Requirements**
 
 - List each subcommand's exit codes and meanings.
-- List the main error types (unsupported policy, sandbox setup failure, apply conflict, missing Job) with their exit codes and messages.
+- List the main error types (unsupported policy, sandbox setup failure, apply conflict, missing Session) with their exit codes and messages.
 - Explain how CI distinguishes "agent failure" from "pVisor refused to run".
 
 **Acceptance criteria**

@@ -50,7 +50,7 @@ fn execution_checkpoint_is_bound_to_its_run_encoding_and_capture_operation() {
         snapshot_id: "a".repeat(64),
         store: std::env::temp_dir().join("private/snapshots"),
         source_run_id: operation.run_id.clone(),
-        source_attempt_id: "attempt-1".into(),
+        source_execution_id: "execution-1".into(),
         created_at_unix_ms: 1,
         ram_storage: SnapshotRamStorage::Compressed,
     };
@@ -79,14 +79,14 @@ fn execution_checkpoint_is_bound_to_its_run_encoding_and_capture_operation() {
         )
         .is_err()
     );
-    for corruption in ["run", "encoding", "relative", "identity", "attempt"] {
+    for corruption in ["run", "encoding", "relative", "identity", "execution"] {
         let mut bad = checkpoint.clone();
         match corruption {
             "run" => bad.source_run_id = "other".into(),
             "encoding" => bad.ram_storage = SnapshotRamStorage::Raw,
             "relative" => bad.store = "relative".into(),
             "identity" => bad.snapshot_id = "g".repeat(64),
-            "attempt" => bad.source_attempt_id.clear(),
+            "execution" => bad.source_execution_id.clear(),
             _ => unreachable!(),
         }
         assert!(

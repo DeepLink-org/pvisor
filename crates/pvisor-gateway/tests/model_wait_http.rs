@@ -73,7 +73,7 @@ struct Wait(Arc<Admission>);
 
 impl ModelWaitLifecycle for Lifecycle {
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>> {
-        assert_eq!(request.attempt_id.unwrap().as_str(), "wait-attempt");
+        assert_eq!(request.execution_id.unwrap().as_str(), "wait-execution");
         assert_eq!(request.client_model, "test-model");
         assert!(!request.call_id.is_empty());
         Ok(Box::new(Wait(self.0.clone())))
@@ -214,7 +214,7 @@ impl Fixture {
             })),
             InProcessRuntime {
                 controller,
-                attempt_id: Some("wait-attempt".into()),
+                execution_id: Some("wait-execution".into()),
                 model_wait: install
                     .then(|| Arc::new(Lifecycle(admission.clone())) as Arc<dyn ModelWaitLifecycle>),
                 ..Default::default()

@@ -171,7 +171,7 @@ fn s3_cli_publishes_once_then_independent_read_only_clients_need_no_registry_or_
     assert_eq!(
         s3.puts.load(Ordering::Relaxed),
         before_puts,
-        "readers must never attempt PutObject"
+        "readers must never execution PutObject"
     );
     let missing = cli(
         tmp.path(),
@@ -607,7 +607,7 @@ fn main() {
         fs::write(&config, configuration).unwrap();
         let workspace = tmp.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
-        let job = tmp.path().join("job");
+        let session = tmp.path().join("session");
         let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
         command
             .env_clear()
@@ -621,7 +621,7 @@ fn main() {
             .env("PVISOR_CACHE_READ_ONLY", "true")
             .current_dir(&workspace)
             .args(["spawn", "--stage"])
-            .arg(&job)
+            .arg(&session)
             .args(["--config"])
             .arg(&config)
             .args([
@@ -658,7 +658,7 @@ fn main() {
         );
 
         let bundle: serde_json::Value =
-            serde_json::from_slice(&fs::read(job.join("run-bundle.json")).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(session.join("run-bundle.json")).unwrap()).unwrap();
         assert!(
             bundle["run"]["output"]["stdout"]
                 .as_str()

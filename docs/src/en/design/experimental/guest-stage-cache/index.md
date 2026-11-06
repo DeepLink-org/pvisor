@@ -52,7 +52,7 @@ Host OverlayFs already provides owned-view caching, mutation-effect collection a
 
 ### 1.3 Goals and measurement boundaries
 
-Complete path resolution, attributes and ordinary read-only open without filesystem VMM requests when metadata, permissions, retention and versions are complete. Valid data hits also stay local; missing data, stage mutation and required host observation/effects use the backend. Evaluate cold start, steady state and complete Attempts.
+Complete path resolution, attributes and ordinary read-only open without filesystem VMM requests when metadata, permissions, retention and versions are complete. Valid data hits also stay local; missing data, stage mutation and required host observation/effects use the backend. Evaluate cold start, steady state and complete Executions.
 
 Zero requests means no filesystem VMM requests within the specified operation window. Metadata import, first protocol probes, reference reclamation and teardown are recorded separately. It does not mean a VM has no hardware exits, scheduling or other device activity.
 
@@ -86,7 +86,7 @@ flowchart LR
     Transport --> Cache
 ```
 
-The guest owns caches, local open state and protocol-granted object references. The VMM owns sessions, trusted mappings, native handles, authorization and request lifecycle. OverlayCore owns composition, copy-up, preimages and stage semantics. Runtime/supervisor continues to arbitrate Attempt, freeze, seal, save and restore.
+The guest owns caches, local open state and protocol-granted object references. The VMM owns sessions, trusted mappings, native handles, authorization and request lifecycle. OverlayCore owns composition, copy-up, preimages and stage semantics. Runtime/supervisor continues to arbitrate Execution, freeze, seal, save and restore.
 
 Metadata construction/import fixes the source revision, validates indexes and preserves raw Unix path bytes/hardlink identity. Caches retain image/backend content validation and never treat holes in sparse lazy placeholders as real file content.
 
@@ -127,7 +127,7 @@ The following semantic model supports review; it is not a final serialization la
 
 | Concept | Required information | Lifetime/use |
 |---|---|---|
-| Session identity | Attempt, stage, base revision, protocol, permission semantics, policy version | Host validates before mount/restore; tokens do not cross sessions |
+| Session identity | Execution, stage, base revision, protocol, permission semantics, policy version | Host validates before mount/restore; tokens do not cross sessions |
 | Object identity | Host-assigned/recognized object ID, incarnation, type, hardlink group | Stable while referenced despite path/inode-number reuse |
 | Backing identity | Physical/remote backing identity and generation | Copy-up/replacement may change backing; existing opens retain current VM semantics |
 | Directory version | Directory and relevant covering state | Creation, removal, rename, whiteout/opaque updates |
@@ -395,7 +395,7 @@ Exit gate: sequential semantics, concurrent linearization, lifetimes and invalid
 
 ##### M4: restoration and runtime lifecycle
 
-1. Reuse Attempt/supervisor, CPU/device quiescence and filesystem-freeze ownership. Required guest flush/ACK completes while CPUs/device paths remain available.
+1. Reuse Execution/supervisor, CPU/device quiescence and filesystem-freeze ownership. Required guest flush/ACK completes while CPUs/device paths remain available.
 2. Save protocol mode, base/stage, policy, references and bindings; separate caches from required references. Native FD numbers are not persistent identities.
 3. Cover Unbound, Bound, Binding, in-flight I/O and undrained updates. Frozen state is explicit, without threads awaiting the frozen guest.
 4. Deleted open stage objects retain restorable backing; unsupported capture explicitly rejects the profile instead of reopening the current name.
@@ -521,7 +521,7 @@ Preflight confirms instruments/workloads before freezing. New issues stop the ba
 
 ##### 2.9.5.5 Timing and statistics
 
-Report internal tool time and complete Attempt time separately. The latter includes per-run metadata preparation/delivery, startup/import, tools, seal, requested checkpoint/export and teardown. Offline image construction is separate; first-use/reuse costs include new import rather than moving it outside timing.
+Report internal tool time and complete Execution time separately. The latter includes per-run metadata preparation/delivery, startup/import, tools, seal, requested checkpoint/export and teardown. Offline image construction is separate; first-use/reuse costs include new import rather than moving it outside timing.
 
 Publish samples, condition medians, same-round paired changes and 95% bootstrap confidence intervals. Examine distributions first. Separated clusters require proportions/conditions and no overall tool ranking. Intervals crossing zero mean no detected difference, not proved equality; 30 samples do not establish reliable P99.
 
@@ -620,7 +620,7 @@ Full cost = metadata preparation/delivery + VM startup/import + tools
 Candidate net benefit = backend work removed - added import/maintenance/reclaim/restore cost
 ```
 
-Report offline shared-image construction separately from per-Attempt import, including first-use and reuse costs. Formal A/B compares total latency, CPU, memory, IO and throughput; diagnostics explain request reductions. Register benefit/tolerance gates before measurement and evaluate confidence intervals with complete correctness.
+Report offline shared-image construction separately from per-Execution import, including first-use and reuse costs. Formal A/B compares total latency, CPU, memory, IO and throughput; diagnostics explain request reductions. Register benefit/tolerance gates before measurement and evaluate confidence intervals with complete correctness.
 
 ### 3.5 Research questions and decision gates
 

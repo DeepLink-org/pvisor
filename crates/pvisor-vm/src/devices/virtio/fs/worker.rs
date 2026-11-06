@@ -314,8 +314,8 @@ struct Completion {
 /// No borrowed VolatileSlice or unsafe Send implementation crosses threads.
 #[cfg(test)]
 struct RequestPool {
-    jobs: Option<crossbeam_channel::Sender<Request>>,
-    idle_jobs: Option<crossbeam_channel::Sender<Request>>,
+    tasks: Option<crossbeam_channel::Sender<Request>>,
+    idle_tasks: Option<crossbeam_channel::Sender<Request>>,
     completed: crossbeam_channel::Receiver<Completion>,
     wake: Arc<EventFd>,
     awaiting_wake: Arc<AtomicBool>,
@@ -340,17 +340,17 @@ impl RequestPool {
             ));
         }
         let handle = Arc::new(handle);
-        let (jobs, receive) = crossbeam_channel::bounded::<Request>(limit);
+        let (tasks, receive) = crossbeam_channel::bounded::<Request>(limit);
         // Keep isolated requests on one warm worker. Bursts still use the
         // shared FIFO; this slot counts against the same in-flight bound.
-        let (idle_jobs, idle_receive) = crossbeam_channel::bounded::<Request>(1);
+        let (idle_tasks, idle_receive) = crossbeam_channel::bounded::<Request>(1);
         // Although this channel is unbounded, at most `limit` accepted requests
         // can exist, including queued, executing and unpublished completions.
         let (completed, completions) = crossbeam_channel::unbounded();
         let wake = Arc::new(EventFd::new(EFD_NONBLOCK)?);
         let mut pool = Self {
-            jobs: Some(jobs),
-            idle_jobs: Some(idle_jobs),
+            tasks: Some(tasks),
+            idle_tasks: Some(idle_tasks),
             completed: completions,
             wake,
             awaiting_wake: Arc::new(AtomicBool::new(false)),
@@ -431,9 +431,9 @@ impl RequestPool {
         // Capacity covers every in-flight request, so the owner never blocks
         // behind I/O and can always service the dedicated high-priority queue.
         let sender = if self.in_flight == 0 {
-            &self.idle_jobs
+            &self.idle_tasks
         } else {
-            &self.jobs
+            &self.tasks
         };
         sender
             .as_ref()
@@ -447,8 +447,8 @@ impl RequestPool {
 #[cfg(test)]
 impl Drop for RequestPool {
     fn drop(&mut self) {
-        self.jobs.take();
-        self.idle_jobs.take();
+        self.tasks.take();
+        self.idle_tasks.take();
         for worker in self.threads.drain(..) {
             if worker.join().is_err() {
                 std::process::abort();
@@ -1079,11 +1079,11 @@ mod tests {
             b"{\"unknown\":1}",
             b"{\"capacity_mib\":0}",
             b"{\"capacity_mib\":257}",
-            b"{\"jobs\":0}",
+            b"{\"tasks\":0}",
             b"{\"chunks\":65}",
             b"{\"delay_us\":50001}",
             b"{\"batch_kib\":8192}",
-            b"{\"jobs\":-1}",
+            b"{\"tasks\":-1}",
             b"{\"qualification_lock\":1}",
             b"{\"qualification_lock\":true}",
             b"{\"qualification_lock\":false}",
@@ -1648,9 +1648,9 @@ mod tests {
             let wake = pool.wake.clone();
             // Joining ensures the worker finished the send/disarm/wake sequence.
             for worker in pool.threads.drain(..) {
-                // Disconnect both job inputs before joining.
-                pool.jobs.take();
-                pool.idle_jobs.take();
+                // Disconnect both session inputs before joining.
+                pool.tasks.take();
+                pool.idle_tasks.take();
                 worker.join().unwrap();
             }
             assert_eq!(wake.read().is_ok(), armed);

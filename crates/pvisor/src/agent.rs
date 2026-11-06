@@ -442,7 +442,7 @@ mod tests {
         let source = root.path().join("builtin.json");
         let original = serde_json::to_vec(&catalog()).unwrap();
         std::fs::write(&source, &original).unwrap();
-        let mut spec = RunSpec::process("job", "zcode", "zcode");
+        let mut spec = RunSpec::process("session", "zcode", "zcode");
         spec.metadata
             .insert("pvisor.gateway.profile".into(), json!("zcode-bigmodel"));
         spec.metadata.insert(
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn plain_proxy_does_not_apply_a_capture_catalog_profile() {
-        let mut spec = RunSpec::process("job", "zcode", "zcode");
+        let mut spec = RunSpec::process("session", "zcode", "zcode");
         spec.metadata
             .insert("pvisor.gateway.profile".into(), json!("zcode-bigmodel"));
         let mut plan = ImplantPlan::default();

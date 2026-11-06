@@ -216,7 +216,7 @@ VMM / pager 锁的情况下对原文件范围执行 F_PUNCHHOLE。该范围此�
 
 控制回复区分完整的安全拒绝和状态不确定的失败：错误回复若带已知 Running /
 Paused 状态且没有 RAM 报告，保留连接并向调用方返回拒绝；未知状态、畸形帧、
-断线和超时仍取消 Attempt。冷 pager 的整机 offload 拒绝会返回已知状态。
+断线和超时仍取消 Execution。冷 pager 的整机 offload 拒绝会返回已知状态。
 原有 fail-stop 用例及新增拒绝后继续 pause 的用例均通过，控制模块共 12 项。
 
 `cold_vm_check.py` 首次完整实验通过：两个 2 vCPU / 256 MiB Linux VM 分别

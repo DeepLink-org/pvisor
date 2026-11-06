@@ -632,7 +632,7 @@ def one_trial(batch, protocol, case, pair, condition):
             returncode=returncode,
             timed_out=timed_out.is_set(),
             ready_ms=(ready - started) / 1e6 if ready else None,
-            job_ms=(ended - started) / 1e6,
+            session_ms=(ended - started) / 1e6,
             exit_after_done_ms=(ended - done) / 1e6 if done else None,
             resource=dict(
                 cpu_usage_usec_delta=usage(after) - usage(before),
@@ -741,7 +741,7 @@ def campaign(batch):
                 json.dumps(
                     {
                         k: record.get(k)
-                        for k in ("case_id", "pair", "condition", "valid", "job_ms", "error")
+                        for k in ("case_id", "pair", "condition", "valid", "session_ms", "error")
                     }
                 ),
                 file=sys.stderr,

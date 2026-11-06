@@ -1,6 +1,6 @@
 //! Host protocol adapters over the host-only pvisor-guest control engine.
 //! No workload or file operation executes on the host. A detached supervisor
-//! owns jobs and bounded replay buffers for the life of exactly one VM.
+//! owns processes and bounded replay buffers for the life of exactly one VM.
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
     Router,
@@ -41,7 +41,7 @@ pub(crate) struct Service {
     pub generation_number: u64,
     pub env: BTreeMap<String, String>,
     pub e2b: bool,
-    jobs: Arc<Mutex<VecDeque<Arc<Job>>>>,
+    processes: Arc<Mutex<VecDeque<Arc<CommandProcess>>>>,
     slots: Arc<tokio::sync::Semaphore>,
     http_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -63,7 +63,7 @@ impl Service {
             generation_number,
             env,
             e2b,
-            jobs: Default::default(),
+            processes: Default::default(),
             slots: Arc::new(tokio::sync::Semaphore::new(16)),
             http_slots: Arc::new(tokio::sync::Semaphore::new(64)),
         }
@@ -80,7 +80,7 @@ struct Journal {
     bytes: usize,
     done: bool,
 }
-struct Job {
+struct CommandProcess {
     id: String,
     pid: u32,
     generation: u64,
@@ -92,7 +92,7 @@ struct Job {
     input: AsyncMutex<Option<OwnedWriteHalf>>,
     stdin_closed: AtomicBool,
 }
-impl Job {
+impl CommandProcess {
     fn push(&self, event: Event) -> bool {
         let mut journal = self.journal.lock().unwrap();
         if journal.done {
@@ -316,7 +316,7 @@ impl Service {
             _ => Err(invalid("invalid upload completion")),
         }
     }
-    fn job(&self, selector: &Value) -> Result<Arc<Job>, Error> {
+    fn process(&self, selector: &Value) -> Result<Arc<CommandProcess>, Error> {
         if !selector.is_string()
             && !selector.as_object().is_some_and(|object| {
                 object.len() == 1
@@ -332,29 +332,29 @@ impl Service {
         {
             return Err(invalid("exactly one process pid or tag required"));
         }
-        self.jobs
+        self.processes
             .lock()
             .unwrap()
             .iter()
             .rev()
-            .find(|job| {
-                selector["pid"].as_u64() == Some(u64::from(job.pid))
+            .find(|process| {
+                selector["pid"].as_u64() == Some(u64::from(process.pid))
                     || selector["tag"]
                         .as_str()
-                        .is_some_and(|tag| job.tag.as_deref() == Some(tag))
-                    || selector.as_str() == Some(job.id.as_str())
+                        .is_some_and(|tag| process.tag.as_deref() == Some(tag))
+                    || selector.as_str() == Some(process.id.as_str())
             })
             .cloned()
             .ok_or_else(|| Error(StatusCode::NOT_FOUND, "process not found".into()))
     }
-    async fn signal(&self, job: &Job, signal: i32) -> Result<(), Error> {
-        if job.done() {
+    async fn signal(&self, process: &CommandProcess, signal: i32) -> Result<(), Error> {
+        if process.done() {
             return Err(Error(StatusCode::NOT_FOUND, "process exited".into()));
         }
         ensure_ready(
             self.rpc(&GuestRequest::Signal {
-                pid: job.pid,
-                generation: job.generation,
+                pid: process.pid,
+                generation: process.generation,
                 signal,
             })
             .await?,
@@ -365,23 +365,23 @@ impl Service {
         launch: ExecLaunch,
         stdin: bool,
         tag: Option<String>,
-    ) -> Result<Arc<Job>, Error> {
+    ) -> Result<Arc<CommandProcess>, Error> {
         let reservation = {
-            let mut jobs = self.jobs.lock().unwrap();
-            if jobs.iter().filter(|job| !job.done()).count() >= 16 {
+            let mut processes = self.processes.lock().unwrap();
+            if processes.iter().filter(|process| !process.done()).count() >= 16 {
                 return Err(Error(
                     StatusCode::TOO_MANY_REQUESTS,
                     "native active process limit (16)".into(),
                 ));
             }
-            while jobs.len() >= 64 {
-                let Some(index) = jobs.iter().position(|job| job.done()) else {
+            while processes.len() >= 64 {
+                let Some(index) = processes.iter().position(|process| process.done()) else {
                     return Err(Error(
                         StatusCode::TOO_MANY_REQUESTS,
                         "native retained process limit".into(),
                     ));
                 };
-                jobs.remove(index);
+                processes.remove(index);
             }
             // A bounded semaphore below also covers concurrent launches before registration.
             self.launch_slot()
@@ -397,7 +397,7 @@ impl Service {
         };
         let (reader, writer) = stream.into_split();
         let (changed, _) = watch::channel(0);
-        let job = Arc::new(Job {
+        let process = Arc::new(CommandProcess {
             id: uuid::Uuid::new_v4().to_string(),
             pid,
             generation,
@@ -414,19 +414,19 @@ impl Service {
             stdin_closed: AtomicBool::new(false),
         });
         {
-            let mut jobs = self.jobs.lock().unwrap();
+            let mut processes = self.processes.lock().unwrap();
             // Recheck after asynchronous spawn: parallel admissions may have
             // consumed the retention slots observed before the await.
-            while jobs.len() >= 64 {
-                let index = jobs
+            while processes.len() >= 64 {
+                let index = processes
                     .iter()
-                    .position(|job| job.done())
+                    .position(|process| process.done())
                     .expect("at most 16 active execs");
-                jobs.remove(index);
+                processes.remove(index);
             }
-            jobs.push_back(job.clone());
+            processes.push_back(process.clone());
         }
-        let current = job.clone();
+        let current = process.clone();
         let service = self.clone();
         tokio::spawn(async move {
             let mut reader = reader;
@@ -459,9 +459,9 @@ impl Service {
             drop(_reservation);
         });
         if !stdin {
-            job.close_stdin().await?;
+            process.close_stdin().await?;
         }
-        Ok(job)
+        Ok(process)
     }
     fn launch_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Error> {
         // Per-service limit; socket slots remain available for signal/files/info.
@@ -473,7 +473,7 @@ impl Service {
         })
     }
 }
-impl Job {
+impl CommandProcess {
     async fn close_stdin(&self) -> Result<(), Error> {
         let mut input = self.input.lock().await;
         if !self.stdin_closed.load(Ordering::Acquire) {
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn terminal_event_is_retained_when_output_budget_is_exhausted() {
         let (changed, _) = watch::channel(0);
-        let job = Job {
+        let process = CommandProcess {
             id: "id".into(),
             pid: 2,
             generation: 1,
@@ -971,9 +971,9 @@ mod tests {
             input: AsyncMutex::new(None),
             stdin_closed: AtomicBool::new(false),
         };
-        assert!(!job.push(Event::Output(1, vec![0])));
-        assert!(job.push(Event::Exit(125, Some("output limit".into()))));
-        assert!(job.done());
-        assert!(!job.push(Event::Output(1, vec![])));
+        assert!(!process.push(Event::Output(1, vec![0])));
+        assert!(process.push(Event::Exit(125, Some("output limit".into()))));
+        assert!(process.done());
+        assert!(!process.push(Event::Output(1, vec![])));
     }
 }

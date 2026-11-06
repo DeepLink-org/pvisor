@@ -31,7 +31,7 @@ pub struct RunConfig {
     pub gateway: GatewaySettings,
     /// Durable Trace Event journal recording.
     pub record: RecordSettings,
-    /// Session, workspace and user policy layers; resolved once per Attempt.
+    /// Session, workspace and user policy layers; resolved once per Execution.
     pub policies: pvisor_core::SessionPolicies,
 }
 
@@ -276,7 +276,7 @@ pub struct BaseReference {
 #[serde(deny_unknown_fields)]
 pub struct PreparedBase {
     /// SnapshotStore directory, resolved against the execution caller's cwd.
-    /// CLI Jobs persist its canonical path for later independent workers.
+    /// CLI Sessions persist its canonical path for later independent workers.
     pub store: PathBuf,
     /// Existing durably pinned generation; not an arbitrary rootfs path.
     pub base: BaseReference,
@@ -296,7 +296,7 @@ pub struct VmSettings {
     /// Host-only live control endpoint; omitted uses an automatic private socket.
     /// The existing parent must be private (0700); existing paths are never overwritten.
     pub control_socket: Option<PathBuf>,
-    /// New private live RAM backing file. Omitted: create an attempt-local file
+    /// New private live RAM backing file. Omitted: create an execution-local file
     /// in the user's disk cache, except Linux dedup without an explicit backing
     /// uses private anonymous RAM. Existing files are never overwritten.
     pub ram_backing: Option<PathBuf>,
@@ -317,7 +317,7 @@ pub struct VmSettings {
     /// after service loss. Physical/legacy pools must stay alive. Disabled by default.
     pub memory_pool: Option<PathBuf>,
     /// Host-owned immutable filesystem pool for native execution checkpoints.
-    /// Must be independent of every VM-writable root and on the Job's volume.
+    /// Must be independent of every VM-writable root and on the Session's volume.
     /// Linux x86-64 no-network snapshot profile only; omitted keeps owned copies.
     pub snapshot_filesystem_pool: Option<PathBuf>,
     /// Optional caller-provided same-host resource service; pVisor ships no node server.
@@ -591,7 +591,7 @@ impl Default for OverlayNetSettings {
 #[serde(deny_unknown_fields)]
 pub struct PeerNetworkSettings {
     /// Shared network name: 1–24 ASCII letters, digits, underscores or hyphens.
-    /// Names are scoped to the effective host UID, independently of Job storage.
+    /// Names are scoped to the effective host UID, independently of Session storage.
     pub network: String,
     /// Unique non-gateway host in the gateway's private IPv4 /24.
     /// A live duplicate refuses startup; stopping an instance releases its lease.
@@ -725,7 +725,7 @@ pub struct RecordSettings {
 
 /// Resolved configuration for the internal OverlayNet + optional Gateway sink.
 ///
-/// The supervisor retains this policy as configured. Attempt-bound wait adapters
+/// The supervisor retains this policy as configured. Execution-bound wait adapters
 /// and actual listener addresses are runtime state, not updates to this policy.
 #[derive(Debug, Clone)]
 #[cfg(feature = "gateway")]
@@ -734,7 +734,7 @@ pub struct GatewayDriverConfig {
     pub output_dir: PathBuf,
     pub gateway_enabled: bool,
     pub model_wait: Option<std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
-    /// Opt-in Host observation and native coordination of model calls per Attempt.
+    /// Opt-in Host observation and native coordination of model calls per Execution.
     /// Mutually exclusive with `model_wait`; does not
     /// change scheduler reservations.
     pub cooperative_model_wait: Option<CooperativeModelWait>,
@@ -748,8 +748,8 @@ pub struct ModelWaitRounds {
     /// A new round also observes `pause_after` before requesting fresh evidence.
     /// Must be between 10 ms and 60 seconds; defaults to 100 ms.
     pub recheck_after: std::time::Duration,
-    /// Minimum interval after an automatic offload attempt completes before
-    /// another may start. Shared across requests in this Attempt. Pause remains
+    /// Minimum interval after an automatic offload execution completes before
+    /// another may start. Shared across requests in this Execution. Pause remains
     /// available during cooldown; skipped offloads are reconsidered next round.
     /// Must be >= `recheck_after` and <= one day; defaults to five seconds.
     pub offload_cooldown: std::time::Duration,
@@ -932,7 +932,7 @@ impl GatewayDriverConfig {
         self
     }
 
-    /// Install an Attempt-bound Host lifecycle for every authorized model call.
+    /// Install an Execution-bound Host lifecycle for every authorized model call.
     /// No guest header is required. A custom owner must independently establish
     /// idleness and coordinate concurrent calls before controlling a VM.
     pub fn model_wait(
@@ -943,11 +943,11 @@ impl GatewayDriverConfig {
         self
     }
 
-    /// Enable the built-in, Attempt-local Host coordinator. Requires a VM,
+    /// Enable the built-in, Execution-local Host coordinator. Requires a VM,
     /// enabled Gateway and guest idle handoff; invalid timers or a simultaneous
-    /// custom `model_wait` fail before starting the Attempt. Ordinary model
+    /// custom `model_wait` fail before starting the Execution. Ordinary model
     /// requests need no header. Overlap wakes the VM and disables automatic
-    /// transitions for the remainder of this Attempt without rejecting calls.
+    /// transitions for the remainder of this Execution without rejecting calls.
     /// This does not release admission reservations or enable daemon integration.
     pub fn cooperative_model_wait(mut self, policy: CooperativeModelWait) -> Self {
         self.cooperative_model_wait = Some(policy);

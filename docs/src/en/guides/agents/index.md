@@ -1,5 +1,5 @@
 ---
-description: Run Claude Code, Codex CLI, or any script as a pVisor Job with workspace staging, network policy, and a recorded Run Bundle.
+description: Run Claude Code, Codex CLI, or any script as a pVisor Session with workspace staging, network policy, and a recorded Run Bundle.
 ---
 
 # Connect your agent
@@ -10,7 +10,7 @@ After the [offline staging demo](../../start/first-run.md#agent-style), connect 
 
 1. ### Check the agent and authentication {#prepare-agent}
 
-    Check the command in the terminal where you will launch the Job, for example Claude Code:
+    Check the command in the terminal where you will launch the Session, for example Claude Code:
 
     ```bash title="Shell"
     command -v claude
@@ -28,7 +28,7 @@ After the [offline staging demo](../../start/first-run.md#agent-style), connect 
     pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
-    Specify the goal, allowed file scope, and required tests. Wait for the agent to finish and exit back to the launching terminal. For model connectivity or dependency-download failures, check destinations and credentials against the network table below. Retain errors and Job records before changing configuration and retrying.
+    Specify the goal, allowed file scope, and required tests. Wait for the agent to finish and exit back to the launching terminal. For model connectivity or dependency-download failures, check destinations and credentials against the network table below. Retain errors and Session records before changing configuration and retrying.
 
 1. ### Review and accept results {#accept-results}
 

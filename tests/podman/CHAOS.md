@@ -16,7 +16,7 @@ performance benchmark.
 - Before starting and between rounds, stop if one-minute load exceeds 75% of the
   host logical CPU count or macOS `memory_pressure` reports less than 20% free.
   These are sampled guardrails, not a hard bound on every instantaneous host load.
-- Each run owns a private temporary store. Cleanup attempts both exact owned
+- Each run owns a private temporary store. Cleanup executions both exact owned
   names, checks the public container list is empty, then deletes its store. If
   cleanup fails, the report retains the directory for diagnosis rather than
   deleting authority needed to recover a live VM. Other stores are untouched.

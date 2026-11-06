@@ -398,13 +398,15 @@ class DocsTests(unittest.TestCase):
                 "reference/cli.md",
             } <= set(pages(guide))
             assert {
-                "concepts/jobs.md",
+                "concepts/sessions.md",
                 "concepts/staging.md",
                 "concepts/lifecycle.md",
                 "concepts/resource-optimization.md",
                 "concepts/resource-reuse.md",
             } <= set(pages(concepts))
-            assert {"reference/jobs.md", "guides/infrastructure/lifecycle.md"} <= set(pages(guide))
+            assert {"reference/sessions.md", "guides/infrastructure/lifecycle.md"} <= set(
+                pages(guide)
+            )
             design = config["nav"][5][expected_sections[locale][5]]
             experiments_label = "实验设计" if locale == "zh" else "Experimental design"
             experiments = next(

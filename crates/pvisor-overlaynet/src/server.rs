@@ -27,7 +27,7 @@ const MAX_ACTIVE_REQUESTS: usize = 128;
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
     pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
+    pub execution_id: Option<String>,
     pub session_id: String,
     pub sink: T,
 }
@@ -451,7 +451,7 @@ where
         &context.policy,
         NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
-            attempt_id: context.attempt_id.clone().map(pvisor_core::AttemptId),
+            execution_id: context.execution_id.clone().map(pvisor_core::ExecutionId),
             host: host.to_string(),
             port,
             transport,
@@ -609,7 +609,7 @@ mod tests {
                     limits: Vec::new(),
                 })?,
                 run_id: Some("run-1".into()),
-                attempt_id: Some("attempt-1".into()),
+                execution_id: Some("execution-1".into()),
                 session_id: "session-1".into(),
                 sink: (),
             })

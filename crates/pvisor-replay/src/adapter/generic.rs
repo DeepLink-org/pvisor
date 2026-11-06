@@ -1588,7 +1588,7 @@ fn latest_codex_session_path(root: &Path, session_id: &str) -> Option<PathBuf> {
             // Never pick an unrelated/stale rollout from the isolated
             // CODEX_HOME.  The native session id is also checked from the
             // event stream below; matching the filename avoids selecting a
-            // rotated file belonging to another replay attempt.
+            // rotated file belonging to another replay execution.
             let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };

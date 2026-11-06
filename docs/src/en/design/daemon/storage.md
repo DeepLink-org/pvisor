@@ -22,7 +22,7 @@ Restart with the same private state directory and a compatible runtime configura
 4. Map native Running/Paused/Stopped/Missing to `Running`/`Paused`/`Terminated`/`Failed`. Missing sandboxes stay visible and reserved until explicitly deleted.
 5. Report deferred reconciliation errors without fabricating cleanup success. Startup maintenance retries expired/delete-pending objects.
 
-A normal daemon shutdown preserves detached supervisors/VMs and records. Restart reconnects over private IPC without rebuilding VMs or minting new Attempts; IPC loss preserves an uncertain state. GET reconciles; list returns persisted observations. Startup neither adopts unknown VMs nor restarts missing/crashed workloads; a host reboot does not preserve live VMs.
+A normal daemon shutdown preserves detached supervisors/VMs and records. Restart reconnects over private IPC without rebuilding VMs or minting new Executions; IPC loss preserves an uncertain state. GET reconciles; list returns persisted observations. Startup neither adopts unknown VMs nor restarts missing/crashed workloads; a host reboot does not preserve live VMs.
 
 ## Private registry {#metadata}
 
@@ -44,7 +44,7 @@ The aggregate 16 MiB budget measures the logical version-1-equivalent snapshot: 
 
 Records retain image/argv, environment, metadata, CPU/memory reservation, creation/expiration, last observed status and sandbox endpoint token. Environment secrets are durable state: protect this directory and backups. They are not put in supervisor argv or host environment, but remain accessible to trusted host/runtime owners.
 
-Runtime state additionally retains private `owner.json`, per-sandbox `preparing.json`/`identity.json`, `run.json` (generation/Run/Attempt IDs), lifecycle markers, owner lock, `control.sock`, `ports/` bridges and `run/` native storage, including `live-ram` backing and `tmp/` scratch (set as supervisor `TMPDIR`). A completed cleanup retains only its minimal tombstone/lock/marker fence. These support reconciliation/cleanup, not a public stage/checkpoint/artifact API.
+Runtime state additionally retains private `owner.json`, per-sandbox `preparing.json`/`identity.json`, `run.json` (generation/Run/Execution IDs), lifecycle markers, owner lock, `control.sock`, `ports/` bridges and `run/` native storage, including `live-ram` backing and `tmp/` scratch (set as supervisor `TMPDIR`). A completed cleanup retains only its minimal tombstone/lock/marker fence. These support reconciliation/cleanup, not a public stage/checkpoint/artifact API.
 
 Native runtime does not write `observation.json` caches or use them as liveness proof. Endpoint lookup authenticates the live supervisor and checks current Running state and deletion fences; full readiness checks remain at create, Inspect and resume. See [service access](index.md#endpoints).
 

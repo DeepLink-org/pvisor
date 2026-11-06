@@ -2,7 +2,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Optional in-process FUSE overlay root for one Attempt.
+/// Optional in-process FUSE overlay root for one Execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayHint {
     /// None preserves the configured persistence policy.
@@ -19,7 +19,7 @@ pub struct OverlayHint {
     pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
     /// Durable staging root containing upper storage and the merged mount.
     pub stage_dir: Option<PathBuf>,
-    /// Writable upper directory for this Attempt.
+    /// Writable upper directory for this Execution.
     pub upper_dir: Option<PathBuf>,
     /// Work directory required by overlay implementations.
     pub work_dir: Option<PathBuf>,

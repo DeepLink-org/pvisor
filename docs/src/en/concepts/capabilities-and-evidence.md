@@ -1,6 +1,6 @@
 # Capabilities, evidence, and guarantees
 
-To assess a Job's guarantees, check its requested permissions, admission plan, installed controls and observed outcomes separately. `--safe`, a stage directory, or an executor name alone does not prove that every capability is enforced.
+To assess a Session's guarantees, check its requested permissions, admission plan, installed controls and observed outcomes separately. `--safe`, a stage directory, or an executor name alone does not prove that every capability is enforced.
 
 ## Policy layering rules {#layering}
 
@@ -47,7 +47,7 @@ Requested permissions → admission plan → installed controls → execution an
 
 `status --review` displays the Run Bundle's controls, warnings and staged changes. File observations cover only operations that reach OverlayFS; network observations cover only traffic that reaches OverlayNet. `null` means unobserved; zero means observed with no hits. Operation counts are not a substitute for the final file diff.
 
-Optional Event Journals record lifecycle and facts actually published by Gateway, linked by identity and causal references. They do not contain the full Bundle's file changes, outputs, artifacts, and control inventory. Event order is not a global ordering of external side effects across Jobs. See [Operation and Event](../design/operations-events.md).
+Optional Event Journals record lifecycle and facts actually published by Gateway, linked by identity and causal references. They do not contain the full Bundle's file changes, outputs, artifacts, and control inventory. Event order is not a global ordering of external side effects across Sessions. See [Operation and Event](../design/operations-events.md).
 
 ## Guarantee scope
 

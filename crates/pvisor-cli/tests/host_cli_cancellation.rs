@@ -38,12 +38,12 @@ try:
                 try: peer.connect('/proc/self/fd/%s/%s' % (directory, os.path.basename(endpoint)))
                 finally: os.close(directory)
                 peer.sendall((json.dumps({'version': 1, 'request_id': 'x' * 256,
-                    'target': {'job_id': record['run_id'], 'attempt_id': 'stale-attempt', 'generation': None},
+                    'target': {'session_id': record['run_id'], 'execution_id': 'stale-execution', 'generation': None},
                     'command': {'operation': 'terminate'}}) + '\n').encode())
                 response = json.loads(peer.makefile('rb').readline(4097))
                 assert response['request_id'] == 'x' * 256, response
                 assert response['result']['Err']['code'] == 'conflict', response
-            assert child.poll() is None, 'stale cancellation must not terminate the Job'
+            assert child.poll() is None, 'stale cancellation must not terminate the Session'
         if kind == 'missing-endpoint': os.unlink(endpoint)  # only this test-owned owner's socket
         killed = subprocess.run([binary, 'kill', 'last', '--json'], cwd=root,
             env=dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0'),

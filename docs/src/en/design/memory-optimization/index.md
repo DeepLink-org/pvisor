@@ -23,7 +23,7 @@ GVA is a guest-process address, translated by guest page tables to GPA. KVM/HVF 
 
 `MAP_PRIVATE` allows instances to read the same immutable backing while writes create private physical pages. GPA and HVA can remain unchanged while the host physical page changes: that is the COW isolation point. Guest translation, host mappings and shared file content are different layers, so summing process RSS does not directly measure physical consumption.
 
-The VM runtime owns mappings and consistent CPU/device access; Jobs and snapshot stores own complete-state publication and persistent references. The Linux physical page pool retains referenced shared slots; local compressed stores retain encoded instance-cold pages. Their recovery and failure contracts differ.
+The VM runtime owns mappings and consistent CPU/device access; Sessions and snapshot stores own complete-state publication and persistent references. The Linux physical page pool retains referenced shared slots; local compressed stores retain encoded instance-cold pages. Their recovery and failure contracts differ.
 
 Pin a reliable backing or recovery source before unmapping or reclaiming original RAM. Private COW isolates writes; live pool references prevent slot reuse. Runtime sharing is separate from a durable machine checkpoint, and pool uptime does not replace durable state.
 
@@ -75,7 +75,7 @@ Losing the physical/legacy pool fails dependent VMs. Linux sealed-compressed cli
 
 Linux sandbox serving explicitly enables physical-page sharing with `--memory-pool`, off by default; it needs no userfaultfd. Linux instance-local live compression and the pool's `compressed` mode require kernel-fault userfaultfd. Sealed clients can recover already-delivered content after service loss.
 
-Apple Silicon can run the daemon pool independently and connect through `pvisor run --memory-pool SOCKET` or the Job `--vm-memory-pool` option, without enabling the Linux sandbox API. Default `compressed` uses the HVF cold-block pool. Explicit `physical-pages` shares 16 KiB host pages with COW through a private unlinked file, rather than Linux memfd. The temporary filesystem must support mapping and hole punching; account for file-cache and disk use separately. Neither macOS pool mode has Linux sealed-local recovery after service loss: both require a live owner.
+Apple Silicon can run the daemon pool independently and connect through `pvisor run --memory-pool SOCKET` or the Session `--vm-memory-pool` option, without enabling the Linux sandbox API. Default `compressed` uses the HVF cold-block pool. Explicit `physical-pages` shares 16 KiB host pages with COW through a private unlinked file, rather than Linux memfd. The temporary filesystem must support mapping and hole punching; account for file-cache and disk use separately. Neither macOS pool mode has Linux sealed-local recovery after service loss: both require a live owner.
 
 Physical sharing has native Apple Silicon acceptance entry points; see the [shared-memory acceptance record](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-daemon/tests/MACOS_SHARED_MEMORY.md). It does not establish production density, scan CPU cost or tail latency. Snapshot, file backing, offload, KSM and cold-page modes have explicit combination restrictions; configurations do not hot-switch automatically.
 

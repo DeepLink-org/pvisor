@@ -36,7 +36,7 @@ fn supported(device: &dyn BusDevice) -> bool {
 }
 
 impl Bus {
-    /// Poll while CPUs are parked, releasing the VMM lock between attempts.
+    /// Poll while CPUs are parked, releasing the VMM lock between executions.
     /// Never close the RAM gate until every worker has stopped. Unsupported
     /// mappings are detected before requesting any device to freeze.
     pub fn freeze_snapshot_devices(&self) -> Result<bool, String> {

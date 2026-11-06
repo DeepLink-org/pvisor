@@ -20,7 +20,7 @@ pvisor spawn --executor vm --rootfs image=ubuntu:24.04 \
 ## 写入去向
 
 - 合并后的 rootfs 是 guest `/`，`/workspace` 是 guest 的工作目录；
-- 工作区改动进入指定 stage 或默认 Job 存储，退出后保留，供审查和 apply；
+- 工作区改动进入指定 stage 或默认 Session 存储，退出后保留，供审查和 apply；
 - VM 根目录的其他写入使用临时 upper，VM 退出时丢弃；
 - 镜像缓存被标为不可变，`apply` 不能改写被其他 Run 共享的 rootfs。
 

@@ -69,7 +69,7 @@ pvisor ps -a
 | 名称已存在 | 用 `pvisor ps -a` 检查，选新名称；只清理确认属于本次演示的容器。 |
 | `exec` 找不到运行实例 | 用 `pvisor ps -a` 核对状态和名称，确认没有超过 `sleep` 时限。 |
 
-该模式使用容器命令管理 VM；参数与卷的持久化规则见[容器参考](../reference/cli.md#container-commands)。未配置卷的演示不需要 Job 的 review/apply/drop。
+该模式使用容器命令管理 VM；参数与卷的持久化规则见[容器参考](../reference/cli.md#container-commands)。未配置卷的演示不需要 Session 的 review/apply/drop。
 
 ## Agent style stagebox {#agent-style}
 
@@ -113,7 +113,7 @@ pvisor spawn --safe --overlaynet-deny-all -- sh -c '
 '
 ```
 
-等待命令结束并回到终端提示符。`spawn` 启动并记录一次 Job；`--safe` 请求隔离和工作区暂存；`--overlaynet-deny-all` 为这个离线任务禁用网络；`--` 后面是要执行的程序及其参数。
+等待命令结束并回到终端提示符。`spawn` 启动并记录一次 Session；`--safe` 请求隔离和工作区暂存；`--overlaynet-deny-all` 为这个离线任务禁用网络；`--` 后面是要执行的程序及其参数。
 
 命令将内容写入文件，没有终端输出。两个文件应留在暂存区。检查它们是否都没有出现在原目录：
 
@@ -127,11 +127,11 @@ test ! -e hello.txt && test ! -e scratch.txt && echo 'Workspace unchanged'
 Workspace unchanged
 ```
 
-如果没有这行输出，请先停止后续合入操作，确认启动命令包含 `--safe`、Job 成功启动，并检查当前目录。启动失败时见下方[常见问题](#troubleshooting)。
+如果没有这行输出，请先停止后续合入操作，确认启动命令包含 `--safe`、Session 成功启动，并检查当前目录。启动失败时见下方[常见问题](#troubleshooting)。
 
 ### 3. 审查暂存改动 {#review-changes}
 
-查看刚才 Job 的状态和文件差异：
+查看刚才 Session 的状态和文件差异：
 
 ```bash
 pvisor status last
@@ -140,7 +140,7 @@ pvisor review last --diff
 
 `status` 应表明任务已停止；`review` 应列出 `hello.txt` 和 `scratch.txt` 两项新增，内容分别为 `Hello from pVisor` 和 `Temporary notes`。输出中的身份、路径和时间会随运行变化。
 
-这里的 `last` 指当前工作区最近登记的 Job。完成本教程前不要在这个目录启动另一个 Job，否则 `last` 会指向新的任务。实际并行任务请使用明确的 [Job 身份](../reference/jobs.md)。
+这里的 `last` 指当前工作区最近登记的 Session。完成本教程前不要在这个目录启动另一个 Session，否则 `last` 会指向新的任务。实际并行任务请使用明确的 [Session 身份](../reference/sessions.md)。
 
 还可以在只读的任务视图中查看文件：
 
@@ -148,7 +148,7 @@ pvisor review last --diff
 pvisor inspect last -- cat hello.txt
 ```
 
-预期输出 `Hello from pVisor`。你可以在 Job 内读取这个文件；直接在原目录执行 `cat hello.txt` 仍应提示文件不存在。
+预期输出 `Hello from pVisor`。你可以在 Session 内读取这个文件；直接在原目录执行 `cat hello.txt` 仍应提示文件不存在。
 
 写入原目录前，先预览所选路径：
 
@@ -191,7 +191,7 @@ test ! -e scratch.txt && echo 'scratch.txt: absent'
 
 ### 刚才发生了什么？ {#what-happened}
 
-| 操作 | Job 中的文件 | 原目录中的文件 |
+| 操作 | Session 中的文件 | 原目录中的文件 |
 | --- | --- | --- |
 | `spawn --safe` 完成 | 两个文件均为候选改动 | 两个文件均不存在 |
 | `apply --path hello.txt` 完成 | 临时笔记仍待处理 | 只有 `hello.txt` |
@@ -206,14 +206,14 @@ test ! -e scratch.txt && echo 'scratch.txt: absent'
 | `pvisor: command not found` | 激活安装环境，或检查原生包的 `bin` 是否在 `PATH`；见[安装检查](installation.md#verify-installation)。 |
 | FUSE、FSKit 或挂载失败 | 完成[平台准备](installation.md#local-prerequisites)。Linux 检查设备与挂载工具，macOS 检查文件系统扩展。 |
 | `setgroups`、`uid_map` 或 user namespace 权限错误 | 检查系统的 user namespace 与 AppArmor 策略；见 [Host 执行器](../guides/executors/host.md)。 |
-| `last` 找不到任务或指向别的任务 | 回到启动 Job 的目录，用记录的 Job 身份定位；见 [Job 与存储](../reference/jobs.md)。 |
-| `apply` 拒绝执行 | 确认 Job 已停止，并检查冲突或未完成的记录；见[审查与合入](../guides/review-apply.md)。 |
+| `last` 找不到任务或指向别的任务 | 回到启动 Session 的目录，用记录的 Session 身份定位；见 [Session 与存储](../reference/sessions.md)。 |
+| `apply` 拒绝执行 | 确认 Session 已停止，并检查冲突或未完成的记录；见[审查与合入](../guides/review-apply.md)。 |
 
-`--safe` 无法落实所需控制时会拒绝启动。不要通过删掉这个参数继续教程：普通 Host Job 默认直接写入原工作区。
+`--safe` 无法落实所需控制时会拒绝启动。不要通过删掉这个参数继续教程：普通 Host Session 默认直接写入原工作区。
 
 ## 下一步 {#next-steps}
 
 - [用 Claude Code 修复测试](../guides/agents/claude-code.md#repair-task)：使用可复现的小项目、任务提示和验收步骤，完成真实 Agent 成果交接。
 - [本地工作流](../guides/index.md)：把这套操作用于已有项目，验证候选改动并处理冲突。
 - [VM 工具执行](infrastructure.md)：从调用脚本执行 Linux VM 中的测试并读取结构化反馈。
-- [CLI 参考](../reference/cli.md)：查询参数、Job 定位与存储规则。
+- [CLI 参考](../reference/cli.md)：查询参数、Session 定位与存储规则。

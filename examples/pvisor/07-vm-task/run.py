@@ -22,7 +22,7 @@ def main():
         print(step["stdout"].strip())
         if step["stderr"]:
             print(step["stderr"].strip())
-    print(f"Job: {feedback['job_id']}; Attempt: {feedback['attempt_id']}")
+    print(f"Session: {feedback['session_id']}; Execution: {feedback['execution_id']}")
     print(f"Results: {Path(feedback['records_dir']) / 'sample.json'}")
     if any(s["exit_code"] != 0 or s["timed_out"] for s in feedback["steps"]):
         raise SystemExit("Tool feedback contains a failure; see the retained records")

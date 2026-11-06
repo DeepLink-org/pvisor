@@ -387,7 +387,7 @@ def one_trial(batch, protocol, pair, condition):
                 result["returncode"] = process.wait()
             finally:
                 timer.cancel()
-        result["job_ms"] = (time.monotonic_ns() - started) / 1e6
+        result["session_ms"] = (time.monotonic_ns() - started) / 1e6
         if result["returncode"] != 0:
             raise ValueError("nonzero subject exit")
         validate_rows(protocol, result["rows"], ready, done)

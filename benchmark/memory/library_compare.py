@@ -20,8 +20,8 @@ from pathlib import Path
 from library_protocol import VARIANTS
 from pool_compare import (
     REPO,
-    attempt,
     digest,
+    execution,
     expected,
     host_identity,
     kernel_state,
@@ -157,7 +157,7 @@ def main():
         harness_sha256=digest(Path(__file__).with_name("pool_compare.py")),
         harness_files=harness,
         host=host_identity(),
-        attempts=[],
+        executions=[],
         complete=False,
         caveats=[
             "different guest kernels, block/virtio-fs root and guest supervisor",
@@ -194,9 +194,9 @@ def main():
                 save(output / "report.json", report)
                 return 1
             arm = VARIANTS[variant][0]
-            row = attempt(
+            row = execution(
                 inputs,
-                output / str(len(report["attempts"])),
+                output / str(len(report["executions"])),
                 arm,
                 "random-shared",
                 hashes,
@@ -205,7 +205,7 @@ def main():
                 docker_inputs=docker_inputs,
             )
             row.update(round=round_index, library_variant=variant)
-            report["attempts"].append(row)
+            report["executions"].append(row)
             save(output / "report.json", report)
             print(f"round={round_index} {variant}: {row['status']}", file=sys.stderr, flush=True)
             if row["status"] != "successful":
@@ -220,7 +220,7 @@ def main():
         json.dumps(
             dict(
                 complete=report["complete"],
-                conditions=len(report["attempts"]),
+                conditions=len(report["executions"]),
                 evidence=str(output),
             )
         )

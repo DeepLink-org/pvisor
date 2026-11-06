@@ -4,7 +4,7 @@ TURNS = [
 ]
 
 REPLIES = [
-    "pVisor owns one Run and its Attempt lifecycle.",
+    "pVisor owns one Run and its Execution lifecycle.",
     "Gateway writes the visible dialogue into the Run workspace.",
 ]
 

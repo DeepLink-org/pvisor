@@ -1196,9 +1196,9 @@ class ReleasePackagingTests(unittest.TestCase):
                         for command in commands
                     )
 
-    def test_acceptance_rejects_reused_attempt_and_wrong_applied_bytes(self):
+    def test_acceptance_rejects_reused_execution_and_wrong_applied_bytes(self):
         # Exercise the acceptance oracle itself; these mocks are not VM evidence.
-        for fault in (None, "same-attempt", "wrong-apply", "strict-executed", "vm-start"):
+        for fault in (None, "same-execution", "wrong-apply", "strict-executed", "vm-start"):
             with self.subTest(fault=fault), workspace() as (root, resources):
                 executable = root / "pvisor"
                 wheel = root / "pvisor.whl"
@@ -1209,16 +1209,16 @@ class ReleasePackagingTests(unittest.TestCase):
                 upper = root / "upper"
                 upper.mkdir()
                 counter = upper / "counter"
-                state = {"attempt": 0, "busy": True}
+                state = {"execution": 0, "busy": True}
 
                 class Process:
                     returncode = None
 
                     def __init__(self, command, **kwargs):
-                        state["attempt"] += 1
+                        state["execution"] += 1
                         stage.mkdir(exist_ok=True)
                         (stage / "run.json").write_text("{}")
-                        counter.write_text(str(1000 + state["attempt"]))
+                        counter.write_text(str(1000 + state["execution"]))
 
                     def poll(self):
                         return self.returncode
@@ -1249,10 +1249,10 @@ class ReleasePackagingTests(unittest.TestCase):
                                 json.dumps({"run": {"output": {"stderr": "VM startup error"}}})
                             )
                     elif args[1] == "status":
-                        if state["attempt"] == 2 and state["busy"]:
+                        if state["execution"] == 2 and state["busy"]:
                             state["busy"] = False
                             return subprocess.CompletedProcess(
-                                command, 1, "", "Error: Job operation already in progress: busy"
+                                command, 1, "", "Error: Session operation already in progress: busy"
                             )
                         if "--review" in args:
                             output = json.dumps({"schema_version": 5})
@@ -1261,10 +1261,10 @@ class ReleasePackagingTests(unittest.TestCase):
                                 {
                                     "schema_version": 2,
                                     "run": {
-                                        "run_id": "same-job",
-                                        "attempt_id": "same"
-                                        if fault == "same-attempt"
-                                        else str(state["attempt"]),
+                                        "run_id": "same-session",
+                                        "execution_id": "same"
+                                        if fault == "same-execution"
+                                        else str(state["execution"]),
                                         "overlay": {"upper": str(upper)},
                                     },
                                 }
@@ -1277,7 +1277,10 @@ class ReleasePackagingTests(unittest.TestCase):
                                 b"wrong" if fault == "wrong-apply" else b"reviewed wheel bytes"
                             )
                         else:
-                            code, output = 1, "Error: Job composes read-only layers above its base"
+                            code, output = (
+                                1,
+                                "Error: Session composes read-only layers above its base",
+                            )
                     return subprocess.CompletedProcess(command, code, output, "")
 
                 resources.enter_context(mock.patch.object(wheel_verify.subprocess, "run", run))

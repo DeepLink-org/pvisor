@@ -58,7 +58,7 @@ pub(super) fn acquire(
     MOUNTS
         .get_or_init(|| Mounts::new(4096))
         .get((store.clone(), snapshot_id.to_owned()), || {
-            // Independent of any one Attempt's directory/lifetime, and never
+            // Independent of any one Execution's directory/lifetime, and never
             // nested in the durable store (which may be an OverlayFS lower).
             let mut reader = published.ram_reader()?;
             let extents = reader.compact_zero_restore()?;
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_same_snapshot_shares_one_owner_and_last_attempt_releases_it() {
+    fn concurrent_same_snapshot_shares_one_owner_and_last_execution_releases_it() {
         let pool = Mounts::new(1);
         let loads = AtomicUsize::new(0);
         let drops = Arc::new(AtomicUsize::new(0));

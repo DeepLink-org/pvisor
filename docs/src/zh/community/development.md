@@ -27,7 +27,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 
 | 目录 | 职责 |
 |---|---|
-| `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
+| `crates/pvisor/` | 可嵌入运行时、Session/Execution 编排、执行器、持久化 Session 服务、镜像准备和缓存机制 |
 | `crates/pvisor-cli/` | 两个应用二进制、CLI 命令、终端适配和 replay 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox API、原生 guest 协议适配，以及跨平台缓存/池组件 |
@@ -76,24 +76,24 @@ core, guest ──> 不依赖其他 workspace crate
 | 实现入口 | 所有权 |
 | --- | --- |
 | `pvisor-cli/src/cli/mod.rs` | 按选中命令构造参数解析与分派；root help 描述命令组 |
-| `pvisor-cli/src/cli/host*.rs`、`run/` | 前端/owner 启动、终端、信号与 Job 命令适配 |
-| `pvisor/src/runtime/job_service/` | 持久 Job 生命周期、workspace、fork、capture、视图与策略 |
-| `pvisor/src/runtime/attempt_service.rs` | 同一进程内 live Attempt 的 status/pause/resume/termination，供 Job 与 daemon 复用 |
-| `pvisor/src/session*`、`runtime/attempt.rs` | 一次 Attempt 的驱动准备、执行与收尾 |
+| `pvisor-cli/src/cli/host*.rs`、`run/` | 前端/owner 启动、终端、信号与 Session 命令适配 |
+| `pvisor/src/runtime/session_service/` | 持久 Session 生命周期、workspace、fork、capture、视图与策略 |
+| `pvisor/src/runtime/execution_service.rs` | 同一进程内 live Execution 的 status/pause/resume/termination，供 Session 与 daemon 复用 |
+| `pvisor/src/session*`、`runtime/execution/mod.rs` | 一次 Execution 的驱动准备、执行与收尾 |
 | `pvisor/src/runtime/completion.rs` | Bundle 字节与终态结果绑定的完成提交及读取验证 |
 | `pvisor/src/docker.rs`、`image/` | 逐容器 VM、镜像目录与共享压缩镜像池；普通 OCI 执行器仍是独立路径 |
 | `pvisor-daemon/src/daemon/`、`runtime.rs` | API、准入、记录、supervisor 与 cgroup/VM 归属 |
 | `pvisor-daemon/src/native/`、`prepared_image.rs` | OpenSandbox/E2B guest 协议适配与模板发布 |
 | `pvisor-replay/src/adapter/`、`bridge/` | 轨迹规划、Agent 选择与原生续跑协议桥 |
 
-CLI 拥有参数和展示；runtime 拥有执行与持久 Job；VM、文件系统和网络实现分别留在所属 crate。共享策略与 wire DTO 由 Core 定义，普通 Job 与 daemon 复用进程内控制，但保留各自鉴权、准入、存储与确认清理。
+CLI 拥有参数和展示；runtime 拥有执行与持久 Session；VM、文件系统和网络实现分别留在所属 crate。共享策略与 wire DTO 由 Core 定义，普通 Session 与 daemon 复用进程内控制，但保留各自鉴权、准入、存储与确认清理。
 
 公开接口与迁移状态以[核心架构](../design/architecture.md#api-boundaries)为准。当前仅 VM、OverlayFS 与 Journal 采用唯一 `api` 入口；其他 crate 继续使用实际导出，不能按这张逻辑表假定 Rust 可见性或稳定性已统一。
 
 ### 核心实现边界
 
 core 定义 Operation、Event 和共享策略；pvisor 实现准入、实际改写、Placement 和调度。
-Session 统一拥有 Attempt 的资源与终态；执行器负责执行并返回观察，OverlayCore 负责文件应用与恢复。
+Session 统一拥有 Execution 的资源与终态；执行器负责执行并返回观察，OverlayCore 负责文件应用与恢复。
 AgentCtl 的实际 I/O 留在 pvisor；嵌入调用方提供 Core 审批通道。完整职责见[核心架构](../design/architecture.md)，
 字段和事件顺序见 [Operation 与 Event](../design/operations-events.md)。
 
@@ -185,7 +185,7 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 资源限制、可选网络配置和 shim agent 参数。supervisor 初始化 guest 文件系统和
 控制台 I/O，挂载工作区、配置网络、直接启动工作负载并回收子进程。
 退出时先通过 libkrun 私有的根文件系统 ioctl `0x7602` 上报工作负载退出码，
-再 sync/reboot。非零退出码使 Attempt 失败；VM 正常关机但未上报退出码时按 125 失败。
+再 sync/reboot。非零退出码使 Execution 失败；VM 正常关机但未上报退出码时按 125 失败。
 
 启动性能实测及测量范围见
 [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#guest-init-comparison-apple-silicon)。

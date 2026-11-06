@@ -19,13 +19,13 @@ pVisor is neither cryptographic remote attestation nor hostile multi-tenant isol
 
 ## Platforms, interfaces, and capability status {#support-scope}
 
-When choosing an execution environment, check prerequisites in [Platforms and executor support](../reference/platforms.md), then verify that [Executor boundaries](executor-boundaries.md) cover the required file, network, and process controls. Native Jobs, standalone containers, and the daemon expose different interfaces. See the [integration matrix](../guides/infrastructure/integration.md) for native Job, Runtime, daemon, and shim capabilities, and the [CLI reference](../reference/cli.md) for standalone container commands.
+When choosing an execution environment, check prerequisites in [Platforms and executor support](../reference/platforms.md), then verify that [Executor boundaries](executor-boundaries.md) cover the required file, network, and process controls. Native Sessions, standalone containers, and the daemon expose different interfaces. See the [integration matrix](../guides/infrastructure/integration.md) for native Session, Runtime, daemon, and shim capabilities, and the [CLI reference](../reference/cli.md) for standalone container commands.
 
 Check requested policy, planned controls, and installed controls separately using [Capabilities, evidence, and guarantees](../concepts/capabilities-and-evidence.md). Experimental capabilities such as automatic wait management have their own [implementation stages](../design/experimental/index.md); experimental results do not establish support across all platforms or interfaces.
 
 ## Review the security of one task
 
-List the files, credentials, networks, and external services available to the task. Establish the trusted side using the [Threat model](threat-model.md), and configure controls using [Hardening](hardening.md). After a native Job runs, use `pvisor status --review` to inspect installed controls, warnings, and file changes. Consult [Known limitations](known-limitations.md) before accepting results. Missing observations remain unknown; cooperative controls do not establish mandatory isolation.
+List the files, credentials, networks, and external services available to the task. Establish the trusted side using the [Threat model](threat-model.md), and configure controls using [Hardening](hardening.md). After a native Session runs, use `pvisor status --review` to inspect installed controls, warnings, and file changes. Consult [Known limitations](known-limitations.md) before accepting results. Missing observations remain unknown; cooperative controls do not establish mandatory isolation.
 
 ## When you discover a boundary problem
 

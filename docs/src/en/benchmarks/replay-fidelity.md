@@ -10,7 +10,7 @@ Each of seven adapters passes 60/60 checks for fixed task 0, with whole prepare-
 
 Measure exact reconstruction of recorded digests, arguments and observations without tool execution as replay fidelity. Fidelity determines whether a recorded trajectory can serve as input to a real task. Higher fidelity preserves more of the original context in the new run.
 
-Each adapter receives twenty synthetic native-format trajectories, each with two tool batches, using `after-step=1` and `prepare-only`. Three repetitions shuffle adapter/task order with a fixed seed, giving 420 attempts. The table pins format profiles separately from installed Agent CLI versions.
+Each adapter receives twenty synthetic native-format trajectories, each with two tool batches, using `after-step=1` and `prepare-only`. Three repetitions shuffle adapter/task order with a fixed seed, giving 420 executions. The table pins format profiles separately from installed Agent CLI versions.
 
 Valid samples must preserve the source digest, exact command arguments and historical observations for the complete first batch, exclude the second action, report `replayed_tool_calls=0` with no Agent started, and retain both the pre-existing workspace file's contents and the file inventory. An independent publication audit rechecks every retained command, native prefix and workspace. Failures are counted separately rather than assigned zero latency.
 

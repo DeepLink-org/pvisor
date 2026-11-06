@@ -49,7 +49,7 @@ nav = [
     ] },
     { "Learning path" = [
       { "Learn pVisor through tasks" = "cases/index.md" },
-      { "1. From a command to a Job" = "cases/01-first-job.md" },
+      { "1. From a command to a Session" = "cases/01-first-session.md" },
       { "2. Review and accept file changes" = "cases/02-review-and-decide.md" },
       { "3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md" },
       { "4. Set boundaries for untrusted work" = "cases/04-boundaries.md" },
@@ -73,7 +73,7 @@ nav = [
       { "Configuration files" = "reference/config.md" },
       { "Policy fields" = "reference/policy.md" },
       { "Run Bundle format" = "reference/run-bundle.md" },
-      { "Job usage and storage" = "reference/jobs.md" },
+      { "Session usage and storage" = "reference/sessions.md" },
       { "Machine-readable output" = "reference/json-output.md" },
       { "Environment variables" = "reference/env-vars.md" },
       { "Exit codes and errors" = "reference/exit-codes.md" },
@@ -83,7 +83,7 @@ nav = [
   ] },
   { "Basic concepts" = [
     { "pVisor overview" = "why/index.md" },
-    { "Core concepts" = "concepts/jobs.md" },
+    { "Core concepts" = "concepts/sessions.md" },
     { "Core capabilities" = [
       { "File-level supervision and isolation" = "concepts/staging.md" },
       { "Sandbox lifecycle management" = "concepts/lifecycle.md" },
@@ -122,7 +122,7 @@ nav = [
       { "Architecture overview" = "design/index.md" },
       { "Core design principles" = "design/principles.md" },
       { "Core architecture" = "design/architecture.md" },
-      { "Job, Operation, Attempt and Event" = "design/execution-model.md" },
+      { "Session, Operation, Execution and Event" = "design/execution-model.md" },
     ] },
     { "VM and virtual devices" = [
       { "Execution, devices and consistency" = "design/vm-runtime.md" },
@@ -146,7 +146,7 @@ nav = [
     ] },
     { "Snapshots and state" = [
       { "Consistent freeze and state storage" = "design/environment-snapshot.md" },
-      { "Job checkpoints and forks" = "design/job-checkpoint-cli.md" },
+      { "Session checkpoints and forks" = "design/session-checkpoint-cli.md" },
     ] },
     { "Single-node daemon" = [
       { "Single-node daemon architecture" = "design/daemon/index.md" },
@@ -199,7 +199,7 @@ nav = [
     ] },
     { "Testing and semantic specifications" = [
       { "Testing and semspec" = "community/testing.md" },
-      { "pVisor Job scenarios and regression examples" = "reference/cases.md" },
+      { "pVisor Session scenarios and regression examples" = "reference/cases.md" },
       { "Staging, apply and drop specifications (unreviewed draft)" = "cases/06-stage-apply.md" },
     ] },
     { "Release and maintenance" = [

@@ -1,8 +1,8 @@
 # `pvisor` 命令参考
 
-`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建 Job，省略子命令也默认进入 `spawn`。
-Job 生命周期和变更审查命令直接操作 Job，不新增 `job` 子命令，
-`replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)；现有 Job ID 和磁盘记录仍保留
+`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建 Session，省略子命令也默认进入 `spawn`。
+Session 生命周期和变更审查命令直接操作 Session，不新增 `session` 子命令，
+`replay` 从轨迹创建 Session。Session、Run 与 Execution 的关系见[执行模型](../design/execution-model.md)；现有 Session ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
@@ -28,7 +28,7 @@ pvisor help suspend
 `run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`、`network`
 提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
 用 `pvisor COMMAND --help` 查看支持的参数。
-`--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn`，不属于容器 `run`。
+`--safe`、`--stage`、`--executor` 等 Session 参数属于 `spawn`，不属于容器 `run`。
 
 ```bash
 pvisor pull alpine:3.20
@@ -43,7 +43,7 @@ pvisor rm redis
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
 该接口不实现 Docker Engine API、Compose 或 credential helper。
 容器记录使用独立存储；review/apply/drop 也接受下述暂存绑定挂载的实例名称或 ID。
-Job 选择器与 checkpoint 保持原有行为；`spawn` 不变。
+Session 选择器与 checkpoint 保持原有行为；`spawn` 不变。
 
 ### 容器绑定挂载暂存（仅 Linux） {#container-staged-binds}
 
@@ -158,26 +158,26 @@ secret/SSH/cache mount、名称形式 COPY 属主、外部镜像 COPY、扩展�
 尚不支持 push、Docker archive 导出或多平台构建。Apple Silicon/HVF 有原生验收覆盖，
 Linux/KVM 需要单独进行运行时验收。
 
-## Job owner 与持久操作 {#host-agentctl}
+## Session owner 与持久操作 {#host-agentctl}
 
-`pvisor spawn` 启动前端和私有 Job owner。活 status、kill、VM 控制与执行捕获
-连接 Job 记录中的 owner；普通命令不需要 socket 参数。已停止 Job 的 status、
-review、apply、drop 和 inspect 在调用方持有 `job.lock` 时直接执行。
+`pvisor spawn` 启动前端和私有 Session owner。活 status、kill、VM 控制与执行捕获
+连接 Session 记录中的 owner；普通命令不需要 socket 参数。已停止 Session 的 status、
+review、apply、drop 和 inspect 在调用方持有 `session.lock` 时直接执行。
 有效 owner 仍持有 stage 时，apply/drop 拒绝执行。交互执行沿用原终端，允许
 Ctrl-C 到达工作负载，并在退出后恢复前台进程组。
 
-实例协议为 `pvisor-instance-control-2`；兼容的调用方二进制不要求摘要与 owner
+实例协议为 `pvisor-instance-control-3`；兼容的调用方二进制不要求摘要与 owner
 相同。同 UID 私有 socket 使用有界换行 JSON，不接收终端描述符或 Guest
 AgentCtl token。响应丢失、超时和取消之后，副作用仍可能已经发生，命令不自动重试。
 
-升级前使用旧二进制等旧 Job 结束，并停止旧 `--pvisor-internal-host`。新 CLI
+升级前使用旧二进制等旧 Session 结束，并停止旧 `--pvisor-internal-host`。新 CLI
 忽略旧 generation socket；没有 live control 的旧记录只提供磁盘状态。
 daemon supervisor 保持不变。所有权、记录校验和平台限制见
 [Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)。
 
 ## 实验性特性 {#features}
 
-在调用方查询运行时特性，无需启动 Job 或连接 owner：
+在调用方查询运行时特性，无需启动 Session 或连接 owner：
 
 ```bash
 pvisor feature
@@ -185,7 +185,7 @@ pvisor feature list --json
 pvisor --feature workload-aware-memory-offloading feature --json
 ```
 
-每项包含 `name`、`stage`、`default`、`enabled` 和 `description`。`default` 是注册默认值；`enabled` 是默认值叠加本次查询的 `--feature` 选项。查询不加载 Run 配置，也不检查正在运行的 Job。启用值不代表平台可用或运行成功。
+每项包含 `name`、`stage`、`default`、`enabled` 和 `description`。`default` 是注册默认值；`enabled` 是默认值叠加本次查询的 `--feature` 选项。查询不加载 Run 配置，也不检查正在运行的 Session。启用值不代表平台可用或运行成功。
 
 全局 `--feature NAME` 可重复，可放在 `spawn` 前后，也接受逗号分隔名称。未知名称被拒绝。`--` 后的参数属于工作负载。
 
@@ -203,7 +203,7 @@ pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sl
 
 ## Daemon 与缓存命令 {#service}
 
-`pvisor spawn` 与后续 Job 命令提供原生执行与审查；`pvisor run` 等容器命令管理独立 VM。直接调用 `pvisor-daemon` 准备模板并运行部分 OpenSandbox/E2B profile，或单独启用缓存/池组件；`pvisor cache` 是缓存客户端。
+`pvisor spawn` 与后续 Session 命令提供原生执行与审查；`pvisor run` 等容器命令管理独立 VM。直接调用 `pvisor-daemon` 准备模板并运行部分 OpenSandbox/E2B profile，或单独启用缓存/池组件；`pvisor cache` 是缓存客户端。
 
 ```bash
 pvisor-daemon prepare-image --help
@@ -215,7 +215,7 @@ pvisor cache --help
 为 `pvisor-daemon serve --sandbox` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor cache prepare/publish/list/stat/read` 是客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
 
 其他未知名称按默认执行规则处理。不支持的控制命令 `ctrl` 是明确例外：
-`pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
+`pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Session 准入前
 拒绝并给出迁移提示，不会按默认规则运行名为 `ctrl` 的程序。控制 VM
 使用下方 live VM 命令。`pvisor spawn -- ctrl` 仍表达显式工作负载意图，
 不恢复旧控制 API。使用 `pvisor -- COMMAND` 显式执行程序。
@@ -227,7 +227,7 @@ pvisor cache --help
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/executors/index.md)。
 - **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/replay.md)。
 
-第一次使用时，可以先运行并审查一个 Job：
+第一次使用时，可以先运行并审查一个 Session：
 
 ```bash
 pvisor spawn --safe -- codex
@@ -235,7 +235,7 @@ pvisor status --review last
 pvisor apply last --path src
 ```
 
-`last` 只解析默认存储中属于当前工作区的 Job；用 `--stage PATH` 时，后续命令传入该路径或 Job ID，见 [Job 与存储](../concepts/jobs.md)。
+`last` 只解析默认存储中属于当前工作区的 Session；用 `--stage PATH` 时，后续命令传入该路径或 Session ID，见 [Session 与存储](../concepts/sessions.md)。
 
 ### 暂存与存储 {#暂存与存储}
 
@@ -244,14 +244,14 @@ pvisor apply last --path src
 | 运行方式或目录 | 写入去向 | 退出后的处理 |
 | --- | --- | --- |
 | 普通 host，未启用暂存 | 原工作区 | 已写入宿主；不能用 `drop` 撤销 |
-| `--safe` 的工作区 | Job 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
+| `--safe` 的工作区 | Session 存储中的写时复制 stage | 默认保留，供 `status --review`、`apply`、`drop` 使用 |
 | 显式 `--stage PATH` 的工作区 | 指定 stage | 默认保留；该选项也启用暂存 |
-| VM 工作区 | 指定 stage 或默认 Job 存储 | 默认保留 |
+| VM 工作区 | 指定 stage 或默认 Session 存储 | 默认保留 |
 | VM 根目录的其他写入 | 私有临时 upper | VM 退出后丢弃 |
 | `--safe` 的 HOME／`CODEX_HOME` 状态 | 独立私有 stage | 退出后丢弃，不进入工作区 Run Bundle |
 | 显式 `--mount SOURCE:write` | 宿主 SOURCE | 直接持久写入，不经工作区 apply/drop |
 
-Job 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
+Session 记录和 Run Bundle 保存在运行存储中。`--stage PATH` 选择位置，
 不是 `--safe` 保留工作区改动的前提。文件审查不覆盖已经发生的远程副作用。
 
 ### 文件系统参数 {#文件系统参数}
@@ -260,8 +260,8 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `/Volumes/pvisor-*` 是合并视图的挂载点，包含当前目录已有的文件。
 显式配置工作目录或 OverlayFS base 时，以显式配置为准。
 
-普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 默认将工作区
-改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
+普通 host Session 默认将工作区写入直接透传到 lower。`--safe` 默认将工作区
+改动保留在 Session 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
 `--stage PATH` 仅用于指定存储位置，不是保留改动的前提。
 
 ```bash
@@ -272,7 +272,7 @@ pvisor spawn --access '.env:deny' -- codex
 ```
 
 `--mount SOURCE:read` 向 host executor 授予原绝对路径的只读访问，要求 `--safe`；
-`SOURCE:write` 直接修改宿主机。两者不支持改写 TARGET，不能与工作区、Job 存储或可写运行时路径重叠；
+`SOURCE:write` 直接修改宿主机。两者不支持改写 TARGET，不能与工作区、Session 存储或可写运行时路径重叠；
 Linux 的私有 `/tmp` 内不能使用只读共享。不要共享含秘密的目录。
 `--mount SOURCE[:TARGET]:stage` 则把 SOURCE 加入工作区写时复制视图的底层，并非独立目录挂载。
 `--access PATH-GLOB:deny|warn` 默认累加配置、预设和 CLI 规则：deny 拒绝、warn 放行并警告。
@@ -297,16 +297,16 @@ Commands:
   logs        查看容器输出
 
 Agent Commands:
-  spawn       启动 Job
-  status      查看 Job 状态
-  kill        终止 Job
+  spawn       启动 Session
+  status      查看 Session 状态
+  kill        终止 Session
   review      审查暂存变化与执行证据
   apply       接受选定的暂存变化
   drop        丢弃暂存变化
-  inspect     只读查看 Job 文件系统
+  inspect     只读查看 Session 文件系统
   checkpoint  create, list, show, delete, verify, import-base, verify-base, gc
-  suspend     保存执行状态并暂停 Job
-  resume      继续暂停的 Job
+  suspend     保存执行状态并暂停 Session
+  resume      继续暂停的 Session
   fork        从暂存文件或 VM 执行状态创建分支
 
 Tools:
@@ -323,7 +323,7 @@ pvisor spawn --safe -- codex
 pvisor status --review last
 ```
 
-默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的 synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Job 存储中，退出后可 review/apply/drop。显式 `--stage <PATH>` 会保留 Job 和可写 stage，改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
+默认 host 执行保留宿主机文件系统视图；`--filesystem sandbox` 才启用 pVisor 的 synthetic-root/Landlock 或 Seatbelt 文件系统访问策略。`--safe` 默认暂存工作区，并给 HOME（包括在 shell 内启动的 Codex）提供独立的写时复制视图。没有 `--stage` 时，changeset 和 Run Bundle 默认保留在 Session 存储中，退出后可 review/apply/drop。显式 `--stage <PATH>` 会保留 Session 和可写 stage，改动可供人工审查，并以 `0600` 写入 `run-bundle.json`。
 
 `--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与 Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以 `UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
 
@@ -337,15 +337,15 @@ pvisor fork last -- codex
 pvisor apply last --all # or: pvisor drop last
 ```
 
-`fork` 会先为已停止 Job 的暂存文件系统创建快照，再启动子 Job。
+`fork` 会先为已停止 Session 的暂存文件系统创建快照，再启动子 Session。
 传入 `--checkpoint ID` 可复用已有逻辑检查点。嵌入式 host 可以调用
 `RunHandle::checkpoint`：pVisor 发布 AgentCtl quiesce 指令，要求每个被冻进
 checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再发布
 `continue`。逻辑 checkpoint 保留文件系统和协作客户端 safe-point 边界，不
 保留进程内存。
 
-要结束正在运行的 Job，使用 `pvisor kill JOB_ID`。它向 Job 的监督进程请求正常
-终止；用 `pvisor status JOB_ID` 查看最终状态。已停止的 Job 仍可审查并选择应用或丢弃。
+要结束正在运行的 Session，使用 `pvisor kill SESSION_ID`。它向 Session 的监督进程请求正常
+终止；用 `pvisor status SESSION_ID` 查看最终状态。已停止的 Session 仍可审查并选择应用或丢弃。
 
 ## 应用暂存的项目改动 {#apply}
 
@@ -358,18 +358,18 @@ pvisor apply last --all --exclude 'build/**'
 pvisor apply last --include 'src/**' --dry-run --json
 ```
 
-`SOURCE` 必填，接受 Job ID、stage 目录、`last` 等工作区选择器，或
+`SOURCE` 必填，接受 Session ID、stage 目录、`last` 等工作区选择器，或
 [暂存 bind 的实例名称/ID](#container-staged-binds)（需要时指定 `--mount`）。
 Upper 目录及 stage 内部路径（包括 upper 内的路径）不能作为 apply 来源。
 共享的 status/inspect upper 选择器保持不变。
-Apply 要求 Job 已停止、完成证据有效，且 stage 支持 apply。默认范围是记录中的项目；
+Apply 要求 Session 已停止、完成证据有效，且 stage 支持 apply。默认范围是记录中的项目；
 路径和 glob 均相对于该范围。项目外的改动继续保留在 stage 中。
 
 **Breaking change：** `apply --target` 已删除，不能任意改向其他目录写回。
-Apply 也拒绝 `-o` 和 `--output-dir`，Job 查找存储只使用 `--store`；
+Apply 也拒绝 `-o` 和 `--output-dir`，Session 查找存储只使用 `--store`；
 不提供隐藏别名或兼容适配器。
-运行时使用 `RuntimeJobService::apply_command`、`ApplyCommandRequest` 和 schema-1 结果；
-旧 `ApplyRequest` 与 `RuntimeJobService::apply` 入口已删除。
+运行时使用 `SessionService::apply_command`、`ApplyCommandRequest` 和 schema-1 结果；
+旧 `ApplyRequest` 与 `SessionService::apply` 入口已删除。
 
 ### 选择与输出 {#apply-options}
 
@@ -383,7 +383,7 @@ Apply 也拒绝 `-o` 和 `--output-dir`，Job 查找存储只使用 `--store`；
 | `--dry-run` | 只读预检：展示所选改动、必要依赖、阻塞原因和剩余数量；不消费暂存改动。 |
 | `--diff` | 展示有大小限制的文本 diff，跳过二进制内容。要求 `--dry-run`；与 `--json` 冲突。 |
 | `--json` | stdout 只输出一个 schema 版本 1 的结果对象；要求 `--path`、`--include` 或 `--all`，绝不打开选择器。诊断写入 stderr。 |
-| `--store DIR` | Job 查找存储，默认 `.pvisor/capture`；没有短别名或旧式别名。 |
+| `--store DIR` | Session 查找存储，默认 `.pvisor/capture`；没有短别名或旧式别名。 |
 | `--mount GUEST` | 使用容器名称/ID 时，选择精确的暂存 bind guest 目标；一个暂存 bind 时可省略，多个时必填。 |
 | `--rootfs` | 高级操作：以特权写回记录中的 `/` 目标；容器暂存 bind 拒绝此选项。 |
 
@@ -405,7 +405,7 @@ Enter 进入预览，`q` 取消。被排除的路径不能勾选。预览中，`
 
 `--dry-run` 不写目标、journal、apply ledger 或 recovery 状态，不隐式恢复，
 也不创建目标目录或缺失的锁文件。预览使用严格只读的观察锁和 lease；
-已有 `job.lock` 或必需 lease 文件缺失时直接拒绝，不补建。
+已有 `session.lock` 或必需 lease 文件缺失时直接拒绝，不补建。
 新 `stage` 在启动时预建这些锁，使首次预览可直接使用。
 旧 stage 缺少这些锁时仍然阻塞；预览不会修复锁或适配旧存储。
 
@@ -427,7 +427,7 @@ Apply 重新校验绑定和目录身份；项目目录被替换、契约改变�
 新目录必须属于调用者，且 owner 可读、可搜索。
 私有 backing 的物理权限不能绕过逻辑元数据校验。这些限制不重新定义普通工作区 apply。
 
-高级 `--rootfs` 保持 effective UID 0、同 UID Job 锁和存储要求：stage 必须由 root 创建，
+高级 `--rootfs` 保持 effective UID 0、同 UID Session 锁和存储要求：stage 必须由 root 创建，
 位于规范的 root 所有目录，所有祖先目录也必须归 root 且不可被 group/world 写入。
 它不提权或导入普通用户 stage；`/tmp` 存储不符合要求。此时路径相对于 `/`。
 新契约 rootstage 的非 root 项目 apply 不授权 rootfs apply。
@@ -438,7 +438,7 @@ Apply 重新校验绑定和目录身份；项目目录被替换、契约改变�
 JSON 结果包含 `schema_version: 1`、`operation: "apply"`、`mode`
 （`preview` 或 `execute`）、`status`、`source`、`scope`、`selected`、`required`、
 `blockers`、`remaining`、`execution`、`candidates` 和 `plan`。
-Source 标识固定的 Job、stage、Attempt 和 generation；scope 标识项目或 rootfs 及目标。
+Source 标识固定的 Session、stage、Execution 和 generation；scope 标识项目或 rootfs 及目标。
 `plan` 是不透明的确认 token，不是 CLI 选项。
 `remaining.in_scope`、`remaining.outside_scope` 未知时为 null，不伪造为零。
 执行证据包含 `apply_id`、`applied`、`ledger_confirmed`、`recovery_required` 和 `error`；
@@ -460,9 +460,9 @@ Pending apply 只会阻塞，不隐式恢复：保留 stage、已有 `apply-ledg
 执行错误可能已写入部分目标；重试或 drop 前应检视执行证据并完成协调处理。
 Apply 成功不会自动运行测试，项目结果须单独验证。
 
-## Job 检查点管理
+## Session 检查点管理
 
-`spawn` 保持既有选项和默认行为。以下接口已支持停止 Job 的工作区检查点：
+`spawn` 保持既有选项和默认行为。以下接口已支持停止 Session 的工作区检查点：
 
 ```bash
 pvisor checkpoint create ./stage/task --request-id before-refactor --json
@@ -475,14 +475,14 @@ pvisor checkpoint delete ./stage/task CHECKPOINT_ID --json
 pvisor checkpoint gc ./stage/task --json
 ```
 
-检查点属于指定 Job，默认类型为 workspace，保存 staged upper、前像、策略及来源 Attempt。
+检查点属于指定 Session，默认类型为 workspace，保存 staged upper、前像、策略及来源 Execution。
 其 lower 仍是外部路径引用；不会因此保存进程内存或保证外部 lower 不变。唯一 ID 前缀可以解析，歧义会报错。
 创建请求可用 `--request-id` 重试；已经删除的结果不能通过重用同一 key 再捕获。
 分叉保留来源 manifest 的硬链接引用，父子 stage 需要在同一文件系统；引用存在时删除拒绝。
-`drop JOB` 保留 Job、检查点和分支引用，`apply/drop` 必须显式指定 Job，并要求记录已确认停止。
+`drop SESSION` 保留 Session、检查点和分支引用，`apply/drop` 必须显式指定 Session，并要求记录已确认停止。
 `review` 的 JSON 区分已记录的执行证据与当前选定的文件视图；成功 apply/drop 后工作区 generation 递增。
 
-已保存的工作区检查点的查看和分叉要求源 Job lease，因此源 Job 正在运行时会拒绝。
+已保存的工作区检查点的查看和分叉要求源 Session lease，因此源 Session 正在运行时会拒绝。
 
 ### 完整 VM 执行检查点 {#full-vm-execution-checkpoints}
 
@@ -498,17 +498,17 @@ pvisor checkpoint verify ./stage/task CHECKPOINT_ID --json
 pvisor checkpoint gc ./stage/task --kind execution --json
 ```
 
-`create --kind execution` 保存后继续运行。`suspend` 只有在检查点发布且原 VM 确认退出后才成功；超时仅结束等待，不能据此判断 VM 已退出。使用相同 `--request-id` 重试不会重复捕获。`resume` 只恢复当前 suspended head，保留 Job ID、生成新 Attempt，并保留旧 Attempt 的记录和 Bundle；原 stage 路径继续指向当前 Attempt。恢复保持检查点中的 guest 环境，不继承发起恢复的 shell 环境。
+`create --kind execution` 保存后继续运行。`suspend` 只有在检查点发布且原 VM 确认退出后才成功；超时仅结束等待，不能据此判断 VM 已退出。使用相同 `--request-id` 重试不会重复捕获。`resume` 只恢复当前 suspended head，保留 Session ID、生成新 Execution，并保留旧 Execution 的记录和 Bundle；原 stage 路径继续指向当前 Execution。恢复保持检查点中的 guest 环境，不继承发起恢复的 shell 环境。
 
-execution fork 不接受替换命令。指定历史检查点时可以保持父 Job 运行；不指定时，对运行中父 Job 捕获后继续执行，对已暂停父 Job 使用当前 head。子 Job 拥有独立 RAM 和文件系统上层。`--ram-storage raw|compressed` 只影响新捕获，默认 compressed。`resume` 和 execution `fork` 支持 `--eager-ram`，在启动前完整读取 RAM；省略时按需加载。
+execution fork 不接受替换命令。指定历史检查点时可以保持父 Session 运行；不指定时，对运行中父 Session 捕获后继续执行，对已暂停父 Session 使用当前 head。子 Session 拥有独立 RAM 和文件系统上层。`--ram-storage raw|compressed` 只影响新捕获，默认 compressed。`resume` 和 execution `fork` 支持 `--eager-ram`，在启动前完整读取 RAM；省略时按需加载。
 
-当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`spawn` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status JOB --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
+当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`spawn` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status SESSION --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
 
-当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。必要时恢复副本也使用独立目录，Attempt 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
+当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Session 归属。必要时恢复副本也使用独立目录，Execution 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
 
-暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job 的全库清理，不清理 daemon 沙箱状态。
+暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill SESSION` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Session 删除/归档接口来释放它们。GC 回收本 Session 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Session 的全库清理，不清理 daemon 沙箱状态。
 
-原不可变基底管理可通过 `checkpoint import-base JOB ROOTFS --json`、`checkpoint verify-base JOB BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `spawn --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Job 检查点。实现与验收见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
+原不可变基底管理可通过 `checkpoint import-base SESSION ROOTFS --json`、`checkpoint verify-base SESSION BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `spawn --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Session 检查点。实现与验收见[Session 检查点设计](../design/session-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
 
@@ -666,7 +666,7 @@ trajectory = "/input/session.jsonl"
 after_step = 30
 agent_entrypoint = "/usr/bin/claude"
 max_steps = 200
-session_id = "task-291-attempt-1"
+session_id = "task-291-execution-1"
 replay_only = false
 disable_thinking = true
 boundary_user_prompt = "Review the fresh observation before continuing."
@@ -850,8 +850,8 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 
 | Run 选项 | `[vm]` 下的 TOML 字段 | 默认值 / 用途 |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | 未设置：owner 使用 `/tmp/pvisor-host-<有效 UID>/jobs/<job-id>/<attempt-id>/control.sock`（规范化 `/tmp`） |
-| `--vm-ram-backing FILE` | `ram_backing` | 未设置：普通文件 backing 模式使用 attempt 本地文件；只允许新文件 |
+| `--vm-control-socket PATH` | `control_socket` | 未设置：owner 使用 `/tmp/pvisor-host-<有效 UID>/sessions/<session-id>/<execution-id>/control.sock`（规范化 `/tmp`） |
+| `--vm-ram-backing FILE` | `ram_backing` | 未设置：普通文件 backing 模式使用 execution 本地文件；只允许新文件 |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`；尽力而为的宿主去重建议 |
@@ -876,12 +876,12 @@ executor 时会被拒绝。路径选项只替换对应字段，省略的路径�
 本地压缩开关。它与 backing/FUSE 压缩、去重、外部池、快照捕获/恢复、
 快照文件系统池及整 VM offload 互斥。去重与任一种压缩模式及外部池互斥。
 冲突在合并配置/CLI 后检查，因此按需使用显式 `=false` 覆盖。
-文件系统池必须由宿主管理，处于 VM 可写根及快照 store 之外，并与 Job
+文件系统池必须由宿主管理，处于 VM 可写根及快照 store 之外，并与 Session
 位于同一卷；设置 node socket 不代表服务故障后可透明恢复。
 
-### Live VM Attempt 控制 {#vm-instance-control}
+### Live VM Execution 控制 {#vm-instance-control}
 
-普通控制直接从 Job 记录读取规范的私有 owner 地址：
+普通控制直接从 Session 记录读取规范的私有 owner 地址：
 
 ```bash
 pvisor status last --json
@@ -891,20 +891,20 @@ pvisor suspend last --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
 pvisor resume last --vm-load
 ```
 
-`status` 显示 Job 状态。`suspend --vm-pause` 暂停 vCPU；`--vm-offload`
+`status` 显示 Session 状态。`suspend --vm-pause` 暂停 vCPU；`--vm-offload`
 使用更强的 CPU/设备静默边界，可选写入同文件系统的宿主私有 RAM 文件。
 pause 与 offload 冲突，`--vm-ram-file` 要求 offload。活 `resume`（包括
-`--vm-load`）继续同一 Attempt，不恢复快照。普通 suspend 捕获执行检查点并
-停止 Attempt；已停止 Job 的 resume 恢复封存检查点。活状态转换返回包含
+`--vm-load`）继续同一 Execution，不恢复快照。普通 suspend 捕获执行检查点并
+停止 Execution；已停止 Session 的 resume 恢复封存检查点。活状态转换返回包含
 `status` 与 `value` 的 JSON。
 
-`--vm-socket PATH` 是调试覆盖，要求同时提供 `--vm-job-id ID` 和
-`--vm-attempt-id ID`；位置 selector 必须匹配显式 Job ID。这些参数只在
+`--vm-socket PATH` 是调试覆盖，要求同时提供 `--vm-session-id ID` 和
+`--vm-execution-id ID`；位置 selector 必须匹配显式 Session ID。这些参数只在
 status/suspend/resume 内有效。`--vm-control-socket` 在创建 VM 时选择路径。
 CLI 与嵌入式自定义端点都必须位于规范的 `/tmp/pvisor-host-<UID>` 内
 （macOS 通常为 `/private/tmp`），各级目录属于同 UID、不是符号链接、权限
 `0700`，socket 为 `0600`。不覆盖已有 socket。默认路径为
-`jobs/<job-id>/<attempt-id>/control.sock`，Attempt 结束时清除发现记录。
+`sessions/<session-id>/<execution-id>/control.sock`，Execution 结束时清除发现记录。
 执行器将整个权限根目录排除在 Guest 访问范围外；这些是宿主记录，不是
 Guest 发现文件。当前调试覆盖仍使用旧交换路径，其取消限制见
 [owner 控制边界](../design/architecture.md#host-limits)；协议见
@@ -955,7 +955,7 @@ rootfs。
 `--rootfs image=<PATH>` 使用 OCI 镜像或镜像路径；三者互斥，host rootfs 在
 macOS 上被拒绝。这是统一 rootfs 语法；
 `--mount SOURCE[:TARGET]:stage` 为 guest 工作区组合额外底层，当前工作区是隐式底层；
-read/write 显式宿主共享目前仅支持 host executor。工作区改动进入指定 stage 或默认 Job 存储，退出后保留；
+read/write 显式宿主共享目前仅支持 host executor。工作区改动进入指定 stage 或默认 Session 存储，退出后保留；
 VM 根目录其他写入使用临时 upper，并在 VM 退出时丢弃。
 
 合并后的 rootfs 是 guest `/`，`/workspace` 成为 guest cwd。在 Linux 和
@@ -996,7 +996,7 @@ pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID --
 
 本地准备不使用缓存服务；成功输出包含 `schema_version`、`prepared_rootfs`
 （canonical `store` 与 `base.id`）及独立 `rootfs` 路径。首次准备包含复制、
-完整内容/元数据校验和持久 pin。后续普通 CLI 由 Job owner 认证该对象，
+完整内容/元数据校验和持久 pin。后续普通 CLI 由 Session owner 认证该对象，
 取得运行期 lease 并接通 Immutable 物理 lower；不会每次重新封存。
 默认工作区保持 live；可显式选择[封存工作区](#prepared-workspace)。
 
@@ -1031,7 +1031,7 @@ pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID 
 
 准备结果包含 `schema_version`、`prepared_workspace`（canonical `store` 与
 `base.id`）和独立 `workspace` 路径。首次准备复制并校验内容与元数据，持久 pin
-跨命令退出和 GC 保留；后续 Job owner 重新认证 workspace catalog 并取得
+跨命令退出和 GC 保留；后续 Session owner 重新认证 workspace catalog 并取得
 运行期 lease，无需重新封存。
 
 读取使用所选固定 generation，宿主项目的后续修改不会进入当前 Run 的快照读视图。
@@ -1074,7 +1074,7 @@ project/                         # reusable workspace / default base
 ```
 
 `status`、`inspect` 使用的共享生命周期选择器接受 Run id、Run 目录、项目工作区、
-`run.json`、upper 或 merged 路径。`apply` 只接受 Job ID、stage 目录或工作区选择器
+`run.json`、upper 或 merged 路径。`apply` 只接受 Session ID、stage 目录或工作区选择器
 （包括 `last`），不接受 upper 或 stage 内部路径。项目工作区选择其最新 Run；
 apply 写回该 Run 的记录目标或绑定项目范围，不接受覆盖。
 `--store` 选择查找存储，不改变写回位置：

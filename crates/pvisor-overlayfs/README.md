@@ -56,7 +56,7 @@ DTOs.
 
 Mount preparation is not transactional: errors may leave directories or journal
 initialization behind. Explicit unmount consumes ownership even on failure;
-drop attempts cleanup but discards errors. A finished request thread does not
+drop executions cleanup but discards errors. A finished request thread does not
 prove mount detachment. The macOS mount-table probe fails closed, while Linux's
 metadata heuristic can miss same-device bind mounts. Metrics clones share a
 thread-safe sink; snapshots do not freeze the filesystem, retain at most 8192
@@ -108,7 +108,7 @@ receive thread when the mutation lane is idle. Read callbacks do the same only
 when both lanes are idle; READ requests of at least 64 KiB always retain worker
 dispatch to preserve bulk-read pipelining. Any accepted mutation, including off-lock copy
 preparation, keeps reads on their independent worker so metadata can continue
-arriving during copying. An already accepted job prevents overtaking within its
+arriving during copying. An already accepted session prevents overtaking within its
 lane. Admission bounds, inode pins and shutdown draining also cover inline
 callbacks; copy preparation never runs on the receive thread. Normal reads and
 short mutation handlers can still hold the state lock during backing I/O, as

@@ -1,5 +1,5 @@
 use super::*;
-use pvisor_core::{AttemptId, AttemptInfo, ExecutorKind, ExecutorPlan, IsolationKind, RunId};
+use pvisor_core::{ExecutionId, ExecutionInfo, ExecutorKind, ExecutorPlan, IsolationKind, RunId};
 
 pub(super) fn execution() -> Execution {
     execution_with(RunState::Created, ExecutorKind::VirtualMachine)
@@ -9,8 +9,8 @@ fn execution_with(state: RunState, kind: ExecutorKind) -> Execution {
     let status = RunStatus {
         run_id: RunId::from("execution-test"),
         state,
-        attempt: AttemptInfo {
-            attempt_id: AttemptId::from("attempt-test"),
+        execution: ExecutionInfo {
+            execution_id: ExecutionId::from("execution-test"),
             number: 1,
             executor: ExecutorPlan {
                 name: "test".into(),
@@ -30,7 +30,7 @@ fn execution_with(state: RunState, kind: ExecutorKind) -> Execution {
     let (live, _) = tokio::sync::broadcast::channel(16);
     let events = RunEventPublisher::new(
         status.run_id.clone(),
-        status.attempt.attempt_id.clone(),
+        status.execution.execution_id.clone(),
         "test",
         Arc::new(super::super::event::NoopEventSink::default()),
         live,
@@ -70,14 +70,17 @@ fn native_controls() -> [OperationKind; 5] {
 
 #[tokio::test]
 async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
-    use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
+    use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostExecutionCommand};
     let controls = execution_with(RunState::Created, ExecutorKind::Process);
     controls.ready().await;
-    let reply = controls.dispatch(HostAttemptCommand::Status).await.unwrap();
+    let reply = controls
+        .dispatch(HostExecutionCommand::Status)
+        .await
+        .unwrap();
     assert_eq!(reply.status.run_id, controls.status().run_id);
     assert_eq!(
-        reply.status.attempt.attempt_id,
-        controls.status().attempt.attempt_id
+        reply.status.execution.execution_id,
+        controls.status().execution.execution_id
     );
     assert!(reply.value.is_none());
     for kind in native_controls()
@@ -89,14 +92,14 @@ async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
         }])
     {
         let error = controls
-            .dispatch(HostAttemptCommand::Operation { kind })
+            .dispatch(HostExecutionCommand::Operation { kind })
             .await
             .unwrap_err();
         assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
     }
     assert!(!controls.cancellation.is_cancelled());
     let reply = controls
-        .dispatch(HostAttemptCommand::Terminate)
+        .dispatch(HostExecutionCommand::Terminate)
         .await
         .unwrap();
     assert!(controls.cancellation.is_cancelled());
@@ -106,7 +109,7 @@ async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
     controls.finish(RunState::Completed, None, 10).await;
     assert_eq!(
         controls
-            .dispatch(HostAttemptCommand::Status)
+            .dispatch(HostExecutionCommand::Status)
             .await
             .unwrap()
             .status
@@ -117,23 +120,23 @@ async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
 
 #[tokio::test]
 async fn execution_dispatch_routes_all_native_primitives_through_control_checks() {
-    use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
+    use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostExecutionCommand};
     use pvisor_core::operation::{OperationKind, SnapshotRamStorage};
     let controls = execution_with(RunState::Starting, ExecutorKind::VirtualMachine);
     for kind in native_controls() {
         let error = controls
-            .dispatch(HostAttemptCommand::Operation { kind })
+            .dispatch(HostExecutionCommand::Operation { kind })
             .await
             .unwrap_err();
         assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
         assert!(
             error
                 .message
-                .contains("attempt is not running or suspended")
+                .contains("execution is not running or suspended")
         );
     }
     let error = controls
-        .dispatch(HostAttemptCommand::Operation {
+        .dispatch(HostExecutionCommand::Operation {
             kind: OperationKind::RunExecute {
                 program: "/bin/true".into(),
                 args: vec![],
@@ -144,7 +147,7 @@ async fn execution_dispatch_routes_all_native_primitives_through_control_checks(
         .unwrap_err();
     assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
     let error = controls
-        .dispatch(HostAttemptCommand::Operation {
+        .dispatch(HostExecutionCommand::Operation {
             kind: OperationKind::RunCheckpoint {
                 request_id: String::new(),
                 ram_storage: SnapshotRamStorage::Raw,
@@ -155,13 +158,13 @@ async fn execution_dispatch_routes_all_native_primitives_through_control_checks(
     assert_eq!(error.code, AgentCtlHostErrorCode::InvalidRequest);
     controls.cancel();
     let error = controls
-        .dispatch(HostAttemptCommand::Operation {
+        .dispatch(HostExecutionCommand::Operation {
             kind: OperationKind::RunPause,
         })
         .await
         .unwrap_err();
     assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
-    assert!(error.message.contains("attempt is cancelling"));
+    assert!(error.message.contains("execution is cancelling"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -210,7 +213,7 @@ async fn execution_readiness_waits_for_start_and_is_fenced_by_cancellation() {
 }
 
 #[tokio::test]
-async fn execution_readiness_rejects_terminal_and_non_vm_attempts() {
+async fn execution_readiness_rejects_terminal_and_non_vm_executions() {
     let controls = execution_with(RunState::Starting, ExecutorKind::VirtualMachine);
     controls.finish(RunState::Completed, None, 10).await;
     assert!(controls.wait_ready().await.is_err());
@@ -336,7 +339,7 @@ async fn execution_failed_history_write_keeps_observations_and_allows_completion
     );
     execution.finish(RunState::Cancelled, None, 10).await;
     assert_eq!(execution.status().state, RunState::Cancelled);
-    assert_eq!(execution.status().attempt.finished_at_unix_ms, Some(10));
+    assert_eq!(execution.status().execution.finished_at_unix_ms, Some(10));
     assert!(execution.snapshot().progress.history_gap);
 }
 
@@ -454,7 +457,7 @@ async fn execution_termination_remains_available_during_a_native_wait() {
         .unwrap();
     execution.transition(RunState::Running, None).await;
     assert_eq!(execution.status().state, RunState::Cancelled);
-    assert_eq!(execution.status().attempt.finished_at_unix_ms, Some(50));
+    assert_eq!(execution.status().execution.finished_at_unix_ms, Some(50));
     assert_eq!(execution.snapshot().progress.in_flight, 0);
     assert_eq!(
         replay(&records(&execution).await).unwrap().status.state,
@@ -529,7 +532,7 @@ async fn execution_retained_history_recovers_a_torn_tail_without_reexecuting() {
     use std::io::Write;
     let root = tempfile::tempdir().unwrap();
     let record: super::super::RunRecord = serde_json::from_value(serde_json::json!({
-        "schema_version":1,"run_id":"execution-test","attempt_id":"attempt-test","session_id":"session",
+        "schema_version":1,"run_id":"execution-test","execution_id":"execution-test","session_id":"session",
         "agent":"test","pid":0,"command":["true"],"state":"running","started_at_unix_ms":1,
         "storage":root.path(),"network":{},"gateway_listen":null,"overlay":null
     })).unwrap();
@@ -541,7 +544,7 @@ async fn execution_retained_history_recovers_a_torn_tail_without_reexecuting() {
         .await
         .unwrap();
     execution.mark_dispatched(&id).await.unwrap();
-    let path = root.path().join("execution-attempt-test.jsonl");
+    let path = root.path().join("execution-execution-test.jsonl");
     assert!(
         Journal::read(&path).is_err(),
         "a second writer cannot steal the live journal"
@@ -559,7 +562,7 @@ async fn execution_retained_history_recovers_a_torn_tail_without_reexecuting() {
     assert_eq!(state.status.state, RunState::Running);
     assert_eq!(state.pending.len(), 1);
     let mut records = recovered.records().unwrap();
-    records.last_mut().unwrap().event.scope[3] = "foreign-attempt".into();
+    records.last_mut().unwrap().event.scope[3] = "foreign-execution".into();
     assert!(replay(&records).is_err());
 }
 
@@ -617,7 +620,7 @@ async fn snapshots_match_a_single_history_prefix_during_native_results() {
 
 #[cfg(feature = "gateway")]
 #[tokio::test]
-async fn cooperative_manual_rejection_keeps_the_attempt_and_delivery_available() {
+async fn cooperative_manual_rejection_keeps_the_execution_and_delivery_available() {
     let mut execution = execution();
     execution.ready().await;
     let coordinator = super::super::wait_coordinator::WaitCoordinator::new(

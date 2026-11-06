@@ -1,5 +1,5 @@
 use pvisor::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError, AgentCtlServer};
-use pvisor_core::{AgentDirective, AgentErrorCode, AgentState, AttemptId, RunId};
+use pvisor_core::{AgentDirective, AgentErrorCode, AgentState, ExecutionId, RunId};
 use std::time::Duration;
 
 fn client(server: &AgentCtlServer, client_id: &str) -> AgentCtlClient {
@@ -16,7 +16,8 @@ fn response_code(error: anyhow::Error) -> AgentErrorCode {
 
 #[test]
 fn all_runtime_clients_must_sync_the_checkpoint_boundary() {
-    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server =
+        AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
     let mut first = client(&server, "first");
     let mut second = client(&server, "second");
 
@@ -97,7 +98,8 @@ fn all_runtime_clients_must_sync_the_checkpoint_boundary() {
 
 #[test]
 fn invalid_token_and_duplicate_live_client_have_typed_errors() {
-    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server =
+        AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
     let mut bad_config = AgentCtlClientConfig::from_environment(&server.environment(), "bad-token")
         .unwrap()
         .unwrap();
@@ -118,7 +120,8 @@ fn invalid_token_and_duplicate_live_client_have_typed_errors() {
 
 #[test]
 fn checkpoint_rejects_new_sessions_and_mismatched_acknowledgements() {
-    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server =
+        AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
     let mut participant = client(&server, "participant");
     participant.connect().unwrap();
     server.control().request_quiesce("cp", None).unwrap();
@@ -154,7 +157,8 @@ fn checkpoint_rejects_new_sessions_and_mismatched_acknowledgements() {
 
 #[test]
 fn stale_session_can_be_replaced_outside_checkpoint() {
-    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server =
+        AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
     let mut stale = client(&server, "worker");
     stale.connect().unwrap();
     std::thread::sleep(Duration::from_millis(3_100));
@@ -165,7 +169,8 @@ fn stale_session_can_be_replaced_outside_checkpoint() {
 
 #[test]
 fn checkpoint_keeps_a_disconnected_participant_in_the_frozen_set() {
-    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server =
+        AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
     let mut participant = client(&server, "participant");
     participant.connect().unwrap();
     server.control().request_quiesce("cp", None).unwrap();

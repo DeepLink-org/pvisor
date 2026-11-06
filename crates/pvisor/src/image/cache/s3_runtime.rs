@@ -40,7 +40,7 @@ impl Drop for Permit {
         }
     }
 }
-struct Job {
+struct Task {
     store: Arc<dyn ObjectStore>,
     key: String,
     operation: Operation,
@@ -51,7 +51,7 @@ struct Job {
 pub(super) struct Runtime {
     pid: u32,
     admission: Arc<Admission>,
-    send: Option<tokio::sync::mpsc::UnboundedSender<Job>>,
+    send: Option<tokio::sync::mpsc::UnboundedSender<Task>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Runtime {
@@ -70,9 +70,9 @@ impl Runtime {
         Ok(runtime)
     }
     fn new() -> anyhow::Result<Self> {
-        // The admission permit bounds queued plus executing jobs. UnboundedSender
+        // The admission permit bounds queued plus executing tasks. UnboundedSender
         // itself never blocks or requires entering the caller's Tokio runtime.
-        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Task>();
         let (ready, initialized) = mpsc::sync_channel::<anyhow::Result<()>>(1);
         let worker = std::thread::Builder::new()
             .name("pvisor-cache-s3".into())
@@ -92,16 +92,16 @@ impl Runtime {
                 let mut operations = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
-                        job = receive.recv() => match job {
-                            Some(job) => { operations.spawn(async move {
+                        task = receive.recv() => match task {
+                            Some(task) => { operations.spawn(async move {
                                 let result = tokio::time::timeout_at(
-                                    tokio::time::Instant::from_std(job.deadline),
-                                    s3_operation(job.store.as_ref(), &job.key, job.operation),
+                                    tokio::time::Instant::from_std(task.deadline),
+                                    s3_operation(task.store.as_ref(), &task.key, task.operation),
                                 ).await.map_err(|_| anyhow::anyhow!("S3 image operation timed out"))
                                     .and_then(|result| result);
-                                let _ = job.reply.send(result);
+                                let _ = task.reply.send(result);
                                 // Keep admission charged until response publication.
-                                drop(job._permit);
+                                drop(task._permit);
                             }); },
                             None => break,
                         },
@@ -164,7 +164,7 @@ impl Runtime {
         self.send
             .as_ref()
             .context("S3 cache worker stopped")?
-            .send(Job {
+            .send(Task {
                 store,
                 key,
                 operation,

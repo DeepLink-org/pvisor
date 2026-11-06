@@ -26,7 +26,7 @@ Host 进程与 OCI 容器使用宿主内核，容器通过 namespace、资源控
 2. builder 建立 guest RAM 区域、内核与启动参数，安装所选虚拟设备，交给平台后端注册内存和创建 vCPU。
 3. `VmRuntime::run(self, on_ready)` 消费配置，在 VM 可控制时向回调交付 `VmmHandle`。回调应及时返回，让事件循环推进；这个函数的返回值是运行结果，不是 handle。
 4. vCPU 进入硬件虚拟化执行。需要宿主处理的 VM exit、设备通知、中断和控制请求，由相应 CPU 线程或事件循环处理。
-5. guest 的 `pvisor-guest` supervisor 负责 guest 内启动与进程环境；宿主 Session 继续拥有整个 Attempt 的收尾和结果发布。
+5. guest 的 `pvisor-guest` supervisor 负责 guest 内启动与进程环境；宿主 Session 继续拥有整个 Execution 的收尾和结果发布。
 
 普通 guest 指令与大部分系统调用在 guest 内执行。一次 guest `read` 只有在导出文件树需要后端 I/O 时才到 virtio-fs；guest 内存页命中、tmpfs 或 procfs 操作可由 guest 自己完成。网络连接通过 guest TCP/IP 和 virtio-net 进入宿主出口。
 
@@ -62,11 +62,11 @@ virtio-fs 目前保留一个普通 request queue 和一个 hiprio queue。可重
 
 冻结按 **vCPU 确认 → 设备排空 → RAM gate 关闭** 推进。排空期间必须允许已有完成路径前进，不能提前关闭它们所需的 RAM 访问。`VmmHandle` 的控制事务串行化状态迁移；等待 worker 时释放 VMM 锁，让设备收尾有机会执行。
 
-冻结超时或控制状态失败时，调用方必须终止失败 runner，不能让未知设备状态与 guest 并发恢复。完整快照还需要捕获范围内的文件系统和兼容性绑定；对端网络不会随本地 RAM 回退，所以当前原生 Job execution profile 排除网络设备。持久发布与恢复合同由[环境快照](environment-snapshot.md)维护。
+冻结超时或控制状态失败时，调用方必须终止失败 runner，不能让未知设备状态与 guest 并发恢复。完整快照还需要捕获范围内的文件系统和兼容性绑定；对端网络不会随本地 RAM 回退，所以当前原生 Session execution profile 排除网络设备。持久发布与恢复合同由[环境快照](environment-snapshot.md)维护。
 
 ## 回到整体架构与源码 {#integration}
 
-VM 承担机器状态的唯一所有权，上层仍决定这次 Attempt 的文件、网络、存储与失败处置。内存优化必须经过 VM 的一致性边界；文件系统和网络服务不得自行保存 guest 裸指针；snapshot store 固定对象并发布可恢复状态。这个拆分让宿主存储和服务能够演进，同时保持 guest 地址空间与队列生命周期集中管理。
+VM 承担机器状态的唯一所有权，上层仍决定这次 Execution 的文件、网络、存储与失败处置。内存优化必须经过 VM 的一致性边界；文件系统和网络服务不得自行保存 guest 裸指针；snapshot store 固定对象并发布可恢复状态。这个拆分让宿主存储和服务能够演进，同时保持 guest 地址空间与队列生命周期集中管理。
 
 | 源码入口（相对 `crates/pvisor-vm/src/`） | 重点 |
 | --- | --- |

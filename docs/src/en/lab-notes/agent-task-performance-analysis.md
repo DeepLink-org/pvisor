@@ -4,7 +4,7 @@
 
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 
-Complete repair/testing takes about **4.61 s** in image-free pVisor VM and **8.51 s** on Firecracker / complete Ubuntu; staging takes **0.72 s**. Ubuntu boot affects short jobs, while pVisor retains substantial tool-execution costs: fast startup does not establish leading tools. Claude/VM: initialization timeout / N=0; real Codex tool-loop results follow below.
+Complete repair/testing takes about **4.61 s** in image-free pVisor VM and **8.51 s** on Firecracker / complete Ubuntu; staging takes **0.72 s**. Ubuntu boot affects short sessions, while pVisor retains substantial tool-execution costs: fast startup does not establish leading tools. Claude/VM: initialization timeout / N=0; real Codex tool-loop results follow below.
 
 ## Motivation
 
@@ -68,7 +68,7 @@ Codex uses uniform inner `danger-full-access`, with the outer runtime supplying 
 
 Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
 
-Complete-Ubuntu repair/testing takes **8.12 s** on q35 and **10.33 s** on microvm, with internal tools taking **2.75 / 2.81 s**. Image-free pVisor reduces waiting for fresh jobs, while its 4.02 s worker time remains above these complete-Ubuntu paths, a priority when environments are reused. Selecting microvm does not automatically improve complete tasks in this configuration. Networking, devices and exposed CPU features differ; the entire difference cannot be assigned to block devices or FUSE.
+Complete-Ubuntu repair/testing takes **8.12 s** on q35 and **10.33 s** on microvm, with internal tools taking **2.75 / 2.81 s**. Image-free pVisor reduces waiting for fresh sessions, while its 4.02 s worker time remains above these complete-Ubuntu paths, a priority when environments are reused. Selecting microvm does not automatically improve complete tasks in this configuration. Networking, devices and exposed CPU features differ; the entire difference cannot be assigned to block devices or FUSE.
 
 Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/index.md#full-ubuntu-qemu)
 

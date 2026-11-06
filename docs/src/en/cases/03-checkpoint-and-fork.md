@@ -1,6 +1,6 @@
 # 3. Save a proposal and explore a branch
 
-A workspace checkpoint saves proposed files and conflict preimages for refactoring, review, and alternate attempts. A fork starts a new command; it does not continue the old process memory. Full VM restore is covered separately in chapter 5.
+A workspace checkpoint saves proposed files and conflict preimages for refactoring, review, and alternate executions. A fork starts a new command; it does not continue the old process memory. Full VM restore is covered separately in chapter 5.
 
 ### S-USE-009: Retry checkpoint creation
 
@@ -30,7 +30,7 @@ json_expect "$CASE_ROOT/show.json" /branch_references 0
 
 Create a checkpoint before accepting a proposal so you can review the saved view later.
 
-**Contract**: After apply, current changes are empty; checkpoint review still lists report.txt and drop refuses the fully applied Job and preserves its checkpoint.
+**Contract**: After apply, current changes are empty; checkpoint review still lists report.txt and drop refuses the fully applied Session and preserves its checkpoint.
 
 **Violation**: apply or drop rewrites the immutable savepoint.
 
@@ -53,7 +53,7 @@ pvisor checkpoint show "$CASE_ROOT/source" "$checkpoint" --json > "$CASE_ROOT/sh
 
 ### S-USE-011: Start two branches from one proposal
 
-Compare implementations by forking twice from one checkpoint. Keep the source proposal and both child Jobs separate.
+Compare implementations by forking twice from one checkpoint. Keep the source proposal and both child Sessions separate.
 
 **Contract**: Both branches read seed and independently write branch-a/branch-b; the source retains seed and the host has no report.txt. Deleting the referenced checkpoint fails.
 

@@ -9,7 +9,7 @@ use crate::env::{
         READONLY_FLUSH_ENV, RESTORE_RAM_SERVER_ENV, RESTORE_RAM_WATCHDOG_ENV, RUNNER_SPEC_ENV,
     },
 };
-use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
+use crate::executor::{ExecutionContext, ExecutorOutput, RunExecutor, SessionEnd as End};
 use crate::executor::{join_capture, read_limited, stdio};
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -421,7 +421,7 @@ fn collect_host_authority_paths(
         }
     }
     if let Some(endpoint) = env.get(crate::AGENTCTL_ENDPOINT_ENV) {
-        // Cooperative Session sockets live directly in /tmp, not in a
+        // Cooperative ExecutionContext sockets live directly in /tmp, not in a
         // dedicated authority directory. Hide only the endpoint, never its
         // arbitrary parent. Keep its guest path even if a restored socket is
         // no longer present on the host.
@@ -480,7 +480,7 @@ impl VmExecutor {
             .chain(self.settings.snapshot_filesystem_pool.iter())
             .chain(self.vsock_ports.values())
         {
-            let path = crate::job_service::paths::fork_stage_candidate(path)?;
+            let path = crate::session_service::paths::fork_stage_candidate(path)?;
             for store in [workspace_store, selected.store.as_path()] {
                 anyhow::ensure!(
                     !path.starts_with(store) && !store.starts_with(&path),
@@ -491,7 +491,7 @@ impl VmExecutor {
         Ok((owner, selected.store.canonicalize()?))
     }
 
-    /// Fully read the authenticated RAM view into an Attempt-owned file.
+    /// Fully read the authenticated RAM view into an Execution-owned file.
     /// Default restore keeps its lazy shared baseline. CPU mappings remain
     /// private; original owners stay pinned for later incremental captures.
     pub(crate) fn materialize_restore_ram(&mut self, storage: &Path) -> anyhow::Result<()> {
@@ -606,7 +606,7 @@ impl VmExecutor {
                 .chain(settings.snapshot_filesystem_pool.iter())
                 .chain(settings.control_socket.iter())
             {
-                let path = crate::job_service::paths::fork_stage_candidate(path)?;
+                let path = crate::session_service::paths::fork_stage_candidate(path)?;
                 anyhow::ensure!(
                     !path.starts_with(&selected.store) && !selected.store.starts_with(&path),
                     "prepared rootfs store overlaps mutable VM backing: {}",
@@ -696,7 +696,7 @@ impl VmExecutor {
     /// Import the source with `SnapshotStore::import_base` before constructing
     /// the executor. The generation must exactly match `VmSettings::rootfs`
     /// after canonicalization. This method transfers its GC lease into the
-    /// executor; clones retain it until the last executor/Attempt is dropped.
+    /// executor; clones retain it until the last executor/Execution is dropped.
     /// Only that physical lower is declared immutable. Writable upper storage
     /// remains mutable and the normal journal, copy-up and apply rules remain
     /// active. External modification of the private store is unsupported.
@@ -772,7 +772,7 @@ impl VmExecutor {
         Ok(self)
     }
 
-    /// Prepare a new Attempt from a sealed same-host snapshot. Pair the
+    /// Prepare a new Execution from a sealed same-host snapshot. Pair the
     /// returned overlay with PVisorBuilder::overlay and the same storage path.
     /// The guest keeps its saved process environment; host identity is new.
     pub fn restore(
@@ -1071,7 +1071,7 @@ impl RunExecutor for VmExecutor {
         cfg!(target_os = "linux")
     }
 
-    async fn execute(&self, context: &Session) -> ExecutorOutput {
+    async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
         if self.guest_idle && (!self.vsock_ports.is_empty() || self.settings.cold_pager_requested())
@@ -1381,7 +1381,7 @@ impl RunExecutor for VmExecutor {
             vm_network_enabled,
         );
         // Publishing the reserved host-only control port explicitly selects the
-        // shared guest process/file engine. Ordinary Jobs retain omission.
+        // shared guest process/file engine. Ordinary Sessions retain omission.
         guest.control = self
             .vsock_ports
             .contains_key(&pvisor_guest::control::CONTROL_PORT);
@@ -1516,14 +1516,14 @@ impl RunExecutor for VmExecutor {
                     }
                 };
                 let run_id = spec.run_id.to_string();
-                let attempt_id = context.attempt_id().to_string();
+                let execution_id = context.execution_id().to_string();
                 let firmware = self.firmware_path.clone();
                 let filesystem_pool = self.settings.snapshot_filesystem_pool.clone();
                 tokio::task::spawn_blocking(move || {
                     super::checkpoint::binding(
                         store,
                         run_id,
-                        attempt_id,
+                        execution_id,
                         firmware.as_deref(),
                         filesystem_pool.as_deref(),
                     )
@@ -1940,7 +1940,7 @@ impl RunExecutor for VmExecutor {
         ) {
             Ok(foreground) => foreground,
             Err(error) => {
-                crate::session::lifecycle::terminate_process_tree(
+                crate::execution_context::lifecycle::terminate_process_tree(
                     &mut child,
                     process_group,
                     spec.runtime.termination_grace_ms,
@@ -2064,7 +2064,7 @@ impl RunExecutor for VmExecutor {
                         .await,
                 );
             }
-            crate::session::lifecycle::terminate_process_tree(
+            crate::execution_context::lifecycle::terminate_process_tree(
                 &mut child,
                 process_group,
                 spec.runtime.termination_grace_ms,
@@ -2212,7 +2212,7 @@ impl RunExecutor for VmExecutor {
 fn apply_restore(
     runner: &mut RunnerSpec,
     restore: &super::checkpoint::PreparedRestore,
-    context: &Session,
+    context: &ExecutionContext,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         runner.cpu_qos == restore.cpu_qos,
@@ -2220,11 +2220,11 @@ fn apply_restore(
     );
     anyhow::ensure!(
         runner.guest.network.is_none() && context.drivers.is_some(),
-        "restore requires a durable no-network Attempt"
+        "restore requires a durable no-network Execution"
     );
     anyhow::ensure!(
-        context.attempt_id().as_str() != restore.checkpoint.source_attempt_id,
-        "restore must use a new Attempt identity"
+        context.execution_id().as_str() != restore.checkpoint.source_execution_id,
+        "restore must use a new Execution identity"
     );
     anyhow::ensure!(
         context.spec().run_id.as_str() == restore.checkpoint.source_run_id
@@ -2364,7 +2364,7 @@ fn capture_checkpoint(
         let binding = spec
             .checkpoint
             .as_ref()
-            .ok_or("CAPABILITY_UNSUPPORTED: Job has no durable full-device capture binding")?;
+            .ok_or("CAPABILITY_UNSUPPORTED: Session has no durable full-device capture binding")?;
         if spec.guest.network.is_some() {
             return Err("CAPABILITY_UNSUPPORTED: network device capture is unavailable".into());
         }
@@ -2420,7 +2420,7 @@ fn capture_checkpoint(
                         .unwrap_or_else(|_| std::process::exit(1));
                     if checkpoint.store != binding.store
                         || checkpoint.source_run_id != binding.run_id
-                        || checkpoint.source_attempt_id != binding.attempt_id
+                        || checkpoint.source_execution_id != binding.execution_id
                         || checkpoint.ram_storage != ram_storage
                     {
                         std::process::exit(1);
@@ -2678,7 +2678,7 @@ fn validate_prepared_rootfs_device(
         .chain(view.apply_target.iter())
         .filter(|path| !path.as_os_str().is_empty())
     {
-        let path = crate::job_service::paths::fork_stage_candidate(path)?;
+        let path = crate::session_service::paths::fork_stage_candidate(path)?;
         anyhow::ensure!(
             !path.starts_with(store) && !store.starts_with(&path),
             "prepared rootfs store overlaps a writable guest path: {}",
@@ -3267,11 +3267,11 @@ fn prepare_network_resolver(
     std::fs::create_dir_all(resolver.parent().expect("resolver parent"))?;
     std::fs::write(
         &resolver,
-        format!("nameserver {router}\noptions timeout:2 attempts:2\n"),
+        format!("nameserver {router}\noptions timeout:2 executions:2\n"),
     )?;
     overlay.lowers.insert(0, network_lower);
     // An explicit promise belongs to its original physical lower. The private
-    // resolver generation is fully written before VM entry and its attempt owner
+    // resolver generation is fully written before VM entry and its execution owner
     // keeps it unchanged until guest exit; empty vectors retain their legacy default.
     if !overlay.lower_mutability.is_empty() {
         overlay
@@ -3607,7 +3607,7 @@ mod tests {
                 assert_eq!(overlay.lowers[0], resolver_lower);
                 assert_eq!(
                     std::fs::read(resolver_lower.join("etc/resolv.conf")).unwrap(),
-                    b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n"
+                    b"nameserver 192.0.2.1\noptions timeout:2 executions:2\n"
                 );
             } else {
                 assert!(!resolver_lower.exists());
@@ -3855,10 +3855,10 @@ mod tests {
                 host_boot: "boot".into(),
                 build: "build".into(),
                 firmware: "firmware".into(),
-                profile: "pvisor-job-owned-overlay-v1".into(),
+                profile: "pvisor-session-owned-overlay-v1".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         });
         assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
         runner.checkpoint = None;
@@ -4113,15 +4113,15 @@ mod tests {
                 host_boot: "boot".into(),
                 build: "build".into(),
                 firmware: "firmware".into(),
-                profile: "pvisor-job-owned-overlay-v1".into(),
+                profile: "pvisor-session-owned-overlay-v1".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         });
         let encoded = serde_json::to_value(&spec).unwrap();
         let decoded: RunnerSpec = serde_json::from_value(encoded.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
-        assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
+        assert_eq!(decoded.checkpoint.unwrap().execution_id, "execution");
         assert!(decoded.ram_dedup);
         assert!(decoded.private_ram);
         assert_eq!(
@@ -4211,7 +4211,7 @@ mod tests {
             excluded: vec![],
             access_policy: Default::default(),
         };
-        // Exercise both a live Session socket and its now-missing captured path.
+        // Exercise both a live ExecutionContext socket and its now-missing captured path.
         for live in [true, false] {
             let paths =
                 collect_host_authority_paths(authority.clone(), &BTreeMap::new(), &env).unwrap();

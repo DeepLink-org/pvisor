@@ -6,29 +6,29 @@ companion lookup.
 
 ## Boundary
 
-Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Attempt execution and
-`job_service::RuntimeJobService`. This application library exposes frontend
+Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Execution execution and
+`session_service::SessionService`. This application library exposes frontend
 modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
-ownership. Each running Job owns its recorded private control socket; stopped Job operations
+ownership. Each running Session owns its recorded private control socket; stopped Session operations
 run directly in the caller. Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint
-references and request replay; the source retains its live Attempt lease.
+references and request replay; the source retains its live Execution lease.
 The CLI's policy preflight reads under that execution-operation lease without
-claiming mutation ownership of the source Attempt. Workspace fork and stopped
+claiming mutation ownership of the source Execution. Workspace fork and stopped
 resume retain the source-directory exclusion required for their mutations.
-Repeated suspend of an already suspended Job resolves its confirmed durable head
+Repeated suspend of an already suspended Session resolves its confirmed durable head
 through the runtime, without requiring a live owner. Missing control endpoints
-on running Jobs remain errors, not permission to treat them as suspended.
-On a live Job, ordinary `resume` unpauses the VM. Supplying `--request-id` or
+on running Sessions remain errors, not permission to treat them as suspended.
+On a live Session, ordinary `resume` unpauses the VM. Supplying `--request-id` or
 `--eager-ram` selects durable restore semantics instead: only a matching admitted
 restore request can replay successfully; a fresh request cannot replace a live
-Attempt or silently become an unpause.
-Deleting an unreferenced execution checkpoint uses the runtime Job lease and
-snapshot-store reader fences even while the Job runs; suspended heads and child
+Execution or silently become an unpause.
+Deleting an unreferenced execution checkpoint uses the runtime Session lease and
+snapshot-store reader fences even while the Session runs; suspended heads and child
 references remain protected. Workspace checkpoint deletion still requires a
-stopped source and its Attempt lease.
+stopped source and its Execution lease.
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
 Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
@@ -54,7 +54,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 ## Command help and live VM controls
 
 Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
-`exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`, `stage`,
+`exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Session `spawn`, `stage`,
 `status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
 `resume`, `fork`) and **Tools** (installed `daemon`/`replay` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
@@ -66,7 +66,7 @@ pvisor review last
 pvisor apply last --path src
 ```
 
-`apply SOURCE` defaults to the recorded project. SOURCE is required: a Job ID,
+`apply SOURCE` defaults to the recorded project. SOURCE is required: a Session ID,
 stage directory, workspace selector (including `last`), or staged-bind instance
 name/ID (with `--mount` when needed; see the container profile below).
 Upper directories and internal stage paths are refused as apply sources; shared status/inspect
@@ -78,16 +78,16 @@ combine with `--path` or `--include`. Exclusions alone require `--interactive`.
 See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
 argument, JSON and exit-code contracts.
 
-Apply rejects `--target`, `-o` and `--output-dir`. Use `--store DIR` for Job lookup;
+Apply rejects `--target`, `-o` and `--output-dir`. Use `--store DIR` for Session lookup;
 the writeback target cannot be redirected. The runtime entry point is
-`RuntimeJobService::apply_command` with `ApplyCommandRequest` and a schema-1
+`SessionService::apply_command` with `ApplyCommandRequest` and a schema-1
 result.
 
 TOML `[run] profile = "safe"` selects the same preset as `--safe`. Explicit
 `--filesystem host` conflicts with the safe profile and fails before workload
 execution. Ordinary runs report `safe_profile_requested = false`. Managed replay
 uses `spawn --config`, preserves the safe request and returns the outer exit status.
-After an interrupted new Attempt, `status` reconciles a committed completion or
+After an interrupted new Execution, `status` reconciles a committed completion or
 reports `unknown` while preserving its stage; missing completion is never success.
 `status --review` and `review` display `UNKNOWN` for an uncommitted completion,
 with the retained stage and an existing `status` reconciliation entry point.
@@ -99,7 +99,7 @@ a missing receipt keeps the outcome unknown. Corrupt evidence remains an error.
 
 Status JSON and text share the runtime's projected `state`; liveness does not
 imply running. Live pause is `paused`, cancellation teardown is `cancelling`, and
-confirmed native suspension is `hibernated`. The selected Attempt and applied
+confirmed native suspension is `hibernated`. The selected Execution and applied
 history position come from one atomic `Execution::snapshot()` observation.
 
 Status JSON uses `schema_version: 2`: `run` is a display summary, with an explicit
@@ -112,7 +112,7 @@ Full Run records and per-path tables are not returned. Live owners also provide
 `execution_progress` (applied position, queued/in-flight counts and uncertainty).
 Use checkpoint list/review and the retained owning records for details. Live
 protocol 2 reports an incompatible old owner instead of guessing its schema;
-drain old Jobs through their owning executable before replacing an installation.
+drain old Sessions through their owning executable before replacing an installation.
 
 `review --diff` and apply preview read regular files through component-wise
 no-follow descriptors, including ancestors of the recorded roots. Symlinks,
@@ -128,29 +128,29 @@ The seven live VM flags are command-local, under **Live VM** in command help:
 
 | Command | Accepted live VM flags |
 | --- | --- |
-| `status` | `--vm-socket`, `--vm-job-id`, `--vm-attempt-id` |
+| `status` | `--vm-socket`, `--vm-session-id`, `--vm-execution-id` |
 | `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file` |
 | `resume` | The three identity flags plus `--vm-load` |
 
 Place these flags after the supported command. Normal status/suspend/resume
-resolve the owner from the Job record. `--vm-socket` is a debug override under
+resolve the owner from the Session record. `--vm-socket` is a debug override under
 `/tmp/pvisor-host-<UID>` and requires the two explicit identity flags; positional
-selectors must then match `--vm-job-id`. Pause and offload are mutually exclusive;
+selectors must then match `--vm-session-id`. Pause and offload are mutually exclusive;
 `--vm-ram-file` requires offload. Resume with a live owner continues the same
-Attempt; stopped resume restores a sealed checkpoint.
+Execution; stopped resume restores a sealed checkpoint.
 
 The frontend self-executes one owner over an inherited private socketpair. The
 owner remains in the original session, owns descendant cleanup, and installs
-signal handlers before unblocking signals. Interactive Jobs use the original
+signal handlers before unblocking signals. Interactive Sessions use the original
 controlling terminal and may receive Ctrl-C directly; foreground ownership is
 restored at exit. Other commands never start a worker. Live commands execute
-inside the starting owner binary through `pvisor-instance-control-2`; compatible
-caller binaries need not have matching digests. Stopped operations take the Job
-root's `job.lock`. Apply/drop refuse an owner still holding stage. See the runtime
+inside the starting owner binary through `pvisor-instance-control-3`; compatible
+caller binaries need not have matching digests. Stopped operations take the Session
+root's `session.lock`. Apply/drop refuse an owner still holding stage. See the runtime
 README for socket validation, lost-response ambiguity and platform limitations.
-Live VM requests are foreground-only and carry an exact Job/Attempt target plus
+Live VM requests are foreground-only and carry an exact Session/Execution target plus
 either recorded discovery or an explicit debug socket. They are not serialized
-into the Job owner bootstrap protocol and cannot launch, restore or lock a Job.
+into the Session owner bootstrap protocol and cannot launch, restore or lock a Session.
 Ordinary resume of a live owner uses the same live-control execution path;
 stopped resume retains its checkpoint restoration path.
 The explicit `--vm-socket` debug override still uses the older SDK exchange;
@@ -177,12 +177,12 @@ keeps process-relative spans separate from host checkpoint gaps and workload Rea
 
 The frontend verifies and pins its own executable before launching its owner;
 there is no user-wide digest admission or generation socket. Before replacing an
-installation, drain Jobs and stop `--pvisor-internal-host` using its owning executable.
+installation, drain Sessions and stop `--pvisor-internal-host` using its owning executable.
 Records without live control expose disk state only.
 
 ## Staged system experiments (Linux preview)
 
-`stage` creates an ordinary Job in a native VM with the host `/` as a live,
+`stage` creates an ordinary Session in a native VM with the host `/` as a live,
 read-only lower. Unlike `spawn --rootfs host`, it retains the **whole rootfs**
 upper and preimages after exit, not just workspace edits. No image is needed.
 The lower is not a frozen system snapshot; concurrent host changes remain visible.
@@ -199,23 +199,23 @@ The interface follows the container CLI's option spelling and argument boundary:
 `-i/--interactive`, `-t/--tty`, repeated `-e/--env` and `--env-file`,
 `-w/--workdir`, `--name`, `--cpus`, `-m/--memory`, and `--network bridge|none`.
 There is no positional image. Options after COMMAND (or `--`) belong literally
-to the workload. `--name` is the Job label, not a new name-based selector;
-use the printed Job ID, stage path, or `last` in the launching workspace.
+to the workload. `--name` is the Session label, not a new name-based selector;
+use the printed Session ID, stage path, or `last` in the launching workspace.
 
 Defaults are 2 vCPUs, 512 MiB RAM, current host working directory, and controlled
-IPv4 TCP/DNS egress (`bridge` uses the Job's existing VM data plane, not membership
+IPv4 TCP/DNS egress (`bridge` uses the Session's existing VM data plane, not membership
 in the Docker container bridge). `none` omits guest networking. A command's stdin
 is closed unless `-i` is supplied; no COMMAND selects a shell with stdin attached
 and uses a PTY when launched from a terminal. `-t` requires a host terminal and
 allocates a guest PTY, combining stdout/stderr; without `-i`, stdin remains
-`/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY streams. Stage uses the ordinary Job owner, cancellation,
+`/dev/null` even with `-t`. Without `-t`, explicit commands use separate non-TTY streams. Stage uses the ordinary Session owner, cancellation,
 completion receipt, review, and drop; it does not appear in container `ps`.
 There is no detach, `--rm`, writable bind mount, image selection or host fallback.
 Personal Agent defaults are not loaded. Existing workspace/network policy defaults
 still apply. `PVISOR_STAGE=1` identifies the environment to scripts.
 
 `--stage PATH` selects fresh persistent storage; omitted storage is
-`PVISOR_RUN_HOME/JOB_ID` or `$HOME/.pvisor/runs/JOB_ID`. Existing Job storage is
+`PVISOR_RUN_HOME/SESSION_ID` or `$HOME/.pvisor/runs/SESSION_ID`. Existing Session storage is
 never silently reused. Exit, including a nonzero workload exit, retains reviewable
 changes. `drop` discards only pending changes, not already applied paths or external
 side effects. HOME and other readable host files, including credentials, remain
@@ -226,7 +226,7 @@ HOME, PATH and TMPDIR.
 
 ### Applying project changes
 
-For new `stage` Jobs, ordinary `apply` selects only changes beneath the recorded
+For new `stage` Sessions, ordinary `apply` selects only changes beneath the recorded
 launch-time project, even though the stage retains the whole rootfs. Paths and
 globs are project-relative; outside-project changes remain staged. Non-root
 project apply is supported within this restricted contract:
@@ -252,13 +252,13 @@ stage and failed admission refuse entry to the picker.
 
 `--dry-run` does not write the target, journals, ledger or recovery state and
 does not consume staged changes. Preview locks open only existing lock files
-and leases: missing `job.lock` or required lease files fail closed, without
+and leases: missing `session.lock` or required lease files fail closed, without
 creating them. New `stage` startup precreates these observation locks. Old
 stages missing them remain blocked; preview does not install a compatibility
-adapter or repair storage. Apply still requires a stopped Job and valid
+adapter or repair storage. Apply still requires a stopped Session and valid
 completion evidence.
 
-New rootstage Jobs capture `ProjectApplyScope` version 1: a canonical project
+New rootstage Sessions capture `ProjectApplyScope` version 1: a canonical project
 root other than `/`, with its device/inode identity. The scope is bound into the
 RunRecord and Run Bundle by the completion receipt and revalidated before
 writeback. A changed directory identity or missing/mismatched binding blocks
@@ -302,7 +302,7 @@ sudo -H pvisor drop /root/pvisor-stages/config-edit
 ```
 
 This preview **does not elevate or import an ordinary user's stage**. Same-UID
-Job locks are preserved; rootfs apply requires effective UID 0 and a root-created
+Session locks are preserved; rootfs apply requires effective UID 0 and a root-created
 stage whose canonical directory and ancestors are root-owned and not group/world
 writable. `/tmp` storage is therefore not eligible. `--rootfs` applies only to
 the recorded `/` target; ordinary apply cannot redirect a workspace stage to `/`.
@@ -334,15 +334,15 @@ applies to the real host root.
 ## Docker command profile (experimental)
 
 `pvisor run` creates a container, optionally with Linux staged binds as described
-below; `spawn` retains its existing Job stage/review/apply semantics.
-Unknown command names and leading Job options default to `spawn`;
-`pvisor -- COMMAND` explicitly selects default Job execution. Use `spawn` for Jobs.
+below; `spawn` retains its existing Session stage/review/apply semantics.
+Unknown command names and leading Session options default to `spawn`;
+`pvisor -- COMMAND` explicitly selects default Session execution. Use `spawn` for Sessions.
 Each container
 uses its own Linux VM and supervisor, started as the current host user. No
 central Docker daemon, privileged helper or shared Linux VM is required.
 Guest root is independent of host root; the image's `User` is respected.
 Docker defaults are translated on the host into generic guest launch options.
-Jobs, container workloads and exec share one guest launcher and PID-1 reaper;
+Sessions, container workloads and exec share one guest launcher and PID-1 reaper;
 the optional control transport does not implement a separate supervisor.
 
 ```bash
@@ -390,8 +390,8 @@ incompatible protocols/modes, failed readiness and lost pool owners are errors,
 with no silent fallback. Logs are in the instance's `manager.log`.
 `--vm-memory-pool auto` also works through frontend TOML `[vm] memory_pool = "auto"`;
 the runtime receives a resolved socket. Embedding callers still pass explicit paths.
-Job owners ask the launching frontend to resolve `auto` over their private
-bootstrap channel. Shared services therefore survive Job completion and
+Session owners ask the launching frontend to resolve `auto` over their private
+bootstrap channel. Shared services therefore survive Session completion and
 request descendant cleanup; ordinary workload descendants remain owned and cleaned.
 
 The private same-user socket is canonicalized and saved with the container;
@@ -527,10 +527,10 @@ pvisor drop edits --mount /notes
 pvisor rm edits
 ```
 
-Without `--mount`, paths and `last` retain Job semantics. Bare IDs fall back to
-container selection only after runtime discovery confirms that no Job matches.
-Corrupt records/indexes, duplicate Job IDs and discovery errors refuse fallback;
-explicit `--mount` selects the container namespace without that Job lookup.
+Without `--mount`, paths and `last` retain Session semantics. Bare IDs fall back to
+container selection only after runtime discovery confirms that no Session matches.
+Corrupt records/indexes, duplicate Session IDs and discovery errors refuse fallback;
+explicit `--mount` selects the container namespace without that Session lookup.
 
 Apply paths/globs are relative to the selected host source: `--path src` means
 `HOST/src`, not `/workspace/src`. Authority is bound to that source and launch
@@ -613,19 +613,19 @@ Both local source and destination are checked against canonical Host authority
 before initializing/copying, without contacting or changing a listener.
 
 `pvisor spawn --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
-catalog entry in the ordinary Job owner, before default host rootfs or
+catalog entry in the ordinary Session owner, before default host rootfs or
 OCI preparation. Both options are required together and conflict with `--rootfs`,
 configured image sources, host/container execution and JSON `--spec`. TOML can
 use `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`; omission
-keeps prepared-rootfs selection disabled. Jobs persist the canonical selector and exact root path;
+keeps prepared-rootfs selection disabled. Sessions persist the canonical selector and exact root path;
 future owners must authenticate both rather than trust the path alone.
 
 Warm opens verify the small record/seal and marker, then retain a GC lease in the
 executor and native child; they do not reimport or fully hash the tree. Durable
-catalog pins also preserve stopped Jobs after the preparer exits. Rootfs ownership
+catalog pins also preserve stopped Sessions after the preparer exits. Rootfs ownership
 does not snapshot the workspace, promote OCI/lazy paths, or enable the default-off
 lower-data/local-FLUSH experiments. Native execution checkpoint capture and
-restore are unsupported for this source: the capability and Job admission report
+restore are unsupported for this source: the capability and Session admission report
 that limit before capture, and no capture binding is installed. Workspace logical
 checkpoints retain their independent behavior. See the runtime README for the
 ownership and platform limits.
@@ -633,7 +633,7 @@ ownership and platform limits.
 Successful owner process-tree cleanup is idempotent. Linux uses subreaper
 adoption and pidfds, observes stopped forkers before rescanning, and reaps escaped
 descendants inside the owner. The frontend reaps its own owner child. After
-Attempt terminal publication, the owner allows the existing bounded RAM/macFUSE
+Execution terminal publication, the owner allows the existing bounded RAM/macFUSE
 cleanup window before escalating. macOS keeps
 birth-identity checks, polling and its existing limitations for missed reparented
 orphans. These paths require platform-specific integration coverage.
@@ -661,7 +661,7 @@ Run options require the workspace pair together. TOML uses
 `[overlayfs.prepared_workspace]` with `store` and `base = { id = "..." }`.
 `PreparedBase` is the common selector DTO; the existing `PreparedRootfs` Rust name
 and `vm.prepared_rootfs` JSON/TOML representation remain compatible. A conflicting
-CLI/config workspace selector fails. Jobs persist its canonical store/id for
+CLI/config workspace selector fails. Sessions persist its canonical store/id for
 independent later owners; serialized fields do not carry leases or ownership.
 
 The first supported path requires a native VM, an authenticated prepared rootfs,
@@ -672,9 +672,9 @@ restore. The default live
 workspace path is preserved inside the guest. Stores must be disjoint from that
 live target, stage, root share, mutable VM backing, recording output and any
 guest-visible sources, including canonical symlink aliases. Existing stage or
-Run metadata is not permission to reopen or overwrite a previous Job.
+Run metadata is not permission to reopen or overwrite a previous Session.
 
-The Job owner reopens the workspace-purpose catalog and passes its
+The Session owner reopens the workspace-purpose catalog and passes its
 typed lease with the exact prepared-rootfs `Arc<VmExecutor>` to the runtime. Fresh
 upper/compact-journal creation occurs under the Run lease. The native child
 independently authenticates the physical seal and holds its own lease; it does
@@ -690,7 +690,7 @@ semantics. These interface changes do not establish a performance result.
 
 ## Source layout
 
-- `src/cli/`: Job commands, typed owner bootstrap, per-Job discovery,
+- `src/cli/`: Session commands, typed owner bootstrap, per-Session discovery,
   safe Agent presets, terminal adapters and output rendering.
 - `src/cli/features.rs`: runtime feature listing frontend; registry/settings
   remain in `pvisor::features`.
@@ -703,7 +703,7 @@ semantics. These interface changes do not establish a performance result.
 - `tests/`: executable/frontend integration tests, including tests that combine
   runtime APIs with command execution. Runtime-only tests remain in `pvisor`.
 
-Normal startup, prepared JSON specs and restored Jobs share one private
+Normal startup, prepared JSON specs and restored Sessions share one private
 configuration-to-builder adapter for storage, network, Gateway and the resolved
 control socket. Each entry still owns executor/stage preparation, recording
 admission and resource lifetimes. Prepared specs remain host-only; restored
@@ -745,12 +745,12 @@ Fixtures resolve input beside the OCI bundle; rootfs mountpoint placeholders
 are not serialized input and must not be discovered by a recursive file search.
 
 The ignored `minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio`
-Job test needs KVM, a static C compiler and (for GNU builds)
+Session test needs KVM, a static C compiler and (for GNU builds)
 `PVISOR_TEST_LIBRARY_DIR` pointing to local firmware. It boots an image containing
 only a static Ready executable ten times each with one and two vCPUs, checks
-unique Ready output and zero exit, and keeps every attempt's logs on failure.
+unique Ready output and zero exit, and keeps every execution's logs on failure.
 It covers PID 1's pre-Rust standard-stream repair when the image has no `/dev`.
-Native Job tests pin an immutable CLI copy for each test thread. Its temporary
+Native Session tests pin an immutable CLI copy for each test thread. Its temporary
 directory is removed when that thread exits normally; a process-static temporary
 directory would never be destructed and would leak one executable per test
 process. A regression checks removal after joining the owning thread. Abrupt
@@ -781,13 +781,13 @@ PVISOR_DOCKER_TEST_ROOTFS=/absolute/path/to/rootfs mise run test -- pvisor-cli -
 
 It checks startup failure, exit codes, stdout/stderr, stdin EOF, PTY allocation,
 detached lifetime, stop/start persistence, foreground signal forwarding, orphan
-reaping and concurrent exec exit routing. A separate ordinary Job VM case checks
+reaping and concurrent exec exit routing. A separate ordinary Session VM case checks
 the default launch configuration's orphan reaping and exit status.
 
 Set `PVISOR_DOCKER_TEST_IMAGE` to a pinned native Alpine reference to run the
 container/build acceptance cases on freshly pulled compressed-pool images;
 the fixture asserts a pool binding instead of installing a directory-backed
-image. `PVISOR_DOCKER_TEST_ROOTFS` remains required by the separate ordinary Job
+image. `PVISOR_DOCKER_TEST_ROOTFS` remains required by the separate ordinary Session
 case. `PVISOR_DOCKER_TEST_BINARY` can select the static product executable with
 embedded firmware, independently of Cargo's dynamic test artifact. It is copied
 privately before use; macOS copies retain the existing signing procedure.
@@ -933,21 +933,21 @@ egress. MTU is 1500. IPv6, non-/24 subnets, host/container modes, multiple netwo
 attachments, `network connect/disconnect`, DNS aliases, general broadcast/multicast
 and IPv4 fragments are unsupported and rejected/dropped explicitly.
 
-Native Job `spawn --config` and embedded callers retain explicit
+Native Session `spawn --config` and embedded callers retain explicit
 `[overlaynet.peers]`/`PeerNetworkSettings` for low-level user-private groups,
 independently of the container store catalog. See the
 [runtime contract](../pvisor/README.md#explicit-same-host-vm-peer-networks).
 
-The Job owner calls `VmExecutor::prepare_process()` after self-exec and environment
+The Session owner calls `VmExecutor::prepare_process()` after self-exec and environment
 restoration, before creating Tokio threads. Linux can then grow its high-FD table
 while it is unshared. The temporary descriptors are closed immediately; no existing
 FD, reserved runner destination or resource limit changes. Preparation failure is
-nonfatal so a low descriptor limit does not disable host Jobs. A failed later VM
+nonfatal so a low descriptor limit does not disable host Sessions. A failed later VM
 FD duplication retains its normal error. Other platforms keep their existing path.
 
-## Optional ephemeral Job stages
+## Optional ephemeral Session stages
 
-For disposable jobs that do not need apply or checkpoint/restart recovery:
+For disposable sessions that do not need apply or checkpoint/restart recovery:
 
 ```bash
 pvisor spawn --stage /path/to/fresh-stage --stage-durability ephemeral -- COMMAND
@@ -958,10 +958,10 @@ The default remains `checkpoint`; `strict` remains available. Ephemeral completi
 retains ordinary output and validates observations, but omits the automatic
 upper/preimage tree sync. It publishes a volatile marker instead of a durable
 seal. Apply (including auto-apply), logical/execution checkpoints, and reuse
-for another Attempt are unsupported. Read-only inspection does not certify
-post-crash output. Use a new stage for each job.
+for another Execution are unsupported. Read-only inspection does not certify
+post-crash output. Use a new stage for each session.
 
-Guest fsync, normal writes, preimage hashing, audit/Job metadata persistence and
+Guest fsync, normal writes, preimage hashing, audit/Session metadata persistence and
 RAM offload writeback are unchanged. This is a stage completion option, not a
 global persistence-off switch. Any comparison must disclose the reduced stage
 guarantee and use the same binary/input for the two durability settings; no
@@ -991,7 +991,7 @@ before its output fails; inspect the catalog before retrying a mutation.
 
 `pvisor vm-run --rootfs ROOT --cpus 2 --memory 256 --readonly FIXTURES -- /probe`
 executes a Linux command through KVM (Linux x86_64), HVF (Apple Silicon) or WHP
-(Windows x86_64). Rootfs writes persist directly. It creates no Job, Bundle or
+(Windows x86_64). Rootfs writes persist directly. It creates no Session, Bundle or
 stage and has no networking, interactive stdin, task stdio ports, live control
 or snapshots.
 
@@ -1012,7 +1012,7 @@ are excluded, and other Windows commands are rejected.
 Full Unix installations also include `pvisor-tui` for interaction,
 `pvisor-replay` for replay and `pvisor-daemon` for automatic pools/shared services.
 Companion dispatch checks trusted adjacent executables. These components,
-Job/container workflows and Windows packaging remain unported. `whp_smoke.exe`
+Session/container workflows and Windows packaging remain unported. `whp_smoke.exe`
 is a test probe; embedded `pvisor-guest` runs inside Linux guests.
 
 See the [platform matrix](../../docs/src/en/reference/platforms.md),

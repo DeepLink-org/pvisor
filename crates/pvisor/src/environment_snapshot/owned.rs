@@ -261,7 +261,7 @@ mod tests {
                 fs::metadata(first.join("data")).unwrap().ino(),
                 fs::metadata(second.join("data")).unwrap().ino()
             );
-            fs::write(first.join("alias"), b"first attempt mutation").unwrap();
+            fs::write(first.join("alias"), b"first execution mutation").unwrap();
             assert_eq!(fs::read(second.join("data")).unwrap(), b"owned capture");
             let mut bytes = Vec::new();
             published
@@ -378,9 +378,9 @@ mod tests {
                     let root = &root;
                     let barrier = barrier.clone();
                     threads.spawn(move || {
-                        let job = root.join(format!("job-{index}"));
-                        let store = SnapshotStore::with_filesystem_pool(&job, pool).unwrap();
-                        let references = job.join("references");
+                        let session = root.join(format!("session-{index}"));
+                        let store = SnapshotStore::with_filesystem_pool(&session, pool).unwrap();
+                        let references = session.join("references");
                         fs::create_dir(&references).unwrap();
                         barrier.wait();
                         store
@@ -439,7 +439,8 @@ mod tests {
             0
         );
         assert!(owners[0].root().exists());
-        let extra = SnapshotStore::with_filesystem_pool(&root.join("another-job"), &pool).unwrap();
+        let extra =
+            SnapshotStore::with_filesystem_pool(&root.join("another-session"), &pool).unwrap();
         let references = root.join("another-references");
         fs::create_dir(&references).unwrap();
         let hit = extra
@@ -483,9 +484,9 @@ mod tests {
         fs::hard_link(original.join("data"), original.join("alias")).unwrap();
         fs::write(original.join("unvisited"), b"original unseen content").unwrap();
         let pool = root.join("pool");
-        let job = root.join("job");
-        let store = SnapshotStore::with_filesystem_pool(&job, &pool).unwrap();
-        let capture = job.join("captures/first/rootfs");
+        let session = root.join("session");
+        let store = SnapshotStore::with_filesystem_pool(&session, &pool).unwrap();
+        let capture = session.join("captures/first/rootfs");
         fs::create_dir_all(&capture).unwrap();
         copy_owned_tree(&original, &capture.join("layer-000")).unwrap();
         fs::write(
@@ -520,7 +521,7 @@ mod tests {
         assert_ne!(inode, fs::metadata(original.join("data")).unwrap().ino());
         store.delete(&sealed.id).unwrap();
         drop(store);
-        fs::remove_dir_all(&job).unwrap();
+        fs::remove_dir_all(&session).unwrap();
         let collector = SnapshotStore::new(&pool).unwrap();
         collector.collect_abandoned().unwrap();
         assert_eq!(
@@ -590,7 +591,7 @@ mod tests {
             assert_eq!(published.manifest().version, 5);
             assert!(published.manifest().filesystem_blocks.is_some());
             assert!(!published.directory().join("rootfs").exists());
-            let references = root.join("attempt");
+            let references = root.join("execution");
             fs::create_dir(&references).unwrap();
             let owner = published
                 .share_readonly_layer(Path::new("lower"), &references)

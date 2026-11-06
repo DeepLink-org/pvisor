@@ -17,8 +17,8 @@ Design: 四个固定 argv，逐条件顺序运行；每条件 2 次预热、10 �
 预检创建一个独立 Run store 和已完成 Run，status/review 读取该 Run；host-run 每次
 必须恰好新增一个成功完成的 Bundle，预热与正式样本使用相同校验。
 
-准备时展开 `@BINARY@`、`@JOB_COMMAND@`、`@JOB@`、`@BATCH@`、`@REPO@`，
-路径仍是独立 argv，不经过 shell 拼接。`@JOB_COMMAND@` 从 CLI 顶层 help 选择
+准备时展开 `@BINARY@`、`@SESSION_COMMAND@`、`@SESSION@`、`@BATCH@`、`@REPO@`，
+路径仍是独立 argv，不经过 shell 拼接。`@SESSION_COMMAND@` 从 CLI 顶层 help 选择
 spawn，兼容尚未重命名的基线 run。实验使用已准备的二进制，默认关闭附加性能日志。
 
 ```sh
@@ -49,11 +49,11 @@ PVISOR_FS_PROFILE = "0"
 
 ### host-run
 
-每次执行最小 host Job，并在计时外验证恰好新增一个成功完成的 Run Bundle。
+每次执行最小 host Session，并在计时外验证恰好新增一个成功完成的 Run Bundle。
 
 <!-- semspec: bench id=host-run -->
 ```toml
-argv = ["@BINARY@", "@JOB_COMMAND@", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
+argv = ["@BINARY@", "@SESSION_COMMAND@", "--no-agent-defaults", "--overlaynet", "off", "--stdio", "capture", "--", "/usr/bin/true"]
 conclude = ["python3", "@REPO@/benchmark/process/check.py", "new-bundle", "@BATCH@/runs"]
 warmup = 2
 runs = 10
@@ -70,8 +70,8 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=status -->
 ```toml
-argv = ["@BINARY@", "status", "--json", "@JOB@"]
-conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@JOB@/run-bundle.json"]
+argv = ["@BINARY@", "status", "--json", "@SESSION@"]
+conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@SESSION@/run-bundle.json"]
 warmup = 2
 runs = 10
 timeout = 120
@@ -87,8 +87,8 @@ PVISOR_FS_PROFILE = "0"
 
 <!-- semspec: bench id=review -->
 ```toml
-argv = ["@BINARY@", "review", "--json", "@JOB@"]
-conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@JOB@/run-bundle.json"]
+argv = ["@BINARY@", "review", "--json", "@SESSION@"]
+conclude = ["python3", "@REPO@/benchmark/process/check.py", "bundle", "@SESSION@/run-bundle.json"]
 warmup = 2
 runs = 10
 timeout = 120

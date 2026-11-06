@@ -266,7 +266,7 @@ pub trait OverlaySessionControl: Sized {
     /// retain stage paths for recovery. Writable cache notification failures are
     /// reported here even if the mount was already forcibly detached; mutations
     /// may have reached upper before failure, and are not rolled back. Drop
-    /// attempts the same cleanup but
+    /// executions the same cleanup but
     /// discards errors. Shutdown should be serialized by the owning caller.
     fn unmount(self) -> anyhow::Result<()>;
 }

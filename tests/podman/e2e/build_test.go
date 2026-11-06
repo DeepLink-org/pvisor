@@ -194,7 +194,7 @@ func TestBuildRunCacheArgumentsAndFailedSteps(t *testing.T) {
 		t.Fatalf("argument result: %q", out)
 	}
 	// A later definition edit must preserve the successful prefix; failed RUNs
-	// must execute on each attempt and cannot replace the already published tag.
+	// must execute on each execution and cannot replace the already published tag.
 	buildFile(t, filepath.Join(dir, "Dockerfile"), "FROM "+e.image+"\nARG VERSION=one\nRUN echo executed; echo $VERSION > /version; cat /proc/sys/kernel/random/uuid > /token\nRUN echo failed-step; exit 7\n")
 	for i := 0; i < 2; i++ {
 		_, logs = e.want(1, "", "build", "--network=none", "--build-arg", "VERSION=two", "-t", e.name, dir)

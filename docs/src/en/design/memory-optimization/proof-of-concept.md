@@ -115,7 +115,7 @@ A mature Observing block uses the current `Publishing` implementation:
 
 1. Copy each block into its own 64 KiB snapshot in the first quiescent epoch, mark Publishing, then resume CPUs/devices.
 2. PUT snapshots and validate replies outside the paused section. CPU faults or device preparation may restore original access permissions and return Publishing to Resident, invalidating reclaim eligibility.
-3. Attempt another quiescent epoch. Only blocks still Publishing with successful pool references become Cold, lose their GPA mappings and receive anonymous `PROT_NONE` at the original HVA.
+3. Execution another quiescent epoch. Only blocks still Publishing with successful pool references become Cold, lose their GPA mappings and receive anonymous `PROT_NONE` at the original HVA.
 4. Rejected uncancelled blocks become Deferred. Access invalidation, commit-budget exhaustion or unavailable quiescence preserves original contents rather than discarding mappings using stale snapshots. Surplus references are RELEASEd outside the paused section.
 5. After resumption, punch newly detached original file ranges. Dropping the snapshot batch also frees the temporary raw copies.
 
@@ -163,7 +163,7 @@ Status 0 means success; rejection is 1 + message length u32 + up to 256 B of UTF
 
 Page queries return `(object_id, object_offset, disposition)`: VM backing identities rather than PFNs. A mapped-page union can deduplicate object/offset pairs but includes shared file caches. Synthetic identities may also report the same key for multiple pages. RAM validation rejects duplicate resident keys under the current contract of no internal physical aliases within one VM, while checking coverage and disposition. The union is not whole-host physical-memory consumption.
 
-RAM inventory fields include `pid`, `timestamp_ns`, `page_bytes`, `query_transaction_us`, `pending_file_bytes_upper`, `columns` and `pages`; each row is `[guest_address, object_id, object_offset, disposition]`. Process inventory uses host addresses and adds region/scanned_pages/query_attempts accounting. Full diagnostics require explicit enablement and can pause execution for hundreds of milliseconds. Their latency must be reported separately from ordinary pager operations.
+RAM inventory fields include `pid`, `timestamp_ns`, `page_bytes`, `query_transaction_us`, `pending_file_bytes_upper`, `columns` and `pages`; each row is `[guest_address, object_id, object_offset, disposition]`. Process inventory uses host addresses and adds region/scanned_pages/query_executions accounting. Full diagnostics require explicit enablement and can pause execution for hundreds of milliseconds. Their latency must be reported separately from ordinary pager operations.
 
 | Source | Core entry points |
 |---|---|

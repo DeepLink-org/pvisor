@@ -53,7 +53,7 @@ use pvisor::host_transport::{
 };
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
-    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostAttemptCommand,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostExecutionCommand,
     HostSupervisorAuth, HostSupervisorCommand as Operation, HostSupervisorRequest,
     HostSupervisorResult, HostSupervisorState,
 };
@@ -298,7 +298,7 @@ impl Tombstone {
 struct RunRecord {
     generation: String,
     run_id: String,
-    attempt_id: String,
+    execution_id: String,
 }
 
 type Request = AgentCtlHostRequest<HostSupervisorRequest>;
@@ -330,13 +330,13 @@ impl From<HostSupervisorState> for RuntimeState {
     }
 }
 
-fn supervisor_request(identity: &Identity, attempt_id: &str, operation: Operation) -> Request {
+fn supervisor_request(identity: &Identity, execution_id: &str, operation: Operation) -> Request {
     Request {
         version: AGENTCTL_HOST_VERSION,
         request_id: uuid::Uuid::new_v4().to_string(),
         target: Some(AgentCtlTarget {
-            job_id: identity.spec.id.clone(),
-            attempt_id: Some(attempt_id.into()),
+            session_id: identity.spec.id.clone(),
+            execution_id: Some(execution_id.into()),
             generation: Some(identity.generation.clone()),
         }),
         command: HostSupervisorRequest {
@@ -545,13 +545,13 @@ impl NativeRuntime {
                 .context("supervisor control unavailable; retain sandbox and reconcile")?;
             authorize_host_peer(&stream)?;
             // Never resolve an unspecified target to the current instance.
-            // run.json is published once and binds the same Attempt across restart.
+            // run.json is published once and binds the same Execution across restart.
             let record: RunRecord = read_json(&directory.join("run.json"))?;
             ensure!(
                 record.generation == identity.generation,
                 "native run generation mismatch"
             );
-            let request = supervisor_request(identity, &record.attempt_id, operation);
+            let request = supervisor_request(identity, &record.execution_id, operation);
             request.validate()?;
             send_frame(&mut stream, &request).await?;
             let response: Response = receive_frame(&mut stream).await?;
@@ -1093,25 +1093,25 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         .build();
     let mut run = make_run_spec(&identity)?;
     run.runtime.max_output_bytes = 64 * 1024;
-    let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
+    let handle = pvisor::session_service::SessionService::start(&visor, run)
         .await
         .context("native VM run admission failed")?;
-    startup.insert("attempt_started_us", startup_clock.elapsed().as_micros());
+    startup.insert("execution_started_us", startup_clock.elapsed().as_micros());
     publish_new(
         &sandbox_dir.join("run.json"),
         &RunRecord {
             generation: identity.generation.clone(),
             run_id: handle.run_id().to_string(),
-            attempt_id: handle.attempt_id().to_string(),
+            execution_id: handle.execution_id().to_string(),
         },
     )?;
     let service = handle.execution().clone();
     // Prove acknowledged live controls before advertising any readiness. This
-    // pauses/resumes the SAME attempt briefly; no snapshot/rebuild is involved.
+    // pauses/resumes the SAME execution briefly; no snapshot/rebuild is involved.
     let controls_ready = timeout(READY_TIMEOUT, async {
         service.wait_ready().await?;
         service
-            .dispatch(HostAttemptCommand::Operation {
+            .dispatch(HostExecutionCommand::Operation {
                 kind: pvisor_core::OperationKind::RunPause,
             })
             .await?;
@@ -1120,7 +1120,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             "startup pause was not confirmed"
         );
         service
-            .dispatch(HostAttemptCommand::Operation {
+            .dispatch(HostExecutionCommand::Operation {
                 kind: pvisor_core::OperationKind::RunResume,
             })
             .await?;
@@ -1132,7 +1132,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     })
     .await;
     if !matches!(controls_ready, Ok(Ok(()))) {
-        service.dispatch(HostAttemptCommand::Terminate).await?;
+        service.dispatch(HostExecutionCommand::Terminate).await?;
         let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
         bail!("native live VM control verification failed");
     }
@@ -1168,7 +1168,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         )
         .await;
         if !matches!(initialized, Ok(Ok(()))) {
-            service.dispatch(HostAttemptCommand::Terminate).await?;
+            service.dispatch(HostExecutionCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
             bail!("native execd binding initialization failed");
         }
@@ -1184,7 +1184,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         })
         .await;
         if initialized.is_err() {
-            service.dispatch(HostAttemptCommand::Terminate).await?;
+            service.dispatch(HostExecutionCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
             bail!("native guest engine readiness failed");
         }
@@ -1196,7 +1196,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         )
         .await;
         if !matches!(initialized, Ok(Ok(()))) {
-            service.dispatch(HostAttemptCommand::Terminate).await?;
+            service.dispatch(HostExecutionCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
             bail!("native envd initialization failed: {initialized:?}");
         }
@@ -1217,7 +1217,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                 if authorize_host_peer(&stream).is_err() { continue; }
                 let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
                 let Ok(Ok(request)) = request else { continue; };
-                let admission = admit_supervisor_request(&identity, &handle.attempt_id().to_string(), &request);
+                let admission = admit_supervisor_request(&identity, &handle.execution_id().to_string(), &request);
                 if let Err(error) = admission {
                     let reply = Response { version: AGENTCTL_HOST_VERSION,
                         request_id: request.request_id, result: Err(error) };
@@ -1253,7 +1253,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             }
             // Publication task death cannot leave a pretend healthy sandbox.
             _ = publications.join_next() => {
-                service.dispatch(HostAttemptCommand::Terminate).await?;
+                service.dispatch(HostExecutionCommand::Terminate).await?;
                 let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
                 bail!("native publication failed");
             }
@@ -1278,7 +1278,7 @@ async fn execute_control(
         mark(directory, "deleting")?;
         timeout(
             CONTROL_TIMEOUT,
-            service.dispatch(HostAttemptCommand::Terminate),
+            service.dispatch(HostExecutionCommand::Terminate),
         )
         .await??;
         // Cancellation is not reaping proof; the caller still awaits RunHandle::wait.
@@ -1286,13 +1286,13 @@ async fn execute_control(
     }
     ensure_not_deleting(directory)?;
     let command = match operation {
-        Operation::Pause => HostAttemptCommand::Operation {
+        Operation::Pause => HostExecutionCommand::Operation {
             kind: pvisor_core::OperationKind::RunPause,
         },
-        Operation::Resume => HostAttemptCommand::Operation {
+        Operation::Resume => HostExecutionCommand::Operation {
             kind: pvisor_core::OperationKind::RunResume,
         },
-        _ => HostAttemptCommand::Status,
+        _ => HostExecutionCommand::Status,
     };
     let result = timeout(CONTROL_TIMEOUT, service.dispatch(command)).await??;
     let state = native_status(result.status)?;
@@ -1370,7 +1370,7 @@ fn native_state(service: &pvisor::Execution) -> Result<RuntimeState> {
 fn native_status(status: pvisor_core::RunStatus) -> Result<RuntimeState> {
     use pvisor_core::{ExecutorKind, RunState};
     ensure!(
-        status.attempt.executor.kind == ExecutorKind::VirtualMachine,
+        status.execution.executor.kind == ExecutorKind::VirtualMachine,
         "run is not a VM"
     );
     match status.state {
@@ -2331,16 +2331,16 @@ fn ensure_not_deleting(directory: &Path) -> Result<()> {
 }
 fn admit_supervisor_request(
     identity: &Identity,
-    attempt_id: &str,
+    execution_id: &str,
     request: &Request,
 ) -> Result<(), AgentCtlHostError> {
     request.validate()?;
     if identity.owner == request.command.auth.owner
         && constant_time_equal(&identity.token, &request.command.auth.token)
         && request.target.as_ref().is_some_and(|target| {
-            target.job_id == identity.spec.id
+            target.session_id == identity.spec.id
                 && target.generation.as_deref() == Some(identity.generation.as_str())
-                && target.attempt_id.as_deref() == Some(attempt_id)
+                && target.execution_id.as_deref() == Some(execution_id)
         })
     {
         Ok(())
@@ -2609,7 +2609,7 @@ mod tests {
         fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
             pvisor::ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
+        async fn execute(&self, session: &pvisor::ExecutionContext) -> pvisor::ExecutorOutput {
             pvisor::ProcessExecutor::default().execute(session).await
         }
     }
@@ -2619,7 +2619,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let socket = temp.path().join("unexpected.sock");
         let visor = supervisor_builder().control_socket(&socket).build();
-        let result = pvisor::job_service::RuntimeJobService::start(
+        let result = pvisor::session_service::SessionService::start(
             &visor,
             pvisor_core::RunSpec::process("socket-conflict", "test", "/bin/true"),
         )
@@ -2629,7 +2629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_job_start_and_attempt_dispatch_do_not_fabricate_vm_controls() {
+    async fn shared_session_start_and_execution_dispatch_do_not_fabricate_vm_controls() {
         let temp = tempfile::tempdir().unwrap();
         let visor = supervisor_builder()
             .storage(temp.path().join("run"))
@@ -2639,17 +2639,17 @@ mod tests {
             ))
             .executors(vec![Arc::new(VmLabelledProcess)])
             .build();
-        let mut run = pvisor_core::RunSpec::process("shared-attempt", "test", "/bin/sleep");
+        let mut run = pvisor_core::RunSpec::process("shared-execution", "test", "/bin/sleep");
         let pvisor_core::RunInvocation::Process(process) = &mut run.invocation;
         process.args = vec!["60".into()];
-        let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
+        let handle = pvisor::session_service::SessionService::start(&visor, run)
             .await
             .unwrap();
         let service = handle.execution().clone();
         let ready = timeout(CONTROL_TIMEOUT, service.wait_ready()).await;
         if !matches!(ready, Ok(Ok(()))) {
             service
-                .dispatch(HostAttemptCommand::Terminate)
+                .dispatch(HostExecutionCommand::Terminate)
                 .await
                 .unwrap();
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
@@ -2659,8 +2659,11 @@ mod tests {
             handle.control_socket().is_err(),
             "unexpected auto VM endpoint"
         );
-        let status = service.dispatch(HostAttemptCommand::Status).await.unwrap();
-        assert_eq!(status.status.attempt.attempt_id, *handle.attempt_id());
+        let status = service
+            .dispatch(HostExecutionCommand::Status)
+            .await
+            .unwrap();
+        assert_eq!(status.status.execution.execution_id, *handle.execution_id());
         assert_eq!(native_status(status.status).unwrap(), RuntimeState::Running);
         assert_eq!(native_state(&service).unwrap(), RuntimeState::Running);
 
@@ -2694,7 +2697,7 @@ mod tests {
             .is_err()
         );
         service
-            .dispatch(HostAttemptCommand::Terminate)
+            .dispatch(HostExecutionCommand::Terminate)
             .await
             .unwrap();
         timeout(DELETE_TIMEOUT, handle.wait())
@@ -3528,19 +3531,19 @@ mod tests {
     fn ownership_requires_owner_id_generation_and_secret() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, _) = identity_fixture(temp.path());
-        let request = supervisor_request(&identity, "attempt", Operation::Inspect);
-        assert!(admit_supervisor_request(&identity, "attempt", &request).is_ok());
+        let request = supervisor_request(&identity, "execution", Operation::Inspect);
+        assert!(admit_supervisor_request(&identity, "execution", &request).is_ok());
         for field in 0..8 {
             let mut bad = request.clone();
             match field {
                 0 => bad.command.auth.owner.push('x'),
                 1 => bad.command.auth.token.replace_range(0..1, "z"),
-                2 => bad.target.as_mut().unwrap().job_id.push('x'),
+                2 => bad.target.as_mut().unwrap().session_id.push('x'),
                 3 => bad.target.as_mut().unwrap().generation = Some("other".into()),
-                4 => bad.target.as_mut().unwrap().attempt_id = Some("other".into()),
+                4 => bad.target.as_mut().unwrap().execution_id = Some("other".into()),
                 5 => bad.version += 1,
                 6 => bad.target.as_mut().unwrap().generation = None,
-                _ => bad.target.as_mut().unwrap().attempt_id = None,
+                _ => bad.target.as_mut().unwrap().execution_id = None,
             }
             let expected = if field == 5 {
                 AgentCtlHostErrorCode::VersionMismatch
@@ -3548,7 +3551,7 @@ mod tests {
                 AgentCtlHostErrorCode::Unauthorized
             };
             assert_eq!(
-                admit_supervisor_request(&identity, "attempt", &bad)
+                admit_supervisor_request(&identity, "execution", &bad)
                     .unwrap_err()
                     .code,
                 expected,
@@ -3577,9 +3580,9 @@ mod tests {
             let result = bad.result.as_mut().unwrap();
             match field {
                 0 => result.owner.push('x'),
-                1 => result.target.job_id.push('x'),
+                1 => result.target.session_id.push('x'),
                 2 => result.target.generation = None,
-                _ => result.target.attempt_id = None,
+                _ => result.target.execution_id = None,
             }
             assert!(validate_reply(&identity, &request, bad).is_err());
         }
@@ -3724,7 +3727,7 @@ mod tests {
             &serde_json::json!({
                 "generation": identity.generation,
                 "run_id": "run-old",
-                "attempt_id": "attempt-old",
+                "execution_id": "execution-old",
                 "state": "Running",
             }),
         )
@@ -3752,7 +3755,7 @@ mod tests {
             &RunRecord {
                 generation: identity.generation.clone(),
                 run_id: "run-old".into(),
-                attempt_id: "attempt-old".into(),
+                execution_id: "execution-old".into(),
             },
         )
         .unwrap();
@@ -3984,7 +3987,7 @@ mod tests {
         let (identity, _) = identity_fixture(temp.path());
         let request = supervisor_request(
             &identity,
-            "attempt",
+            "execution",
             Operation::Endpoint { port: EXECD_PORT },
         );
         send_frame(&mut sender, &request).await.unwrap();
@@ -4002,7 +4005,7 @@ mod tests {
     async fn shared_sync_client_and_daemon_exchange_host_envelopes() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, _) = identity_fixture(temp.path());
-        let request = supervisor_request(&identity, "attempt", Operation::Inspect);
+        let request = supervisor_request(&identity, "execution", Operation::Inspect);
         let client_request = request.clone();
         let (mut client, server) = std::os::unix::net::UnixStream::pair().unwrap();
         server.set_nonblocking(true).unwrap();
@@ -4015,7 +4018,7 @@ mod tests {
         });
         authorize_host_peer(&server).unwrap();
         let received: Request = receive_frame(&mut server).await.unwrap();
-        assert!(admit_supervisor_request(&identity, "attempt", &received).is_ok());
+        assert!(admit_supervisor_request(&identity, "execution", &received).is_ok());
         let reply = Response {
             version: AGENTCTL_HOST_VERSION,
             request_id: received.request_id.clone(),
@@ -4038,7 +4041,7 @@ mod tests {
     async fn shared_codec_leaves_version_validation_to_the_envelope() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, _) = identity_fixture(temp.path());
-        let mut request = supervisor_request(&identity, "attempt", Operation::Inspect);
+        let mut request = supervisor_request(&identity, "execution", Operation::Inspect);
         request.version = AGENTCTL_HOST_VERSION + 1;
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         sender
@@ -4048,7 +4051,7 @@ mod tests {
         let received: Request = receive_frame(&mut receiver).await.unwrap();
         assert_eq!(received.version, request.version);
         assert_eq!(
-            admit_supervisor_request(&identity, "attempt", &received)
+            admit_supervisor_request(&identity, "execution", &received)
                 .unwrap_err()
                 .code,
             AgentCtlHostErrorCode::VersionMismatch

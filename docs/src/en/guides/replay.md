@@ -2,7 +2,7 @@
 
 To reproduce a failure or retry from a historical step, prepare a fresh sandbox and the agent's native trajectory, then run `pvisor replay`. By default it reruns tool calls before the selected boundary, rebuilds context from the new results and lets the agent continue. Tool calls may repeat file or remote side effects; set sandbox permissions for the task before running.
 
-The agent saves its native trajectory; [Gateway capture](capture.md) produces a model-traffic Event Journal. SandboxReplay processes sessions through native-trajectory adapters and creates a derived Run in the [Run and Attempt model](../design/execution-model.md).
+The agent saves its native trajectory; [Gateway capture](capture.md) produces a model-traffic Event Journal. SandboxReplay processes sessions through native-trajectory adapters and creates a derived Run in the [Run and Execution model](../design/execution-model.md).
 
 <span id="3-install-and-run-location"></span>
 

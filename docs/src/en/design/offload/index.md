@@ -157,7 +157,7 @@ Compressed objects are packed contiguously and may cross disk pages. There is no
 
 ### Exit and failures {#ownership-and-cleanup}
 
-Normal exit waits for the child; cancellation/deadline terminates its process tree before detach. Backing cleanup attempts unmount and removes staging/mount directories. Unpublished temporary backing/layers are deleted; explicit files, aliases and kept layers persist.
+Normal exit waits for the child; cancellation/deadline terminates its process tree before detach. Backing cleanup executions unmount and removes staging/mount directories. Unpublished temporary backing/layers are deleted; explicit files, aliases and kept layers persist.
 
 Exit does not perform another generation commit. Writes after the last resume can be discarded with staging; the manifest retains the last committed head. Inspect through read-only `CompressedRam::open` only after the writer stops.
 
@@ -186,7 +186,7 @@ The following evidence comes from targeted tests and inspection on 2026-10-03, c
 | Host RAM mapping/reclamation | 2 passed | Shared data retained, device windows excluded, invalid backing rejected |
 | Publication side effect after rejection | 1 passed | Reproduced an alias surviving transition failure |
 
-These 38 checks establish some storage/control invariants, not end-to-end guest correctness. Six VM document cases hit EPERM during socket setup; direct SDK execution was blocked at AgentCtl initialization before guest entry. Logs are in `review_project/06-evidence/offload-20261003/`. Those attempts cannot be counted as successful VM tests.
+These 38 checks establish some storage/control invariants, not end-to-end guest correctness. Six VM document cases hit EPERM during socket setup; direct SDK execution was blocked at AgentCtl initialization before guest entry. Logs are in `review_project/06-evidence/offload-20261003/`. Those executions cannot be counted as successful VM tests.
 
 An existing 256 MiB compressed RAM sample has a 999-byte manifest, a ~21.45 MiB base and a ~1.85 MiB delta. Both generations allocate 23.30 MiB, excluding manifest/directory overhead. Ten historical heads remain while GC retained only one base and delta. [Detailed measurements](disk-layout-and-schema.md#experiments) gives exact sizes and artifact location.
 

@@ -13,7 +13,7 @@
 /// continue to pop packets from it. However, when a desynchronized queue is drained, additional
 /// data may still be available, so the muxer will have to perform a more costly walk of the entire
 /// connection pool to find it.  This walk is performed here, as part of building an RX queue from
-/// the connection pool. When an out-of-sync is drained, the muxer will discard it, and attempt to
+/// the connection pool. When an out-of-sync is drained, the muxer will discard it, and execution to
 /// rebuild a synced one.
 use std::collections::VecDeque;
 

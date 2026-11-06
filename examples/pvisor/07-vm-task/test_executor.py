@@ -29,7 +29,12 @@ class ExecutorTests(unittest.TestCase):
             for step in self.task["steps"]
         ]
         self.bundle = {
-            "run": {"state": "completed", "exit_code": 0, "run_id": "job-1", "attempt_id": "a-1"}
+            "run": {
+                "state": "completed",
+                "exit_code": 0,
+                "run_id": "session-1",
+                "execution_id": "a-1",
+            }
         }
         self.calls = []
         self.cli = self.stack.enter_context(patch("executor.subprocess.check_output", self.output))
@@ -51,7 +56,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(json.loads((root / "workspace/task.json").read_text()), self.task)
         self.assertEqual(feedback["task_id"], self.task["task_id"])
         self.assertEqual(feedback["steps"], self.steps)
-        self.assertEqual(feedback["job_id"], "job-1")
+        self.assertEqual(feedback["session_id"], "session-1")
         self.assertEqual(json.loads((root / "sample.json").read_text()), feedback)
         self.assertIn("drop", self.calls)
 

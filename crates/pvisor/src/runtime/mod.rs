@@ -5,10 +5,10 @@
 
 pub(crate) mod agentctl;
 pub(crate) mod agentctl_client;
-mod attempt;
 pub(crate) mod bundle;
 pub mod checkpoint;
 pub(crate) mod completion;
+mod drivers;
 pub(crate) mod event;
 pub(crate) mod execution;
 #[cfg(unix)]
@@ -16,8 +16,6 @@ pub mod host_transport;
 mod implant;
 #[cfg(unix)]
 pub(crate) mod instance_control;
-pub mod job_execution;
-pub mod job_service;
 #[cfg(feature = "gateway")]
 mod model_wait;
 pub(crate) mod operation;
@@ -26,12 +24,14 @@ pub(crate) mod owned_workspace;
 mod proxy;
 mod registry;
 pub(crate) mod run;
+pub mod session_execution;
+pub mod session_service;
 mod supervisor;
 #[cfg(feature = "gateway")]
 mod wait_coordinator;
 
-pub(crate) use attempt::VmNetworkAttachment;
-pub(crate) use attempt::{AttemptSession, AttemptTeardown};
+pub(crate) use drivers::VmNetworkAttachment;
+pub(crate) use drivers::{ExecutionTeardown, SessionDrivers};
 pub(crate) use overlay::{
     prepare_overlay_record_mountless, save_lower_mutability, stage_overlay_record,
 };
@@ -55,7 +55,7 @@ pub use registry::LEASE_FILENAME;
 pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
-    EnvironmentProjection, JobDirectoryLock, RunLineage, RunLookupError, RunRecord,
+    EnvironmentProjection, RunLineage, RunLookupError, RunRecord, SessionDirectoryLock,
     control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
     default_run_home, is_live, lookup_run_id, resolve_run,
 };

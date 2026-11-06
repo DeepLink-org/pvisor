@@ -470,7 +470,7 @@ fn verify_detached(mountpoint: &std::path::Path) -> io::Result<()> {
         .any(|line| line.split(|byte| *byte == b' ').nth(4) == Some(escaped.as_slice()))
     {
         return Err(io::Error::other(
-            "mount is still present after detach attempt",
+            "mount is still present after detach execution",
         ));
     }
     Ok(())

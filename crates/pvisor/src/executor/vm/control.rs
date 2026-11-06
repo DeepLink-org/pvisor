@@ -1,4 +1,4 @@
-//! Attempt-local VM controls and the live file backing owned by the supervisor.
+//! Execution-local VM controls and the live file backing owned by the supervisor.
 
 use anyhow::Context;
 use pvisor_core::operation::{OperationKind, VmMemory, VmState};
@@ -42,7 +42,7 @@ fn offload_phase(stage: &str, started: std::time::Instant, complete: bool) {
     }
 }
 
-/// Same inode throughout the attempt: path selection never copies or remaps RAM.
+/// Same inode throughout the execution: path selection never copies or remaps RAM.
 pub(super) struct RamBacking {
     pub file: Arc<File>,
     storage: Arc<File>,
@@ -711,7 +711,7 @@ impl VmControl {
                 anyhow::ensure!(
                     ready.directory == directory
                         && ready.run_id == binding.run_id
-                        && ready.attempt_id == binding.attempt_id
+                        && ready.execution_id == binding.execution_id
                         && ready.created_at_unix_ms > 0,
                     "native capture readiness binding mismatch"
                 );
@@ -867,7 +867,7 @@ impl VmControl {
                 anyhow::ensure!(
                     checkpoint.store == binding.store
                         && checkpoint.source_run_id == binding.run_id
-                        && checkpoint.source_attempt_id == binding.attempt_id
+                        && checkpoint.source_execution_id == binding.execution_id
                         && checkpoint.ram_storage == *ram_storage,
                     "checkpoint authority mismatch"
                 );
@@ -900,7 +900,11 @@ impl VmControl {
             Ok::<_, anyhow::Error>(Ok(reply))
         })
         .await
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("VM control timed out; terminating attempt")));
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "VM control timed out; terminating execution"
+            ))
+        });
         if result.is_err() {
             let connection = guard.take();
             self.cancellation.cancel();
@@ -971,7 +975,7 @@ mod tests {
                 profile: "test-profile".into(),
             },
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
         }
     }
 
@@ -1014,7 +1018,7 @@ mod tests {
                         snapshot_id: "e".repeat(64),
                         store: binding.store,
                         source_run_id: binding.run_id,
-                        source_attempt_id: binding.attempt_id,
+                        source_execution_id: binding.execution_id,
                         created_at_unix_ms: 1,
                         ram_storage: pvisor_core::operation::SnapshotRamStorage::Compressed,
                     }),
@@ -1065,7 +1069,7 @@ mod tests {
                     capture: Some(super::super::checkpoint::CaptureReady {
                         directory: request.directory,
                         run_id: "run".into(),
-                        attempt_id: "attempt".into(),
+                        execution_id: "execution".into(),
                         created_at_unix_ms: 1,
                     }),
                 },
@@ -1125,7 +1129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_checkpoint_readiness_or_uncommitted_success_cancels_attempt() {
+    async fn malformed_checkpoint_readiness_or_uncommitted_success_cancels_execution() {
         for early_success in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let binding = checkpoint_binding(directory.path());
@@ -1151,7 +1155,7 @@ mod tests {
                     capture: Some(super::super::checkpoint::CaptureReady {
                         directory: request.directory,
                         run_id: "other".into(),
-                        attempt_id: "attempt".into(),
+                        execution_id: "execution".into(),
                         created_at_unix_ms: 1,
                     }),
                 };
@@ -1162,7 +1166,7 @@ mod tests {
                         snapshot_id: "a".repeat(64),
                         store,
                         source_run_id: "run".into(),
-                        source_attempt_id: "attempt".into(),
+                        source_execution_id: "execution".into(),
                         created_at_unix_ms: 1,
                         ram_storage: pvisor_core::operation::SnapshotRamStorage::Compressed,
                     });
@@ -1476,7 +1480,7 @@ mod tests {
                         reply.checkpoint = Some(pvisor_core::operation::ExecutionCheckpoint {
                             store: "/snapshots".into(),
                             source_run_id: "run".into(),
-                            source_attempt_id: "attempt".into(),
+                            source_execution_id: "execution".into(),
                             snapshot_id: "invalid".into(),
                             created_at_unix_ms: 1,
                             ram_storage: pvisor_core::operation::SnapshotRamStorage::Raw,
@@ -1501,7 +1505,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compressed_commit_failure_cancels_attempt_and_closes_control() {
+    async fn compressed_commit_failure_cancels_execution_and_closes_control() {
         let directory = tempfile::tempdir().unwrap();
         let backing = staged_compressed_backing(directory.path());
         let store = backing.compression_store.clone().unwrap();
@@ -1811,7 +1815,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_acknowledgements_discard_connection_and_cancel_attempt() {
+    async fn invalid_acknowledgements_discard_connection_and_cancel_execution() {
         for fault in ["oversize", "json", "state", "report", "disconnect"] {
             let directory = tempfile::tempdir().unwrap();
             let cancellation = CancellationToken::new();
@@ -1886,7 +1890,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_attempt() {
+    async fn cancelled_waiter_does_not_abandon_ack_and_rejection_cancels_execution() {
         let directory = tempfile::tempdir().unwrap();
         let cancellation = CancellationToken::new();
         let control = VmControl::new(cancellation.clone());

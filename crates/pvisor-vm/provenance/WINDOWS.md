@@ -41,7 +41,7 @@ Local integration:
   probe is removed because it could outlive its partition.
 - Advanced profiles without a completed Windows implementation return explicit
   unsupported errors. Native contract/unit tests run independently of WHP;
-  the separate hardware smoke job boots the repository's Windows firmware.
+  the separate hardware smoke session boots the repository's Windows firmware.
 
 Upstream copyright/SPDX headers are retained. The imported code is Apache-2.0
 with the notices in [WINDOWS-THIRD-PARTY](WINDOWS-THIRD-PARTY). The guest kernel

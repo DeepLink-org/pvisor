@@ -1,6 +1,6 @@
 //! Query projections for live and offline status. Frontends only render these values.
 use super::{ExecutionSnapshot, RunRecordState};
-use crate::job_service::{StatusAttempt, StatusResponse};
+use crate::session_service::{StatusExecution, StatusResponse};
 use anyhow::ensure;
 use pvisor_core::RunState;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusState {
-    /// The Attempt has been admitted but startup has not begun.
+    /// The Execution has been admitted but startup has not begun.
     Created,
     /// Executor startup is in progress.
     Starting,
@@ -82,8 +82,8 @@ impl StatusResponse {
     pub(crate) fn project_live(&mut self, snapshot: ExecutionSnapshot) -> anyhow::Result<()> {
         ensure!(
             snapshot.status.run_id.as_str() == self.record.run_id
-                && Some(snapshot.status.attempt.attempt_id.as_str())
-                    == self.record.attempt_id.as_deref(),
+                && Some(snapshot.status.execution.execution_id.as_str())
+                    == self.record.execution_id.as_deref(),
             "foreign or unavailable live status observation"
         );
         self.state = if snapshot.status.state.is_terminal() {
@@ -91,7 +91,7 @@ impl StatusResponse {
         } else {
             StatusState::live(snapshot.status.state)
         };
-        self.live_attempt = Some(StatusAttempt::from(&snapshot.status));
+        self.live_execution = Some(StatusExecution::from(&snapshot.status));
         self.execution_progress = Some(snapshot.progress);
         Ok(())
     }
@@ -100,16 +100,16 @@ impl StatusResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job_service::StatusRun;
     use crate::runtime::execution::{ControlOrigin, tests::execution};
+    use crate::session_service::StatusRun;
     use pvisor_core::operation::{OperationKind, Value, VmState};
     fn response() -> StatusResponse {
         StatusResponse {
-            schema_version: 2,
+            schema_version: 3,
             state: StatusState::Unknown,
             record: StatusRun {
                 run_id: "execution-test".into(),
-                attempt_id: Some("attempt-test".into()),
+                execution_id: Some("execution-test".into()),
                 session_id: "session".into(),
                 state: RunRecordState::Running,
                 pid: 1,
@@ -125,7 +125,7 @@ mod tests {
                 overlay: None,
             },
             live: true,
-            live_attempt: None,
+            live_execution: None,
             execution_progress: None,
             execution_blocker: None,
             workspace_checkpoint_count: 0,
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(response.state, StatusState::Paused);
         assert_eq!(response.state.as_str(), "paused");
         assert_eq!(
-            response.live_attempt.as_ref().unwrap().state,
+            response.live_execution.as_ref().unwrap().state,
             RunState::Suspended
         );
         assert_eq!(
@@ -182,7 +182,7 @@ mod tests {
         let mut response = response();
         let before = serde_json::to_value(&response).unwrap();
         let mut foreign = owner.snapshot();
-        foreign.status.attempt.attempt_id = "foreign".into();
+        foreign.status.execution.execution_id = "foreign".into();
         assert!(response.project_live(foreign).is_err());
         assert_eq!(before, serde_json::to_value(&response).unwrap());
         owner.finish(RunState::Completed, None, 3).await;

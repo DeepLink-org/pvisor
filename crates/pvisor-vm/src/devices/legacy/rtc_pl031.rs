@@ -198,7 +198,7 @@ impl RTC {
                 self.ris = 0;
                 self.trigger_interrupt()?;
             }
-            RTCCR => (), // ignore attempts to turn off the timer.
+            RTCCR => (), // ignore tries to turn off the timer.
             o => {
                 return Err(Error::BadWriteOffset(o));
             }
@@ -305,7 +305,7 @@ mod tests {
         let v = byte_order::read_le_u32(&data[..]);
         assert_eq!(0, v);
 
-        // Attempts to turn off the RTC should not go through.
+        // Executions to turn off the RTC should not go through.
         byte_order::write_le_u32(&mut data, 0);
         rtc.write(0, RTCCR, &data);
         rtc.read(0, RTCCR, &mut data);

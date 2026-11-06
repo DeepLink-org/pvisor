@@ -13,7 +13,7 @@ Enter each directory in its own terminal and run the commands below. Keep each s
 
 ## Run two tasks in separate worktrees
 
-Run one Job in each of two independent checkouts/worktrees, with a separate stage outside the project and an explicit selector for each task. Applying one task then leaves the other task's lower unchanged, so each result can be reviewed on its own. Networking and credentials remain per-Job policy decisions.
+Run one Session in each of two independent checkouts/worktrees, with a separate stage outside the project and an explicit selector for each task. Applying one task then leaves the other task's lower unchanged, so each result can be reviewed on its own. Networking and credentials remain per-Session policy decisions.
 
 ```bash
 # Terminal A / workspace A
@@ -29,11 +29,11 @@ This is not a batch scheduling interface. Once you pick a result, merge it per w
 
 ## Shared-workspace and fork limits
 
-Forking from the same stopped Job preserves a shared staged starting point, but the checkpoint does not freeze every lower. After the first branch applies, the other branch and the host can conflict; that refusal is a protection mechanism and must not be bypassed by deleting preimages. To reproduce the same input, pin the workspace baseline, tool versions, and image digests.
+Forking from the same stopped Session preserves a shared staged starting point, but the checkpoint does not freeze every lower. After the first branch applies, the other branch and the host can conflict; that refusal is a protection mechanism and must not be bypassed by deleting preimages. To reproduce the same input, pin the workspace baseline, tool versions, and image digests.
 
 ## What decides how many can run
 
-Validate with two tasks first, then record processes, FUSE mounts, VM memory, disk, model-service quota, and proxy-port use. Give each Job a non-conflicting port, and choose concurrency from measurements rather than round numbers such as 8, 32 or 128. Read the Bundle for the actual effect of resource limits; see [concurrency density](../benchmarks/density.md).
+Validate with two tasks first, then record processes, FUSE mounts, VM memory, disk, model-service quota, and proxy-port use. Give each Session a non-conflicting port, and choose concurrency from measurements rather than round numbers such as 8, 32 or 128. Read the Bundle for the actual effect of resource limits; see [concurrency density](../benchmarks/density.md).
 
 ## Validate the batch workflow with two offline tasks {#batch}
 

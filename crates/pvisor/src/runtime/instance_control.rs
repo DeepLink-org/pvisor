@@ -1,7 +1,7 @@
-//! Host-only, attempt-scoped Job control. One JSON line per connection.
+//! Host-only, execution-scoped Session control. One JSON line per connection.
 //!
-//! This is not snapshot restart: `resume` resumes the same live Attempt. Endpoint
-//! discovery lives in the host Job record; no endpoint is projected into a guest.
+//! This is not snapshot restart: `resume` resumes the same live Execution. Endpoint
+//! discovery lives in the host Session record; no endpoint is projected into a guest.
 
 use super::execution::Execution;
 use super::host_transport::{
@@ -10,13 +10,13 @@ use super::host_transport::{
 };
 use super::run::RunHandle;
 #[cfg(test)]
-use pvisor_core::AttemptId;
+use pvisor_core::ExecutionId;
 use pvisor_core::RunStatus;
 #[cfg(test)]
 use pvisor_core::host_protocol::AgentCtlTarget;
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
-    AgentCtlHostResponse, HostAttemptCommand, HostVmCommand, HostVmResult,
+    AgentCtlHostResponse, HostExecutionCommand, HostVmCommand, HostVmResult,
 };
 #[cfg(test)]
 use pvisor_core::operation::OperationKind;
@@ -42,7 +42,7 @@ const MAX_INSPECT_MOUNTS: usize = 16;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(310);
 
-// Discovery borrows the Attempt owner; it never extends resource lifetime.
+// Discovery borrows the Execution owner; it never extends resource lifetime.
 type Owners = HashMap<(String, String), std::sync::Weak<Owner>>;
 fn owners() -> &'static Mutex<Owners> {
     static OWNERS: OnceLock<Mutex<Owners>> = OnceLock::new();
@@ -69,7 +69,7 @@ impl Drop for Registration {
         let status = self.owner.execution.status();
         let key = (
             status.run_id.to_string(),
-            status.attempt.attempt_id.to_string(),
+            status.execution.execution_id.to_string(),
         );
         let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
         if owners
@@ -91,7 +91,7 @@ pub(crate) fn register(
     let status = execution.status();
     let key = (
         status.run_id.to_string(),
-        status.attempt.attempt_id.to_string(),
+        status.execution.execution_id.to_string(),
     );
     let owner = Arc::new(Owner {
         execution,
@@ -109,48 +109,48 @@ pub(crate) fn register(
             .get(&key)
             .and_then(std::sync::Weak::upgrade)
             .is_none(),
-        "Attempt owner already registered"
+        "Execution owner already registered"
     );
     owners.insert(key, Arc::downgrade(&owner));
     Ok(Registration { owner })
 }
 
-fn find(job: &str, attempt: &str) -> Option<Arc<Owner>> {
+fn find(session: &str, execution: &str) -> Option<Arc<Owner>> {
     owners()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&(job.into(), attempt.into()))
+        .get(&(session.into(), execution.into()))
         .and_then(std::sync::Weak::upgrade)
 }
 
 pub(crate) fn local_owner(record: &super::RunRecord) -> Option<Arc<Owner>> {
-    let owner = find(&record.run_id, record.attempt_id.as_deref()?)?;
+    let owner = find(&record.run_id, record.execution_id.as_deref()?)?;
     let saved = owner.record.as_ref()?;
     (saved.stage_dir() == record.stage_dir()).then_some(owner)
 }
 
 pub(crate) fn socket(handle: &RunHandle) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(
-        handle.execution().status().attempt.executor.kind
+        handle.execution().status().execution.executor.kind
             == pvisor_core::ExecutorKind::VirtualMachine,
         "live VM controls require a VM executor"
     );
     anyhow::ensure!(
         !handle.execution().status().state.is_terminal(),
-        "attempt control endpoint is no longer available"
+        "execution control endpoint is no longer available"
     );
-    find(handle.run_id().as_str(), handle.attempt_id().as_str())
+    find(handle.run_id().as_str(), handle.execution_id().as_str())
         .and_then(|owner| {
             owner
                 .endpoint
                 .as_ref()
                 .map(|endpoint| endpoint.path.clone())
         })
-        .ok_or_else(|| anyhow::anyhow!("attempt control endpoint is unavailable"))
+        .ok_or_else(|| anyhow::anyhow!("execution control endpoint is unavailable"))
 }
 
-pub(crate) fn close_inspections(job: &str, attempt: &str) {
-    if let Some(owner) = find(job, attempt) {
+pub(crate) fn close_inspections(session: &str, execution: &str) {
+    if let Some(owner) = find(session, execution) {
         owner.close_inspections();
     }
 }
@@ -175,8 +175,8 @@ impl Drop for OwnedSocket {
             && let Some(parent) = self.path.parent()
         {
             let _ = std::fs::remove_dir(parent);
-            if let Some(job) = parent.parent() {
-                let _ = std::fs::remove_dir(job);
+            if let Some(session) = parent.parent() {
+                let _ = std::fs::remove_dir(session);
             }
         }
     }
@@ -189,7 +189,11 @@ pub(crate) struct InstanceControlServer {
 }
 
 impl InstanceControlServer {
-    pub(crate) fn bind(path: Option<&Path>, job: &str, attempt: &str) -> anyhow::Result<Self> {
+    pub(crate) fn bind(
+        path: Option<&Path>,
+        session: &str,
+        execution: &str,
+    ) -> anyhow::Result<Self> {
         // Directory-fd addressing keeps canonical UUID paths usable. Custom parents
         // must already exist; never create them, follow a parent symlink, or
         // unlink an existing entry to make binding succeed.
@@ -197,7 +201,7 @@ impl InstanceControlServer {
         let prune = path.is_none();
         let path = match path {
             Some(path) => super::host_transport::instance_socket_override(path)?,
-            None => super::host_transport::instance_control_path(job, attempt)?,
+            None => super::host_transport::instance_control_path(session, execution)?,
         };
         let exclusion_directory = authority_root;
         let native = super::host_transport::bind_instance_socket(&path)?;
@@ -258,11 +262,11 @@ impl InstanceControlServer {
         owner: Arc<Owner>,
     ) -> tokio::task::JoinHandle<()> {
         let mut status = owner.execution.subscribe();
-        let attempt_task = handle.join.abort_handle();
+        let execution_task = handle.join.abort_handle();
         tokio::spawn(async move {
             let mut clients = JoinSet::new();
             let mut replies: Vec<(tokio::task::AbortHandle, Arc<AtomicBool>)> = Vec::new();
-            // A panic can finish the attempt without publishing terminal status.
+            // A panic can finish the execution without publishing terminal status.
             // Our control authority holds a status sender, so channel closure
             // cannot detect that path. Observe task completion without joining
             // it, synthesizing lifecycle status, or delaying normal termination.
@@ -278,7 +282,7 @@ impl InstanceControlServer {
                         if changed.is_err() { break; }
                     }
                     _ = completion_check.tick() => {
-                        if attempt_task.is_finished() { break; }
+                        if execution_task.is_finished() { break; }
                     }
                     _ = clients.join_next(), if !clients.is_empty() => { replies.retain(|(handle, _)| !handle.is_finished()); }
                     accepted = super::host_transport::accept_control(&self.listener) => {
@@ -300,7 +304,7 @@ impl InstanceControlServer {
                     }
                 }
             }
-            // A suspend reply requires durable Job completion after terminal
+            // A suspend reply requires durable Session completion after terminal
             // publication. Keep accepted capture/kill replies; abort idle clients.
             for (task, retain) in replies {
                 if !retain.load(Ordering::Acquire) {
@@ -319,14 +323,14 @@ impl InstanceControlServer {
 fn host_operation(
     request: &AgentCtlHostRequest<HostVmCommand>,
     status: &RunStatus,
-) -> Result<HostAttemptCommand, AgentCtlHostError> {
+) -> Result<HostExecutionCommand, AgentCtlHostError> {
     request.validate()?;
     validate_host_target(
         request.target.as_ref(),
         status.run_id.as_str(),
-        status.attempt.attempt_id.as_str(),
+        status.execution.execution_id.as_str(),
     )?;
-    if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine {
+    if status.execution.executor.kind != pvisor_core::ExecutorKind::VirtualMachine {
         return Err(AgentCtlHostError::new(
             AgentCtlHostErrorCode::Unsupported,
             "live VM controls require a VM executor",
@@ -395,7 +399,7 @@ async fn dispatch(
     validate_host_target(
         request.target.as_ref(),
         status.run_id.as_str(),
-        status.attempt.attempt_id.as_str(),
+        status.execution.execution_id.as_str(),
     )?;
     let error = |error: anyhow::Error| {
         error
@@ -406,12 +410,12 @@ async fn dispatch(
             })
     };
     let value = match request.command {
-        InstanceCommand::JobStatus {} => {
+        InstanceCommand::SessionStatus {} => {
             let record = owner.current_record().map_err(error)?;
-            let result = super::job_service::RuntimeJobService::status(
+            let result = super::session_service::SessionService::status(
                 &Default::default(),
-                super::job_service::StatusRequest {
-                    job: super::job_service::JobSelection {
+                super::session_service::StatusRequest {
+                    session: super::session_service::SessionSelection {
                         selector: Some(record.stage_dir()),
                         storage: record.storage.clone(),
                     },
@@ -427,7 +431,7 @@ async fn dispatch(
             request_id,
         } => {
             let record = owner.current_record().map_err(error)?;
-            let result = super::job_service::RuntimeJobService::capture_selected_execution(
+            let result = super::session_service::SessionService::capture_selected_execution(
                 &Default::default(),
                 &record,
                 suspend,
@@ -436,7 +440,7 @@ async fn dispatch(
                 Duration::from_millis(timeout_ms),
             )
             .await
-            .map_err(super::job_execution::capture_error)?;
+            .map_err(super::session_execution::capture_error)?;
             serde_json::to_value(result)
         }
         command @ (InstanceCommand::Ping {}
@@ -446,7 +450,7 @@ async fn dispatch(
         | InstanceCommand::Inspect { .. }
         | InstanceCommand::UnmountInspect { .. }) => return owner.workspace(command),
         InstanceCommand::Terminate {} => {
-            let result = controls.dispatch(HostAttemptCommand::Terminate).await?;
+            let result = controls.dispatch(HostExecutionCommand::Terminate).await?;
             serde_json::to_value(result)
         }
         command => {
@@ -500,13 +504,13 @@ impl Owner {
         let saved = self
             .record
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Job has no durable storage"))?;
+            .ok_or_else(|| anyhow::anyhow!("Session has no durable storage"))?;
         let current = super::RunRecord::read(&saved.stage_dir())?;
         anyhow::ensure!(
             current.run_id == saved.run_id
-                && current.attempt_id == saved.attempt_id
+                && current.execution_id == saved.execution_id
                 && current.stage_dir() == saved.stage_dir(),
-            "stale Job/Attempt control record"
+            "stale Session/Execution control record"
         );
         Ok(current)
     }
@@ -525,7 +529,7 @@ impl Owner {
                     .map_err(error)?
                     .overlay
                     .as_ref()
-                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                    .ok_or_else(|| error(anyhow::anyhow!("Session has no OverlayFS workspace")))?;
                 Ok(serde_json::Value::Null)
             }
             InstanceCommand::OverlayStatus {} => {
@@ -533,7 +537,7 @@ impl Owner {
                 let overlay = record
                     .overlay
                     .as_ref()
-                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                    .ok_or_else(|| error(anyhow::anyhow!("Session has no OverlayFS workspace")))?;
                 serde_json::to_value(super::overlay_status(overlay).map_err(|e| error(e.into()))?)
             }
             InstanceCommand::Observations {} => Ok(serde_json::json!({
@@ -541,7 +545,7 @@ impl Owner {
                 "network": self.network.as_ref().map(|metrics| metrics.snapshot()),
             })),
             InstanceCommand::StatusObservations {} => {
-                use super::job_service::status::{
+                use super::session_service::status::{
                     Activity, ObservationSource, filesystem_activity, network_activity,
                 };
                 serde_json::to_value(Activity {
@@ -564,7 +568,7 @@ impl Owner {
                 let overlay = record
                     .overlay
                     .as_ref()
-                    .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+                    .ok_or_else(|| error(anyhow::anyhow!("Session has no OverlayFS workspace")))?;
                 let lowers = if record.overlay_lowers.is_empty() {
                     vec![overlay.target.clone()]
                 } else {
@@ -639,11 +643,11 @@ pub async fn exchange(
         .target
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("explicit VM target is required"))?;
-    let attempt_id = target
-        .attempt_id
+    let execution_id = target
+        .execution_id
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("explicit VM attempt is required"))?;
-    validate_host_target(Some(target), &target.job_id, attempt_id)?;
+        .ok_or_else(|| anyhow::anyhow!("explicit VM execution is required"))?;
+    validate_host_target(Some(target), &target.session_id, execution_id)?;
     let path = super::host_transport::instance_socket_override(path)?;
     let path = path.as_path();
     let metadata = std::fs::symlink_metadata(path)?;
@@ -672,8 +676,8 @@ pub async fn exchange(
     reply.validate(&request.request_id)?;
     if let Ok(response) = &reply.result {
         anyhow::ensure!(
-            response.status.run_id.as_str() == target.job_id
-                && response.status.attempt.attempt_id.as_str() == attempt_id,
+            response.status.run_id.as_str() == target.session_id
+                && response.status.execution.execution_id.as_str() == execution_id,
             "control response identity mismatch"
         );
     }
@@ -685,7 +689,7 @@ mod tests {
     use super::*;
     use crate::executor::process::ProcessExecutor;
     use crate::host_transport::allocate_host_directory;
-    use crate::{PVisor, RunExecutor, Session};
+    use crate::{ExecutionContext, PVisor, RunExecutor};
     use pvisor_core::{ExecutorKind, ExecutorPlan, IsolationKind, RunInvocation, RunSpec};
     use std::sync::Arc;
 
@@ -736,10 +740,10 @@ mod tests {
             }
             assert!(!stage.join("execution.sock").exists());
             assert!(!stage.join("control.sock").exists());
-            let response = super::super::job_service::RuntimeJobService::status(
+            let response = super::super::session_service::SessionService::status(
                 &Default::default(),
-                super::super::job_service::StatusRequest {
-                    job: super::super::job_service::JobSelection {
+                super::super::session_service::StatusRequest {
+                    session: super::super::session_service::SessionSelection {
                         selector: Some(stage.clone()),
                         storage: stage.clone(),
                     },
@@ -754,7 +758,7 @@ mod tests {
                 serde_json::json!({"filesystem":null,"network":null})
             );
             let mut foreign = record.clone();
-            foreign.attempt_id = Some("other-attempt".into());
+            foreign.execution_id = Some("other-execution".into());
             assert!(local_owner(&foreign).is_none());
             foreign = record.clone();
             foreign.storage = directory.path().join("other-stage");
@@ -786,7 +790,7 @@ mod tests {
         fn supports(&self, _: &RunInvocation) -> bool {
             true
         }
-        async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, session: &ExecutionContext) -> crate::ExecutorOutput {
             let record =
                 crate::RunRecord::read(&session.drivers.as_ref().unwrap().record().stage_dir())
                     .unwrap();
@@ -798,7 +802,7 @@ mod tests {
                 control.path,
                 super::super::host_transport::instance_control_path(
                     &record.run_id,
-                    record.attempt_id.as_deref().unwrap()
+                    record.execution_id.as_deref().unwrap()
                 )
                 .unwrap()
             );
@@ -858,14 +862,14 @@ mod tests {
             binary_digest: "different-binary-digest".into(),
             pid: std::process::id(),
         };
-        let job = handle.run_id().to_string();
-        let attempt = handle.attempt_id().to_string();
+        let session = handle.run_id().to_string();
+        let execution = handle.execution_id().to_string();
         let cwd = std::env::current_dir().unwrap();
         let copied = endpoint.clone();
         tokio::task::spawn_blocking(move || {
             copied.exchange(
-                &job,
-                &attempt,
+                &session,
+                &execution,
                 super::super::host_transport::InstanceCommand::Status {},
             )
         })
@@ -884,7 +888,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn live_job_status_projects_large_records_before_host_framing() {
+    async fn live_session_status_projects_large_records_before_host_framing() {
         use pvisor_core::operation::{FilesystemObservation, PathOperationCounters};
         let root = tempfile::tempdir().unwrap();
         let runtime = PVisor::builder()
@@ -929,20 +933,20 @@ mod tests {
         );
         record.write().unwrap();
         let endpoint = record.live_control.unwrap();
-        let job = handle.run_id().to_string();
-        let attempt = handle.attempt_id().to_string();
+        let session = handle.run_id().to_string();
+        let execution = handle.execution_id().to_string();
         let value = tokio::task::spawn_blocking(move || {
             endpoint.exchange(
-                &job,
-                &attempt,
-                super::super::host_transport::InstanceCommand::JobStatus {},
+                &session,
+                &execution,
+                super::super::host_transport::InstanceCommand::SessionStatus {},
             )
         })
         .await
         .unwrap()
         .unwrap();
         assert!(serde_json::to_vec(&value).unwrap().len() < 256 * 1024);
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 3);
         assert_eq!(value["live"], true);
         assert_eq!(value["filesystem_observation"]["observed_paths"], 8192);
         assert!(value["record"].get("orchestration").is_none());
@@ -989,7 +993,7 @@ mod tests {
         fn supports(&self, _: &RunInvocation) -> bool {
             true
         }
-        async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, session: &ExecutionContext) -> crate::ExecutorOutput {
             ProcessExecutor::default().execute(session).await
         }
     }
@@ -1058,8 +1062,8 @@ mod tests {
             version: AGENTCTL_HOST_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
             target: Some(AgentCtlTarget {
-                job_id: handle.run_id().to_string(),
-                attempt_id: Some(handle.attempt_id().to_string()),
+                session_id: handle.run_id().to_string(),
+                execution_id: Some(handle.execution_id().to_string()),
                 generation: None,
             }),
             command,
@@ -1117,15 +1121,15 @@ mod tests {
         fn supports(&self, _: &RunInvocation) -> bool {
             true
         }
-        async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, session: &ExecutionContext) -> crate::ExecutorOutput {
             session.execution().ready().await;
             self.trigger.notified().await;
-            panic!("intentional mock attempt panic");
+            panic!("intentional mock execution panic");
         }
     }
 
     #[tokio::test]
-    async fn attempt_task_panic_removes_endpoint_without_terminal_status() {
+    async fn execution_task_panic_removes_endpoint_without_terminal_status() {
         let trigger = Arc::new(tokio::sync::Notify::new());
         let handle = PVisor::builder()
             .executors(vec![Arc::new(PanickingVm {
@@ -1141,7 +1145,7 @@ mod tests {
             .unwrap();
         let path = handle.control_socket().unwrap();
         // Exercise cleanup after the server has already entered its accept
-        // loop, not just an attempt that finished before the server was polled.
+        // loop, not just an execution that finished before the server was polled.
         exchange(&path, &request(&handle, HostVmCommand::Status)).await;
         trigger.notify_one();
         assert!(
@@ -1166,13 +1170,13 @@ mod tests {
                 .parent()
                 .unwrap()
                 .parent(),
-            Some(root.join("jobs").as_path())
+            Some(root.join("sessions").as_path())
         );
         let sibling = allocate_host_directory("exec-").unwrap();
         let nested = InstanceControlServer::bind(
             Some(&sibling.path().join("custom.sock")),
             "bind-test",
-            "attempt-test",
+            "execution-test",
         )
         .unwrap();
         assert_eq!(nested.directory(), root);
@@ -1187,18 +1191,20 @@ mod tests {
     async fn custom_path_permissions_create_only_and_inode_safe_cleanup() {
         let directory = allocate_host_directory("control-test-").unwrap();
         let path = directory.path().join("custom.sock");
-        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
+        let server =
+            InstanceControlServer::bind(Some(&path), "bind-test", "execution-test").unwrap();
         assert_eq!(server.directory(), host_authority_root().unwrap());
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").is_err());
+        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "execution-test").is_err());
         drop(server);
         assert!(!path.exists());
         assert!(directory.path().is_dir());
 
-        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
+        let server =
+            InstanceControlServer::bind(Some(&path), "bind-test", "execution-test").unwrap();
         std::fs::remove_file(&path).unwrap();
         let replacement = UnixListener::bind(&path).unwrap();
         let replacement_inode = std::fs::symlink_metadata(&path).unwrap().ino();
@@ -1210,7 +1216,8 @@ mod tests {
         drop(replacement);
         std::fs::remove_file(&path).unwrap();
 
-        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
+        let server =
+            InstanceControlServer::bind(Some(&path), "bind-test", "execution-test").unwrap();
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink("missing-target", &path).unwrap();
         drop(server);
@@ -1229,7 +1236,7 @@ mod tests {
             InstanceControlServer::bind(
                 Some(&directory.path().join("missing/socket")),
                 "bind-test",
-                "attempt-test"
+                "execution-test"
             )
             .is_err()
         );
@@ -1237,22 +1244,26 @@ mod tests {
         std::fs::create_dir(&public).unwrap();
         std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
-            InstanceControlServer::bind(Some(&public.join("socket")), "bind-test", "attempt-test")
-                .is_err()
+            InstanceControlServer::bind(
+                Some(&public.join("socket")),
+                "bind-test",
+                "execution-test"
+            )
+            .is_err()
         );
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
         assert!(
-            InstanceControlServer::bind(Some(&alias.join("socket")), "bind-test", "attempt-test")
+            InstanceControlServer::bind(Some(&alias.join("socket")), "bind-test", "execution-test")
                 .is_err()
         );
         let path = directory.path().join("existing");
         std::fs::write(&path, b"keep-me").unwrap();
-        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").is_err());
+        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "execution-test").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"keep-me");
         let link = directory.path().join("existing-link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(InstanceControlServer::bind(Some(&link), "bind-test", "attempt-test").is_err());
+        assert!(InstanceControlServer::bind(Some(&link), "bind-test", "execution-test").is_err());
         assert!(
             std::fs::symlink_metadata(&link)
                 .unwrap()
@@ -1274,7 +1285,7 @@ mod tests {
         let req = request(&handle, HostVmCommand::Status);
         super::exchange(&path, &req).await.unwrap().result.unwrap();
         let mut invalid = req;
-        invalid.target.as_mut().unwrap().attempt_id = Some("other-attempt".into());
+        invalid.target.as_mut().unwrap().execution_id = Some("other-execution".into());
         assert!(
             super::exchange(&path, &invalid)
                 .await
@@ -1307,7 +1318,7 @@ mod tests {
         client.write_all(&bytes).await.unwrap();
         let waiter = tokio::spawn(serve(
             server,
-            find(handle.run_id().as_str(), handle.attempt_id().as_str()).unwrap(),
+            find(handle.run_id().as_str(), handle.execution_id().as_str()).unwrap(),
             Arc::new(AtomicBool::new(false)),
             Duration::from_millis(1),
         ));
@@ -1370,7 +1381,7 @@ mod tests {
             fn supports(&self, _: &RunInvocation) -> bool {
                 true
             }
-            async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+            async fn execute(&self, session: &ExecutionContext) -> crate::ExecutorOutput {
                 assert!(
                     !session
                         .spec()
@@ -1401,15 +1412,21 @@ mod tests {
             .await
             .unwrap();
         assert!(handle.control_socket().is_err());
-        let identity = (handle.run_id().to_string(), handle.attempt_id().to_string());
+        let identity = (
+            handle.run_id().to_string(),
+            handle.execution_id().to_string(),
+        );
         assert!(find(&identity.0, &identity.1).is_some_and(|owner| owner.endpoint.is_none()));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
         let service = handle.execution().clone();
-        assert_eq!(service.status().attempt.attempt_id, *handle.attempt_id());
+        assert_eq!(
+            service.status().execution.execution_id,
+            *handle.execution_id()
+        );
         // Wait for execution so the fixture's metadata assertion is exercised.
         handle.execution().wait_ready().await.unwrap();
         service
-            .dispatch(HostAttemptCommand::Terminate)
+            .dispatch(HostExecutionCommand::Terminate)
             .await
             .unwrap();
         handle.wait().await.unwrap();
@@ -1488,9 +1505,9 @@ mod tests {
         let req = request(&handle, HostVmCommand::Status);
         let reply = exchange(&path, &req).await;
         assert_eq!(reply.status.run_id, *handle.run_id());
-        assert_eq!(reply.status.attempt.attempt_id, *handle.attempt_id());
+        assert_eq!(reply.status.execution.execution_id, *handle.execution_id());
         let mut invalid = req.clone();
-        invalid.version = 2;
+        invalid.version = AGENTCTL_HOST_VERSION + 1;
         assert!(
             super::exchange(&path, &invalid)
                 .await
@@ -1499,7 +1516,7 @@ mod tests {
                 .contains("version")
         );
         invalid = req.clone();
-        invalid.target.as_mut().unwrap().attempt_id = Some("other-attempt".into());
+        invalid.target.as_mut().unwrap().execution_id = Some("other-execution".into());
         assert!(
             super::exchange(&path, &invalid)
                 .await
@@ -1519,7 +1536,7 @@ mod tests {
         ] {
             assert_eq!(
                 host_operation(&request(&handle, command), &handle.execution().status()).unwrap(),
-                HostAttemptCommand::Operation { kind }
+                HostExecutionCommand::Operation { kind }
             );
         }
         handle.execution().wait_ready().await.unwrap();
@@ -1609,7 +1626,7 @@ mod tests {
             match variant {
                 0 => request.version += 1,
                 1 => request.target = None,
-                2 => request.target.as_mut().unwrap().attempt_id = Some("stale-attempt".into()),
+                2 => request.target.as_mut().unwrap().execution_id = Some("stale-execution".into()),
                 3 => request.target.as_mut().unwrap().generation = Some("stale-generation".into()),
                 _ => request.request_id = "invalid\nidentity".into(),
             }
@@ -1649,7 +1666,7 @@ mod tests {
             serde_json::json!({
                 "version": AGENTCTL_HOST_VERSION,
                 "run_id": handle.run_id(),
-                "attempt_id": handle.attempt_id(),
+                "execution_id": handle.execution_id(),
                 "command": "status", "file": null,
             }),
             legacy_command,
@@ -1673,14 +1690,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_requires_explicit_attempt_target_before_connecting() {
+    async fn client_requires_explicit_execution_target_before_connecting() {
         let handle = mock().await;
         let path = handle.control_socket().unwrap();
         for variant in 0..3 {
             let mut request = request(&handle, HostVmCommand::Status);
             match variant {
                 0 => request.target = None,
-                1 => request.target.as_mut().unwrap().attempt_id = None,
+                1 => request.target.as_mut().unwrap().execution_id = None,
                 _ => request.target.as_mut().unwrap().generation = Some("unsupported".into()),
             }
             assert!(super::exchange(&path, &request).await.is_err());
@@ -1704,9 +1721,9 @@ mod tests {
                 let request: AgentCtlHostRequest<HostVmCommand> =
                     read_host_frame(&mut stream).await.unwrap();
                 if variant == 2 {
-                    status.attempt.attempt_id = AttemptId::from("other-attempt");
+                    status.execution.execution_id = ExecutionId::from("other-execution");
                 } else if variant == 3 {
-                    status.run_id = pvisor_core::RunId::from("other-job");
+                    status.run_id = pvisor_core::RunId::from("other-session");
                 }
                 let response = AgentCtlHostResponse {
                     version: if variant == 0 {
@@ -1752,7 +1769,7 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[tokio::test]
     #[ignore = "real KVM, static C compiler; PVISOR_TEST_BINARY and PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
-    async fn native_socket_pause_resume_offload_same_attempt() {
+    async fn native_socket_pause_resume_offload_same_execution() {
         let directory = tempfile::tempdir().unwrap();
         let rootfs = directory.path().join("rootfs");
         for name in ["bin", "dev", "proc", "tmp"] {
@@ -1834,14 +1851,14 @@ mod tests {
                     "native CLI exited; inspect native.log"
                 );
                 if let Ok(record) = super::super::registry::RunRecord::read(&stage)
-                    && let Some(attempt_id) = record.attempt_id
+                    && let Some(execution_id) = record.execution_id
                 {
                     let request = AgentCtlHostRequest {
                         version: AGENTCTL_HOST_VERSION,
                         request_id: uuid::Uuid::new_v4().to_string(),
                         target: Some(AgentCtlTarget {
-                            job_id: record.run_id,
-                            attempt_id: Some(attempt_id),
+                            session_id: record.run_id,
+                            execution_id: Some(execution_id),
                             generation: None,
                         }),
                         command: HostVmCommand::Status,
@@ -1874,8 +1891,13 @@ mod tests {
             req.command = command.clone();
             let reply = exchange(&path, &req).await;
             assert_eq!(
-                reply.status.attempt.attempt_id.as_str(),
-                req.target.as_ref().unwrap().attempt_id.as_deref().unwrap()
+                reply.status.execution.execution_id.as_str(),
+                req.target
+                    .as_ref()
+                    .unwrap()
+                    .execution_id
+                    .as_deref()
+                    .unwrap()
             );
             if command == (HostVmCommand::Offload { file: None }) {
                 assert_eq!(reply.status.state, pvisor_core::RunState::Suspended);

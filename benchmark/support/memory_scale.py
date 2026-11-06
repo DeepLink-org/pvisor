@@ -499,9 +499,9 @@ def validate_report(report, config):
     identities = set()
     for guest in guests:
         i, result = guest["instance"], guest.get("result", {})
-        identity = (result.get("run_id"), result.get("attempt_id"))
+        identity = (result.get("run_id"), result.get("execution_id"))
         if not all(identity) or identity in identities or result.get("failure") is not None:
-            raise ValueError("missing/duplicate fresh Run/Attempt or terminal failure")
+            raise ValueError("missing/duplicate fresh Run/Execution or terminal failure")
         identities.add(identity)
         started, finished = (
             result.get("started_at_unix_ms", 0),
@@ -519,7 +519,7 @@ def validate_report(report, config):
             if (
                 result.get("value") != receipt
                 or checkpoint.get("source_run_id") != identity[0]
-                or checkpoint.get("source_attempt_id") != identity[1]
+                or checkpoint.get("source_execution_id") != identity[1]
                 or checkpoint.get("ram_storage") != "raw"
                 or checkpoint.get("created_at_unix_ms", 0) <= 0
                 or not Path(checkpoint.get("store", "")).is_absolute()

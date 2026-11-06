@@ -20,7 +20,7 @@ class DockerEvidenceTests(unittest.TestCase):
             "cpu.max": "400000 100000",
             "pids.max": "256",
         }
-        validate_observation([dict(budget=budget)], [dict(jobs=[])], tasks_max=256)
+        validate_observation([dict(budget=budget)], [dict(sessions=[])], tasks_max=256)
         for key, value in [
             ("memory.max", "max"),
             ("memory.swap.current", "4096"),
@@ -29,14 +29,16 @@ class DockerEvidenceTests(unittest.TestCase):
         ]:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_observation(
-                    [dict(budget={**budget, key: value})], [dict(jobs=[])], tasks_max=256
+                    [dict(budget={**budget, key: value})], [dict(sessions=[])], tasks_max=256
                 )
         with self.assertRaises(ValueError):
             validate_observation(
-                [dict(budget=budget)], [dict(jobs=[dict(kind="build/test")])], tasks_max=256
+                [dict(budget=budget)], [dict(sessions=[dict(kind="build/test")])], tasks_max=256
             )
         with self.assertRaises(ValueError):
-            validate_observation([dict(budget=budget)], [dict(jobs=[])])  # legacy budget stays 128
+            validate_observation(
+                [dict(budget=budget)], [dict(sessions=[])]
+            )  # legacy budget stays 128
 
     def test_recursive_scope_enumeration_and_prefix_boundary(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -332,7 +332,7 @@ async fn cancelled_delivery_future_does_not_strand_paused_vm() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn cancellation_during_offload_finishes_transition_without_resuming_attempt() {
+async fn cancellation_during_offload_finishes_transition_without_resuming_execution() {
     let (coordinator, control) = fixture();
     let gate = control.block("run.offload");
     let entry = entered(&coordinator).await;
@@ -357,7 +357,7 @@ async fn unsupported_offload_keeps_pause_only_and_overlap_wakes_existing_wait() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn uncertain_pause_offload_or_resume_cancels_attempt_without_delivery() {
+async fn uncertain_pause_offload_or_resume_cancels_execution_without_delivery() {
     for failed in ["run.pause", "run.offload", "run.resume"] {
         let (coordinator, control) = fixture();
         *control.fail.lock().unwrap() = Some(failed);
@@ -402,17 +402,17 @@ async fn snapshot_conflict_does_not_override_wait_ownership() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn gateway_adapter_binds_attempt_and_cancel_uses_same_resume_barrier() {
+async fn gateway_adapter_binds_execution_and_cancel_uses_same_resume_barrier() {
     use crate::runtime::model_wait::ModelWaitAdapter;
     use pvisor_gateway::model_wait::ModelWaitLifecycle;
     let (coordinator, control) = fixture();
     let adapter = ModelWaitAdapter {
         coordinator,
-        attempt_id: pvisor_core::AttemptId::new("attempt-a"),
+        execution_id: pvisor_core::ExecutionId::new("execution-a"),
     };
     let mut request = pvisor_core::ModelCallRequest {
         run_id: None,
-        attempt_id: Some(pvisor_core::AttemptId::new("attempt-b")),
+        execution_id: Some(pvisor_core::ExecutionId::new("execution-b")),
         call_id: "call".into(),
         client_model: "test".into(),
         upstream_model: "test".into(),
@@ -421,7 +421,7 @@ async fn gateway_adapter_binds_attempt_and_cancel_uses_same_resume_barrier() {
         upstream_host: "localhost".into(),
     };
     assert!(adapter.reserve(request.clone()).is_err());
-    request.attempt_id = Some(pvisor_core::AttemptId::new("attempt-a"));
+    request.execution_id = Some(pvisor_core::ExecutionId::new("execution-a"));
     let mut wait = adapter.reserve(request).unwrap();
     wait.enter().await.unwrap();
     control.called(1).await;
@@ -507,7 +507,7 @@ async fn actual_gateway_http_delivery_waits_for_native_adapter_resume() {
         );
         let adapter = Arc::new(ModelWaitAdapter {
             coordinator,
-            attempt_id: pvisor_core::AttemptId::new("http-attempt"),
+            execution_id: pvisor_core::ExecutionId::new("http-execution"),
         });
         let config = ProxyConfig::from_toml_str(&format!(
             r#"
@@ -537,7 +537,7 @@ api_key = "test-key"
             storage.path().into(),
             Arc::new(NoopCaptureObserver::new()),
             InProcessRuntime {
-                attempt_id: Some("http-attempt".into()),
+                execution_id: Some("http-execution".into()),
                 model_wait: Some(adapter),
                 ..Default::default()
             },
@@ -834,11 +834,11 @@ async fn host_observed_overlap_forwards_after_cleanup_and_disables_future_pauses
     let (coordinator, control) = idle_offload_fixture();
     let adapter = ModelWaitAdapter {
         coordinator: coordinator.clone(),
-        attempt_id: pvisor_core::AttemptId::new("host-observed"),
+        execution_id: pvisor_core::ExecutionId::new("host-observed"),
     };
     let request = pvisor_core::ModelCallRequest {
         run_id: None,
-        attempt_id: Some(pvisor_core::AttemptId::new("host-observed")),
+        execution_id: Some(pvisor_core::ExecutionId::new("host-observed")),
         call_id: "one".into(),
         client_model: "test".into(),
         upstream_model: "test".into(),
@@ -1118,7 +1118,7 @@ async fn download_wait_uses_common_ownership_and_cancels_safely() {
     Arc::get_mut(&mut coordinator).unwrap().policy.downloads = true;
     let adapter = ModelWaitAdapter {
         coordinator: coordinator.clone(),
-        attempt_id: pvisor_core::AttemptId::new("download-test"),
+        execution_id: pvisor_core::ExecutionId::new("download-test"),
     };
     let mut download = adapter.reserve_download().unwrap().unwrap();
     download.waiting().await.unwrap();
@@ -1198,7 +1198,7 @@ async fn stream_delivery_during_resume_rearm_revokes_new_generation_and_complete
 }
 
 #[tokio::test(start_paused = true)]
-async fn failed_resume_rearm_completes_new_round_with_error_and_cancels_attempt() {
+async fn failed_resume_rearm_completes_new_round_with_error_and_cancels_execution() {
     let (mut coordinator, control) = rounds_fixture();
     Arc::get_mut(&mut coordinator).unwrap().policy.offload_after = None;
     control.rearm.store(true, Ordering::Release);

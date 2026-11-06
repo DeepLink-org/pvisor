@@ -1,4 +1,4 @@
-//! Exercise the public container builder and Job image preparation against one store.
+//! Exercise the public container builder and Session image preparation against one store.
 use pvisor::docker::{
     Store,
     build::{BuildOptions, build},
@@ -7,7 +7,7 @@ use pvisor_overlay_core::backend;
 use std::{collections::BTreeMap, fs, path::Path, process::Command, time::Duration};
 
 #[test]
-fn build_tags_and_job_images_share_one_local_v2_store() {
+fn build_tags_and_session_images_share_one_local_v2_store() {
     const CHILD: &str = "PVISOR_SHARED_IMAGE_STORE_TEST_CHILD";
     if let Ok(root) = std::env::var(CHILD) {
         exercise(Path::new(&root));
@@ -20,7 +20,7 @@ fn build_tags_and_job_images_share_one_local_v2_store() {
         command
             .args([
                 "--exact",
-                "build_tags_and_job_images_share_one_local_v2_store",
+                "build_tags_and_session_images_share_one_local_v2_store",
                 "--nocapture",
             ])
             .env(CHILD, &root)
@@ -99,7 +99,7 @@ fn exercise(root: &Path) {
         fs::write(head, serde_json::to_vec(&record).unwrap()).unwrap();
     }
     let (prepared, owner) = pvisor::cache::prepare_vm_image("shared:alias", None).unwrap();
-    let owner = owner.expect("daemonless Job must use the shared lazy pool");
+    let owner = owner.expect("daemonless Session must use the shared lazy pool");
     assert_eq!(prepared.digest, first.digest);
     assert_eq!(prepared.env["VERSION"], "first");
     assert_eq!(prepared.cmd, vec!["/payload"]);

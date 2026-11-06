@@ -1,6 +1,6 @@
-//! Typed Job requests. CLI syntax is never reconstructed in the service.
+//! Typed Session requests. CLI syntax is never reconstructed in the service.
 //! These DTOs bootstrap a self-executed owner, not a stable public
-//! Job API. The shared core envelopes and host framing are separate contracts.
+//! Session API. The shared core envelopes and host framing are separate contracts.
 use super::{checkpoint, product, run, runtime};
 use anyhow::Context;
 use pvisor_core::host_protocol::{AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlTarget};
@@ -14,7 +14,7 @@ use std::path::Path;
     rename_all = "snake_case",
     deny_unknown_fields
 )]
-pub(crate) enum JobCommand {
+pub(crate) enum SessionCommand {
     Run(Box<run::RunArgs>),
     Status(runtime::StatusArgs),
     Kill(runtime::KillArgs),
@@ -28,7 +28,7 @@ pub(crate) enum JobCommand {
     Drop(runtime::SelectArgs),
 }
 
-impl JobCommand {
+impl SessionCommand {
     pub(super) fn inherits_terminal_input(&self) -> anyhow::Result<bool> {
         match self {
             Self::Run(args) => args.inherits_terminal_input(),
@@ -38,10 +38,10 @@ impl JobCommand {
                 let Some(record) = self.selected_record(&std::env::current_dir()?)? else {
                     return Ok(false);
                 };
-                let Some(job) = pvisor::JobExecution::read(&record)? else {
+                let Some(session) = pvisor::Session::read(&record)? else {
                     return Ok(false);
                 };
-                let pvisor_core::RunInvocation::Process(process) = &job.spec.invocation;
+                let pvisor_core::RunInvocation::Process(process) = &session.spec.invocation;
                 Ok(process.stdin == pvisor_core::StdioMode::Inherit)
             }
             _ => Ok(false),
@@ -49,7 +49,7 @@ impl JobCommand {
     }
 }
 
-impl JobCommand {
+impl SessionCommand {
     pub(super) fn operation(&self) -> &'static str {
         match self {
             Self::Run(_) => "run",
@@ -70,7 +70,7 @@ impl JobCommand {
             Self::Resume(_) | Self::Suspend(_) => checkpoint::check_execution(record)?,
             Self::Fork(args) if args.restores_execution() => checkpoint::check_execution(record)?,
             Self::Fork(_) => {
-                pvisor::job_service::policy::workspace_config(record)?;
+                pvisor::session_service::policy::workspace_config(record)?;
             }
             Self::Checkpoint(args) => args.preflight(record)?,
             _ => {}
@@ -79,15 +79,15 @@ impl JobCommand {
     }
     /// Workspace mutation/restoration owns the stopped source directory.
     /// Execution fork instead pins immutable checkpoints under the runtime's
-    /// execution-operation lease; the source Attempt may keep running.
+    /// execution-operation lease; the source Execution may keep running.
     pub(super) fn lock_source(
         &self,
         record: &pvisor::RunRecord,
-    ) -> anyhow::Result<Option<pvisor::JobDirectoryLock>> {
+    ) -> anyhow::Result<Option<pvisor::SessionDirectoryLock>> {
         if matches!(self, Self::Fork(args) if args.restores_execution()) {
             return Ok(None);
         }
-        pvisor::JobDirectoryLock::acquire(record, self.operation()).map(Some)
+        pvisor::SessionDirectoryLock::acquire(record, self.operation()).map(Some)
     }
     fn selection(&self) -> Option<(Option<&Path>, &Path)> {
         match self {
@@ -102,9 +102,9 @@ impl JobCommand {
                 let (selector, output) = a.selection();
                 Some((Some(selector), output))
             }
-            Self::Suspend(a) => Some((Some(&a.selection().job), &a.selection().output_dir)),
-            Self::Resume(a) => Some((Some(&a.selection().job), &a.selection().output_dir)),
-            Self::Checkpoint(a) => Some((Some(&a.selection().job), &a.selection().output_dir)),
+            Self::Suspend(a) => Some((Some(&a.selection().session), &a.selection().output_dir)),
+            Self::Resume(a) => Some((Some(&a.selection().session), &a.selection().output_dir)),
+            Self::Checkpoint(a) => Some((Some(&a.selection().session), &a.selection().output_dir)),
         }
     }
     pub(super) fn selected_record(&self, cwd: &Path) -> anyhow::Result<Option<pvisor::RunRecord>> {
@@ -117,25 +117,25 @@ impl JobCommand {
             cwd.join(output)
         };
         let selector =
-            selector.context("service Job selector must be resolved before submission")?;
+            selector.context("service Session selector must be resolved before submission")?;
         anyhow::ensure!(
             selector.is_absolute(),
-            "service Job selector must be an absolute durable path"
+            "service Session selector must be an absolute durable path"
         );
         Ok(Some(pvisor::resolve_run(Some(selector), &output)?))
     }
     /// Resolve aliases in the originating cwd once. All subsequent reads and
-    /// mutations address this durable Job root, never a retargetable `last`.
+    /// mutations address this durable Session root, never a retargetable `last`.
     pub(super) fn pin_target(&mut self) -> anyhow::Result<Option<AgentCtlTarget>> {
         let Some((selector, output)) = self.selection() else {
             return Ok(None);
         };
         let record = pvisor::resolve_run(selector, output)?;
-        let root = pvisor::JobExecution::read(&record)?
-            .map(|job| job.root)
+        let root = pvisor::Session::read(&record)?
+            .map(|session| session.root)
             .unwrap_or_else(|| record.stage_dir());
         let root = std::fs::canonicalize(&root)
-            .with_context(|| format!("resolve durable Job root {}", root.display()))?;
+            .with_context(|| format!("resolve durable Session root {}", root.display()))?;
         match self {
             Self::Status(a) => a.selector = Some(root),
             Self::Inspect(a) => a.selector = Some(root),
@@ -144,14 +144,14 @@ impl JobCommand {
 
             Self::Drop(a) => a.selector = root,
             Self::Fork(a) => a.pin_selection(root),
-            Self::Suspend(a) => a.selection_mut().job = root,
-            Self::Resume(a) => a.selection_mut().job = root,
-            Self::Checkpoint(a) => a.selection_mut().job = root,
+            Self::Suspend(a) => a.selection_mut().session = root,
+            Self::Resume(a) => a.selection_mut().session = root,
+            Self::Checkpoint(a) => a.selection_mut().session = root,
             Self::Run(_) => unreachable!(),
         }
         Ok(Some(AgentCtlTarget {
-            job_id: record.run_id,
-            attempt_id: record.attempt_id,
+            session_id: record.run_id,
+            execution_id: record.execution_id,
             generation: record.overlay.map(|overlay| overlay.generation.to_string()),
         }))
     }
@@ -164,59 +164,62 @@ impl JobCommand {
             (Some(record), Some(target)) => check_target(target, &record),
             (Some(_), None) => Err(AgentCtlHostError::new(
                 AgentCtlHostErrorCode::InvalidRequest,
-                "resolved Job command requires a target fence",
+                "resolved Session command requires a target fence",
             )
             .into()),
             (None, None) => Ok(()),
             (None, Some(_)) => Err(AgentCtlHostError::new(
                 AgentCtlHostErrorCode::Conflict,
-                "new Job command cannot address an existing target",
+                "new Session command cannot address an existing target",
             )
             .into()),
         }
     }
 }
 
-pub(super) fn service_context() -> pvisor::job_service::ServiceContext<'static> {
-    pvisor::job_service::ServiceContext {
+pub(super) fn service_context() -> pvisor::session_service::ServiceContext<'static> {
+    pvisor::session_service::ServiceContext {
         expected_target: None,
         check_cancelled: Some(&super::host_service::check_cancelled),
         check_record: Some(&super::host_service::check_record),
     }
 }
 
-pub(super) fn lock_selected_job(
+pub(super) fn lock_selected_session(
     record: &pvisor::RunRecord,
-) -> anyhow::Result<Option<(pvisor::JobExecution, impl Send)>> {
-    pvisor::job_service::lock_selected_job(&service_context(), record)
+) -> anyhow::Result<Option<(pvisor::Session, impl Send)>> {
+    pvisor::session_service::lock_selected_session(&service_context(), record)
 }
 pub(super) fn check_selected_record(
     selected: &pvisor::RunRecord,
     current: &pvisor::RunRecord,
 ) -> anyhow::Result<()> {
-    pvisor::job_service::check_selected_record(selected, current)
+    pvisor::session_service::check_selected_record(selected, current)
 }
 pub(super) fn check_target(
     target: &AgentCtlTarget,
     record: &pvisor::RunRecord,
 ) -> anyhow::Result<()> {
-    pvisor::job_service::check_target(target, record)
+    pvisor::session_service::check_target(target, record)
 }
 
-pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyhow::Result<i32> {
+pub(crate) fn execute(
+    rt: &tokio::runtime::Runtime,
+    command: SessionCommand,
+) -> anyhow::Result<i32> {
     super::host_service::check_cancelled()?;
     match command {
-        JobCommand::Run(args) => return rt.block_on(run::run(*args)),
-        JobCommand::Fork(args) => return rt.block_on(run::fork(args)),
-        JobCommand::Resume(args) => return rt.block_on(checkpoint::resume(args)),
-        JobCommand::Inspect(args) => return runtime::inspect(args),
-        JobCommand::Status(args) => runtime::status(args)?,
-        JobCommand::Kill(args) => runtime::kill(args)?,
+        SessionCommand::Run(args) => return rt.block_on(run::run(*args)),
+        SessionCommand::Fork(args) => return rt.block_on(run::fork(args)),
+        SessionCommand::Resume(args) => return rt.block_on(checkpoint::resume(args)),
+        SessionCommand::Inspect(args) => return runtime::inspect(args),
+        SessionCommand::Status(args) => runtime::status(args)?,
+        SessionCommand::Kill(args) => runtime::kill(args)?,
 
-        JobCommand::Drop(args) => runtime::drop_overlay(args)?,
-        JobCommand::Review(args) => product::review(args)?,
-        JobCommand::Suspend(args) => rt.block_on(checkpoint::suspend(args))?,
-        JobCommand::Checkpoint(args) => rt.block_on(checkpoint::run(args))?,
+        SessionCommand::Drop(args) => runtime::drop_overlay(args)?,
+        SessionCommand::Review(args) => product::review(args)?,
+        SessionCommand::Suspend(args) => rt.block_on(checkpoint::suspend(args))?,
+        SessionCommand::Checkpoint(args) => rt.block_on(checkpoint::run(args))?,
     }
     Ok(0)
 }
@@ -239,7 +242,7 @@ mod tests {
         }))
         .unwrap();
         record.write().unwrap();
-        let owner = pvisor::JobDirectoryLock::acquire(&record, "test-owner").unwrap();
+        let owner = pvisor::SessionDirectoryLock::acquire(&record, "test-owner").unwrap();
         for (state, checkpoint) in [
             ("workspace", None),
             ("execution", None),
@@ -253,8 +256,8 @@ mod tests {
             let super::super::Command::Fork(args) = parsed.command else {
                 panic!("expected fork");
             };
-            let command: JobCommand =
-                serde_json::from_value(serde_json::to_value(JobCommand::Fork(args)).unwrap())
+            let command: SessionCommand =
+                serde_json::from_value(serde_json::to_value(SessionCommand::Fork(args)).unwrap())
                     .unwrap();
             let result = command.lock_source(&record);
             if state == "execution" {
@@ -293,11 +296,11 @@ mod tests {
         let super::super::Command::Spawn(args) = parsed.command else {
             panic!("expected run");
         };
-        let request = JobCommand::Run(args);
+        let request = SessionCommand::Run(args);
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["operation"], "run");
         assert_eq!(value["args"]["command"][1], "literal ; not a shell request");
-        let roundtrip: JobCommand = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip: SessionCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(roundtrip).unwrap(), value);
     }
 
@@ -322,13 +325,13 @@ mod tests {
         let super::super::Command::Spawn(args) = parsed.command else {
             panic!("expected Run");
         };
-        let value = serde_json::to_value(JobCommand::Run(args)).unwrap();
+        let value = serde_json::to_value(SessionCommand::Run(args)).unwrap();
         assert_eq!(
             value["args"]["overlayfs"]["workspace_base_store"],
             "/private/workspace-store"
         );
         assert_eq!(value["args"]["overlayfs"]["workspace_base"], "workspace-id");
-        let decoded: JobCommand = serde_json::from_value(value.clone()).unwrap();
+        let decoded: SessionCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
     }
 
@@ -359,7 +362,7 @@ mod tests {
                 panic!("expected run");
             };
             assert_eq!(
-                JobCommand::Run(args).inherits_terminal_input().unwrap(),
+                SessionCommand::Run(args).inherits_terminal_input().unwrap(),
                 stdin == pvisor_core::StdioMode::Inherit
             );
         }
@@ -368,7 +371,7 @@ mod tests {
             panic!("expected status");
         };
         assert!(
-            !JobCommand::Status(args.args)
+            !SessionCommand::Status(args.args)
                 .inherits_terminal_input()
                 .unwrap()
         );
@@ -380,10 +383,10 @@ mod tests {
         args.extend([
             "--vm-socket",
             "/private/control.sock",
-            "--vm-job-id",
-            "job-one",
-            "--vm-attempt-id",
-            "attempt-one",
+            "--vm-session-id",
+            "session-one",
+            "--vm-execution-id",
+            "execution-one",
         ]);
         args.extend_from_slice(options);
         super::super::Cli::try_parse_from(args).unwrap()
@@ -393,8 +396,8 @@ mod tests {
     fn vm_flags_are_rejected_outside_their_command() {
         let vm_flags = [
             ("--vm-socket", Some("/private/control.sock")),
-            ("--vm-job-id", Some("job-one")),
-            ("--vm-attempt-id", Some("attempt-one")),
+            ("--vm-session-id", Some("session-one")),
+            ("--vm-execution-id", Some("execution-one")),
             ("--vm-pause", None),
             ("--vm-offload", None),
             ("--vm-ram-file", Some("/private/ram")),
@@ -451,8 +454,9 @@ mod tests {
             ),
         ] {
             for flag in flags {
-                let error = super::super::Cli::try_parse_from(["pvisor", command, "job-one", flag])
-                    .unwrap_err();
+                let error =
+                    super::super::Cli::try_parse_from(["pvisor", command, "session-one", flag])
+                        .unwrap_err();
                 assert_eq!(
                     error.kind(),
                     clap::error::ErrorKind::UnknownArgument,
@@ -470,12 +474,12 @@ mod tests {
             ("suspend", vec!["--vm-offload"]),
             ("resume", vec!["--vm-load"]),
         ] {
-            for missing in ["--vm-socket", "--vm-job-id", "--vm-attempt-id"] {
-                let mut args = vec!["pvisor", command, "job-one"];
+            for missing in ["--vm-socket", "--vm-session-id", "--vm-execution-id"] {
+                let mut args = vec!["pvisor", command, "session-one"];
                 for (flag, value) in [
                     ("--vm-socket", "/private/control.sock"),
-                    ("--vm-job-id", "job-one"),
-                    ("--vm-attempt-id", "attempt-one"),
+                    ("--vm-session-id", "session-one"),
+                    ("--vm-execution-id", "execution-one"),
                 ] {
                     if flag != missing {
                         args.extend([flag, value]);
@@ -487,29 +491,29 @@ mod tests {
                     "{command} missing {missing}"
                 );
             }
-            let parsed = parse_vm(command, Some("another-job"), &options);
+            let parsed = parse_vm(command, Some("another-session"), &options);
             assert!(
                 vm_request(&parsed.command)
                     .unwrap_err()
                     .to_string()
                     .contains("selector must match")
             );
-            let parsed = parse_vm(command, Some("job-one"), &options);
+            let parsed = parse_vm(command, Some("session-one"), &options);
             let request = vm_request(&parsed.command).unwrap().unwrap();
             let target = request.target().unwrap();
-            assert_eq!(target.job_id, "job-one");
-            assert_eq!(target.attempt_id.as_deref(), Some("attempt-one"));
+            assert_eq!(target.session_id, "session-one");
+            assert_eq!(target.execution_id.as_deref(), Some("execution-one"));
             request.validate_target(Some(&target)).unwrap();
             assert!(request.validate_target(None).is_err());
             let mut wrong = target.clone();
-            wrong.attempt_id = Some("another-attempt".into());
+            wrong.execution_id = Some("another-execution".into());
             assert!(request.validate_target(Some(&wrong)).is_err());
         }
-        for identity in ["--vm-job-id", "--vm-attempt-id"] {
+        for identity in ["--vm-session-id", "--vm-execution-id"] {
             let mut args = vec!["pvisor", "status", "--vm-socket", "/private/control.sock"];
             for (flag, value) in [
-                ("--vm-job-id", "job-one"),
-                ("--vm-attempt-id", "attempt-one"),
+                ("--vm-session-id", "session-one"),
+                ("--vm-execution-id", "execution-one"),
             ] {
                 args.extend([flag, if flag == identity { "   " } else { value }]);
             }
@@ -522,7 +526,7 @@ mod tests {
             );
         }
         for (command, options) in [("suspend", vec![]), ("resume", vec![])] {
-            let parsed = parse_vm(command, Some("job-one"), &options);
+            let parsed = parse_vm(command, Some("session-one"), &options);
             assert!(vm_request(&parsed.command).is_err());
         }
         for options in [
@@ -532,13 +536,13 @@ mod tests {
             let mut args = vec![
                 "pvisor",
                 "suspend",
-                "job-one",
+                "session-one",
                 "--vm-socket",
                 "/private/control.sock",
-                "--vm-job-id",
-                "job-one",
-                "--vm-attempt-id",
-                "attempt-one",
+                "--vm-session-id",
+                "session-one",
+                "--vm-execution-id",
+                "execution-one",
             ];
             args.extend(options);
             assert!(super::super::Cli::try_parse_from(args).is_err());
@@ -563,7 +567,7 @@ mod tests {
                 assert!(arg.get_help().is_some(), "{command}: {}", arg.get_id());
                 assert_eq!(arg.get_help_heading(), Some("Live VM"));
             }
-            for flag in ["--vm-socket", "--vm-job-id", "--vm-attempt-id"] {
+            for flag in ["--vm-socket", "--vm-session-id", "--vm-execution-id"] {
                 assert!(help.contains(flag), "{help}");
             }
             for flag in ["--vm-pause", "--vm-offload", "--vm-ram-file"] {
@@ -589,8 +593,8 @@ mod tests {
                 .to_string();
             for flag in [
                 "--vm-socket",
-                "--vm-job-id",
-                "--vm-attempt-id",
+                "--vm-session-id",
+                "--vm-execution-id",
                 "--vm-pause",
                 "--vm-offload",
                 "--vm-ram-file",
@@ -608,12 +612,12 @@ mod tests {
         let super::super::Command::Status(args) = parsed.command else {
             unreachable!()
         };
-        let value = serde_json::to_value(JobCommand::Status(args.args)).unwrap();
+        let value = serde_json::to_value(SessionCommand::Status(args.args)).unwrap();
         assert!(!value.to_string().contains("vm_"));
-        let _: JobCommand = serde_json::from_value(value).unwrap();
+        let _: SessionCommand = serde_json::from_value(value).unwrap();
         let parsed = parse_vm(
             "suspend",
-            Some("job-one"),
+            Some("session-one"),
             &["--vm-offload", "--vm-ram-file", "/private/ram"],
         );
         let request = vm_request(&parsed.command).unwrap().unwrap();
@@ -623,16 +627,16 @@ mod tests {
         let super::super::Command::Suspend(args) = parsed.command else {
             unreachable!()
         };
-        let value = serde_json::to_value(JobCommand::Suspend(args.args)).unwrap();
+        let value = serde_json::to_value(SessionCommand::Suspend(args.args)).unwrap();
         assert!(!value.to_string().contains("vm_"));
-        let _: JobCommand = serde_json::from_value(value).unwrap();
-        let parsed = parse_vm("resume", Some("job-one"), &["--vm-load"]);
+        let _: SessionCommand = serde_json::from_value(value).unwrap();
+        let parsed = parse_vm("resume", Some("session-one"), &["--vm-load"]);
         let super::super::Command::Resume(args) = parsed.command else {
             unreachable!()
         };
-        let value = serde_json::to_value(JobCommand::Resume(args.args)).unwrap();
+        let value = serde_json::to_value(SessionCommand::Resume(args.args)).unwrap();
         assert!(!value.to_string().contains("vm_"));
-        let _: JobCommand = serde_json::from_value(value).unwrap();
+        let _: SessionCommand = serde_json::from_value(value).unwrap();
     }
 
     #[test]
@@ -646,13 +650,13 @@ mod tests {
             let mut args = vec![
                 "pvisor",
                 command,
-                "job-one",
+                "session-one",
                 "--vm-socket",
                 "/private/control.sock",
-                "--vm-job-id",
-                "job-one",
-                "--vm-attempt-id",
-                "attempt-one",
+                "--vm-session-id",
+                "session-one",
+                "--vm-execution-id",
+                "execution-one",
             ];
             if let Some(option) = option {
                 args.push(option);
@@ -660,10 +664,10 @@ mod tests {
             let parsed = super::super::Cli::try_parse_from(args).unwrap();
             let request = vm_request(&parsed.command).unwrap().unwrap();
             assert_eq!(format!("{:?}", request.command), action);
-            assert_eq!(request.target().unwrap().job_id, "job-one");
+            assert_eq!(request.target().unwrap().session_id, "session-one");
             assert_eq!(
-                request.target().unwrap().attempt_id.as_deref(),
-                Some("attempt-one")
+                request.target().unwrap().execution_id.as_deref(),
+                Some("execution-one")
             );
         }
         assert!(
@@ -680,11 +684,11 @@ mod tests {
     #[test]
     fn live_vm_controls_cannot_enter_the_owner_bootstrap_protocol() {
         assert!(
-            serde_json::from_value::<JobCommand>(serde_json::json!({
+            serde_json::from_value::<SessionCommand>(serde_json::json!({
                 "operation": "vm",
                 "args": {
-                    "job_id": "job-one",
-                    "attempt_id": "attempt-one",
+                    "session_id": "session-one",
+                    "execution_id": "execution-one",
                     "socket": "/private/control.sock",
                     "endpoint": null,
                     "command": {"operation": "status"}
@@ -699,7 +703,8 @@ mod tests {
     #[test]
     fn ordinary_lifecycle_commands_do_not_become_live_control_requests() {
         for command in ["status", "suspend", "resume"] {
-            let parsed = super::super::Cli::try_parse_from(["pvisor", command, "job-one"]).unwrap();
+            let parsed =
+                super::super::Cli::try_parse_from(["pvisor", command, "session-one"]).unwrap();
             assert!(vm_request(&parsed.command).unwrap().is_none());
         }
     }

@@ -19,13 +19,13 @@ A workload can return `1`, `2`, or `125` itself, so a number alone is insufficie
 | Command under `inspect` | Returns the inspected command's exit code |
 | Companion command | Dispatch preserves its code; also inspect replay result phase/quality |
 
-Apply conflicts, missing Jobs, and UnsupportedPolicy do not currently have distinct numeric codes. Workloads may themselves return 1, 2, 125, or 130; numbers alone cannot distinguish agent failure from pVisor refusal.
+Apply conflicts, missing Sessions, and UnsupportedPolicy do not currently have distinct numeric codes. Workloads may themselves return 1, 2, 125, or 130; numbers alone cannot distinguish agent failure from pVisor refusal.
 
 ## Daemon process and API errors {#daemon}
 
 The standalone `pvisor-daemon` process returns 0 for successful `protocol` or normal server shutdown, 2 for clap argument errors, and 1 for startup/runtime errors reported on stderr. These are service process statuses, not sandbox workload exit codes. Companion dispatch preserves the companion's code when installed.
 
-Lifecycle clients must instead inspect HTTP status, `{code, message}` and `X-Request-ID`. Create returns 202 JSON; pause/resume return 202 with empty bodies; confirmed deletion returns 204. None establishes workload command success. Command results come from the prepared image's real execd data plane, not the native Job Run Bundle or retired Cluster aggregate result. Unsupported creation options are rejected rather than silently applied. See [daemon operations](../guides/daemon/index.md#operations).
+Lifecycle clients must instead inspect HTTP status, `{code, message}` and `X-Request-ID`. Create returns 202 JSON; pause/resume return 202 with empty bodies; confirmed deletion returns 204. None establishes workload command success. Command results come from the prepared image's real execd data plane, not the native Session Run Bundle or retired Cluster aggregate result. Unsupported creation options are rejected rather than silently applied. See [daemon operations](../guides/daemon/index.md#operations).
 
 ## Automation
 
@@ -61,6 +61,6 @@ The command returns `7` and may still leave a reviewable `result.txt`. Retain ex
 | `deadline_exceeded` | Task exceeded its wall-clock deadline; inspect progress and retained files |
 | `infrastructure` | Execution machinery failed, such as sandbox setup or I/O; inspect diagnostics |
 
-Parse errors and pre-admission failures can occur before `run.failure` or a Bundle exists. Missing Job selection, apply conflicts, and management-command errors are reported on stderr with exit 1, rather than being fabricated as workload failures. `UnsupportedPolicy` diagnostics describe a rejected capability request; `CAPABILITY_UNSUPPORTED` is used for ordinary execution-checkpoint/suspend requests. Do not grade these as failed model answers.
+Parse errors and pre-admission failures can occur before `run.failure` or a Bundle exists. Missing Session selection, apply conflicts, and management-command errors are reported on stderr with exit 1, rather than being fabricated as workload failures. `UnsupportedPolicy` diagnostics describe a rejected capability request; `CAPABILITY_UNSUPPORTED` is used for ordinary execution-checkpoint/suspend requests. Do not grade these as failed model answers.
 
 The downloadable [nonzero-exit sample](../assets/examples/json/failed-run.json) records `state = "failed"`, `exit_code = 7`, and `failure.kind = "process_exit"`. The [timeout sample](../assets/examples/json/timeout-run.json) records `state = "failed"`, omits `exit_code`, and uses `failure.kind = "deadline_exceeded"`; its CLI returned 1. Both retain staged candidate files. [Collection provenance](../assets/examples/json/provenance.json) includes the commands and observed return codes.

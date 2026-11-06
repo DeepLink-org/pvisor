@@ -16,7 +16,7 @@ pub enum AuditKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditScope {
     pub run_id: String,
-    pub attempt_id: String,
+    pub execution_id: String,
     pub view: String,
 }
 

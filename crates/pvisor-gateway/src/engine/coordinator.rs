@@ -100,7 +100,7 @@ impl CaptureRuntime {
     }
 
     /// Backpressured admission to the same FIFO as `spawn_apply`. Once admitted,
-    /// dropping this future does not cancel the owned capture job.
+    /// dropping this future does not cancel the owned capture session.
     pub async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
         self.apply_dispatcher
             .apply(Arc::new(ctx.clone()), event)
@@ -141,7 +141,7 @@ impl CaptureRuntime {
         .await?
     }
 
-    /// Barrier behind accepted jobs, including the backfills they await. This
+    /// Barrier behind accepted sessions, including the backfills they await. This
     /// is not a fence against producers that continue admitting new work.
     /// Rejected-event diagnostics use a separate writer; shutdown, not this
     /// capture barrier, explicitly drains that writer.
@@ -219,7 +219,7 @@ impl CaptureRuntimeInner {
                             record,
                         )
                     {
-                        // Diagnostic failure must not abandon the child's accepted job.
+                        // Diagnostic failure must not abandon the child's accepted session.
                         tracing::error!("prepared backfill dead letter write failed: {dl:#}");
                     }
                     tracing::warn!("spawn link backfill failed: {error:#}");

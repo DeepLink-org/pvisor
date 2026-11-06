@@ -2,7 +2,7 @@
 
 用 OpenSandbox 1.1.0 或 E2B Python SDK 2.59.0 驱动本机 Linux VM 沙箱。daemon 负责资源准入、持久归属、生命周期与过期清理；每个沙箱由独立 supervisor 持有，API 重启后可重新连接。
 
-需要工作区改动审查与合入时，使用原生 Job 的 `pvisor spawn`。daemon 提供已测试的核心 SDK 子集，不提供 Job 的 stage/apply 或 checkpoint/fork API。跨节点放置、工作流与业务重试由调用方管理。
+需要工作区改动审查与合入时，使用原生 Session 的 `pvisor spawn`。daemon 提供已测试的核心 SDK 子集，不提供 Session 的 stage/apply 或 checkpoint/fork API。跨节点放置、工作流与业务重试由调用方管理。
 
 ## 前提条件 {#prerequisites}
 
@@ -68,7 +68,7 @@ EOF
 | 能力 | 当前行为 |
 | --- | --- |
 | 镜像创建、列表、查询、删除 | 本机沙箱生命周期；创建接受 argv/env/metadata、CPU/memory 限制及可选 TTL |
-| Pause / resume | 同一 Attempt 上已确认的 live vCPU pause/resume，不是 checkpoint |
+| Pause / resume | 同一 Execution 上已确认的 live vCPU pause/resume，不是 checkpoint |
 | 续期 | 未来 RFC3339 时间，必须延长已有 TTL |
 | 端点 | 仅 daemon 路由的 execd 44772 与 egress 18080 |
 | 命令、文件、health、metrics | 默认原生 guest 引擎；显式上游模板使用服务代理 |
@@ -190,11 +190,11 @@ OpenSandbox 不支持签名端点过期、任意应用端口、WebSocket 或 CON
 
 宿主账户、daemon/firmware 和预制镜像必须可信。私有状态与同 UID IPC 无法阻止敌对同 UID 或 root 代码。其他本机用户可能访问 loopback 发布，应配置服务鉴权与宿主访问控制。秘密不进入 supervisor argv 或宿主环境，但保存在私有记录中。目前没有安全审计结果；敌对多用户隔离不在保护范围内。
 
-## 与原生 Job、缓存和旧 Cluster 的关系 {#native}
+## 与原生 Session、缓存和旧 Cluster 的关系 {#native}
 
-daemon sandbox ID 不是 Job ID，不要传给 `pvisor checkpoint`、`fork`、`apply` 或 `drop`。daemon pause 是同一 live Attempt 上已确认的 vCPU pause，不是封存 RAM/CPU/设备/文件系统快照。原生 Job 的文件审查、检查点与模型捕获继续走 `pvisor spawn` 路径：执行步骤见 [VM 指南](../executors/vm.md)，本机 Job 文件检查点见[检查点与分叉](../fork-checkpoint.md)，模型请求路由和捕获见 [Gateway 指南](../capture.md)。兼容的独立 rootfs、无网络 VM Job 可以使用 execution checkpoint；通过 `pvisor status --json` 检查 capability 与 blockers。
+daemon sandbox ID 不是 Session ID，不要传给 `pvisor checkpoint`、`fork`、`apply` 或 `drop`。daemon pause 是同一 live Execution 上已确认的 vCPU pause，不是封存 RAM/CPU/设备/文件系统快照。原生 Session 的文件审查、检查点与模型捕获继续走 `pvisor spawn` 路径：执行步骤见 [VM 指南](../executors/vm.md)，本机 Session 文件检查点见[检查点与分叉](../fork-checkpoint.md)，模型请求路由和捕获见 [Gateway 指南](../capture.md)。兼容的独立 rootfs、无网络 VM Session 可以使用 execution checkpoint；通过 `pvisor status --json` 检查 capability 与 blockers。
 
-`pvisor cache prepare/publish/list/stat/read` 保持为独立命令，不是 daemon 子命令；发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。Daemon 状态与原生 Job 和缓存存储分开保存；Daemon API key 不授权独立缓存或 node 运行时 IPC。
+`pvisor cache prepare/publish/list/stat/read` 保持为独立命令，不是 daemon 子命令；发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。Daemon 状态与原生 Session 和缓存存储分开保存；Daemon API key 不授权独立缓存或 node 运行时 IPC。
 
 旧 Cluster 任务/客户端 SDK、Controller/Worker 注册、放置、DAG、lease 续期、完成 outbox 和 artifact 退役命令都不是 daemon 接口。不要把旧 task JSON、`worker.toml`、Controller 凭据或 journal 作为 daemon 输入；分布式任务历史没有自动转成沙箱状态的路径。退役部署前保留旧结果，为 OpenSandbox profile 使用新状态。
 

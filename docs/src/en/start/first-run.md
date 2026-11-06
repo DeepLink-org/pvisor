@@ -69,7 +69,7 @@ The final list should no longer contain `pvisor-demo`. If ten minutes have elaps
 | Name already exists | Inspect `pvisor ps -a` and choose another name; remove only containers you know belong to this demo. |
 | `exec` cannot find a running instance | Check status and name with `pvisor ps -a`, including whether the sleep deadline elapsed. |
 
-This mode manages VMs through container commands. See the [container reference](../reference/cli.md#container-commands) for flags and volume persistence. This demo configures no volumes and needs no Job review/apply/drop.
+This mode manages VMs through container commands. See the [container reference](../reference/cli.md#container-commands) for flags and volume persistence. This demo configures no volumes and needs no Session review/apply/drop.
 
 ## Agent style stagebox {#agent-style}
 
@@ -113,7 +113,7 @@ pvisor spawn --safe --overlaynet-deny-all -- sh -c '
 '
 ```
 
-Wait for the command to finish and return to your terminal prompt. `spawn` starts and records a Job; `--safe` requests isolation and workspace staging; `--overlaynet-deny-all` disables networking for this offline task; everything after `--` is the program and its arguments.
+Wait for the command to finish and return to your terminal prompt. `spawn` starts and records a Session; `--safe` requests isolation and workspace staging; `--overlaynet-deny-all` disables networking for this offline task; everything after `--` is the program and its arguments.
 
 The command writes to files without printing their contents. Both files should remain staged. Check that neither appeared in the original directory:
 
@@ -127,11 +127,11 @@ Expected output:
 Workspace unchanged
 ```
 
-If this line is absent, stop before applying anything. Check that the launch command included `--safe`, that the Job started successfully, and that you are in the right directory. For startup failures, see [troubleshooting](#troubleshooting) below.
+If this line is absent, stop before applying anything. Check that the launch command included `--safe`, that the Session started successfully, and that you are in the right directory. For startup failures, see [troubleshooting](#troubleshooting) below.
 
 ### 3. Review the staged changes {#review-changes}
 
-Check the Job status and file diff:
+Check the Session status and file diff:
 
 ```bash
 pvisor status last
@@ -140,7 +140,7 @@ pvisor review last --diff
 
 `status` should show a stopped task. `review` should list two additions, `hello.txt` and `scratch.txt`, containing `Hello from pVisor` and `Temporary notes`. Identities, paths, and timestamps vary between runs.
 
-`last` selects the most recently registered Job for this workspace. Do not start another Job here until you finish the tutorial, because `last` would then select the new task. Use explicit [Job identities](../reference/jobs.md) for parallel work.
+`last` selects the most recently registered Session for this workspace. Do not start another Session here until you finish the tutorial, because `last` would then select the new task. Use explicit [Session identities](../reference/sessions.md) for parallel work.
 
 You can also read a file in the task's read-only view:
 
@@ -148,7 +148,7 @@ You can also read a file in the task's read-only view:
 pvisor inspect last -- cat hello.txt
 ```
 
-Expect `Hello from pVisor`. You can read the file inside the Job. In the original directory, `cat hello.txt` should still report a missing file.
+Expect `Hello from pVisor`. You can read the file inside the Session. In the original directory, `cat hello.txt` should still report a missing file.
 
 Preview the selection before writing to the original directory:
 
@@ -191,7 +191,7 @@ Expect the same two lines again. `drop` leaves the accepted `hello.txt` in place
 
 ### What happened? {#what-happened}
 
-| Operation | Files in the Job | Files in the original directory |
+| Operation | Files in the Session | Files in the original directory |
 | --- | --- | --- |
 | `spawn --safe` completes | Both files are candidates | Neither file exists |
 | `apply --path hello.txt` completes | Temporary notes still await a decision | Only `hello.txt` |
@@ -206,14 +206,14 @@ File staging controls acceptance of file changes. `drop` does not undo accepted 
 | `pvisor: command not found` | Activate the installation environment or put the native package's `bin` on `PATH`; see [installation checks](installation.md#verify-installation). |
 | FUSE, FSKit, or mount failure | Complete [platform setup](installation.md#local-prerequisites). Check the device and mount helper on Linux or the filesystem extension on macOS. |
 | `setgroups`, `uid_map`, or user namespace permission error | Check system user namespace and AppArmor policies; see the [Host executor](../guides/executors/host.md). |
-| `last` is missing or selects another task | Return to the launch directory and use the recorded Job identity; see [Jobs and storage](../reference/jobs.md). |
-| `apply` refuses to run | Check that the Job stopped, then inspect conflicts or incomplete records; see [review and apply](../guides/review-apply.md). |
+| `last` is missing or selects another task | Return to the launch directory and use the recorded Session identity; see [Sessions and storage](../reference/sessions.md). |
+| `apply` refuses to run | Check that the Session stopped, then inspect conflicts or incomplete records; see [review and apply](../guides/review-apply.md). |
 
-`--safe` refuses to start if required controls cannot be installed. Keep the flag while fixing setup: ordinary Host Jobs write directly to the original workspace by default.
+`--safe` refuses to start if required controls cannot be installed. Keep the flag while fixing setup: ordinary Host Sessions write directly to the original workspace by default.
 
 ## Next steps {#next-steps}
 
 - [Repair tests with Claude Code](../guides/agents/claude-code.md#repair-task): use a reproducible small project, task prompt, and acceptance checks for a real agent handoff.
 - [Local workflows](../guides/index.md): use this process in an existing project, validate candidate changes, and handle conflicts.
 - [VM tool execution](infrastructure.md): execute tests in a Linux VM from a caller script and read structured feedback.
-- [CLI reference](../reference/cli.md): look up flags, Job selection, and storage rules.
+- [CLI reference](../reference/cli.md): look up flags, Session selection, and storage rules.

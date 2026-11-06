@@ -58,7 +58,7 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_RUNTIME_DIR", self.path("runtime"))
-            .env("PVISOR_RUN_HOME", self.path("jobs"))
+            .env("PVISOR_RUN_HOME", self.path("sessions"))
             .env("PVISOR_IMAGE_STORE", self.path("images"))
             .env("PVISOR_DOCKER_HOME", self.path("docker"))
             .current_dir(self.path("workspace"))
@@ -120,7 +120,7 @@ impl Fixture {
     }
 
     fn assert_inert(&self) {
-        for name in ["jobs", "stage", "images", "docker"] {
+        for name in ["sessions", "stage", "images", "docker"] {
             assert!(!self.path(name).exists(), "unexpected side effect: {name}");
         }
         for name in [
@@ -168,13 +168,15 @@ fn success(output: &Output) {
 }
 
 #[test]
-fn help_groups_stage_with_jobs_and_is_inert() {
+fn help_groups_stage_with_sessions_and_is_inert() {
     let fixture = Fixture::new();
     let output = fixture.run(fixture.command().arg("--help"));
     success(&output);
     assert!(output.stderr.is_empty());
     let help = String::from_utf8(output.stdout).unwrap();
-    let (containers, agents) = help.split_once("Agent Commands:").expect("Job help group");
+    let (containers, agents) = help
+        .split_once("Agent Commands:")
+        .expect("Session help group");
     assert!(
         !containers
             .lines()
@@ -266,7 +268,7 @@ fn invalid_options_and_resource_boundaries_have_no_side_effects() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn validation_and_literal_workload_options_do_not_start_a_job() {
+fn validation_and_literal_workload_options_do_not_start_a_session() {
     let fixture = Fixture::new();
     for (args, error) in [
         (vec!["-w", "relative"], "--workdir must be an absolute path"),
@@ -356,14 +358,14 @@ fn native_stage_preserves_device_and_inode_across_ancestor_copy_up() {
 import os, subprocess, sys, time
 source, target = sys.argv[1:]
 baseline = os.stat(source)
-for attempt in range(3):
+for execution in range(3):
     before = os.stat(source)
     time.sleep(1.2)  # Cross the ordinary mutable-backing metadata TTL.
     fd = os.open(source, os.O_RDONLY)
     try:
         opened = os.fstat(fd)
         assert (before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino), (
-            attempt, before, opened)
+            execution, before, opened)
         assert (baseline.st_dev, baseline.st_ino) == (opened.st_dev, opened.st_ino)
         assert os.read(fd, 1024) == b"immutable input\n"
     finally:
@@ -703,7 +705,7 @@ exit 23
     );
     success(&output);
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(status["schema_version"], 2);
+    assert_eq!(status["schema_version"], 3);
     assert_eq!(status["run"]["overlay"]["state"], "discarded");
     assert_eq!(status["filesystem"]["changed_files"], 0);
 }

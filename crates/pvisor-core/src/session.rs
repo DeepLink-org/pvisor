@@ -151,7 +151,7 @@ mod tests {
         .unwrap();
         let mut request = NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: "session.example".into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
@@ -233,7 +233,7 @@ mod tests {
         };
         let mut request = NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: "evil.example".into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,

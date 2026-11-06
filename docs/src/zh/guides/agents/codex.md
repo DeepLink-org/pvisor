@@ -36,7 +36,7 @@ description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独�
     '
     ```
 
-    这条命令在同一个 Job 的私有 HOME 中完成 API Key 登录并启动 Codex。登录从标准输入读取 Key，不把它放进命令参数。认证方式见 [OpenAI 官方说明](https://developers.openai.com/codex/auth/)。
+    这条命令在同一个 Session 的私有 HOME 中完成 API Key 登录并启动 Codex。登录从标准输入读取 Key，不把它放进命令参数。认证方式见 [OpenAI 官方说明](https://developers.openai.com/codex/auth/)。
 
     !!! tip "认证状态"
         `--safe` 的 HOME 写入在任务结束后丢弃，下次启动需要重新认证。这个例子只放行模型 API；依赖下载和其他目标需要另行配置，见[网络策略](../policies/network.md)。
@@ -50,7 +50,7 @@ description: "在 pVisor 下运行 Codex CLI：--safe 的网络白名单、独�
     pvisor review last --diff
     ```
 
-    检查任务状态、文件差异和实际测试结果。文件应保留在暂存区，原目录尚未接收修改。`last` 指当前工作区最近一次登记的 Job；完成审查前不要在此目录启动其他 Job。
+    检查任务状态、文件差异和实际测试结果。文件应保留在暂存区，原目录尚未接收修改。`last` 指当前工作区最近一次登记的 Session；完成审查前不要在此目录启动其他 Session。
 
 1. ### 接收需要的文件 {#accept-task}
 
@@ -91,7 +91,7 @@ pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
 
 ## 分叉
 
-对符合[工作区分叉前提](../fork-checkpoint.md)的已停止 host Job，可以保留文件状态，换种方式继续：
+对符合[工作区分叉前提](../fork-checkpoint.md)的已停止 host Session，可以保留文件状态，换种方式继续：
 
 ```bash
 pvisor fork last -- codex

@@ -75,13 +75,13 @@ The 2026-10-17 B-FS-ENG evaluation has separate N5 shape, N5 parameters, indepen
 | Cache and bytes | Fresh guest, uncontrolled warm host backing; deterministic high-entropy SplitMix64 bytes with full verification |
 | SDK budget | Guest 2 vCPU, 512 MiB; enclosing group on CPUs 0 and 1, two-core quota, 2 GiB, swap 0 |
 | Samples | 5 fresh environments per condition; 3 dependent resident rounds each; seeded randomized paired conditions and cell order |
-| Default host buffer | 64 MiB payload capacity, 1,024 jobs, 1 MiB batch, at most 64 chunks, 10 ms wait window |
+| Default host buffer | 64 MiB payload capacity, 1,024 sessions, 1 MiB batch, at most 64 chunks, 10 ms wait window |
 | Correctness | Full guest and host byte verification and normal exit; shape 30/30 and parameters 50/50 valid environments, 0 failures |
 | Interference | No quiet-period, external build/test scan, or per-round complete-inventory gate; all valid slow samples and effects of concurrent team activity retained |
 
 Shape and parameters use the same frozen host, payload, and firmware artifacts. Complete source and artifact hashes remain with the raw cohorts. Analysis uses a separate post-collection v2 while preserving the frozen harness and raw records. Btrfs mount compression does not establish a measured physical compression ratio; a fresh guest does not establish cold disk.
 
-This iteration adds strictly validated host-buffer capacity, batch, jobs and delay controls, queue peaks and backpressure counters, and decouples foreground qualification from the background file-I/O lock. A pinned handle lease preserves fd lifetime; native writes still recheck mutable flags. These candidates retain ordering and error boundaries and are evaluated with the ablations below.
+This iteration adds strictly validated host-buffer capacity, batch, sessions and delay controls, queue peaks and backpressure counters, and decouples foreground qualification from the background file-I/O lock. A pinned handle lease preserves fd lifetime; native writes still recheck mutable flags. These candidates retain ordering and error boundaries and are evaluated with the ablations below.
 
 | Shape condition | Mechanism changed |
 | --- | --- |
@@ -513,7 +513,7 @@ The separate B-FS-DIAG cohort runs 1 fresh CLI environment per arm with three re
 
 The stream's 64:1 merging matches the 64-chunk limit: with 1 KiB requests, batches reach 64 KiB before the 1 MiB byte cap. Host batching does not reduce these workloads' FUSE WRITE, OPEN, READ, FLUSH, or RELEASE inventories. Ordering boundaries at per-file close also constrain accumulation across files.
 
-Across its entire lifetime, the CLI workspace owner accepts 25,393 writes and 76,273,228 bytes and executes 1,180 batches. Accepted and backing byte counts match, with 0 backing errors. Queue peaks are 401,288 bytes and 65 jobs, with 0 reserve waits. These are whole-owner peaks without per-tool peak instrumentation; the rootfs owner accepts 0 writes. This diagnostic does not support expanding the 64 MiB queue as a remedy for the measured bottleneck.
+Across its entire lifetime, the CLI workspace owner accepts 25,393 writes and 76,273,228 bytes and executes 1,180 batches. Accepted and backing byte counts match, with 0 backing errors. Queue peaks are 401,288 bytes and 65 sessions, with 0 reserve waits. These are whole-owner peaks without per-tool peak instrumentation; the rootfs owner accepts 0 writes. This diagnostic does not support expanding the 64 MiB queue as a remedy for the measured bottleneck.
 
 Next candidates should examine fixed per-FUSE-WRITE protocol work, qualification, and worker-dispatch costs while preserving file ordering, deferred errors, and explicit synchronization. Slower backing and genuinely concurrent producers may change batching's value and require new cohorts.
 

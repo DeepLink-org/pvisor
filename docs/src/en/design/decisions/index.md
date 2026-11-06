@@ -9,11 +9,11 @@ ADRs retain context, alternatives and consequences. Subsystem articles own curre
 | 0003 | Keep executor selection explicit under safe | Reject missing controls; platform prerequisites remain | Implementation backfill |
 | 0004 | Human approval of semantic commitments | Test results and product commitments receive separate review | Existing contribution rule backfill |
 | 0005 | One Rust VM crate and trait API | Private backends; uniform declarations do not promise cross-architecture restore | Implementation backfill |
-| 0006 | [Snapshot stages and reuse immutable bases](0006-stage-snapshot.md) | Bases require validation and pins; historical standalone CLI profiles differ from current Job interfaces | accepted; retains the original 2026-10-04 status |
+| 0006 | [Snapshot stages and reuse immutable bases](0006-stage-snapshot.md) | Bases require validation and pins; historical standalone CLI profiles differ from current Session interfaces | accepted; retains the original 2026-10-04 status |
 | 0007 | Share file services between host FUSE and virtio-fs | Shared semantics; adapters retain protocol state and concurrency | Implementation backfill |
 | 0008 | Separate Host and Guest control authority | Separate credentials/endpoints; internal Host protocols require exact compatibility | Implementation backfill |
 
-Implementation backfill means the choice can be checked against source or existing contribution rules, without new maintainer approval. ADR 0006 retains its independent record's accepted status; its old CLI and measurements remain historical artifacts. [Environment snapshots](../environment-snapshot.md) and [Job checkpoints](../job-checkpoint-cli.md#10-当前实现与验收边界) define current behavior.
+Implementation backfill means the choice can be checked against source or existing contribution rules, without new maintainer approval. ADR 0006 retains its independent record's accepted status; its old CLI and measurements remain historical artifacts. [Environment snapshots](../environment-snapshot.md) and [Session checkpoints](../session-checkpoint-cli.md#10-当前实现与验收边界) define current behavior.
 
 ## Record the next decision {#new-decision}
 

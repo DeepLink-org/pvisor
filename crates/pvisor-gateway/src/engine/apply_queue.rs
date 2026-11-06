@@ -17,58 +17,58 @@ use crate::dead_letter;
 const APPLY_QUEUE_CAPACITY: usize = 256;
 const REJECTED_EVENT_QUEUE_CAPACITY: usize = 256;
 const MAX_RETAINED_STORIES: usize = 256;
-const MAX_EXTERNAL_JOBS: usize = 1024;
+const MAX_EXTERNAL_TASKS: usize = 1024;
 const MAX_EXTERNAL_BYTES: usize = 64 * 1024 * 1024;
-const MAX_INTERNAL_JOBS: usize = 256;
+const MAX_INTERNAL_TASKS: usize = 256;
 const MAX_INTERNAL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
 struct BudgetUsage {
-    jobs: usize,
+    tasks: usize,
     bytes: usize,
 }
 
-struct JobBudget {
+struct TaskBudget {
     usage: Mutex<BudgetUsage>,
-    max_jobs: usize,
+    max_tasks: usize,
     max_bytes: usize,
 }
 
-impl JobBudget {
-    fn new(max_jobs: usize, max_bytes: usize) -> Arc<Self> {
+impl TaskBudget {
+    fn new(max_tasks: usize, max_bytes: usize) -> Arc<Self> {
         Arc::new(Self {
             usage: Mutex::new(BudgetUsage::default()),
-            max_jobs,
+            max_tasks,
             max_bytes,
         })
     }
 
     // Never wait for global capacity: a worker may retain its permit while
     // awaiting a backfill. Waiting here could make admission a dependency cycle.
-    fn admit(self: &Arc<Self>, bytes: usize) -> anyhow::Result<JobPermit> {
+    fn admit(self: &Arc<Self>, bytes: usize) -> anyhow::Result<TaskPermit> {
         let mut usage = self.usage.lock().unwrap();
-        if usage.jobs >= self.max_jobs || bytes > self.max_bytes.saturating_sub(usage.bytes) {
-            anyhow::bail!("capture global job/byte budget exhausted");
+        if usage.tasks >= self.max_tasks || bytes > self.max_bytes.saturating_sub(usage.bytes) {
+            anyhow::bail!("capture global task/byte budget exhausted");
         }
-        usage.jobs += 1;
+        usage.tasks += 1;
         usage.bytes += bytes;
-        Ok(JobPermit {
+        Ok(TaskPermit {
             budget: Arc::clone(self),
             bytes,
         })
     }
 }
 
-struct JobPermit {
-    budget: Arc<JobBudget>,
+struct TaskPermit {
+    budget: Arc<TaskBudget>,
     bytes: usize,
 }
 
-impl Drop for JobPermit {
+impl Drop for TaskPermit {
     fn drop(&mut self) {
         let mut usage = self.budget.usage.lock().unwrap();
-        usage.jobs -= 1;
+        usage.tasks -= 1;
         usage.bytes -= self.bytes;
     }
 }
@@ -132,15 +132,18 @@ fn capture_bytes(ctx: &CallContext, event: &Event) -> usize {
     context.saturating_add(content).saturating_add(4096)
 }
 
-struct AdmittedJob {
-    job: ApplyJob,
+struct AdmittedTask {
+    task: ApplyTask,
     // Held through preparation, persistence and dependent backfill receipts.
-    _permit: Option<JobPermit>,
+    _permit: Option<TaskPermit>,
 }
 
-impl From<ApplyJob> for AdmittedJob {
-    fn from(job: ApplyJob) -> Self {
-        Self { job, _permit: None }
+impl From<ApplyTask> for AdmittedTask {
+    fn from(task: ApplyTask) -> Self {
+        Self {
+            task,
+            _permit: None,
+        }
     }
 }
 
@@ -148,7 +151,7 @@ enum RejectedEventMessage {
     Event {
         ctx: Arc<CallContext>,
         event: Event,
-        _permit: JobPermit,
+        _permit: TaskPermit,
     },
     Barrier {
         ack: std_mpsc::SyncSender<anyhow::Result<()>>,
@@ -157,7 +160,7 @@ enum RejectedEventMessage {
 }
 
 struct RejectedEventWriter {
-    budget: Arc<JobBudget>,
+    budget: Arc<TaskBudget>,
     tx: std_mpsc::SyncSender<RejectedEventMessage>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -202,7 +205,7 @@ impl RejectedEventWriter {
             })
             .expect("dead-letter writer thread must start with capture runtime");
         Self {
-            budget: JobBudget::new(REJECTED_EVENT_QUEUE_CAPACITY, MAX_DIAGNOSTIC_BYTES),
+            budget: TaskBudget::new(REJECTED_EVENT_QUEUE_CAPACITY, MAX_DIAGNOSTIC_BYTES),
             tx,
             worker: Mutex::new(Some(worker)),
         }
@@ -222,7 +225,7 @@ impl RejectedEventWriter {
     fn try_record(&self, ctx: Arc<CallContext>, event: Event) {
         let Ok(permit) = self.budget.admit(capture_bytes(&ctx, &event)) else {
             tracing::error!(
-                "dead-letter byte/job budget exhausted; rejected capture gap remains reported by flush/shutdown"
+                "dead-letter byte/task budget exhausted; rejected capture gap remains reported by flush/shutdown"
             );
             return;
         };
@@ -248,10 +251,10 @@ impl Drop for RejectedEventWriter {
     }
 }
 
-// Each admitted job holds the scheduler alive until it finishes. Idle workers
+// Each admitted task holds the scheduler alive until it finishes. Idle workers
 // hold no scheduler reference, so dropping the runtime still drains accepted
 // work (including cross-story backfills) without a permanent sender/task cycle.
-enum ApplyJob {
+enum ApplyTask {
     Capture {
         owner: Arc<SchedulingOwner>,
         ctx: Arc<CallContext>,
@@ -269,7 +272,7 @@ enum ApplyJob {
     },
 }
 
-impl ApplyJob {
+impl ApplyTask {
     fn accounted_bytes(&self) -> usize {
         match self {
             Self::Capture { ctx, event, .. } => capture_bytes(ctx, event),
@@ -292,20 +295,20 @@ impl ApplyJob {
 struct SchedulingState {
     accepting: bool,
     stopped: bool,
-    queues: HashMap<String, mpsc::Sender<AdmittedJob>>,
+    queues: HashMap<String, mpsc::Sender<AdmittedTask>>,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 struct SchedulingOwner {
-    external: Arc<JobBudget>,
-    internal: Arc<JobBudget>,
+    external: Arc<TaskBudget>,
+    internal: Arc<TaskBudget>,
     state: Mutex<SchedulingState>,
     failure: Mutex<Option<String>>,
     rejected: RejectedEventWriter,
 }
 
 /// The only bounded FIFO and worker per story. The worker owns story state and
-/// performs preparation before applying each job; no second actor mailbox.
+/// performs preparation before applying each task; no second actor mailbox.
 #[derive(Clone)]
 pub(crate) struct ApplyDispatcher {
     inner: Arc<CaptureRuntimeInner>,
@@ -318,8 +321,8 @@ impl ApplyDispatcher {
         Self {
             inner,
             owner: Arc::new(SchedulingOwner {
-                external: JobBudget::new(MAX_EXTERNAL_JOBS, MAX_EXTERNAL_BYTES),
-                internal: JobBudget::new(MAX_INTERNAL_JOBS, MAX_INTERNAL_BYTES),
+                external: TaskBudget::new(MAX_EXTERNAL_TASKS, MAX_EXTERNAL_BYTES),
+                internal: TaskBudget::new(MAX_INTERNAL_TASKS, MAX_INTERNAL_BYTES),
                 state: Mutex::new(SchedulingState {
                     accepting: true,
                     stopped: false,
@@ -335,7 +338,7 @@ impl ApplyDispatcher {
     pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event) {
         let bytes = capture_bytes(&ctx, &event);
         let mut state = self.owner.state.lock().unwrap();
-        let job = ApplyJob::Capture {
+        let task = ApplyTask::Capture {
             owner: Arc::clone(&self.owner),
             ctx: Arc::clone(&ctx),
             event,
@@ -343,7 +346,7 @@ impl ApplyDispatcher {
         };
         if !state.accepting {
             drop(state);
-            self.record_rejected_job(job);
+            self.record_rejected_task(task);
             return;
         }
         let admitted = self.owner.external.admit(bytes);
@@ -353,17 +356,17 @@ impl ApplyDispatcher {
         });
         let rejected = match (admitted, tx) {
             (Ok(permit), Ok(tx)) => tx
-                .try_send(AdmittedJob {
-                    job,
+                .try_send(AdmittedTask {
+                    task,
                     _permit: Some(permit),
                 })
                 .err()
-                .map(|error| error.into_inner().job),
-            _ => Some(job),
+                .map(|error| error.into_inner().task),
+            _ => Some(task),
         };
         drop(state);
-        if let Some(job) = rejected {
-            self.record_rejected_job(job);
+        if let Some(task) = rejected {
+            self.record_rejected_task(task);
         }
     }
 
@@ -372,7 +375,7 @@ impl ApplyDispatcher {
         let (ack, done) = oneshot::channel();
         self.send(
             &story_id,
-            ApplyJob::Capture {
+            ApplyTask::Capture {
                 owner: Arc::clone(&self.owner),
                 ctx,
                 event,
@@ -410,7 +413,7 @@ impl ApplyDispatcher {
         let (ack, done) = oneshot::channel();
         self.send(
             story_id,
-            ApplyJob::Command {
+            ApplyTask::Command {
                 owner: Arc::clone(&self.owner),
                 command: Box::new(command),
                 ack,
@@ -422,14 +425,14 @@ impl ApplyDispatcher {
             .map_err(|_| anyhow::anyhow!("story command reply dropped"))?
     }
 
-    async fn send(&self, story_id: &str, job: ApplyJob, internal: bool) -> anyhow::Result<()> {
+    async fn send(&self, story_id: &str, task: ApplyTask, internal: bool) -> anyhow::Result<()> {
         let budget = if internal {
             &self.owner.internal
         } else {
             &self.owner.external
         };
-        let job_permit = budget.admit(
-            job.accounted_bytes()
+        let task_permit = budget.admit(
+            task.accounted_bytes()
                 .saturating_add(story_id.len().saturating_mul(16)),
         )?;
         let tx = {
@@ -440,7 +443,7 @@ impl ApplyDispatcher {
             self.queue(&mut state, story_id)?
         };
         // Reserve outside the lock. Admission is linearized with shutdown only
-        // when the reserved job is sent, not when a producer starts waiting.
+        // when the reserved task is sent, not when a producer starts waiting.
         let permit = tx
             .reserve_owned()
             .await
@@ -449,9 +452,9 @@ impl ApplyDispatcher {
         if state.stopped || (!internal && !state.accepting) {
             anyhow::bail!("capture scheduling owner is shutting down");
         }
-        permit.send(AdmittedJob {
-            job,
-            _permit: Some(job_permit),
+        permit.send(AdmittedTask {
+            task,
+            _permit: Some(task_permit),
         });
         Ok(())
     }
@@ -473,7 +476,7 @@ impl ApplyDispatcher {
             let (ack, done) = oneshot::channel();
             let result = async {
                 tx.send(
-                    ApplyJob::Command {
+                    ApplyTask::Command {
                         owner: Arc::clone(&self.owner),
                         command: Box::new(LocalStoryCommand::Flush),
                         ack,
@@ -521,7 +524,7 @@ impl ApplyDispatcher {
             let (ack, done) = oneshot::channel();
             let stopped = async {
                 tx.send(
-                    ApplyJob::Stop {
+                    ApplyTask::Stop {
                         owner: Arc::clone(&self.owner),
                         ack,
                     }
@@ -573,20 +576,20 @@ impl ApplyDispatcher {
         &self,
         state: &mut SchedulingState,
         story_id: &str,
-    ) -> anyhow::Result<mpsc::Sender<AdmittedJob>> {
+    ) -> anyhow::Result<mpsc::Sender<AdmittedTask>> {
         if let Some(tx) = state.queues.get(story_id) {
             return Ok(tx.clone());
         }
         if state.queues.len() >= MAX_RETAINED_STORIES {
             anyhow::bail!("capture retained story budget exhausted");
         }
-        let (tx, mut rx) = mpsc::channel::<AdmittedJob>(APPLY_QUEUE_CAPACITY);
+        let (tx, mut rx) = mpsc::channel::<AdmittedTask>(APPLY_QUEUE_CAPACITY);
         let inner = Arc::clone(&self.inner);
         let mut story = StoryActor::new(StoryId::new(story_id), inner.story_deps.clone());
         let worker = tokio::spawn(async move {
-            while let Some(AdmittedJob { job, _permit }) = rx.recv().await {
-                match job {
-                    ApplyJob::Capture {
+            while let Some(AdmittedTask { task, _permit }) = rx.recv().await {
+                match task {
+                    ApplyTask::Capture {
                         owner,
                         ctx,
                         event,
@@ -607,7 +610,7 @@ impl ApplyDispatcher {
                             let _ = ack.send(result);
                         }
                     }
-                    ApplyJob::Command {
+                    ApplyTask::Command {
                         owner,
                         command,
                         ack,
@@ -622,7 +625,7 @@ impl ApplyDispatcher {
                         }
                         let _ = ack.send(result);
                     }
-                    ApplyJob::Stop { owner: _owner, ack } => {
+                    ApplyTask::Stop { owner: _owner, ack } => {
                         let _ = ack.send(story.handle(LocalStoryCommand::LocalSnapshot).await);
                         break;
                     }
@@ -642,18 +645,18 @@ impl ApplyDispatcher {
             .get_or_insert_with(|| format!("{error:#}"));
     }
 
-    fn record_rejected_job(&self, job: ApplyJob) {
-        let ApplyJob::Capture { ctx, event, .. } = job else {
+    fn record_rejected_task(&self, task: ApplyTask) {
+        let ApplyTask::Capture { ctx, event, .. } = task else {
             return;
         };
         self.owner.failure.lock().unwrap().get_or_insert_with(|| {
-            "capture admission rejected job (queue, global budget or shutdown)".to_string()
+            "capture admission rejected task (queue, global budget or shutdown)".to_string()
         });
         self.owner.rejected.try_record(Arc::clone(&ctx), event);
         tracing::warn!(
             target: "pvisor_gateway",
             story_id = %ctx.story_id().as_str(),
-            "capture admission rejected job (queue, global budget or shutdown)"
+            "capture admission rejected task (queue, global budget or shutdown)"
         );
     }
 }
@@ -749,8 +752,8 @@ mod tests {
     }
 
     #[test]
-    fn global_budget_counts_active_jobs_and_releases_on_drop() {
-        let budget = JobBudget::new(2, 100);
+    fn global_budget_counts_active_tasks_and_releases_on_drop() {
+        let budget = TaskBudget::new(2, 100);
         let first = budget.admit(60).unwrap();
         assert!(budget.admit(41).is_err());
         let second = budget.admit(40).unwrap();
@@ -759,7 +762,7 @@ mod tests {
         let replacement = budget.admit(60).unwrap();
         drop((second, replacement));
         let usage = budget.usage.lock().unwrap();
-        assert_eq!((usage.jobs, usage.bytes), (0, 0));
+        assert_eq!((usage.tasks, usage.bytes), (0, 0));
         drop(usage);
         assert!(budget.admit(usize::MAX).is_err());
     }
@@ -803,7 +806,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().jobs, 0);
+        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().tasks, 0);
         let internal_retained = dispatcher.owner.internal.admit(MAX_INTERNAL_BYTES).unwrap();
         let exhausted = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -849,7 +852,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().jobs, 0);
+        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().tasks, 0);
         engine.shutdown().await.unwrap();
     }
 
@@ -900,7 +903,7 @@ mod tests {
                 assistant_content: "x".repeat(MAX_DIAGNOSTIC_BYTES + 1),
             }),
         );
-        assert_eq!(writer.budget.usage.lock().unwrap().jobs, 0);
+        assert_eq!(writer.budget.usage.lock().unwrap().tasks, 0);
         writer.drain().unwrap();
         assert!(
             dead_letter::read_dead_letter_entries(dir.path())

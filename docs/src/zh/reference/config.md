@@ -179,31 +179,31 @@ pvisor spawn --config vm-control.toml
 pvisor spawn --config vm-control.toml --vm-ram-dedup=false
 ```
 
-将 TOML 保存为 `vm-control.toml`；前一个 Attempt 结束并释放 socket 后再
+将 TOML 保存为 `vm-control.toml`；前一个 Execution 结束并释放 socket 后再
 依次执行命令。该 Linux 示例假设有效 UID 为 `1000`；替换为自己的有效 UID
 和规范化 `/tmp`（macOS 通常是 `/private/tmp`）。`vm.control_socket`
 是可选的仅宿主调试创建路径，默认未设置。省略时，owner 在
-`/tmp/pvisor-host-<有效 UID>/jobs/<job-id>/<attempt-id>/control.sock`
-绑定端点，并在执行器启动前将地址与身份写入 Job 的 `live_control` 记录，
+`/tmp/pvisor-host-<有效 UID>/sessions/<session-id>/<execution-id>/control.sock`
+绑定端点，并在执行器启动前将地址与身份写入 Session 的 `live_control` 记录，
 终态时清除。CLI 与嵌入 API 的自定义路径都必须位于该规范权限根目录内；
 已有父目录逐级检查为同 UID、非符号链接、权限恰为 `0700`。
 socket 为 `0600`，不覆盖已有路径。执行器将整个权限根目录排除在 guest
 访问范围之外，包括 host-rootfs VM。
 
-[普通 live VM 命令](cli.md#vm-instance-control) 从 Job 记录发现 owner，
-无需复制启动输出中的地址：`status JOB`、`suspend JOB --vm-pause` /
-`--vm-offload`（可选 `--vm-ram-file PATH`）和 `resume JOB`。
-`--vm-socket PATH` 仅作调试覆盖，同时要求 `--vm-job-id` 和
-`--vm-attempt-id`；当前调试路径的取消限制见
+[普通 live VM 命令](cli.md#vm-instance-control) 从 Session 记录发现 owner，
+无需复制启动输出中的地址：`status SESSION`、`suspend SESSION --vm-pause` /
+`--vm-offload`（可选 `--vm-ram-file PATH`）和 `resume SESSION`。
+`--vm-socket PATH` 仅作调试覆盖，同时要求 `--vm-session-id` 和
+`--vm-execution-id`；当前调试路径的取消限制见
 [owner 控制边界](../design/architecture.md#host-limits)。这些子命令局部选项
 必须放在支持的命令之后，不是 `[vm]` 配置字段。`ctrl` 不是兼容别名。
-活 `resume`（包括 `--vm-load`）继续同一 Attempt，不是快照重启，也不预触
-全部 RAM 页；已停止 Job 的普通 resume 恢复封存检查点。非 VM 控制不受支持。
+活 `resume`（包括 `--vm-load`）继续同一 Execution，不是快照重启，也不预触
+全部 RAM 页；已停止 Session 的普通 resume 恢复封存检查点。非 VM 控制不受支持。
 
 `--vm-node-socket SOCKET` 覆盖 `vm.node_socket`；
 `--vm-snapshot-filesystem-pool DIR` 覆盖 `vm.snapshot_filesystem_pool`。
 省略路径标志保留配置。快照池必须由宿主管理，位于 VM 可写根及快照 store
-之外，并与 Job 位于同一卷；其 Linux x86_64 无网络 profile 不代表通用 VM
+之外，并与 Session 位于同一卷；其 Linux x86_64 无网络 profile 不代表通用 VM
 快照支持。本地冷 pager 的单一选项同时启用回收与压缩，不是独立开关。
 它与 backing/FUSE 压缩、去重、外部池、快照捕获/恢复、快照文件系统池及
 整 VM offload 互斥。去重与两种压缩模式及外部池互斥。Linux 外部池按上述
@@ -227,7 +227,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 
 `[vm].ram_dedup = true` 在使用 VM executor 时请求尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 还会选择该 executor。它与 `memory_pool`、`ram_compression`、`cold_ram_compression` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 互斥。Linux 建议面向普通私有匿名 RAM 与恢复的私有 COW 映射；live `MAP_SHARED` RAM 被跳过，不转换映射。macOS 对其他条件合格的映射报告不支持。runner 将安装报告写入 stderr，建议失败仍继续运行；`accepted_bytes` 不是已合并字节、节省，也不证明扫描已启用。不修改全局 KSM 参数或增设服务。启用前先核对[去重边界与共享风险](../design/memory-optimization/deduplication.md#direction)。
 
-`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通与 live 冷 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
+`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Session store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通与 live 冷 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Session store，或导出完整快照。
 
 ### 封存 rootfs {#prepared-rootfs}
 
@@ -237,7 +237,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 `--rootfs-base-store STORE --rootfs-base ID`。完整命令见
 [封存 rootfs 入口](cli.md#prepared-rootfs)。
 
-首次准备复制并完整校验静止的独立 Linux rootfs。复用时，Job owner 与
+首次准备复制并完整校验静止的独立 Linux rootfs。复用时，Session owner 与
 `VmExecutor::new` 认证小记录、seal 与持久 pin，并取得贯穿运行的 GC lease；
 不重新复制或全树校验。`rootfs` 若同时存在，必须与认证后的基底精确一致；
 `image` 和非 VM executor 会被拒绝；该来源当前不支持 execution checkpoint
@@ -280,7 +280,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 
 `[gateway]` 默认 `mode = "off"`，捕获模式为 `capture`。默认 `admin_listen = "127.0.0.1:9876"`、`level = "dialogue"`、`session_header = "x-pvisor-session-id"`、`debug = false`、`routes = []`。可选 `profile` 当前为 `zcode-bigmodel`；`zcode_builtin_config` 指向该适配配置文件。路由与捕获级别按 [Gateway 指南](../guides/capture.md)配置。
 
-`[record].destination` 是可选路径。Gateway 的模型通信记录与 Trace Event journal 有不同数据职责，按[记录概念](../concepts/jobs.md)保留所需产物。
+`[record].destination` 是可选路径。Gateway 的模型通信记录与 Trace Event journal 有不同数据职责，按[记录概念](../concepts/sessions.md)保留所需产物。
 
 ## 完整配置字段表 {#all-fields}
 
@@ -328,7 +328,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `container.mounts[].source` | `PathBuf` | `必需` | 宿主路径 |
 | `container.mounts[].target` | `PathBuf` | `必需` | 容器路径 |
 | `container.mounts[].read_only` | `bool` | `false` | 只读 bind mount |
-| `vm.control_socket` | `Option<PathBuf>` | `未设置` | 仅宿主可用的 live Attempt 端点；默认自动私有 socket；须已有同 UID 0700 父目录及新路径；`--vm-control-socket` |
+| `vm.control_socket` | `Option<PathBuf>` | `未设置` | 仅宿主可用的 live Execution 端点；默认自动私有 socket；须已有同 UID 0700 父目录及新路径；`--vm-control-socket` |
 | `vm.ram_backing` | `Option<PathBuf>` | `未设置` | 新建 RAM backing 路径；拒绝已有文件；`--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
 | `vm.cold_ram_compression` | `bool` | `false` | 实验性 Linux x86_64 本地 live pager；需内核缺页 userfaultfd 权限；无 FUSE/外部池；`--vm-cold-ram-compression` 选择 VM |

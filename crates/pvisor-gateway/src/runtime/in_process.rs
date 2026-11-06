@@ -1,4 +1,4 @@
-//! In-process Gateway for one pVisor Attempt (no forked daemon).
+//! In-process Gateway for one pVisor Execution (no forked daemon).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,20 +21,20 @@ pub struct InProcessCapture {
     interception_metrics: InterceptionMetrics,
 }
 
-/// Attempt-scoped network services shared by Gateway and other interception
+/// Execution-scoped network services shared by Gateway and other interception
 /// drivers owned by pVisor.
 #[derive(Clone)]
 pub struct InProcessRuntime {
     /// Host-owned Run identity for capture routing. Client headers identify only sub-sessions.
     pub run_id: Option<String>,
-    /// Attempt-local model Gateway credential, kept in memory and never snapshotted.
+    /// Execution-local model Gateway credential, kept in memory and never snapshotted.
     /// When set, SDK requests must supply it as Bearer, x-api-key or x-goog-api-key;
     /// Gateway consumes it before upstream forwarding. Plain proxy traffic is unchanged.
     pub client_token: Option<String>,
     pub controller: Arc<dyn ControlController>,
     pub interception_metrics: InterceptionMetrics,
     pub bandwidth_registry: BandwidthRegistry,
-    pub attempt_id: Option<String>,
+    pub execution_id: Option<String>,
     /// Disable LLM dispatch for pVisor runs that only need the network proxy.
     pub gateway_enabled: bool,
     pub model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
@@ -48,7 +48,7 @@ impl Default for InProcessRuntime {
             controller: Arc::new(PolicyControlController),
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
-            attempt_id: None,
+            execution_id: None,
             gateway_enabled: true,
             model_wait: None,
         }
@@ -93,7 +93,7 @@ impl InProcessCapture {
                         controller: runtime.controller,
                         interception_metrics: thread_metrics,
                         bandwidth_registry: runtime.bandwidth_registry,
-                        attempt_id: runtime.attempt_id,
+                        execution_id: runtime.execution_id,
                         gateway_enabled: runtime.gateway_enabled,
                         model_wait: runtime.model_wait,
                     },

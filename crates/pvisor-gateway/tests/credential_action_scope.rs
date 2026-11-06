@@ -204,7 +204,7 @@ async fn administrative_methods_paths_and_normalization_bypasses_never_reach_ups
         ("DELETE", "/v1/messages/batches/id"),
         ("POST", "/v1/realtime/sessions"),
         ("POST", "/v1/detect"),
-        ("POST", "/v1/fine_tuning/jobs"),
+        ("POST", "/v1/fine_tuning/sessions"),
         ("POST", "/prefix/v1/chat/completions"),
         ("POST", "/v1/files/messages"),
         ("POST", "/v1/messages/delete"),

@@ -43,9 +43,10 @@ pub struct EnvironmentProjection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunRecord {
     pub schema_version: u32,
-    /// Completion protocol required by this Attempt. Legacy records omit it.
+    /// Completion protocol required by this Execution. Legacy records omit it.
     /// Protocol 1 requires a result/Bundle receipt before a terminal state is trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_protocol: Option<u16>,
@@ -53,7 +54,7 @@ pub struct RunRecord {
     pub live_control: Option<super::host_transport::LiveControlRecord>,
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
+    pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,7 +77,7 @@ pub struct RunRecord {
     pub workspace: Option<PathBuf>,
     /// Explicit launch-time project writeback authority, bound to the completion Bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_apply_scope: Option<super::job_service::ProjectApplyScope>,
+    pub project_apply_scope: Option<super::session_service::ProjectApplyScope>,
     #[serde(default)]
     pub overlaynet_listen: Option<String>,
     #[serde(default)]
@@ -104,31 +105,31 @@ pub struct RunRecord {
     pub operation: Option<pvisor_core::operation::Operation>,
 }
 
-/// Exclusive caller-side ownership of a durable Job operation. The root's
-/// `job.lock` is never unlinked, so concurrent binaries lock the same inode.
+/// Exclusive caller-side ownership of a durable Session operation. The root's
+/// `session.lock` is never unlinked, so concurrent binaries lock the same inode.
 /// Mutation ownership clears its diagnostic record on drop while holding flock.
 /// Observation only releases flock by closing its read-only descriptor.
-pub struct JobDirectoryLock {
+pub struct SessionDirectoryLock {
     file: File,
     clear_owner: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct JobLockOwner {
+struct SessionLockOwner {
     protocol: String,
     pid: u32,
     operation: String,
 }
 
-impl JobDirectoryLock {
-    /// Lock a recognized Job without following a lock symlink or accepting hard
+impl SessionDirectoryLock {
+    /// Lock a recognized Session without following a lock symlink or accepting hard
     /// links/foreign ownership. Refuses a live owner, busy lock, unknown schema,
     /// or residual diagnostic owner whose process has not died. No retries.
     pub fn acquire(record: &RunRecord, operation: &str) -> anyhow::Result<Self> {
         Self::lock(record, operation, false)
     }
 
-    /// Exclusively observe an existing Job lock without creating it, updating its
+    /// Exclusively observe an existing Session lock without creating it, updating its
     /// owner record, syncing or truncating it on release. Missing locks fail closed.
     /// Uses the same inode, validation and lock order as mutation ownership.
     pub fn observe_existing(record: &RunRecord) -> anyhow::Result<Self> {
@@ -138,20 +139,20 @@ impl JobDirectoryLock {
     fn lock(record: &RunRecord, operation: &str, observe: bool) -> anyhow::Result<Self> {
         use std::io::{Read, Seek, Write};
         use std::os::unix::fs::OpenOptionsExt;
-        const PROTOCOL: &str = "pvisor-job-lock-1";
+        const PROTOCOL: &str = "pvisor-session-lock-1";
         let current = RunRecord::read(&record.stage_dir())?;
-        super::job_service::check_selected_record(record, &current)?;
+        super::session_service::check_selected_record(record, &current)?;
         anyhow::ensure!(
             !current
                 .live_control
                 .as_ref()
                 .is_some_and(|endpoint| endpoint.is_available()),
-            "Job owner still holds stage; operation {operation} refused"
+            "Session owner still holds stage; operation {operation} refused"
         );
-        let root = crate::JobExecution::read(&current)?
-            .map(|job| job.root)
+        let root = crate::Session::read(&current)?
+            .map(|session| session.root)
             .unwrap_or_else(|| current.stage_dir());
-        let path = root.join("job.lock");
+        let path = root.join("session.lock");
         let mut file = OpenOptions::new()
             .read(true)
             .write(!observe)
@@ -162,7 +163,7 @@ impl JobDirectoryLock {
             .open(&path)
             .with_context(|| {
                 format!(
-                    "open existing Job operation lock {} (preview never initializes locks)",
+                    "open existing Session operation lock {} (preview never initializes locks)",
                     path.display()
                 )
             })?;
@@ -172,48 +173,48 @@ impl JobDirectoryLock {
                 && metadata.uid() == unsafe { libc::geteuid() }
                 && metadata.mode() & 0o7777 == 0o600
                 && metadata.nlink() == 1,
-            "job.lock must be an owned 0600 file with one link"
+            "session.lock must be an owned 0600 file with one link"
         );
         anyhow::ensure!(
             unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "Job operation already in progress: {}",
+            "Session operation already in progress: {}",
             std::io::Error::last_os_error()
         );
         let checked = fs::symlink_metadata(&path)?;
         anyhow::ensure!(
             checked.dev() == metadata.dev() && checked.ino() == metadata.ino(),
-            "job.lock changed while locking"
+            "session.lock changed while locking"
         );
         let mut bytes = Vec::new();
         std::io::Read::by_ref(&mut file)
             .take(4097)
             .read_to_end(&mut bytes)?;
-        anyhow::ensure!(bytes.len() <= 4096, "invalid job.lock owner record");
+        anyhow::ensure!(bytes.len() <= 4096, "invalid session.lock owner record");
         if !bytes.is_empty() {
-            let owner: JobLockOwner = serde_json::from_slice(&bytes)?;
-            anyhow::ensure!(owner.protocol == PROTOCOL, "unknown job.lock protocol");
+            let owner: SessionLockOwner = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(owner.protocol == PROTOCOL, "unknown session.lock protocol");
             anyhow::ensure!(
                 owner.pid > 0
                     && owner.pid <= i32::MAX as u32
                     && unsafe { libc::kill(owner.pid as i32, 0) } < 0
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
-                "residual Job lock owner {} may still be alive",
+                "residual Session lock owner {} may still be alive",
                 owner.pid
             );
         }
         let latest = RunRecord::read(&record.stage_dir())?;
-        super::job_service::check_selected_record(record, &latest)?;
+        super::session_service::check_selected_record(record, &latest)?;
         anyhow::ensure!(
             !latest
                 .live_control
                 .as_ref()
                 .is_some_and(|endpoint| endpoint.is_available()),
-            "Job owner still holds stage"
+            "Session owner still holds stage"
         );
         if !observe {
             file.rewind()?;
             file.set_len(0)?;
-            file.write_all(&serde_json::to_vec(&JobLockOwner {
+            file.write_all(&serde_json::to_vec(&SessionLockOwner {
                 protocol: PROTOCOL.into(),
                 pid: std::process::id(),
                 operation: operation.into(),
@@ -226,7 +227,7 @@ impl JobDirectoryLock {
         })
     }
 }
-impl Drop for JobDirectoryLock {
+impl Drop for SessionDirectoryLock {
     fn drop(&mut self) {
         if self.clear_owner {
             let _ = self.file.set_len(0);
@@ -240,7 +241,7 @@ impl RunRecord {
         anyhow::ensure!(
             matches!(
                 (self.schema_version, self.completion_protocol),
-                (1, None) | (2, Some(super::completion::VERSION))
+                (1, None) | (3, Some(super::completion::VERSION))
             ),
             "unsupported Run record schema {} / completion protocol {:?}",
             self.schema_version,
@@ -248,12 +249,12 @@ impl RunRecord {
         );
         Ok(())
     }
-    /// A missing process/lease is insufficient evidence of a completed Attempt.
+    /// A missing process/lease is insufficient evidence of a completed Execution.
     pub fn require_stopped(&self) -> anyhow::Result<()> {
-        super::job_execution::require_mutable(self)?;
+        super::session_execution::require_mutable(self)?;
         anyhow::ensure!(
             self.state.is_stopped() && self.finished_at_unix_ms.is_some(),
-            "EXECUTION_UNKNOWN: Job {} has no confirmed stopped Attempt (state={}); refuse workspace mutation or capture",
+            "EXECUTION_UNKNOWN: Session {} has no confirmed stopped Execution (state={}); refuse workspace mutation or capture",
             self.run_id,
             self.state.as_str()
         );
@@ -264,7 +265,7 @@ impl RunRecord {
     pub fn lock_current(&self) -> anyhow::Result<(Self, RunLease)> {
         self.lock_current_mode(false)
     }
-    /// Observe the current Attempt under its existing exclusive lease, without
+    /// Observe the current Execution under its existing exclusive lease, without
     /// creating directories or lease files. Completion validation remains mandatory.
     pub fn observe_current(&self) -> anyhow::Result<(Self, RunLease)> {
         self.lock_current_mode(true)
@@ -278,7 +279,7 @@ impl RunRecord {
         };
         let mut current = Self::read(&stage)?;
         // Our own exclusive lease makes is_live true. It must not suppress the
-        // completion gate for a stopped Attempt about to be reviewed or mutated.
+        // completion gate for a stopped Execution about to be reviewed or mutated.
         super::completion::Completion::observe_record(&mut current)?;
         anyhow::ensure!(
             current.run_id == self.run_id,
@@ -298,7 +299,7 @@ impl RunRecord {
     }
 
     /// Initialize preview lock inodes during explicit project-scope launch only.
-    /// The caller owns the new Attempt lease; previews must never call this method.
+    /// The caller owns the new Execution lease; previews must never call this method.
     pub(crate) fn initialize_apply_observation_locks(&self) -> anyhow::Result<()> {
         if self.project_apply_scope.is_none() {
             return Ok(());
@@ -312,18 +313,18 @@ impl RunRecord {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(stage.join("job.lock"))?;
+            .open(stage.join("session.lock"))?;
         let metadata = file.metadata()?;
         anyhow::ensure!(
             metadata.is_file()
                 && metadata.uid() == unsafe { libc::geteuid() }
                 && metadata.mode() & 0o7777 == 0o600
                 && metadata.nlink() == 1,
-            "job.lock must be an owned 0600 file with one link"
+            "session.lock must be an owned 0600 file with one link"
         );
         file.sync_all()?;
-        // All native ExecutionJob mutators use this same RunLease inode. Initialize
-        // it before Job publication, not on the first read-only command.
+        // All native ExecutionSession mutators use this same RunLease inode. Initialize
+        // it before Session publication, not on the first read-only command.
         drop(RunLease::acquire(&stage.join("execution-operation"))?);
         Persistence::sync_directory(&stage)?;
         Ok(())
@@ -370,25 +371,25 @@ impl RunRecord {
     }
 
     pub fn read(stage: &Path) -> anyhow::Result<Self> {
-        // A Job's original stage remains a stable selector across Attempts.
-        // The active Attempt owns its own run.json, Bundle and storage lease.
-        let active = crate::JobExecution::read_stage(stage)?;
-        let stage = active.as_ref().map_or(stage, |job| {
-            if job.state() == crate::JobState::Restoring
-                && !job.active_stage.join(RUN_META_FILENAME).exists()
+        // A Session's original stage remains a stable selector across Executions.
+        // The active Execution owns its own run.json, Bundle and storage lease.
+        let active = crate::Session::read_stage(stage)?;
+        let stage = active.as_ref().map_or(stage, |session| {
+            if session.state() == crate::SessionState::Restoring
+                && !session.active_stage.join(RUN_META_FILENAME).exists()
             {
-                job.previous_stage.as_path()
+                session.previous_stage.as_path()
             } else {
-                job.active_stage.as_path()
+                session.active_stage.as_path()
             }
         });
         let path = stage.join(RUN_META_FILENAME);
         let mut record: Self = serde_json::from_slice(&fs::read(&path)?)?;
         record.validate_schema()?;
-        if let Some(job) = &active {
+        if let Some(session) = &active {
             anyhow::ensure!(
-                record.run_id == job.run_id,
-                "execution Job record owner mismatch"
+                record.run_id == session.run_id,
+                "execution Session record owner mismatch"
             );
         }
         // A writer may have published the terminal projection immediately before
@@ -520,17 +521,17 @@ fn control_request(
     let endpoint = record
         .live_control
         .as_ref()
-        .context("owning Job control endpoint unavailable")?;
+        .context("owning Session control endpoint unavailable")?;
     anyhow::ensure!(
         endpoint.pid != std::process::id(),
-        "local Job owner unavailable"
+        "local Session owner unavailable"
     );
     endpoint.exchange(
         &record.run_id,
         record
-            .attempt_id
+            .execution_id
             .as_deref()
-            .context("control requires an Attempt identity")?,
+            .context("control requires an Execution identity")?,
         command,
     )
 }
@@ -569,7 +570,7 @@ pub fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
 
 pub(crate) fn control_status_observations(
     stage: &Path,
-) -> anyhow::Result<super::job_service::status::Activity> {
+) -> anyhow::Result<super::session_service::status::Activity> {
     Ok(serde_json::from_value(control_request(
         stage,
         super::host_transport::InstanceCommand::StatusObservations {},
@@ -607,7 +608,7 @@ pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
     }
 }
 
-/// Failure to establish a unique Job identity. Never permits container fallback.
+/// Failure to establish a unique Session identity. Never permits container fallback.
 ///
 /// Includes corrupt records/indexes, conflicting identities, ambiguity and I/O
 /// failures. The source retains diagnostic context; no discovery state is changed.
@@ -616,7 +617,7 @@ pub struct RunLookupError(anyhow::Error);
 
 impl std::fmt::Display for RunLookupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot safely resolve Job identity: {:#}", self.0)
+        write!(f, "cannot safely resolve Session identity: {:#}", self.0)
     }
 }
 
@@ -626,7 +627,7 @@ impl std::error::Error for RunLookupError {
     }
 }
 
-/// Strictly discover an exact Job ID, without interpreting paths or `last`.
+/// Strictly discover an exact Session ID, without interpreting paths or `last`.
 ///
 /// Searches the selected storage and both default roots (including storage
 /// indexes beneath those roots). `Ok(None)` alone establishes absence and
@@ -665,10 +666,10 @@ fn lookup_run_id_in(
     storage: &Path,
     roots: &[PathBuf],
 ) -> anyhow::Result<Option<RunRecord>> {
-    let id = id.to_str().context("Job ID must be UTF-8")?;
+    let id = id.to_str().context("Session ID must be UTF-8")?;
     anyhow::ensure!(
         !id.is_empty() && Path::new(id).file_name().and_then(|name| name.to_str()) == Some(id),
-        "expected an exact Job ID"
+        "expected an exact Session ID"
     );
     let mut stores = std::collections::BTreeSet::from([storage.to_path_buf()]);
     for root in roots {
@@ -686,8 +687,8 @@ fn lookup_run_id_in(
     for store in stores {
         let metadata = store.join(RUN_META_FILENAME);
         if discovery_present(&metadata)? {
-            let record =
-                RunRecord::read(&store).with_context(|| format!("read Job {}", store.display()))?;
+            let record = RunRecord::read(&store)
+                .with_context(|| format!("read Session {}", store.display()))?;
             if record.run_id == id {
                 matches.insert(record.stage_dir().canonicalize()?, record);
             }
@@ -695,14 +696,17 @@ fn lookup_run_id_in(
         let path = run_index_path(&store, id);
         if discovery_present(&path)? {
             let index: RunIndex = serde_json::from_slice(&fs::read(&path)?)
-                .with_context(|| format!("read Job index {}", path.display()))?;
-            anyhow::ensure!(index.run_id == id, "Job index owner mismatch");
+                .with_context(|| format!("read Session index {}", path.display()))?;
+            anyhow::ensure!(index.run_id == id, "Session index owner mismatch");
             let record = RunRecord::read(&index.stage_dir)?;
-            anyhow::ensure!(record.run_id == id, "Job record owner mismatch");
+            anyhow::ensure!(record.run_id == id, "Session record owner mismatch");
             matches.insert(record.stage_dir().canonicalize()?, record);
         }
     }
-    anyhow::ensure!(matches.len() <= 1, "ambiguous existing Job selector: {id}");
+    anyhow::ensure!(
+        matches.len() <= 1,
+        "ambiguous existing Session selector: {id}"
+    );
     Ok(matches.into_values().next())
 }
 
@@ -732,7 +736,7 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
     }
 
     // No explicit selector means "the latest Run for this workspace", with the
-    // same safety as `last`: never silently return another workspace's Job.
+    // same safety as `last`: never silently return another workspace's Session.
     resolve_last(storage, std::env::current_dir().ok().as_deref())
 }
 
@@ -745,11 +749,11 @@ fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRec
             return Ok(record);
         }
         // Do not silently fall back to the newest Run from another workspace:
-        // `last` would then point `status`/`apply`/`drop` at an unrelated Job,
-        // and `apply` would write that Job's changes back into its own target.
+        // `last` would then point `status`/`apply`/`drop` at an unrelated Session,
+        // and `apply` would write that Session's changes back into its own target.
         anyhow::bail!(
             "no pVisor Run found for the current workspace ({}); `last` resolves only \
-             Runs registered for this workspace. Pass the Job id or an explicit stage \
+             Runs registered for this workspace. Pass the Session id or an explicit stage \
              path, for example `pvisor status --review PATH`",
             current.display()
         );
@@ -906,7 +910,7 @@ mod tests {
 
     fn record(storage: &Path, stage: &Path, upper: &Path) -> RunRecord {
         RunRecord {
-            attempt_id: None,
+            execution_id: None,
             schema_version: 1,
             completion_protocol: None,
             live_control: None,
@@ -976,7 +980,7 @@ mod tests {
             run.state = RunRecordState::Running;
             run.finished_at_unix_ms = None;
             run.pid = pid;
-            run.attempt_id = Some("old-attempt".into());
+            run.execution_id = Some("old-execution".into());
             run.live_control = Some(super::super::host_transport::LiveControlRecord {
                 path: path.clone(),
                 device: metadata.dev(),
@@ -987,10 +991,10 @@ mod tests {
                 binary_digest: "old-owner".into(),
             });
             run.write().unwrap();
-            let status = super::super::job_service::RuntimeJobService::status(
+            let status = super::super::session_service::SessionService::status(
                 &Default::default(),
-                super::super::job_service::StatusRequest {
-                    job: super::super::job_service::JobSelection {
+                super::super::session_service::StatusRequest {
+                    session: super::super::session_service::SessionSelection {
                         selector: Some(stage.clone()),
                         storage: temp.path().to_owned(),
                     },
@@ -998,7 +1002,7 @@ mod tests {
             )
             .unwrap();
             assert!(!status.live);
-            assert!(status.live_attempt.is_none());
+            assert!(status.live_execution.is_none());
             assert_eq!(status.record.state, RunRecordState::Running);
         }
     }
@@ -1018,7 +1022,7 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let metadata = fs::symlink_metadata(&path).unwrap();
         let mut run = record(temp.path(), &stage, &stage.join("upper"));
-        run.attempt_id = Some("orphan-attempt".into());
+        run.execution_id = Some("orphan-execution".into());
         run.state = RunRecordState::Running;
         run.finished_at_unix_ms = None;
         run.live_control = Some(super::super::host_transport::LiveControlRecord {
@@ -1050,10 +1054,10 @@ mod tests {
                     }
                 }
             });
-            let status = super::super::job_service::RuntimeJobService::status(
+            let status = super::super::session_service::SessionService::status(
                 &Default::default(),
-                super::super::job_service::StatusRequest {
-                    job: super::super::job_service::JobSelection {
+                super::super::session_service::StatusRequest {
+                    session: super::super::session_service::SessionSelection {
                         selector: Some(stage.clone()),
                         storage: temp.path().to_owned(),
                     },
@@ -1071,32 +1075,32 @@ mod tests {
                 observations
                     .unwrap_err()
                     .to_string()
-                    .contains("local Job owner unavailable")
+                    .contains("local Session owner unavailable")
             );
             assert_eq!(connections.load(Ordering::Relaxed), 0);
         });
     }
 
     #[test]
-    fn job_directory_lock_serializes_and_rejects_unsafe_or_unknown_records() {
+    fn session_directory_lock_serializes_and_rejects_unsafe_or_unknown_records() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
         let run = record(temp.path(), &stage, &stage.join("upper"));
         run.write().unwrap();
-        let path = stage.join("job.lock");
-        let held = JobDirectoryLock::acquire(&run, "apply").unwrap();
-        let owner: JobLockOwner = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let path = stage.join("session.lock");
+        let held = SessionDirectoryLock::acquire(&run, "apply").unwrap();
+        let owner: SessionLockOwner = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(owner.operation, "apply");
-        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
         drop(held);
         assert!(fs::read(&path).unwrap().is_empty());
-        drop(JobDirectoryLock::acquire(&run, "review").unwrap());
+        drop(SessionDirectoryLock::acquire(&run, "review").unwrap());
         fs::hard_link(&path, stage.join("alias.lock")).unwrap();
-        assert!(JobDirectoryLock::acquire(&run, "apply").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "apply").is_err());
         fs::remove_file(stage.join("alias.lock")).unwrap();
         fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(stage.join("run.json"), &path).unwrap();
-        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
         fs::remove_file(&path).unwrap();
         let mut unknown = run.clone();
         unknown.schema_version = 99;
@@ -1105,7 +1109,23 @@ mod tests {
             serde_json::to_vec(&unknown).unwrap(),
         )
         .unwrap();
-        assert!(JobDirectoryLock::acquire(&run, "apply").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "apply").is_err());
+    }
+
+    #[test]
+    fn session_identity_formats_reject_previous_modern_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let mut run = record(temp.path(), &stage, &stage.join("upper"));
+        assert!(run.validate_schema().is_ok());
+        run.schema_version = 3;
+        run.completion_protocol = Some(super::super::completion::VERSION);
+        assert!(run.validate_schema().is_ok());
+        run.schema_version = 2;
+        assert!(run.validate_schema().is_err());
+        run.schema_version = 3;
+        run.completion_protocol = Some(1);
+        assert!(run.validate_schema().is_err());
     }
 
     #[test]
@@ -1114,11 +1134,11 @@ mod tests {
         let stage = temp.path().join("stage");
         let run = record(temp.path(), &stage, &stage.join("upper"));
         run.write().unwrap();
-        assert!(JobDirectoryLock::observe_existing(&run).is_err());
-        assert!(!stage.join("job.lock").exists());
+        assert!(SessionDirectoryLock::observe_existing(&run).is_err());
+        assert!(!stage.join("session.lock").exists());
         assert!(RunLease::observe_existing(&stage.join("missing")).is_err());
         assert!(!stage.join("missing").exists());
-        drop(JobDirectoryLock::acquire(&run, "seed").unwrap());
+        drop(SessionDirectoryLock::acquire(&run, "seed").unwrap());
         drop(RunLease::acquire(&stage).unwrap());
         let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "exit 0"])
@@ -1126,11 +1146,11 @@ mod tests {
             .unwrap();
         let dead_pid = child.id();
         child.wait().unwrap();
-        let path = stage.join("job.lock");
+        let path = stage.join("session.lock");
         fs::write(
             &path,
-            serde_json::to_vec(&JobLockOwner {
-                protocol: "pvisor-job-lock-1".into(),
+            serde_json::to_vec(&SessionLockOwner {
+                protocol: "pvisor-session-lock-1".into(),
                 pid: dead_pid,
                 operation: "interrupted".into(),
             })
@@ -1153,16 +1173,16 @@ mod tests {
         let owner_before = snapshot(&path);
         let lease_before = snapshot(&lease_path);
         {
-            let _owner = JobDirectoryLock::observe_existing(&run).unwrap();
+            let _owner = SessionDirectoryLock::observe_existing(&run).unwrap();
             let _lease = RunLease::observe_existing(&stage).unwrap();
-            assert!(JobDirectoryLock::acquire(&run, "contender").is_err());
+            assert!(SessionDirectoryLock::acquire(&run, "contender").is_err());
             assert!(RunLease::acquire(&stage).is_err());
         }
         assert_eq!(owner_before, snapshot(&path));
         assert_eq!(lease_before, snapshot(&lease_path));
         // Observation retains legacy owner validation, without clearing bad bytes.
         fs::write(&path, b"unknown-owner").unwrap();
-        assert!(JobDirectoryLock::observe_existing(&run).is_err());
+        assert!(SessionDirectoryLock::observe_existing(&run).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"unknown-owner");
         fs::remove_file(&lease_path).unwrap();
         std::os::unix::fs::symlink(&path, &lease_path).unwrap();
@@ -1173,20 +1193,20 @@ mod tests {
     }
 
     #[test]
-    fn residual_job_lock_is_cleared_only_after_its_process_dies() {
+    fn residual_session_lock_is_cleared_only_after_its_process_dies() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
         let run = record(temp.path(), &stage, &stage.join("upper"));
         run.write().unwrap();
-        let path = stage.join("job.lock");
-        drop(JobDirectoryLock::acquire(&run, "seed").unwrap());
-        let mut owner = JobLockOwner {
-            protocol: "pvisor-job-lock-1".into(),
+        let path = stage.join("session.lock");
+        drop(SessionDirectoryLock::acquire(&run, "seed").unwrap());
+        let mut owner = SessionLockOwner {
+            protocol: "pvisor-session-lock-1".into(),
             pid: std::process::id(),
             operation: "apply".into(),
         };
         fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
-        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
         let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "exit 0"])
             .spawn()
@@ -1194,10 +1214,10 @@ mod tests {
         owner.pid = child.id();
         child.wait().unwrap();
         fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
-        drop(JobDirectoryLock::acquire(&run, "drop").unwrap());
+        drop(SessionDirectoryLock::acquire(&run, "drop").unwrap());
         owner.protocol = "future-lock".into();
         fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
-        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        assert!(SessionDirectoryLock::acquire(&run, "drop").is_err());
     }
 
     #[test]
@@ -1316,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_job_lookup_rejects_path_inputs_and_unreadable_discovery_roots() {
+    fn strict_session_lookup_rejects_path_inputs_and_unreadable_discovery_roots() {
         let temp = tempfile::tempdir().unwrap();
         for id in [
             "",
@@ -1338,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_job_lookup_distinguishes_absence_corruption_and_collisions() {
+    fn strict_session_lookup_distinguishes_absence_corruption_and_collisions() {
         let temp = tempfile::tempdir().unwrap();
         let storage = temp.path().join("storage");
         let root = temp.path().join("default");
@@ -1369,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_job_lookup_rejects_corrupt_dangling_and_wrong_owner_indexes() {
+    fn strict_session_lookup_rejects_corrupt_dangling_and_wrong_owner_indexes() {
         let temp = tempfile::tempdir().unwrap();
         let storage = temp.path().join("storage");
         let path = run_index_path(&storage, "run-test");

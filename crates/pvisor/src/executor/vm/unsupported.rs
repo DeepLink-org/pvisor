@@ -5,7 +5,7 @@
 //! their tests build on Intel macOS while producing a clear VM error.
 
 use crate::config::VmSettings;
-use crate::executor::{ExecutorOutput, RunExecutor, Session};
+use crate::executor::{ExecutionContext, ExecutorOutput, RunExecutor};
 use async_trait::async_trait;
 use pvisor_core::{
     CapabilityEnforcementPlan, ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput,
@@ -119,7 +119,7 @@ impl RunExecutor for VmExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, _context: &Session) -> ExecutorOutput {
+    async fn execute(&self, _context: &ExecutionContext) -> ExecutorOutput {
         ExecutorOutput {
             executor_observations: Default::default(),
 

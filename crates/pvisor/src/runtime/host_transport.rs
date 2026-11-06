@@ -112,8 +112,8 @@ pub(crate) fn allocate_host_directory(prefix: &str) -> anyhow::Result<tempfile::
     Ok(directory)
 }
 
-/// Wire contract for one running Job owner; independent of its binary digest.
-pub const INSTANCE_CONTROL_PROTOCOL: &str = "pvisor-instance-control-2";
+/// Wire contract for one running Session owner; independent of its binary digest.
+pub const INSTANCE_CONTROL_PROTOCOL: &str = "pvisor-instance-control-3";
 
 /// Host-only discovery persisted before execution, cleared on terminal publication.
 /// The path is canonical, excluded from guest inputs, and bound to device/inode.
@@ -151,13 +151,13 @@ pub enum InstanceCommand {
     StatusObservations {},
     /// Read native VM status; non-VM executors return Unsupported.
     Status {},
-    /// Read Job status and owner observations.
-    JobStatus {},
+    /// Read Session status and owner observations.
+    SessionStatus {},
     /// Request cancellation; completion and resource release remain owner-owned.
     Terminate {},
-    /// Pause vCPUs of the same live VM Attempt.
+    /// Pause vCPUs of the same live VM Execution.
     Pause {},
-    /// Resume/unpause the same live VM Attempt; never restores a checkpoint.
+    /// Resume/unpause the same live VM Execution; never restores a checkpoint.
     Resume {},
     /// Quiesce the VM and offload RAM using its existing transition lock.
     Offload {
@@ -166,7 +166,7 @@ pub enum InstanceCommand {
     },
     /// Capture execution with a scoped receipt; cancellation may follow effects.
     Capture {
-        /// Stop the Attempt after sealing its checkpoint.
+        /// Stop the Execution after sealing its checkpoint.
         suspend: bool,
         /// Encoding for captured RAM.
         ram_storage: pvisor_core::operation::SnapshotRamStorage,
@@ -187,11 +187,11 @@ pub enum InstanceCommand {
     },
 }
 
-/// Create checked, private authority directories for one exact Job/Attempt.
+/// Create checked, private authority directories for one exact Session/Execution.
 /// IDs must each be a single normal path component; existing symlinks fail closed.
-pub fn instance_control_path(job: &str, attempt: &str) -> anyhow::Result<std::path::PathBuf> {
+pub fn instance_control_path(session: &str, execution: &str) -> anyhow::Result<std::path::PathBuf> {
     let mut directory = host_authority_root()?;
-    for name in ["jobs", job, attempt] {
+    for name in ["sessions", session, execution] {
         let mut components = std::path::Path::new(name).components();
         anyhow::ensure!(
             matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -242,7 +242,7 @@ pub fn instance_socket_override(path: &std::path::Path) -> anyhow::Result<std::p
     Ok(path)
 }
 
-// Full Job/Attempt paths exceed sockaddr_un even with ordinary UUIDs. Resolve
+// Full Session/Execution paths exceed sockaddr_un even with ordinary UUIDs. Resolve
 // only the checked parent through a directory fd, retaining the canonical record.
 fn with_instance_socket<T: Send + 'static>(
     path: &std::path::Path,
@@ -305,20 +305,20 @@ impl LiveControlRecord {
     /// a write, cancellation or missing response: the operation may have happened.
     pub fn exchange(
         &self,
-        job: &str,
-        attempt: &str,
+        session: &str,
+        execution: &str,
         command: InstanceCommand,
     ) -> anyhow::Result<serde_json::Value> {
-        self.exchange_checked(job, attempt, command, None)
+        self.exchange_checked(session, execution, command, None)
     }
 
     /// Exchange with caller cancellation checks while awaiting I/O. Cancellation
     /// closes only this connection, joins its I/O thread, and reports uncertain
-    /// effects without resending. The check must be quick and must not take Job locks.
+    /// effects without resending. The check must be quick and must not take Session locks.
     pub fn exchange_checked(
         &self,
-        job: &str,
-        attempt: &str,
+        session: &str,
+        execution: &str,
         command: InstanceCommand,
         check: Option<&(dyn Fn() -> anyhow::Result<()> + Send + Sync)>,
     ) -> anyhow::Result<serde_json::Value> {
@@ -332,8 +332,8 @@ impl LiveControlRecord {
             version: AGENTCTL_HOST_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
             target: Some(AgentCtlTarget {
-                job_id: job.to_owned(),
-                attempt_id: Some(attempt.to_owned()),
+                session_id: session.to_owned(),
+                execution_id: Some(execution.to_owned()),
                 generation: None,
             }),
             command,
@@ -420,7 +420,7 @@ impl LiveControlRecord {
         self.check_identity()?;
         anyhow::ensure!(
             self.protocol == INSTANCE_CONTROL_PROTOCOL,
-            "incompatible Job control protocol {}; owner binary: {} ({})",
+            "incompatible Session control protocol {}; owner binary: {} ({})",
             self.protocol,
             self.binary.display(),
             self.binary_digest
@@ -620,24 +620,24 @@ pub fn authorize_host_peer(stream: &UnixStream) -> Result<(), AgentCtlHostError>
     }
 }
 
-/// A live endpoint must never route to a different Attempt, including after restore.
+/// A live endpoint must never route to a different Execution, including after restore.
 /// There is no independent generation in these endpoint records; reject supplied generations.
 pub fn validate_host_target(
     target: Option<&AgentCtlTarget>,
-    job: &str,
-    attempt: &str,
+    session: &str,
+    execution: &str,
 ) -> Result<(), AgentCtlHostError> {
     match target {
         Some(target)
-            if target.job_id == job
-                && target.attempt_id.as_deref() == Some(attempt)
+            if target.session_id == session
+                && target.execution_id.as_deref() == Some(execution)
                 && target.generation.is_none() =>
         {
             Ok(())
         }
         _ => Err(AgentCtlHostError::new(
             AgentCtlHostErrorCode::Conflict,
-            "host control identity mismatch (stale Job/Attempt or generation)",
+            "host control identity mismatch (stale Session/Execution or generation)",
         )),
     }
 }
@@ -723,8 +723,8 @@ mod tests {
         let checked = cancelled.clone();
         let client = tokio::task::spawn_blocking(move || {
             endpoint.exchange_checked(
-                "job",
-                "attempt",
+                "session",
+                "execution",
                 InstanceCommand::Terminate {},
                 Some(&|| {
                     anyhow::ensure!(!checked.load(Ordering::SeqCst), "caller cancelled");
@@ -937,20 +937,20 @@ mod tests {
     }
 
     #[test]
-    fn live_target_requires_matching_job_explicit_attempt_and_no_generation() {
+    fn live_target_requires_matching_session_explicit_execution_and_no_generation() {
         let mut target = AgentCtlTarget {
-            job_id: "job".into(),
-            attempt_id: Some("attempt".into()),
+            session_id: "session".into(),
+            execution_id: Some("execution".into()),
             generation: None,
         };
-        validate_host_target(Some(&target), "job", "attempt").unwrap();
-        assert!(validate_host_target(Some(&target), "other", "attempt").is_err());
-        assert!(validate_host_target(Some(&target), "job", "new-attempt").is_err());
-        assert!(validate_host_target(None, "job", "attempt").is_err());
+        validate_host_target(Some(&target), "session", "execution").unwrap();
+        assert!(validate_host_target(Some(&target), "other", "execution").is_err());
+        assert!(validate_host_target(Some(&target), "session", "new-execution").is_err());
+        assert!(validate_host_target(None, "session", "execution").is_err());
         target.generation = Some("old".into());
-        assert!(validate_host_target(Some(&target), "job", "attempt").is_err());
+        assert!(validate_host_target(Some(&target), "session", "execution").is_err());
         target.generation = None;
-        target.attempt_id = None;
-        assert!(validate_host_target(Some(&target), "job", "attempt").is_err());
+        target.execution_id = None;
+        assert!(validate_host_target(Some(&target), "session", "execution").is_err());
     }
 }

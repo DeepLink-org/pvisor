@@ -20,10 +20,10 @@ upstream fixtures.
 
 Online network/model policy is fixed in memory at startup. Session `proxy.toml`
 files are diagnostic snapshots, omit inline API keys, and cannot change policy or
-credential routes. Embedded Attempts bind the capture root to a host-owned Run
+credential routes. Embedded Executions bind the capture root to a host-owned Run
 identity; client headers identify sub-sessions within that root.
 
-When pVisor owns upstream credentials, each Attempt injects a fresh local SDK
+When pVisor owns upstream credentials, each Execution injects a fresh local SDK
 credential and requires it before model dispatch. Missing/foreign tokens receive
 401. Gateway consumes that credential before forwarding and resolves the supplier
 key from its frozen routes. This scopes access to the token holder; it does not
@@ -34,7 +34,7 @@ total-stream deadline, so active long streams can continue.
 Shutdown allows one second for existing cancellation responses, then closes
 remaining proxy and admin transport I/O before draining accepted
 capture work. Partial request uploads, ordinary proxy upstream waits and clients
-that stop reading cannot retain a connection indefinitely during Attempt teardown.
+that stop reading cannot retain a connection indefinitely during Execution teardown.
 Normal response framing, trailers and backpressure are unchanged.
 
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
@@ -50,7 +50,7 @@ Gemini schema normalization and provider error envelopes are private helpers.
 
 ## Host-observed inference waits
 
-An embedding runtime can install an Attempt-bound
+An embedding runtime can install an Execution-bound
 [`ModelWaitLifecycle`](src/model_wait.rs) through
 `InProcessRuntime.model_wait`, or through pVisor's
 `GatewayDriverConfig::model_wait`. Host installation observes every authorized
@@ -68,7 +68,7 @@ non-streaming reply it waits for the body or a read failure. For SSE the default
 boundary is the first nonempty body chunk, EOF or read failure. A Host lifecycle
 may instead supply `ModelWait::stream_buffer() -> Some(ModelStreamBuffer)` and
 expose its latched wake through `wait_for_wake()`. The native adapter supplies
-both from its Attempt coordinator; no guest/client cooperation header is used.
+both from its Execution coordinator; no guest/client cooperation header is used.
 
 Each batch collection ends on byte limit, a fixed time limit starting at
 successful headers for the first batch or after the previous batch drains,
@@ -116,12 +116,12 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-The `pvisor` runtime supplies one built-in Attempt-local adapter through
+The `pvisor` runtime supplies one built-in Execution-local adapter through
 `GatewayDriverConfig::cooperative_model_wait`; see its
 [contract and limits](../pvisor/README.md#cooperative-model-waits-opt-in-rust-api).
 It requires the single-vCPU guest-kernel idle handoff before pause and optional
 offload. Overlapping calls wake an owned pause and permanently disable automatic
-transitions for that Attempt, while forwarding and response barriers continue.
+transitions for that Execution, while forwarding and response barriers continue.
 `Execution` owns status and native controls; the coordinator owns automatic-pause
 arbitration. All authorized calls are observed; client headers cannot select or
 bypass observation. The M0 native adapter, declaration parser and compatibility
@@ -144,19 +144,19 @@ The HTTP regression checks both valid completion and this malformed-stream case.
 
 Each capture runtime retains at most 256 story queues/workers until shutdown,
 with the existing 256-slot FIFO per story. External admission is also limited
-across stories to 1,024 queued, waiting-for-FIFO, or active jobs and 64 MiB of
-accounted input. Internal backfills use a separate reserved budget of 256 jobs
-and 32 MiB; rejected-event diagnostics have 256 jobs and 8 MiB. Byte accounting
+across stories to 1,024 queued, waiting-for-FIFO, or active sessions and 64 MiB of
+accounted input. Internal backfills use a separate reserved budget of 256 sessions
+and 32 MiB; rejected-event diagnostics have 256 sessions and 8 MiB. Byte accounting
 includes context, raw bodies, semantic inputs and prepared commands, using a
-conservative serialized-size multiplier plus per-job overhead. These are
+conservative serialized-size multiplier plus per-session overhead. These are
 admission limits, not an RSS limit: committed story projections and the run
 registry can still grow over the lifetime of a runtime.
 
-Global job/byte/story exhaustion fails immediately rather than waiting for
+Global session/byte/story exhaustion fails immediately rather than waiting for
 permits retained by a child awaiting a main-story backfill. Internal work still
 uses the ordered story FIFO. Oversized/exhausted internal work returns an error
 and retains the existing prepared-backfill dead-letter path; it cannot silently
-skip a required receipt. Flush/stop barriers do not consume data-job budgets,
+skip a required receipt. Flush/stop barriers do not consume data-session budgets,
 so overload cannot prevent draining accepted work. Existing constructors and
 persisted schemas are unchanged; limits are currently fixed defaults.
 

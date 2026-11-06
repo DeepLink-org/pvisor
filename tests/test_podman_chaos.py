@@ -49,7 +49,7 @@ class ChaosSafetyTests(unittest.TestCase):
                     runner.run()
                 call.assert_not_called()
 
-    def test_cleanup_attempts_every_owned_name_after_error(self):
+    def test_cleanup_executions_every_owned_name_after_error(self):
         with workspace() as (directory, _):
             runner = self.runner(directory)
             with mock.patch.object(

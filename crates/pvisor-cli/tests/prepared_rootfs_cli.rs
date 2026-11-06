@@ -1,4 +1,4 @@
-//! Local physical-rootfs preparation and normal Job-owner admission boundaries.
+//! Local physical-rootfs preparation and normal Session-owner admission boundaries.
 #![cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 use pvisor::environment_snapshot::SnapshotStore;
 use std::{
@@ -28,7 +28,7 @@ fn command(binary: &str, root: &Path) -> Command {
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_RUNTIME_DIR", root.join("runtime"))
-        .env("PVISOR_RUN_HOME", root.join("jobs"))
+        .env("PVISOR_RUN_HOME", root.join("sessions"))
         .env("PVISOR_STARTUP_TIMING", "0");
     command
 }
@@ -621,7 +621,7 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("base reference mismatch"));
 
-    // Local cache preparation does not enter a Job owner. Its source/store
+    // Local cache preparation does not enter a Session owner. Its source/store
     // checks must still protect the canonical authority before any copy/init.
     let authority = pvisor::host_transport::host_authority_root().unwrap();
     let secret_source = authority.join("private-rootfs-input");

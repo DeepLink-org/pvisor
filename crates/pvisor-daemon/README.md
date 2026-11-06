@@ -21,14 +21,14 @@ pvisor daemon stop
 ```
 
 `-M` takes no argument and abbreviates `--memory-pool auto` for containers or
-`--vm-memory-pool auto` for Jobs; the long forms and explicit sockets still work.
+`--vm-memory-pool auto` for Sessions; the long forms and explicit sockets still work.
 `start` detaches the manager and returns JSON only after readiness. Concurrent
 starts converge under a bounded startup lock. `auto` first discovers the
 same-user daemon and requires its memory-pool capability; if the manager is
 absent, it starts one with that capability. Without a pool selector, workloads
 keep their existing independent execution. Explicit socket selectors never
 start a daemon or fall back to a private pool. Resolved sockets, rather than the
-`auto` keyword, are saved in Job/container records; container `start` requires
+`auto` keyword, are saved in Session/container records; container `start` requires
 that original pool to remain available.
 Every `start`, including reuse of a running manager, joins the startup lock
 before inspecting the control socket. A concurrent starter therefore cannot
@@ -82,7 +82,7 @@ pvisor-daemon serve --sandbox --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup
 ```
 
 `--cache-image-store` selects the local V2 image directory shared with Docker
-and VM Jobs (default: user data `pvisor/docker/images`). Published Docker image
+and VM Sessions (default: user data `pvisor/docker/images`). Published Docker image
 records require a V2 binding and explicit platform; directory-backed image records
 are rejected and must be recreated in the current format. `--memory-pool` can run independently
 or alongside cache/sandbox serving. `--state` belongs to sandbox or memory-pool
@@ -183,7 +183,7 @@ to future resolutions/pulls, not existing VM bindings. Existing supervisors keep
 their pinned version and source list. A direct `--from URL` still means one
 explicit source and refuses to overwrite an existing name.
 
-Each mirrored source attempt has a five-second network budget including retries,
+Each mirrored source execution has a five-second network budget including retries,
 with thirty seconds total per mirrored object read or name-resolution stage.
 Sources are lazy-initialized and retained; requests are sequential, not raced.
 Existing admission/byte limits apply. Single-source bindings retain their
@@ -284,7 +284,7 @@ on trusted networks. Ordinary OCI mirrors need V2 preparation before they can
 serve these bundles.
 
 HTTP readers admit at most 32 operations per client, with a 5-second connect
-bound and one shared 30-second deadline across at most two GET attempts.
+bound and one shared 30-second deadline across at most two GET executions.
 Connection/body failures and transient 429/500/502/503/504 may retry once.
 Only `Retry-After` values of 0 or 1 seconds are retried automatically; longer or
 unsupported values fail rather than retry early. Malformed Range responses,
@@ -447,7 +447,7 @@ never follow upstream `main` or an image's `latest` tag automatically.
 | `GET /v1/sandboxes` | Repeated state filters, SDK-encoded metadata, page/pageSize |
 | `GET /v1/sandboxes/{id}` | Reconcile local native state; 200 JSON |
 | `DELETE /v1/sandboxes/{id}` | Confirm native deletion before releasing reservation; 204 |
-| `POST /v1/sandboxes/{id}/pause` and `/resume` | Acknowledged live vCPU pause/resume on the same Attempt; 202 empty body |
+| `POST /v1/sandboxes/{id}/pause` and `/resume` | Acknowledged live vCPU pause/resume on the same Execution; 202 empty body |
 | `POST /v1/sandboxes/{id}/renew-expiration` | Future RFC3339 deadline, must extend existing TTL |
 | `GET /v1/sandboxes/{id}/endpoints/{port}` | Actual execd (44772) and egress (18080) publication |
 | Command, file, health and metrics data plane | Native guest engine with host wire adapters by default; explicit upstream templates retain byte-transparent proxying |
@@ -536,10 +536,10 @@ Bytes are selected from bounded guest frames; skipping a large prefix still
 reads it through the guest transport. Line-based `offset`/`limit` reads are
 explicitly unsupported (501), rather than silently returning the whole file.
 
-Bounds per sandbox: 64 HTTP response streams, 16 active managed execs, 64 retained jobs, 4 MiB output or
-16,384 output events per job, 64 MiB per upload, 128 upload files and 1,024 entries
+Bounds per sandbox: 64 HTTP response streams, 16 active managed execs, 64 retained sessions, 4 MiB output or
+16,384 output events per session, 64 MiB per upload, 128 upload files and 1,024 entries
 per directory listing. Exceeding output limits kills that process and reports a
-terminal error; completed jobs are evicted oldest-first. Frame size remains 1 MiB.
+terminal error; completed sessions are evicted oldest-first. Frame size remains 1 MiB.
 Slow/disconnected clients do not create unbounded buffers. Foreground OpenSandbox
 stream cancellation kills its process; E2B processes and explicit background
 commands remain connectable within those retention limits. These limits and the
@@ -745,7 +745,7 @@ full SDK conformance or hostile multi-user isolation.
 Invoke `pvisor-daemon` directly. The native `pvisor` application does not depend
 on this crate. The VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
-daemon restart. Execution starts through pVisor's `RuntimeJobService`; live
+daemon restart. Execution starts through pVisor's `SessionService`; live
 status/pause/resume/termination dispatch through the shared in-process
 `Execution`. The supervisor disables pVisor's default HostVm endpoint with
 `instance_control(false)`, retaining only its authenticated `control.sock` rather
@@ -826,16 +826,16 @@ No security audit or hostile multi-user assurance is claimed.
 
 - One daemon exclusively locks a private state directory. Owner identity and
   sandbox records are atomically persisted before native creation/control.
-- Runtime operations use core `AgentCtlHostRequest`/`AgentCtlHostResponse` version-1
+- Runtime operations use core `AgentCtlHostRequest`/`AgentCtlHostResponse` version-2
   envelopes over newline-delimited JSON (maximum 1 MiB payload, no length prefix).
   Framing and same-effective-UID peer authentication reuse pVisor's public
   `host_transport` implementation, including bounded encoding and sync/async frame
   interoperability; envelope and owner/token/generation validation remain explicit
   supervisor responsibilities. Responses must correlate the request ID and echo
   the authenticated owner/target.
-  Private IPC authenticates same-UID peer credentials, namespace owner, sandbox Job
-  ID, explicit Attempt ID, generation and secret token. Missing generation or
-  Attempt cannot resolve to the current instance. The token remains private and
+  Private IPC authenticates same-UID peer credentials, namespace owner, sandbox Session
+  ID, explicit Execution ID, generation and secret token. Missing generation or
+  Execution cannot resolve to the current instance. The token remains private and
   separate from host API, lifecycle and guest credentials; cooperative guest
   AgentCtl never grants supervisor authority. Durable identity binds the boot
   ID and cgroup device/inode. Sandbox IDs are never reused or relaunched; lost
@@ -902,7 +902,7 @@ No security audit or hostile multi-user assurance is claimed.
   remain usable at proxy capacity. This is an HTTP stream count, not a hard
   node RSS/FD/disk limit or a per-tenant fairness guarantee; the pool and host
   service processes still require separately provisioned resources.
-- Maintenance scans once per second with at most eight concurrent cleanup jobs.
+- Maintenance scans once per second with at most eight concurrent cleanup sessions.
   A rotating inventory cursor prevents repeatedly failing records at the start
   of the inventory from starving later candidates. Runtime operations retain
   their own cleanup/fallback timing; rotation is not a hard cleanup deadline.
@@ -968,7 +968,7 @@ do not erase reservations or fabricate ownership to bypass the guard.
 
 The list API reports the last durable observation; GET reconciles native state.
 After store initialization and runtime preflight, startup schedules a background
-reconciliation pass with at most eight concurrent jobs instead of waiting for
+reconciliation pass with at most eight concurrent sessions instead of waiting for
 all sandbox inspections before serving HTTP. Until reconciliation completes,
 list may report pre-restart observations; reservations remain held, and control
 and endpoint operations still use live runtime checks rather than trusting a
@@ -1103,7 +1103,7 @@ depend on the live compressed pool. Kernel cache files/page-cache overhead are
 outside compressed payload limits, with no automatic kernel-cache GC. Do not
 modify/truncate cache files or expose the directory to guests.
 
-Connect ordinary Jobs using `pvisor spawn --vm-memory-pool SOCKET -- COMMAND`,
+Connect ordinary Sessions using `pvisor spawn --vm-memory-pool SOCKET -- COMMAND`,
 or containers using `pvisor run --memory-pool SOCKET IMAGE COMMAND`. With the
 example state above, SOCKET is `/tmp/pvisor-pool/memory-pool/pool.sock` (the JSON
 record includes its canonical macOS `/private/tmp` spelling). No OpenSandbox
@@ -1334,7 +1334,7 @@ density require their own validation.
 | `native.rs`, `native/` | Host OpenSandbox/E2B adapters, bounded process journals and guest RPC; never host execution |
 
 The native API-restart SDK regression accepts an unused state directory and a
-real delegated cgroup. It verifies unchanged Run/Attempt identity, absence of
+real delegated cgroup. It verifies unchanged Run/Execution identity, absence of
 injected Go services, binary files and a live stdin process across API restart:
 
 ```sh

@@ -39,7 +39,7 @@ fn overlap(a: &Path, b: &Path) -> bool {
 }
 
 pub(crate) fn candidate(path: &Path) -> anyhow::Result<PathBuf> {
-    super::job_service::paths::fork_stage_candidate(path)
+    super::session_service::paths::fork_stage_candidate(path)
 }
 
 impl OwnedWorkspace {
@@ -306,7 +306,7 @@ pub(crate) fn reject_checkpoint_reconstruction(
     Ok(())
 }
 
-/// Retain a checked lease across the entire stopped-Job apply operation. A
+/// Retain a checked lease across the entire stopped-Session apply operation. A
 /// normal composed or unauthenticated frozen lower is never admitted here.
 pub(crate) fn apply_owner(
     record: &super::registry::RunRecord,

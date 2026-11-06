@@ -22,7 +22,7 @@
 4. 将原生 Running/Paused/Stopped/Missing 映射为 `Running`/`Paused`/`Terminated`/`Failed`。缺失 sandbox 保持可见且预留资源，直到显式删除。
 5. 报告延后对账错误，不虚构清理成功。启动维护以重试过期／待删除对象。
 
-正常 daemon 关闭保留独立 supervisor/VM 与记录。重启重新连接私有 IPC，不重建 VM 或生成新 Attempt；IPC 丢失保留不确定状态。GET 对账，list 返回持久观察。启动不接管未知 VM，也不重新启动缺失／崩溃工作负载；宿主重启不能保留 live VM。
+正常 daemon 关闭保留独立 supervisor/VM 与记录。重启重新连接私有 IPC，不重建 VM 或生成新 Execution；IPC 丢失保留不确定状态。GET 对账，list 返回持久观察。启动不接管未知 VM，也不重新启动缺失／崩溃工作负载；宿主重启不能保留 live VM。
 
 ## 私有 Registry {#metadata}
 
@@ -44,7 +44,7 @@ Store 拒绝符号链接状态／记录目录，Unix 上打开 lock/registry 文
 
 记录保留镜像/argv、环境、metadata、CPU/内存预留、创建／过期时间、最近观察状态和 sandbox 端点 token。环境秘密进入持久状态，须保护目录及备份。它们不进入 supervisor argv 或宿主环境，但可信宿主／运行时所有者仍可访问。
 
-运行时状态另有私有 `owner.json`，逐 sandbox 的 `preparing.json`/`identity.json`、`run.json`（generation/Run/Attempt ID）、生命周期 marker、owner 锁、`control.sock`、`ports/` bridge 与 `run/` 原生存储（含 `live-ram` backing 和作为 supervisor `TMPDIR` 的 `tmp/` scratch）；清理完成后只保留最小 tombstone／锁／marker 屏障，用于对账／清理，不是公开 stage/checkpoint/artifact API。
+运行时状态另有私有 `owner.json`，逐 sandbox 的 `preparing.json`/`identity.json`、`run.json`（generation/Run/Execution ID）、生命周期 marker、owner 锁、`control.sock`、`ports/` bridge 与 `run/` 原生存储（含 `live-ram` backing 和作为 supervisor `TMPDIR` 的 `tmp/` scratch）；清理完成后只保留最小 tombstone／锁／marker 屏障，用于对账／清理，不是公开 stage/checkpoint/artifact API。
 
 原生运行时不写入 `observation.json` 缓存，也不以其作为存活证据。端点查询认证 live supervisor，并检查当前 Running 状态与删除屏障；完整就绪检查仍保留在 create、Inspect 和 resume。见[服务访问](index.md#endpoints)。
 

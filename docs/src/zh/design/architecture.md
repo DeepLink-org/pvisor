@@ -1,6 +1,6 @@
 # 核心架构
 
-pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在启动前确定策略与执行边界，运行时管理文件、网络和机器资源，结束后保留可审查的结果。Operation 描述处理请求，Event 描述处理过程中发生的事实。
+pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Session：在启动前确定策略与执行边界，运行时管理文件、网络和机器资源，结束后保留可审查的结果。Operation 描述处理请求，Event 描述处理过程中发生的事实。
 
 这条主线分成两个职责：**core 提供定义，pvisor 提供实现。** 外部调用方提交执行请求，通过运行句柄控制一次执行，通过 Event 观察它的过程和结果。
 
@@ -11,7 +11,7 @@ pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在�
 | 所有者 | 职责 |
 | --- | --- |
 | `pvisor-core` | Operation、策略决定、Placement、Outcome、Event，以及跨组件交互契约；共享纯校验与策略求值 |
-| `pvisor` | 请求解析、能力准入、实际策略改写、放置选择、调度、执行和 Attempt 生命周期 |
+| `pvisor` | 请求解析、能力准入、实际策略改写、放置选择、调度、执行和 Execution 生命周期 |
 | `pvisor-journal` | Event 提交、回执、去重、因果引用校验和恢复 |
 | `pvisor-overlay-core` | 文件授权接入、写时复制、preimage、review/apply/recovery/drop |
 | `pvisor-overlayfs` | 宿主 FUSE 挂载与文件操作接入 |
@@ -19,12 +19,12 @@ pVisor 将 Agent CLI、脚本和自动化命令组织成可管理的 Job：在�
 | `pvisor-guest` | VM 内 PID 1 与命令启动契约 |
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
 | `pvisor-daemon` | 单节点 sandbox API、持久归属、原生 VM supervisor 与 guest 协议适配 |
-| `pvisor-cli` | CLI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
+| `pvisor-cli` | CLI、cache/replay 前端与 Host Session 应用适配；消费 runtime |
 | `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；OCI container 与可选 VM 两种执行层的生命周期、exec 与 FIFO/PTY IO |
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
-[Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `RuntimeJobService` 启动执行，并复用进程内 `Execution` 控制同一 live Attempt。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Job 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
+[Daemon](daemon/index.md) 的 VM-only `NativeRuntime` 在独立 supervisor 中使用持久 `SessionService` 启动执行，并复用进程内 `Execution` 控制同一 live Execution。它保留 RunHandle，可跨 API 重启继续持有 VM；daemon 自行负责 SDK 鉴权、准入和确认清理。原生 Session 的 stage/apply、checkpoint/fork 和 Gateway 接口仍有独立归属，不因复用 runtime 自动暴露给 SDK。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端；嵌入调用方提供 Core 审批通道。驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway 或 replay，捕获通过 `gateway` feature 启用。
 
@@ -32,7 +32,7 @@ core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor �
 
 ![执行入口、Runtime、宿主服务与 VM 内部的 CPU、RAM、设备和平台实现](assets/pvisor-architecture.svg)
 
-执行入口提交配置，Runtime 组织 Session 和 Attempt，宿主服务提供文件、网络、镜像和持久存储。Host、OCI 和 VM 是不同的执行路径；图中向下展开 VM 的内部状态及其与宿主的关系。crate 依赖表达代码复用，资源归属决定谁负责停止、同步和释放。
+执行入口提交配置，Runtime 组织 Session 和 Execution，宿主服务提供文件、网络、镜像和持久存储。Host、OCI 和 VM 是不同的执行路径；图中向下展开 VM 的内部状态及其与宿主的关系。crate 依赖表达代码复用，资源归属决定谁负责停止、同步和释放。
 
 ### 宿主数据服务 {#host-services}
 
@@ -56,7 +56,7 @@ OverlayNet 拥有连接授权与转发，VM 的 virtio-net 将 Ethernet frame �
 
 普通 pause 只确认 CPU 停驻，设备仍可能访问 RAM。完整冻结需要同时处理 CPU、队列和内存引用；恢复先校验兼容性，在暂停状态安装映射与设备状态，再显式 resume。物理共享、冷页和 offload 按平台、backing 与 profile 选择，不能假定同时可用。调用与失败后状态由 [VM 设计](vm-runtime.md#freeze)和[环境快照](environment-snapshot.md)维护。
 
-源码入口：`pvisor/src/session/lifecycle.rs`、`pvisor-overlay-core/src/service.rs`、`pvisor/src/image/cache/backend.rs`、`pvisor-vm/src/api.rs`、`handle.rs` 和 `devices/virtio/`。
+源码入口：`pvisor/src/execution_context/lifecycle.rs`、`pvisor-overlay-core/src/service.rs`、`pvisor/src/image/cache/backend.rs`、`pvisor-vm/src/api.rs`、`handle.rs` 和 `devices/virtio/`。
 
 ## API 边界与迁移状态 {#api-boundaries}
 
@@ -79,24 +79,24 @@ crate 的逻辑职责和 Rust 可见性需要分别检查。当前只有 `pvisor
 
 ## Host 与 Guest AgentCtl {#host-agentctl}
 
-Host AgentCtl 是内置 Job CLI 操作的权限路径。Guest AgentCtl 是每个 Attempt
+Host AgentCtl 是内置 Session CLI 操作的权限路径。Guest AgentCtl 是每个 Execution
 面向工作负载 `Hello`/`Sync`、客户端状态、directive 与 checkpoint 静默点的
 协作路径。两者使用独立 schema、凭据与端点：guest 协作 token 不能授权
-宿主 Job、VM、暂存文件或 daemon supervisor 控制。Bundle 的 `agentctl`
+宿主 Session、VM、暂存文件或 daemon supervisor 控制。Bundle 的 `agentctl`
 快照仍描述 Guest 协作，不是 Host 授权回执。
 
-### Job owner 与请求所有权 {#host-job-service}
+### Session owner 与请求所有权 {#host-session-service}
 
 `pvisor spawn` 保留终端前端和一个 self-exec owner。两者直接继承 stdio，
 通过私有 socketpair 传递取消与退出信息。owner 留在原 session，使用独立
 进程组。交互执行沿用原控制终端，退出后恢复前台进程组；终端 Ctrl-C 可以
 直接到达工作负载。Linux 将 owner 设为 subreaper，保留 pidfd 后代回收。
 
-进入执行器前，owner 绑定私有 socket，并将 `live_control` 写入宿主 Job
+进入执行器前，owner 绑定私有 socket，并将 `live_control` 写入宿主 Session
 记录。规范地址为：
 
 ```text
-/tmp/pvisor-host-<UID>/jobs/<job-id>/<attempt-id>/control.sock
+/tmp/pvisor-host-<UID>/sessions/<session-id>/<execution-id>/control.sock
 ```
 
 各级目录属于同 UID、不是符号链接、权限为 `0700`；socket 为 `0600`。
@@ -106,29 +106,29 @@ Guest 视图之外。公布终态时清除发现记录；owner 只删除自己�
 inode。保留存储的嵌入式运行也发布相同记录。
 
 活 status、kill、原生 VM 状态转换、执行捕获及运行中 inspect 由启动时的
-owner 二进制执行。已停止 Job 的 status、review、apply、drop 和 inspect
+owner 二进制执行。已停止 Session 的 status、review、apply、drop 和 inspect
 直接在调用方执行。封存检查点的恢复和 fork 直接启动新 owner。有效 owner
-仍持有 stage 时，apply/drop 拒绝执行。持久操作在 Job 根目录的 `job.lock`
+仍持有 stage 时，apply/drop 拒绝执行。持久操作在 Session 根目录的 `session.lock`
 上获取独占 `flock`，检查其属于当前用户、权限 `0600`、硬链接数为 1。
-诊断记录包含锁协议、PID 和操作名。未知 Job schema 拒绝修改。只有原持有
+诊断记录包含锁协议、PID 和操作名。未知 Session schema 拒绝修改。只有原持有
 进程已死且没有有效控制端点时，才能清除残留持有者信息。只读 inspect 使用
 stage 声明的 lower 可变性；声明缺失或 lower 已重绑定时使用 Mutable，读取
 不保证时效性。
 
 ### owner 控制与保留的适配入口 {#owner-internal-control}
 
-每个 Attempt 只有一个宿主实例监听。本地调用按精确 Job／Attempt 与 stage
-身份选择 owner，无需连接该监听。Attempt 任务持有注册；即使调用方仍保留
+每个 Execution 只有一个宿主实例监听。本地调用按精确 Session／Execution 与 stage
+身份选择 owner，无需连接该监听。Execution 任务持有注册；即使调用方仍保留
 owner 引用，退出清理也会移除发现记录。Guest AgentCtl 保留独立的信任边界。
 
 | 路径 | 实现与所有权 |
 | --- | --- |
 | 工作区控制 | `instance_control.rs` 持有观察数据与唯一的有界 inspect 挂载表；`registry.rs` 对本地直接调用，对外经记录中的实例 socket 调用。旧 Overlay 监听与 stage 发现链接已删除。 |
-| 原生执行捕获 | `job_execution.rs` 持有持久回执与 Job 锁；本地请求直接调用执行 owner，已接受任务在前端超时后继续运行。外部请求使用同一个实例 socket，不再创建 `execution.sock` 监听。 |
+| 原生执行捕获 | `session_execution.rs` 持有持久回执与 Session 锁；本地请求直接调用执行 owner，已接受任务在前端超时后继续运行。外部请求使用同一个实例 socket，不再创建 `execution.sock` 监听。 |
 | 显式 VM 调试 | `--vm-socket` 与嵌入式 `host_vm_exchange` 继续提供面向同一宿主实例监听的异步适配，复用 Host envelope 与有界 codec。 |
 
 后续可把 owner 启动消息收窄到 run、fork、resume。
-当前 `JobCommand` 仍序列化全部命令，只有这三个命令实际经 socketpair 启动；
+当前 `SessionCommand` 仍序列化全部命令，只有这三个命令实际经 socketpair 启动；
 其他命令的序列化、owner 终端分支和对应往返测试可以随之移除。
 `OwnedTree.excluded` 的生产调用均为零，`Completion.signal` 没有读取方，
 恢复路径的 `vm_control_socket(None)` 恒为空，也属于可删除的遗留。
@@ -136,14 +136,14 @@ owner 引用，退出清理也会移除发现记录。Guest AgentCtl 保留独�
 
 ### 线上契约与升级 {#host-wire}
 
-实例契约名为 `pvisor-instance-control-2`。Core 的 version-1 Host envelope
-携带关联信息、精确 Job/Attempt 目标及类型化结果/错误。
+实例契约名为 `pvisor-instance-control-3`。Core 的 version-2 Host envelope
+携带关联信息、精确 Session/Execution 目标及类型化结果/错误。
 `runtime/host_transport.rs` 保留换行 JSON framing，单帧上限 1 MiB。
 同一 owner 最多接纳八个连接，修改复用已有操作锁。公共 socket 不接收终端
 描述符或 Guest token。内部 CLI DTO 只用于 self-exec owner 的启动。
 
-调用方与 owner 的二进制可以不同，只要求实例协议匹配。不兼容的 Job 协议
-会指出该 owner 记录的二进制，不阻塞其他 Job。升级前使用旧二进制等旧 Job
+调用方与 owner 的二进制可以不同，只要求实例协议匹配。不兼容的 Session 协议
+会指出该 owner 记录的二进制，不阻塞其他 Session。升级前使用旧二进制等旧 Session
 结束，并停止旧 `--pvisor-internal-host`。新 CLI 不连接旧的
 `<generation>.sock`。没有 live 发现字段的旧记录只提供磁盘状态，不自动发现
 旧 VM。daemon supervisor 的监听、私有凭据、framing 和准入保持不变。
@@ -170,7 +170,7 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 
 例如，请求允许网络访问而 workspace 策略拒绝全部网络时，准入形成有效网络配置，再将同一配置交给网络驱动和执行器；准备阶段不应重新读取可变配置，避免记录与实际出口不一致。
 
-源码入口：`pvisor/src/runtime/run.rs::resolve_run`、`pvisor/src/session.rs`、`pvisor/src/runtime/job_service/managed.rs`。
+源码入口：`pvisor/src/runtime/run.rs::resolve_run`、`pvisor/src/execution_context.rs`、`pvisor/src/runtime/session_service/managed.rs`。
 
 `RunSpec` 是调用方的执行配置输入；`Operation` 是结构化的操作描述。目前唯一生产操作是 `run.execute`，包含程序、参数和工作目录。执行器实际消费有效 RunSpec 及准备好的驱动附件。`PVisor::resolve_operation` 使用同一准入路径，供启动前审查，不能代替实际执行及安装证据。
 
@@ -180,9 +180,9 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 
 ## 一个生命周期所有者
 
-当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理；Job、Run 与 Attempt 的身份区分见[执行模型](../design/execution-model.md)。
+当前每次 `PVisor::run` 创建一个 Execution，由 pvisor 中的 `Session` 统一持有和管理；Session、Run 与 Execution 的身份区分见[执行模型](../design/execution-model.md)。
 
-Session 负责驱动准备、Guest AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 保留完成等待、checkpoint 和事件订阅；`RunHandle::execution()` 提供统一的 Execution owner，用于状态、取消与控制；取消请求不等于执行已经停止。
+ExecutionContext 负责驱动准备、Guest AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Session／Execution 身份或公布终态。`RunHandle` 保留完成等待、checkpoint 和事件订阅；`RunHandle::execution()` 提供统一的 Execution owner，用于状态、取消与控制；取消请求不等于执行已经停止。
 
 Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接口。进程组之外的后代和各平台隔离缺口见[隔离设计](isolation.md)。Guest AgentCtl 负责工作负载协作和 checkpoint 静默点，本身不是强制控制；Host AgentCtl 则是上方描述的独立宿主权限路径。
 
@@ -200,12 +200,12 @@ core 共享文件／网络策略求值。user、workspace、session 和执行器
 
 | 记录 | 回答的问题 |
 | --- | --- |
-| `run.json` | 这项 Job 的身份、状态、执行器及本地资源是什么？ |
-| `completion.json` | 当前 Attempt 的哪个结果与哪一份 Bundle 字节已经绑定提交？ |
+| `run.json` | 这项 Session 的身份、状态、执行器及本地资源是什么？ |
+| `completion.json` | 当前 Execution 的哪个结果与哪一份 Bundle 字节已经绑定提交？ |
 | Run Bundle | 结果、控制观察、产物及文件／网络摘要是什么？ |
 | Event Journal／Trace | 已发布了哪些事实，它们如何关联？ |
 | Overlay diff／preimage | 哪些文件仍待审查，应用时应检查什么原始状态？ |
 
-持久 Attempt 的完成回执绑定结果与 Bundle，Run 和 execution Job 保存状态投影，Event 提供事实观察。提交顺序与缺失回执时的核对见[Attempt 完成协议](execution-model.md#attempt-completion)。Event 可以重建已观察到的操作过程；恢复外部状态还需要对应的输入与执行机制。Agent 原生轨迹 replay 的恢复范围由 [Replay 设计](replay.md)维护。
+持久 Execution 的完成回执绑定结果与 Bundle，Run 和 execution Session 保存状态投影，Event 提供事实观察。提交顺序与缺失回执时的核对见[Execution 完成协议](execution-model.md#execution-completion)。Event 可以重建已观察到的操作过程；恢复外部状态还需要对应的输入与执行机制。Agent 原生轨迹 replay 的恢复范围由 [Replay 设计](replay.md)维护。
 
 暂存文件先审查再应用。OverlayCore 负责目标校验、持久化应用意图、更新及恢复；一个批次不是原子文件系统事务。`apply`、`drop` 与文件检查点的恢复范围及不能撤销的外部副作用见[能力与证据](../concepts/capabilities-and-evidence.md)，操作流程见[审查与应用](../guides/review-apply.md)。

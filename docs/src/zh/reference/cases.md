@@ -1,8 +1,8 @@
-# pVisor Job 用户场景与回归示例
+# pVisor Session 用户场景与回归示例
 
-从最简单的 Job 开始，逐步加入资源限制、stage、VM、容器和网络功能，最后走完审查、分支与轨迹回放流程。
+从最简单的 Session 开始，逐步加入资源限制、stage、VM、容器和网络功能，最后走完审查、分支与轨迹回放流程。
 每个 case 先说明用途、准备和预期结果，再给出可执行命令；编号便于单独回归。
-`run` 创建 Job；`status`、`inspect`、`apply`、`drop`、`fork`、`kill` 直接操作 Job。`replay` 从轨迹启动 Job。编号（如 A01）只用于回归报告和问题定位。
+`run` 创建 Session；`status`、`inspect`、`apply`、`drop`、`fork`、`kill` 直接操作 Session。`replay` 从轨迹启动 Session。编号（如 A01）只用于回归报告和问题定位。
 
 
 
@@ -21,7 +21,7 @@
 | 接入 Gateway 或记录轨迹 | H01–H02 |
 | 从配置文件或 RunSpec 执行 | I01–I03 |
 | 参考多能力组合 | J01–J03 |
-| 审查、选择性提交、分支或终止 Job | K01–K04 |
+| 审查、选择性提交、分支或终止 Session | K01–K04 |
 | 准备轨迹回放 | M01 |
 
 本文件同时是用户文档和 semspec 的 DOC 规格源。每个场景包含用途、语义、违反示例、
@@ -56,7 +56,7 @@ L01、L02 和 S-DOC-053、S-DOC-054 随 `env` 功能移除；这些 ID 不再复
 
 每条规格把原来的命令、退出预期和全部断言放在同一个审核摘要内。预期非零退出必须
 实际发生并通过原断言，不作为 xfail。断言函数来自参与审核摘要的同目录 `index.md` 准备块，读取当前 case
-的 `run-bundle.json`、`run.json` 和命令日志。pVisor 配置、Job 数据及夹具都在
+的 `run-bundle.json`、`run.json` 和命令日志。pVisor 配置、Session 数据及夹具都在
 临时 CASE_ROOT；失败保留现场，`--keep` 保留所有现场。缺少声明的前提条件报告 SKIP。
 
 新增规格保持 UNREVIEWED。检查成功不等于人工批准；人工完成规格、词汇和引擎审核后，
@@ -84,7 +84,7 @@ VM 示例需要 Linux 和 `/dev/kvm`。OCI runtime 可执行文件存在不保�
 ### S-DOC-001：A01 省略 `run` 的最简调用
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
 **语义**：输出当前 workspace 的绝对路径并成功退出。默认使用 host executor，不启用 stage；未配置网络策略时记录为 ambient。
 
@@ -110,9 +110,9 @@ bundle_expect network.policy.mode ambient
 ### S-DOC-002：A02 显式 `run` 与省略形式等价
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
-**语义**：两个输出文件内容相同，都是当前工作目录。两次运行会各自生成记录，Job ID 和时间可以不同。
+**语义**：两个输出文件内容相同，都是当前工作目录。两次运行会各自生成记录，Session ID 和时间可以不同。
 
 **理由**：对比省略和显式写出 `run` 的两种调用。分别保存 Agent 的标准输出，便于比较。
 
@@ -132,12 +132,12 @@ test "$(cat implicit.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
 bundle_expect run.agent pwd
 ```
 
-### S-DOC-003：A03 Job 名称和 stdio capture
+### S-DOC-003：A03 Session 名称和 stdio capture
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
-**语义**：Job 名称为 `smoke`，结果中的标准输出为 `hello`，未被截断。
+**语义**：Session 名称为 `smoke`，结果中的标准输出为 `hello`，未被截断。
 
 **理由**：为这次运行命名，并将 Agent 输出保存到运行结果。`--name smoke` 指定显示名，`--stdio capture` 开启输出采集。
 
@@ -159,7 +159,7 @@ bundle_expect run.output.stdout_truncated false
 ### S-DOC-004：A04 超时
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
 **语义**：pVisor 非零退出，运行结果的失败类型为 `deadline_exceeded`。
 
@@ -183,7 +183,7 @@ bundle_expect run.failure.retryable false
 ### S-DOC-005：A05 严格执行模式拒绝 best-effort 边界
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
 准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
@@ -209,7 +209,7 @@ stdout_has "lacks enforced evidence for requested capability dimensions"
 ### S-DOC-006：A06 显式环境投影
 
 
-建议场景：适合第一次使用 pVisor、确认命令和 Job 身份。
+建议场景：适合第一次使用 pVisor、确认命令和 Session 身份。
 
 **语义**：子进程可见 `TEST_PVISOR_VALUE=visible`；运行记录列出这个变量，但不声明整体继承宿主环境。
 
@@ -235,7 +235,7 @@ bundle_expect environment.inherits_host false
 
 **语义**：命令退出后，`direct.txt` 直接出现在原 workspace，记录中没有 OverlayFS stage。
 
-**理由**：验证普通 host Job 的默认可写 lower；无需为日常命令额外选择执行器或 stage。
+**理由**：验证普通 host Session 的默认可写 lower；无需为日常命令额外选择执行器或 stage。
 
 **违反示例**：没有请求 stage 的 host 写入没有直接出现在工作区。
 
@@ -405,7 +405,7 @@ test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
 
 **语义**：命令成功，日志中给出的存储目录及 Run Bundle 保留，原 workspace 没有新建的文件。
 
-**理由**：无需手写存储路径。`--safe` 在没有指定 `--stage` 时使用持久 Job 存储，退出后保留改动。
+**理由**：无需手写存储路径。`--safe` 在没有指定 `--stage` 时使用持久 Session 存储，退出后保留改动。
 
 **违反示例**：日志中的 Run Bundle 路径在退出后消失，或 result.txt 出现在原工作区。
 
@@ -878,7 +878,7 @@ stdout_has "--vm cannot be combined with a non-vm --executor"
 
 F04 显式设置 `--container-platform linux/amd64`，假设 Linux x86_64。此选项接受匹配的原生架构断言，拒绝跨架构值，即使提供了预制 rootfs；host/VM 配置会拒绝它。它不是模拟执行、程序自动发现或下载选择器。现有用例检查组合启动，不是平台拒绝矩阵。见[容器准备](../guides/executors/container.md)与[配置](config.md#settings)。
 
-### S-DOC-030：F01 最小 container Job
+### S-DOC-030：F01 最小 container Session
 
 
 建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。
@@ -1167,7 +1167,7 @@ stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
 
 **语义**：curl 请求失败；`status --review` 的 Network access observations 可指出 `blocked.example:80` 被拒绝。host proxy 是协作式边界，本例只证明经过代理的请求被拦截。
 
-**理由**：通过 pVisor 注入的代理访问一个明确拒绝的域名，确认 Job 记录的是具体目标和拒绝次数，而不只是网络失败总数。请求在策略层被拒绝，不依赖该域名真实可访问。
+**理由**：通过 pVisor 注入的代理访问一个明确拒绝的域名，确认 Session 记录的是具体目标和拒绝次数，而不只是网络失败总数。请求在策略层被拒绝，不依赖该域名真实可访问。
 
 **违反示例**：请求失败，但审查记录没有 blocked.example:80 的具体拒绝目标和次数。
 
@@ -1281,11 +1281,11 @@ bundle_expect run.agent true
 
 准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-**语义**：运行名称为 `case-i02`，`run-result.json` 非空。该委托路径当前只支持 host executor，不套用普通 Job 的 rootless safe profile；不要把此例视为隔离模式示例。
+**语义**：运行名称为 `case-i02`，`run-result.json` 非空。该委托路径当前只支持 host executor，不套用普通 Session 的 rootless safe profile；不要把此例视为隔离模式示例。
 
 **理由**：执行已准备好的 JSON RunSpec，并把结果原子写入指定文件。手工运行前准备包含 run_id、agent 和 process invocation 的 `run-spec.json`；脚本预置的是运行 `/bin/true` 的 `case-i02`。
 
-**违反示例**：委托运行没有生成结果文件，或被误记成隔离的普通 Job。
+**违反示例**：委托运行没有生成结果文件，或被误记成隔离的普通 Session。
 
 <!-- semspec: case id=S-DOC-044 -->
 ```bash
@@ -1448,9 +1448,9 @@ bundle_expect run.state completed
 bundle_expect filesystem.state staged
 ```
 
-## K. Job 的审查与生命周期
+## K. Session 的审查与生命周期
 
-Job 是面向用户的核心对象。以下命令都直接使用 Job 的 stage 路径作为 selector，无需额外的 `job` 子命令。
+Session 是面向用户的核心对象。以下命令都直接使用 Session 的 stage 路径作为 selector，无需额外的 `session` 子命令。
 
 ### S-DOC-049：K01 审查并只读查看暂存文件
 
@@ -1510,16 +1510,16 @@ test ! -e two.txt
 record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
 ```
 
-### S-DOC-051：K03 从已停止 Job fork
+### S-DOC-051：K03 从已停止 Session fork
 
 
 准备：Linux user/mount namespace 可用。
 
-**语义**：子 Job 读到 `inherited`，但两个 Job 的变更都没有直接写入原 workspace。
+**语义**：子 Session 读到 `inherited`，但两个 Session 的变更都没有直接写入原 workspace。
 
-**理由**：从源 Job 的暂存视图启动一个子 Job。子 Job 可以读取源改动，同时产生自己的独立变更。
+**理由**：从源 Session 的暂存视图启动一个子 Session。子 Session 可以读取源改动，同时产生自己的独立变更。
 
-**违反示例**：fork 读不到源 Job 变更，或子 Job 写入穿透原工作区。
+**违反示例**：fork 读不到源 Session 变更，或子 Session 写入穿透原工作区。
 
 <!-- semspec: case id=S-DOC-051 -->
 ```bash
@@ -1539,16 +1539,16 @@ bundle_contains filesystem.changes inherited.txt "$PVISOR_CASE_ROOT/source-stage
 bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
 ```
 
-### S-DOC-052：K04 终止运行中的 Job
+### S-DOC-052：K04 终止运行中的 Session
 
 
 准备：Linux user/mount namespace 可用。
 
-**语义**：Job 在睡眠结束前退出，`status --json` 报告 `cancelled`，不再处于 live 状态。
+**语义**：Session 在睡眠结束前退出，`status --json` 报告 `cancelled`，不再处于 live 状态。
 
-**理由**：让一个长时间运行的 Job 进入后台，然后按 stage 路径请求正常终止。
+**理由**：让一个长时间运行的 Session 进入后台，然后按 stage 路径请求正常终止。
 
-**违反示例**：kill 后 Job 继续 live，或终态不是 cancelled。
+**违反示例**：kill 后 Session 继续 live，或终态不是 cancelled。
 
 <!-- semspec: case id=S-DOC-052 -->
 ```bash
@@ -1557,13 +1557,13 @@ require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/live-stage" -- /bin/sleep 30 > live.log 2>&1 &
-job_pid=$!
-for ((attempt=0; attempt<100; attempt++)); do
+session_pid=$!
+for ((execution=0; execution<100; execution++)); do
   test -f "$CASE_ROOT/live-stage/run.json" && break
   sleep 0.05
 done
 pvisor kill "$CASE_ROOT/live-stage"
-if wait "$job_pid"; then exit 1; fi
+if wait "$session_pid"; then exit 1; fi
 pvisor status --json "$CASE_ROOT/live-stage" > stopped.json
 CASE_COMMAND
 

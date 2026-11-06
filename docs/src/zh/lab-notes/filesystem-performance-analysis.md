@@ -219,7 +219,7 @@ VM+WB优化前98.317 [97.790–99.596]ms、PR100.040 [93.711–102.885]ms。
 
 guest 2 vCPU/16 GiB；整父组CPU0/1、两核quota、16 GiB、swap0。DATA、NE、SQ、两项Core缺项缓存、WB、DAX均0，guest cache=1、目录FD容量256。五个配对环境块随机交替，每环境九操作、三轮驻留任务；10/10正式、2/2预检、2/2独立计数全部通过。新release有29项runtime合同、7项harness合同通过，46份采集输入与740份产品来源经收据绑定。
 
-Ready包含fresh Host+VM启动并排除退出；工具沿用原worker时钟，stream_write保留自身fsync/close。唯一Ready/Result、正常退出、terminal Job/Bundle、selectors/baseline receipt、lower与缓存隔离、256写文件和三个stream文件的完整字节校验保留。无额外预热、安静期、干扰或每轮全量清单门禁，全部有效慢样本保留。
+Ready包含fresh Host+VM启动并排除退出；工具沿用原worker时钟，stream_write保留自身fsync/close。唯一Ready/Result、正常退出、terminal Session/Bundle、selectors/baseline receipt、lower与缓存隔离、256写文件和三个stream文件的完整字节校验保留。无额外预热、安静期、干扰或每轮全量清单门禁，全部有效慢样本保留。
 
 ### 正式耗时与分布
 
@@ -277,7 +277,7 @@ off Ready保留956.412 ms的慢值，其余四个821.542–829.375 ms；auto为8
 
 Linux x86_64/KVM，guest 2 vCPU/16 GiB，整父组 CPU0/1、两核 quota、16 GiB、swap0；guest cache=1、目录FD容量256。DATA、SQ、两项Core缺项缓存、WB、DAX全0，只读FLUSH固定1。标准负项使用 inode0、entry TTL1秒、attr TTL0，不增加私有 peer 能力或延长属性/正项TTL。
 
-每臂五个新私有 Host/VM、九操作三轮，按五个环境块 seeded 随机交替。10/10正式环境、2/2正确性预检、2/2独立计数环境全部通过；保留唯一Ready/Result、正常退出、terminal Job/Bundle、实际selector/baseline receipt、lower/cache隔离和全部256个写文件及三个stream文件的字节检查。使用独立 namespace/pivot_root/Host authority，不接触既有用户listener。
+每臂五个新私有 Host/VM、九操作三轮，按五个环境块 seeded 随机交替。10/10正式环境、2/2正确性预检、2/2独立计数环境全部通过；保留唯一Ready/Result、正常退出、terminal Session/Bundle、实际selector/baseline receipt、lower/cache隔离和全部256个写文件及三个stream文件的字节检查。使用独立 namespace/pivot_root/Host authority，不接触既有用户listener。
 
 Ready包含fresh Host+VM启动并排除退出；工具保持原worker时钟，stream_write自身fsync/close保留。正式时序关闭profiling，无额外预热、安静期、干扰或每轮全量清单门禁，所有有效慢样本保留。主要指标仅为逐环境三轮七工具累计；32个95%区间均未校正多重比较，5000次配对bootstrap以五个环境块抽样，三轮不是15个独立样本。
 
@@ -338,7 +338,7 @@ Linux x86_64/KVM，guest 2 vCPU/16 GiB，父预算 CPU 0/1、两核 quota、16 G
 | flush | 0 | 1 |
 | both | 1 | 1 |
 
-每臂五个 fresh 私有 Host/VM 环境，按五个环境块随机交替，每环境九操作三轮。20/20 正式环境、4/4 正确性预检和4/4 独立计数环境均通过，保留唯一 Ready/Result、正常退出、terminal Job/Bundle、实际 selector/baseline receipt、lower 隔离和全部写文件/stream 字节检查。每样本独立 namespace、pivot_root 和 Host authority，不复用用户 listener。
+每臂五个 fresh 私有 Host/VM 环境，按五个环境块随机交替，每环境九操作三轮。20/20 正式环境、4/4 正确性预检和4/4 独立计数环境均通过，保留唯一 Ready/Result、正常退出、terminal Session/Bundle、实际 selector/baseline receipt、lower 隔离和全部写文件/stream 字节检查。每样本独立 namespace、pivot_root 和 Host authority，不复用用户 listener。
 
 Ready 包含 fresh Host+VM 启动，worker 保持原内部时钟，两者均排除退出；stream_write 自身 fsync/close 保留。正式时序关闭诊断，无额外预热、安静期、干扰或每轮全量清单门禁，所有有效慢样本保留。没有新增构建、导入或封存；旧 workspace 约1.415 s及更早 rootfs 的准备范围仅引用原收据，不重记为新发生费用，也不把旧计时叠入结果。
 
@@ -428,7 +428,7 @@ metadata 第二、三轮在四臂仍各有2050个 workspace GETATTR；stream_wri
 
 ### 正式耗时
 
-10/10 正式环境、2/2 预检环境及 2/2 独立诊断环境均通过。正式结果重新核对唯一 Ready/Result、正常 CLI 退出、terminal Job、同 run ID 的 VM Bundle、实际来源参数与 workspace receipt；256 个写文件及三份 stream 文件的完整字节、lower 隔离、工具/Python cache 检查均通过。主要指标先在各环境内合计三轮七工具，再求五环境中位数；5000 次配对 bootstrap 以环境块抽样，三轮不作十五个独立样本，32 个区间未校正多重比较。
+10/10 正式环境、2/2 预检环境及 2/2 独立诊断环境均通过。正式结果重新核对唯一 Ready/Result、正常 CLI 退出、terminal Session、同 run ID 的 VM Bundle、实际来源参数与 workspace receipt；256 个写文件及三份 stream 文件的完整字节、lower 隔离、工具/Python cache 检查均通过。主要指标先在各环境内合计三轮七工具，再求五环境中位数；5000 次配对 bootstrap 以环境块抽样，三轮不作十五个独立样本，32 个区间未校正多重比较。
 
 单位 ms；降幅为 `100 × (1 − 封存/live)`，负值表示更慢。逐行中位数不要求相加为累计中位数。
 
@@ -502,9 +502,9 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 原 Core resolve、授权、别名、journal、native OPEN、FD lease、第二次 backend 检查和数据对象 ID/固定 EOF 约束保留。证据不跨 OPEN 保存，不缓存授权或命名空间结论，也没有新增 wire capability、持久 handle 字段或 snapshot schema。SQ 是 host 偏好；DATA 与 FLUSH 仍分别协商，fallback 保留。两臂内部 `open` inclusive span 的边界不同，不能直接比较，更不能与其他 span 相加推导耗时。
 
-2026-10-17，B-FS-ENG 使用同一冻结 GNU host 与既有 0047 固件，仅切换默认关闭的 `PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION=0|1`。DATA=1、只读 FLUSH=1、标准负项 entry=0、两项 Core 缺失缓存=0、目录 FD 容量256、WB=0、DAX=0、guest cache=1。两组复用相同 owned Immutable rootfs/workspace generation 和 frozen workspace baseline；已有封存准备在时钟外，没有按每次启动重新导入。Linux x86_64/KVM，guest 2 vCPU/16 GiB，父预算 CPU0/1、两核 quota、16 GiB、swap0。保留 PVisor、ManagedJob、stage/journal、VmExecutor 与 native runner，省略普通 CLI Host 服务。
+2026-10-17，B-FS-ENG 使用同一冻结 GNU host 与既有 0047 固件，仅切换默认关闭的 `PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION=0|1`。DATA=1、只读 FLUSH=1、标准负项 entry=0、两项 Core 缺失缓存=0、目录 FD 容量256、WB=0、DAX=0、guest cache=1。两组复用相同 owned Immutable rootfs/workspace generation 和 frozen workspace baseline；已有封存准备在时钟外，没有按每次启动重新导入。Linux x86_64/KVM，guest 2 vCPU/16 GiB，父预算 CPU0/1、两核 quota、16 GiB、swap0。保留 PVisor、ManagedSession、stage/journal、VmExecutor 与 native runner，省略普通 CLI Host 服务。
 
-每臂五个 fresh 环境、每环境九操作三轮，固定种子按环境块随机交替，正式 profiling 与 Rust logging 关闭。Ready 从启动至 guest Ready，worker 使用原任务内部时钟，均排除退出。保留正常退出、唯一 completed receipt、同 Job Bundle、cache/lower 隔离、256 个写文件和三份 stream 文件的完整字节检查。无安静期、干扰或全量清单门禁，不删除有效慢样本。主要指标先在每个环境内合计三轮七工具，再比较五个环境的中位数；配对 bootstrap 5000次以环境块抽样，三轮不作独立样本，32个区间未校正多重比较。
+每臂五个 fresh 环境、每环境九操作三轮，固定种子按环境块随机交替，正式 profiling 与 Rust logging 关闭。Ready 从启动至 guest Ready，worker 使用原任务内部时钟，均排除退出。保留正常退出、唯一 completed receipt、同 Session Bundle、cache/lower 隔离、256 个写文件和三份 stream 文件的完整字节检查。无安静期、干扰或全量清单门禁，不删除有效慢样本。主要指标先在每个环境内合计三轮七工具，再比较五个环境的中位数；配对 bootstrap 5000次以环境块抽样，三轮不作独立样本，32个区间未校正多重比较。
 
 ### 正式耗时：没有建立整体收益
 
@@ -533,7 +533,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 | rootfs | 8400 → 3600 | 7364 → 3156 | 7364 → 3156 |
 | workspace | 29554 → 12666 | 14973 → 6417 | 14973 → 6417 |
 
-两挂载各轮均减少57.14%。完整 owner 生命周期中，rootfs 资格查询为25760→11040，workspace 为59507→25503；相应 shared-attempt/receipt-hit 在开启组分别为3680和8501，旧 FLUSH/DATA分类尝试均为零。关闭组 shared-attempt/receipt-hit 均为零，旧两条分类各执行3680和8501次。receipt hit 包括复用不合格结论，不等于成功发出了数据对象 ID；计数也不是 guest cache hit 或磁盘 I/O。
+两挂载各轮均减少57.14%。完整 owner 生命周期中，rootfs 资格查询为25760→11040，workspace 为59507→25503；相应 shared-execution/receipt-hit 在开启组分别为3680和8501，旧 FLUSH/DATA分类尝试均为零。关闭组 shared-execution/receipt-hit 均为零，旧两条分类各执行3680和8501次。receipt hit 包括复用不合格结论，不等于成功发出了数据对象 ID；计数也不是 guest cache hit 或磁盘 I/O。
 
 | 第3轮七工具范围 | OPEN | READ | FLUSH | RELEASE | Core parent+leaf 查询 |
 |---|---:|---:|---:|---:|---:|
@@ -566,7 +566,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 ### 正式耗时
 
-10/10 正式环境有效、零失败。真实 CLI 均正常退出；唯一 Ready/Result、terminal Job、相同 run ID 的 Run Bundle、工具/Python 缓存、live lower 隔离、256 个写文件和三份 stream 文件的完整字节检查通过。分析重新核对冻结配置/制品、随机顺序与原日志，拒绝计时样本中的 filesystem profile/debug 记录。主要指标先在各环境内累计三轮七工具，再求五个环境的中位数；5000 次配对 bootstrap 以环境块抽样，三轮不作独立样本，32 个区间未作多重比较校正。表中单位 ms，降幅为 `100 × (1 − prepared/path)`；各行中位数不要求相加为累计中位数。
+10/10 正式环境有效、零失败。真实 CLI 均正常退出；唯一 Ready/Result、terminal Session、相同 run ID 的 Run Bundle、工具/Python 缓存、live lower 隔离、256 个写文件和三份 stream 文件的完整字节检查通过。分析重新核对冻结配置/制品、随机顺序与原日志，拒绝计时样本中的 filesystem profile/debug 记录。主要指标先在各环境内累计三轮七工具，再求五个环境的中位数；5000 次配对 bootstrap 以环境块抽样，三轮不作独立样本，32 个区间未作多重比较校正。表中单位 ms，降幅为 `100 × (1 − prepared/path)`；各行中位数不要求相加为累计中位数。
 
 | 指标 | 普通 path | prepared | 降幅 % | 95% CI % |
 |---|---:|---:|---:|---:|
@@ -633,7 +633,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 ### 机制与实验范围
 
-同一冻结 GNU host 与既有 0047 固件，仅切换默认关闭的 `PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=0|1`。两组 DATA=1、只读 FLUSH=1、目录 FD 容量 256、两项 Core 缺失缓存=0、WB=0、DAX=0、guest cache=1；复用相同 owned Immutable rootfs/workspace generation 和 frozen workspace baseline。Linux x86_64/KVM，guest 2 vCPU/16 GiB，保留 PVisor、ManagedJob、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务。已有封存输入的准备不在 Ready 或工具时钟内，也没有按每次启动重新导入。
+同一冻结 GNU host 与既有 0047 固件，仅切换默认关闭的 `PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=0|1`。两组 DATA=1、只读 FLUSH=1、目录 FD 容量 256、两项 Core 缺失缓存=0、WB=0、DAX=0、guest cache=1；复用相同 owned Immutable rootfs/workspace generation 和 frozen workspace baseline。Linux x86_64/KVM，guest 2 vCPU/16 GiB，保留 PVisor、ManagedSession、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务。已有封存输入的准备不在 Ready 或工具时钟内，也没有按每次启动重新导入。
 
 候选只将成功完成 Core 命名空间、策略、别名和缺失观察检查的 merged absence 返回为标准 `nodeid=0`、entry TTL 1 秒、attr TTL 0 的成功回复，不分配 inode。Core exclusion 的 ENOENT 仍为错误；exclusion 与 synthetic 名称的祖先、自身和后代均走原普通 lookup，同名 component 的兄弟路径可独立合格。这样 rootfs 中的 host-authority 隐藏路径不会使无关名字失去资格。正项和属性 TTL 不延长，Mutable、非默认授权规则、远端/未知 backend、WB/DAX 等仍回退；显式资格还要求 upper namespace、目录权限、物理根、祖先和挂载身份在 owner 生命周期内受独占稳定合同约束。负项可缓存不等于 lower 数据页可复用，两种资格分别检查。新偏好没有新增 wire capability，既有 DATA/FLUSH 的协商及快照限制继续保留。
 
@@ -641,7 +641,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 ### 正式耗时
 
-正式 10/10 环境有效、零失败；正常退出、唯一 completed receipt、同 Job Bundle、全部写文件与 stream 字节重新审计通过。下表为每组五环境的中位数，单位 ms；降幅为 `100 × (1 − 开启/关闭)`，负值表示更慢。各轮合计与三轮累计均先在每个环境内求和，因此不要求逐行中位数相加等于累计中位数。
+正式 10/10 环境有效、零失败；正常退出、唯一 completed receipt、同 Session Bundle、全部写文件与 stream 字节重新审计通过。下表为每组五环境的中位数，单位 ms；降幅为 `100 × (1 − 开启/关闭)`，负值表示更慢。各轮合计与三轮累计均先在每个环境内求和，因此不要求逐行中位数相加等于累计中位数。
 
 | 指标 | 关闭 | 开启 | 降幅 % | 95% CI % |
 |---|---:|---:|---:|---:|
@@ -704,7 +704,7 @@ workspace 七工具三轮 LOOKUP 减少 4.63%、Core 查询减少 0.49%。其中
 
 ### 同批条件与逐环境分布 {#data-flush-factorial-design}
 
-2026-10-17，B-FS-ENG 以 `PVISOR_VM_FS_LOWER_DATA_CACHE` 与 `PVISOR_VM_FS_READONLY_FLUSH_ELISION` 构成完整四臂：全关 `(0,0)`、仅 data `(1,0)`、仅 FLUSH `(0,1)`、两者开启 `(1,1)`。产品 host、0047 固件和 guest 与下述独立数据页实验逐 SHA 相同，没有产品代码差异；实验 harness 增加严格的四组合声明和验证。两项缺失缓存关闭，目录 FD 容量 256、WB=0、DAX=0、guest cache=1；四臂使用同一 owned Immutable rootfs/workspace 和 frozen baseline。Linux x86_64/KVM，guest 2 vCPU/16 GiB，沿用正常 PVisor、ManagedJob、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务。封存准备在时钟外，正式计时关闭 profiling。
+2026-10-17，B-FS-ENG 以 `PVISOR_VM_FS_LOWER_DATA_CACHE` 与 `PVISOR_VM_FS_READONLY_FLUSH_ELISION` 构成完整四臂：全关 `(0,0)`、仅 data `(1,0)`、仅 FLUSH `(0,1)`、两者开启 `(1,1)`。产品 host、0047 固件和 guest 与下述独立数据页实验逐 SHA 相同，没有产品代码差异；实验 harness 增加严格的四组合声明和验证。两项缺失缓存关闭，目录 FD 容量 256、WB=0、DAX=0、guest cache=1；四臂使用同一 owned Immutable rootfs/workspace 和 frozen baseline。Linux x86_64/KVM，guest 2 vCPU/16 GiB，沿用正常 PVisor、ManagedSession、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务。封存准备在时钟外，正式计时关闭 profiling。
 
 每臂五个 fresh VM，按固定种子在五个配对环境块内随机交替，每环境九操作三轮，无预热。20 个正式环境全部通过输出、工具缓存继承、正常退出、唯一完成收据、同一 Run Bundle、lower 隔离及全部写入/流写字节校验，失败为零。没有安静期、干扰或全量清单门禁，全部有效慢样本保留。Ready 只计可用输出，排除工具和退出；worker 时钟排除启动与退出，stream_write 保留自身 fsync/close。三轮相关，独立单位仍为每臂五个环境。累计先逐环境合计七工具的 21 个 worker 时钟，不是完整任务墙钟。
 
@@ -771,7 +771,7 @@ B-FS-DIAG 为四臂各跑一个独立 fresh 环境，不混入正式计时。每
 
 ### 条件与正式计时 {#immutable-lower-data-timing}
 
-2026-10-17，B-FS-ENG 使用同一冻结 GNU host 与 0047 固件，仅切换 `PVISOR_VM_FS_LOWER_DATA_CACHE=0|1`。两组均复用 owned Immutable rootfs/workspace 与 frozen baseline；目录 FD 容量 256、WB=0、DAX=0、guest cache=1，lower 负项缓存、upper 不存在缓存和只读 FLUSH 消除全部关闭。Linux x86_64/KVM，guest 2 vCPU/16 GiB，保留正常 PVisor、ManagedJob、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务；既有输入封存在时钟外，正式计时关闭 profiling。
+2026-10-17，B-FS-ENG 使用同一冻结 GNU host 与 0047 固件，仅切换 `PVISOR_VM_FS_LOWER_DATA_CACHE=0|1`。两组均复用 owned Immutable rootfs/workspace 与 frozen baseline；目录 FD 容量 256、WB=0、DAX=0、guest cache=1，lower 负项缓存、upper 不存在缓存和只读 FLUSH 消除全部关闭。Linux x86_64/KVM，guest 2 vCPU/16 GiB，保留正常 PVisor、ManagedSession、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务；既有输入封存在时钟外，正式计时关闭 profiling。
 
 每组五个 fresh VM，同轮 seeded 随机配对，每环境九操作三轮、无预热。十个正式环境全部通过正常退出、输出、工具缓存继承、Run Bundle、lower 隔离、全部写文件及流写字节校验，失败为零。没有安静期、干扰或全量清单门禁，保留全部有效慢样本。Ready 排除工具与退出，worker 时钟排除启动与退出；stream_write 保留自身 fsync/close。三轮相关，独立样本数仍为每组五个。累计值先逐环境合计 21 个七工具 worker 时钟，再取中位数，不是完整任务墙钟。
 
@@ -834,7 +834,7 @@ O_PATH 硬断言使用已核验的 raw `openat` 构造 fd：两组 F_GETFL 都�
 
 ### 条件与正式计时 {#readonly-local-flush-timing}
 
-2026-10-17，B-FS-ENG 使用同一冻结 GNU host 和新增 0046 协议的固件，仅切换 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0|1`。两组均复用 owned Immutable rootfs/workspace 与 frozen baseline；目录 FD 容量 256，lower 负项缓存与 upper 不存在缓存关闭，WB=0、DAX=0、guest cache=1。Linux x86_64/KVM，guest 2 vCPU/16 GiB，沿用正常 PVisor、ManagedJob、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务；封存准备在时钟外。
+2026-10-17，B-FS-ENG 使用同一冻结 GNU host 和新增 0046 协议的固件，仅切换 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0|1`。两组均复用 owned Immutable rootfs/workspace 与 frozen baseline；目录 FD 容量 256，lower 负项缓存与 upper 不存在缓存关闭，WB=0、DAX=0、guest cache=1。Linux x86_64/KVM，guest 2 vCPU/16 GiB，沿用正常 PVisor、ManagedSession、stage/journal、VmExecutor 和 native runner，省略 CLI Host 服务；封存准备在时钟外。
 
 每组五个 fresh VM，同轮 seeded 随机配对，每环境九操作三轮、无预热。十个正式环境全部通过正常退出、输出、工具缓存继承、Run Bundle、lower 隔离、全部写文件及流写字节校验，失败为零。没有安静期、干扰或全量清单门禁，保留全部有效慢样本。Ready 排除工具与退出，worker 时钟排除启动与退出；stream_write 保留操作自身的 fsync/close。三轮相关，独立样本数仍为每组五个。累计值先逐环境合计 21 个七工具 worker 时钟，再取中位数，不是完整任务墙钟。
 
@@ -885,7 +885,7 @@ rg 的 OPEN、READ、RELEASE 各 2051 次保持不变，说明候选减少的是
 
 Immutable lower 命中后，重复解析仍需验证 upper 的物理父链。显式独占 upper 契约允许在连续只读 epoch 内保留 `MissingLeaf` / `UnavailableParent`，工程对照检验这些重复查询是否构成当前工具等待的主要成本。
 
-2026-10-17，B-FS-ENG 使用同一新 GNU 工程制品与 0045 固件，仅切换 `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=0/1`。两组使用相同 owned Immutable rootfs/workspace generation，workspace 为 frozen baseline；目录 FD 缓存容量 256、lower 负缓存关闭、WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。Linux x86_64/KVM、guest 2 vCPU/16 GiB，使用正常 PVisor、ManagedJob、stage/journal、VmExecutor 与 native runner；省略 CLI Host 服务，已有输入封存成本排除在时钟之外，不更新普通 CLI 用户表。
+2026-10-17，B-FS-ENG 使用同一新 GNU 工程制品与 0045 固件，仅切换 `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=0/1`。两组使用相同 owned Immutable rootfs/workspace generation，workspace 为 frozen baseline；目录 FD 缓存容量 256、lower 负缓存关闭、WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。Linux x86_64/KVM、guest 2 vCPU/16 GiB，使用正常 PVisor、ManagedSession、stage/journal、VmExecutor 与 native runner；省略 CLI Host 服务，已有输入封存成本排除在时钟之外，不更新普通 CLI 用户表。
 
 每组五个新环境，在固定种子的配对块内随机交替，每环境九操作三轮，无预热。十个环境全部通过正常退出、输出、缓存继承、Run Bundle、lower 隔离及完整写入和 stream 字节检查，零失败。没有干扰、安静期或全量清单门禁，保留所有有效慢样本。Ready 排除工具和退出；工具使用 worker 时钟，排除启动和退出，stream_write 保留其操作本身的 fsync/close。每环境三轮相关，独立样本数仍为五；三轮七工具累计先在每个环境内合计 21 次操作，再统计中位数，不代表完整任务墙钟。
 
@@ -949,7 +949,7 @@ ATIME 两组各 36 个 case 通过，不提供性能结论，也不能抵消上�
 
 重复解析中，Immutable lower 上已确认不存在的叶子仍会触发物理查询。工程对照检验保存这一结果能否减少 Ready 和驻留工具的等待，同时保持 upper、其他 lower、权限与 journal 语义。
 
-2026-10-17，B-FS-ENG 在同一新 GNU 工程制品与 0045 固件上，仅切换 `PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE=0/1`。两组使用相同的真实 owned Immutable rootfs 和 workspace generation，workspace 保持 frozen baseline；目录 FD 缓存容量均为 256，WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。Linux x86_64/KVM、guest 2 vCPU/16 GiB，使用正常 PVisor、ManagedJob、stage/journal、VmExecutor 与 native runner，省略 CLI Host 服务。已有封存输入的准备排除在计时之外，结果不改写普通 CLI 用户表。
+2026-10-17，B-FS-ENG 在同一新 GNU 工程制品与 0045 固件上，仅切换 `PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE=0/1`。两组使用相同的真实 owned Immutable rootfs 和 workspace generation，workspace 保持 frozen baseline；目录 FD 缓存容量均为 256，WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。Linux x86_64/KVM、guest 2 vCPU/16 GiB，使用正常 PVisor、ManagedSession、stage/journal、VmExecutor 与 native runner，省略 CLI Host 服务。已有封存输入的准备排除在计时之外，结果不改写普通 CLI 用户表。
 
 每组五个新环境，固定种子在配对块内随机交替，每环境运行九操作三轮，无预热。十个环境全部通过输出、缓存继承、Run Bundle、lower 隔离、全部写入和 stream 字节及正常退出校验，无失败。无干扰、安静期或全量清单门禁，保留全部有效慢样本。Ready 截止唯一就绪输出，排除工具和退出；工具使用 worker 时钟，排除启动和退出，stream_write 保留操作本身的 fsync/close。三轮相互关联，独立样本数为每组五个环境；七工具累计先逐环境合计 21 次操作，再统计中位数，不代表完整任务墙钟。
 
@@ -995,7 +995,7 @@ rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减�
 
 ### 条件与时间结果 {#directory-cache-atime-timing}
 
-2026-10-17，B-FS-ENG 在同一个冻结 GNU 工程制品与 0045 固件上，仅切换目录 FD 缓存容量 256 / 1024。两组 rootfs 和 workspace 均为真实 owned Immutable，workspace 使用 frozen baseline；WB=0、DAX=0、guest cache=1。沿用正常 PVisor、ManagedJob、stage/journal、VmExecutor 与 native runner，省略 CLI Host 服务，因此 Ready 不与普通 CLI 用户表跨批比较。封存输入复用已有 generation，准备成本不计入 Ready 或工具时钟。
+2026-10-17，B-FS-ENG 在同一个冻结 GNU 工程制品与 0045 固件上，仅切换目录 FD 缓存容量 256 / 1024。两组 rootfs 和 workspace 均为真实 owned Immutable，workspace 使用 frozen baseline；WB=0、DAX=0、guest cache=1。沿用正常 PVisor、ManagedSession、stage/journal、VmExecutor 与 native runner，省略 CLI Host 服务，因此 Ready 不与普通 CLI 用户表跨批比较。封存输入复用已有 generation，准备成本不计入 Ready 或工具时钟。
 
 每组五个新环境，同轮 seeded 随机交替，每环境运行原九操作三轮。十个正式环境全部通过正常退出、输出、缓存继承、Run Bundle、lower 隔离和全部写入字节校验；无干扰、安静期或全量清单门禁，保留全部有效慢样本。Ready 排除工具和退出，工具使用 worker 时钟；三轮七工具累计先在每个环境内合计 21 次操作，再取中位数，独立样本数仍为五。
 
@@ -1034,9 +1034,9 @@ rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减�
 
 ### 条件与计时范围 {#owned-input-protocol}
 
-B-FS-ENG 使用同一冻结 GNU 工程制品和 0045 固件，经正常 PVisor、ManagedJob、stage/journal、VmExecutor 与 native runner 执行。入口省略 CLI Host 服务；普通 CLI 默认输入尚未自动取得这些所有权和缓存资格。Linux x86_64/KVM，guest 2 vCPU/16 GiB，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，热宿主输入、独立 upper、Job、工作区和任务工具缓存。WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。
+B-FS-ENG 使用同一冻结 GNU 工程制品和 0045 固件，经正常 PVisor、ManagedSession、stage/journal、VmExecutor 与 native runner 执行。入口省略 CLI Host 服务；普通 CLI 默认输入尚未自动取得这些所有权和缓存资格。Linux x86_64/KVM，guest 2 vCPU/16 GiB，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，热宿主输入、独立 upper、Session、工作区和任务工具缓存。WB=0、DAX=0、guest cache=1，正式计时关闭 profiling。
 
-四组 rootfs 共用一个真实导入并封存的物理目录，只切换 Mutable / Immutable 声明。基线和 rootfs-only 的工作区使用独立 live Mutable 拷贝；workspace-only 和两者启用组使用初始字节相同的 sealed snapshot、frozen baseline 和 Immutable lower，apply target 仍是独立 trial 工作区。因此工作区对照同时改变缓存资格及读观察/journal 工作，属于联合处理。SnapshotBase 从可信 store 认证 generation，并持有覆盖 Job 和 native teardown 的 lease；运行后保留 store，没有额外创建持久 pin。一次导入与封存准备为 **51.048 秒**，独立于 Ready 和工具计时。
+四组 rootfs 共用一个真实导入并封存的物理目录，只切换 Mutable / Immutable 声明。基线和 rootfs-only 的工作区使用独立 live Mutable 拷贝；workspace-only 和两者启用组使用初始字节相同的 sealed snapshot、frozen baseline 和 Immutable lower，apply target 仍是独立 trial 工作区。因此工作区对照同时改变缓存资格及读观察/journal 工作，属于联合处理。SnapshotBase 从可信 store 认证 generation，并持有覆盖 Session 和 native teardown 的 lease；运行后保留 store，没有额外创建持久 pin。一次导入与封存准备为 **51.048 秒**，独立于 Ready 和工具计时。
 
 每组五个新环境，同轮 seeded 随机交替，每环境执行九操作三轮，共 20 个有效环境、零失败。Ready 结束于唯一就绪输出，排除工具和退出；各工具使用 worker 时钟，stream_write 保留显式 fsync/close。正常退出、工具输出、缓存继承、Run Bundle、lower 隔离、256 文件和三份 stream 完整字节均校验。无安静期、干扰监控或全量清单门禁，保留全部慢有效样本。三轮相关，统计独立单位仍是五个环境。
 
@@ -2406,7 +2406,7 @@ cargo nextest run --locked --release -p pvisor-vm \
 
 暂存视图的连续读取约 +25%，离线 npm 约 +19%；元数据约 31 倍、写小文件约 50 倍。倍率很大，也要同时看原生只有几毫秒和增加约 150–190 ms 的绝对值。host 几乎没有 worker 开销，总时长仍增加 CLI 与记录成本。safe 再增加命名空间、限制和代理准备；VM 多数整项任务在约 0.5–1 秒量级。
 
-该历史批次的 OCI 对照使用 Podman，当时 Docker daemon 不可访问；后续已补充 rootless Docker Engine 的 bind-mount 数据，见上方完整环境对照。Docker overlay2 和 Docker Desktop 仍未测量。pVisor OCI 每个 Job 准备私有 rootfs，wall 反映这个成本；worker 单独显示工具执行成本。
+该历史批次的 OCI 对照使用 Podman，当时 Docker daemon 不可访问；后续已补充 rootless Docker Engine 的 bind-mount 数据，见上方完整环境对照。Docker overlay2 和 Docker Desktop 仍未测量。pVisor OCI 每个 Session 准备私有 rootfs，wall 反映这个成本；worker 单独显示工具执行成本。
 
 ### 工具兼容性补测
 

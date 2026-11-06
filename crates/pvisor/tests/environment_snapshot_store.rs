@@ -77,7 +77,7 @@ fn layer_sharing_checks_reference_volume_and_private_copy_remains_available() {
 }
 
 #[test]
-fn shared_lower_references_survive_snapshot_deletion_restart_and_retained_attempts() {
+fn shared_lower_references_survive_snapshot_deletion_restart_and_retained_executions() {
     use std::os::unix::fs::MetadataExt;
     let root = tempfile::tempdir().unwrap();
     let (store, id) = layered_snapshot(root.path());

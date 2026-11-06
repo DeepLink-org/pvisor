@@ -290,13 +290,13 @@ class SafetyTests(unittest.TestCase):
                 scope.close()
 
     def test_completion_unknown_is_not_cancelled(self):
-        run = dict(state="cancelled", run_id="r", attempt_id="a", finished_at_unix_ms=1)
+        run = dict(state="cancelled", run_id="r", execution_id="a", finished_at_unix_ms=1)
         completion = dict(result=dict(run), bundle_blake3="a" * 64)
         self.assertTrue(chaos.committed_completion(run, completion))
         self.assertFalse(chaos.committed_completion(run, None))
-        completion["result"]["attempt_id"] = "another"
+        completion["result"]["execution_id"] = "another"
         self.assertFalse(chaos.committed_completion(run, completion))
-        completion["result"]["attempt_id"] = "a"
+        completion["result"]["execution_id"] = "a"
         completion["result"]["failure"] = {"kind": "unknown"}
         self.assertFalse(chaos.committed_completion(run, completion))
 

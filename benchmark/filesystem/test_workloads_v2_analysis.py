@@ -167,7 +167,7 @@ class WorkloadAnalysisContracts(unittest.TestCase):
             all(point["read_completed_mib_s"] is None for point in result["observations"])
         )
         self.assertTrue(all(point["write_completed_mib_s"] > 0 for point in result["observations"]))
-        self.assertNotIn("job_ms", result["raw_rows"][0])
+        self.assertNotIn("session_ms", result["raw_rows"][0])
 
     def test_derived_files_preserve_sources_and_refuse_overwrite(self):
         protocol, records = fixture()

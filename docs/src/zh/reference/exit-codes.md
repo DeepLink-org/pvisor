@@ -19,13 +19,13 @@
 | `inspect` 中的命令结束 | 返回该检查命令的退出码 |
 | 伴随工具 | 派发保留其退出码；replay 成功与质量还要查看结果协议 |
 
-应用冲突、Job 未找到与 UnsupportedPolicy 目前没有独占的数字退出码。工作负载自身也可能返回 1、2、125 或 130，所以数字不能单独区分“Agent 失败”和“pVisor 拒绝”。
+应用冲突、Session 未找到与 UnsupportedPolicy 目前没有独占的数字退出码。工作负载自身也可能返回 1、2、125 或 130，所以数字不能单独区分“Agent 失败”和“pVisor 拒绝”。
 
 ## Daemon 进程与 API 错误 {#daemon}
 
 独立 `pvisor-daemon` 的 `protocol` 成功或服务正常停止返回 0；clap 参数错误返回 2；启动/运行错误在 stderr 报告并返回 1。这些是服务进程状态，不是沙箱工作负载退出码。安装 companion 后，伴随派发保留其退出码。
 
-生命周期客户端应检查 HTTP status、`{code, message}` 与 `X-Request-ID`。创建返回 202 JSON；pause/resume 返回 202 空响应体；确认删除返回 204。这些都不证明工作负载命令成功。命令结果来自 prepared image 的真实 execd 数据面，不是原生 Job Run Bundle 或已退役 Cluster 的聚合结果。不支持的创建选项会被拒绝，不会静默生效。见 [daemon 运维](../guides/daemon/index.md#operations)。
+生命周期客户端应检查 HTTP status、`{code, message}` 与 `X-Request-ID`。创建返回 202 JSON；pause/resume 返回 202 空响应体；确认删除返回 204。这些都不证明工作负载命令成功。命令结果来自 prepared image 的真实 execd 数据面，不是原生 Session Run Bundle 或已退役 Cluster 的聚合结果。不支持的创建选项会被拒绝，不会静默生效。见 [daemon 运维](../guides/daemon/index.md#operations)。
 
 ## 在自动化里判断
 
@@ -61,6 +61,6 @@ printf 'run=%s review=%s\n' "$run_code" "$review_code"
 | `deadline_exceeded` | 任务超过实际经过时间限制；检查进度与保留文件 |
 | `infrastructure` | sandbox 设置或 I/O 等执行基础设施失败；检查诊断 |
 
-解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Job、apply 冲突和管理命令错误写到 stderr 并返回 1，不会伪装成任务失败。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
+解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Session、apply 冲突和管理命令错误写到 stderr 并返回 1，不会伪装成任务失败。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
 
 可下载的[非零退出样例](../assets/examples/json/failed-run.json) 记录 `state = "failed"`、`exit_code = 7`、`failure.kind = "process_exit"`。[超时样例](../assets/examples/json/timeout-run.json) 记录 `state = "failed"`，省略 `exit_code`，`failure.kind = "deadline_exceeded"`，CLI 返回 1。两者都保留了暂存的候选文件。[采集来源](../assets/examples/json/provenance.json) 包含命令与实际退出码。

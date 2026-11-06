@@ -322,7 +322,7 @@ mod tests {
         let spec = RunSpec::process("observation-check", "agent", "/bin/true");
         let plan = PVisor::new().resolve_operation(spec).unwrap();
         let result: RunResult = serde_json::from_value(serde_json::json!({
-            "run_id": "observation-check", "attempt_id": "attempt",
+            "run_id": "observation-check", "execution_id": "execution",
             "state": "completed", "started_at_unix_ms": 0,
             "finished_at_unix_ms": 1, "exit_code": 0
         }))

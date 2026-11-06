@@ -164,7 +164,7 @@ def collect(protocol, records):
             host_verified=record.get("host_verified") is True,
             analysis_eligible=failures_before == len(failures),
         )
-        for field in ("ready_ms", "job_ms", "exit_after_done_ms"):
+        for field in ("ready_ms", "session_ms", "exit_after_done_ms"):
             environment[field] = record.get(field) if number(record.get(field)) else None
         resources = record.get("resource", {})
         for field in ("cpu_usage_usec_delta", "sampled_memory_current_peak"):

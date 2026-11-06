@@ -1,6 +1,6 @@
-//! Generation-scoped bind stages. Catalog admission never waits for a Job lock.
+//! Generation-scoped bind stages. Catalog admission never waits for a Session lock.
 use super::*;
-use crate::runtime::{self, JobDirectoryLock, RunRecord, StagedRunLease};
+use crate::runtime::{self, RunRecord, SessionDirectoryLock, StagedRunLease};
 use pvisor_core::overlay::{OverlayRecord, OverlayState};
 
 const BINDING: &str = "pvisor.docker_staged_bind";
@@ -12,7 +12,7 @@ pub struct StagedMount {
     pub target: PathBuf,
     /// Canonical host directory whose changes may be accepted.
     pub source: PathBuf,
-    /// Independent Job stage directory; absent before the first start.
+    /// Independent Session stage directory; absent before the first start.
     pub stage: Option<PathBuf>,
 }
 
@@ -104,7 +104,7 @@ fn binding(store: &Store, instance: &Instance, index: usize, mount: &Mount) -> B
 }
 impl Store {
     /// Describe explicit staged binds. This is metadata, not operation admission;
-    /// use `staged_mount_stage` and shared Job service checks for review/apply/drop.
+    /// use `staged_mount_stage` and shared Session service checks for review/apply/drop.
     pub fn staged_mounts(&self, selector: &str) -> anyhow::Result<Vec<StagedMount>> {
         let _catalog = self.lock()?;
         let instance = self.resolve(selector)?;
@@ -124,10 +124,10 @@ impl Store {
     }
     /// Resolve a stopped, receipt-confirmed staged bind under the catalog lock.
     /// Omission is valid only for exactly one staged bind; otherwise `mount` must
-    /// equal its complete guest target. Ordinary binds/volumes never select a Job.
+    /// equal its complete guest target. Ordinary binds/volumes never select a Session.
     /// Resolution observes existing locks without creating them or changing their
     /// diagnostic records. Missing locks fail closed for every caller.
-    /// Returned paths confer no durable admission: the Job service rechecks the
+    /// Returned paths confer no durable admission: the Session service rechecks the
     /// container binding under its operation lease, so restart/removal fail closed.
     pub fn staged_mount_stage(
         &self,
@@ -159,16 +159,16 @@ impl Store {
         stopped(self, &instance)?;
         let stage = path(self, &instance.id, &instance.generation, index);
         let selected_record = RunRecord::read(&stage)?;
-        let _directory = JobDirectoryLock::observe_existing(&selected_record)?;
+        let _directory = SessionDirectoryLock::observe_existing(&selected_record)?;
         let (record, _lease) = selected_record.observe_current()?;
         validate_record(&record, &binding(self, &instance, index, selected))?;
         record.require_stopped()?;
         Ok(stage)
     }
-    /// Recheck a container Job's owner/generation binding. Shared Job operations
+    /// Recheck a container Session's owner/generation binding. Shared Session operations
     /// invoke this automatically, including when given a stage path directly.
-    /// Native Jobs without a Docker binding are unaffected. Never hold this lock
-    /// over frontend interaction; start/remove take nonblocking Job locks.
+    /// Native Sessions without a Docker binding are unaffected. Never hold this lock
+    /// over frontend interaction; start/remove take nonblocking Session locks.
     pub fn check_bound_staged_record(record: &RunRecord) -> anyhow::Result<()> {
         let Some(value) = record.orchestration.get(BINDING) else {
             return Ok(());
@@ -272,7 +272,7 @@ fn validate_record(record: &RunRecord, bound: &Binding) -> anyhow::Result<()> {
 
 pub(super) struct Stage {
     record: RunRecord,
-    _directory: JobDirectoryLock,
+    _directory: SessionDirectoryLock,
     _lease: StagedRunLease,
 }
 
@@ -290,7 +290,7 @@ pub(super) fn prepare(store: &Store, instance: &Instance) -> anyhow::Result<Vec<
         private_directory(&stage)?;
         let lease = StagedRunLease::acquire_new(&stage)?;
         let id = uuid();
-        let scope = crate::job_service::ProjectApplyScope::capture(&mount.source)?;
+        let scope = crate::session_service::ProjectApplyScope::capture(&mount.source)?;
         let overlay: OverlayRecord = serde_json::from_value(serde_json::json!({
             "id":id,"generation":0,"target":mount.source,
             "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
@@ -309,7 +309,7 @@ pub(super) fn prepare(store: &Store, instance: &Instance) -> anyhow::Result<Vec<
             &[pvisor_overlay_core::LayerMutability::Mutable],
         )?;
         let record: RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":2,"completion_protocol":1,"run_id":id,"attempt_id":uuid(),
+            "schema_version":2,"completion_protocol":1,"run_id":id,"execution_id":uuid(),
             "session_id":instance.id,"agent":"docker-staged-bind-owner","pid":std::process::id(),
             "command":instance.argv,"state":"running","started_at_unix_ms":instance.started_ms,
             "finished_at_unix_ms":null,"storage":stage,"workspace":mount.source,
@@ -318,7 +318,7 @@ pub(super) fn prepare(store: &Store, instance: &Instance) -> anyhow::Result<Vec<
         }))?;
         record.write()?;
         record.initialize_apply_observation_locks()?;
-        let directory = JobDirectoryLock::acquire(&record, "docker-generation-owner")?;
+        let directory = SessionDirectoryLock::acquire(&record, "docker-generation-owner")?;
         stages.push(Stage {
             record,
             _directory: directory,
@@ -333,13 +333,13 @@ pub(super) fn complete(stages: &mut [Stage], code: i32) -> anyhow::Result<()> {
         let record = &mut stage.record;
         runtime::stage_overlay_record(record.overlay.as_mut().context("missing stage overlay")?)?;
         let result: pvisor_core::RunResult = serde_json::from_value(serde_json::json!({
-            "run_id":record.run_id,"attempt_id":record.attempt_id,"state":if code == 0 {"completed"} else {"failed"},
+            "run_id":record.run_id,"execution_id":record.execution_id,"state":if code == 0 {"completed"} else {"failed"},
             "started_at_unix_ms":record.started_at_unix_ms,"finished_at_unix_ms":crate::unix_now_ms(),"exit_code":code,
             "warnings":["Container owner observed VMM exit and sealed this bind stage; no executor isolation attestation is claimed."]
         }))?;
         let snapshot = crate::AgentCtlSnapshot {
             run_id: record.run_id.clone(),
-            attempt_id: record.attempt_id.clone().unwrap(),
+            execution_id: record.execution_id.clone().unwrap(),
             directive: pvisor_core::protocol::AgentDirective::Continue,
             clients: vec![],
         };
@@ -354,7 +354,7 @@ pub(super) fn complete(stages: &mut [Stage], code: i32) -> anyhow::Result<()> {
 }
 
 // Written only on a path which never successfully spawned a VMM. It permits
-// catalog cleanup, never Job review/apply/drop or completion synthesis.
+// catalog cleanup, never Session review/apply/drop or completion synthesis.
 pub(super) fn failed_admission(store: &Store, instance: &Instance) -> anyhow::Result<()> {
     crate::util::write_private_json(
         &store.directory(&instance.id).join("failed-admission.json"),
@@ -437,7 +437,7 @@ pub(super) fn lock_previous(
             }
         }
         let selected = RunRecord::read(&stage)?;
-        let directory = JobDirectoryLock::acquire(&selected, "docker-generation-transition")?;
+        let directory = SessionDirectoryLock::acquire(&selected, "docker-generation-transition")?;
         let (record, lease) = selected.lock_current()?;
         validate_record(&record, &binding(store, instance, index, mount))?;
         if !failed {
@@ -544,7 +544,7 @@ mod tests {
         assert_ne!(alias, Path::new("/"));
         assert!(is_root_identity(&fs::metadata(&alias).unwrap()).unwrap());
         assert!(
-            crate::job_service::ProjectApplyScope::capture(&alias)
+            crate::session_service::ProjectApplyScope::capture(&alias)
                 .unwrap_err()
                 .to_string()
                 .contains("identity")

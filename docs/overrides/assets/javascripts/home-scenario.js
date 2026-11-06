@@ -21,18 +21,18 @@ export const INITIAL_FILES = Object.freeze({
   'shop/coupons.py': coupon, 'shop/order.py': order,
   'README.md': '# Shop\n\nLocal development notes (uncommitted).',
 });
-export const JOBS = [
+export const SESSIONS = [
   { id: 'price', code: 'P1', lane: -1, color: '#81b8ff', title: pair('金额精度', 'Money precision'), agent: 'Ada', task: pair('用十进制定点计算，保留接口。', 'Use decimal arithmetic; keep the API.') },
   { id: 'stock', code: 'I1', lane: 1, color: '#80dac0', title: pair('库存边界', 'Stock limits'), agent: 'Lin', task: pair('拒绝超卖与负数数量。', 'Reject overselling and negative quantities.') },
   { id: 'coupon', code: 'C1', lane: -2, color: '#c1a0f5', title: pair('优惠券', 'Coupons'), agent: 'Sam', task: pair('折扣不能让金额小于零。', 'Keep discounted totals nonnegative.') },
-  { id: 'round', code: 'P2', lane: -3, color: '#dfb36f', title: pair('另一种舍入', 'Try rounding'), agent: 'Kai', parent: 'price', task: pair('从已停止任务的文件状态尝试 round。', 'Try round from a stopped Job’s file checkpoint.') },
+  { id: 'round', code: 'P2', lane: -3, color: '#dfb36f', title: pair('另一种舍入', 'Try rounding'), agent: 'Kai', parent: 'price', task: pair('从已停止任务的文件状态尝试 round。', 'Try round from a stopped Session’s file checkpoint.') },
   { id: 'retry', code: 'P3', lane: 2, color: '#79c9eb', title: pair('保留用户修改', 'Keep your edit'), agent: 'Ada', task: pair('读当前项目，重做金额修复。', 'Redo the money fix from the current project.') },
   { id: 'integration', code: 'T1', lane: 3, color: '#f1a38e', title: pair('集成验证', 'Integration'), agent: 'Jo', task: pair('检查金额、优惠券与运费一起工作。', 'Check totals, discounts, and shipping together.') },
   { id: 'shipping', code: 'S1', lane: 4, color: '#c1a0f5', title: pair('运费规则', 'Shipping rule'), agent: 'Lin', task: pair('满额包邮使用折扣前金额。', 'Use the pre-discount total for free shipping.') },
   { id: 'docs', code: 'D1', lane: -4, color: '#80dac0', title: pair('补齐交付说明', 'Delivery notes'), agent: 'Sam', task: pair('记录边界用例，保留 README 草稿。', 'Document edge cases; preserve the README draft.') },
 ];
 export const CHAPTERS = [
-  { t: 0, title: pair('开始', 'Start'), note: pair('订单服务有三个问题。分别开任务，读现有项目，修改先留在各自的暂存区。', 'Three issues in the order service. Start separate Jobs against the existing project; retain their edits in private stages.') },
+  { t: 0, title: pair('开始', 'Start'), note: pair('订单服务有三个问题。分别开任务，读现有项目，修改先留在各自的暂存区。', 'Three issues in the order service. Start separate Sessions against the existing project; retain their edits in private stages.') },
   { t: 18, title: pair('并行尝试', 'Explore'), note: pair('金额、库存、优惠券同时推进。Agent 在各自的文件视图里修改和测试，原项目继续可用。', 'Money, stock, and coupons progress together. Each agent edits and tests its own file view while the original project stays available.') },
   { t: 44, title: pair('遇到冲突', 'Conflict'), note: pair('你补了金额单位说明。旧修复基于更早的文件，接收时被拒绝；候选仍留着，可以检查或重试。', 'You added a currency note. The old fix used an earlier file, so apply refuses to overwrite it. The proposal remains available for review or retry.') },
   { t: 64, title: pair('选择接收', 'Select'), note: pair('先接收库存和优惠券的源码与测试。实验笔记留在暂存区，金额修复从你的新版本重新开始。', 'Accept stock and coupon source and tests. Leave experiment notes staged while the money fix starts again from your edit.') },
@@ -41,14 +41,14 @@ export const CHAPTERS = [
 ];
 
 const events = [];
-const add = (t, type, job, data = {}) => events.push({ t, type, job, ...data });
-const start = (t, job) => add(t, 'start', job);
-const read = (t, job, paths) => add(t, 'read', job, { paths });
-const write = (t, job, path, content) => add(t, 'write', job, { path, content });
-const test = (t, job, passed, total, detail) => add(t, 'test', job, { passed, total, detail });
-const stop = (t, job) => add(t, 'stop', job);
-const apply = (t, job, paths) => add(t, 'apply', job, { paths });
-const drop = (t, job) => add(t, 'drop', job);
+const add = (t, type, session, data = {}) => events.push({ t, type, session, ...data });
+const start = (t, session) => add(t, 'start', session);
+const read = (t, session, paths) => add(t, 'read', session, { paths });
+const write = (t, session, path, content) => add(t, 'write', session, { path, content });
+const test = (t, session, passed, total, detail) => add(t, 'test', session, { passed, total, detail });
+const stop = (t, session) => add(t, 'stop', session);
+const apply = (t, session, paths) => add(t, 'apply', session, { paths });
+const drop = (t, session) => add(t, 'drop', session);
 start(3, 'price'); read(5, 'price', ['shop/pricing.py', 'tests/test_pricing.py']);
 start(7, 'stock'); read(9, 'stock', ['shop/inventory.py', 'tests/test_inventory.py']);
 start(11, 'coupon'); read(13, 'coupon', ['shop/coupons.py', 'tests/test_coupons.py']);
@@ -95,68 +95,68 @@ add(140, 'verify', null, { passed: 20, total: 20 });
 drop(143, 'price'); drop(145, 'coupon'); drop(147, 'docs');
 export const EVENTS = events.sort((a, b) => a.t - b.t);
 
-function newJob(id, t) {
-  return { ...JOBS.find(j => j.id === id), start: t, end: null, status: 'running', baseline: {}, upper: {}, applied: [], tests: null, log: [], conflicts: [] };
+function newSession(id, t) {
+  return { ...SESSIONS.find(j => j.id === id), start: t, end: null, status: 'running', baseline: {}, upper: {}, applied: [], tests: null, log: [], conflicts: [] };
 }
 export function createState() {
-  return { time: 0, files: { ...INITIAL_FILES }, jobs: {}, history: [], log: [], applied: [], conflicts: [], verification: null };
+  return { time: 0, files: { ...INITIAL_FILES }, sessions: {}, history: [], log: [], applied: [], conflicts: [], verification: null };
 }
 // A null observation records absence, so a later same-name file is a conflict.
-function observe(state, job, path) {
-  if (!Object.hasOwn(job.baseline, path)) job.baseline[path] = state.files[path] ?? null;
+function observe(state, session, path) {
+  if (!Object.hasOwn(session.baseline, path)) session.baseline[path] = state.files[path] ?? null;
 }
 export function reduceEvent(state, event) {
-  const { t, type, job: id } = event;
-  let job = state.jobs[id];
+  const { t, type, session: id } = event;
+  let session = state.sessions[id];
   let message;
   let paths = event.paths || (event.path ? [event.path] : []);
   let outcome = type;
   if (type === 'start' || type === 'fork') {
-    job = state.jobs[id] = newJob(id, t);
+    session = state.sessions[id] = newSession(id, t);
     if (type === 'fork') {
-      const parent = state.jobs[event.parent];
+      const parent = state.sessions[event.parent];
       if (!parent || parent.end === null) throw new Error('File fork requires a stopped parent');
-      job.baseline = { ...parent.baseline }; job.upper = { ...parent.upper };
+      session.baseline = { ...parent.baseline }; session.upper = { ...parent.upper };
     }
-    message = type === 'fork' ? pair('从 P1 文件检查点启动 P2', 'Start P2 from P1’s file checkpoint') : pair('启动 ' + job.code + ' · 私有暂存区', 'Start ' + job.code + ' · private stage');
+    message = type === 'fork' ? pair('从 P1 文件检查点启动 P2', 'Start P2 from P1’s file checkpoint') : pair('启动 ' + session.code + ' · 私有暂存区', 'Start ' + session.code + ' · private stage');
   } else if (type === 'read') {
-    paths.forEach(path => observe(state, job, path));
+    paths.forEach(path => observe(state, session, path));
     message = pair('读取 ' + paths[0] + ' · 记录原像', 'Read ' + paths[0] + ' · record baseline');
   } else if (type === 'write') {
-    observe(state, job, event.path); job.upper[event.path] = event.content;
+    observe(state, session, event.path); session.upper[event.path] = event.content;
     message = pair('写入 upper · ' + event.path, 'Write upper · ' + event.path);
   } else if (type === 'edit') {
     state.files[event.path] = event.content;
     message = pair('你修改了金额单位说明 · 原项目', 'You add a currency note · original project');
   } else if (type === 'test') {
-    job.tests = { passed: event.passed, total: event.total, detail: event.detail };
+    session.tests = { passed: event.passed, total: event.total, detail: event.detail };
     message = pair(`示例测试 ${event.passed}/${event.total} · ${event.detail}`, `Example tests ${event.passed}/${event.total} · ${event.detail}`);
   } else if (type === 'stop') {
-    job.end = t; job.status = job.tests && job.tests.passed < job.tests.total ? 'failed' : 'review';
-    message = pair('任务停止 · 候选文件可审查', 'Job stopped · proposal ready for review');
+    session.end = t; session.status = session.tests && session.tests.passed < session.tests.total ? 'failed' : 'review';
+    message = pair('任务停止 · 候选文件可审查', 'Session stopped · proposal ready for review');
   } else if (type === 'apply') {
-    if (job.end === null) throw new Error('Stop writers before apply');
-    if (paths.some(p => !Object.hasOwn(job.upper, p))) throw new Error('Apply selects existing proposals');
-    const conflicts = paths.filter(p => (state.files[p] ?? null) !== job.baseline[p]);
+    if (session.end === null) throw new Error('Stop writers before apply');
+    if (paths.some(p => !Object.hasOwn(session.upper, p))) throw new Error('Apply selects existing proposals');
+    const conflicts = paths.filter(p => (state.files[p] ?? null) !== session.baseline[p]);
     if (conflicts.length) {
-      job.status = 'conflict'; job.conflicts = conflicts; outcome = 'conflict';
-      state.conflicts.push({ job: id, t, paths: conflicts });
+      session.status = 'conflict'; session.conflicts = conflicts; outcome = 'conflict';
+      state.conflicts.push({ session: id, t, paths: conflicts });
       message = pair('拒绝覆盖 · ' + conflicts.join(', '), 'Apply refused · ' + conflicts.join(', '));
     } else {
-      for (const p of paths) { state.files[p] = job.upper[p]; delete job.upper[p]; job.applied.push(p); }
-      job.status = 'applied'; state.applied.push({ job: id, t, paths: [...paths] });
-      message = pair(`审查后接收 ${paths.length} 个文件 · ${job.code}`, `Accept ${paths.length} reviewed files · ${job.code}`);
+      for (const p of paths) { state.files[p] = session.upper[p]; delete session.upper[p]; session.applied.push(p); }
+      session.status = 'applied'; state.applied.push({ session: id, t, paths: [...paths] });
+      message = pair(`审查后接收 ${paths.length} 个文件 · ${session.code}`, `Accept ${paths.length} reviewed files · ${session.code}`);
     }
   } else if (type === 'drop') {
-    if (job.end === null) throw new Error('Stop before discarding proposals');
-    paths = Object.keys(job.upper); job.upper = {}; job.status = 'dropped';
-    message = pair(`丢弃剩余 ${paths.length} 个候选 · ${job.code}`, `Drop ${paths.length} remaining proposals · ${job.code}`);
+    if (session.end === null) throw new Error('Stop before discarding proposals');
+    paths = Object.keys(session.upper); session.upper = {}; session.status = 'dropped';
+    message = pair(`丢弃剩余 ${paths.length} 个候选 · ${session.code}`, `Drop ${paths.length} remaining proposals · ${session.code}`);
   } else if (type === 'verify') {
     state.verification = { passed: event.passed, total: event.total };
     message = pair('最终项目 · 20/20 示例测试通过', 'Final project · 20/20 example tests pass');
   } else throw new Error('Unknown demo event: ' + type);
   const record = { ...event, type: outcome, paths, message };
-  state.history.push(record); state.log.push(record); if (job) job.log.push(record);
+  state.history.push(record); state.log.push(record); if (session) session.log.push(record);
   state.time = t;
   return state;
 }
@@ -167,10 +167,10 @@ export function stateAt(time) {
   return state;
 }
 export function counters(state) {
-  const jobs = Object.values(state.jobs);
+  const sessions = Object.values(state.sessions);
   return {
-    running: jobs.filter(j => j.end === null).length,
-    staged: jobs.reduce((n, j) => n + Object.keys(j.upper).length, 0),
+    running: sessions.filter(j => j.end === null).length,
+    staged: sessions.reduce((n, j) => n + Object.keys(j.upper).length, 0),
     accepted: new Set(state.applied.flatMap(a => a.paths)).size,
     conflicts: state.conflicts.length,
   };

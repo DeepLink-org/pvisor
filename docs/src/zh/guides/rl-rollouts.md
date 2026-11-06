@@ -15,7 +15,7 @@ pvisor inspect ../rollout-001 -- cat answer.txt
 
 ## 单次 rollout 的现有拼装方式
 
-当前可以将一次命令执行、模型流量记录和原生 Agent 轨迹作为一个评测样本。先为样本准备干净 workspace，再运行命令并保留 Job ID、Run Bundle、Event Journal 与 Agent 原生轨迹。reward 的计算、任务队列、模型训练和跨节点调度由现有框架负责。
+当前可以将一次命令执行、模型流量记录和原生 Agent 轨迹作为一个评测样本。先为样本准备干净 workspace，再运行命令并保留 Session ID、Run Bundle、Event Journal 与 Agent 原生轨迹。reward 的计算、任务队列、模型训练和跨节点调度由现有框架负责。
 
 | 产物 | 用途 | 不能替代 |
 | --- | --- | --- |
@@ -50,4 +50,4 @@ pvisor drop ../rollout-001
 
 这只是内容匹配奖励，真实任务替换为单元测试、环境得分或人工标注。若执行检查或文件读取失败，记录为失败样本并保留诊断，停止后面的正常评分步骤。CI 中使用 `set -e` 或显式检查每一步返回值。
 
-收集原生 Agent 轨迹时按[接入指南](agents/index.md)配置 Agent 自身的输出位置；启用 Gateway 捕获的步骤见[模型通信记录](capture.md)。把轨迹位置、Bundle 与评分用同一个 task/attempt ID 关联。批量任务复用[并行工作区流程](parallel-agents.md#batch)，每个样本使用新的 Stage。
+收集原生 Agent 轨迹时按[接入指南](agents/index.md)配置 Agent 自身的输出位置；启用 Gateway 捕获的步骤见[模型通信记录](capture.md)。把轨迹位置、Bundle 与评分用同一个 task/execution ID 关联。批量任务复用[并行工作区流程](parallel-agents.md#batch)，每个样本使用新的 Stage。

@@ -97,7 +97,7 @@ touch finish
 
 The counter continues after resume. `finish` tells the task to check memory, write `result.json`, and exit. Wait for the command in the first terminal to finish before collecting results.
 
-These operations continue the **same VM Attempt**, requiring the original owner/VMM to remain alive. Plain `suspend` instead saves an execution checkpoint; see [checkpoint semantics](../../concepts/lifecycle.md#checkpoint-boundary). This demo uses ordinary file-backed RAM without compression, deduplication, or a shared pool. Resident-page observations are not total service memory usage and do not guarantee a reclamation amount.
+These operations continue the **same VM Execution**, requiring the original owner/VMM to remain alive. Plain `suspend` instead saves an execution checkpoint; see [checkpoint semantics](../../concepts/lifecycle.md#checkpoint-boundary). This demo uses ordinary file-backed RAM without compression, deduplication, or a shared pool. Resident-page observations are not total service memory usage and do not guarantee a reclamation amount.
 
 ## 5. Collect results {#collect-results}
 
@@ -116,13 +116,13 @@ bundle = json.loads((root / 'result.bundle.json').read_text())
 result = json.loads((root / 'result.json').read_text())
 assert bundle['run']['state'] == 'completed'
 assert bundle['run']['exit_code'] == 0
-assert bundle['run']['attempt_id'] == before['run']['attempt_id']
+assert bundle['run']['execution_id'] == before['run']['execution_id']
 assert result['memory_ok'] is True and result['steps'] > 0
-print('PASS: same Attempt, memory intact, task completed')
+print('PASS: same Execution, memory intact, task completed')
 PY
 ```
 
-**Expected result:** `PASS: same Attempt, memory intact, task completed`. `memory_ok` is `true`; `steps` varies with the timing of your operations. The caller can associate its task ID with the Bundle's Job/Attempt IDs before scoring or scheduling.
+**Expected result:** `PASS: same Execution, memory intact, task completed`. `memory_ok` is `true`; `steps` varies with the timing of your operations. The caller can associate its task ID with the Bundle's Session/Execution IDs before scoring or scheduling.
 
 The VM exits when the task finishes. Retain the records and results you need, then discard unapplied candidates:
 
@@ -132,4 +132,4 @@ pvisor drop ../stage
 
 The explicitly selected `guest.ram` is a caller-owned backing file; remove it once the VM has exited and it is no longer needed. To stop early, use `pvisor kill ../stage`. The five-minute task timeout continues during pauses.
 
-This workflow was verified on 2026-10-24 with Linux x86_64/KVM and CLI `0.3.0+g35.b318715`: the counter stopped after pause/offload, continued after resume, retained its Attempt identity, passed memory checks, and exited with code 0. This verifies single-VM functionality, not concurrency density or automatic model-wait management.
+This workflow was verified on 2026-10-24 with Linux x86_64/KVM and CLI `0.3.0+g35.b318715`: the counter stopped after pause/offload, continued after resume, retained its Execution identity, passed memory checks, and exited with code 0. This verifies single-VM functionality, not concurrency density or automatic model-wait management.

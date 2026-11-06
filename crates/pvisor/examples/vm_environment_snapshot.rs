@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
         None
     };
     // Private destination persists for the experiment's host-side assertions.
-    // A failed attempt never reuses its tree; callers remove it before retry.
+    // A failed execution never reuses its tree; callers remove it before retry.
     let root = if let Some(snapshot) = &published {
         let root = base.join("restored-rootfs");
         snapshot.materialize(&root)?;

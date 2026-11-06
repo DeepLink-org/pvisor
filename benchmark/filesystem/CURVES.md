@@ -45,7 +45,7 @@ backing 调用。把 WRITE 提前回复只移动等待位置；若随后 flush�
 
 [curves_driver.rs](curves_driver.rs) 经 `pvisor_vm::api` 构造一个 rootfs
 Overlay 连接；输出位于 `/curve-work`。这是 SDK 机制探针，不经过普通
-`pvisor run --safe` 的完整 Job、Gateway、stage journal、Bundle 和 apply 流程。
+`pvisor run --safe` 的完整 Session、Gateway、stage journal、Bundle 和 apply 流程。
 不把它的绝对耗时解释为 CLI Ready 或整个 Agent 的完成时间。
 
 [curves_guest.rs](curves_guest.rs) 编译为同一个静态 Linux x86_64 payload。
@@ -114,7 +114,7 @@ snapshot schema。
 | JSON 字段 | 默认值 | 支持范围 / 含义 |
 | --- | --- | --- |
 | `capacity_mib` | 64 | 整数 4–256；payload 预算，含预留、排队和执行中的字节 |
-| `jobs` | 1024 | 整数 1–4096；上述三种状态共同占用的任务数 |
+| `sessions` | 1024 | 整数 1–4096；上述三种状态共同占用的任务数 |
 | `batch_kib` | 1024 | 整数 4–4096；不得超过 payload 预算 |
 | `chunks` | 64 | 整数 1–64；一次合批最多多少个原始请求 |
 | `delay_us` | 10000 | 整数 0–50000；最老待处理项的合批等待目标 |
@@ -126,8 +126,8 @@ snapshot schema。
 
 字节和任务数可能先后成为瓶颈。若每个接收请求恰为 4 KiB，1024 项最多承载
 4 MiB；若恰为 64 KiB，则最多承载 64 MiB。实际请求形状必须由独立诊断核对。
-因此现有 `capacity-256m` 不自动证明测试填满了 256 MiB；`peak_jobs` 先到顶时，
-曲线可能由任务数限制。要隔离更大字节预算的作用，需另登记 jobs 敏感性或更大
+因此现有 `capacity-256m` 不自动证明测试填满了 256 MiB；`peak_sessions` 先到顶时，
+曲线可能由任务数限制。要隔离更大字节预算的作用，需另登记 sessions 敏感性或更大
 请求的对照，不能运行后补改解释。
 
 runner 清理继承的 `PVISOR_*`，再安装冻结条件。临时在 shell 中设置配置不会
@@ -185,17 +185,17 @@ cell 时钟；仅收到 WRITE 回复或 `CURVES_DONE` 不足以判定有效。
 ### 环境与资源时钟
 
 `ready_ms` 从观察者启动 subject 到 guest payload 的 `CURVES_READY`，不是
-公开 VM ready callback，也不是普通 CLI Ready。`job_ms` 覆盖整个 subject/
+公开 VM ready callback，也不是普通 CLI Ready。`session_ms` 覆盖整个 subject/
 payload 进程，包括启动、cell 准备、guest 验证和退出，结束于独立宿主验证之前。
 
-资源采样范围比 `job_ms` 更宽：当前 10 ms `memory.current` 采样、byte-seconds
+资源采样范围比 `session_ms` 更宽：当前 10 ms `memory.current` 采样、byte-seconds
 积分和最终 cgroup 快照还包含独立宿主验证及观察者开销，覆盖该环境的全部
 cells，不能分摊成某个 cell 的局部内存。采样峰值可能漏掉短峰，字段名保留
 `sampled_`。父 cgroup 跨整个 campaign 复用；内核 `memory.peak` 是该组累计
 高水位，后续 trial 会继承此前峰值，**不是每个条件的独立峰值**。`cpu.stat`、
 `io.stat` 等累计记录也要先取明确边界的差分，不能直接比较原始累计值。
 
-队列 profile 的 `*_peak_bytes_sum` / `*_peak_jobs_sum` 是每个停止 session
+队列 profile 的 `*_peak_bytes_sum` / `*_peak_sessions_sum` 是每个停止 session
 峰值的和；只有确认该 owner 只有一个 session 时才能当作它的队列峰值。该计数
 只覆盖 payload/任务预算，不替代整个 cgroup 内存，也不证明 VM 已能 offload。
 
@@ -469,7 +469,7 @@ token，并按预先保存的 cell 顺序映射；不按日志时间猜归属。
 逐区间保留原始累计差分，再仅对计数扣除一次 marker 自身：一个 IOCTL、80
 请求字节和一个 direct request。inclusive span 的时间保留诊断含义，不能相加
 为总时间或据此替代正式性能样本。最终计数包含准备/验证，phase 差分排除它们。
-启用缓存时，accepted bytes、backing bytes、accepted requests/queue jobs 和
+启用缓存时，accepted bytes、backing bytes、accepted requests/queue sessions 和
 backing/queue batches 必须闭合且 backing errors=0；缺少显式计数不是零。
 condition/total 汇总是不同诊断 trial 的工作量之和，不是平均工作量。
 
@@ -503,7 +503,7 @@ runner 已有开关，也不是已完成或已有结果。
 | 改善来自哪一环？ | sync、unmerged、async | 完成/循环吞吐、阶段时间、实际 backing batches/bytes | shape 对照结合 DIAG 核对实际路径；复制、worker 交接与资格检查的独立贡献需另行登记诊断设计 |
 | 粒度和局部文件并发如何影响收益？ | 1–1024 KiB；1/2/4 worker，总字节固定 | 完成吞吐、同步/关闭占比、逐对比值 | 已有闭环有限工作量曲线；不是多 VM 扩展性 |
 | 高频同步和小文件是否退化？ | 每 1/16/256 次及最终 fsync；create/write/close | total、accepted、applied、fsync、close、dirsync | 已有；另有普通 CLI 七工具 N5，Cargo/npm 等应用待测 |
-| 队列参数是否稳健？ | Q=4/16/64/256 MiB；batch=64/256/1024 KiB；delay=0/100/1000/10000/50000 μs | 完成吞吐、两类高水位、reserve waits、整环境资源 | 已有部分逐项参数臂；需识别 jobs 瓶颈，再登记 jobs/更大请求敏感性 |
+| 队列参数是否稳健？ | Q=4/16/64/256 MiB；batch=64/256/1024 KiB；delay=0/100/1000/10000/50000 μs | 完成吞吐、两类高水位、reserve waits、整环境资源 | 已有部分逐项参数臂；需识别 sessions 瓶颈，再登记 sessions/更大请求敏感性 |
 | 是否只是短暂填队列？ | 长运行，累计字节覆盖 Q 的 0.25/1/4/16 倍；慢 backing | accepted 与 completed/durable 时间线、队列增长、最终 drain | 当前只有有限 8/64/128 MiB 工作量，实际队列未饱和；持续稳态和慢存储待测 |
 | 饱和前后吞吐与尾延迟如何变化？ | 开放到达负载约为同步基线容量的 25/50/75/90/100/110/125% | offered/completed rate、端到端 P50/P95/P99、积压/拒绝/超时 | 未测；需独立负载发生器与逐请求时间戳，当前 cell 均值不能替代 |
 | 工作集跨过缓存容量会怎样？ | read WSS / 有效 guest RAM=0.25/1/4；host/guest/protocol/tool 缓存状态分层 | 首次/重复 read、fault、I/O、整组内存、读写混合干扰 | 已有独立 Immutable lower 1–768 MiB 五遍 reopen 曲线及逐轮历史；不同 RAM 和冷盘待测 |

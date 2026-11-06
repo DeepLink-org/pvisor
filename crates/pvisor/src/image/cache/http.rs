@@ -13,13 +13,13 @@ use std::{
 
 pub(crate) struct Http {
     root: reqwest::Url,
-    send: Option<tokio::sync::mpsc::UnboundedSender<Job>>,
+    send: Option<tokio::sync::mpsc::UnboundedSender<Task>>,
     worker: Option<std::thread::JoinHandle<()>>,
     active: Arc<AtomicUsize>,
     pid: u32,
 }
 
-struct Job {
+struct Task {
     url: reqwest::Url,
     range: Option<Range<u64>>,
     limit: usize,
@@ -123,7 +123,7 @@ impl Http {
             }
         }
         let client = builder.build()?;
-        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Task>();
         let (ready, initialized) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::Builder::new().name("pvisor-image-http".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -135,14 +135,14 @@ impl Http {
                 let mut tasks = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
-                        job = receive.recv() => match job {
-                            Some(job) => {
+                        task = receive.recv() => match task {
+                            Some(task) => {
                                 let client = client.clone();
                                 tasks.spawn(async move {
-                                    let result = Self::fetch_with_deadline(&client, job.url, job.range, job.limit,
-                                        job.deadline.saturating_duration_since(std::time::Instant::now())).await;
-                                    let _ = job.reply.send(result);
-                                    drop(job.permit);
+                                    let result = Self::fetch_with_deadline(&client, task.url, task.range, task.limit,
+                                        task.deadline.saturating_duration_since(std::time::Instant::now())).await;
+                                    let _ = task.reply.send(result);
+                                    drop(task.permit);
                                 });
                             }
                             None => break,
@@ -208,7 +208,7 @@ impl Http {
         self.send
             .as_ref()
             .context("HTTP image worker stopped")?
-            .send(Job {
+            .send(Task {
                 url,
                 range,
                 limit,
@@ -230,7 +230,7 @@ impl Http {
         budget: Duration,
     ) -> anyhow::Result<Option<StoredObject>> {
         let deadline = tokio::time::Instant::now() + budget;
-        for attempt in 0..2 {
+        for execution in 0..2 {
             let result = tokio::time::timeout_at(
                 deadline,
                 Self::fetch_once(client, url.clone(), range.clone(), limit),
@@ -238,7 +238,7 @@ impl Http {
             .await
             .map_err(|_| anyhow::anyhow!("HTTP image read timed out"))?;
             match result {
-                Err(error) if attempt == 0 => {
+                Err(error) if execution == 0 => {
                     let wait = if let Some(retry) = error.downcast_ref::<RetryLater>() {
                         Some(retry.0)
                     } else if error.downcast_ref::<reqwest::Error>().is_some_and(|e| {

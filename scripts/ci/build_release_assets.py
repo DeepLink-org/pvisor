@@ -96,7 +96,7 @@ class Pvisor < Formula
     %w[pvisor pvisor-replay pvisor-daemon].each do |name|
       assert_match version.to_s, shell_output("#{{bin}}/#{{name}} --version")
     end
-    # Homebrew's test sandbox cannot nest pVisor's Seatbelt; CI runs Jobs outside it.
+    # Homebrew's test sandbox cannot nest pVisor's Seatbelt; CI runs Sessions outside it.
     system bin/"pvisor", "replay", "--help"
     system bin/"pvisor-daemon", "protocol"
   end

@@ -14,7 +14,7 @@
 | Main additions | Waiting-window observation, all-vCPU aggregation, policy owner, wake/deadline and lost-wakeup prevention |
 | Pending | Complete idle sources, wake/deadline, automatic offload, HVF validation and offload-benefit experiments |
 
-An Agent waiting for a model response, input or an external tool may retain resident VM RAM without useful execution. Short waits allow CPU sleep; longer waiting windows can justify offload to reduce memory-time cost. Resume continues the same live Attempt rather than creating a persistent checkpoint or restarting it.
+An Agent waiting for a model response, input or an external tool may retain resident VM RAM without useful execution. Short waits allow CPU sleep; longer waiting windows can justify offload to reduce memory-time cost. Resume continues the same live Execution rather than creating a persistent checkpoint or restarting it.
 
 The host decides whether to offload using window length, memory pressure, device safety, restoration budget and supported profiles. A blocked thread alone does not trigger immediate offload.
 
@@ -22,7 +22,7 @@ The host decides whether to offload using window length, memory pressure, device
 
 ### 1.1 Waiting windows and resident memory
 
-An Agent waiting for a model, network or external tool may retain resident VM RAM without useful computation. CPU sleep reduces execution cost; memory reclamation additionally needs a sufficiently long window, safe parking and timely restoration of the same Attempt.
+An Agent waiting for a model, network or external tool may retain resident VM RAM without useful computation. CPU sleep reduces execution cost; memory reclamation additionally needs a sufficiently long window, safe parking and timely restoration of the same Execution.
 
 Three questions guide the design: identify useful waiting across relevant vCPUs, restore reliably on network/control/timer events, and establish whether memory-time savings cover observation, commit and restore costs.
 
@@ -61,7 +61,7 @@ flowchart TD
 ```
 
 - `pvisor-vm` owns backend observation and CPU/device control. Public contracts belong in `api.rs`; the experiment does not expose private VMM modules.
-- `pvisor` owns policy, Host backing commit, Attempt lifecycle, configuration and explainable events.
+- `pvisor` owns policy, Host backing commit, Execution lifecycle, configuration and explainable events.
 - Event sources such as OverlayNet notify wake before guest RAM access or potentially blocking channels.
 - One control owner serializes automatic policy with manual pause/resume/checkpoint/cancel; existing completion ownership remains intact.
 
@@ -73,7 +73,7 @@ M0 defines Executing, HandlingExit, WaitingForEvent, HostDescheduled, ManualPaus
 
 ### 2.3 Wake, deadlines and commit order
 
-Required information includes Attempt identity, CPU topology generation, observation sequence, idle epoch, pending wake sequence, park reason, available deadline and clock domain.
+Required information includes Execution identity, CPU topology generation, observation sequence, idle epoch, pending wake sequence, park reason, available deadline and clock domain.
 
 Latch wake throughout Candidate/Quiescing/Offloading/Offloaded; preserve already-pending events. Revalidate observation and event sequences after entering the stop boundary. Wake arriving during Host backing commit waits until commit completes, then restores immediately; RAM writers do not reopen earlier.
 
@@ -104,7 +104,7 @@ Automatic wake releases only the automatic park owned by that owner/epoch. Manua
 
 ### 2.5 Initial profiles
 
-- Ordinary writable shared file-backed RAM, raw offload, same live Attempt.
+- Ordinary writable shared file-backed RAM, raw offload, same live Execution.
 - One vCPU first; expand after SMP aggregation/epoch acceptance.
 - Network wake initially uses existing OverlayNet IPv4 TCP, with explicit timer/control-wake support.
 - No in-flight virtio-fs requests; skip slow I/O and preserve existing RAM leases during discard.
@@ -154,7 +154,7 @@ Exit gate: fault injection and controlled interleavings prove no lost wake; prof
 - [ ] Check ordinary file-backed RAM support; exclude pager/pool/private COW.
 - [ ] Reject in-flight filesystem I/O and unguarded devices early; real drain failure is not routine policy rejection.
 - [ ] Define initial grace, deadline guard, reentry cooldown and wake-frequency suppression.
-- [ ] Restore the same Attempt under real delayed-network, timer and control wake, verifying all content.
+- [ ] Restore the same Execution under real delayed-network, timer and control wake, verifying all content.
 - [ ] Preserve fail-stop/unknown behavior for offload/store/restore failures and actual terminal state.
 
 Exit gate: correctness, authority and lifecycle negative controls pass. Mark only validated platforms/profiles as restricted PoC.
@@ -185,7 +185,7 @@ Promotion gate: net resource benefit on explicit workloads while meeting QoS, wi
 |---|---|---|
 | `crates/pvisor-vm/src/api.rs` and private backends | Observation contracts, wait/deadline, CPU control and device gate | API boundary, states/epochs, timers and RAM correctness |
 | `crates/pvisor/src/executor/vm/` | Observation/control channels, backing commit and profiles | Drain/commit/wake concurrency and fail-stop |
-| `crates/pvisor/src/runtime/` | Attempt arbitration, automatic policy and events | Authority preserved across manual/automatic/snapshot/cancel |
+| `crates/pvisor/src/runtime/` | Execution arbitration, automatic policy and events | Authority preserved across manual/automatic/snapshot/cancel |
 | `crates/pvisor-overlaynet/src/vm.rs` and later device sources | Wake-before-RAM and external socket lifecycle | Data/EOF/errors/backpressure/already-pending events |
 | Existing crate and product integration tests | Mock interleavings and real VM validation | Separate platform passes, failures and skips |
 | `benchmark/` | Registered policy experiments | Independent data/receipts/samples outside this directory |

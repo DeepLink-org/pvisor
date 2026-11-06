@@ -205,7 +205,7 @@ def collect(protocol, records):
             stderr=record.get("stderr", record.get("stderr_path")),
             error=record.get("error"),
         )
-        for field in ("wrapper_prepare_ns", "job_ns", "exit_after_done_ns"):
+        for field in ("wrapper_prepare_ns", "session_ns", "exit_after_done_ns"):
             if number(record.get(field)):
                 environment[field.removesuffix("_ns") + "_ms"] = record[field] / 1e6
         for field, value in record.get("resource", {}).items():

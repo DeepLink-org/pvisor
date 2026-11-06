@@ -106,7 +106,7 @@ fn select(
 ) -> io::Result<tempfile::TempDir> {
     let mut failures = Vec::new();
     for (root, shared) in candidates {
-        let attempt: io::Result<tempfile::TempDir> = (|| {
+        let execution: io::Result<tempfile::TempDir> = (|| {
             validate(root, uid, *shared, roots)?;
             let directory = tempfile::Builder::new()
                 .prefix("ram-mount-")
@@ -115,7 +115,7 @@ fn select(
             validate(directory.path(), uid, false, roots)?;
             Ok(directory)
         })();
-        match attempt {
+        match execution {
             Ok(directory) => return Ok(directory),
             Err(error) => failures.push(format!("{}: {error}", root.display())),
         }

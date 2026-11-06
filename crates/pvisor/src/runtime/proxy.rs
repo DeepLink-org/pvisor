@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 struct Sink {
     policy: NetworkPolicy,
     run_id: String,
-    attempt_id: String,
+    execution_id: String,
 }
 #[async_trait::async_trait]
 impl OverlaySink for Sink {
@@ -27,7 +27,7 @@ impl OverlaySink for Sink {
         Ok(OverlayRequestContext {
             policy: self.policy.clone(),
             run_id: Some(self.run_id.clone()),
-            attempt_id: Some(self.attempt_id.clone()),
+            execution_id: Some(self.execution_id.clone()),
             session_id: self.run_id.clone(),
             sink: (),
         })
@@ -54,7 +54,7 @@ impl Proxy {
         controller: Arc<dyn ControlController>,
         metrics: InterceptionMetrics,
         run_id: String,
-        attempt_id: String,
+        execution_id: String,
     ) -> anyhow::Result<Self> {
         let listener = std::net::TcpListener::bind(listen)?;
         listener.set_nonblocking(true)?;
@@ -65,7 +65,7 @@ impl Proxy {
             Sink {
                 policy,
                 run_id,
-                attempt_id,
+                execution_id,
             },
             Arc::new(AtomicUsize::new(0)),
         )
@@ -132,7 +132,7 @@ mod tests {
             Arc::new(pvisor_core::PolicyControlController),
             metrics,
             "run".into(),
-            "attempt".into(),
+            "execution".into(),
         )
         .unwrap();
         let address = proxy.listen.clone();
@@ -143,7 +143,7 @@ mod tests {
             .unwrap();
         let response = client.get("http://example.com/").send().unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        // An idle client must not keep Attempt teardown waiting for its connection.
+        // An idle client must not keep Execution teardown waiting for its connection.
         proxy.shutdown().unwrap();
         assert!(std::net::TcpStream::connect(&address).is_err());
         assert!(
@@ -153,7 +153,7 @@ mod tests {
                 Arc::new(pvisor_core::PolicyControlController),
                 InterceptionMetrics::default(),
                 "run".into(),
-                "attempt".into()
+                "execution".into()
             )
             .is_err()
         );

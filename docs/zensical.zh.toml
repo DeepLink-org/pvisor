@@ -49,7 +49,7 @@ nav = [
     ] },
     { "任务学习路线" = [
       { "按任务学习 pVisor" = "cases/index.md" },
-      { "1. 从一个命令到一个 Job" = "cases/01-first-job.md" },
+      { "1. 从一个命令到一个 Session" = "cases/01-first-session.md" },
       { "2. 先审查，再接受文件改动" = "cases/02-review-and-decide.md" },
       { "3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md" },
       { "4. 为不可信任务声明边界" = "cases/04-boundaries.md" },
@@ -73,7 +73,7 @@ nav = [
       { "配置文件参考" = "reference/config.md" },
       { "策略字段参考" = "reference/policy.md" },
       { "Run Bundle 格式" = "reference/run-bundle.md" },
-      { "Job 用法与存储" = "reference/jobs.md" },
+      { "Session 用法与存储" = "reference/sessions.md" },
       { "机器可读输出" = "reference/json-output.md" },
       { "环境变量" = "reference/env-vars.md" },
       { "退出码与错误" = "reference/exit-codes.md" },
@@ -83,7 +83,7 @@ nav = [
   ] },
   { "基本概念" = [
     { "pVisor 概览" = "why/index.md" },
-    { "核心概念" = "concepts/jobs.md" },
+    { "核心概念" = "concepts/sessions.md" },
     { "核心功能" = [
       { "文件级监管与隔离" = "concepts/staging.md" },
       { "沙箱生命周期管理" = "concepts/lifecycle.md" },
@@ -122,7 +122,7 @@ nav = [
       { "架构总览" = "design/index.md" },
       { "核心设计原则" = "design/principles.md" },
       { "核心架构" = "design/architecture.md" },
-      { "Job、Operation、Attempt 与 Event" = "design/execution-model.md" },
+      { "Session、Operation、Execution 与 Event" = "design/execution-model.md" },
     ] },
     { "VM 与虚拟设备" = [
       { "执行、设备与一致性" = "design/vm-runtime.md" },
@@ -146,7 +146,7 @@ nav = [
     ] },
     { "快照与状态" = [
       { "一致性冻结与状态存储" = "design/environment-snapshot.md" },
-      { "Job 检查点与分叉" = "design/job-checkpoint-cli.md" },
+      { "Session 检查点与分叉" = "design/session-checkpoint-cli.md" },
     ] },
     { "单节点 Daemon" = [
       { "单节点 Daemon 架构" = "design/daemon/index.md" },
@@ -199,7 +199,7 @@ nav = [
     ] },
     { "测试与语义规格" = [
       { "测试与 semspec" = "community/testing.md" },
-      { "pVisor Job 用户场景与回归示例" = "reference/cases.md" },
+      { "pVisor Session 用户场景与回归示例" = "reference/cases.md" },
       { "暂存、应用与丢弃规格（未审核草稿）" = "cases/06-stage-apply.md" },
     ] },
     { "发布与维护" = [

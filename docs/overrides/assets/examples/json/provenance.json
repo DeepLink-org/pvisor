@@ -1,5 +1,5 @@
 {
-  "kind": "actual CLI output; paths, identities and numeric wall-clock fields normalized",
+  "kind": "historical CLI output adapted to current Session field names; not a new execution",
   "commands": {
     "run-bundle": [
       "run",

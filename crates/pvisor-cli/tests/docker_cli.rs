@@ -281,7 +281,7 @@ impl Native {
         output
     }
 
-    fn job(&self, script: &str, expected: i32) {
+    fn session(&self, script: &str, expected: i32) {
         let root = self._temporary.path();
         let mut command = Command::new(&self.binary);
         for (key, directory) in [
@@ -299,7 +299,7 @@ impl Native {
         fs::create_dir(&workspace).unwrap();
         let output = command
             .current_dir(workspace)
-            .env("PVISOR_RUN_HOME", root.join("jobs"))
+            .env("PVISOR_RUN_HOME", root.join("sessions"))
             .env("PVISOR_STARTUP_TIMING", "0")
             .args(["spawn", "--executor", "vm", "--rootfs"])
             .arg(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").unwrap())
@@ -394,12 +394,12 @@ fn docker_stop_infinite_timeout_waits_past_default_grace_without_escalating() {
 
 #[test]
 #[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_ROOTFS"]
-fn job_native_vm_uses_shared_supervision() {
-    Native::new().job(
+fn session_native_vm_uses_shared_supervision() {
+    Native::new().session(
         include_str!("../../pvisor-guest/tests/fixtures/reap_orphans.sh"),
         0,
     );
-    Native::new().job("echo job-stderr >&2; exit 7", 7);
+    Native::new().session("echo session-stderr >&2; exit 7", 7);
 }
 
 #[test]

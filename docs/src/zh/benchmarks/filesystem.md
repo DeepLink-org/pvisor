@@ -188,7 +188,7 @@ N=3 中位数 [最小–最大]，单位 s；未将三轮当成九个独立样�
 
 此对照使用共同的目录 rootfs，不经过 lazy cache；压缩镜像的文件访问成本见[镜像实验](lazy-image-startup.md#local-access)。
 
-Native/host 输出在 Btrfs；staged 使用 FUSE 暂存；两种 pVisor VM 使用 virtio-fs、OverlayFS 与暂存输出。普通 CLI Job 入口为 `spawn`，host writeback 关闭，产品关闭 DAX，guest writeback 分别请求关闭/开启。Docker 使用新私有 rootless overlay2，可写层承载输出、输入只读 bind，退出后复制输出供独立校验。
+Native/host 输出在 Btrfs；staged 使用 FUSE 暂存；两种 pVisor VM 使用 virtio-fs、OverlayFS 与暂存输出。普通 CLI Session 入口为 `spawn`，host writeback 关闭，产品关闭 DAX，guest writeback 分别请求关闭/开启。Docker 使用新私有 rootless overlay2，可写层承载输出、输入只读 bind，退出后复制输出供独立校验。
 
 Firecracker、QEMU q35、QEMU microvm 共用未修改的官方 stock 内核、匹配模块 initrd、最小 PID1 和私有 ext4 root/work 磁盘，virtio-blk、FLUSH 与正常卸载保持启用。QEMU microvm 开启 ACPI 进行设备发现。磁盘准备、容器创建和输出导出均不计入 Ready/任务。工具、内核和存储栈差异属于配置，不解释为纯 VMM 开销。
 

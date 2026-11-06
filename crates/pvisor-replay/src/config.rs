@@ -371,7 +371,7 @@ mode = "off"
                 "state_dir": "/tmp/sweeval-sandbox-replay/state",
                 "output_dir": "/tmp/sweeval-sandbox-replay/output",
                 "max_steps": 200,
-                "session_id": "task-291-attempt-1",
+                "session_id": "task-291-execution-1",
                 "run_id": "sweeval"
             }))
             .unwrap(),
@@ -384,7 +384,7 @@ mode = "off"
         assert_eq!(request.after_step, 49);
         assert_eq!(request.workspace, Path::new("/app"));
         assert_eq!(request.max_steps, Some(200));
-        assert_eq!(request.session_id.as_deref(), Some("task-291-attempt-1"));
+        assert_eq!(request.session_id.as_deref(), Some("task-291-execution-1"));
         assert_eq!(request.run_id.as_deref(), Some("sweeval"));
         assert_eq!(request.mode, ReplayMode::ReplayAndContinue);
         assert!(!request.disable_thinking);

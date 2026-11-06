@@ -387,7 +387,7 @@ impl Queue {
         let used_ring = self.used_ring;
         let used_ring_size = 6 + 8 * queue_size;
         if !self.ready {
-            error!("attempt to use virtio queue that is not marked ready");
+            error!("try to use virtio queue that is not marked ready");
             false
         } else if self.size > self.max_size || self.size == 0 || (self.size & (self.size - 1)) != 0
         {

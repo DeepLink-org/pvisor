@@ -65,7 +65,7 @@ fn removed_ctrl_is_not_a_builtin() {
         );
         assert!(
             !root.path().join("runs").exists(),
-            "retired ctrl must not admit a Job"
+            "retired ctrl must not admit a Session"
         );
     }
 }
@@ -154,7 +154,7 @@ fn cancellation_is_acknowledged_with_signal_exit_status() {
 }
 
 #[test]
-fn simultaneous_requests_isolate_cwd_and_environment_and_leave_stopped_jobs_addressable() {
+fn simultaneous_requests_isolate_cwd_and_environment_and_leave_stopped_sessions_addressable() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     let invoke = |root: &std::path::Path, marker: &str| {
@@ -267,7 +267,7 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
     assert!(
         endpoint.path.ends_with(
             std::path::Path::new(&record.run_id)
-                .join(record.attempt_id.as_ref().unwrap())
+                .join(record.execution_id.as_ref().unwrap())
                 .join("control.sock")
         )
     );

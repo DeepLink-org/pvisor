@@ -723,7 +723,7 @@ mod tests {
     fn network_request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
@@ -835,7 +835,7 @@ mod tests {
         };
         let request = ModelCallRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             call_id: "call-1".into(),
             client_model: "claude-sonnet".into(),
             upstream_model: "claude-sonnet".into(),
@@ -896,7 +896,7 @@ mod tests {
                 policy: &guard,
                 request: &NetworkAccessRequest {
                     run_id: None,
-                    attempt_id: None,
+                    execution_id: None,
                     host: "api.example.com".into(),
                     port: Some(port),
                     transport,
@@ -972,7 +972,7 @@ mod tests {
                 policy: &guard,
                 request: &NetworkAccessRequest {
                     run_id: None,
-                    attempt_id: None,
+                    execution_id: None,
                     host,
                     port: Some(8080),
                     transport: NetworkTransport::Http,

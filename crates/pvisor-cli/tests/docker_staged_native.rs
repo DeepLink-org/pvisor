@@ -61,7 +61,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_STATE_HOME", root.join("state"))
-            .env("PVISOR_RUN_HOME", root.join("jobs"))
+            .env("PVISOR_RUN_HOME", root.join("sessions"))
             .env("PVISOR_DOCKER_HOME", &self.native.home)
             .env("PVISOR_IMAGE_STORE", self.native.home.join("images"))
             .env_remove("PVISOR_STARTUP_TIMING")

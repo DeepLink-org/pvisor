@@ -467,7 +467,7 @@ VM 退出/CPU drop 登记 Stopped 并推进 topology generation，不复活停�
 下一个可观察接点。关闭观测时，以同一时间截断逐 CPU wait 和全等待窗口，
 将活动 wait 标为 Unknown；`wait_exits` 包含此类观测区间截断，不等同于后端
 wake 次数。禁用期间 Stopped 仍登记生命周期/topology，但不累计不可观测的
-等待时长。调用方绑定自己的 Attempt、源码及 binary/firmware 身份。
+等待时长。调用方绑定自己的 Execution、源码及 binary/firmware 身份。
 
 HVF 只在 `should_wait` 通过且真正进入 WFE/timeout channel select 前采集
 WaitingForEvent，离开 select 即关闭；已过期或有 pending interrupt 的路径
@@ -764,7 +764,7 @@ single-session diagnostics). `lower_data_cache_open_flags` counts qualified
 OPEN replies, `lower_data_cache_object_registrations` counts assigned IDs,
 `lower_data_cache_object_reuses` counts repeated receipts for registered IDs,
 and `lower_data_cache_object_rejections`/`lower_data_cache_capacity_rejections`
-count fallback receipt attempts/its capacity subset. All are diagnostic work
+count fallback receipt executions/its capacity subset. All are diagnostic work
 counts, not bytes saved, elapsed time or a performance result.
 
 Focused private tests cover strict parsing, old-peer and incompatible-session
@@ -810,12 +810,12 @@ old-peer fallback, RELEASE and the DATA/FLUSH lifetime contracts remain unchange
 
 Linux Overlay profiles explicitly initialize every measurement, including zero:
 `shared_open_qualification_enabled` is the effective host preference (not guest
-negotiation), and `open_qualification_fgetfl_attempts`,
-`open_qualification_fstat_attempts`, `open_qualification_statx_attempts`, and
-`open_qualification_fstatfs_attempts` count only actual qualification query
-attempts, including failures. They exclude native lookup/getattr and other
-operations' metadata syscalls. `_shared_attempts`, `_legacy_flush_attempts` and
-`_legacy_data_attempts` with the same `open_qualification` prefix count classifier
+negotiation), and `open_qualification_fgetfl_executions`,
+`open_qualification_fstat_executions`, `open_qualification_statx_executions`, and
+`open_qualification_fstatfs_executions` count only actual qualification query
+executions, including failures. They exclude native lookup/getattr and other
+operations' metadata syscalls. `_shared_executions`, `_legacy_flush_executions` and
+`_legacy_data_executions` with the same `open_qualification` prefix count classifier
 entries. `_receipt_hits` counts request-local decisions consumed after the second
 backend check, including negative decisions; `_receipt_misses` counts fresh
 legacy DATA classification there. Existing flag, registration, reuse and
@@ -826,7 +826,7 @@ macOS diagnostic contract.
 On the successful combined source path, seven qualification query sites become
 F_GETFL+statx+fstatfs, while DATA-only goes from four to three. These are static
 call counts, not measured syscall totals or elapsed speedup. Focused private
-tests compare real pinned descriptors and profile attempts, independent DATA/
+tests compare real pinned descriptors and profile executions, independent DATA/
 FLUSH fallback, incomplete statx masks/unsupported statx, nlink/status flags,
 copy-up/old lower EOF, second backend checking, fresh later receipt calls,
 release, default parsing and snapshot schema. Independent real guest and
@@ -1123,7 +1123,7 @@ the same signature on every platform; unsupported backends return an error.
 Layer selection uses Core's checked metadata layer index, including nested lower
 roots, rather than inferring it from physical path prefixes. Selection retains
 policy/I/O errors and the ordinary metadata resolver's absence observations.
-Restore can add the new Attempt's private authority paths through
+Restore can add the new Execution's private authority paths through
 `rebind_filesystem_exclusions`. It preserves every existing exclusion, rejects
 absolute/escaping paths and additions that hide saved inode paths, and leaves
 other topology checks intact. This keeps new control sockets and storage hidden
@@ -1296,7 +1296,7 @@ DAX 和恢复 guest-writeback 会话明确不支持。直接共享目录的 pass
 
 私有工程变量 `PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 接受严格 JSON object，
 未知/重复字段、错误类型与越界值在连接建立前拒绝；未设置使用上述默认值。
-字段为 `capacity_mib`（4–256）、`jobs`（1–4096）、`batch_kib`（4–4096，
+字段为 `capacity_mib`（4–256）、`sessions`（1–4096）、`batch_kib`（4–4096，
 不超过容量）、`chunks`（1–64）和 `delay_us`（0–50000）。单个大请求不为
 满足合批大小而拆分，单独执行；`chunks=1,delay_us=0` 是不合并的异步对照。
 资格检查在保留 File 的同一个 HandleLease 中查询固定 FD，不等待后台 native
@@ -1331,7 +1331,7 @@ guest RAM 引用；后续 READ/SETATTR/FLUSH 等阻塞请求仍可能持 RAM 引
 
 ### 文件 I/O 的合版验收线
 
-文件 I/O 先作为独立机制验收，再接入 Attempt 调度、Gateway 与 RAM
+文件 I/O 先作为独立机制验收，再接入 Execution 调度、Gateway 与 RAM
 offload/resume。及格不要求所有 FUSE 请求异步，也不以 WRITE 提前返回
 或单个吞吐数字代替生命周期正确性。首个候选范围是 Linux staged overlay、
 独占 upper、guest writeback=0、DAX=0、host writeback=1。
@@ -1500,7 +1500,7 @@ release 制品与正式配对批次，不由并发单测推导收益。
 `VmConfiguration::guest_idle_handoff` opts a fresh Linux/KVM x86-64 VM into the
 matching firmware's `pvisor_idle=1` protocol. It accepts one or two vCPUs and
 rejects larger topologies, snapshot profiles and optional unaudited device features. `GuestIdleControl` arms one bounded
-acquisition attempt, reads/waits for copied `GuestIdleStatus`, conditionally pauses by epoch,
+acquisition execution, reads/waits for copied `GuestIdleStatus`, conditionally pauses by epoch,
 and retires that epoch. Arming alone never authorizes pause. A missing guest
 patch simply supplies no idle offer. Optional `offload_guest_idle(epoch)` reuses
 native writeback/reclaim after conditional pause; unconditional `offload_ram()`

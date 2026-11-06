@@ -38,7 +38,7 @@ class ProcessSmokeContracts(unittest.TestCase):
         canonical = json.dumps(previous, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(
             hashlib.sha256(canonical).hexdigest(),
-            "465f373ac167562e78a6f52e7e6aa965fd80539858851fc379ab2339994026ae",
+            "eafabb66bb710f349e8801b75aef70fa2cb70389875a3fc7dad3c134075d8490",
         )
         self.assertFalse((ROOT / "process/nightly.json").exists())
         self.assertFalse((ROOT / "process/nightly.commands.json").exists())
@@ -93,7 +93,7 @@ class ProcessSmokeContracts(unittest.TestCase):
                 "#!" + sys.executable + "\n"
                 "import json,os,pathlib,sys,uuid\n"
                 "if sys.argv[1:] == ['--help']:\n"
-                " print('Commands:\\n  spawn  Run a Job')\n"
+                " print('Commands:\\n  spawn  Run a Session')\n"
                 "elif sys.argv[1] == 'spawn':\n"
                 " d=pathlib.Path(os.environ['PVISOR_RUN_HOME'])/('run-'+uuid.uuid4().hex);d.mkdir(parents=True)\n"
                 " (d/'run-bundle.json').write_text(json.dumps({'run':{'state':'completed','exit_code':0}}))\n"

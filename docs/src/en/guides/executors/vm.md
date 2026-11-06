@@ -20,7 +20,7 @@ Pin image digests when you need reproducibility. `--image-store` overrides the i
 ## Where writes go
 
 - The merged rootfs is the guest `/`, and `/workspace` is the guest's working directory.
-- Workspace changes go to the chosen stage or the default Job storage and survive exit for review and apply.
+- Workspace changes go to the chosen stage or the default Session storage and survive exit for review and apply.
 - Other writes to the VM root use a temporary upper that is discarded when the VM exits.
 - The image cache is marked immutable; `apply` cannot rewrite a rootfs shared with other Runs.
 

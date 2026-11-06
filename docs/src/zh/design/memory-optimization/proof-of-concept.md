@@ -163,7 +163,7 @@ Cold 恢复由 pager 锁串行化：GET 到预留 scratch，检查长度和 ID�
 
 页查询返回 `(object_id, object_offset, disposition)`，它是 VM backing 对象身份，不是 PFN。进程映射联集可按对象与偏移去重，但包括共享文件缓存；合成身份也可能让多个页报告同一键。RAM 校验依据当前“单 VM 无内部物理 alias”合同拒绝重复驻留键，同时验证覆盖和 disposition，不把键联集当作全机物理占用。
 
-RAM inventory 的主要字段为 `pid`、`timestamp_ns`、`page_bytes`、`query_transaction_us`、`pending_file_bytes_upper`、`columns` 与 `pages`；pages 每行是 `[guest_address, object_id, object_offset, disposition]`。进程 inventory 使用 host 地址，另记录 region / scanned_pages / query_attempts。完整诊断只在显式开启后执行，可能暂停数百毫秒，应与普通 pager 延迟分开。
+RAM inventory 的主要字段为 `pid`、`timestamp_ns`、`page_bytes`、`query_transaction_us`、`pending_file_bytes_upper`、`columns` 与 `pages`；pages 每行是 `[guest_address, object_id, object_offset, disposition]`。进程 inventory 使用 host 地址，另记录 region / scanned_pages / query_executions。完整诊断只在显式开启后执行，可能暂停数百毫秒，应与普通 pager 延迟分开。
 
 | 源码 | 核心入口 |
 |---|---|

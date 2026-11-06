@@ -34,7 +34,7 @@ The aggregate slice also contains the API and the SDK worker. The SDK worker
 has a separate 256 MiB cap and one-CPU quota. Swap is disabled. Every observed
 live guest must retain its exact CPU/memory/PID limits; no more than four may
 exist. One observer records actual cgroup usage, PID-limit events, process
-thread counts and FD counts. A failure also attempts bounded guest `/proc`
+thread counts and FD counts. A failure also executions bounded guest `/proc`
 snapshots before cleanup, without launching more workload processes.
 
 Replacement payloads are at most 65,537 bytes. Each VM retains two independent
@@ -55,15 +55,15 @@ The initial schedule covers every scenario before seeded random repeats:
 | Concurrent files | Exact binary bytes, atomic move, size/listing, single byte ranges, chmod including `000`, guest SHA-256 and SDK readback agree |
 | Concurrent commands | Literal argv/UTF-8, separate stdout/stderr and distinct nonzero exits, including 125, stay correctly routed |
 | Concurrent append | Eight writers per VM append independent byte values; exact total length and each writer's byte count survive without assuming shell record atomicity |
-| Background jobs | Completion/status and byte cursors reproduce the exact expected output |
+| Background sessions | Completion/status and byte cursors reproduce the exact expected output |
 | Pause/resume | Acknowledged live controls retain heartbeat and all committed files |
 | API crash | Kill only the pidfd-verified owned API process; restart under a stable delegated unit and recover the same sandbox IDs and data |
-| In-flight background commit | Acknowledged background job waits behind a file gate, survives API death with the same job ID, then atomically commits exact bytes and reproduces its completion/logs after the gate opens |
+| In-flight background commit | Acknowledged background session waits behind a file gate, survives API death with the same session ID, then atomically commits exact bytes and reproduces its completion/logs after the gate opens |
 | Delete/recreate | Delete confirms 404, admission can be reused and the new VM has private data |
 | Foreground cancellation | A started process cannot create its delayed marker after its SDK request is cancelled |
 
 `--profile steady` keeps the same four VMs and API process for the whole run.
-It selects files, commands, jobs, pause/resume, cancellation and concurrent
+It selects files, commands, sessions, pause/resume, cancellation and concurrent
 append, leaving API death and replacement to the default `chaos` profile.
 Use a longer bounded batch, for example `--rounds 20000 --seconds 2400`, to
 observe FD/thread/memory retention over a sustained owner lifetime. The initial
@@ -82,7 +82,7 @@ own pinned retry behavior.
 
 The stable service wrapper survives API death. Restarting the **systemd unit**
 instead can reset delegated child resource attributes and is not equivalent to
-crashing only the API. Cleanup attempts every observed owned sandbox, accepts
+crashing only the API. Cleanup executions every observed owned sandbox, accepts
 an already completed 404 deletion, stops only its own unit and retains private
 state for diagnosis. The caller's parent slice is not configured or stopped by
 the driver.

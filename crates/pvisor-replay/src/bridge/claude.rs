@@ -532,8 +532,8 @@ async fn forward_openai_request(
     shared: &BridgeShared,
     body: Vec<u8>,
 ) -> anyhow::Result<(u16, Vec<u8>)> {
-    let attempts = shared.retry_delays.len() + 1;
-    for attempt in 0..attempts {
+    let executions = shared.retry_delays.len() + 1;
+    for execution in 0..executions {
         if shared.cancellation.is_cancelled() {
             anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
         }
@@ -569,16 +569,17 @@ async fn forward_openai_request(
                 match body_result {
                     Ok(response_body) => {
                         let response_body = response_body.to_vec();
-                        if !RETRYABLE_UPSTREAM_STATUSES.contains(&status) || attempt + 1 == attempts
+                        if !RETRYABLE_UPSTREAM_STATUSES.contains(&status)
+                            || execution + 1 == executions
                         {
                             return Ok((status, response_body));
                         }
                     }
-                    Err(error) if attempt + 1 == attempts => return Err(error.into()),
+                    Err(error) if execution + 1 == executions => return Err(error.into()),
                     Err(_) => {}
                 }
             }
-            Err(error) if attempt + 1 == attempts => return Err(error.into()),
+            Err(error) if execution + 1 == executions => return Err(error.into()),
             Err(_) => {}
         }
         tokio::select! {
@@ -586,7 +587,7 @@ async fn forward_openai_request(
             _ = shared.cancellation.cancelled() => {
                 anyhow::bail!("Claude SandboxReplay bridge request was cancelled during shutdown");
             }
-            _ = tokio::time::sleep(shared.retry_delays[attempt]) => {}
+            _ = tokio::time::sleep(shared.retry_delays[execution]) => {}
         }
     }
     unreachable!("upstream retry loop always returns")

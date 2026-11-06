@@ -1,9 +1,9 @@
-//! Job-scoped workspace and execution checkpoint management.
+//! Session-scoped workspace and execution checkpoint management.
 use anyhow::Context;
 use clap::{Args, Subcommand, ValueEnum};
-use pvisor::JobExecution;
+use pvisor::Session;
 use pvisor::checkpoint::{checkpoint_branch_refs, list_checkpoints, resolve_checkpoint};
-use pvisor::job_execution::{self};
+use pvisor::session_execution::{self};
 use pvisor::{RunRecord, resolve_run};
 use pvisor_core::operation::SnapshotRamStorage;
 
@@ -36,14 +36,14 @@ impl From<RamStorage> for SnapshotRamStorage {
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Selection {
-    /// Explicit Job id, stage path, run.json, or last.
-    pub job: PathBuf,
+    /// Explicit Session id, stage path, run.json, or last.
+    pub session: PathBuf,
     #[arg(long, short = 'o', default_value = ".pvisor/capture")]
     pub output_dir: PathBuf,
 }
 impl Selection {
     pub fn resolve(&self) -> anyhow::Result<RunRecord> {
-        let record = resolve_run(Some(&self.job), &self.output_dir)?;
+        let record = resolve_run(Some(&self.session), &self.output_dir)?;
         super::host_service::check_record(&record)?;
         Ok(record)
     }
@@ -107,8 +107,8 @@ impl SuspendArgs {
     pub(super) fn selection_mut(&mut self) -> &mut Selection {
         &mut self.selection
     }
-    pub(super) fn job_selector(&self) -> &std::path::Path {
-        &self.selection.job
+    pub(super) fn session_selector(&self) -> &std::path::Path {
+        &self.selection.session
     }
 }
 impl ResumeArgs {
@@ -121,8 +121,8 @@ impl ResumeArgs {
     pub(super) fn selection_mut(&mut self) -> &mut Selection {
         &mut self.selection
     }
-    pub(super) fn job_selector(&self) -> &std::path::Path {
-        &self.selection.job
+    pub(super) fn session_selector(&self) -> &std::path::Path {
+        &self.selection.session
     }
 }
 
@@ -132,16 +132,16 @@ async fn capture(
     ram_storage: SnapshotRamStorage,
     request_id: String,
     timeout_ms: u64,
-) -> anyhow::Result<pvisor::job_service::CaptureResponse> {
+) -> anyhow::Result<pvisor::session_service::CaptureResponse> {
     let Some(endpoint) = record
         .live_control
         .as_ref()
         .filter(|endpoint| endpoint.is_available())
     else {
-        // A suspended Job has no live owner. The runtime validates its durable
+        // A suspended Session has no live owner. The runtime validates its durable
         // head and request receipt under the execution-operation lease; a
-        // running Job with a missing endpoint still fails closed there.
-        return pvisor::job_service::RuntimeJobService::capture_selected_execution(
+        // running Session with a missing endpoint still fails closed there.
+        return pvisor::session_service::SessionService::capture_selected_execution(
             &super::host::service_context(),
             record,
             suspend,
@@ -155,9 +155,9 @@ async fn capture(
         endpoint.exchange_checked(
             &record.run_id,
             record
-                .attempt_id
+                .execution_id
                 .as_deref()
-                .context("Job has no Attempt identity")?,
+                .context("Session has no Execution identity")?,
             pvisor::host_transport::InstanceCommand::Capture {
                 suspend,
                 ram_storage,
@@ -187,7 +187,7 @@ pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
     let checkpoint = response.checkpoint;
     emit(
         args.json,
-        serde_json::json!({"schema_version":1,"operation":"suspend","job_id":record.run_id,"state":"suspended","request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
+        serde_json::json!({"schema_version":1,"operation":"suspend","session_id":record.run_id,"state":"suspended","request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
     )
 }
 
@@ -216,7 +216,7 @@ enum CheckpointCommand {
         #[arg(long, default_value = "120s")]
         timeout: super::run::DurationMs,
     },
-    /// List immutable savepoints belonging to a Job.
+    /// List immutable savepoints belonging to a Session.
     List {
         #[command(flatten)]
         selection: Selection,
@@ -233,7 +233,7 @@ enum CheckpointCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Delete an unreferenced savepoint; workspace savepoints require a stopped Job.
+    /// Delete an unreferenced savepoint; workspace savepoints require a stopped Session.
     Delete {
         #[command(flatten)]
         selection: Selection,
@@ -247,7 +247,7 @@ enum CheckpointCommand {
         selection: Selection,
         #[arg(long)]
         json: bool,
-        /// Omit to collect both stores; execution collection can run on a suspended Job.
+        /// Omit to collect both stores; execution collection can run on a suspended Session.
         #[arg(long, value_enum)]
         kind: Option<Kind>,
     },
@@ -259,7 +259,7 @@ enum CheckpointCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Import a rootfs into the Job's immutable base store.
+    /// Import a rootfs into the Session's immutable base store.
     ImportBase {
         #[command(flatten)]
         selection: Selection,
@@ -291,12 +291,12 @@ impl CheckpointArgs {
         }
     }
     pub(super) fn preflight(&self, record: &RunRecord) -> anyhow::Result<()> {
-        // Execution deletion has its own Job/Attempt and retained-reference
+        // Execution deletion has its own Session/Execution and retained-reference
         // fences below. This classification is not mutation authorization:
-        // workspace fallback must still acquire stopped-Attempt ownership.
+        // workspace fallback must still acquire stopped-Execution ownership.
         let execution_delete = match &self.command {
             CheckpointCommand::Delete { id, .. } => {
-                JobExecution::read(record)?.is_some_and(|job| job.checkpoints.contains_key(id))
+                Session::read(record)?.is_some_and(|session| session.checkpoints.contains_key(id))
             }
             _ => false,
         };
@@ -314,7 +314,9 @@ impl CheckpointArgs {
             .is_some_and(|endpoint| endpoint.is_available())
             && !execution_delete
         {
-            anyhow::bail!("Job owner still holds stage; persistent checkpoint mutation refused");
+            anyhow::bail!(
+                "Session owner still holds stage; persistent checkpoint mutation refused"
+            );
         }
         if matches!(
             &self.command,
@@ -341,13 +343,13 @@ impl CheckpointArgs {
     }
 }
 
-/// Check the Job configuration before admitting native execution checkpoints.
-/// Platform support alone does not guarantee that this Job can be restored.
+/// Check the Session configuration before admitting native execution checkpoints.
+/// Platform support alone does not guarantee that this Session can be restored.
 pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
-    pvisor::job_service::execution_blocker(record)
+    pvisor::session_service::execution_blocker(record)
 }
 pub(super) fn check_execution(record: &RunRecord) -> anyhow::Result<()> {
-    pvisor::job_service::require_execution(record)
+    pvisor::session_service::require_execution(record)
 }
 
 pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
@@ -380,11 +382,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                 let checkpoint = response.checkpoint;
                 return emit(
                     json,
-                    serde_json::json!({"schema_version":1,"operation":"checkpoint.create","job_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
+                    serde_json::json!({"schema_version":1,"operation":"checkpoint.create","session_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
                 );
             }
             let (checkpoint, reused) =
-                pvisor::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
+                pvisor::session_service::SessionService::create_selected_workspace_checkpoint(
                     &super::host::service_context(),
                     &selected,
                     request_id.as_deref(),
@@ -392,7 +394,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             emit(
                 json,
                 serde_json::json!({
-                    "schema_version": 1, "operation": "checkpoint.create", "job_id": selected.run_id,
+                    "schema_version": 1, "operation": "checkpoint.create", "session_id": selected.run_id,
                     "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id,
                     "kind": "workspace", "reused": reused, "checkpoint": checkpoint,
                 }),
@@ -413,14 +415,14 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     .collect::<Result<_, _>>()?
             };
             if kind != Some(Kind::Workspace)
-                && let Some(job) = JobExecution::read(&record)?
+                && let Some(session) = Session::read(&record)?
             {
-                checkpoints.extend(job.checkpoints.values().map(|capture| serde_json::json!({"checkpoint_id":capture.checkpoint.snapshot_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches})));
+                checkpoints.extend(session.checkpoints.values().map(|capture| serde_json::json!({"checkpoint_id":capture.checkpoint.snapshot_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches})));
             }
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.list",
-                    "job_id":record.run_id,"kind_filter":kind,"execution_blocker":execution_blocker(&record),"checkpoints":checkpoints}),
+                    "session_id":record.run_id,"kind_filter":kind,"execution_blocker":execution_blocker(&record),"checkpoints":checkpoints}),
             )
         }
         CheckpointCommand::Show {
@@ -429,12 +431,12 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            if let Some(job) = JobExecution::read(&record)?
-                && let Some(capture) = job.checkpoints.get(&id)
+            if let Some(session) = Session::read(&record)?
+                && let Some(capture) = session.checkpoints.get(&id)
             {
                 return emit(
                     json,
-                    serde_json::json!({"schema_version":1,"operation":"checkpoint.show","job_id":record.run_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches,"suspended_head":job.head.as_deref()==Some(&id)}),
+                    serde_json::json!({"schema_version":1,"operation":"checkpoint.show","session_id":record.run_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches,"suspended_head":session.head.as_deref()==Some(&id)}),
                 );
             }
             // Keep the source manifest alive while computing reference information.
@@ -444,7 +446,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.show",
-                "job_id":record.run_id,"kind":"workspace","branch_references":refs,
+                "session_id":record.run_id,"kind":"workspace","branch_references":refs,
                 "checkpoint":checkpoint}),
             )
         }
@@ -454,41 +456,44 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let template = JobExecution::read(&record)?;
-            let _job_lease = template.as_ref().map(JobExecution::lock).transpose()?;
-            let job = template.map(|job| job.current()).transpose()?;
-            if let Some(job) = &job {
-                job.validate_record_target(&record)?;
-                let current = RunRecord::read(&job.active_stage)?;
+            let template = Session::read(&record)?;
+            let _session_lease = template.as_ref().map(Session::lock).transpose()?;
+            let session = template.map(|session| session.current()).transpose()?;
+            if let Some(session) = &session {
+                session.validate_record_target(&record)?;
+                let current = RunRecord::read(&session.active_stage)?;
                 super::host::check_selected_record(&record, &current)?;
                 super::host_service::check_record(&current)?;
             }
-            if let Some(mut job) = job
-                && job.checkpoints.contains_key(&id)
+            if let Some(mut session) = session
+                && session.checkpoints.contains_key(&id)
             {
-                let capture = job.checkpoints.get(&id).context("checkpoint disappeared")?;
+                let capture = session
+                    .checkpoints
+                    .get(&id)
+                    .context("checkpoint disappeared")?;
                 anyhow::ensure!(
-                    job.head.as_deref() != Some(&id) && capture.branches.is_empty(),
-                    "CHECKPOINT_REFERENCED: retained by suspended head or child Jobs"
+                    session.head.as_deref() != Some(&id) && capture.branches.is_empty(),
+                    "CHECKPOINT_REFERENCED: retained by suspended head or child Sessions"
                 );
                 // Store-level reader leases also protect active native restores.
-                let store = checkpoint_store(&job, &capture.checkpoint.store)?;
+                let store = checkpoint_store(&session, &capture.checkpoint.store)?;
                 store.delete(&id)?;
-                job.checkpoints.remove(&id);
+                session.checkpoints.remove(&id);
                 // Keep admitted request ids fenced after deletion.
-                for request in job.requests.values_mut() {
+                for request in session.requests.values_mut() {
                     if request.checkpoint.as_deref() == Some(&id) {
                         request.checkpoint = None;
                         request.error = Some("checkpoint deleted".into());
                     }
                 }
-                job.write()?;
+                session.write()?;
                 return emit(
                     json,
-                    serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","job_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
+                    serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","session_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
                 );
             }
-            let id = pvisor::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
+            let id = pvisor::session_service::SessionService::delete_selected_workspace_checkpoint(
                 &super::host::service_context(),
                 &record,
                 &id,
@@ -496,7 +501,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.delete",
-                "job_id":record.run_id,"checkpoint_id":id,"deleted":true}),
+                "session_id":record.run_id,"checkpoint_id":id,"deleted":true}),
             )
         }
         CheckpointCommand::Gc {
@@ -505,47 +510,48 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             kind,
         } => {
             let record = selection.resolve()?;
-            let template = JobExecution::read(&record)?;
-            let _job_lease = template.as_ref().map(JobExecution::lock).transpose()?;
-            let job = template.map(|job| job.current()).transpose()?;
-            if let Some(job) = &job {
-                job.validate_record_target(&record)?;
-                let current = RunRecord::read(&job.active_stage)?;
+            let template = Session::read(&record)?;
+            let _session_lease = template.as_ref().map(Session::lock).transpose()?;
+            let session = template.map(|session| session.current()).transpose()?;
+            if let Some(session) = &session {
+                session.validate_record_target(&record)?;
+                let current = RunRecord::read(&session.active_stage)?;
                 super::host::check_selected_record(&record, &current)?;
                 super::host_service::check_record(&current)?;
             }
-            let scope = if job.is_some() {
-                "job_checkpoint_transactions"
+            let scope = if session.is_some() {
+                "session_checkpoint_transactions"
             } else {
-                "job_workspace_transactions"
+                "session_workspace_transactions"
             };
             let removed = if kind == Some(Kind::Execution) {
                 0
             } else {
-                pvisor::job_service::RuntimeJobService::collect_selected_workspace_transactions(
+                pvisor::session_service::SessionService::collect_selected_workspace_transactions(
                     &super::host::service_context(),
                     &record,
                 )?
             };
             let mut execution_removed = 0;
             if kind != Some(Kind::Workspace)
-                && let Some(job) = job
+                && let Some(session) = session
             {
-                let mut stores = job.stores.clone();
-                stores.insert(job.active_stage.join("execution-snapshots"));
+                let mut stores = session.stores.clone();
+                stores.insert(session.active_stage.join("execution-snapshots"));
                 stores.extend(
-                    job.checkpoints
+                    session
+                        .checkpoints
                         .values()
                         .map(|capture| capture.checkpoint.store.clone()),
                 );
                 for path in stores {
-                    execution_removed += checkpoint_store(&job, &path)?.collect_abandoned()?;
+                    execution_removed += checkpoint_store(&session, &path)?.collect_abandoned()?;
                 }
             }
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.gc",
-                "job_id":record.run_id,"scope":scope,"kind_filter":kind,
+                "session_id":record.run_id,"scope":scope,"kind_filter":kind,
                 "root":record.stage_dir().join(pvisor::CHECKPOINTS_DIR),"removed_transactions":removed,
                 "execution_removed_transactions":execution_removed,"published_checkpoints_deleted":0}),
             )
@@ -556,17 +562,18 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let template = job_execution::job(&record)?;
+            let template = session_execution::session(&record)?;
             let _lease = template.lock()?;
-            let job = template.current()?;
-            job.validate_record_target(&record)?;
-            super::host_service::check_record(&RunRecord::read(&job.active_stage)?)?;
-            let checkpoint = job.checkpoint(&id)?;
-            let compatibility = pvisor::VmExecutor::checkpoint_compatibility(&job.config.vm)?;
-            let object = checkpoint_store(&job, &checkpoint.store)?.open(&id, &compatibility)?;
+            let session = template.current()?;
+            session.validate_record_target(&record)?;
+            super::host_service::check_record(&RunRecord::read(&session.active_stage)?)?;
+            let checkpoint = session.checkpoint(&id)?;
+            let compatibility = pvisor::VmExecutor::checkpoint_compatibility(&session.config.vm)?;
+            let object =
+                checkpoint_store(&session, &checkpoint.store)?.open(&id, &compatibility)?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.verify","job_id":job.run_id,"checkpoint_id":id,"verified":true,"manifest":object.manifest()}),
+                serde_json::json!({"operation":"checkpoint.verify","session_id":session.run_id,"checkpoint_id":id,"verified":true,"manifest":object.manifest()}),
             )
         }
         CheckpointCommand::ImportBase {
@@ -575,14 +582,15 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let (job, _lease) = super::host::lock_selected_job(&record)?
-                .context("this Job has no native execution handoff")?;
+            let (session, _lease) = super::host::lock_selected_session(&record)?
+                .context("this Session has no native execution handoff")?;
             let rootfs = rootfs.canonicalize()?;
             super::host_service::reject_guest_exposure([rootfs.clone()])?;
-            let base = checkpoint_store(&job, &job.primary_store()?)?.import_base(&rootfs)?;
+            let base =
+                checkpoint_store(&session, &session.primary_store()?)?.import_base(&rootfs)?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.import_base","job_id":job.run_id,"base":base.reference(),"rootfs":base.root()}),
+                serde_json::json!({"operation":"checkpoint.import_base","session_id":session.run_id,"base":base.reference(),"rootfs":base.root()}),
             )
         }
         CheckpointCommand::VerifyBase {
@@ -591,22 +599,22 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let job = job_execution::job(&record)?;
-            let base = checkpoint_store(&job, &job.primary_store()?)?
+            let session = session_execution::session(&record)?;
+            let base = checkpoint_store(&session, &session.primary_store()?)?
                 .open_base(&pvisor::environment_snapshot::BaseReference { id })?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.verify_base","job_id":job.run_id,"base":base.reference(),"verified":true}),
+                serde_json::json!({"operation":"checkpoint.verify_base","session_id":session.run_id,"base":base.reference(),"verified":true}),
             )
         }
     }
 }
 
 fn checkpoint_store(
-    job: &JobExecution,
+    session: &Session,
     path: &std::path::Path,
 ) -> anyhow::Result<pvisor::environment_snapshot::SnapshotStore> {
-    match job.config.vm.snapshot_filesystem_pool.as_deref() {
+    match session.config.vm.snapshot_filesystem_pool.as_deref() {
         Some(pool) => pvisor::environment_snapshot::SnapshotStore::with_filesystem_pool(path, pool),
         None => pvisor::environment_snapshot::SnapshotStore::new(path),
     }
@@ -618,9 +626,9 @@ fn emit(json: bool, mut value: serde_json::Value) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         println!(
-            "{}: Job {}",
+            "{}: Session {}",
             value["operation"].as_str().unwrap_or("checkpoint"),
-            value["job_id"].as_str().unwrap_or("-")
+            value["session_id"].as_str().unwrap_or("-")
         );
         if let Some(checkpoints) = value["checkpoints"].as_array() {
             for cp in checkpoints {

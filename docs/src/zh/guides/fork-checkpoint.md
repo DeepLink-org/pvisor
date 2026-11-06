@@ -1,21 +1,21 @@
 # 逻辑检查点与分叉
 
-工作区分叉保留当前文件提案，用新命令尝试另一种做法。先确认父 Job 是已停止、且启动策略可重建的 host Job，父子 stage 位于同一文件系统，并且尚未全部 apply/drop 清理暂存数据。VM/container 或带 Gateway 路由的 Job 不支持这条工作区分叉路径。
+工作区分叉保留当前文件提案，用新命令尝试另一种做法。先确认父 Session 是已停止、且启动策略可重建的 host Session，父子 stage 位于同一文件系统，并且尚未全部 apply/drop 清理暂存数据。VM/container 或带 Gateway 路由的 Session 不支持这条工作区分叉路径。
 
-满足这些条件后，可以分叉出一个新 Job，让 Agent 换一种方式继续：
+满足这些条件后，可以分叉出一个新 Session，让 Agent 换一种方式继续：
 
 ```bash
 pvisor fork last -- codex
 ```
 
-`last` 只查找默认存储。父 Job 使用显式 stage 时，将它替换为该 stage 路径或 Job ID，选择规则见[Job 与存储](../concepts/jobs.md)。
+`last` 只查找默认存储。父 Session 使用显式 stage 时，将它替换为该 stage 路径或 Session ID，选择规则见[Session 与存储](../concepts/sessions.md)。
 
 ## 行为
 
-- `fork` 要求源 Job 已停止，先为它的暂存文件系统创建逻辑检查点，再启动子 Job；
-- 子 Job 记录与源 Job 的来源关系，源 Job 的暂存改动不受影响，仍可单独审查、应用或丢弃；
+- `fork` 要求源 Session 已停止，先为它的暂存文件系统创建逻辑检查点，再启动子 Session；
+- 子 Session 记录与源 Session 的来源关系，源 Session 的暂存改动不受影响，仍可单独审查、应用或丢弃；
 - 传入 `--checkpoint ID` 可复用已有的逻辑检查点；
-- 省略 `--` 之后的命令时，子 Job 沿用源 Job 的命令。
+- 省略 `--` 之后的命令时，子 Session 沿用源 Session 的命令。
 
 ## 检查点保存什么
 
@@ -23,9 +23,9 @@ pvisor fork last -- codex
 | --- | --- |
 | 暂存工作区的上层（upper） | 进程内存与运行状态 |
 | 首次修改时记录的冲突基线 | 外部服务状态、已发生的网络调用 |
-| 与源 Job 的来源关系 | 所有底层宿主文件的不可变副本 |
+| 与源 Session 的来源关系 | 所有底层宿主文件的不可变副本 |
 
-子 Job 从这份文件改动启动新命令，原进程的内存不会继续。快照内容同步落盘后才发布 manifest。需要继续 VM 执行状态时，使用另一种[execution checkpoint](../reference/cli.md#full-vm-execution-checkpoints)，并检查对应 profile 的支持条件。
+子 Session 从这份文件改动启动新命令，原进程的内存不会继续。快照内容同步落盘后才发布 manifest。需要继续 VM 执行状态时，使用另一种[execution checkpoint](../reference/cli.md#full-vm-execution-checkpoints)，并检查对应 profile 的支持条件。
 
 ## 嵌入式 API
 

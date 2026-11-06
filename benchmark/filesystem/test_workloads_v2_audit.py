@@ -317,7 +317,7 @@ class AuditContracts(unittest.TestCase):
                             returncode=0,
                             timed_out=False,
                             ready_ms=0.1,
-                            job_ms=1,
+                            session_ms=1,
                             exit_after_done_ms=0.1,
                             ready_record=ready,
                             rows=rows,

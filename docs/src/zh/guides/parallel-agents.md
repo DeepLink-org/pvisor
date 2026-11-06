@@ -13,7 +13,7 @@ git worktree add --detach ../pvisor-task-b HEAD
 
 ## 在两个独立 worktree 中运行两个任务
 
-在两个独立 checkout/worktree 中各运行一个 Job，每个任务使用项目外的独立 stage 和明确选择器。一个任务 apply 不会改变另一个任务的 lower，两份结果可以分别审查。网络和凭据仍由每个 Job 的策略决定。
+在两个独立 checkout/worktree 中各运行一个 Session，每个任务使用项目外的独立 stage 和明确选择器。一个任务 apply 不会改变另一个任务的 lower，两份结果可以分别审查。网络和凭据仍由每个 Session 的策略决定。
 
 ```bash
 # Terminal A / workspace A
@@ -29,11 +29,11 @@ pvisor status --review ../stage-b
 
 ## 同一工作区与分叉的限制
 
-从同一已停止 Job fork 可以保留共同的暂存起点，但检查点不冻结所有 lower。第一条分支 apply 后，另一条分支与宿主可能发生冲突；这种拒绝是保护机制，不能通过删原像绕过。要复现相同输入，应固定 workspace 基线、工具版本和镜像摘要。
+从同一已停止 Session fork 可以保留共同的暂存起点，但检查点不冻结所有 lower。第一条分支 apply 后，另一条分支与宿主可能发生冲突；这种拒绝是保护机制，不能通过删原像绕过。要复现相同输入，应固定 workspace 基线、工具版本和镜像摘要。
 
 ## 运行数量由什么决定
 
-先从两个任务验证，再记录进程、FUSE 挂载、VM 内存、磁盘、模型服务额度和代理端口占用。每个 Job 使用不冲突的端口；并发度按实测决定，8、32、128 不是默认值。资源限制的实际效果读 Bundle；容量测试见[并发密度](../benchmarks/density.md)。
+先从两个任务验证，再记录进程、FUSE 挂载、VM 内存、磁盘、模型服务额度和代理端口占用。每个 Session 使用不冲突的端口；并发度按实测决定，8、32、128 不是默认值。资源限制的实际效果读 Bundle；容量测试见[并发密度](../benchmarks/density.md)。
 
 ## 两个离线任务跑通批量流程 {#batch}
 

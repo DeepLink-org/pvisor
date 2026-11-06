@@ -46,7 +46,7 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
                 {
                     return (
                         StatusCode::UNAUTHORIZED,
-                        "Attempt Gateway credential required",
+                        "Execution Gateway credential required",
                     )
                         .into_response();
                 }
@@ -76,7 +76,7 @@ impl OverlaySink for GatewayState {
         Ok(OverlayRequestContext {
             policy: NetworkPolicy::from_config(config.as_ref())?,
             run_id: route.root_session,
-            attempt_id: self.attempt_id.clone(),
+            execution_id: self.execution_id.clone(),
             session_id: route.session_id,
             sink: GatewayRequestContext { config, debug_on },
         })

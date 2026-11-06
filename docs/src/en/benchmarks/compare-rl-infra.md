@@ -2,7 +2,7 @@
 
 ## Motivation {#motivation}
 
-Judge a rollout executor by the whole attempt: environment creation, model and tool alternation, verification, reward assignment and retries. For local tool-heavy attempts, stage offers the lower measured repair cost and the higher tested active capacity, at the price of a host-process boundary; choose a VM when the attempt needs an independent guest kernel. Keep the existing task, model and training layers, and treat dedicated integrations as unvalidated.
+Judge a rollout executor by the whole execution: environment creation, model and tool alternation, verification, reward assignment and retries. For local tool-heavy executions, stage offers the lower measured repair cost and the higher tested active capacity, at the price of a host-process boundary; choose a VM when the execution needs an independent guest kernel. Keep the existing task, model and training layers, and treat dedicated integrations as unvalidated.
 
 On a shared two-core, 2 GiB budget, stage completes 160/160 tasks at concurrency 32, while the VM completes 138/160 at 32 and 80/80 at 16. Fixed repair takes 0.64 s staged against 3.25 s on the VM. Prefix preparation takes 6.07–6.59 ms per format, and cold shell responses total 2.86 MiB against 28.39 MiB for a native Docker full pull; none of these has a measured effect on training throughput, success rate or reward.
 
@@ -14,7 +14,7 @@ Tool and training-related observations retain their historical cohorts; image de
 
 ## Experiment design {#interpretation}
 
-Measure active task capacity, tool and repair cost, and prefix-preparation cost as the three stages of one rollout attempt. Capacity sets how many attempts run at once, the two costs set what each attempt consumes; more capacity and lower cost mean more attempts per unit of infrastructure.
+Measure active task capacity, tool and repair cost, and prefix-preparation cost as the three stages of one rollout execution. Capacity sets how many executions run at once, the two costs set what each execution consumes; more capacity and lower cost mean more executions per unit of infrastructure.
 
 This scenario analysis reuses registered local Linux/x86_64 experiments; it makes no new measurements. The owning topics define artifacts, validation and controls:
 
@@ -30,7 +30,7 @@ Invalid outputs and failed executions do not enter successful timings; all valid
 | [OpenHands runtime](https://docs.openhands.dev/openhands/usage/sandboxes/docker) | Agent tool environment, including Docker sandbox; a replay-format check does not validate a runtime integration |
 | [SWE-Gym](https://github.com/SWE-Gym/SWE-Gym) | Repository tasks, executable environments, verification and Agent/verifier training; no matched training comparison |
 | [verl](https://verl.readthedocs.io/en/latest/) | Training, rollout and model resource coordination; no validated pVisor training integration |
-| pVisor | Per-attempt execution, staged files and records; model inference, GPU allocation, reward design and cluster scheduling remain external |
+| pVisor | Per-execution execution, staged files and records; model inference, GPU allocation, reward design and cluster scheduling remain external |
 
 ## Data and analysis {#results}
 

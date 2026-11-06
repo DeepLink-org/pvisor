@@ -82,7 +82,7 @@ impl Vsock {
         self.cid
     }
 
-    /// Walk the driver-provided RX queue buffers and attempt to fill them up with any data that we
+    /// Walk the driver-provided RX queue buffers and try to fill them up with any data that we
     /// have pending. Return `true` if descriptors have been added to the used ring, and `false`
     /// otherwise.
     pub fn process_stream_rx(&mut self) -> bool {

@@ -19,13 +19,13 @@ pVisor 不提供密码学远程证明，也不是敌对多租户隔离。
 
 ## 平台、接口与能力状态 {#support-scope}
 
-选择执行环境时，先核对[平台与执行器支持矩阵](../reference/platforms.md)中的准备条件，再检查[执行器边界](executor-boundaries.md)是否覆盖需要的文件、网络和进程控制。原生 Job、独立容器与 daemon 的接口范围不同；原生 Job、Runtime、daemon 和 shim 的能力见[接入方式矩阵](../guides/infrastructure/integration.md)。独立容器命令见 [CLI 参考](../reference/cli.md)。
+选择执行环境时，先核对[平台与执行器支持矩阵](../reference/platforms.md)中的准备条件，再检查[执行器边界](executor-boundaries.md)是否覆盖需要的文件、网络和进程控制。原生 Session、独立容器与 daemon 的接口范围不同；原生 Session、Runtime、daemon 和 shim 的能力见[接入方式矩阵](../guides/infrastructure/integration.md)。独立容器命令见 [CLI 参考](../reference/cli.md)。
 
 请求的策略、计划安装的控制与实际生效的控制需要分别核对，含义见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)。自动等待管理等实验能力按各自的[实现阶段](../design/experimental/index.md)判断；实验结果不代表所有平台或接口都已支持。
 
 ## 对一次任务做安全评审
 
-列出任务可接触的文件、凭据、网络和外部服务，按[威胁模型](threat-model.md)确定可信侧，并用[加固建议](hardening.md)配置所需控制。原生 Job 执行后通过 `pvisor status --review` 核对实际控制、警告与文件改动；结合[已知限制](known-limitations.md)决定是否接受结果。缺失的观察保留为未知，协作式控制不能视为强制隔离。
+列出任务可接触的文件、凭据、网络和外部服务，按[威胁模型](threat-model.md)确定可信侧，并用[加固建议](hardening.md)配置所需控制。原生 Session 执行后通过 `pvisor status --review` 核对实际控制、警告与文件改动；结合[已知限制](known-limitations.md)决定是否接受结果。缺失的观察保留为未知，协作式控制不能视为强制隔离。
 
 ## 发现边界问题时
 

@@ -60,20 +60,20 @@ Outcome 的成功值包含终态和退出码；错误区分 Failed、Denied、Un
 | `id` | 事件身份，用于关联与去重 |
 | `trace_id` | 归属的执行记录；当前运行流按 Run 过滤 |
 | `producer`、`observed_at_unix_ms` | 生产者与观察时间 |
-| `scope` | 事件作用域；操作事实使用 Run／Attempt 范围 |
+| `scope` | 事件作用域；操作事实使用 Run／Execution 范围 |
 | `context`、`operation` | 上下文身份与操作身份；不是完整载荷 |
 | `caused_by` | 已知前置事实的事件 ID |
 | `level`、`granularity` | 展示和筛选信息 |
 
-同一 Attempt 的操作事实使用相同操作身份并串联因果引用。Context 事实没有操作引用；领域 Observation 可以不带执行引用。Journal 校验事件与引用，提交位置表示落入该日志的顺序。
+同一 Execution 的操作事实使用相同操作身份并串联因果引用。Context 事实没有操作引用；领域 Observation 可以不带执行引用。Journal 校验事件与引用，提交位置表示落入该日志的顺序。
 
-依赖前置结果的处理必须在前置结果确定后执行；不能因为换了 Placement 或转发路径就倒置这个依赖。独立并发操作没有由时间先后自动产生的因果关系。当前机制维护事实提交和已知依赖，不提供跨 Job 全局排序，也不拦截命令内部的每个 syscall。
+依赖前置结果的处理必须在前置结果确定后执行；不能因为换了 Placement 或转发路径就倒置这个依赖。独立并发操作没有由时间先后自动产生的因果关系。当前机制维护事实提交和已知依赖，不提供跨 Session 全局排序，也不拦截命令内部的每个 syscall。
 
 ## 提交、订阅与失败
 
 pvisor 准备驱动后提交启动事实，成功后才调用执行器。必要事实提交失败会阻止派发，准备资源需要清理。执行后记录失败以 failure／warning 报告；记录失败不会撤销已经发生的效果。
 
-保留存储的 Attempt 在发布 `Completed` 和生命周期终态事件之前提交[完成回执](execution-model.md#attempt-completion)。回执已提交而终态事件写入失败时，结果保持有效，事件覆盖存在审计缺口；事件订阅方需要结合持久结果核对完成，不能用缺少事件推断命令未执行。
+保留存储的 Execution 在发布 `Completed` 和生命周期终态事件之前提交[完成回执](execution-model.md#execution-completion)。回执已提交而终态事件写入失败时，结果保持有效，事件覆盖存在审计缺口；事件订阅方需要结合持久结果核对完成，不能用缺少事件推断命令未执行。
 
 Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。提交结果未知时，先核对已发生的效果，再决定是否重试外部操作。`RunHandle` 的订阅提供本次 Run 的已提交事件，包括共享 Journal 中的 Gateway 观察；实时接收方还须处理断开与落后，完整历史从 Journal 读取。
 
@@ -94,7 +94,7 @@ Bundle 的完成绑定与旧格式读取、Event／Journal 的精确版本检查
 | `pvisor_core::operation`、`pvisor_core::event` | 公共结构及校验 |
 | `pvisor_core::execution` | 执行输入、能力计划与输出定义 |
 | pvisor 的 `runtime/operation.rs` | 请求和实际边界的操作／观察构造 |
-| pvisor 的 `runtime/event.rs`、`session/lifecycle.rs` | 事实发布、派发和收尾 |
+| pvisor 的 `runtime/event.rs`、`execution_context/lifecycle.rs` | 事实发布、派发和收尾 |
 | `pvisor-journal` | 提交、引用校验与恢复 |
 
 ```sh

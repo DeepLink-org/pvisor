@@ -3,7 +3,7 @@
   "generated_at_unix_ms": 20,
   "run": {
     "run_id": "run-v1-fixture",
-    "attempt_id": "attempt-v1-fixture",
+    "execution_id": "execution-v1-fixture",
     "session_id": "run-v1-fixture",
     "agent": "fixture-agent",
     "command": ["/bin/true"],
@@ -28,7 +28,7 @@
   },
   "agentctl": {
     "run_id": "run-v1-fixture",
-    "attempt_id": "attempt-v1-fixture",
+    "execution_id": "execution-v1-fixture",
     "directive": {
       "kind": "continue"
     },

@@ -1,5 +1,5 @@
 ---
-description: 审查暂存 Job 的文件改动，按路径选择性应用，并通过恢复记录处理 preimage 冲突。
+description: 审查暂存 Session 的文件改动，按路径选择性应用，并通过恢复记录处理 preimage 冲突。
 ---
 
 # 审查并应用改动
@@ -12,9 +12,9 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-不传 `--stage` 时，`--safe` 把工作区改动保留在 Job 存储中；需要指定位置时，用 `--stage PATH`，放在项目外，且每次 Run 使用新目录。
+不传 `--stage` 时，`--safe` 把工作区改动保留在 Session 存储中；需要指定位置时，用 `--stage PATH`，放在项目外，且每次 Run 使用新目录。
 
-`last` 解析当前工作区最新的 Job。使用了 `--stage` 时，用该路径代替 `last`。`status --review` 展示证据和改动，`inspect` 在只读视图中执行检查命令。见 [Job 与存储](../concepts/jobs.md)。
+`last` 解析当前工作区最新的 Session。使用了 `--stage` 时，用该路径代替 `last`。`status --review` 展示证据和改动，`inspect` 在只读视图中执行检查命令。见 [Session 与存储](../concepts/sessions.md)。
 
 ## 分批应用
 
@@ -42,7 +42,7 @@ pvisor drop last
 
 ## 审查顺序与预期结果
 
-先确认 Job 已停止，再按以下顺序读记录：结果与退出码 → 实际文件/网络边界和警告 → 拒绝或失败的访问 → 净文件改动。允许规则和捕获记录不能代替强制力证据。
+先确认 Session 已停止，再按以下顺序读记录：结果与退出码 → 实际文件/网络边界和警告 → 拒绝或失败的访问 → 净文件改动。允许规则和捕获记录不能代替强制力证据。
 
 ```bash
 pvisor status --review --diff ../stage-001
@@ -55,6 +55,6 @@ pvisor status --review ../stage-001
 
 ## 冲突后怎么处理
 
-遇到冲突时先保留当前工作区和 stage，不删除原像或手改 ledger。比较宿主当前文件、暂存文件与原任务要求，决定保留哪一份。要把两边的改动合在一起，应在新的 Job 或常规 Git 工作流里明确解决，再重试；pVisor 不会自动做三方合并。
+遇到冲突时先保留当前工作区和 stage，不删除原像或手改 ledger。比较宿主当前文件、暂存文件与原任务要求，决定保留哪一份。要把两边的改动合在一起，应在新的 Session 或常规 Git 工作流里明确解决，再重试；pVisor 不会自动做三方合并。
 
 drop 前记录最终决定。已 apply 的批次不能被 drop 回滚；全部 apply 或 drop 会清理一次性暂存数据，所以需要 fork 时应先 fork。

@@ -316,7 +316,7 @@ def build_cli(args):
             sha(REPO / name) == expected and sha(source / name) == expected
             for name, expected in hashes.items()
         ),
-        "source changed during CLI build; retain attempt",
+        "source changed during CLI build; retain execution",
     )
     receipt = dict(
         schema=1,
@@ -763,12 +763,12 @@ def inherited_worker(config, condition, trial, directory):
     output = module.alias(directory, config)
     row = load(output / "row.json")
     expected_firmware = module.alias(config["firmware"], config)
-    job = load(Path(row["logs"]) / "stage/execution-job.json")
+    session = load(Path(row["logs"]) / "stage/execution-session.json")
     argv = load(Path(row["logs"]) / "command.json")["argv"]
     require(
         argv.count("--vm-library-dir") == 1
         and argv[argv.index("--vm-library-dir") + 1] == str(expected_firmware)
-        and job["config"]["vm"]["library_dir"] == str(expected_firmware),
+        and session["config"]["vm"]["library_dir"] == str(expected_firmware),
         "real CLI argv/persisted selected firmware differs",
     )
     if config["phase"] == "profiles":

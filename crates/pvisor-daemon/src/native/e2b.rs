@@ -201,7 +201,7 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                         None
                     };
                     let tag = body.get("tag").and_then(Value::as_str).map(str::to_owned);
-                    let job = service
+                    let process = service
                         .start(
                             ExecLaunch {
                                 argv,
@@ -216,20 +216,20 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                             tag,
                         )
                         .await?;
-                    opensandbox::events(job, true, None)
+                    opensandbox::events(process, true, None)
                 }
                 "/process.Process/Connect" => {
                     object_keys(&body, &["process"])?;
-                    opensandbox::events(service.job(&body["process"])?, true, None)
+                    opensandbox::events(service.process(&body["process"])?, true, None)
                 }
                 "/process.Process/List" => {
                     object_keys(&body, &[])?;
-                    let jobs = service.jobs.lock().unwrap();
-                    axum::Json(json!({"processes":jobs.iter().filter(|job|!job.done()).map(|job|json!({"pid":job.pid,"tag":job.tag,"config":{"cmd":job.launch.argv[0],"args":job.launch.argv[1..],"envs":job.launch.env,"cwd":job.launch.cwd}})).collect::<Vec<_>>()})).into_response()
+                    let processes = service.processes.lock().unwrap();
+                    axum::Json(json!({"processes":processes.iter().filter(|process|!process.done()).map(|process|json!({"pid":process.pid,"tag":process.tag,"config":{"cmd":process.launch.argv[0],"args":process.launch.argv[1..],"envs":process.launch.env,"cwd":process.launch.cwd}})).collect::<Vec<_>>()})).into_response()
                 }
                 "/process.Process/SendInput" => {
                     object_keys(&body, &["process", "input"])?;
-                    let job = service.job(&body["process"])?;
+                    let process = service.process(&body["process"])?;
                     let value = body["input"]["stdin"]
                         .as_str()
                         .or(body["input"]["pty"].as_str())
@@ -237,17 +237,17 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(value)
                         .map_err(|_| invalid("input must be base64"))?;
-                    job.send_input(&bytes).await?;
+                    process.send_input(&bytes).await?;
                     axum::Json(json!({})).into_response()
                 }
                 "/process.Process/CloseStdin" => {
                     object_keys(&body, &["process"])?;
-                    service.job(&body["process"])?.close_stdin().await?;
+                    service.process(&body["process"])?.close_stdin().await?;
                     axum::Json(json!({})).into_response()
                 }
                 "/process.Process/Update" => {
                     object_keys(&body, &["process", "pty"])?;
-                    let job = service.job(&body["process"])?;
+                    let process = service.process(&body["process"])?;
                     let rows = body["pty"]["size"]["rows"]
                         .as_u64()
                         .and_then(|v| u16::try_from(v).ok())
@@ -261,8 +261,8 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                     ensure_ready(
                         service
                             .rpc(&GuestRequest::Resize {
-                                pid: job.pid,
-                                generation: job.generation,
+                                pid: process.pid,
+                                generation: process.generation,
                                 rows,
                                 columns,
                             })
@@ -281,8 +281,8 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                             .ok_or_else(|| invalid("unsupported signal"))?
                             as i32,
                     };
-                    let job = service.job(&body["process"])?;
-                    service.signal(&job, signal).await?;
+                    let process = service.process(&body["process"])?;
+                    service.signal(&process, signal).await?;
                     axum::Json(json!({})).into_response()
                 }
                 "/filesystem.Filesystem/Stat" => {

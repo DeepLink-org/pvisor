@@ -449,7 +449,7 @@ backups without that receipt are retained and require manual inspection, not
 automatic adoption. Terminal `overlay.json` publications are authoritative over
 an older matching Run overlay identity/generation. While the apply ledger is
 pending, runtime reads project the terminal state to block drop but retain the
-original generation for recovery. Apply reconciles under the Job mutation/Run
+original generation for recovery. Apply reconciles under the Session mutation/Run
 lease and target lock, then publishes the new runtime fence only after ledger
 commit. Recovery failures are errors, not `AlreadyApplied`. This does not make
 `run.json` and the core ledger an atomic publication.

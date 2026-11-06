@@ -6,7 +6,7 @@ use pvisor_core::{
 fn request(host: &str) -> NetworkAccessRequest {
     NetworkAccessRequest {
         run_id: None,
-        attempt_id: None,
+        execution_id: None,
         host: host.into(),
         port: Some(443),
         transport: NetworkTransport::TcpTunnel,

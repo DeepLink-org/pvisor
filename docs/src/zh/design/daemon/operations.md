@@ -48,7 +48,7 @@ OpenSandbox 基线：**1.1.0**、`release-1.1.0`、commit `b1a29cf93a823a95913f7
 | `GET /v1/sandboxes` | 重复 states、SDK 编码 metadata、page/pageSize；最近持久观察 |
 | `GET /v1/sandboxes/{id}` | 对账原生状态；200 JSON |
 | `DELETE /v1/sandboxes/{id}` | 确认删除后释放；204 |
-| `POST /v1/sandboxes/{id}/pause`、`/resume` | 确认同一 Attempt 的 live vCPU pause/resume；202 空体 |
+| `POST /v1/sandboxes/{id}/pause`、`/resume` | 确认同一 Execution 的 live vCPU pause/resume；202 空体 |
 | `POST /v1/sandboxes/{id}/renew-expiration` | 未来 RFC3339 截止时间，延长已有 TTL |
 | `GET /v1/sandboxes/{id}/endpoints/{port}` | 通过 daemon authority 发布实际 execd/egress |
 | 数据面 | 默认 guest 引擎与主机协议适配；显式上游模板使用代理 |

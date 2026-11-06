@@ -1,7 +1,7 @@
 # Platforms and executor support
 
 Linux x86_64 and Apple Silicon macOS have full CLI installations. Windows x86_64
-currently supports source-built `pvisor vm-run`; Jobs, TUI, replay and the local
+currently supports source-built `pvisor vm-run`; Sessions, TUI, replay and the local
 Daemon are not ported.
 
 One `pvisor.exe` covers this VM entry point, with `libkrunfw.dll`, a Linux rootfs
@@ -13,14 +13,14 @@ Apple Silicon Mac with working HVF.
 ## Installed components {#binaries}
 
 Complete Linux/macOS wheels and native archives contain four host programs from
-the same version, installed together. Ordinary noninteractive Jobs need no
+the same version, installed together. Ordinary noninteractive Sessions need no
 resident Daemon. Other components are invoked by the features that use them.
 
 | Program and owner | Used for | Windows status |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Job owners; `vm-run` executes a VM in the current process | Only `pvisor.exe` with `vm-run`, help/version |
+| `pvisor` / `pvisor-cli` | Command entry; self-launches ordinary Session owners; `vm-run` executes a VM in the current process | Only `pvisor.exe` with `vm-run`, help/version |
 | `pvisor-tui` / `pvisor-cli` | `pvisor tui`, `spawn --tui/--ask`, interactive resume; launches adjacent `pvisor` and owns the PTY, terminal and review panels | Not ported |
-| `pvisor-replay` / `pvisor-cli` | `pvisor replay`; managed replay calls adjacent `pvisor` using Job/trajectory contracts | Not ported |
+| `pvisor-replay` / `pvisor-cli` | `pvisor replay`; managed replay calls adjacent `pvisor` using Session/trajectory contracts | Not ported |
 | `pvisor-daemon` / separate crate | `pvisor daemon`, cache/sandbox services; `--vm-memory-pool auto` discovers or starts the shared pool through it | Not ported |
 
 Copying only the main program leaves companion-dependent commands unavailable.
@@ -43,21 +43,21 @@ pool calls live in [automatic pool discovery](https://github.com/DeepLink-org/pv
 | Feature | Linux x86_64 | Apple Silicon macOS | Windows x86_64 |
 | --- | --- | --- | --- |
 | `vm-run` | KVM, readable/writable `/dev/kvm`; Linux x86_64 guest | HVF, Hypervisor signing; Linux aarch64 guest, no macFUSE needed | WHP enabled followed by reboot; nested hosts must expose virtualization; Linux x86_64 guest |
-| Host Jobs (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
-| Native OCI Jobs (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
+| Host Sessions (`spawn`), OverlayFS, review/apply/drop | FUSE for staging; user namespaces and Landlock for sandbox | macFUSE 5.4.0+ FSKit for staging; Seatbelt for file/network controls | Not ported |
+| Native OCI Sessions (`container` / `--executor container`) | `crun`/`runc` and a matching static Linux injected binary | Unsupported | Unsupported |
 | Docker-style VM containers and network policy | Implementation and separate contracts | Implementation; each capability needs HVF validation | Not ported |
 | Linux host-root `stage`, `:stage` binds | Linux-specific paths | No Linux host-root; staged-bind equivalence with Linux is unestablished | Unsupported |
 | VM snapshots, restore, cold RAM | APIs/tests with backing/profile restrictions | APIs/tests with HVF/backing restrictions | Unsupported; pause/resume only |
 | Gateway | Depends on executor and configuration | Host execution path exists | Excluded from this CLI |
 
 [Docker-style container commands](cli.md#container-commands) such as `pvisor run`
-use one Linux VM per container. They are separate from native OCI Jobs and do
+use one Linux VM per container. They are separate from native OCI Sessions and do
 not implement the Docker Engine API. Linux arm64 has source paths requiring
 host-specific build/KVM evidence and a matching rootfs; OCI also needs a
 `linux/arm64` injected binary. The x86_64 wheel does not cover arm64. Intel macOS
 has no current release support promise and is outside `vm-run`.
 
-After installation, run `pvisor --version`. Inspect effective Job controls in
+After installation, run `pvisor --version`. Inspect effective Session controls in
 the Run Bundle; check `vm-run` results through exit status and host files.
 
 ## Platform implementations {#implementation-parity}
@@ -69,7 +69,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token-authenticated e
 
 | Layer | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI/processes | Full command tree, Job owners, signals and descendant cleanup | Same Job/companion structure, with macOS terminal/resource limits | Minimal command tree calls shared `vm-run`; no Job owner, control socket or Job state records |
+| CLI/processes | Full command tree, Session owners, signals and descendant cleanup | Same Session/companion structure, with macOS terminal/resource limits | Minimal command tree calls shared `vm-run`; no Session owner, control socket or Session state records |
 | Companions | Adjacent discovery, Unix uid/mode checks, `exec` dispatch | Same checks; resolves Homebrew entry to its real installation | No dispatch; a full port needs `.exe` lookup, ACL trust and process startup/exit propagation |
 | Terminal | PTY, foreground ownership and signals | PTY, terminal restoration; separate TUI | Windows console/PTY lifecycle is not integrated |
 | Shared services | Unix sockets, same-user authentication, locks and readiness; sandbox also needs cgroup/KVM | Unix IPC; cache/pool supported, sandbox API unsupported | IPC, endpoint ACLs, locks, cancellation and service cleanup are not ported; reaching a remote Linux API does not supply a local service |
@@ -83,15 +83,15 @@ mutating shared trees.
 A full Windows port also needs adjacent installation and version/permission
 checks, real CLI→TUI→CLI, CLI→replay→CLI and CLI→Daemon calls. Tests must cover
 terminal restoration, cancellation/deadlines, descendant cleanup, service
-readiness and failure recovery, then check Job JSON/Bundles, review/apply and
+readiness and failure recovery, then check Session JSON/Bundles, review/apply and
 service protocols separately. `--help` or VM workload results alone do not
 validate those calls.
 
 ## Feature sets and critical paths across three platforms
 
-`vm-run` writes directly to caller-owned rootfs. It creates no Job, Bundle, stage
+`vm-run` writes directly to caller-owned rootfs. It creates no Session, Bundle, stage
 or container instance and provides no network/vsock, interactive stdin, separate
-task stdio, container lifecycle, snapshots or Job policies.
+task stdio, container lifecycle, snapshots or Session policies.
 Output uses the VM console and may include kernel logs. Workload exit codes
 propagate; argument errors return 2, preparation/runtime errors 1, and exit
 authentication failure or abnormal VM termination 125. The external caller owns

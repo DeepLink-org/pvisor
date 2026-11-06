@@ -1,4 +1,4 @@
-//! Attempt-local ownership for cooperative waits and explicit VM controls.
+//! Execution-local ownership for cooperative waits and explicit VM controls.
 //!
 //! A single obligation owns its timer task until cleanup completes. Cancellation
 //! is a latched token, not a best-effort message in a possibly full queue. Native
@@ -350,7 +350,7 @@ impl WaitCoordinator {
     ) -> anyhow::Result<Option<Arc<WaitEntry>>> {
         anyhow::ensure!(
             !self.cancellation.is_cancelled() && self.available(),
-            "attempt is not live"
+            "execution is not live"
         );
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if self.automatic_disabled.load(Ordering::Acquire) || active.is_some() {
@@ -431,7 +431,7 @@ impl WaitCoordinator {
             let ownership = self.state.lock().await;
             anyhow::ensure!(
                 !self.cancellation.is_cancelled() && self.available(),
-                "attempt ended during model wait"
+                "execution ended during model wait"
             );
             if !ownership.manual_pause {
                 anyhow::ensure!(
@@ -445,7 +445,7 @@ impl WaitCoordinator {
             }
             drop(ownership);
             tokio::select! {
-                _ = self.cancellation.cancelled() => anyhow::bail!("attempt cancelled during model wait"),
+                _ = self.cancellation.cancelled() => anyhow::bail!("execution cancelled during model wait"),
                 result = changed.changed() => { result?; },
             }
         }
@@ -765,7 +765,7 @@ impl WaitCoordinator {
             let mut ownership = self.state.lock().await;
             anyhow::ensure!(
                 !self.cancellation.is_cancelled() && self.available(),
-                "attempt ended during model wait"
+                "execution ended during model wait"
             );
             if delivery {
                 anyhow::ensure!(!entry.retired.is_cancelled(), "model wait already retired");
@@ -794,7 +794,7 @@ impl WaitCoordinator {
             drop(ownership);
             // Manual pause remains authoritative; cancellation still unblocks cleanup.
             tokio::select! {
-                _ = self.cancellation.cancelled() => anyhow::bail!("attempt cancelled during model wait"),
+                _ = self.cancellation.cancelled() => anyhow::bail!("execution cancelled during model wait"),
                 result = changed.changed() => { result?; },
             }
         }

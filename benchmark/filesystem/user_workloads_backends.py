@@ -158,7 +158,7 @@ def prepare_rootfs(batch, rootfs, source_batch, artifacts):
 
 def _payload(case, rounds=3, ram_mib=512):
     # The product selects the staged workspace through cwd. An absolute lower
-    # path would bypass that view for a host-staged Job.
+    # path would bypass that view for a host-staged Session.
     return ["/bench-artifacts/payload", case, "output", "input", str(rounds), str(ram_mib)]
 
 

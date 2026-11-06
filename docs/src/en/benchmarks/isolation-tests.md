@@ -16,7 +16,7 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 Measure allowed and denied accesses and final write destinations in a fixture with known paths as the effective isolation boundary. It represents the access restrictions each mode actually enforces. A tighter boundary leaves fewer host paths reachable or modifiable.
 
-Seven configurations each run three fresh fixtures. A fixed seed shuffles configurations in each repetition, giving 21 attempts. Native and host provide host-accessible controls. Podman uses private overlay storage and a writable workspace mount; pVisor OCI uses crun and an explicit writable mount. VM and OCI use the same prepared Python/Git rootfs.
+Seven configurations each run three fresh fixtures. A fixed seed shuffles configurations in each repetition, giving 21 executions. Native and host provide host-accessible controls. Podman uses private overlay storage and a writable workspace mount; pVisor OCI uses crun and an explicit writable mount. VM and OCI use the same prepared Python/Git rootfs.
 
 Each fixture must read the inside-view file, write and read back a workspace file, and use an internal Unix socketpair. Outside probes cover absolute paths, symlinks, `/proc/self/root`, parent traversal, absolute and symlink writes, a host Unix socket connection and an absolute lower-workspace alias write. Validation checks actual output, final host bytes, staged content and the Bundle's execution boundary rather than syscall status alone.
 

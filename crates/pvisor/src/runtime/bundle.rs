@@ -15,7 +15,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 5;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 6;
 const LEGACY_RUN_BUNDLE_SCHEMA_VERSION: u32 = 4;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
@@ -25,7 +25,7 @@ pub struct RunBundle {
     pub generated_at_unix_ms: u64,
     /// Launch-time project authority; immutable once the completion receipt commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_apply_scope: Option<super::job_service::ProjectApplyScope>,
+    pub project_apply_scope: Option<super::session_service::ProjectApplyScope>,
     pub run: BundleRun,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<RunLineage>,
@@ -59,7 +59,7 @@ pub struct BundleRun {
     pub parent_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    pub attempt_id: String,
+    pub execution_id: String,
     pub session_id: String,
     pub agent: String,
     pub command: Vec<String>,
@@ -295,7 +295,7 @@ impl RunBundle {
                 run_id: record.run_id.clone(),
                 parent_run_id: record.parent_run_id.clone(),
                 task_id: record.task_id.clone(),
-                attempt_id: result.attempt_id.as_str().to_string(),
+                execution_id: result.execution_id.as_str().to_string(),
                 session_id: record.session_id.clone(),
                 agent: record.agent.clone(),
                 command: record.command.clone(),
@@ -387,7 +387,7 @@ impl RunBundle {
                 .get("project_apply_scope")
                 .filter(|value| !value.is_null())
                 .cloned()
-                .map(serde_json::from_value::<super::job_service::ProjectApplyScope>)
+                .map(serde_json::from_value::<super::session_service::ProjectApplyScope>)
                 .transpose()?;
             anyhow::ensure!(
                 record.project_apply_scope == scope,
@@ -396,13 +396,13 @@ impl RunBundle {
             if value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION {
                 anyhow::ensure!(
                     record.completion_protocol == Some(super::completion::VERSION),
-                    "EXECUTION_UNKNOWN: protocol-aware Bundle requires an Attempt completion binding"
+                    "EXECUTION_UNKNOWN: protocol-aware Bundle requires an Execution completion binding"
                 );
             }
             if record.completion_protocol.is_some() {
                 anyhow::ensure!(
                     super::completion::Completion::load(&record)?.is_some(),
-                    "EXECUTION_UNKNOWN: Attempt completion is not committed; stage retained"
+                    "EXECUTION_UNKNOWN: Execution completion is not committed; stage retained"
                 );
             }
         }
@@ -423,9 +423,9 @@ impl RunBundle {
         );
         anyhow::ensure!(
             !self.run.run_id.trim().is_empty()
-                && !self.run.attempt_id.trim().is_empty()
+                && !self.run.execution_id.trim().is_empty()
                 && self.agentctl.run_id == self.run.run_id
-                && self.agentctl.attempt_id == self.run.attempt_id,
+                && self.agentctl.execution_id == self.run.execution_id,
             "Run Bundle identity mismatch"
         );
         // Unix timestamps are adjustable wall-clock samples, not monotonic
@@ -617,7 +617,7 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use pvisor_core::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
+    use pvisor_core::{CapabilityEnforcementEvidence, ExecutionId, NetworkCapability, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(
@@ -658,12 +658,12 @@ mod tests {
         fs::create_dir(&upper).unwrap();
         fs::write(upper.join("changed.txt"), b"changed").unwrap();
         let mut record = RunRecord {
-            attempt_id: None,
+            execution_id: None,
             schema_version: 1,
             completion_protocol: None,
             live_control: None,
             run_id: "run-1".into(),
-            parent_run_id: Some("job-1".into()),
+            parent_run_id: Some("session-1".into()),
             task_id: Some("task-1".into()),
             session_id: "run-1".into(),
             agent: "codex".into(),
@@ -707,15 +707,15 @@ mod tests {
             overlay_lowers: vec![],
             lineage: None,
             orchestration: std::collections::BTreeMap::from([(
-                "pvisor.orchestration.job_id".into(),
-                serde_json::json!("job-1"),
+                "pvisor.orchestration.session_id".into(),
+                serde_json::json!("session-1"),
             )]),
             operation: None,
         };
         let mut result = RunResult {
             executor_observations: Default::default(),
             run_id: RunId::new("run-1"),
-            attempt_id: AttemptId::new("attempt-1"),
+            execution_id: ExecutionId::new("execution-1"),
             state: RunState::Completed,
             started_at_unix_ms: 10,
             finished_at_unix_ms: 20,
@@ -730,7 +730,7 @@ mod tests {
         };
         let agentctl = AgentCtlSnapshot {
             run_id: "run-1".into(),
-            attempt_id: "attempt-1".into(),
+            execution_id: "execution-1".into(),
             directive: crate::AgentDirective::Continue,
             clients: vec![],
         };
@@ -765,7 +765,11 @@ mod tests {
                 "filesystem_changes_staged",
                 serde_json::json!(false),
             ),
-            ("agentctl", "attempt_id", serde_json::json!("other-attempt")),
+            (
+                "agentctl",
+                "execution_id",
+                serde_json::json!("other-execution"),
+            ),
         ] {
             let mut invalid = valid.clone();
             invalid[section][field] = replacement;
@@ -797,9 +801,12 @@ mod tests {
         );
         assert_eq!(bundle.filesystem.unwrap().changed_files, 1);
         assert!(!bundle.safety.network_non_bypassable);
-        assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
+        assert_eq!(bundle.run.parent_run_id.as_deref(), Some("session-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
-        assert_eq!(bundle.orchestration["pvisor.orchestration.job_id"], "job-1");
+        assert_eq!(
+            bundle.orchestration["pvisor.orchestration.session_id"],
+            "session-1"
+        );
         assert!(
             bundle
                 .environment
