@@ -136,7 +136,10 @@ pub(crate) async fn handle_connect_authorized(
         let (destination_read, destination_write) = destination.split();
         let upload = copy_limited(client_read, destination_write, bandwidth.clone(), None);
         let download = copy_limited(destination_read, client_write, bandwidth, wait);
-        let _ = tokio::join!(upload, download);
+        // A successful EOF only half-closes the tunnel: keep draining the
+        // opposite direction. An error is terminal and must release both
+        // copies (including a companion blocked on I/O or bandwidth).
+        let _ = tokio::try_join!(upload, download);
     });
     Ok(Response::builder()
         .status(StatusCode::OK)

@@ -489,6 +489,154 @@ mod tests {
     use crate::policy::{NetworkConfig, NetworkMode};
     use pvisor_core::PolicyControlController;
 
+    struct FailedResume;
+
+    #[async_trait]
+    impl DownloadWait for FailedResume {
+        async fn waiting(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn ready(&mut self) -> anyhow::Result<()> {
+            anyhow::bail!("native resume failed")
+        }
+
+        fn cancel(&mut self) {}
+    }
+
+    #[tokio::test]
+    async fn connect_resume_failure_cancels_backpressured_upload_and_returns_admission() {
+        connect_forwarding_ownership(true).await;
+    }
+
+    #[tokio::test]
+    async fn connect_half_close_drains_backpressured_response_and_returns_admission() {
+        connect_forwarding_ownership(false).await;
+    }
+
+    async fn connect_forwarding_ownership(fail_resume: bool) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{Duration, timeout};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let bandwidth = BandwidthRegistry::default()
+            .session(if fail_resume {
+                vec![crate::policy::NetworkBandwidthLimit {
+                    host: None,
+                    port: None,
+                    bytes_per_second: 1,
+                }]
+            } else {
+                vec![]
+            })
+            .await;
+        let (mut client, server) = tokio::io::duplex(1024);
+        let service_counter = counter.clone();
+        let service_slots = slots.clone();
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let counter = service_counter.clone();
+                let slots = service_slots.clone();
+                let bandwidth = bandwidth.clone();
+                async move {
+                    let mut request = request.map(axum::body::Body::new);
+                    let mut guard = ActiveRequestGuard::new(counter);
+                    guard._permit = Some(slots.try_acquire_owned().unwrap());
+                    request.extensions_mut().insert(Arc::new(guard));
+                    let target = parse_connect_target(&address.to_string()).unwrap();
+                    let authorized = AuthorizedTarget {
+                        host: address.ip().to_string(),
+                        addresses: vec![address],
+                    };
+                    handle_connect_authorized(
+                        request,
+                        target,
+                        &authorized,
+                        bandwidth,
+                        fail_resume.then(|| DownloadGuard(Box::new(FailedResume))),
+                    )
+                    .await
+                    .map_err(std::io::Error::other)
+                }
+            });
+        let connection = tokio::spawn(async move {
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(hyper_util::rt::TokioIo::new(server), service)
+                .with_upgrades()
+                .await
+        });
+        client
+            .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let (mut upstream, _) = timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut headers = Vec::new();
+        timeout(Duration::from_secs(2), async {
+            while !headers.ends_with(b"\r\n\r\n") {
+                headers.push(client.read_u8().await.unwrap());
+            }
+        })
+        .await
+        .unwrap();
+        assert!(headers.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(slots.available_permits(), 0);
+        client.write_all(&[b'u'; 64]).await.unwrap();
+        if fail_resume {
+            // This accepted upload cannot finish its one-byte/second throttle
+            // within the deadline. A downstream resume failure is terminal,
+            // unlike successful EOF, and must cancel this companion copy.
+            upstream.write_all(b"accepted response").await.unwrap();
+        } else {
+            client.shutdown().await.unwrap();
+            let mut upload = Vec::new();
+            timeout(Duration::from_secs(2), upstream.read_to_end(&mut upload))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(upload, [b'u'; 64]);
+            // Upstream accepted the response before closing its write half.
+            // It exceeds the client's 1 KiB buffer: successful upload EOF
+            // must not discard a download waiting for the client to drain.
+            let response = vec![b'r'; 32 * 1024];
+            upstream.write_all(&response).await.unwrap();
+            upstream.shutdown().await.unwrap();
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+            assert_eq!(slots.available_permits(), 0);
+            let mut downloaded = Vec::new();
+            timeout(Duration::from_secs(2), client.read_to_end(&mut downloaded))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(downloaded, response);
+        }
+        let released = timeout(Duration::from_secs(2), async {
+            while counter.load(Ordering::Relaxed) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        // Always close our peers, including on the failing reproduction.
+        drop(client);
+        drop(upstream);
+        timeout(Duration::from_secs(2), connection)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            released.is_ok(),
+            "completed or failed tunnel retained admission"
+        );
+        assert_eq!(slots.available_permits(), 1);
+    }
+
     #[tokio::test]
     async fn overload_is_rejected_and_response_body_drop_returns_the_slot() {
         let state = OverlayServerState::new(
