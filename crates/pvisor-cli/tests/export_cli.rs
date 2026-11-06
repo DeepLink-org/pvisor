@@ -126,8 +126,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
         ),
         (
             "spawn",
-            // --vm-node-socket selects a caller-provided RAM pin service.
-            "75b100d8e55d77d3de427e2ec11a60a059762cfcb15f2516e84ec37c96d3ce1e",
+            // Pin the Session lifecycle wording and caller-provided RAM pin service.
+            "d7d1221a53af117178edcb2837372e1cb9cacacea628982a8528fbd348b35009",
         ),
     ] {
         let text = help(root.path(), &[command, "--help"]);

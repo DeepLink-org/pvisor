@@ -1269,7 +1269,7 @@ mod tests {
 
     #[test]
     fn missing_observation_locks_fail_closed_without_initializing_any_path() {
-        for missing in ["session", "execution", "execution"] {
+        for missing in ["session", "execution", "operation"] {
             let root = tempfile::tempdir().unwrap();
             let record = fixture_layout(root.path(), true);
             seed_execution_session(&record);
@@ -1284,7 +1284,7 @@ mod tests {
                     .join(crate::runtime::registry::LEASE_FILENAME),
             };
             fs::remove_file(&path).unwrap();
-            if missing == "execution" {
+            if missing == "operation" {
                 fs::remove_dir(path.parent().unwrap()).unwrap();
             }
             let before = tree_snapshot(root.path());
