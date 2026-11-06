@@ -18,6 +18,15 @@ preserve successful half-close: the opposite direction drains
 before tunnel ownership is released. A copy or download-resume error instead
 cancels the companion direction and releases the tunnel's admission permit.
 
+Known HTTP/2 CONNECT limitation: Hyper 1.9 reports some stream resets (`CANCEL`
+and `NO_ERROR`) as read EOF and exposes no independently awaitable reset signal
+on its upgraded stream. If a client abandons the whole tunnel while upstream
+stays silent/open, the proxy can retain tunnel ownership and its admission
+permit while waiting for the other direction. This also reproduces without
+bandwidth throttling. Ordinary EOF must remain a valid half-close; treating it
+as cancellation would discard legitimate delayed responses. Prompt release on
+these resets is not guaranteed by the current transport integration.
+
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
 in-process smoltcp stack serves synthetic DNS, then terminates and
 re-originates policy-authorized IPv4 TCP. The Rust guest supervisor configures
