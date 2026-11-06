@@ -5,7 +5,7 @@ use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::executor::artifact::resolve_pvisor_binary;
 use crate::executor::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{Captured, read_limited, stdio};
-use crate::executor::{ExecutorOutput, RunExecutor, Session, SessionEnd as End};
+use crate::executor::{ExecutionContext, ExecutorOutput, RunExecutor, SessionEnd as End};
 use async_trait::async_trait;
 use pvisor_core::{
     ExecutorKind, ExecutorPlan, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
@@ -79,7 +79,7 @@ impl ContainerExecutor {
     fn build_command(
         &self,
         spec: &RunSpec,
-        attempt_id: &str,
+        execution_id: &str,
         pvisor_binary: &Path,
         files: &DelegatedRunFiles,
     ) -> anyhow::Result<Command> {
@@ -139,7 +139,7 @@ impl ContainerExecutor {
         }
 
         let control_dir = files.spec_path.parent().unwrap();
-        let bundle = control_dir.join(format!("oci-bundle-{}", attempt_id));
+        let bundle = control_dir.join(format!("oci-bundle-{}", execution_id));
         fs::create_dir_all(&bundle)?;
         let configured_rootfs = self
             .settings
@@ -267,7 +267,7 @@ impl ContainerExecutor {
                 mapping_entries(requested_user.1, 0, 1),
             )
         };
-        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/output/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
+        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/output/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.execution_id":execution_id}});
         crate::util::write_private_json(&config, &cfg)?;
         let state = control_dir.join("oci-state");
         fs::create_dir_all(&state)?;
@@ -276,7 +276,7 @@ impl ContainerExecutor {
             .arg("run")
             .arg("--bundle")
             .arg(bundle)
-            .arg(container_name(run_id, attempt_id));
+            .arg(container_name(run_id, execution_id));
 
         command
             .stdin(stdio(invocation.stdin))
@@ -414,7 +414,7 @@ impl RunExecutor for ContainerExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: &Session) -> ExecutorOutput {
+    async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
         let spec = context.spec().clone();
         context
             .execution()
@@ -438,7 +438,7 @@ impl RunExecutor for ContainerExecutor {
                 executor.settings.rootfs = Some(prepared.rootfs);
             }
             let command =
-                executor.build_command(&spec, context.attempt_id().as_str(), &binary, &files)?;
+                executor.build_command(&spec, context.execution_id().as_str(), &binary, &files)?;
             Ok::<_, anyhow::Error>((files, command))
         }
         .await;
@@ -448,7 +448,7 @@ impl RunExecutor for ContainerExecutor {
                 return failed_to_start(error.to_string());
             }
         };
-        let name = container_name(spec.run_id.as_str(), context.attempt_id().as_str());
+        let name = container_name(spec.run_id.as_str(), context.execution_id().as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -489,7 +489,7 @@ impl RunExecutor for ContainerExecutor {
         let transport_stdout = join_capture_bounded(stdout_task).await;
         let transport_stderr = join_capture_bounded(stderr_task).await;
         if let End::Exited(Ok(status)) = &end {
-            match files.read_result(&spec.run_id, context.attempt_id()) {
+            match files.read_result(&spec.run_id, context.execution_id()) {
                 Ok(output) => {
                     // Only the host-observed runtime status determines completion.
                     // Boundary-writable results supply transcript bytes, never controls or evidence.
@@ -780,7 +780,7 @@ fn parse_user(value: Option<&str>) -> anyhow::Result<(u32, u32)> {
     Ok((uid, gid))
 }
 
-fn container_name(run_id: &str, attempt_id: &str) -> String {
+fn container_name(run_id: &str, execution_id: &str) -> String {
     fn clean(value: &str) -> String {
         value
             .chars()
@@ -794,8 +794,8 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
             .collect()
     }
     let run = clean(run_id).chars().take(32).collect::<String>();
-    let attempt = clean(attempt_id);
-    let suffix = attempt
+    let execution = clean(execution_id);
+    let suffix = execution
         .chars()
         .rev()
         .take(24)
@@ -829,7 +829,7 @@ mod tests {
         })
         .unwrap();
         let error = executor
-            .build_command(&spec, "attempt", &binary, &files)
+            .build_command(&spec, "execution", &binary, &files)
             .unwrap_err();
         assert!(
             error.to_string().contains("host control storage"),
@@ -971,7 +971,7 @@ mod tests {
         invocation.inherit_env = false;
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let command = executor
-            .build_command(&spec, "attempt-one", &runtime, &files)
+            .build_command(&spec, "execution-one", &runtime, &files)
             .unwrap();
         let args = command
             .as_std()
@@ -980,7 +980,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             args.iter()
-                .any(|arg| arg.contains("oci-bundle-attempt-one"))
+                .any(|arg| arg.contains("oci-bundle-execution-one"))
         );
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
         let config: serde_json::Value = serde_json::from_slice(
@@ -989,7 +989,7 @@ mod tests {
                     .spec_path
                     .parent()
                     .unwrap()
-                    .join("oci-bundle-attempt-one/config.json"),
+                    .join("oci-bundle-execution-one/config.json"),
             )
             .unwrap(),
         )
@@ -1123,14 +1123,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_name_is_path_safe_and_retains_attempt_entropy() {
-        let name = container_name("run/unsafe", "attempt:1234567890");
+    fn runtime_name_is_path_safe_and_retains_execution_entropy() {
+        let name = container_name("run/unsafe", "execution:1234567890");
         assert!(!name.contains('/'));
         assert!(!name.contains(':'));
         assert!(name.ends_with("1234567890"));
         assert_ne!(
-            container_name("run", "attempt-one"),
-            container_name("run", "attempt-two")
+            container_name("run", "execution-one"),
+            container_name("run", "execution-two")
         );
         assert_ne!(OsStr::new(&name), OsStr::new(""));
     }

@@ -1,6 +1,6 @@
 //! Stable value types shared by pVisor, Gateway, and storage contracts.
 //!
-//! A local Run and its execution Attempt identify policy requests and results.
+//! A Session uses a stable Run identity and a distinct Execution identity for each execution.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,7 +50,7 @@ macro_rules! string_id {
 }
 
 string_id!(RunId);
-string_id!(AttemptId);
+string_id!(ExecutionId);
 
 /// A versioned logical Agent reference. It describes identity, not placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +187,7 @@ pub struct RuntimeConfig {
     /// Explicit native Linux VM scheduling class. Unset inherits existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_qos: Option<CpuQosClass>,
-    /// Wall-clock limit for one Attempt. `None` means no pVisor deadline.
+    /// Wall-clock limit for one Execution. `None` means no pVisor deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     /// Grace period between a cooperative process-tree termination request and
@@ -398,7 +398,7 @@ pub struct NetworkAccessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<AttemptId>,
+    pub execution_id: Option<ExecutionId>,
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
@@ -424,7 +424,7 @@ pub struct ModelCallRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<AttemptId>,
+    pub execution_id: Option<ExecutionId>,
     pub call_id: String,
     pub client_model: String,
     pub upstream_model: String,
@@ -495,7 +495,7 @@ pub enum RunState {
     Checkpointing,
     Suspended,
     /// Native execution has exited after sealing a full continuation checkpoint.
-    /// Unlike Suspended (live pause), this Attempt owns no running VM.
+    /// Unlike Suspended (live pause), this Execution owns no running VM.
     Hibernated,
     Cancelling,
     Completed,
@@ -858,8 +858,8 @@ pub struct ExecutorPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttemptInfo {
-    pub attempt_id: AttemptId,
+pub struct ExecutionInfo {
+    pub execution_id: ExecutionId,
     pub number: u32,
     /// Admission-time plan, never runtime enforcement evidence.
     pub executor: ExecutorPlan,
@@ -873,7 +873,7 @@ pub struct AttemptInfo {
 pub struct RunStatus {
     pub run_id: RunId,
     pub state: RunState,
-    pub attempt: AttemptInfo,
+    pub execution: ExecutionInfo,
     pub updated_at_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -924,7 +924,7 @@ pub struct ArtifactRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
     pub run_id: RunId,
-    pub attempt_id: AttemptId,
+    pub execution_id: ExecutionId,
     pub state: RunState,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: u64,
@@ -1034,22 +1034,22 @@ mod tests {
     }
 
     #[test]
-    fn local_request_and_result_wire_shapes_use_run_and_attempt_identity() {
+    fn local_request_and_result_wire_shapes_use_run_and_execution_identity() {
         let request = serde_json::json!({
-            "run_id": "local-run", "attempt_id": "local-attempt", "host": "api.example.com",
+            "run_id": "local-run", "execution_id": "local-execution", "host": "api.example.com",
             "port": 443, "transport": "https", "resolved_ip": "203.0.113.1"
         });
         let decoded: NetworkAccessRequest = serde_json::from_value(request.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), request);
         let request = serde_json::json!({
-            "run_id": "local-run", "attempt_id": "local-attempt", "call_id": "call-1",
+            "run_id": "local-run", "execution_id": "local-execution", "call_id": "call-1",
             "client_model": "model", "upstream_model": "model", "provider": "provider",
             "protocol": "openai", "upstream_host": "api.example.com"
         });
         let decoded: ModelCallRequest = serde_json::from_value(request.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), request);
         let result = serde_json::json!({
-            "run_id": "local-run", "attempt_id": "local-attempt", "state": "completed",
+            "run_id": "local-run", "execution_id": "local-execution", "state": "completed",
             "started_at_unix_ms": 1, "finished_at_unix_ms": 2,
             "output": {"stdout_truncated": false, "stderr_truncated": false},
             "metrics": {}, "artifacts": [], "warnings": [],

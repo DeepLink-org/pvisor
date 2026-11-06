@@ -2,7 +2,7 @@
 
 Use OpenSandbox 1.1.0 or E2B Python SDK 2.59.0 to drive local Linux VM sandboxes. The daemon owns resource admission, persistent ownership, lifecycle and expiration cleanup. Each sandbox has an independent supervisor that clients can reconnect to after an API restart.
 
-Use native Jobs through `pvisor spawn` when you need workspace review and merging. The daemon provides a tested core SDK subset without Job stage/apply or checkpoint/fork APIs. Callers own cross-node placement, workflows and business retries.
+Use native Sessions through `pvisor spawn` when you need workspace review and merging. The daemon provides a tested core SDK subset without Session stage/apply or checkpoint/fork APIs. Callers own cross-node placement, workflows and business retries.
 
 ## Prerequisites {#prerequisites}
 
@@ -68,7 +68,7 @@ Compatibility is pinned to OpenSandbox **1.1.0** (`release-1.1.0`). The unmodifi
 | Capability | Current behavior |
 | --- | --- |
 | Image create, list, get, delete | Node-local sandbox lifecycle; create accepts argv/env/metadata, CPU/memory limits and an optional TTL |
-| Pause / resume | Confirmed live vCPU pause/resume on the same Attempt, not a checkpoint |
+| Pause / resume | Confirmed live vCPU pause/resume on the same Execution, not a checkpoint |
 | Renew | A future RFC3339 time that extends an existing TTL |
 | Endpoints | Only daemon-routed execd 44772 and egress 18080 |
 | Commands, files, health, metrics | Native guest engine by default; service proxy for explicit upstream templates |
@@ -190,11 +190,11 @@ Native OverlayNet provides VM egress networking. OpenSandbox network-policy requ
 
 The host account, daemon/firmware and prepared images must be trusted. Private state and same-UID IPC do not stop hostile same-UID or root code. Other local users may reach loopback publications; configure service authentication and host access controls. Secrets stay out of supervisor argv and the host environment but are kept in private records. No security-audit results exist; hostile multi-user isolation is out of scope.
 
-## Relationship to native Jobs, the cache and the retired Cluster {#native}
+## Relationship to native Sessions, the cache and the retired Cluster {#native}
 
-A daemon sandbox ID is not a Job ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Attempt, not a sealed RAM/CPU/device/filesystem snapshot. Native Job file review, checkpoints and model capture continue through the `pvisor spawn` path: execution steps are in the [VM guide](../executors/vm.md), node-local Job file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Job can use execution checkpoints; check capability and blockers with `pvisor status --json`.
+A daemon sandbox ID is not a Session ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Execution, not a sealed RAM/CPU/device/filesystem snapshot. Native Session file review, checkpoints and model capture continue through the `pvisor spawn` path: execution steps are in the [VM guide](../executors/vm.md), node-local Session file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Session can use execution checkpoints; check capability and blockers with `pvisor status --json`.
 
-`pvisor cache prepare/publish/list/stat/read` remain independent commands, not daemon subcommands; see the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Jobs and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
+`pvisor cache prepare/publish/list/stat/read` remain independent commands, not daemon subcommands; see the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Sessions and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
 
 The retired Cluster task/client SDK, Controller/Worker registration, placement, DAG, lease renewal, completion outbox and artifact retirement commands are not daemon interfaces. Do not feed old task JSON, `worker.toml`, Controller credentials or journals to the daemon; there is no automatic path from distributed task history to sandbox state. Retain old results before retiring a deployment, and use fresh state for the OpenSandbox profile.
 

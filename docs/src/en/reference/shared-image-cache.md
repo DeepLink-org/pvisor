@@ -6,7 +6,7 @@
 
 Docker-compatible commands, spawn without a selected remote backend, and the cache server share one local image directory. Its default is `~/Library/Application Support/pvisor/docker/images/` on macOS and `$XDG_DATA_HOME/pvisor/docker/images/` on Linux, usually `~/.local/share/pvisor/docker/images/`. Revisions referenced by tasks belong in persistent user data storage.
 
-An explicit Job/cache image-store option takes precedence, followed by `PVISOR_IMAGE_STORE`. With only `PVISOR_DOCKER_HOME` set, all local entry points use its `images/`, preserving isolated storage. Embedded `Store::open(root)` always uses `root/images`, independently of environment defaults. Container state, Job records and writable layers keep their separate owners. The local image root and its control directories must be owned by the current user, private (0700) and not symlinks; incompatible existing directories fail without changing their permissions.
+An explicit Session/cache image-store option takes precedence, followed by `PVISOR_IMAGE_STORE`. With only `PVISOR_DOCKER_HOME` set, all local entry points use its `images/`, preserving isolated storage. Embedded `Store::open(root)` always uses `root/images`, independently of environment defaults. Container state, Session records and writable layers keep their separate owners. The local image root and its control directories must be owned by the current user, private (0700) and not symlinks; incompatible existing directories fail without changing their permissions.
 
 ```text
 <image-store>/
@@ -132,7 +132,7 @@ Open fetches controls, root.bin and the root-directory frame without parsing the
 
 Writable mode reuses mutable-tag HEADs for five minutes; publishers update with --refresh. Read-only mode always uses published HEADs without registry queries. Tasks pin returned image_handles, and older revisions remain readable while retained. IMAGE@sha256:… is an independent reference whose meta must be published separately; a tag's returned image_handle already pins that version.
 
-Actual S3 traffic includes control objects, metadata pages, and complete data chunks. Logical file bytes returned by the cache API are not billed traffic. Automatic GC/quotas are not implemented. Disable relevant jobs/publications and confirm readers exited before deleting meta/data; never delete shared objects based solely on age.
+Actual S3 traffic includes control objects, metadata pages, and complete data chunks. Logical file bytes returned by the cache API are not billed traffic. Automatic GC/quotas are not implemented. Disable relevant sessions/publications and confirm readers exited before deleting meta/data; never delete shared objects based solely on age.
 
 ## Code layout
 
@@ -186,7 +186,7 @@ pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - macOS: `~/Library/Caches/pvisor/cache.sock`
 - Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, usually `~/.cache/pvisor/cache.sock`
 
-Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` to select the server’s local image directory, shared with Docker and daemonless VM Jobs. The server does not start automatically.
+Use `--cache-image-store DIR` or `PVISOR_IMAGE_STORE` to select the server’s local image directory, shared with Docker and daemonless VM Sessions. The server does not start automatically.
 
 ## Automatic VM lazy loading
 

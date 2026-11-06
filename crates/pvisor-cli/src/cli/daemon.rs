@@ -9,7 +9,7 @@ pub(super) fn resolve_pool(selector: PathBuf) -> anyhow::Result<PathBuf> {
     super::host_service::resolve_memory_pool()
 }
 
-// Only the frontend starts user-wide services. Job owners delegate over their
+// Only the frontend starts user-wide services. Session owners delegate over their
 // private bootstrap channel so request descendant cleanup cannot kill the pool.
 pub(super) fn resolve_auto_pool() -> anyhow::Result<PathBuf> {
     let (executable, _) = crate::companions::find("daemon")?

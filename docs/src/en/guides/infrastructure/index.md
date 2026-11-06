@@ -15,7 +15,7 @@ An agent-native sandbox organizes environments, state, and evidence around these
 1. **Prepare inputs:** the caller pins the task, agent/model versions, workspace baseline, image identity, and resource budget.
 2. **Create and execute:** start the environment through the selected interface, check admission and installed controls, and run the workload.
 3. **Wait or save:** keep the running environment, a file branch, or a supported execution checkpoint according to the state required.
-4. **Deliver results:** associate exit results, candidate files, and available records with the upstream task and attempt.
+4. **Deliver results:** associate exit results, candidate files, and available records with the upstream task and execution.
 5. **Release resources:** reconcile operation outcomes, retain required artifacts, and clean up through that interface's lifecycle.
 
 The surrounding system owns task queues, model sampling, reward computation, retry policy, and cross-node placement. Successful pVisor execution establishes that the corresponding operation completed. An evaluator or business rule determines task correctness and whether the result is a valid training sample.
@@ -36,9 +36,9 @@ Trajectory capture and replay also apply to [local Agent workflows](../index.md#
 
 ## Deliver samples for evaluation and RL {#rl}
 
-Use the [single-rollout example](../rl-rollouts.md) to validate “execute → read candidates → score → save the sample → clean up.” It collects results through native Jobs and can connect to an existing evaluator on one machine.
+Use the [single-rollout example](../rl-rollouts.md) to validate “execute → read candidates → score → save the sample → clean up.” It collects results through native Sessions and can connect to an existing evaluator on one machine.
 
-As sample volume grows, keep a separate workspace and identity for every attempt. Associate task ID, execution identity, input versions, trajectory locations, and score. Record execution failure, access denial, recording failure, and task score separately so environment failures do not become model-capability judgments.
+As sample volume grows, keep a separate workspace and identity for every execution. Associate task ID, execution identity, input versions, trajectory locations, and score. Record execution failure, access denial, recording failure, and task score separately so environment failures do not become model-capability judgments.
 
 Explicitly enable [capture](../capture.md) when model communication records are needed. External orchestration integrations own multi-node handoff and centralized evidence; see [execution and orchestration research](../../design/research/index.md#ownership) for the design and current gaps.
 
@@ -52,6 +52,6 @@ Capacity evaluation should cover valid completions, tool latency, total host and
 
 ## Start from a current interface {#start}
 
-For file results and native Job records, validate the CLI or Rust Runtime first. For HTTP sandbox lifecycle, prepare the service according to the [daemon deployment prerequisites](../daemon/index.md). For an existing containerd call chain, check the [shim's interface scope](integration.md#containerd).
+For file results and native Session records, validate the CLI or Rust Runtime first. For HTTP sandbox lifecycle, prepare the service according to the [daemon deployment prerequisites](../daemon/index.md). For an existing containerd call chain, check the [shim's interface scope](integration.md#containerd).
 
 The [integration matrix](integration.md#capabilities) lists daemon bootstrap, end-to-end SDK validation, and capability gaps. Full RL training throughput, reward, and cross-host scaling benefits still require upstream workload experiments; see [RL scenario comparisons](../../benchmarks/compare-rl-infra.md) for existing cost analysis.

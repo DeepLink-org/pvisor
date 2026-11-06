@@ -229,7 +229,7 @@ bitflags! {
         /// Indicates that the filesystem supports asynchronous read requests.
         ///
         /// If this capability is not requested/available, the kernel will ensure that there is at
-        /// most one pending read request per file-handle at any time, and will attempt to order
+        /// most one pending read request per file-handle at any time, and will try to order
         /// read requests by increasing offset.
         ///
         /// This feature is enabled by default when supported by the kernel.
@@ -298,7 +298,7 @@ bitflags! {
         const HAS_IOCTL_DIR = HAS_IOCTL_DIR;
 
         /// Traditionally, while a file is open the FUSE kernel module only asks the filesystem for
-        /// an update of the file's attributes when a client attempts to read beyond EOF. This is
+        /// an update of the file's attributes when a client tries to read beyond EOF. This is
         /// unsuitable for e.g. network filesystems, where the file contents may change without the
         /// kernel knowing about it.
         ///
@@ -353,7 +353,7 @@ bitflags! {
 
         /// Indicates support for zero-message opens. If this flag is set in the `capable` parameter
         /// of the `init` trait method, then the file system may return `ENOSYS` from the open() handler
-        /// to indicate success. Further attempts to open files will be handled in the kernel. (If
+        /// to indicate success. Further tries to open files will be handled in the kernel. (If
         /// this flag is not set, returning ENOSYS will be treated as an error and signaled to the
         /// caller).
         ///
@@ -412,7 +412,7 @@ bitflags! {
 
         /// Indicates support for zero-message opens. If this flag is set in the `capable` parameter
         /// of the `init` trait method, then the file system may return `ENOSYS` from the opendir() handler
-        /// to indicate success. Further attempts to open directories will be handled in the kernel. (If
+        /// to indicate success. Further tries to open directories will be handled in the kernel. (If
         /// this flag is not set, returning ENOSYS will be treated as an error and signaled to the
         /// caller).
         ///

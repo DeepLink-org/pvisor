@@ -19,13 +19,13 @@ pub(super) struct StatusCommandArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusArgs {
-    /// Job id, stage directory, upper directory, or workspace path.
+    /// Session id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
     #[arg(long)]
     pub json: bool,
-    /// Show the Job's Run Bundle, safety evidence, and staged changes.
+    /// Show the Session's Run Bundle, safety evidence, and staged changes.
     #[arg(long)]
     pub review: bool,
     /// Include bounded unified diffs in the review view.
@@ -40,7 +40,7 @@ pub struct StatusArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KillArgs {
-    /// Live Job id, stage directory, or workspace path.
+    /// Live Session id, stage directory, or workspace path.
     pub selector: PathBuf,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -51,7 +51,7 @@ pub struct KillArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectArgs {
-    /// Job id, stage directory, upper directory, or workspace path.
+    /// Session id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -66,9 +66,9 @@ pub struct InspectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectArgs {
-    /// Job id, stage directory, workspace path, or container name/id.
+    /// Session id, stage directory, workspace path, or container name/id.
     pub selector: PathBuf,
-    /// Select a container's exact staged bind guest path (never a Job selector).
+    /// Select a container's exact staged bind guest path (never a Session selector).
     #[arg(long, value_name = "GUEST_PATH")]
     #[serde(default)]
     pub mount: Option<PathBuf>,
@@ -79,16 +79,16 @@ pub struct SelectArgs {
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyArgs {
-    /// Job id, stage directory, workspace selector, or container name/id; internal stage paths are refused.
+    /// Session id, stage directory, workspace selector, or container name/id; internal stage paths are refused.
     #[arg(value_name = "SOURCE")]
     pub selector: PathBuf,
-    /// Select a container's exact staged bind guest path (never a Job selector).
+    /// Select a container's exact staged bind guest path (never a Session selector).
     #[arg(long, value_name = "GUEST_PATH")]
     #[serde(default)]
     pub mount: Option<PathBuf>,
     /// Apply recorded system-root changes as root instead of the project scope.
     /// Requires a root-created stage in root-controlled storage; sudo apply of
-    /// another user's stage is unsupported by same-UID Job locks. This is not an
+    /// another user's stage is unsupported by same-UID Session locks. This is not an
     /// atomic system upgrade: filtering package files separately from package
     /// metadata can leave the system/package database inconsistent.
     #[arg(long, help_heading = "Scope")]
@@ -131,7 +131,7 @@ pub struct ApplyArgs {
     #[arg(long, conflicts_with = "interactive", help_heading = "Output")]
     #[serde(default)]
     pub json: bool,
-    /// Job lookup storage.
+    /// Session lookup storage.
     #[arg(long, value_name = "DIR", default_value = DEFAULT_STORAGE, help_heading = "Storage")]
     pub store: PathBuf,
 }
@@ -149,10 +149,10 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             mount: None,
         });
     }
-    let response = pvisor::job_service::RuntimeJobService::status(
+    let response = pvisor::session_service::SessionService::status(
         &super::host::service_context(),
-        pvisor::job_service::StatusRequest {
-            job: pvisor::job_service::JobSelection {
+        pvisor::session_service::StatusRequest {
+            session: pvisor::session_service::SessionSelection {
                 selector: args.selector,
                 storage: args.output_dir,
             },
@@ -163,11 +163,11 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         return Ok(());
     }
     let record = &response.record;
-    println!("job: {}", record.run_id);
+    println!("session: {}", record.run_id);
     println!("session: {}", record.session_id);
     println!("state: {}", response.state.as_str());
-    if let Some(attempt) = &response.live_attempt {
-        println!("attempt: {:?}", attempt.state);
+    if let Some(execution) = &response.live_execution {
+        println!("execution: {:?}", execution.state);
     }
     println!(
         "pid: {}{}",
@@ -198,12 +198,12 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     } else {
         println!("execution checkpoint: supported");
     }
-    if let Some(job) = &response.execution {
+    if let Some(session) = &response.execution {
         println!(
             "execution: {} ({} checkpoints)",
-            job.state, job.checkpoint_count
+            session.state, session.checkpoint_count
         );
-        if let Some(head) = &job.suspended_head {
+        if let Some(head) = &session.suspended_head {
             println!("suspended head: {head}");
         }
     }
@@ -278,12 +278,12 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn status_json(response: &pvisor::job_service::StatusResponse) -> serde_json::Value {
+fn status_json(response: &pvisor::session_service::StatusResponse) -> serde_json::Value {
     let record = &response.record;
     serde_json::json!({
         "schema_version": response.schema_version,
         "state": response.state,
-        "run": record, "live": response.live, "live_attempt": response.live_attempt,
+        "run": record, "live": response.live, "live_execution": response.live_execution,
         "execution_progress": response.execution_progress,
         "checkpoint_capability": {"workspace": record.overlay.is_some(), "workspace_capture_requires": "confirmed_stopped", "execution": response.execution_blocker.is_none(), "execution_blocker": response.execution_blocker},
         "execution": response.execution, "workspace_checkpoint_count": response.workspace_checkpoint_count,
@@ -302,19 +302,19 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         .as_ref()
         .filter(|endpoint| endpoint.is_available());
     if endpoint.is_none() {
-        if pvisor::job_execution::terminate_suspended(&record)? {
+        if pvisor::session_execution::terminate_suspended(&record)? {
             if args.json {
                 println!(
                     "{}",
-                    serde_json::json!({"schema_version":1,"operation":"kill","job_id":record.run_id,"state":"terminated","suspended_head_released":true})
+                    serde_json::json!({"schema_version":1,"operation":"kill","session_id":record.run_id,"state":"terminated","suspended_head_released":true})
                 );
             } else {
-                println!("terminated suspended Job {}", record.run_id);
+                println!("terminated suspended Session {}", record.run_id);
             }
             return Ok(());
         }
         if record.state.is_stopped() {
-            let _job = super::host::lock_selected_job(&record)?;
+            let _session = super::host::lock_selected_session(&record)?;
             let (current, _lease) = record.lock_current()?;
             super::host_service::check_record(&current)?;
             current.require_stopped()?;
@@ -322,22 +322,22 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::json!({"schema_version":1,"operation":"kill",
-                "job_id":current.run_id,"state":current.state,"already_stopped":true})
+                "session_id":current.run_id,"state":current.state,"already_stopped":true})
                 );
             } else {
-                println!("Job {} is already stopped", current.run_id);
+                println!("Session {} is already stopped", current.run_id);
             }
             return Ok(());
         }
-        anyhow::bail!("Job has no valid recorded owner; only its durable state is available");
+        anyhow::bail!("Session has no valid recorded owner; only its durable state is available");
     }
     let endpoint = endpoint.unwrap();
     endpoint.exchange_checked(
         &record.run_id,
         record
-            .attempt_id
+            .execution_id
             .as_deref()
-            .context("Job has no Attempt identity")?,
+            .context("Session has no Execution identity")?,
         pvisor::host_transport::InstanceCommand::Terminate {},
         Some(&super::host_service::check_cancelled),
     )?;
@@ -345,11 +345,11 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::json!({"schema_version":1,"operation":"kill",
-            "job_id":record.run_id,"state":"stopping","termination_requested":true,"cooperative":true})
+            "session_id":record.run_id,"state":"stopping","termination_requested":true,"cooperative":true})
         );
     } else {
         println!(
-            "requested termination of Job {} (PID {})",
+            "requested termination of Session {} (PID {})",
             record.run_id, record.pid
         );
     }
@@ -366,13 +366,13 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let mut record = selected.clone();
     let mut leases = None;
     let mount = if let Some(endpoint) = endpoint {
-        let attempt = selected
-            .attempt_id
+        let execution = selected
+            .execution_id
             .clone()
-            .context("live Job has no Attempt identity")?;
+            .context("live Session has no Execution identity")?;
         let response = endpoint.exchange_checked(
             &selected.run_id,
-            &attempt,
+            &execution,
             pvisor::host_transport::InstanceCommand::Inspect {
                 checkpoint: args.checkpoint.clone(),
             },
@@ -380,8 +380,8 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         )?;
         InspectMount::Remote {
             endpoint,
-            job: selected.run_id.clone(),
-            attempt,
+            session: selected.run_id.clone(),
+            execution,
             id: response["id"]
                 .as_str()
                 .context("inspect response missing id")?
@@ -389,7 +389,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
             mountpoint: serde_json::from_value(response["mountpoint"].clone())?,
         }
     } else {
-        let job = super::host::lock_selected_job(&selected)?;
+        let session = super::host::lock_selected_session(&selected)?;
         let (current, lease) = selected.lock_current()?;
         super::host::check_selected_record(&selected, &current)?;
         record = current;
@@ -400,11 +400,11 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         } else {
             record.require_stopped()?;
         }
-        leases = Some((job, lease));
+        leases = Some((session, lease));
         let overlay = record
             .overlay
             .as_ref()
-            .context("this Job has no OverlayFS workspace to inspect")?;
+            .context("this Session has no OverlayFS workspace to inspect")?;
         let lowers = if record.overlay_lowers.is_empty() {
             vec![overlay.target.clone()]
         } else {
@@ -426,7 +426,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let overlay = record
         .overlay
         .as_ref()
-        .context("this Job has no OverlayFS workspace to inspect")?;
+        .context("this Session has no OverlayFS workspace to inspect")?;
 
     let command = if args.command.is_empty() {
         vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())]
@@ -487,8 +487,8 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
 enum InspectMount {
     Remote {
         endpoint: pvisor::host_transport::LiveControlRecord,
-        job: String,
-        attempt: String,
+        session: String,
+        execution: String,
         id: String,
         mountpoint: PathBuf,
     },
@@ -510,14 +510,14 @@ impl InspectMount {
         match self {
             Self::Remote {
                 endpoint,
-                job,
-                attempt,
+                session,
+                execution,
                 id,
                 ..
             } => endpoint
                 .exchange(
-                    &job,
-                    &attempt,
+                    &session,
+                    &execution,
                     pvisor::host_transport::InstanceCommand::UnmountInspect { id },
                 )
                 .map(|_| ()),
@@ -534,7 +534,7 @@ impl InspectMount {
 }
 
 pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
-    use pvisor::job_service::{DropRequest, RuntimeJobService};
+    use pvisor::session_service::{DropRequest, SessionService};
     args.selector = super::stage_source::resolve(
         Some(&args.selector),
         &args.output_dir,
@@ -542,10 +542,10 @@ pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
     )?
     .expect("explicit drop source");
     args.mount = None;
-    let response = RuntimeJobService::drop(
+    let response = SessionService::drop(
         &super::host::service_context(),
         DropRequest {
-            job: pvisor::job_service::JobSelection {
+            session: pvisor::session_service::SessionSelection {
                 selector: Some(args.selector),
                 storage: args.output_dir,
             },
@@ -554,15 +554,18 @@ pub fn drop_overlay(mut args: SelectArgs) -> anyhow::Result<()> {
     render_drop(response);
     Ok(())
 }
-fn render_drop(response: pvisor::job_service::MutationResponse) {
-    use pvisor::job_service::MutationOutcome;
+fn render_drop(response: pvisor::session_service::MutationResponse) {
+    use pvisor::session_service::MutationOutcome;
     match response.outcome {
         MutationOutcome::AlreadyDropped => println!(
             "remaining staged changes already dropped for {}",
-            response.job_id
+            response.session_id
         ),
         MutationOutcome::Dropped => {
-            println!("dropped remaining staged changes for {}", response.job_id)
+            println!(
+                "dropped remaining staged changes for {}",
+                response.session_id
+            )
         }
     }
 }
@@ -626,7 +629,7 @@ mod tests {
         for warning in [
             "not an atomic system upgrade",
             "package metadata",
-            "same-UID Job locks",
+            "same-UID Session locks",
         ] {
             assert!(help.contains(warning), "{help}");
         }

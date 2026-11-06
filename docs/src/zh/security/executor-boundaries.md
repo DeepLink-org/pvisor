@@ -20,7 +20,7 @@
 
 ## 单机 daemon 边界 {#daemon}
 
-上表描述原生 Job 请求的控制，不是 daemon API。VM-only NativeRuntime 在独立 supervisor 中嵌入 pVisor，使用独立不可变 guest rootfs 与私有写入；委派 cgroup v2 限制 supervisor/VM 树。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node 共享。OpenSandbox 网络策略选项被拒绝；原生 OverlayNet 出口网络不构成 deny-all 声明。
+上表描述原生 Session 请求的控制，不是 daemon API。VM-only NativeRuntime 在独立 supervisor 中嵌入 pVisor，使用独立不可变 guest rootfs 与私有写入；委派 cgroup v2 限制 supervisor/VM 树。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node 共享。OpenSandbox 网络策略选项被拒绝；原生 OverlayNet 出口网络不构成 deny-all 声明。
 
 宿主账户、daemon/firmware 与预制镜像属于可信输入。私有状态和同 UID IPC 不防御敌对宿主 UID/root 代码。默认原生适配器和受管理上游模板都要求沙箱范围的数据鉴权；loopback 映射也校验私有服务 token，不能把本机地址当作认证。没有敌对多用户或安全审计保证。模板选择与已验证 SDK 范围见[daemon 指南](../guides/daemon/index.md#prerequisites)。
 

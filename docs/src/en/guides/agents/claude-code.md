@@ -64,7 +64,7 @@ Use Claude Code to fix a Python function that mishandles whitespace. After testi
     ```text
     Fix slugify in slugify.py: lowercase the input, trim surrounding whitespace, and collapse consecutive whitespace (including tabs and newlines) into one hyphen.
     Preserve the three existing tests in test_slugify.py and add a test that whitespace-only input returns an empty string.
-    Modify only slugify.py and test_slugify.py; also create experiment-notes.txt describing the attempts, as an experiment record to leave out of acceptance.
+    Modify only slugify.py and test_slugify.py; also create experiment-notes.txt describing the executions, as an experiment record to leave out of acceptance.
     Install no dependencies, access no external services, and make no Git commits or pushes.
     Run the tests first to confirm failure. After the fix, run python3 -B -m unittest -v and report the actual result.
     ```
@@ -100,7 +100,7 @@ Use Claude Code to fix a Python function that mishandles whitespace. After testi
     python3 -B -m unittest -v
     ```
 
-    Expect 4 passing tests afterward. If the agent created no notes and all candidates were accepted, skip drop. Review unexpected files before deciding. For command failure or cancellation, inspect Job status and retain available records before following [troubleshooting](../troubleshooting.md).
+    Expect 4 passing tests afterward. If the agent created no notes and all candidates were accepted, skip drop. Review unexpected files before deciding. For command failure or cancellation, inspect Session status and retain available records before following [troubleshooting](../troubleshooting.md).
 
 </div>
 
@@ -111,7 +111,7 @@ Use Claude Code to fix a Python function that mishandles whitespace. After testi
 | Real-client tool loop | Existing records use Claude Code 2.1.128 with local deterministic model responses; see [end-to-end tasks](../../benchmarks/agent-tasks.md) for configuration and scope. |
 | This tutorial's cloud-model repair task | A cloud-model run of this task using a release artifact still needs end-to-end verification. |
 | Operation without repeated approvals | A verified version/configuration matrix is not yet established; tool-loop tests do not establish this behavior. |
-| Reproduction record | Keep OS, pVisor/Claude versions, launch command, before/after test results, Job identity, and actual approval prompts; omit keys. |
+| Reproduction record | Keep OS, pVisor/Claude versions, launch command, before/after test results, Session identity, and actual approval prompts; omit keys. |
 
 This tutorial retains Claude's own approval settings. Initial authentication, tool permissions, or other confirmations may still appear. File review/apply does not undo model charges or remote operations. Source and tests are the intended deliverables; notes are explicitly designated experiment records in this task. The product does not automatically classify or certify files as safe.
 

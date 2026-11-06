@@ -47,7 +47,7 @@ Step 43: exit_code=0, timed_out=False
 Syntax OK
 ```
 
-末尾还应看到 `Job: …; Attempt: …` 和 `Results: …/sample.json`。路径每次运行不同，请保留本次 `Results` 路径。
+末尾还应看到 `Session: …; Execution: …` 和 `Results: …/sample.json`。路径每次运行不同，请保留本次 `Results` 路径。
 
 ## 3. 打开并核对反馈 {#read-feedback}
 

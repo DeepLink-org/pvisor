@@ -229,7 +229,7 @@ fn main() {
         )
         record(str(args[0]), result.returncode, result.stdout + result.stderr)
         if result.returncode != expected:
-            if busy_ok and "Error: Job operation already in progress:" in result.stderr:
+            if busy_ok and "Error: Session operation already in progress:" in result.stderr:
                 return None
             if "--stage" in args:
                 stage_path = Path(args[args.index("--stage") + 1])
@@ -391,8 +391,13 @@ fn main() {
             )
             processes.append(resumed)
             current, _, _ = progress(frozen)
-            if current["run_id"] != first["run_id"] or current["attempt_id"] == first["attempt_id"]:
-                raise RuntimeError("cold restore did not preserve Job and replace Attempt identity")
+            if (
+                current["run_id"] != first["run_id"]
+                or current["execution_id"] == first["execution_id"]
+            ):
+                raise RuntimeError(
+                    "cold restore did not preserve Session and replace Execution identity"
+                )
             run(["kill", stage, "--json"])
             resumed.wait(timeout=60)
             review = json.loads(run(["status", stage, "--review", "--json"]))
@@ -403,7 +408,7 @@ fn main() {
             # Restores compose immutable checkpoint layers; apply is deliberately unsupported.
             refused = run(["apply", stage, "--path", "counter"], expected=1)
             if "composes read-only layers" not in refused or (workspace / "counter").exists():
-                raise RuntimeError("restored layered Job did not refuse unsupported apply")
+                raise RuntimeError("restored layered Session did not refuse unsupported apply")
             record("vm-restore-stage-review", 0, "PASS; layered apply refused")
         finally:
             if any(process.poll() is None for process in processes):
@@ -411,7 +416,7 @@ fn main() {
                     deadline = time.monotonic() + 15
                     while run(["kill", stage, "--json"], busy_ok=True) is None:
                         if time.monotonic() >= deadline:
-                            raise RuntimeError("Job stayed busy during acceptance cleanup")
+                            raise RuntimeError("Session stayed busy during acceptance cleanup")
                         time.sleep(0.1)
                 finally:
                     for process in processes:
@@ -469,7 +474,7 @@ def install_smoke(wheel: Path, version: str, acceptance_log: Path | None = None)
             _run([str(scripts / "pvisor"), command, "--help"], env=env)
 
         if acceptance_log is not None:
-            # Private runner state; do not consume the operator's Job defaults.
+            # Private runner state; do not consume the operator's Session defaults.
             env["HOME"] = str(Path(temporary) / "home")
             Path(env["HOME"]).mkdir()
             env["PVISOR_RUN_HOME"] = str(Path(temporary) / "runs")

@@ -14,12 +14,12 @@ use std::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileAccessContext {
     pub run_id: String,
-    pub attempt_id: String,
+    pub execution_id: String,
     pub view: String,
     pub audit_socket: Option<PathBuf>,
 }
 
-/// Attempt-local state is not part of the persisted identity or rule value.
+/// Execution-local state is not part of the persisted identity or rule value.
 #[derive(Debug, Clone, Default, Serialize)]
 struct FileAccessBinding {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,7 +108,7 @@ impl TryFrom<FileAccessWire> for FileAccessPolicy {
 }
 
 impl FileAccessPolicy {
-    /// Compare authorization rules independently of Attempt/audit identities.
+    /// Compare authorization rules independently of Execution/audit identities.
     pub fn same_rules(&self, other: &Self) -> bool {
         self.rules.allow == other.rules.allow
             && self.rules.deny == other.rules.deny
@@ -185,14 +185,14 @@ impl FileAccessPolicy {
         })
     }
 
-    pub fn bind_session(&mut self, run_id: &str, attempt_id: &str, view: &str) {
+    pub fn bind_session(&mut self, run_id: &str, execution_id: &str, view: &str) {
         #[cfg(unix)]
         let audit_socket = crate::audit::socket();
         #[cfg(not(unix))]
         let audit_socket = None;
         self.binding.context = Some(FileAccessContext {
             run_id: run_id.into(),
-            attempt_id: attempt_id.into(),
+            execution_id: execution_id.into(),
             view: view.into(),
             audit_socket,
         });
@@ -425,7 +425,7 @@ impl FileAccessPolicy {
                         scope: self.binding.context.as_ref().map(|context| {
                             crate::audit::AuditScope {
                                 run_id: context.run_id.clone(),
-                                attempt_id: context.attempt_id.clone(),
+                                execution_id: context.execution_id.clone(),
                                 view: context.view.clone(),
                             }
                         }),
@@ -443,8 +443,10 @@ impl FileAccessPolicy {
                         let Some(socket) = &context.audit_socket else {
                             return Err(io::ErrorKind::PermissionDenied.into());
                         };
-                        let key =
-                            format!("{}:{}:{}", context.run_id, context.attempt_id, context.view);
+                        let key = format!(
+                            "{}:{}:{}",
+                            context.run_id, context.execution_id, context.view
+                        );
                         crate::audit::request_at(socket, &key, &prompt)
                     } else {
                         // Standalone adapters retain their process-local approval channel.
@@ -472,9 +474,9 @@ mod tests {
     #[test]
     fn same_rules_ignores_only_audit_bindings_and_checks_scoped_authorization() {
         let mut source = FileAccessPolicy::new(vec!["private/**".into()], vec![]).unwrap();
-        source.bind_session("old", "old-attempt", "rootfs");
+        source.bind_session("old", "old-execution", "rootfs");
         let mut restored = source.clone();
-        restored.bind_session("new", "new-attempt", "rootfs");
+        restored.bind_session("new", "new-execution", "rootfs");
         assert!(source.same_rules(&restored));
         assert_ne!(source, restored);
         let changed = FileAccessPolicy::new(vec!["other/**".into()], vec![]).unwrap();
@@ -484,7 +486,7 @@ mod tests {
         policies.workspace.filesystem = Some(changed.clone());
         let scoped = policies.filesystem(&FileAccessPolicy::default());
         let mut rebound = scoped.clone();
-        rebound.bind_session("new", "new-attempt", "workspace");
+        rebound.bind_session("new", "new-execution", "workspace");
         assert!(scoped.same_rules(&rebound));
         assert_ne!(scoped, rebound);
         policies.workspace.filesystem = Some(FileAccessPolicy::default());
@@ -495,10 +497,10 @@ mod tests {
     }
 
     #[test]
-    fn projected_rules_share_only_the_attempt_binding_and_persist_as_values() {
+    fn projected_rules_share_only_the_execution_binding_and_persist_as_values() {
         let mut policy =
             FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
-        policy.bind_session("run", "attempt", "workspace");
+        policy.bind_session("run", "execution", "workspace");
         let before = serde_json::to_value(&policy).unwrap();
         let mut projected = policy.prefixed("workspace").unwrap().for_view("root");
         projected.extend(&FileAccessPolicy::default()).unwrap();
@@ -517,7 +519,7 @@ mod tests {
     fn persisted_policy_cannot_restore_preparation_bypass() {
         let mut policy =
             FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![]).unwrap();
-        policy.bind_session("run", "attempt", "workspace");
+        policy.bind_session("run", "execution", "workspace");
         assert!(policy.check(Path::new("secret")).is_ok());
         let restored: FileAccessPolicy =
             serde_json::from_value(serde_json::to_value(&policy).unwrap()).unwrap();

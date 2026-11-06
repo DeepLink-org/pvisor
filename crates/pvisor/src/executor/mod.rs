@@ -4,8 +4,8 @@ pub(crate) mod artifact;
 pub(crate) mod container;
 pub(crate) mod delegated;
 pub(crate) mod process;
-pub use crate::session::lifecycle::ExecutorOutput;
-pub(crate) use crate::session::lifecycle::{SessionEnd, exit_outcome};
+pub use crate::execution_context::lifecycle::ExecutorOutput;
+pub(crate) use crate::execution_context::lifecycle::{SessionEnd, exit_outcome};
 pub mod sandbox;
 pub(crate) mod vm;
 
@@ -17,13 +17,13 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Clone, Default)]
-pub(crate) struct AttemptAttachments {
+pub(crate) struct ExecutionAttachments {
     pub filesystem: Option<pvisor_core::FileAccessPolicy>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
     pub workspace_base: Option<Arc<crate::runtime::owned_workspace::OwnedWorkspace>>,
 }
 
-pub(crate) use crate::session::Session;
+pub(crate) use crate::execution_context::ExecutionContext;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
 /// Operation is an audit projection, not an arbitrary-expression dispatch API.
@@ -36,7 +36,7 @@ pub trait RunExecutor: Send + Sync {
     /// Whether this executor consumes pVisor's VM network attachment.
     ///
     /// A virtual-machine descriptor alone is not sufficient to claim that the
-    /// Attempt network is non-bypassable: pluggable executors must explicitly
+    /// Execution network is non-bypassable: pluggable executors must explicitly
     /// opt into the transport handoff contract.
     fn supports_vm_network_attachment(&self) -> bool {
         false
@@ -50,7 +50,7 @@ pub trait RunExecutor: Send + Sync {
     fn supports_cpu_qos(&self) -> bool {
         false
     }
-    async fn execute(&self, session: &crate::Session) -> ExecutorOutput;
+    async fn execute(&self, session: &crate::ExecutionContext) -> ExecutorOutput;
 }
 
 #[derive(Debug)]

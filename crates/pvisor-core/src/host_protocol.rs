@@ -2,7 +2,7 @@
 //! Transport and authentication remain endpoint responsibilities.
 use serde::{Deserialize, Serialize};
 
-pub const AGENTCTL_HOST_VERSION: u32 = 1;
+pub const AGENTCTL_HOST_VERSION: u32 = 2;
 pub const AGENTCTL_HOST_MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// Byte bound for correlation and target identities, independent of frame size.
 pub const AGENTCTL_HOST_MAX_ID_BYTES: usize = 256;
@@ -18,8 +18,8 @@ pub struct AgentCtlHostRequest<C> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCtlTarget {
-    pub job_id: String,
-    pub attempt_id: Option<String>,
+    pub session_id: String,
+    pub execution_id: Option<String>,
     pub generation: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,8 +84,8 @@ fn validate_envelope(version: u32, request_id: &str) -> Result<(), AgentCtlHostE
 }
 impl AgentCtlTarget {
     pub fn validate(&self) -> Result<(), AgentCtlHostError> {
-        validate_identity(&self.job_id)?;
-        for value in [&self.attempt_id, &self.generation].into_iter().flatten() {
+        validate_identity(&self.session_id)?;
+        for value in [&self.execution_id, &self.generation].into_iter().flatten() {
             validate_identity(value)?;
         }
         Ok(())
@@ -115,11 +115,11 @@ impl<R> AgentCtlHostResponse<R> {
     }
 }
 
-/// Host-authority commands for an already selected Attempt.
-/// Endpoint authentication and exact Job/Attempt/generation binding are external.
+/// Host-authority commands for an already selected Execution.
+/// Endpoint authentication and exact Session/Execution/generation binding are external.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HostAttemptCommand {
+pub enum HostExecutionCommand {
     Status,
     Terminate,
     Operation {
@@ -127,7 +127,7 @@ pub enum HostAttemptCommand {
     },
 }
 
-impl<'de> Deserialize<'de> for HostAttemptCommand {
+impl<'de> Deserialize<'de> for HostExecutionCommand {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -148,12 +148,12 @@ impl<'de> Deserialize<'de> for HostAttemptCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HostAttemptResult {
+pub struct HostExecutionResult {
     pub status: crate::RunStatus,
     pub value: Option<crate::operation::Value>,
 }
 
-/// Host-only live VM controls for an explicitly addressed Attempt.
+/// Host-only live VM controls for an explicitly addressed Execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostVmCommand {
@@ -184,7 +184,7 @@ impl<'de> Deserialize<'de> for HostVmCommand {
     }
 }
 
-impl From<HostVmCommand> for HostAttemptCommand {
+impl From<HostVmCommand> for HostExecutionCommand {
     fn from(command: HostVmCommand) -> Self {
         use crate::operation::OperationKind;
         match command {
@@ -202,8 +202,8 @@ impl From<HostVmCommand> for HostAttemptCommand {
     }
 }
 
-impl From<HostAttemptResult> for HostVmResult {
-    fn from(result: HostAttemptResult) -> Self {
+impl From<HostExecutionResult> for HostVmResult {
+    fn from(result: HostExecutionResult) -> Self {
         Self {
             status: result.status,
             value: result.value,
@@ -262,11 +262,11 @@ mod tests {
     use super::*;
     fn request() -> AgentCtlHostRequest<()> {
         AgentCtlHostRequest {
-            version: 1,
+            version: AGENTCTL_HOST_VERSION,
             request_id: "request".into(),
             target: Some(AgentCtlTarget {
-                job_id: "job".into(),
-                attempt_id: Some("attempt".into()),
+                session_id: "session".into(),
+                execution_id: Some("execution".into()),
                 generation: Some("generation".into()),
             }),
             command: (),
@@ -276,12 +276,12 @@ mod tests {
     fn envelope_bounds_and_version() {
         let mut r = request();
         assert!(r.validate().is_ok());
-        r.version = 2;
+        r.version = AGENTCTL_HOST_VERSION + 1;
         assert_eq!(
             r.validate().unwrap_err().code,
             AgentCtlHostErrorCode::VersionMismatch
         );
-        r.version = 1;
+        r.version = AGENTCTL_HOST_VERSION;
         for id in [String::new(), "x".repeat(257), "bad\nidentity".into()] {
             r.request_id = id;
             assert!(r.validate().is_err());
@@ -292,8 +292,8 @@ mod tests {
             let mut r = request();
             let t = r.target.as_mut().unwrap();
             match field {
-                0 => t.job_id = "x".repeat(257),
-                1 => t.attempt_id = Some(String::new()),
+                0 => t.session_id = "x".repeat(257),
+                1 => t.execution_id = Some(String::new()),
                 _ => t.generation = Some("x".repeat(257)),
             }
             assert!(r.validate().is_err());
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn response_correlation_including_errors() {
         let mut r = AgentCtlHostResponse::<()> {
-            version: 1,
+            version: AGENTCTL_HOST_VERSION,
             request_id: "request".into(),
             result: Err(AgentCtlHostError::new(
                 AgentCtlHostErrorCode::Unavailable,
@@ -311,7 +311,7 @@ mod tests {
         };
         assert!(r.validate("request").is_ok());
         assert!(r.validate("other").is_err());
-        r.version = 2;
+        r.version = AGENTCTL_HOST_VERSION + 1;
         assert!(r.validate("request").is_err());
     }
     #[test]
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn attempt_commands_use_strict_operation_tagged_wire() {
+    fn execution_commands_use_strict_operation_tagged_wire() {
         use crate::operation::{OperationKind, SnapshotRamStorage};
         for kind in [
             OperationKind::RunPause,
@@ -386,24 +386,24 @@ mod tests {
                 cwd: None,
             },
         ] {
-            let command = HostAttemptCommand::Operation { kind };
+            let command = HostExecutionCommand::Operation { kind };
             let wire = serde_json::to_value(&command).unwrap();
             assert_eq!(
-                serde_json::from_value::<HostAttemptCommand>(wire).unwrap(),
+                serde_json::from_value::<HostExecutionCommand>(wire).unwrap(),
                 command
             );
         }
         for (command, wire) in [
             (
-                HostAttemptCommand::Status,
+                HostExecutionCommand::Status,
                 serde_json::json!({"operation": "status"}),
             ),
             (
-                HostAttemptCommand::Terminate,
+                HostExecutionCommand::Terminate,
                 serde_json::json!({"operation": "terminate"}),
             ),
             (
-                HostAttemptCommand::Operation {
+                HostExecutionCommand::Operation {
                     kind: OperationKind::RunPause,
                 },
                 serde_json::json!({"operation": "operation", "kind": {"op": "run.pause"}}),
@@ -411,7 +411,7 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(&command).unwrap(), wire);
             assert_eq!(
-                serde_json::from_value::<HostAttemptCommand>(wire).unwrap(),
+                serde_json::from_value::<HostExecutionCommand>(wire).unwrap(),
                 command
             );
         }
@@ -424,7 +424,7 @@ mod tests {
             serde_json::json!({"operation": "pause"}),
             serde_json::json!({"operation": "load"}),
         ] {
-            assert!(serde_json::from_value::<HostAttemptCommand>(wire).is_err());
+            assert!(serde_json::from_value::<HostExecutionCommand>(wire).is_err());
         }
     }
 
@@ -433,7 +433,9 @@ mod tests {
         let mut value = serde_json::to_value(request()).unwrap();
         value["extra"] = true.into();
         assert!(serde_json::from_value::<AgentCtlHostRequest<()>>(value).is_err());
-        assert!(serde_json::from_str::<AgentCtlTarget>(r#"{"job_id":"j","extra":true}"#).is_err());
+        assert!(
+            serde_json::from_str::<AgentCtlTarget>(r#"{"session_id":"j","extra":true}"#).is_err()
+        );
         assert!(
             serde_json::from_str::<AgentCtlHostError>(
                 r#"{"code":"internal","message":"m","extra":true}"#

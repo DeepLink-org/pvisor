@@ -4,7 +4,7 @@
 
 | 顺序 | 你遇到的问题 | 使用的命令 | 可执行场景 |
 |---|---|---|---|
-| [1. 首次运行](01-first-job.md) | 如何记录脚本、处理失败和超时？ | `run`、`status`、`--config` | S-USE-001–004 |
+| [1. 首次运行](01-first-session.md) | 如何记录脚本、处理失败和超时？ | `run`、`status`、`--config` | S-USE-001–004 |
 | [2. 审查与决定](02-review-and-decide.md) | Agent 改了哪些文件，哪些可以接受？ | `review`、`inspect`、`apply`、`drop`、`kill` | S-USE-005–008 |
 | [3. 保存与分支](03-checkpoint-and-fork.md) | 如何保留方案，比较两个独立尝试？ | `checkpoint create/list/show`、`fork` | S-USE-009–011 |
 | [4. 声明边界](04-boundaries.md) | 如何限制文件访问和网络连接？ | `--safe`、`--access`、`--overlaynet-deny-all` | S-USE-012–014 |
@@ -36,10 +36,10 @@ cat report.txt
 | 为真实模型请求路由、捕获轨迹 | `pvisor spawn --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `mise run examples -- 04-gateway-llm-control` 的本地 mock 请求测试 |
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
 | 选择 OCI 容器或 VM 执行 | `pvisor spawn --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
-| 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Job，不是 daemon 能力 |
+| 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Session，不是 daemon 能力 |
 | 管理 OCI 文件缓存或共享冷页池 | `pvisor cache` / `pvisor-daemon serve --sandbox --memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[daemon 池](../guides/daemon/index.md#memory-pool) |
 
-Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `mise run build -- release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
+Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `mise run build -- release` 包含该能力。没有安装伴随二进制时，核心 Session 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Session 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
 
 ## 同一份文档，执行同一套检查
 
@@ -48,14 +48,14 @@ Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `mise run bui
 ```bash
 mise run semspec -- list docs/src/zh/cases --domain USE
 mise run semspec -- lint docs/src/zh/cases
-mise run semspec -- run docs/src/zh/cases/01-first-job.md
+mise run semspec -- run docs/src/zh/cases/01-first-session.md
 mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
 mise run cases -- --suite use
 mise run cases -- --suite use --case S-USE-005,S-USE-007 --keep
 mise run cases -- --suite use --output target/pvisor-learning-report.json
 ```
 
-`mise run cases -- --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Job 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 S-USE ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。入口直接使用 semspec 的 `--require-pass`；发现、选择和报告校验使用同一份解析结果。指定 `--output` 时，选择校验通过后先清理旧报告，再原子写入本次结果；不依赖额外的验证脚本。
+`mise run cases -- --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Session 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 S-USE ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。入口直接使用 semspec 的 `--require-pass`；发现、选择和报告校验使用同一份解析结果。指定 `--output` 时，选择校验通过后先清理旧报告，再原子写入本次结果；不依赖额外的验证脚本。
 
 规格和包含准备块的完整 Markdown 文档都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`。测试执行不会批准规格或更新审核账本。
 
@@ -97,11 +97,11 @@ assert_content() {
 }
 assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi; }
 
-# Independent learning-path fixtures. No simulated Jobs or product internals.
+# Independent learning-path fixtures. No simulated Sessions or product internals.
 journey_setup() {
   export HOME="$CASE_ROOT/home"
   export XDG_CONFIG_HOME="$HOME/config" XDG_DATA_HOME="$HOME/data" XDG_CACHE_HOME="$HOME/cache"
-  export PVISOR_RUN_HOME="$CASE_ROOT/jobs"
+  export PVISOR_RUN_HOME="$CASE_ROOT/sessions"
   mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$PVISOR_RUN_HOME"
 }
 pvisor() { command "${SUBJECT_BIN:-pvisor}" "$@"; }
@@ -115,7 +115,7 @@ journey_contains() {
 }
 journey_wait_file() {
   local path=$1 pid=$2
-  for ((attempt=0; attempt<200; attempt++)); do
+  for ((execution=0; execution<200; execution++)); do
     [ ! -f "$path" ] || return 0
     kill -0 "$pid" 2>/dev/null || fail "process exited before creating $path"
     sleep 0.025

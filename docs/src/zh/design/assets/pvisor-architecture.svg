@@ -9,7 +9,7 @@
 <rect x="36" y="235" width="1528" height="146" rx="43" fill="#1a3d68" stroke="#416080" stroke-width="8"/>
 <text x="800" y="281" font-size="36" font-weight="700" fill="#c8e0fc" font-style="italic">pvisor Runtime · Session</text>
 <rect x="59" y="302" width="355" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
-<text x="236.5" y="340.5" font-size="28" font-weight="700" fill="#e9eef8">Job / Attempt</text>
+<text x="236.5" y="340.5" font-size="28" font-weight="700" fill="#e9eef8">Session / Execution</text>
 <rect x="433" y="302" width="354" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
 <text x="610.0" y="340.5" font-size="25" font-weight="700" fill="#e9eef8">准入与配置解析</text>
 <rect x="806" y="302" width="354" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>

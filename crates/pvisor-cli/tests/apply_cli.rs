@@ -24,17 +24,17 @@ impl Fixture {
             fs::create_dir_all(stage.join(dir)).unwrap();
         }
         let record: pvisor::RunRecord = serde_json::from_value(json!({
-            "schema_version":1,"run_id":"apply-cli-job","session_id":"apply-cli-session","attempt_id":"apply-cli-attempt",
+            "schema_version":1,"run_id":"apply-cli-session","session_id":"apply-cli-session","execution_id":"apply-cli-execution",
             "agent":"test","pid":0,"command":["/bin/true"],"state":"completed",
             "started_at_unix_ms":10,"finished_at_unix_ms":20,"storage":stage,"workspace":target,"network":{},
-            "overlay":{"id":"apply-cli-job","generation":7,"target":target,
+            "overlay":{"id":"apply-cli-session","generation":7,"target":target,
                 "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
                 "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
         })).unwrap();
         record.write().unwrap();
         // Launch initializes observation locks; legacy fixtures must do the same
         // before preview, which must never create or initialize lock files.
-        for name in ["job.lock", "lease.lock"] {
+        for name in ["session.lock", "lease.lock"] {
             fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -144,9 +144,9 @@ fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, FileSnapshot> {
 #[test]
 fn missing_locks_preview_is_blocked_without_creating_or_modifying_files() {
     for missing in [
-        vec!["job.lock"],
+        vec!["session.lock"],
         vec!["lease.lock"],
-        vec!["job.lock", "lease.lock"],
+        vec!["session.lock", "lease.lock"],
     ] {
         let f = Fixture::new();
         for name in &missing {
@@ -254,16 +254,16 @@ fn json_preview_all_exclude_store_and_direct_execution() {
 
 #[test]
 fn picker_inventory_reports_exclusions_without_hiding_conflicts_or_writing() {
-    use pvisor::job_service::{
-        ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+    use pvisor::session_service::{
+        ApplyCommandRequest, ServiceContext, SessionSelection, SessionService,
     };
     let f = Fixture::new();
     fs::write(f.target.join("keep.txt"), b"concurrent\n").unwrap();
     let before = tree_snapshot(f.root.path());
-    let response = RuntimeJobService::apply_command(
+    let response = SessionService::apply_command(
         &ServiceContext::default(),
         ApplyCommandRequest {
-            job: JobSelection {
+            session: SessionSelection {
                 selector: Some(f.stage.clone()),
                 storage: f.root.path().to_path_buf(),
             },
@@ -353,7 +353,7 @@ fn picker_inventory_is_unavailable_after_admission_failure() {
         let f = Fixture::new();
         let mut record = pvisor::RunRecord::read(&f.stage).unwrap();
         match reason {
-            "missing-lock" => fs::remove_file(f.stage.join("job.lock")).unwrap(),
+            "missing-lock" => fs::remove_file(f.stage.join("session.lock")).unwrap(),
             "pending" => {
                 let overlay = record.overlay.as_ref().unwrap();
                 let intent = ApplyRecord {
@@ -409,9 +409,9 @@ fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     bundle["schema_version"] = json!(4);
     bundle["run"]["run_id"] = json!(record.run_id);
     bundle["run"]["session_id"] = json!(record.session_id);
-    bundle["run"]["attempt_id"] = json!(record.attempt_id);
+    bundle["run"]["execution_id"] = json!(record.execution_id);
     bundle["agentctl"]["run_id"] = json!(record.run_id);
-    bundle["agentctl"]["attempt_id"] = json!(record.attempt_id);
+    bundle["agentctl"]["execution_id"] = json!(record.execution_id);
     bundle["executor_observations"] =
         serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
     bundle["safety"]["filesystem_changes_staged"] = json!(true);
@@ -557,7 +557,7 @@ fn help_is_grouped_and_text_distinguishes_preflight_no_matches_and_success() {
     assert!(output.status.success(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("No matching staged changes"), "{text}");
-    assert!(text.contains("Source: apply-cli-job"), "{text}");
+    assert!(text.contains("Source: apply-cli-session"), "{text}");
     assert!(
         text.contains(&format!("Stage: {}", f.stage.display())),
         "{text}"

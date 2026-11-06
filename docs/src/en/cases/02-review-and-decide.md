@@ -28,9 +28,9 @@ json_paths "$CASE_ROOT/review.json" report.txt
 
 When an Agent edits a report and an experiment, accept only the report and discard the remainder.
 
-**Contract**: apply --path commits only report.txt; drop discards scratch.txt and preserves the Job record.
+**Contract**: apply --path commits only report.txt; drop discards scratch.txt and preserves the Session record.
 
-**Violation**: Selective apply commits everything or drop removes the Job record.
+**Violation**: Selective apply commits everything or drop removes the Session record.
 
 <!-- semspec: case id=S-USE-006 -->
 ```bash
@@ -67,11 +67,11 @@ pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
 assert_content "$CASE_ROOT/view.txt" agent
 ```
 
-### S-USE-008: Stop a Job before deciding
+### S-USE-008: Stop a Session before deciding
 
-For a stuck task, kill it, confirm it has stopped, then discard files. Do not apply a live Job.
+For a stuck task, kill it, confirm it has stopped, then discard files. Do not apply a live Session.
 
-**Contract**: A live Job refuses apply; after kill it is cancelled and no longer live, with no workspace edit.
+**Contract**: A live Session refuses apply; after kill it is cancelled and no longer live, with no workspace edit.
 
 **Violation**: Live apply succeeds, the task remains alive after kill, or writes escape staging.
 

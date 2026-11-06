@@ -3,7 +3,7 @@
 use std::process::Command;
 const CANCEL: &str = r#"
 import glob, json, os, select, signal, socket, subprocess, sys, time
-binary, root, kind = sys.argv[1:]
+binary, root, kind, host_version = sys.argv[1:]
 marker = os.path.join(root, 'escaped.pid')
 workload = '''import os, signal, time, sys
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -37,13 +37,13 @@ try:
                 directory = os.open(os.path.dirname(endpoint), os.O_RDONLY | os.O_DIRECTORY)
                 try: peer.connect('/proc/self/fd/%s/%s' % (directory, os.path.basename(endpoint)))
                 finally: os.close(directory)
-                peer.sendall((json.dumps({'version': 1, 'request_id': 'x' * 256,
-                    'target': {'job_id': record['run_id'], 'attempt_id': 'stale-attempt', 'generation': None},
+                peer.sendall((json.dumps({'version': int(host_version), 'request_id': 'x' * 256,
+                    'target': {'session_id': record['run_id'], 'execution_id': 'stale-execution', 'generation': None},
                     'command': {'operation': 'terminate'}}) + '\n').encode())
                 response = json.loads(peer.makefile('rb').readline(4097))
                 assert response['request_id'] == 'x' * 256, response
                 assert response['result']['Err']['code'] == 'conflict', response
-            assert child.poll() is None, 'stale cancellation must not terminate the Job'
+            assert child.poll() is None, 'stale cancellation must not terminate the Session'
         if kind == 'missing-endpoint': os.unlink(endpoint)  # only this test-owned owner's socket
         killed = subprocess.run([binary, 'kill', 'last', '--json'], cwd=root,
             env=dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0'),
@@ -80,6 +80,7 @@ fn ignored_signals_and_double_fork_sessions_are_bounded_on_cancel_and_disconnect
             .args(["-c", CANCEL, env!("CARGO_BIN_EXE_pvisor")])
             .arg(root.path())
             .arg(kind)
+            .arg(pvisor_core::host_protocol::AGENTCTL_HOST_VERSION.to_string())
             .output()
             .unwrap();
         assert!(

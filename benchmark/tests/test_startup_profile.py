@@ -65,7 +65,7 @@ class StartupProfileContracts(unittest.TestCase):
                     mark(1, "session.begin", 10),
                     mark(2, "session.begin", 500),
                     mark(1, "process.spawn_ready", 20),
-                    mark(1, "attempt.teardown_begin", 900000),
+                    mark(1, "execution.teardown_begin", 900000),
                     mark(2, "process.spawn_ready", 520),
                     mark(2, "cli.run_finished", 1000000),
                 ]

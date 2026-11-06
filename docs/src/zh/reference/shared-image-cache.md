@@ -6,7 +6,7 @@
 
 Docker 兼容命令、未选择远程后端的 spawn 和 cache server 共用一个本地镜像目录。macOS 默认是 `~/Library/Application Support/pvisor/docker/images/`；Linux 默认是 `$XDG_DATA_HOME/pvisor/docker/images/`，通常为 `~/.local/share/pvisor/docker/images/`。这里保留被任务引用的镜像 revision，使用持久数据目录。
 
-显式 Job/cache 镜像目录优先，其次是 `PVISOR_IMAGE_STORE`。只设置 `PVISOR_DOCKER_HOME` 时，所有本地入口使用其 `images/`，保留隔离存储语义；嵌入式 `Store::open(root)` 固定使用 `root/images`，不读取环境默认值。容器状态、Job 记录和可写层仍各自保存。本地镜像根目录及控制子目录必须由当前用户拥有、权限私有（0700）且不是符号链接；不兼容的已有目录会报错，不自动修改权限。
+显式 Session/cache 镜像目录优先，其次是 `PVISOR_IMAGE_STORE`。只设置 `PVISOR_DOCKER_HOME` 时，所有本地入口使用其 `images/`，保留隔离存储语义；嵌入式 `Store::open(root)` 固定使用 `root/images`，不读取环境默认值。容器状态、Session 记录和可写层仍各自保存。本地镜像根目录及控制子目录必须由当前用户拥有、权限私有（0700）且不是符号链接；不兼容的已有目录会报错，不自动修改权限。
 
 ```text
 <image-store>/
@@ -187,7 +187,7 @@ pvisor cache read pvisor-v2:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 - Linux：`$XDG_CACHE_HOME/pvisor/cache.sock`，通常为
   `~/.cache/pvisor/cache.sock`
 
-服务端接受 `--cache-image-store DIR` 或 `PVISOR_IMAGE_STORE` 指定本地镜像目录，与 Docker 和无守护进程的 VM Job 共用。它不会自动启动。
+服务端接受 `--cache-image-store DIR` 或 `PVISOR_IMAGE_STORE` 指定本地镜像目录，与 Docker 和无守护进程的 VM Session 共用。它不会自动启动。
 
 ## VM 自动懒加载
 

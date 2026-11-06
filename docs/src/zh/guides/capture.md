@@ -1,6 +1,6 @@
 # 捕获 Agent 轨迹
 
-要检查 Agent 发给模型的请求和收到的响应，可以为 Job 启用 Gateway capture。它记录经过 Gateway 的模型流量，随 Run 启停，无需单独启动 Gateway 命令或守护进程。捕获范围与强制控制的区别见[能力与证据](../concepts/capabilities-and-evidence.md)。
+要检查 Agent 发给模型的请求和收到的响应，可以为 Session 启用 Gateway capture。它记录经过 Gateway 的模型流量，随 Run 启停，无需单独启动 Gateway 命令或守护进程。捕获范围与强制控制的区别见[能力与证据](../concepts/capabilities-and-evidence.md)。
 
 先按[安装指南](../start/installation.md)安装 `pvisor`。真实 Agent 可直接通过 `pvisor spawn` 配置：
 

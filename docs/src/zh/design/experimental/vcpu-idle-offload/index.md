@@ -14,7 +14,7 @@
 | 主要新增 | 等待窗口观测、全 vCPU 聚合、策略 owner、wake/deadline 与 lost-wakeup 防护 |
 | 尚未完成 | 完整 idle 来源、wake/deadline、自动 offload、HVF 验收与卸载收益实验 |
 
-Agent 等待模型响应、输入或外部工具时，VM可能不需要执行，但仍保留大量驻留RAM。短等待让CPU自然休眠；有足够长的等待窗口时，评估自动offload，减少内存时间成本。唤醒后继续同一个live Attempt，不将其冒充持久checkpoint或重新启动。
+Agent 等待模型响应、输入或外部工具时，VM可能不需要执行，但仍保留大量驻留RAM。短等待让CPU自然休眠；有足够长的等待窗口时，评估自动offload，减少内存时间成本。唤醒后继续同一个live Execution，不将其冒充持久checkpoint或重新启动。
 
 选择是否卸载由宿主决定，依据窗口长度、内存压力、设备安全、恢复预算和支持范围；不对每次线程阻塞立即卸载。
 
@@ -22,7 +22,7 @@ Agent 等待模型响应、输入或外部工具时，VM可能不需要执行，
 
 ### 1.1 等待窗口与驻留内存
 
-Agent 等待模型响应、网络或外部工具时，VM 可能长时间没有有效计算，却仍持有驻留 RAM。普通 CPU 休眠降低计算开销；内存回收还需要知道等待窗口是否足够长、如何停驻安全，以及何时恢复同一个 Attempt。
+Agent 等待模型响应、网络或外部工具时，VM 可能长时间没有有效计算，却仍持有驻留 RAM。普通 CPU 休眠降低计算开销；内存回收还需要知道等待窗口是否足够长、如何停驻安全，以及何时恢复同一个 Execution。
 
 设计需要回答三个问题：如何识别全部相关 vCPU 的可利用等待窗口；如何在网络、控制或 timer 到来时可靠恢复；节省的内存时间是否足以覆盖观察、提交和恢复成本。
 
@@ -61,7 +61,7 @@ flowchart TD
 ```
 
 - `pvisor-vm`归属后端观测及CPU/device控制，新增公共契约必须集中于`api.rs`，不为实验暴露私有VMM模块。
-- `pvisor`归属策略、Host backing commit、Attempt生命周期、配置和可解释事件。
+- `pvisor`归属策略、Host backing commit、Execution生命周期、配置和可解释事件。
 - OverlayNet等事件源在guest RAM访问或可能阻塞的channel之前通知wake。
 - 单一control owner串行仲裁自动策略与手动pause/resume/checkpoint/cancel，不另造completion owner。
 
@@ -73,7 +73,7 @@ M0 已定义观测状态：Executing、HandlingExit、WaitingForEvent、HostDesc
 
 ### 2.3 wake、deadline 与提交顺序
 
-至少需要Attempt身份、CPU topology generation、观测sequence、idle epoch、pending wake sequence、停驻原因、可用deadline和clock domain。
+至少需要Execution身份、CPU topology generation、观测sequence、idle epoch、pending wake sequence、停驻原因、可用deadline和clock domain。
 
 wake在Candidate/Quiescing/Offloading/Offloaded阶段均latch；已有pending事件不得忽略。进入停止边界后重验观测和事件sequence。Host backing提交期间收到wake先排队，提交完成后立即恢复，不能提前打开writers。
 
@@ -104,7 +104,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 
 ### 2.5 初期 profile
 
-- 普通writable shared file-backed RAM、raw offload、同live Attempt。
+- 普通writable shared file-backed RAM、raw offload、同live Execution。
 - 先单vCPU，SMP聚合/epoch验收后扩展。
 - 网络wake优先现有OverlayNet IPv4 TCP；明确timer与控制wake支持。
 - 无在途virtio-fs请求；慢I/O跳过，不对已有RAM lease强行discard。
@@ -154,7 +154,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 - [ ] 普通file-backed RAM支持检查，排除pager/pool/private COW等。
 - [ ] 在途FS/未守护设备提前拒绝，不以真实drain失败作为常规策略。
 - [ ] 初期grace、deadline guard、重入冷却、wake频率抑制。
-- [ ] 真实delayed network、timer、控制wake下恢复同Attempt并校验全部内容。
+- [ ] 真实delayed network、timer、控制wake下恢复同Execution并校验全部内容。
 - [ ] offload/store/恢复失败沿用fail-stop与unknown，终态不伪造。
 
 退出条件：正确性、权限与生命周期负对照通过；仅对验收的平台/profile标记受限PoC。
@@ -185,7 +185,7 @@ busy/unsupported/short-window是破坏性transition之前的正常拒绝。现�
 |---|---|---|
 | `crates/pvisor-vm/src/api.rs`与私有后端 | 观测契约、wait/deadline、CPU控制与device gate | API boundary、状态/epoch、timer与RAM正确性 |
 | `crates/pvisor/src/executor/vm/` | 观测/控制通道、backing提交、支持profile | 排空/提交/wake并发、错误fail-stop |
-| `crates/pvisor/src/runtime/` | Attempt仲裁、自动策略与事件 | manual/auto/snapshot/cancel不越权 |
+| `crates/pvisor/src/runtime/` | Execution仲裁、自动策略与事件 | manual/auto/snapshot/cancel不越权 |
 | `crates/pvisor-overlaynet/src/vm.rs`及后续设备事件源 | wake-before-RAM与外部socket生命周期 | 数据/EOF/错误/背压/已pending事件 |
 | 原crate测试与产品集成测试 | mock交错与真实VM验证 | 分平台记录通过/失败/跳过 |
 | `benchmark/` | 已登记策略实验 | 独立数据/收据/样本，不放本目录 |

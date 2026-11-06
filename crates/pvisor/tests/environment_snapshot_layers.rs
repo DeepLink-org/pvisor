@@ -232,7 +232,7 @@ fn read_only_directories_survive_materialization_and_are_reclaimed_after_last_ow
     let materialized = root.join("restored");
     restored.materialize(&materialized).unwrap();
     assert_eq!(inventory(&materialized).unwrap(), expected);
-    let references = root.join("last-attempt");
+    let references = root.join("last-execution");
     fs::create_dir(&references).unwrap();
     let active = restored
         .share_readonly_layer(Path::new("lower"), &references)
@@ -394,7 +394,7 @@ fn pooled_checkpoints_retain_inodes_without_data_aliases_and_survive_parent_stor
         .unwrap(),
         b"immutable lower data"
     );
-    let references = root.join("last-attempt");
+    let references = root.join("last-execution");
     fs::create_dir(&references).unwrap();
     let active = snapshot
         .share_readonly_layer(Path::new("lower"), &references)
@@ -406,7 +406,7 @@ fn pooled_checkpoints_retain_inodes_without_data_aliases_and_survive_parent_stor
         fs::read_dir(root.join("pool/filesystems")).unwrap().count(),
         1
     );
-    // Active owners fence GC even if their retained Attempt directory is removed.
+    // Active owners fence GC even if their retained Execution directory is removed.
     fs::remove_dir_all(references).unwrap();
     reopened.collect_abandoned().unwrap();
     assert!(active.root().exists());
@@ -525,7 +525,7 @@ fn pooled_snapshot_rejects_missing_forged_or_symlinked_marker_references() {
 }
 
 #[test]
-fn concurrent_jobs_share_one_pool_without_copying_or_collapsing_lower_origins() {
+fn concurrent_sessions_share_one_pool_without_copying_or_collapsing_lower_origins() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let (_parent, _id, owners) = source_layers(root);
@@ -536,7 +536,7 @@ fn concurrent_jobs_share_one_pool_without_copying_or_collapsing_lower_origins() 
     std::thread::scope(|scope| {
         let mut children = Vec::new();
         for index in 0..8 {
-            let directory = root.join(format!("job-{index}"));
+            let directory = root.join(format!("session-{index}"));
             fs::create_dir(&directory).unwrap();
             let owners = &owners;
             children.push(scope.spawn(move || {

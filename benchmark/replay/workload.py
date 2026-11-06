@@ -91,7 +91,7 @@ def classify(execution, parsed, required):
 def run(plan, backend, output, *, clock=time.monotonic, sleep=time.sleep):
     """One admitted task; create-to-cleanup timing includes initialization and official tests.
 
-    Always attempt deletion even after partial creation. Cleanup API success is
+    Always execution deletion even after partial creation. Cleanup API success is
     distinct from a host-side physical-exit audit. No replay or teardown retries.
     """
     validate(plan)

@@ -13,12 +13,12 @@
 | Native supervisor | Embedded pVisor/VM, RunHandle, vCPU controls, cgroup identity and guest protocol adaptation | Stage/apply/checkpoint API or automatic node sharing |
 | Prepared image | Pin userspace/backend; explicit upstream templates supply execd/envd | Replacing lifecycle API authorization |
 | `pvisor-guest` | Shared PID 1, process launch/reaping, file and control protocol | Host HTTP authentication or SDK wire adapters |
-| Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
+| Native pVisor | VM execution embedded by supervisors; public Session workflow remains separate | Automatic exposure of stage/checkpoint APIs |
 | Native node runtime | Separate immutable backing protocols | Automatic daemon acquisition/sharing |
 | Daemon pool component | Optional detached pool enabled by `serve --sandbox --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
 | `pvisor cache` / `pvisor-daemon serve --cache` | OCI preparation/publication/reads and cache serving | Sandbox lifecycle |
 
-The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. Execution starts through `RuntimeJobService`; in-process `Execution` handles live status/pause/resume/termination, while supervisors separately verify ownership, readiness and confirmed deletion. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
+The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. Execution starts through `SessionService`; in-process `Execution` handles live status/pause/resume/termination, while supervisors separately verify ownership, readiness and confirmed deletion. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
 
 Sandbox lifecycle, immutable backing and live RAM have separate owners and failure boundaries. A new path needs acquisition, cancellation, termination and pin-release contracts, evaluated through fixed-budget measurement. Unified packaging, startup or ports do not supply missing runtime adapters. Live-VM takeover, shared cold-pool arbitration and automatic node acquisition each need their own adapters and validation; startup, memory and density gains need separate measurement.
 
@@ -101,9 +101,9 @@ Conservative reservations trade utilization for explicit cleanup accounting: pau
 
 ## Independent execution semantics {#integration}
 
-Native pause/resume controls the same Attempt's live vCPUs through the RunHandle; it is not cgroup freeze, memory offload, checkpoint/restore or VM reconstruction. Admission accounting is retained. Execd forwarding is not Gateway routing, capture or inference-idle CPU release.
+Native pause/resume controls the same Execution's live vCPUs through the RunHandle; it is not cgroup freeze, memory offload, checkpoint/restore or VM reconstruction. Admission accounting is retained. Execd forwarding is not Gateway routing, capture or inference-idle CPU release.
 
-Ordinary Jobs keep their independent [checkpoint/fork semantics](../execution-model.md). The daemon cannot stage/apply files, restore native VM state, acquire node backing or coordinate model responses. Wiring those paths requires explicit adapters with lifecycle/evidence contracts, not renaming the retired distributed control.
+Ordinary Sessions keep their independent [checkpoint/fork semantics](../execution-model.md). The daemon cannot stage/apply files, restore native VM state, acquire node backing or coordinate model responses. Wiring those paths requires explicit adapters with lifecycle/evidence contracts, not renaming the retired distributed control.
 
 ## Compatibility and evidence {#invariants}
 

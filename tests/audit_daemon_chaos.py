@@ -137,7 +137,7 @@ def audit(root):
         assert counts[kind] == schedule.count(kind)
     assert counts["file_roundtrip"] == 8 * schedule.count("files")
     assert counts["command"] == 12 * schedule.count("commands")
-    assert counts["background_command"] == 4 * schedule.count("jobs")
+    assert counts["background_command"] == 4 * schedule.count("sessions")
     assert counts["append"] == 4 * schedule.count("append")
     assert counts["background_commit"] == schedule.count("background_crash")
     assert counts["create"] == 4 + counts["recreate"]

@@ -102,7 +102,7 @@ impl Fixture {
         .unwrap();
         let record: pvisor::RunRecord = serde_json::from_value(serde_json::json!({
             "schema_version":1,"run_id":"owned-apply","session_id":"owned-apply",
-            "attempt_id":"attempt-owned","agent":"sh","pid":0,"command":["/bin/true"],
+            "execution_id":"execution-owned","agent":"sh","pid":0,"command":["/bin/true"],
             "state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":2,
             "storage":self.stage,"network":{},"overlay_lowers":[self.base.root()],
             "overlay":{"id":"owned-apply","generation":0,"target":self.target,"baseline_lower":self.base.root(),
@@ -117,11 +117,11 @@ impl Fixture {
         (core, record)
     }
 
-    fn apply(&self) -> anyhow::Result<pvisor::job_service::ApplyCommandResponse> {
-        pvisor::job_service::RuntimeJobService::apply_command(
-            &pvisor::job_service::ServiceContext::default(),
-            pvisor::job_service::ApplyCommandRequest {
-                job: pvisor::job_service::JobSelection {
+    fn apply(&self) -> anyhow::Result<pvisor::session_service::ApplyCommandResponse> {
+        pvisor::session_service::SessionService::apply_command(
+            &pvisor::session_service::ServiceContext::default(),
+            pvisor::session_service::ApplyCommandRequest {
+                session: pvisor::session_service::SessionSelection {
                     selector: Some(self.stage.clone()),
                     storage: self.root.clone(),
                 },
@@ -428,10 +428,10 @@ fn owned_workspace_checkpoint_review_survives_but_reconstruction_is_rejected() {
     drop(core);
     pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &f.stage.join("preimages")).unwrap();
     record.write().unwrap();
-    let response = pvisor::job_service::RuntimeJobService::create_workspace_checkpoint(
-        &pvisor::job_service::ServiceContext::default(),
-        pvisor::job_service::WorkspaceCreateRequest {
-            job: pvisor::job_service::JobSelection {
+    let response = pvisor::session_service::SessionService::create_workspace_checkpoint(
+        &pvisor::session_service::ServiceContext::default(),
+        pvisor::session_service::WorkspaceCreateRequest {
+            session: pvisor::session_service::SessionSelection {
                 selector: Some(f.stage.clone()),
                 storage: f.root.clone(),
             },
@@ -515,23 +515,23 @@ fn owned_workspace_checkpoint_review_survives_but_reconstruction_is_rejected() {
 
 #[tokio::test]
 async fn owned_workspace_native_restore_services_refuse_before_launch_or_stage_mutation() {
-    use pvisor::job_service::*;
+    use pvisor::session_service::*;
     let f = Fixture::new();
     let (core, record) = f.stopped_stage();
     drop(core);
     pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &f.stage.join("preimages")).unwrap();
     record.write().unwrap();
     let context = ServiceContext::default();
-    let job = || JobSelection {
+    let session = || SessionSelection {
         selector: Some(f.stage.clone()),
         storage: f.root.clone(),
     };
     assert!(execution_blocker(&record).unwrap().contains("fresh-only"));
     assert!(format!("{:#}", policy::workspace_config(&record).unwrap_err()).contains("fresh-only"));
-    let captured = RuntimeJobService::capture_execution(
+    let captured = SessionService::capture_execution(
         &context,
         CaptureRequest {
-            job: job(),
+            session: session(),
             suspend: false,
             ram_storage: pvisor_core::operation::SnapshotRamStorage::Compressed,
             request_id: None,
@@ -540,10 +540,10 @@ async fn owned_workspace_native_restore_services_refuse_before_launch_or_stage_m
     )
     .await;
     assert!(format!("{:#}", captured.unwrap_err()).contains("fresh-only"));
-    let resumed = RuntimeJobService::resume(
+    let resumed = SessionService::resume(
         &context,
         ResumeRequest {
-            job: job(),
+            session: session(),
             request_id: None,
             eager_ram: false,
         },
@@ -552,10 +552,10 @@ async fn owned_workspace_native_restore_services_refuse_before_launch_or_stage_m
     .await;
     assert!(format!("{:#}", resumed.unwrap_err()).contains("fresh-only"));
     let child = f.root.join("fork-child");
-    let forked = RuntimeJobService::fork_execution(
+    let forked = SessionService::fork_execution(
         &context,
         ExecutionForkRequest {
-            job: job(),
+            session: session(),
             checkpoint: Some("unused".into()),
             stage: Some(child.clone()),
             name: None,
@@ -568,8 +568,8 @@ async fn owned_workspace_native_restore_services_refuse_before_launch_or_stage_m
     .await;
     assert!(format!("{:#}", forked.unwrap_err()).contains("fresh-only"));
     assert!(!child.exists());
-    assert!(!f.stage.join("attempts").exists());
-    assert!(!f.stage.join("execution-job.json").exists());
+    assert!(!f.stage.join("executions").exists());
+    assert!(!f.stage.join("execution-session.json").exists());
 }
 
 #[tokio::test]
@@ -588,7 +588,7 @@ async fn owned_workspace_managed_selector_cannot_replace_runtime_ownership() {
         ..Default::default()
     });
     let plain = PVisor::builder().storage(&f.stage).build();
-    let denied = pvisor::job_service::RuntimeJobService::start_managed(
+    let denied = pvisor::session_service::SessionService::start_managed(
         &plain,
         RunSpec::process("unowned-managed", "sh", "/bin/true"),
         config.clone(),
@@ -609,7 +609,7 @@ async fn owned_workspace_managed_selector_cannot_replace_runtime_ownership() {
         .base
         .id = "f".repeat(64);
     let owned = f.builder().build();
-    let denied = pvisor::job_service::RuntimeJobService::start_managed(
+    let denied = pvisor::session_service::SessionService::start_managed(
         &owned,
         RunSpec::process("wrong-selector", "sh", "/bin/true"),
         config,

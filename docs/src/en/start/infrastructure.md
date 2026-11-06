@@ -47,7 +47,7 @@ Step 43: exit_code=0, timed_out=False
 Syntax OK
 ```
 
-The final lines should include `Job: …; Attempt: …` and `Results: …/sample.json`. Paths vary between runs; retain this run's `Results` path.
+The final lines should include `Session: …; Execution: …` and `Results: …/sample.json`. Paths vary between runs; retain this run's `Results` path.
 
 ## 3. Open and check feedback {#read-feedback}
 

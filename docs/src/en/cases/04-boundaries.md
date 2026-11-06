@@ -45,7 +45,7 @@ assert_content "$CASE_ROOT/public.txt" public
 
 Use deny-all for offline work that needs no API. Test against a local listener to avoid reliance on a public service.
 
-**Contract**: The host can reach the listener; the deny-all Job cannot, and network evidence is non_bypassable.
+**Contract**: The host can reach the listener; the deny-all Session cannot, and network evidence is non_bypassable.
 
 **Violation**: Network isolation silently degrades and the Agent reaches the host listener.
 

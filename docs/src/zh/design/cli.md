@@ -1,7 +1,7 @@
 # pVisor 命令模型
 
-CLI 有两个执行入口：`pvisor run` 创建独立容器 VM，`pvisor spawn` 创建 Job；省略子命令时默认进入 `spawn`。`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Job，`replay` 从已有轨迹创建 Job；Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)。
-内部仍用 Run 记录保存 Job，配置类型仍是 `RunConfig`；配置文件必须显式传入，
+CLI 有两个执行入口：`pvisor run` 创建独立容器 VM，`pvisor spawn` 创建 Session；省略子命令时默认进入 `spawn`。`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Session，`replay` 从已有轨迹创建 Session；Session、Run 与 Execution 的关系见[执行模型](../design/execution-model.md)。
+内部仍用 Run 记录保存 Session，配置类型仍是 `RunConfig`；配置文件必须显式传入，
 不会被当作隐式项目策略。
 
 ## 使用 `spawn` 启动
@@ -13,7 +13,7 @@ pvisor -- codex
 pvisor spawn -- codex
 ```
 
-`--stage PATH` 将 changeset 保留在指定目录。普通 host Job 省略时直接写入工作区；
+`--stage PATH` 将 changeset 保留在指定目录。普通 host Session 省略时直接写入工作区；
 `--safe` 默认保留工作区暂存改动，生命周期见 [暂存与存储](../reference/cli.md#暂存与存储)。选中的 host、container 或 VM Provider 会在
 Run Bundle 中分别记录实际 capability 与限制。
 
@@ -25,7 +25,7 @@ Run Bundle 中分别记录实际 capability 与限制。
 | Runtime | `--executor host\|container\|vm`、`--rootfs`、`--container-image` | 选择执行 Provider 与 rootfs |
 | Network | `--overlaynet-deny-all`、`--overlaynet-allow`、`--overlaynet-limit` | 请求 deny、allowlist 或限速策略 |
 | Gateway | `--gateway-mode`、`--gateway-route`、`--gateway-level` | 配置路由，并按需捕获模型流量 |
-| Limits | `--timeout`、`--memory`、`--max-processes`、`--max-open-files` | 在 Provider 支持时限制 Attempt |
+| Limits | `--timeout`、`--memory`、`--max-processes`、`--max-open-files` | 在 Provider 支持时限制 Execution |
 | Configuration | `--config`、`--spec`、`--name`、`--pass-env` | 提供 RunConfig 或准备好的 RunSpec、身份和显式环境变量 |
 
 Provider 选择不会改变 Run 契约，只会改变各 capability 维度的 enforcement 机制；最终
@@ -33,7 +33,7 @@ Evidence 会分维度记录。
 
 ## 查看并决定
 
-完成后的 Job 仍然是一个记录，staged effect 必须显式接受或丢弃：
+完成后的 Session 仍然是一个记录，staged effect 必须显式接受或丢弃：
 
 ```bash
 pvisor review last
@@ -45,13 +45,13 @@ pvisor apply last --all
 # 或：pvisor drop last
 ```
 
-`review` 和 `status --review` 解释历史 Run Bundle 的执行证据，并重新读取选定工作区的 staged change；`inspect` 在 Job 视图中执行只读命令；`apply`
-提交选定路径并保留其余内容；`drop` 丢弃剩余文件变更，保留 Job 和 checkpoint。两者要求显式 Job 和已确认的停止终态。重置会
+`review` 和 `status --review` 解释历史 Run Bundle 的执行证据，并重新读取选定工作区的 staged change；`inspect` 在 Session 视图中执行只读命令；`apply`
+提交选定路径并保留其余内容；`drop` 丢弃剩余文件变更，保留 Session 和 checkpoint。两者要求显式 Session 和已确认的停止终态。重置会
 创建新的 stage generation，避免旧 metadata 覆盖新的决定。
 
 ## Checkpoint 与 Fork
 
-`fork` 默认先为已停止 Job 的文件系统创建逻辑检查点，再启动子 Job（检查点范围见[执行模型](../design/execution-model.md)）：
+`fork` 默认先为已停止 Session 的文件系统创建逻辑检查点，再启动子 Session（检查点范围见[执行模型](../design/execution-model.md)）：
 
 ```bash
 pvisor checkpoint create last --request-id before-refactor --json
@@ -68,26 +68,26 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 重复的 list 选项替换整个列表；`--` 后的命令替换 `run.command`。`--container-image` 与
 `--rootfs` 可以推断匹配的 executor；自动化场景仍建议显式指定 `--executor`。
 
-公共工作流保持简单：启动 Job，检查 Evidence，然后明确决定 staged effect 的去向。Provider
+公共工作流保持简单：启动 Session，检查 Evidence，然后明确决定 staged effect 的去向。Provider
 行为见[执行环境](../guides/executors/index.md)，完整选项见 [CLI 参考](../reference/cli.md)。
 
 ## 核心命令与服务边界
 
-顶层按对象组织：容器命令管理独立 VM，Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
+顶层按对象组织：容器命令管理独立 VM，Session 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Session。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Session 执行、审查和检查点操作，Tools 提供缓存、回放和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
 
 | 职责 | 入口 |
 |---|---|
-| Job 生命周期与分支 | `spawn`、`status`、`kill`、`suspend`、`resume`、`fork` |
+| Session 生命周期与分支 | `spawn`、`status`、`kill`、`suspend`、`resume`、`fork` |
 | 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
-| Job 不可变检查点 | `checkpoint` |
+| Session 不可变检查点 | `checkpoint` |
 | 轨迹回放 | `replay` |
 | 本机 sandbox 生命周期 | `pvisor-daemon prepare-image` / `serve --sandbox` 与 OpenSandbox/E2B 部分协议 API |
 | 不可变镜像缓存 | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | 可选 daemon 自有共享页 | `pvisor-daemon serve --sandbox --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 
-`status --review` 是快捷形式；`review` 是详细审查入口。Job 操作直接使用顶层命令，没有 `job` 命令层。
+`status --review` 是快捷形式；`review` 是详细审查入口。Session 操作直接使用顶层命令，没有 `session` 命令层。
 
-资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
+资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Session 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
 pvisor-daemon serve --help
@@ -96,31 +96,31 @@ pvisor cache --help
 pvisor-daemon memory-pool --help
 ```
 
-Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存和 replay 仍独立于 Job 命令；replay 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
+Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存和 replay 仍独立于 Session 命令；replay 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
-工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署与原生资源预算见 [daemon 架构](daemon/index.md)与[运维](daemon/operations.md)。
+工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Session 命令。Sandbox 部署与原生资源预算见 [daemon 架构](daemon/index.md)与[运维](daemon/operations.md)。
 
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
 
-`spawn` 启动终端前端和一个 Job owner。活控制通过记录中的私有 socket 在 owner
-内执行；已停止 Job 的操作在调用方持有 `job.lock` 时执行。普通命令从 Job
+`spawn` 启动终端前端和一个 Session owner。活控制通过记录中的私有 socket 在 owner
+内执行；已停止 Session 的操作在调用方持有 `session.lock` 时执行。普通命令从 Session
 发现端点。`--vm-socket` 是调试覆盖，要求同时提供两个显式身份参数。
 Live VM flags 仍是子命令局部选项；pause/offload 互斥，`--vm-ram-file`
-要求 offload。活 resume 继续同一 Attempt；已停止 Job 的 resume 恢复封存
+要求 offload。活 resume 继续同一 Execution；已停止 Session 的 resume 恢复封存
 检查点。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
 
 嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
-Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作职责，
+Execution 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作职责，
 与 Host 权限隔离。协议兼容、取消与升级限制见
 [Host 与 Guest AgentCtl](architecture.md#host-agentctl)。
 具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。
 
 
-完整 VM 快照的 Job 接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复通过 Job 命令提供；支持范围和验收见设计的第 10 节。[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
+完整 VM 快照的 Session 接口见[Session 检查点与分叉 CLI 设计稿](session-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复通过 Session 命令提供；支持范围和验收见设计的第 10 节。[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
 
 帮助、版本和 feature 查询返回时不输出 startup 日志。执行命令仅在解析完成后、
-派发 Job 请求前打出 `process.entry` 和 `cli.parsed`。标记名称不代表已测量
+派发 Session 请求前打出 `process.entry` 和 `cli.parsed`。标记名称不代表已测量
 完整的进程入口或参数解析开销。
 
 ## 实现职责 {#implementation-ownership}
@@ -129,14 +129,14 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 `cli/host_service.rs` 负责前端/owner 生命周期、按记录路由和协议兼容。
 `cli/host_process.rs` 管理进程树与终端交接；`cli/host_image.rs` 保留 macOS
 已加载/磁盘 Mach-O UUID 校验。`runtime/host_transport.rs` 共享私有路径、
-有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-2`，
-独立于调用方二进制摘要。内部 `JobCommand` DTO 目前覆盖全部命令，只有
+有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-3`，
+独立于调用方二进制摘要。内部 `SessionCommand` DTO 目前覆盖全部命令，只有
 spawn、fork、resume 用于启动同一二进制的 owner；其他命令直接执行或向 owner
 发送实例协议命令。
 Core 拥有共享 Host envelope 和 supervisor 定义，daemon 准入不变。
-参见 [owner 生命周期](architecture.md#host-job-service)及
+参见 [owner 生命周期](architecture.md#host-session-service)及
 [现存内部通道与清理顺序](architecture.md#owner-internal-control)。
 
-`cli/run.rs` 负责新 Job 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/job_execution.rs` 负责持久化 Job 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
+`cli/run.rs` 负责新 Session 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/session_execution.rs` 负责持久化 Session 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
 
 Lazy 镜像所有权分开管理宿主 FUSE 挂载与 VM 直接后端附件。VM 准备路径返回直接附件，宿主卸载逻辑不会作用于该附件。Gateway 保存规范事件，在 actor 分发前排除 draft，不再提供 live Markdown 兼容选项或旧草稿投影命令。

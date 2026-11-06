@@ -4,13 +4,13 @@ Run Bundle 是一次任务的交接记录：执行了什么、如何结束、留
 
 先用 `pvisor status --review STAGE` 看摘要；自动化使用 `--json`，按 `schema_version` 选择读取逻辑。完整文件位于任务输出提示的 `run-bundle.json`。
 
-## schema 5 的顶层记录
+## schema 6 的顶层记录
 
 | 字段 | 来源与用途 |
 | --- | --- |
 | `schema_version` / `generated_at_unix_ms` | 格式版本与生成时间；当前版本 5 |
 | `project_apply_scope` | 可选的启动时项目写回授权；未显式 opt-in 时省略 |
-| `run` | Run/Attempt/Session 身份、命令、终态、时间、退出码、失败、输出、指标和结果产物 |
+| `run` | Run/Execution/Session 身份、命令、终态、时间、退出码、失败、输出、指标和结果产物 |
 | `executor_plan` | 可选准入计划；不能作为控制已安装的证明 |
 | `executor_observations` | 必需的实际执行器观察；强制力证据唯一来源 |
 | `safety` | 从实际观察派生的文件/网络边界布尔值与警告 |
@@ -32,9 +32,9 @@ pvisor status --review --json ../stage-001 > ../bundle-001.json
 jq '{schema_version, run: {id: .run.run_id, state: .run.state}, safety, resources}' ../bundle-001.json
 ```
 
-Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt 及协议 1 的 `completion.json` 回执，包括 Bundle 摘要。旧 schema-4 Bundle 保留原读取规则。未知版本、绑定损坏或缺少必需的观察契约会失败，不能把缺失字段解释为安全。owner 退出后缺少已提交回执的 Attempt 保持 Unknown，并拒绝应用工作区变更。
+Bundle 以 `0600` 写入。新 schema-6 Bundle 必须匹配 schema-3 Run/Execution 及协议 2 的 `completion.json` 回执，包括 Bundle 摘要。旧 schema-4 Bundle 保留原读取规则。未知版本、绑定损坏或缺少必需的观察契约会失败，不能把缺失字段解释为安全。owner 退出后缺少已提交回执的 Execution 保持 Unknown，并拒绝应用工作区变更。
 
-命令参数、路径、stdout/stderr、捕获载荷仍可能含秘密；变量值未记录不代表整个 Bundle 已脱敏。分享前检查 Bundle 和它引用的产物。源码类型见 `crates/pvisor/src/runtime/bundle.rs`；目录与清理规则见 [Job 与存储](../concepts/jobs.md)。
+命令参数、路径、stdout/stderr、捕获载荷仍可能含秘密；变量值未记录不代表整个 Bundle 已脱敏。分享前检查 Bundle 和它引用的产物。源码类型见 `crates/pvisor/src/runtime/bundle.rs`；目录与清理规则见 [Session 与存储](../concepts/sessions.md)。
 
 ## 字段类型与出现规则 {#fields}
 
@@ -46,7 +46,7 @@ Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt
 | --- | --- | --- | --- |
 | `schema_version` | `u32` | 必需 | 新记录为 5；旧版本 4 按原契约接受 |
 | `generated_at_unix_ms` | `u64` | 必需 | Bundle 生成时间，Unix 毫秒 |
-| `project_apply_scope` | `Option<super::job_service::ProjectApplyScope>` | 可省略，默认 None；None 时省略 | 启动时的项目写回范围；缺失时为 None，不授予项目写回权限 |
+| `project_apply_scope` | `Option<super::session_service::ProjectApplyScope>` | 可省略，默认 None；None 时省略 | 启动时的项目写回范围；缺失时为 None，不授予项目写回权限 |
 | `run` | `BundleRun` | 必需 | 执行结果与身份 |
 | `lineage` | `Option<RunLineage>` | 空时省略 | fork 时的父 Run 与 checkpoint 身份 |
 | `executor_observations` | `ExecutorObservations` | 必需 | 执行器回执；实际安装控制的权威来源 |
@@ -67,7 +67,7 @@ Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt
 | `run.run_id` | `String` | 必需 | Run 身份 |
 | `run.parent_run_id` | `Option<String>` | 空时省略 | 提供时的父 Run 身份 |
 | `run.task_id` | `Option<String>` | 空时省略 | 提供时的 Task 身份 |
-| `run.attempt_id` | `String` | 必需 | Attempt 身份 |
+| `run.execution_id` | `String` | 必需 | Execution 身份 |
 | `run.session_id` | `String` | 必需 | Session 身份 |
 | `run.agent` | `String` | 必需 | Agent 标签 |
 | `run.command` | `Vec<String>` | 必需 | 实际命令参数数组 |
@@ -138,7 +138,7 @@ Bundle 以 `0600` 写入。新 schema-5 Bundle 必须匹配 schema-2 Run/Attempt
 
 | JSON 路径 | Rust 类型 | 出现规则 | 含义 |
 | --- | --- | --- | --- |
-| `lineage.parent_run_id` | `String` | 必需 | 父 Job 身份 |
+| `lineage.parent_run_id` | `String` | 必需 | 父 Session 身份 |
 | `lineage.checkpoint_id` | `String` | 必需 | fork 使用的 checkpoint |
 
 | JSON 路径 | Rust 类型 | 出现规则 | 含义 |

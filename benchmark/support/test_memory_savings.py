@@ -78,12 +78,12 @@ class MemorySavingsTests(unittest.TestCase):
                 }
             )
         ]
-        guards = [dict(jobs=[])]
+        guards = [dict(sessions=[])]
         validate_observation(rows, guards)
         for bad_rows, bad_guards in [
             ([], guards),
             (rows, []),
-            (rows, [dict(jobs=[dict(pid=123)])]),
+            (rows, [dict(sessions=[dict(pid=123)])]),
             ([dict(error="permission denied")], guards),
         ]:
             with self.assertRaises(ValueError):
@@ -104,13 +104,13 @@ class MemorySavingsTests(unittest.TestCase):
                 }
             )
         ]
-        builds = [dict(jobs=[dict(pid=123, kind="build/test")])]
+        builds = [dict(sessions=[dict(pid=123, kind="build/test")])]
         validate_observation(rows, builds, allow_builds=True)
         with self.assertRaises(ValueError):
             validate_observation(rows, builds)
-        for jobs in ([dict(pid=123, kind="VM")], [dict(pid=123)]):
+        for sessions in ([dict(pid=123, kind="VM")], [dict(pid=123)]):
             with self.assertRaises(ValueError):
-                validate_observation(rows, [dict(jobs=jobs)], allow_builds=True)
+                validate_observation(rows, [dict(sessions=sessions)], allow_builds=True)
 
     def test_512_mib_reading_requires_complete_resident_evidence(self):
         raw = report()

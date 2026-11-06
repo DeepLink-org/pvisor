@@ -1,6 +1,6 @@
 # Configuration files
 
-Save a working command as TOML to reuse its settings locally, in CI, and in batch jobs. Start with the local example below: it keeps output in a Stage so you can inspect it before writing changes back to the project.
+Save a working command as TOML to reuse its settings locally, in CI, and in batch sessions. Start with the local example below: it keeps output in a Stage so you can inspect it before writing changes back to the project.
 
 Use the [CLI reference](cli.md) for command-line options and the [policy reference](policy.md) for file and network rules.
 
@@ -181,12 +181,12 @@ pvisor spawn --config vm-control.toml --vm-ram-dedup=false
 ```
 
 Save the TOML as `vm-control.toml`; run the commands sequentially after the
-previous Attempt releases its socket. This Linux example assumes effective UID
+previous Execution releases its socket. This Linux example assumes effective UID
 `1000`; substitute your effective UID and canonical `/tmp` (usually
 `/private/tmp` on macOS). `vm.control_socket` is an optional host-only debug
 creation path, unset by default. When omitted, the owner binds
-`/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock`
-and publishes its address and identity in the Job's `live_control` record before
+`/tmp/pvisor-host-<effective-UID>/sessions/<session-id>/<execution-id>/control.sock`
+and publishes its address and identity in the Session's `live_control` record before
 executor startup, clearing it at terminal state. Both CLI and embedded custom
 paths must stay inside that canonical authority root. Existing parent directories
 are checked individually for the same UID, no symlinks and exactly `0700`.
@@ -194,20 +194,20 @@ Sockets are `0600`; existing paths are never overwritten. Executors exclude the
 whole authority root from guests, including host-rootfs VMs.
 
 [Normal live VM commands](cli.md#vm-instance-control) discover the owner from the
-Job record without copying an address from startup output: `status JOB`,
-`suspend JOB --vm-pause` / `--vm-offload` (optional `--vm-ram-file PATH`), and
-`resume JOB`. `--vm-socket PATH` is a debug override requiring `--vm-job-id`
-and `--vm-attempt-id`; see [owner control limits](../design/architecture.md#host-limits)
+Session record without copying an address from startup output: `status SESSION`,
+`suspend SESSION --vm-pause` / `--vm-offload` (optional `--vm-ram-file PATH`), and
+`resume SESSION`. `--vm-socket PATH` is a debug override requiring `--vm-session-id`
+and `--vm-execution-id`; see [owner control limits](../design/architecture.md#host-limits)
 for its current cancellation limitation. These command-local options follow the
 supported command and are not `[vm]` fields. `ctrl` is not a compatibility alias.
-Live `resume` (including `--vm-load`) continues the same Attempt, without snapshot
-restart or eager RAM prefaulting. Ordinary stopped-Job resume restores a sealed
+Live `resume` (including `--vm-load`) continues the same Execution, without snapshot
+restart or eager RAM prefaulting. Ordinary stopped-Session resume restores a sealed
 checkpoint. Non-VM controls are unsupported.
 
 `--vm-node-socket SOCKET` overrides `vm.node_socket`;
 `--vm-snapshot-filesystem-pool DIR` overrides `vm.snapshot_filesystem_pool`.
 Omitted path flags preserve config. The snapshot pool must be host-owned,
-outside VM-writable roots and snapshot stores, and on the Job's volume; its
+outside VM-writable roots and snapshot stores, and on the Session's volume; its
 Linux x86_64 no-network profile is not general VM snapshot support. The local
 cold pager's single option enables both reclaim and compression, not independent
 toggles. It conflicts with backing/FUSE compression, dedup, external pools,
@@ -235,7 +235,7 @@ or a read-access heat detector, and does not promise production density.
 
 `[vm].ram_dedup = true` requests best-effort host RAM dedup advice when using the VM executor; `--vm-ram-dedup` also selects that executor. It conflicts with `memory_pool`, `ram_compression`, `cold_ram_compression` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`. Linux advice targets ordinary private anonymous RAM and restored private COW mappings; live `MAP_SHARED` RAM is skipped without conversion. macOS reports unsupported for otherwise eligible mappings. The runner reports installation to stderr and continues on advice failure; `accepted_bytes` is not merged bytes, savings or proof that scanning is enabled. No global KSM settings or services change. Review [deduplication boundaries and sharing risks](../design/memory-optimization/deduplication.md#direction) before opting in.
 
-`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Job stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary and live cold RAM compression, and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
+`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Session stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary and live cold RAM compression, and explicit RAM backing. Retain the pool with its Session stores or export complete snapshots.
 
 ### Sealed rootfs {#prepared-rootfs}
 
@@ -247,7 +247,7 @@ or a read-access heat detector, and does not promise production density.
 [sealed-rootfs commands](cli.md#prepared-rootfs).
 
 Initial preparation copies and fully verifies a quiescent, independent Linux
-rootfs. On reuse, the Job owner and `VmExecutor::new` authenticate small
+rootfs. On reuse, the Session owner and `VmExecutor::new` authenticate small
 records, the seal and persistent pin, retaining a GC lease throughout execution
 without copying or auditing the whole tree. If `rootfs` is also present, it must
 exactly match the authenticated base. `image` and non-VM executors are rejected.
@@ -304,7 +304,7 @@ preparation costs separately from execution time.
 
 `[gateway]` defaults to `mode = "off"`; capture uses `capture`. Other defaults are `admin_listen = "127.0.0.1:9876"`, `level = "dialogue"`, `session_header = "x-pvisor-session-id"`, `debug = false`, `routes = []`. The optional `profile` currently accepts `zcode-bigmodel`; `zcode_builtin_config` points to that integration's configuration. Configure routes and capture levels using the [Gateway guide](../guides/capture.md).
 
-`[record].destination` is an optional path. Gateway model-traffic records and Trace Event journals have different responsibilities; retain the artifacts you need as described in [Jobs and storage](../concepts/jobs.md).
+`[record].destination` is an optional path. Gateway model-traffic records and Trace Event journals have different responsibilities; retain the artifacts you need as described in [Sessions and storage](../concepts/sessions.md).
 
 ## Complete configuration field reference {#all-fields}
 
@@ -352,7 +352,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `container.mounts[].source` | `PathBuf` | `required` | Host path |
 | `container.mounts[].target` | `PathBuf` | `required` | Container path |
 | `container.mounts[].read_only` | `bool` | `false` | Read-only bind mount |
-| `vm.control_socket` | `Option<PathBuf>` | `unset` | Host-only live Attempt endpoint; default automatic private socket; existing same-UID 0700 parent and new path required; `--vm-control-socket` |
+| `vm.control_socket` | `Option<PathBuf>` | `unset` | Host-only live Execution endpoint; default automatic private socket; existing same-UID 0700 parent and new path required; `--vm-control-socket` |
 | `vm.ram_backing` | `Option<PathBuf>` | `unset` | New RAM backing path; existing files rejected; `--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable compressed backing; `--vm-ram-compression` |
 | `vm.cold_ram_compression` | `bool` | `false` | Experimental Linux x86_64 local live pager; kernel-fault userfaultfd authority required; no FUSE/pool; `--vm-cold-ram-compression` selects VM |

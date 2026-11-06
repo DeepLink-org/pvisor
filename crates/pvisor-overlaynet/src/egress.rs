@@ -9,7 +9,7 @@ use crate::policy::{DenyReason, NetworkPolicy};
 use crate::resolver::{
     ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
-use pvisor_core::{AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId};
+use pvisor_core::{ControlController, ExecutionId, NetworkAccessRequest, NetworkTransport, RunId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -19,7 +19,7 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Default)]
 pub struct EgressContext {
     pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
+    pub execution_id: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,11 +39,11 @@ pub(crate) enum EgressError {
     },
 }
 
-/// Attempt-scoped authorization services for transparent VM flows.
+/// Execution-scoped authorization services for transparent VM flows.
 ///
 /// The compiled policy remains an invariant and an injected controller may
 /// only narrow it. The injected registry shares identical bandwidth buckets
-/// with the explicit proxy running in the same Attempt. The policy lives
+/// with the explicit proxy running in the same Execution. The policy lives
 /// behind a shared cell so a caller-supplied replacement (for example a
 /// republished egress gate) takes effect for every flow authorized after
 /// the swap; in-flight authorizations may still complete under the previous
@@ -147,7 +147,7 @@ impl EgressRuntime {
         let policy = self.current_policy();
         let request = NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
-            attempt_id: context.attempt_id.clone().map(AttemptId),
+            execution_id: context.execution_id.clone().map(ExecutionId),
             host: host.to_owned(),
             port: Some(port),
             transport: NetworkTransport::TcpTunnel,

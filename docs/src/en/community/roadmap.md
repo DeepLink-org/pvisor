@@ -1,6 +1,6 @@
 # Roadmap
 
-The current focus is single-machine execution reliability, shared-resource cost and interface consistency. Native Jobs, per-container VMs and daemon SDK profiles have separate entry points; the work below completes their contracts and validation without defining supervision levels by instance count.
+The current focus is single-machine execution reliability, shared-resource cost and interface consistency. Native Sessions, per-container VMs and daemon SDK profiles have separate entry points; the work below completes their contracts and validation without defining supervision levels by instance count.
 
 | Work | Acceptance criteria |
 | --- | --- |

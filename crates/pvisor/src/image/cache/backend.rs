@@ -543,7 +543,7 @@ impl RemoteFs {
         let mut start = 0;
         let mut cursor = 0;
         for _ in 0..Self::PREFETCH_PAGES {
-            // Count even failed attempts; transport failures cannot reset the
+            // Count even failed executions; transport failures cannot reset the
             // bound. Speculative failures fall back to exact stat, never ENOENT.
             self.prefetch_pages += 1;
             let page = match self.directory_page(&node, start, cursor) {

@@ -169,7 +169,7 @@ async fn cancellation_of_admitted_apply_does_not_cancel_owned_work() {
     let (engine, release) = gated_engine(dir.path()).await;
     let ctx = test_context();
     let mut applying = Box::pin(engine.apply(&ctx, request("survives cancellation")));
-    // One poll admits the job behind the gate and waits for its reply.
+    // One poll admits the session behind the gate and waits for its reply.
     assert_pending(applying.as_mut()).await;
     drop(applying);
     let mut cancelled = Box::pin(engine.apply(
@@ -297,13 +297,13 @@ async fn one_bounded_fifo_reports_overload_and_shutdown_drains_accepted_tail() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(error.to_string().contains("rejected job"));
+    assert!(error.to_string().contains("rejected task"));
     let retained_clone = engine.clone();
     let error = tokio::time::timeout(WAIT, engine.shutdown())
         .await
         .unwrap()
         .unwrap_err();
-    assert!(error.to_string().contains("rejected job"));
+    assert!(error.to_string().contains("rejected task"));
     // Keep the writer alive: shutdown must drain diagnostics independently of Drop.
     assert_eq!(
         crate::dead_letter::read_dead_letter_entries(dir.path())

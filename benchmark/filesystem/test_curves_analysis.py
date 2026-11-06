@@ -84,7 +84,7 @@ def record(plan, pair, condition, times=(1_000_000, 2_000_000, 6_000_000)):
         "valid": True,
         "returncode": 0,
         "ready_ms": 4.0,
-        "job_ms": 20.0,
+        "session_ms": 20.0,
         "sampled_memory_current_peak": 2 * ANALYSIS.MIB,
         "resource": {"memory.peak": "999999", "cpu.stat": "usage_usec 123"},
     }

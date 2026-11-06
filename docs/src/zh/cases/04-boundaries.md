@@ -45,7 +45,7 @@ assert_content "$CASE_ROOT/public.txt" public
 
 离线分析和不需 API 的任务可以 deny-all。用本机监听器验证连接确实失败，不依赖公网服务。
 
-**语义**：宿主能连接测试监听器，deny-all Job 的相同连接失败且网络 Evidence 声明 non_bypassable。
+**语义**：宿主能连接测试监听器，deny-all Session 的相同连接失败且网络 Evidence 声明 non_bypassable。
 
 **违反示例**：网络隔离静默退化，Agent 仍连到宿主监听器。
 

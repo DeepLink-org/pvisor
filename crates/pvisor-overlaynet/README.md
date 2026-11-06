@@ -18,7 +18,7 @@ Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
 in-process smoltcp stack serves synthetic DNS, then terminates and
 re-originates policy-authorized IPv4 TCP. The Rust guest supervisor configures
 its static IPv4 address and route directly, without waiting for DHCP. Gateway capture is reachable through
-the guest's virtual router; Gateway and ordinary VM egress share the Attempt
+the guest's virtual router; Gateway and ordinary VM egress share the Execution
 controller, metrics, and bandwidth buckets.
 
 The driver tracks at most `max_flows` concurrent TCP flows (default 1024;

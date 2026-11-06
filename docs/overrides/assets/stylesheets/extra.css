@@ -213,14 +213,14 @@
   outline-offset: 3px;
 }
 
-.pc-home-job-example,
+.pc-home-session-example,
 .pc-home-docker-example {
   grid-column: 1 / -1;
   min-width: 0;
 }
 
 .pc-home-docker-example,
-#pc-home-docker:checked ~ .pc-home-job-example {
+#pc-home-docker:checked ~ .pc-home-session-example {
   display: none;
 }
 

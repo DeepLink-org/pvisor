@@ -1,14 +1,14 @@
-//! B-FS-ENG: sealed-input factorial experiment through the normal Job runtime.
+//! B-FS-ENG: sealed-input factorial experiment through the normal Session runtime.
 //!
 //! This engineering entry omits the CLI Host service. All four conditions retain
-//! PVisor, managed Job completion, journals, Run Bundles and the native runner.
+//! PVisor, managed Session completion, journals, Run Bundles and the native runner.
 use anyhow::{Context, ensure};
 use clap::{Parser, Subcommand};
 use pvisor::{
     ExecutionOverlayHint, NetworkDriverConfig, OverlayHint, OverlayNetMode, PVisor, RunConfig,
     RunExecutorKind, StageDurability, VmExecutor, VmSettings,
     environment_snapshot::{BaseReference, SnapshotStore},
-    job_service::RuntimeJobService,
+    session_service::SessionService,
 };
 use pvisor_core::{RunInvocation, RunSpec};
 use pvisor_overlay_core::{LayerMutability, OverlayCore, OverlayLayout};
@@ -305,7 +305,7 @@ async fn run(command: Command) -> anyhow::Result<i32> {
     config.run.inherit_env = false;
     config.run.pass_env = pass_env;
     config.overlaynet.mode = OverlayNetMode::Off;
-    let managed = RuntimeJobService::start_managed(&runtime, spec, config).await?;
+    let managed = SessionService::start_managed(&runtime, spec, config).await?;
     let result = managed.wait().await?;
     let receipt = serde_json::json!({
         "schema": 1, "condition": condition, "rootfs_immutable": rootfs_immutable,
@@ -320,7 +320,7 @@ async fn run(command: Command) -> anyhow::Result<i32> {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>(),
         "rootfs_lease": true, "workspace_lease": true,
-        "runtime": "PVisor/ManagedJob/Overlay/VmExecutor", "cli_host_service": false,
+        "runtime": "PVisor/ManagedSession/Overlay/VmExecutor", "cli_host_service": false,
         "run_id": run_id, "exit_code": result.exit_code, "state": result.state,
     });
     let receipt_path = std::env::var_os("PVISOR_FS_OWNED_INPUTS_RECEIPT")
@@ -329,9 +329,9 @@ async fn run(command: Command) -> anyhow::Result<i32> {
     publish(&receipt_path, &receipt)?;
     eprintln!("OWNED_INPUTS_RECEIPT {}", serde_json::to_string(&receipt)?);
     if let Some(failure) = result.failure {
-        eprintln!("owned-inputs Job failed: {}", failure.message);
+        eprintln!("owned-inputs Session failed: {}", failure.message);
     }
-    // Leases and the runtime owner remain live until native teardown and Job
+    // Leases and the runtime owner remain live until native teardown and Session
     // completion have finished. Store collection is a separate caller action.
     drop((runtime, root_base, workspace_base));
     Ok(result.exit_code.unwrap_or(125))

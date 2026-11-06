@@ -1,4 +1,4 @@
-//! Job lifecycle commands and dispatch to first-party companions.
+//! Session lifecycle commands and dispatch to first-party companions.
 mod agent;
 mod apply;
 mod cache;
@@ -72,29 +72,29 @@ enum Command {
 
     /// Apply selected changes, preview them, or pick paths in a terminal.
     #[command(
-        long_about = "Apply selected staged changes. SOURCE is required: a Job id, stage directory, or workspace selector (including last). Upper directories and internal stage paths are not apply sources.\n\nExplicit --path, --include or --all executes without prompting. --all permits --exclude, but not --path or --include. Exclusions alone require --interactive. With no selection, a picker opens only when both stdin and stdout are terminals; otherwise selection is required.\n\nUse --dry-run for a read-only plan, optionally with --diff for bounded text diffs. --json requires an explicit positive selection and never opens a picker. --interactive conflicts with --dry-run and --json.\n\nOrdinary apply is project-scoped. --rootfs explicitly requests privileged system changes; it is not an atomic system upgrade. Exit codes: 0 success, 1 execution/service error, 2 arguments, 3 blocked, 130 quit."
+        long_about = "Apply selected staged changes. SOURCE is required: a Session id, stage directory, or workspace selector (including last). Upper directories and internal stage paths are not apply sources.\n\nExplicit --path, --include or --all executes without prompting. --all permits --exclude, but not --path or --include. Exclusions alone require --interactive. With no selection, a picker opens only when both stdin and stdout are terminals; otherwise selection is required.\n\nUse --dry-run for a read-only plan, optionally with --diff for bounded text diffs. --json requires an explicit positive selection and never opens a picker. --interactive conflicts with --dry-run and --json.\n\nOrdinary apply is project-scoped. --rootfs explicitly requests privileged system changes; it is not an atomic system upgrade. Exit codes: 0 success, 1 execution/service error, 2 arguments, 3 blocked, 130 quit."
     )]
     Apply(runtime::ApplyArgs),
     /// Discard staged changes.
     Drop(runtime::SelectArgs),
-    /// Show Job status and execution evidence.
+    /// Show Session status and execution evidence.
     Status(runtime::StatusCommandArgs),
     /// Review staged changes and execution evidence.
     Review(product::ReviewArgs),
     /// Export selected project results without applying them (Linux only).
     #[command(long_about = handoff::EXPORT_LONG_ABOUT)]
     Export(handoff::ExportArgs),
-    /// Manage Job checkpoints.
+    /// Manage Session checkpoints.
     Checkpoint(checkpoint::CheckpointArgs),
-    /// Suspend a Job or pause a live VM.
+    /// Suspend a Session or pause a live VM.
     Suspend(checkpoint::SuspendCommandArgs),
-    /// Resume a suspended Job or live VM.
+    /// Resume a suspended Session or live VM.
     Resume(checkpoint::ResumeCommandArgs),
-    /// Stop a running Job.
+    /// Stop a running Session.
     Kill(runtime::KillArgs),
-    /// Branch a Job from staged files or a checkpoint.
+    /// Branch a Session from staged files or a checkpoint.
     Fork(run::ForkArgs),
-    /// Inspect a Job's filesystem.
+    /// Inspect a Session's filesystem.
     Inspect(runtime::InspectArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -109,7 +109,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Job execution (spawn).\nUse pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor stage -it -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Session execution (spawn).\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -167,7 +167,7 @@ fn grouped_commands(command: &clap::Command) -> String {
         for sub in members {
             let name = sub.get_name();
             let about = match name {
-                "spawn" => "Run an agent or command as a Job".to_owned(),
+                "spawn" => "Run an agent or command as a Session".to_owned(),
                 _ => sub.get_about().map(ToString::to_string).unwrap_or_default(),
             };
             output.push_str(&format!("  {name:width$}  {about}\n"));
@@ -248,7 +248,7 @@ pub fn main() -> anyhow::Result<()> {
         !args.get(1).is_some_and(|arg| arg == "ctrl")
             && !(args.get(1).is_some_and(|arg| arg == "help")
                 && args.get(2).is_some_and(|arg| arg == "ctrl")),
-        "`pvisor ctrl` has been retired; use status JOB, suspend JOB --vm-pause/--vm-offload, or resume JOB"
+        "`pvisor ctrl` has been retired; use status SESSION, suspend SESSION --vm-pause/--vm-offload, or resume SESSION"
     );
     let core_command = Cli::command();
     let offset = command_offset(&args);
@@ -403,9 +403,9 @@ pub fn main() -> anyhow::Result<()> {
     }
     match parsed.command {
         #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-        Command::VmRun(_) => unreachable!("direct VM dispatch precedes Job startup"),
+        Command::VmRun(_) => unreachable!("direct VM dispatch precedes Session startup"),
         Command::Container(_) => {
-            unreachable!("container commands dispatch before Job startup")
+            unreachable!("container commands dispatch before Session startup")
         }
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
         Command::Stage(_) => {
@@ -413,24 +413,28 @@ pub fn main() -> anyhow::Result<()> {
         }
         Command::Cache(args) => cache::run(args)?,
         Command::Spawn(run) => {
-            finish(host_service::call(host::JobCommand::Run(run))?);
+            finish(host_service::call(host::SessionCommand::Run(run))?);
         }
-        Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
+        Command::Fork(args) => finish(host_service::call(host::SessionCommand::Fork(args))?),
         Command::Apply(args) => finish(apply::run(args)),
-        Command::Drop(args) => finish(host_service::call(host::JobCommand::Drop(args))?),
-        Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args.args))?),
-        Command::Review(args) => finish(host_service::call(host::JobCommand::Review(args))?),
+        Command::Drop(args) => finish(host_service::call(host::SessionCommand::Drop(args))?),
+        Command::Status(args) => {
+            finish(host_service::call(host::SessionCommand::Status(args.args))?)
+        }
+        Command::Review(args) => finish(host_service::call(host::SessionCommand::Review(args))?),
         Command::Export(args) => handoff::export(args)?,
         Command::Checkpoint(args) => {
-            finish(host_service::call(host::JobCommand::Checkpoint(args))?)
+            finish(host_service::call(host::SessionCommand::Checkpoint(args))?)
         }
-        Command::Suspend(args) => finish(host_service::call(host::JobCommand::Suspend(args.args))?),
+        Command::Suspend(args) => finish(host_service::call(host::SessionCommand::Suspend(
+            args.args,
+        ))?),
         Command::Resume(resume) => {
             let resume = resume.args;
-            finish(host_service::call(host::JobCommand::Resume(resume))?);
+            finish(host_service::call(host::SessionCommand::Resume(resume))?);
         }
-        Command::Kill(args) => finish(host_service::call(host::JobCommand::Kill(args))?),
-        Command::Inspect(args) => finish(host_service::call(host::JobCommand::Inspect(args))?),
+        Command::Kill(args) => finish(host_service::call(host::SessionCommand::Kill(args))?),
+        Command::Inspect(args) => finish(host_service::call(host::SessionCommand::Inspect(args))?),
         Command::External(args) => companions::dispatch(
             args[0]
                 .to_str()
@@ -456,7 +460,7 @@ mod feature_parser_tests {
         Cli::from_arg_matches(&command.try_get_matches_from(args).unwrap()).unwrap()
     }
     #[test]
-    fn unbuilt_parser_preserves_informational_and_job_commands() {
+    fn unbuilt_parser_preserves_informational_and_session_commands() {
         for (args, expected) in [
             (
                 vec!["pvisor", "--help"],
@@ -723,7 +727,7 @@ mod feature_parser_tests {
             panic!("spawn")
         };
         run.features = parsed.features;
-        let value = serde_json::to_value(host::JobCommand::Run(run.clone())).unwrap();
+        let value = serde_json::to_value(host::SessionCommand::Run(run.clone())).unwrap();
         assert_eq!(
             value["args"]["features"][0],
             "workload-aware-memory-offloading"
@@ -732,7 +736,7 @@ mod feature_parser_tests {
             value["args"]["command"],
             serde_json::json!(["echo", "--feature", "guest-only"])
         );
-        let roundtrip: host::JobCommand = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip: host::SessionCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(roundtrip).unwrap(), value);
     }
     #[test]

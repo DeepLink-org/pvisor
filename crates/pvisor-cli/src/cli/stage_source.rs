@@ -1,4 +1,4 @@
-//! Resolve container stages without reinterpreting failed Job lookups as containers.
+//! Resolve container stages without reinterpreting failed Session lookups as containers.
 use anyhow::{Context, ensure};
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,7 @@ pub(super) fn resolve(
         return Ok(None);
     };
     if mount.is_none() {
-        // Paths and workspace aliases always retain Job semantics, including errors.
+        // Paths and workspace aliases always retain Session semantics, including errors.
         if selector == Path::new("last") || selector.components().count() != 1 || present(selector)?
         {
             return Ok(Some(selector.to_path_buf()));

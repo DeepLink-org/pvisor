@@ -132,7 +132,7 @@ class ObserverContractTests(unittest.TestCase):
 
 
 class CampaignContractTests(unittest.TestCase):
-    def test_first_failure_skips_only_remaining_attempts_of_that_cell(self):
+    def test_first_failure_skips_only_remaining_executions_of_that_cell(self):
         with tempfile.TemporaryDirectory(prefix="user-workloads-campaign-") as directory:
             batch = Path(directory)
             protocol = dict(
@@ -165,12 +165,12 @@ class CampaignContractTests(unittest.TestCase):
             with (
                 mock.patch.object(RUNNER, "verify_inputs") as verification,
                 mock.patch.object(RUNNER.SHARED, "cgroup_state", return_value=state),
-                mock.patch.object(RUNNER, "one_trial", side_effect=trial) as attempts,
+                mock.patch.object(RUNNER, "one_trial", side_effect=trial) as executions,
                 mock.patch("builtins.print"),
             ):
                 RUNNER.campaign(batch)
             observed = [
-                (call.args[2], call.args[3], call.args[4]) for call in attempts.call_args_list
+                (call.args[2], call.args[3], call.args[4]) for call in executions.call_args_list
             ]
             self.assertEqual(len(observed), 10)
             self.assertEqual(

@@ -83,7 +83,7 @@ const FRAME_BATCH: usize = 32;
 pub struct VmGatewayRoute {
     /// Port exposed on the guest's virtual router (default [`ROUTER_IPV4`]).
     pub guest_port: u16,
-    /// Attempt-local Gateway listener on the host.
+    /// Execution-local Gateway listener on the host.
     pub host: SocketAddr,
 }
 
@@ -131,7 +131,7 @@ impl VmNetworkConfig {
     }
 }
 
-/// Attempt-scoped smoltcp backend. The returned peer stream is passed to
+/// Execution-scoped smoltcp backend. The returned peer stream is passed to
 /// `pvisor_vm::api::VmConfiguration::network`; this side owns the policy and host sockets.
 pub struct VmNetwork {
     shutdown: Option<oneshot::Sender<()>>,
@@ -153,7 +153,7 @@ impl VmNetwork {
                     config.egress.permits_peer_network(),
                     "peer networking requires EgressRuntime::for_peer_network with unrestricted policy and no bandwidth limits"
                 );
-                BoundPeer::bind(peer, config.context.attempt_id.clone())
+                BoundPeer::bind(peer, config.context.execution_id.clone())
             })
             .transpose()?;
         let (backend, guest) = StdUnixStream::pair().context("create VM network socket pair")?;

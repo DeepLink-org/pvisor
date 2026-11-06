@@ -1,10 +1,10 @@
 # 排查一次 Run
 
-Job 没有按预期工作时，先查看它的 Run Bundle，核对请求的边界、实际安装的机制和警告，再决定是否调整参数重试。
+Session 没有按预期工作时，先查看它的 Run Bundle，核对请求的边界、实际安装的机制和警告，再决定是否调整参数重试。
 
 ## 先做三个只读检查
 
-在运行命令的项目目录中执行。若使用了显式 stage，将示例中的 `last` 替换为该路径；[Job 与存储](../concepts/jobs.md)说明如何重新定位任务：
+在运行命令的项目目录中执行。若使用了显式 stage，将示例中的 `last` 替换为该路径；[Session 与存储](../concepts/sessions.md)说明如何重新定位任务：
 
 ```bash
 pvisor status last
@@ -45,14 +45,14 @@ pvisor inspect last -- git status --short
 ```
 
 Agent 修改的是 Run-owned view。写入该 view 之外的路径可能被记录为 external Effect，也可能
-无法被 executor 提供。保持 stage 位于项目目录之外，使用明确的 stage 路径定位 Job，不要只按文件名比较生成的 Run 目录与项目根目录。
+无法被 executor 提供。保持 stage 位于项目目录之外，使用明确的 stage 路径定位 Session，不要只按文件名比较生成的 Run 目录与项目根目录。
 
 ## capture 输出缺失
 
 执行审查和模型流量捕获是两个独立决策。先确认 Run 已完成且 Bundle 可读，再检查
 capture 配置和传给 `--record-destination` 的目标路径。
 
-目标目录为空时，按[模型流量捕获步骤](capture.md)检查代理或 base URL 配置，再启动新 Job。Run Bundle 用于核对执行结果；启用 capture 后，模型请求和响应记录在 Gateway Journal 中，查找时使用捕获目录。
+目标目录为空时，按[模型流量捕获步骤](capture.md)检查代理或 base URL 配置，再启动新 Session。Run Bundle 用于核对执行结果；启用 capture 后，模型请求和响应记录在 Gateway Journal 中，查找时使用捕获目录。
 
 ## 提交 issue 前
 

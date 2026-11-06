@@ -96,7 +96,7 @@ brew install --cask macfuse
 
 Enable macFUSE in System Settings → General → Login Items & Extensions → File System Extensions, and complete any system prompts. pVisor uses FSKit without loading a kernel extension or reducing boot security. Staging startup fails if FSKit is unavailable.
 
-Ordinary Host Jobs write directly to the workspace by default. The tutorial uses `--safe` for staging; keep it while resolving mount failures.
+Ordinary Host Sessions write directly to the workspace by default. The tutorial uses `--safe` for staging; keep it while resolving mount failures.
 
 ??? note "Optional: Linux VM tool execution setup"
 
@@ -157,7 +157,7 @@ python -m pip install --upgrade pvisor-sandbox
 python -m pip uninstall pvisor-sandbox
 ```
 
-Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstalling leaves Job state and user caches in place.
+Before upgrading, check release notes and deployed `PVISOR_*` settings. Uninstalling leaves Session state and user caches in place.
 
 <a id="homebrew-and-native-downloads"></a>
 
@@ -176,7 +176,7 @@ To install without Python, download the native archive for your platform and `SH
 
 See the [release guide](../community/releasing.md#one-time-setup) for Homebrew tap publication requirements and configuration.
 
-Job startup requires the executable and its ancestor directories to be owned by
+Session startup requires the executable and its ancestor directories to be owned by
 you or root and not writable by other users; root-owned sticky directories such
 as `/tmp` are allowed. Homebrew may create its Cellar with group write permission.
 If startup reports `unsafe owner executable ancestor`, inspect the named directory.

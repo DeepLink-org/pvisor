@@ -22,27 +22,27 @@ The Runtime starts and manages execution environments through Executors. In the 
 
 Consider a VM tool execution: an Agent reads `config.toml`, queries an external HTTPS service and modifies the configuration. Workspace staging is enabled, retaining file changes as candidates for subsequent review. See the [local workflow quick start](../start/first-run.md) for enabling staging and default write behavior.
 
-### Job, Attempt and Session
+### Session, Execution and Session
 
 Three concepts connect task identity, actual execution and resource management:
 
 | Concept | Role in this execution |
 | --- | --- |
-| **Job** | Gives the managed task a persistent identity linking state, records and candidate results. |
-| **Attempt** | Identifies one actual execution; the example's reads, queries and modifications occur within this execution. |
+| **Session** | Gives the managed task a persistent identity linking state, records and candidate results. |
+| **Execution** | Identifies one actual execution; the example's reads, queries and modifications occur within this execution. |
 | **Session** | The internal Runtime object managing this execution's resources, organizing preparation, cleanup and result persistence. |
 
-An Agent's application task can include multiple model interactions and tool calls; the caller decides how to map them to Jobs. See [Execution model](execution-model.md) for Job/Attempt identity changes during checkpoint restoration and branching.
+An Agent's application task can include multiple model interactions and tool calls; the caller decides how to map them to Sessions. See [Execution model](execution-model.md) for Session/Execution identity changes during checkpoint restoration and branching.
 
 ![Sequence from RunSpec through preparation, launch facts, execution, cleanup and terminal publication](assets/execution-sequence.svg)
 
 Execution proceeds through three stages:
 
 1. **Preparation.** Resolve requests and policies, check executor capabilities, and prepare file, network and execution resources.
-2. **Execution.** Commit required launch records before starting tools, associating execution with the current Attempt. Tools read the configuration, query the service and retain file changes in the stage.
-3. **Completion.** After tools exit, clean up resources and check installed controls. When storage is retained, save the Bundle, commit an Attempt completion receipt binding the result to its Bundle digest, then publish terminal events. File candidates still await caller review and acceptance; see the [Attempt completion protocol](execution-model.md#attempt-completion).
+2. **Execution.** Commit required launch records before starting tools, associating execution with the current Execution. Tools read the configuration, query the service and retain file changes in the stage.
+3. **Completion.** After tools exit, clean up resources and check installed controls. When storage is retained, save the Bundle, commit an Execution completion receipt binding the result to its Bundle digest, then publish terminal events. File candidates still await caller review and acceptance; see the [Execution completion protocol](execution-model.md#execution-completion).
 
-Cancellation requests, tool exit and task completion are distinct events; Runtime and the durable Job service must still finish cleanup and save results. See [Execution model](execution-model.md) for preparation failure, cancellation and completion rules, and [Core architecture](architecture.md) for the call sequence.
+Cancellation requests, tool exit and task completion are distinct events; Runtime and the durable Session service must still finish cleanup and save results. See [Execution model](execution-model.md) for preparation failure, cancellation and completion rules, and [Core architecture](architecture.md) for the call sequence.
 
 <a id="why-resolve-policy-once"></a>
 
@@ -132,7 +132,7 @@ In the VM execution path, guest network requests pass through the virtual networ
 
 ### From a hostname to two TCP connections
 
-For `api.example.com:443`, the application requests a hostname, while connection establishment uses an IP address. pVisor's synthetic DNS retains a stable name/address mapping within an Attempt so OverlayNet can recover the logical destination when a connection request arrives. The synthetic address associates the connection with a hostname; it is not the external service's actual address.
+For `api.example.com:443`, the application requests a hostname, while connection establishment uses an IP address. pVisor's synthetic DNS retains a stable name/address mapping within an Execution so OverlayNet can recover the logical destination when a connection request arrives. The synthetic address associates the connection with a hostname; it is not the external service's actual address.
 
 ![DNS names, synthetic addresses, guest SYN, policy authorization and host TCP](assets/network-path.svg)
 
@@ -203,7 +203,7 @@ For example, while a file read is pending, the Host may still be writing its res
 
 The VMM first stops vCPUs and coordinates devices to finish in-flight processing, allowing consistent machine-state capture. The higher-level state store saves the captured content, filesystem state and references needed for restoration, then publishes the checkpoint. Restore first validates compatibility and installs memory, CPU, device and file state while paused; execution continues only after installation completes. Failed freezing or restore validation must not release execution. See [VM requests and consistency](vm-runtime.md#freeze) for device coordination and failure handling, and the [Snapshot subsystem](environment-snapshot.md#consistent-cut) for capture and durable publication.
 
-Execution checkpoints restore only the captured machine and filesystem state; they cannot undo changes already made by remote services. Current native Job full VM checkpoints require no network device, private RAM and an owned complete rootfs, so the preceding networked task cannot directly use this capability. See [Job checkpoint design](job-checkpoint-cli.md) for the full support conditions.
+Execution checkpoints restore only the captured machine and filesystem state; they cannot undo changes already made by remote services. Current native Session full VM checkpoints require no network device, private RAM and an owned complete rootfs, so the preceding networked task cannot directly use this capability. See [Session checkpoint design](session-checkpoint-cli.md) for the full support conditions.
 
 Workspace checkpoints preserve file progress without continuing the execution position held in CPU and memory. See [State preservation and branch reuse](../concepts/resource-reuse.md) for when to use each kind, and [Trajectory replay](replay.md) for reusing model context and tool history.
 
@@ -217,7 +217,7 @@ A disk Journal validates an event, writes its record and completes local synchro
 
 A record may have been written even if the caller did not receive its receipt. The caller therefore cannot assume it was not committed. After recovery, retrying the original event ID with identical content returns the original position if the record exists, or appends the event if it does not. Reusing an ID with different content is rejected. See [Journal recovery](journal.md#recovery) for handling unknown commit outcomes, handles and file recovery.
 
-A Journal receipt confirms an event's record position and durability; an Attempt completion receipt binds the execution result to its Bundle. The Attempt receipt does not form one transaction covering Journal, file acceptance records and external effects. A missing terminal event does not establish that the task never completed; consult the [Attempt completion protocol](execution-model.md#attempt-completion). Event deduplication covers record appends, not exactly-once execution of commands or remote requests. Recovery must reconcile records with actual effects; see [Failure semantics and retries](failure-semantics.md#reconciliation) and the [Records and version matrix](records-and-versions.md).
+A Journal receipt confirms an event's record position and durability; an Execution completion receipt binds the execution result to its Bundle. The Execution receipt does not form one transaction covering Journal, file acceptance records and external effects. A missing terminal event does not establish that the task never completed; consult the [Execution completion protocol](execution-model.md#execution-completion). Event deduplication covers record appends, not exactly-once execution of commands or remote requests. Recovery must reconcile records with actual effects; see [Failure semantics and retries](failure-semantics.md#reconciliation) and the [Records and version matrix](records-and-versions.md).
 
 Checkpoints preserve recoverable execution state, while Journal preserves observed execution events. Reading event history alone neither restores a VM nor repeats external operations.
 

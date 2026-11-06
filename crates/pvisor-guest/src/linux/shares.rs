@@ -1,4 +1,4 @@
-//! Guest filesystem setup shared by Jobs and controlled workloads.
+//! Guest filesystem setup shared by Sessions and controlled workloads.
 use super::{check, mount};
 use pvisor_guest::GuestConfig;
 use std::{

@@ -48,7 +48,7 @@ OpenSandbox baseline: **1.1.0**, `release-1.1.0`, commit `b1a29cf93a823a95913f79
 | `GET /v1/sandboxes` | Repeated states, SDK-encoded metadata, page/pageSize; last durable observations |
 | `GET /v1/sandboxes/{id}` | Reconcile native state; 200 JSON |
 | `DELETE /v1/sandboxes/{id}` | Confirm deletion before release; 204 |
-| `POST /v1/sandboxes/{id}/pause`, `/resume` | Confirm live vCPU pause/resume on the same Attempt; 202 empty |
+| `POST /v1/sandboxes/{id}/pause`, `/resume` | Confirm live vCPU pause/resume on the same Execution; 202 empty |
 | `POST /v1/sandboxes/{id}/renew-expiration` | Future RFC3339 deadline extending any existing TTL |
 | `GET /v1/sandboxes/{id}/endpoints/{port}` | Actual execd/egress publication through daemon authority |
 | Data plane | Guest engine and host protocol adapters by default; proxy for explicit upstream templates |

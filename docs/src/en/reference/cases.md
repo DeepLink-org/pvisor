@@ -1,8 +1,8 @@
-# pVisor Job scenarios and regression examples
+# pVisor Session scenarios and regression examples
 
-Start with a simple Job, add limits, staging, VM, container and networking, then complete review, branching and trajectory replay. Each case explains purpose, preparation and expected results before executable commands. IDs allow individual regressions.
+Start with a simple Session, add limits, staging, VM, container and networking, then complete review, branching and trajectory replay. Each case explains purpose, preparation and expected results before executable commands. IDs allow individual regressions.
 
-`run` creates a Job; `status`, `inspect`, `apply`, `drop`, `fork` and `kill` operate on it directly. `replay` creates a Job from a trajectory. Labels such as A01 identify regressions and reports.
+`run` creates a Session; `status`, `inspect`, `apply`, `drop`, `fork` and `kill` operate on it directly. `replay` creates a Session from a trajectory. Labels such as A01 identify regressions and reports.
 
 ## Choose by need
 
@@ -45,7 +45,7 @@ mise run semspec -- --spec-dir docs/src/zh/reference show S-DOC-001
 
 `mise run cases` builds release pVisor, discovers the 52 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `mise run semspec -- --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
 
-Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion functions come from preparation blocks in the sibling `index.md`, which reads this case's Bundle, run record and command logs. Configuration, Jobs and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
+Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion functions come from preparation blocks in the sibling `index.md`, which reads this case's Bundle, run record and command logs. Configuration, Sessions and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
 
 New cases remain UNREVIEWED. Passing checks are separate from human approval. Use `mise run cases -- --require-reviewed` as a gate only after humans review cases, vocabulary and engine. See `mise run semspec -- run --help` for supported options.
 
@@ -68,7 +68,7 @@ Start with A01. Use subsequent examples only when you need a fixed display name,
 ### S-DOC-001: A01 Minimal invocation without run
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
 **Semantics**: Print the absolute current workspace path and exit successfully. Default executor is host, without staging; networking is ambient when no policy is configured.
 
@@ -94,9 +94,9 @@ bundle_expect network.policy.mode ambient
 ### S-DOC-002: A02 Explicit run equals the short form
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
-**Semantics**: Both output files contain the same current working directory. Each execution has a separate record; Job IDs and times may differ.
+**Semantics**: Both output files contain the same current working directory. Each execution has a separate record; Session IDs and times may differ.
 
 **Rationale**: Compare explicit/implicit `run`, saving agent stdout separately.
 
@@ -116,12 +116,12 @@ test "$(cat implicit.txt)" = "$(cd "$PVISOR_CASE_WORKSPACE" && pwd -P)"
 bundle_expect run.agent pwd
 ```
 
-### S-DOC-003: A03 Job name and stdio capture
+### S-DOC-003: A03 Session name and stdio capture
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
-**Semantics**: Job name is `smoke`, result stdout is `hello` and is not truncated.
+**Semantics**: Session name is `smoke`, result stdout is `hello` and is not truncated.
 
 **Rationale**: Name the Run with `--name smoke` and retain output with `--stdio capture`.
 
@@ -143,7 +143,7 @@ bundle_expect run.output.stdout_truncated false
 ### S-DOC-004: A04 Timeout
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
 **Semantics**: pVisor exits nonzero and records failure type `deadline_exceeded`.
 
@@ -167,7 +167,7 @@ bundle_expect run.failure.retryable false
 ### S-DOC-005: A05 Strict mode rejects best-effort boundaries
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
 Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
@@ -191,7 +191,7 @@ stdout_has "lacks enforced evidence for requested capability dimensions"
 ### S-DOC-006: A06 Explicit environment projection
 
 
-Suggested use: First use: verify commands and Job identity.
+Suggested use: First use: verify commands and Session identity.
 
 **Semantics**: The child sees `TEST_PVISOR_VALUE=visible`; records list the variable without claiming full host environment inheritance.
 
@@ -217,7 +217,7 @@ bundle_expect environment.inherits_host false
 
 **Semantics**: After exit, `direct.txt` exists in the original workspace and records contain no OverlayFS stage.
 
-**Rationale**: Verify the ordinary host Job default writable lower without selecting another executor/stage.
+**Rationale**: Verify the ordinary host Session default writable lower without selecting another executor/stage.
 
 **Violation example**: A host write without a staging request does not reach the workspace.
 
@@ -278,7 +278,7 @@ Suggested use: Control or verify resource limits.
 
 **Semantics**: Writing fails; any file left on disk is at most 1024 bytes. The result records a process-exit failure.
 
-**Rationale**: Set 1KiB and use `dd` to attempt a 4KiB write.
+**Rationale**: Set 1KiB and use `dd` to execution a 4KiB write.
 
 **Violation example**: dd writes 4KiB successfully or leaves more than 1024 bytes after failure.
 
@@ -387,7 +387,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Semantics**: The command succeeds; the logged storage directory/Bundle remain and the new file is absent from the original workspace.
 
-**Rationale**: Without `--stage`, `--safe` uses persistent Job storage and retains changes after exit.
+**Rationale**: Without `--stage`, `--safe` uses persistent Session storage and retains changes after exit.
 
 **Violation example**: The logged Bundle disappears after exit or result.txt reaches the original workspace.
 
@@ -1261,11 +1261,11 @@ Suggested use: Execute TOML/JSON configuration or RunSpec through a control plan
 
 Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
-**Semantics**: Name is case-i02 and run-result.json is nonempty. Delegation currently supports host only and does not apply ordinary Job rootless safe profiles; this is not an isolation-mode example.
+**Semantics**: Name is case-i02 and run-result.json is nonempty. Delegation currently supports host only and does not apply ordinary Session rootless safe profiles; this is not an isolation-mode example.
 
 **Rationale**: Execute prepared JSON RunSpec and atomically write its result. Manually supply run_id, agent and process invocation; fixtures use /bin/true named case-i02.
 
-**Violation example**: Omit the result or misrepresent delegation as an isolated ordinary Job.
+**Violation example**: Omit the result or misrepresent delegation as an isolated ordinary Session.
 
 <!-- semspec: case id=S-DOC-044 -->
 ```bash
@@ -1428,9 +1428,9 @@ bundle_expect run.state completed
 bundle_expect filesystem.state staged
 ```
 
-## K. Job review and lifecycle
+## K. Session review and lifecycle
 
-Job is the user-facing object. These commands use its stage path directly as selector without another job subcommand.
+Session is the user-facing object. These commands use its stage path directly as selector without another session subcommand.
 
 ### S-DOC-049: K01 Review and inspect staged files read-only
 
@@ -1490,12 +1490,12 @@ test ! -e two.txt
 record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
 ```
 
-### S-DOC-051: K03 Fork a stopped Job
+### S-DOC-051: K03 Fork a stopped Session
 
 
 Preparation: Linux user/mount namespaces available.
 
-**Semantics**: Child reads inherited; neither Job writes changes directly to original workspace.
+**Semantics**: Child reads inherited; neither Session writes changes directly to original workspace.
 
 **Rationale**: Start a child from the source staged view, reading its changes and creating independent ones.
 
@@ -1519,14 +1519,14 @@ bundle_contains filesystem.changes inherited.txt "$PVISOR_CASE_ROOT/source-stage
 bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
 ```
 
-### S-DOC-052: K04 Terminate a running Job
+### S-DOC-052: K04 Terminate a running Session
 
 
 Preparation: Linux user/mount namespaces available.
 
-**Semantics**: Job exits before sleep completes; status --json reports cancelled and no live state.
+**Semantics**: Session exits before sleep completes; status --json reports cancelled and no live state.
 
-**Rationale**: Background a long Job and request normal termination by stage path.
+**Rationale**: Background a long Session and request normal termination by stage path.
 
 **Violation example**: Remain live after kill or report a different terminal state.
 
@@ -1537,13 +1537,13 @@ require_rootless
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor --stage "$CASE_ROOT/live-stage" -- /bin/sleep 30 > live.log 2>&1 &
-job_pid=$!
-for ((attempt=0; attempt<100; attempt++)); do
+session_pid=$!
+for ((execution=0; execution<100; execution++)); do
   test -f "$CASE_ROOT/live-stage/run.json" && break
   sleep 0.05
 done
 pvisor kill "$CASE_ROOT/live-stage"
-if wait "$job_pid"; then exit 1; fi
+if wait "$session_pid"; then exit 1; fi
 pvisor status --json "$CASE_ROOT/live-stage" > stopped.json
 CASE_COMMAND
 

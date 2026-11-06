@@ -173,7 +173,7 @@ fn startup_logs_are_opt_in_correlated_and_route_to_frontend() {
         assert_eq!(output.stdout, b"WORKLOAD_READY\n");
         log.push_str(&String::from_utf8(output.stderr).unwrap());
     }
-    // Parsing and execution have separate PIDs. Correlate each Job owner
+    // Parsing and execution have separate PIDs. Correlate each Session owner
     // with its originating frontend.
     let bindings: Vec<_> = log
         .lines()

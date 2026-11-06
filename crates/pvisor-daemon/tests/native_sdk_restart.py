@@ -1,4 +1,4 @@
-"""Opt-in E2B SDK check that API restart retains a native VM and stdin job.
+"""Opt-in E2B SDK check that API restart retains a native VM and stdin session.
 
 Requires a native --e2b template, KVM and an empty delegated cgroup. The caller
 supplies an unused state directory and OPEN_SANDBOX_API_KEY/E2B_API_KEY. Only this
@@ -86,7 +86,7 @@ def run(args):
         start()
         connected = Sandbox.connect(sandbox.sandbox_id, **options)
         assert json.loads(record_path.read_text()) == identity, (
-            "API restart replaced the VM Attempt"
+            "API restart replaced the VM Execution"
         )
         assert connected.files.read("/tmp/restart-data", format="bytes") == payload
         assert any(process.pid == pid for process in connected.commands.list())
@@ -94,7 +94,7 @@ def run(args):
         connected.commands.send_stdin(pid, "restart ✓\n")
         assert handle.wait().stdout == "retained:restart ✓"
         print(
-            "PASS: same native VM/Attempt, binary file and live stdin process retained across API restart",
+            "PASS: same native VM/Execution, binary file and live stdin process retained across API restart",
             flush=True,
         )
     finally:

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license = "Apache-2.0 AND MIT"
-description = "pVisor embeddable execution runtime and durable Job service"
+description = "pVisor embeddable execution runtime and durable Session service"
 readme = "README.md"
 
 [features]

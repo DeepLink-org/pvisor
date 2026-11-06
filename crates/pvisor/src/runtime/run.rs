@@ -1,7 +1,7 @@
 //! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
-//! Embedded callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI Job
-//! execution enters directly through a per-Job owner.
+//! Embedded callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI Session
+//! execution enters directly through a per-Session owner.
 
 #[cfg(test)]
 use pvisor_journal::api::JournalStore;
@@ -23,9 +23,9 @@ use pvisor_core::event::Event;
 #[cfg(test)]
 use pvisor_core::event::Receipt;
 use pvisor_core::{
-    AttemptId, CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutorPlan,
-    IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION, RunInvocation, RunResult,
-    RunSpec,
+    CapabilityDimension, CapabilityEnforcementPlan, EnforcementPlanLevel, ExecutionId,
+    ExecutorPlan, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION,
+    RunInvocation, RunResult, RunSpec,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -82,7 +82,7 @@ impl RunEventStream {
 /// Select [`Self::execution`] for status, subscriptions, cancellation and controls.
 pub struct RunHandle {
     pub(crate) run_id: pvisor_core::RunId,
-    pub(crate) attempt_id: AttemptId,
+    pub(crate) execution_id: ExecutionId,
     pub(crate) execution: super::execution::Execution,
     pub(crate) events: RunEventPublisher,
     pub(crate) agentctl: crate::AgentCtlControl,
@@ -93,8 +93,8 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
-    /// Host Unix endpoint for this live VM attempt; never forwarded to the
-    /// guest. Non-VM and terminal attempts return explicit errors.
+    /// Host Unix endpoint for this live VM execution; never forwarded to the
+    /// guest. Non-VM and terminal executions return explicit errors.
     #[cfg(unix)]
     pub fn control_socket(&self) -> anyhow::Result<std::path::PathBuf> {
         super::instance_control::socket(self)
@@ -109,8 +109,8 @@ impl RunHandle {
         &self.run_id
     }
 
-    pub fn attempt_id(&self) -> &AttemptId {
-        &self.attempt_id
+    pub fn execution_id(&self) -> &ExecutionId {
+        &self.execution_id
     }
 
     pub fn subscribe_events(&self) -> RunEventStream {
@@ -223,7 +223,7 @@ impl PVisorBuilder {
         self
     }
 
-    /// Configure the Attempt network policy and interception-driver selection.
+    /// Configure the Execution network policy and interception-driver selection.
     pub fn network(mut self, network: NetworkDriverConfig) -> Self {
         self.runtime = self.runtime.network(network);
         self
@@ -258,7 +258,7 @@ impl PVisorBuilder {
     /// `overlay`; an empty lower list defaults to `target`, while compose or a
     /// different lower is rejected at Run admission. Replacing/wrapping the bound
     /// executor later is rejected before stage writes. Clones and admitted
-    /// Attempts retain the owner through native teardown. No existing stage is
+    /// Executions retain the owner through native teardown. No existing stage is
     /// restored, no CLI selector or VM cache switch is implied, and failed
     /// admission leaves the prepared generations intact. External store writes
     /// are unsupported. Use `on_executor_output` for observation without wrapping
@@ -282,8 +282,8 @@ impl PVisorBuilder {
     ///
     /// The most recently registered observer runs synchronously once after an
     /// invoked executor returns, before stage sealing/teardown. It receives no
-    /// mutable output or Session authority. It must not block, panic or reenter
-    /// runtime operations. Cloned runtimes/Attempts retain the callback; a Run
+    /// mutable output or ExecutionContext authority. It must not block, panic or reenter
+    /// runtime operations. Cloned runtimes/Executions retain the callback; a Run
     /// rejected before execution or cancelled before invocation does not call it.
     pub fn on_executor_output<F>(mut self, observer: F) -> Self
     where
@@ -362,7 +362,7 @@ impl PVisorBuilder {
 
 /// Portable Agent execution runtime.
 ///
-/// Owns Attempt prepare (capture / network / overlay), process execution, and
+/// Owns Execution prepare (capture / network / overlay), process execution, and
 /// Run lifecycle. Hosts call [`Self::run`] directly — no forwarding control plane.
 #[derive(Clone)]
 pub struct PVisor {
@@ -473,7 +473,7 @@ impl PVisor {
     }
 
     /// Resolve the same Operation used by execution, without starting
-    /// an Attempt or mounting filesystems.
+    /// an Execution or mounting filesystems.
     pub fn resolve_operation(
         &self,
         spec: RunSpec,
@@ -591,7 +591,7 @@ impl PVisor {
             && overlay.merged_dir.is_none()
         {
             return Err(PVisorError::InvalidSpec(
-                "Session file policy requires a configured OverlayFS view".into(),
+                "ExecutionContext file policy requires a configured OverlayFS view".into(),
             ));
         }
         if spec
@@ -603,7 +603,7 @@ impl PVisor {
             && !self.runtime.proxy_network_is_configured()
         {
             return Err(PVisorError::InvalidSpec(
-                "Session network policy requires a configured network driver".into(),
+                "ExecutionContext network policy requires a configured network driver".into(),
             ));
         }
         let mut network = self.runtime.resolve_network_config(&spec);
@@ -716,8 +716,8 @@ impl PVisor {
             .spec
             .metadata
             .remove(super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA);
-        let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
-        // Bind and persist before starting any attempt task.
+        let execution_id = ExecutionId::new(format!("execution-{}", uuid::Uuid::new_v4()));
+        // Bind and persist before starting any execution task.
         #[cfg(unix)]
         let control_server = if self.instance_control {
             if self.control_socket.is_some()
@@ -731,7 +731,7 @@ impl PVisor {
                 super::instance_control::InstanceControlServer::bind(
                     self.control_socket.as_deref(),
                     resolved.spec.run_id.as_str(),
-                    attempt_id.as_str(),
+                    execution_id.as_str(),
                 )
                 .map_err(PVisorError::Prepare)?,
             )
@@ -753,11 +753,11 @@ impl PVisor {
                     .map_err(|error| PVisorError::Prepare(error.into()))?,
             );
         }
-        let (mut handle, owner) = crate::Session::start(
+        let (mut handle, owner) = crate::ExecutionContext::start(
             &self.runtime,
             Arc::clone(&self.event_sink),
             resolved,
-            attempt_id,
+            execution_id,
         )
         .await?;
         #[cfg(unix)]
@@ -896,7 +896,7 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventSink, MemoryEventSink, Session};
+    use crate::{EventSink, ExecutionContext, MemoryEventSink};
     use async_trait::async_trait;
     use pvisor_core::{
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
@@ -974,14 +974,14 @@ mod tests {
             resolved.spec.metadata["pvisor.vm.guest_cwd"],
             serde_json::to_value(&target).unwrap()
         );
-        let attempt_id = AttemptId::new("owned-stage-attempt");
+        let execution_id = ExecutionId::new("owned-stage-execution");
         let held = super::super::registry::RunLease::acquire_new(&stage).unwrap();
         let blocked = runtime.runtime.prepare(
             &mut resolved.spec,
             &resolved.preparation,
             &[],
             false,
-            &attempt_id,
+            &execution_id,
         );
         assert!(blocked.is_err());
         assert!(!stage.join("upper").exists() && !stage.join("preimages").exists());
@@ -993,7 +993,7 @@ mod tests {
                 &resolved.preparation,
                 &[],
                 false,
-                &attempt_id,
+                &execution_id,
             )
             .unwrap()
             .unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
         );
         drop(resolved);
         drop(runtime);
-        // Fault injection proves Attempt ownership independently of the builder
+        // Fault injection proves Execution ownership independently of the builder
         // and durable pin. Production does not expose catalog removal.
         std::fs::remove_file(
             store_path
@@ -1080,7 +1080,7 @@ mod tests {
         fn supports_guest_workspace_overlay(&self) -> bool {
             self.2
         }
-        async fn execute(&self, _: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, _: &ExecutionContext) -> crate::ExecutorOutput {
             panic!("preparation tests must not execute workloads")
         }
     }
@@ -1150,7 +1150,7 @@ mod tests {
             for (host, allowed) in [("blocked.example", false), ("allowed.example", true)] {
                 let request = NetworkAccessRequest {
                     run_id: None,
-                    attempt_id: None,
+                    execution_id: None,
                     host: host.into(),
                     port: Some(443),
                     transport: NetworkTransport::TcpTunnel,
@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_finishes_the_attempt() {
+    async fn cancellation_finishes_the_execution() {
         let runtime = PVisor::builder().build();
         let mut spec = RunSpec::process("cancellation", "agent", "/bin/sh");
         let RunInvocation::Process(process) = &mut spec.invocation;
@@ -1203,7 +1203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_proxy_attempt_commits_results_and_releases_resources() {
+    async fn plain_proxy_execution_commits_results_and_releases_resources() {
         let storage = tempfile::tempdir().unwrap();
         let sink = Arc::new(MemoryEventSink::default());
         let runtime = PVisor::builder()
@@ -1217,7 +1217,7 @@ mod tests {
                 },
             ))
             .build();
-        let mut spec = RunSpec::process("proxy-attempt", "agent", "/bin/sh");
+        let mut spec = RunSpec::process("proxy-execution", "agent", "/bin/sh");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.args = vec!["-c".into(), "test -n \"$HTTP_PROXY\"".into()];
         let RunInvocation::Process(process) = &mut spec.invocation;
@@ -1447,7 +1447,7 @@ mod tests {
     struct FailCommittedTerminal {
         stage: std::path::PathBuf,
         kind: crate::EventAppendErrorKind,
-        attempts: Mutex<Vec<String>>,
+        executions: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl EventSink for FailCommittedTerminal {
@@ -1457,7 +1457,10 @@ mod tests {
                     crate::RunBundle::read(&self.stage)?.run.state,
                     RunState::Completed
                 );
-                self.attempts.lock().unwrap().push(event.name().to_owned());
+                self.executions
+                    .lock()
+                    .unwrap()
+                    .push(event.name().to_owned());
                 if event.name() == "run.completed" {
                     anyhow::bail!("simulated terminal publication failure");
                 }
@@ -1482,7 +1485,7 @@ mod tests {
             let sink = Arc::new(FailCommittedTerminal {
                 stage: storage.path().to_path_buf(),
                 kind,
-                attempts: Mutex::new(Vec::new()),
+                executions: Mutex::new(Vec::new()),
             });
             let runtime = PVisor::builder()
                 .storage(storage.path())
@@ -1508,7 +1511,7 @@ mod tests {
                     .any(|warning| warning.contains("terminal event audit gap"))
             );
             assert_eq!(
-                sink.attempts.lock().unwrap().as_slice(),
+                sink.executions.lock().unwrap().as_slice(),
                 ["completed", "run.completed"]
             );
             assert_eq!(
@@ -1594,7 +1597,7 @@ mod tests {
         fn supports(&self, invocation: &RunInvocation) -> bool {
             ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, context: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, context: &ExecutionContext) -> crate::ExecutorOutput {
             let mut output = ProcessExecutor::default().execute(context).await;
             // Backends cannot publish a terminal state or declare a nonzero exit successful.
             assert!(!context.execution().status().state.is_terminal());
@@ -1633,7 +1636,7 @@ mod tests {
         fn supports(&self, invocation: &RunInvocation) -> bool {
             ProcessExecutor::default().supports(invocation)
         }
-        async fn execute(&self, context: &Session) -> crate::ExecutorOutput {
+        async fn execute(&self, context: &ExecutionContext) -> crate::ExecutorOutput {
             ProcessExecutor::default().execute(context).await
         }
     }

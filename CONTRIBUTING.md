@@ -31,7 +31,7 @@ continue to use mise 2026.10.18 and the committed tool versions and lockfiles.
 installing guest Rust targets. CI's shared setup action accepts a `tools` subset
 and a `setup` scope (`none`, `python`, or `full`); tool versions stay in `mise.toml`.
 CI disables automatic tool installation after provisioning so nested tasks keep
-the requested scope. Full local setup and build jobs retain the complete tools.
+the requested scope. Full local setup and builds retain the complete tools.
 
 ```bash
 mise run build            # debug build

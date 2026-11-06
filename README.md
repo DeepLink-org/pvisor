@@ -25,7 +25,7 @@ agents: file changes stay staged until you review them and choose what to keep.
 | Mode | Workflow | Boundary and results |
 | --- | --- | --- |
 | Docker style sandbox | Use familiar image, run, exec, stop, and remove commands | One Linux VM per container; container lifecycle and file operations |
-| Agent style stagebox | Let an agent experiment, review staged changes, and choose what to keep | Native Jobs with explicit staging and review/apply/drop; isolation depends on the selected executor |
+| Agent style stagebox | Let an agent experiment, review staged changes, and choose what to keep | Native Sessions with explicit staging and review/apply/drop; isolation depends on the selected executor |
 
 ### Hands-off vibe coding.
 
@@ -89,7 +89,7 @@ cat hello.txt
 ```
 
 Expect `Hello from pVisor`. The greeting is now in your project; the notes were discarded.
-`last` selects the latest Job in this workspace. The
+`last` selects the latest Session in this workspace. The
 [stagebox walkthrough](https://deeplink-org.github.io/pvisor/start/first-run/#agent-style)
 checks the original directory, staged view, and final file state at each step.
 No model account or VM image is needed for this Host example.
@@ -106,7 +106,7 @@ them, and retest in your project. You need Python, Claude Code, and model access
 > tests already recorded and the cloud-model and approval behavior still awaiting
 > validation. pVisor does not automatically disable agent or IDE approvals.
 
-`--safe` fails if required controls cannot be installed. Ordinary Host Jobs write
+`--safe` fails if required controls cannot be installed. Ordinary Host Sessions write
 through by default. File acceptance does not undo remote API calls, database
 writes, charges, or previously applied files. See
 [security boundaries](https://deeplink-org.github.io/pvisor/security/).
@@ -157,12 +157,12 @@ and RL post-training. Resource sharing and idle-memory reclamation help manage
 machine capacity; execution records and staged changes help you review results.
 Capabilities depend on the interface, executor, and platform.
 
-- Native Jobs: use `pvisor spawn` with Host, OCI, or VM execution and explicit staging for review/apply.
+- Native Sessions: use `pvisor spawn` with Host, OCI, or VM execution and explicit staging for review/apply.
 - Embedded runtime: integrate the [Rust runtime](crates/pvisor/README.md).
 - Platform APIs: use the [local daemon](crates/pvisor-daemon/README.md) for partial OpenSandbox/E2B SDK profiles on Linux/KVM, or the [containerd shim](crates/pvisor-shim/README.md).
 - Container workflows: the experimental [Docker-style CLI](crates/pvisor-cli/README.md#docker-command-profile-experimental) runs one VM per container.
 
-These interfaces have separate lifecycle and capability contracts. Daemon APIs do not expose native Job stage/apply semantics. Container staged
+These interfaces have separate lifecycle and capability contracts. Daemon APIs do not expose native Session stage/apply semantics. Container staged
 binds have their own review/apply/drop contract. Start with the
 [VM tool-execution tutorial](https://deeplink-org.github.io/pvisor/start/infrastructure/)
 for a caller-script example, or consult the

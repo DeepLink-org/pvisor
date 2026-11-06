@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-/// Stored Attempt outcome. Terminal shape alone is not completion or mutation authority;
-/// receipt validation and the existing Job/Attempt leases remain mandatory.
+/// Stored Execution outcome. Terminal shape alone is not completion or mutation authority;
+/// receipt validation and the existing Session/Execution leases remain mandatory.
 pub enum RunRecordState {
     /// Initial stored projection; a live observation is required to claim running.
     Running,
@@ -65,8 +65,8 @@ pub(crate) fn project_record(
         Some(result) => {
             ensure!(
                 record.run_id == result.run_id.as_str()
-                    && record.attempt_id.as_deref() == Some(result.attempt_id.as_str()),
-                "completion Attempt identity mismatch"
+                    && record.execution_id.as_deref() == Some(result.execution_id.as_str()),
+                "completion Execution identity mismatch"
             );
             (
                 record_state(result.state)?,
@@ -86,19 +86,19 @@ mod tests {
     use super::*;
     fn record() -> RunRecord {
         serde_json::from_value(serde_json::json!({
-            "schema_version":2,"completion_protocol":1,"run_id":"job","attempt_id":"attempt","session_id":"session","agent":"test","pid":0,"command":["true"],"state":"running","storage":"/stage","started_at_unix_ms":1,"finished_at_unix_ms":9,"network":{},"gateway_listen":null,"overlay":null
+            "schema_version":3,"completion_protocol":2,"run_id":"session","execution_id":"execution","session_id":"session","agent":"test","pid":0,"command":["true"],"state":"running","storage":"/stage","started_at_unix_ms":1,"finished_at_unix_ms":9,"network":{},"gateway_listen":null,"overlay":null
         })).unwrap()
     }
     #[test]
     fn absent_and_foreign_receipts_cannot_confirm_or_partially_change_a_record() {
         let mut record = record();
         let mut result: RunResult = serde_json::from_value(serde_json::json!({
-            "run_id":"job","attempt_id":"foreign","state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":3,"exit_code":0
+            "run_id":"session","execution_id":"foreign","state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":3,"exit_code":0
         })).unwrap();
         let before = serde_json::to_value(&record).unwrap();
         assert!(project_record(&mut record, Some(&result)).is_err());
         assert_eq!(before, serde_json::to_value(&record).unwrap());
-        result.attempt_id = "attempt".into();
+        result.execution_id = "execution".into();
         result.state = RunState::Running;
         assert!(project_record(&mut record, Some(&result)).is_err());
         assert_eq!(before, serde_json::to_value(&record).unwrap());

@@ -82,6 +82,6 @@ incrementing ENGINE_SEMANTICS and updating the digest stability tests.
   --stdin execution requires canonical source bytes. CLI cancellation exits 128+signal.
 - `bench id=NAME` marks a TOML direct-argv experiment plan. The shared Python
   perf_counter_ns runtime runs warmups and samples, requires zero exits and all
-  validation/hooks, always attempts cleanup, retains every trial and reports sample
+  validation/hooks, always executions cleanup, retains every trial and reports sample
   statistics. Plan/source/runtime bytes bind evidence. These are observations, not
   case approvals; existing registered benchmark publication gates remain mandatory.

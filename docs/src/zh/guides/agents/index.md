@@ -10,7 +10,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
 
 1. ### 确认 Agent 和认证方式 {#prepare-agent}
 
-    在准备启动 Job 的终端检查命令，例如 Claude Code：
+    在准备启动 Session 的终端检查命令，例如 Claude Code：
 
     ```bash title="Shell"
     command -v claude
@@ -28,7 +28,7 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
     pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
     ```
 
-    给出明确目标、允许修改的文件范围和测试要求。等待 Agent 完成任务并退出，回到启动时的终端。若模型连接或依赖下载失败，按下方网络表检查目标与凭据；保留错误和 Job 记录，再调整配置重试。
+    给出明确目标、允许修改的文件范围和测试要求。等待 Agent 完成任务并退出，回到启动时的终端。若模型连接或依赖下载失败，按下方网络表检查目标与凭据；保留错误和 Session 记录，再调整配置重试。
 
 1. ### 审查并接收结果 {#accept-results}
 

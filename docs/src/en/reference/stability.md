@@ -9,8 +9,8 @@ Current readers check format versions. Verify each interface against its reading
 | Interface | Current rule |
 | --- | --- |
 | CLI / Run TOML | Current `--help`/types define behavior; unknown fields reject; check changelog when upgrading |
-| Run record / completion | New Run schema 2 requires completion protocol 1; missing committed completion yields Unknown after owner exit; schema 1 retains legacy reading rules |
-| Run Bundle | New schema 5 requires a matching Run/Attempt completion receipt and Bundle digest; schema 4 remains readable under legacy rules; unknown versions reject; no automatic migration |
+| Run record / completion | New Run schema 3 requires completion protocol 2; missing committed completion yields Unknown after owner exit; schema 1 retains legacy reading rules |
+| Run Bundle | New schema 6 requires a matching Run/Execution completion receipt and Bundle digest; schema 4 remains readable under legacy rules; unknown versions reject; no automatic migration |
 | Event / Journal | Formal version 5; old JSONL incompatible |
 | Operation | Schema 1; unknown versions reject |
 | Replay | `sandbox-playback.result/v3`; adapter versions pinned in the guide |
@@ -21,6 +21,6 @@ These are implemented reading rules, not new long-term promises awaiting maintai
 ## Upgrade procedure
 
 1. Retain old Bundles, Journals, and capture rather than overwriting them.
-2. Run a fresh Job with the new version; check admission, output reading, and apply conflicts.
+2. Run a fresh Session with the new version; check admission, output reading, and apply conflicts.
 3. Keep a compatible old reader for old records; do not remove schema fields to bypass checks.
 4. Record CLI/config/format/platform changes in the changelog. Maintainers still need to define deprecation windows.

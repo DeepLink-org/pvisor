@@ -19,7 +19,7 @@
 <rect x="54" y="523" width="650" height="190" rx="28" fill="#2e4c70" stroke="#416080" stroke-width="7"/>
 <text x="379" y="568" fill="#e9eef8" font-size="28" font-weight="700">合成 DNS 与逻辑身份</text>
 <rect x="72" y="590" width="614" height="96" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
-<text x="379.0" y="634.0" fill="#e9eef8" font-size="27" font-weight="700">名称 ↔ Attempt 内稳定地址</text>
+<text x="379.0" y="634.0" fill="#e9eef8" font-size="27" font-weight="700">名称 ↔ Execution 内稳定地址</text>
 <text x="379.0" y="663.0" fill="#e9eef8" font-size="20" font-weight="500">198.18.0.0/15</text>
 <rect x="726" y="523" width="660" height="190" rx="28" fill="#284867" stroke="#416080" stroke-width="7"/>
 <text x="1056" y="568" fill="#e9eef8" font-size="28" font-weight="700">guest TCP 与 flow 状态</text>
@@ -31,7 +31,7 @@
 <text x="720.0" y="797.0" fill="#e9eef8" font-size="20" font-weight="500">core 授权 → 解析地址检查；不透明 alias 的最终 IP 不可见</text>
 <rect x="54" y="830" width="1332" height="98" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
 <text x="720.0" y="875.0" fill="#e9eef8" font-size="27" font-weight="700">宿主 connect 成功 → 推进 guest 握手 → 双向 relay</text>
-<text x="720.0" y="904.0" fill="#e9eef8" font-size="20" font-weight="500">策略、计数与带宽预算归属同一 Attempt</text>
+<text x="720.0" y="904.0" fill="#e9eef8" font-size="20" font-weight="500">策略、计数与带宽预算归属同一 Execution</text>
 <path d="M720 961 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
 <rect x="30" y="995" width="1380" height="111" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
 <text x="720" y="1042" fill="#c8e0fc" font-size="31" font-weight="700">宿主 TCP socket → 外部服务</text>

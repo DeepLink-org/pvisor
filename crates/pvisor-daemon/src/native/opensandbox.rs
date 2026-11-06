@@ -25,9 +25,13 @@ impl Utf8 {
         text
     }
 }
-pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> Response {
+pub(super) fn events(
+    process: Arc<CommandProcess>,
+    connect: bool,
+    cancel: Option<Service>,
+) -> Response {
     struct State {
-        job: Arc<Job>,
+        process: Arc<CommandProcess>,
         revision: watch::Receiver<u64>,
         cursor: usize,
         done: bool,
@@ -37,19 +41,19 @@ pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> R
     }
     impl Drop for State {
         fn drop(&mut self) {
-            if !self.job.done()
+            if !self.process.done()
                 && let Some(service) = self.cancel.take()
             {
-                let job = self.job.clone();
+                let process = self.process.clone();
                 tokio::spawn(async move {
-                    let _ = service.signal(&job, libc::SIGKILL).await;
+                    let _ = service.signal(&process, libc::SIGKILL).await;
                 });
             }
         }
     }
-    let revision = job.changed.subscribe();
+    let revision = process.changed.subscribe();
     let state = State {
-        job,
+        process,
         revision,
         cursor: 0,
         done: false,
@@ -63,7 +67,7 @@ pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> R
         }
         loop {
             let event = state
-                .job
+                .process
                 .journal
                 .lock()
                 .unwrap()
@@ -76,9 +80,9 @@ pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> R
                 if state.connect {
                     use base64::Engine;
                     let event = match event {
-                        Event::Start => json!({"start":{"pid":state.job.pid}}),
+                        Event::Start => json!({"start":{"pid":state.process.pid}}),
                         Event::Output(channel, bytes) => {
-                            json!({"data":{if state.job.launch.tty.is_some() {"pty"} else if channel == 2 {"stderr"} else {"stdout"}:base64::engine::general_purpose::STANDARD.encode(bytes)}})
+                            json!({"data":{if state.process.launch.tty.is_some() {"pty"} else if channel == 2 {"stderr"} else {"stdout"}:base64::engine::general_purpose::STANDARD.encode(bytes)}})
                         }
                         Event::Exit(code, error) => {
                             state.done = true;
@@ -92,7 +96,7 @@ pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> R
                 } else {
                     match event {
                         Event::Start => output.extend(sse(
-                            json!({"type":"init","text":state.job.id,"timestamp":timestamp()}),
+                            json!({"type":"init","text":state.process.id,"timestamp":timestamp()}),
                         )),
                         Event::Output(channel, bytes) => {
                             let text = state.text[usize::from(channel == 2)].text(&bytes, false);
@@ -111,7 +115,7 @@ pub(super) fn events(job: Arc<Job>, connect: bool, cancel: Option<Service>) -> R
                             if code != 0 {
                                 output.extend(sse(json!({"type":"error","error":{"ename":if error.is_some() {"RuntimeError"} else {"CommandExitError"},"evalue":error.unwrap_or_else(||code.to_string()),"traceback":[]},"timestamp":timestamp()})));
                             }
-                            output.extend(sse(json!({"type":"execution_complete","execution_time":(chrono::Utc::now()-state.job.started).num_milliseconds(),"timestamp":timestamp()})));
+                            output.extend(sse(json!({"type":"execution_complete","execution_time":(chrono::Utc::now()-state.process.started).num_milliseconds(),"timestamp":timestamp()})));
                             state.done = true;
                         }
                     }
@@ -388,9 +392,9 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
         }
         ("POST", "/command") => {
             let (launch, background, timeout_ms) = command(json_body(request).await?)?;
-            let job = service.start(launch, false, None).await?;
+            let process = service.start(launch, false, None).await?;
             if timeout_ms > 0 {
-                let current = job.clone();
+                let current = process.clone();
                 let service = service.clone();
                 tokio::spawn(async move {
                     let mut changed = current.changed.subscribe();
@@ -410,24 +414,25 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                 });
             }
             if background {
-                let mut bytes = sse(json!({"type":"init","text":job.id,"timestamp":timestamp()}));
+                let mut bytes =
+                    sse(json!({"type":"init","text":process.id,"timestamp":timestamp()}));
                 bytes.extend(sse(
                     json!({"type":"execution_complete","timestamp":timestamp()}),
                 ));
                 Ok(([(header::CONTENT_TYPE, "text/event-stream")], bytes).into_response())
             } else {
-                Ok(events(job, false, Some(service)))
+                Ok(events(process, false, Some(service)))
             }
         }
         ("DELETE", "/command") => {
             let id = query(&request, "id").ok_or_else(|| invalid("id required"))?;
-            let job = service.job(&json!(id))?;
-            service.signal(&job, libc::SIGKILL).await?;
+            let process = service.process(&json!(id))?;
+            service.signal(&process, libc::SIGKILL).await?;
             Ok(StatusCode::NO_CONTENT.into_response())
         }
         ("GET", path) if path.starts_with("/command/status/") => {
-            let job = service.job(&json!(path.trim_start_matches("/command/status/")))?;
-            let journal = job.journal.lock().unwrap();
+            let process = service.process(&json!(path.trim_start_matches("/command/status/")))?;
+            let journal = process.journal.lock().unwrap();
             let code = journal.events.iter().find_map(|e| {
                 if let Event::Exit(code, _) = e {
                     Some(*code)
@@ -435,7 +440,7 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                     None
                 }
             });
-            Ok(axum::Json(json!({"id":job.id,"running":!journal.done,"exit_code":code,"started_at":job.started})).into_response())
+            Ok(axum::Json(json!({"id":process.id,"running":!journal.done,"exit_code":code,"started_at":process.started})).into_response())
         }
         ("GET", path) if path.starts_with("/command/") && path.ends_with("/logs") => {
             let id = path
@@ -448,8 +453,8 @@ pub(super) async fn handle(service: Service, request: Request) -> Result<Respons
                 })
                 .transpose()?
                 .unwrap_or(0);
-            let job = service.job(&json!(id))?;
-            let journal = job.journal.lock().unwrap();
+            let process = service.process(&json!(id))?;
+            let journal = process.journal.lock().unwrap();
             let bytes: Vec<u8> = journal
                 .events
                 .iter()

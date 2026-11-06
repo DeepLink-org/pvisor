@@ -16,9 +16,9 @@ const REVIEW_PATH_LIMIT: usize = 200;
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewArgs {
-    /// Job id, project workspace, run.json, a path inside the Job filesystem, or container name/id.
+    /// Session id, project workspace, run.json, a path inside the Session filesystem, or container name/id.
     pub selector: Option<PathBuf>,
-    /// Select a container's exact staged bind guest path (never a Job selector).
+    /// Select a container's exact staged bind guest path (never a Session selector).
     #[arg(
         long,
         value_name = "GUEST_PATH",
@@ -52,10 +52,10 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         &args.output_dir,
         args.mount.as_deref(),
     )?;
-    let response = pvisor::job_service::RuntimeJobService::review(
+    let response = pvisor::session_service::SessionService::review(
         &super::host::service_context(),
-        pvisor::job_service::ReviewRequest {
-            job: pvisor::job_service::JobSelection {
+        pvisor::session_service::ReviewRequest {
+            session: pvisor::session_service::SessionSelection {
                 selector,
                 storage: args.output_dir,
             },
@@ -65,7 +65,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            let Some(unknown) = error.downcast_ref::<pvisor::job_service::ReviewUnavailable>()
+            let Some(unknown) = error.downcast_ref::<pvisor::session_service::ReviewUnavailable>()
             else {
                 return Err(error);
             };
@@ -75,8 +75,8 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
                     serde_json::to_string_pretty(&serde_json::json!({
                         "state": "unknown",
                         "code": "COMPLETION_UNCOMMITTED",
-                        "job_id": unknown.job_id,
-                        "attempt_id": unknown.attempt_id,
+                        "session_id": unknown.session_id,
+                        "execution_id": unknown.execution_id,
                         "reason": unknown.reason,
                         "stage": unknown.stage,
                         "stage_retained": true,
@@ -85,12 +85,12 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
                     }))?
                 );
             } else {
-                println!("pVisor review — {}", unknown.job_id);
+                println!("pVisor review — {}", unknown.session_id);
                 println!("outcome: UNKNOWN");
                 println!("reason: {}", unknown.reason);
                 println!("stage retained: {}", unknown.stage.display());
                 println!(
-                    "recovery: run `pvisor status <selector> --json` with this stage or Job ID to reconcile available receipts"
+                    "recovery: run `pvisor status <selector> --json` with this stage or Session ID to reconcile available receipts"
                 );
                 println!(
                     "A missing receipt cannot establish success. Workspace mutation remains blocked."

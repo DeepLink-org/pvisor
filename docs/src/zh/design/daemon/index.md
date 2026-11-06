@@ -13,12 +13,12 @@
 | 原生 supervisor | 嵌入 pVisor/VM、RunHandle、vCPU 控制、cgroup 身份与 guest 协议适配 | Stage/apply/checkpoint API 或自动 node 共享 |
 | 预制镜像 | 固定用户空间与后端选择；显式上游模板提供 execd/envd | 替代生命周期 API 授权 |
 | `pvisor-guest` | 统一 PID 1、进程启动／回收、文件与控制协议 | 宿主 HTTP 鉴权或 SDK 协议适配 |
-| 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
+| 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Session 工作流仍独立 | 自动暴露 stage/checkpoint API |
 | 原生 node 运行时 | 独立不可变 backing 协议 | 自动 daemon 获取／共享 |
 | Daemon 池组件 | `serve --sandbox --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
 | `pvisor cache` / `pvisor-daemon serve --cache` | OCI 准备／发布／读取与缓存服务 | Sandbox 生命周期 |
 
-Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `RuntimeJobService` 启动；live status/pause/resume/termination 复用进程内 `Execution`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
+Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。执行经 `SessionService` 启动；live status/pause/resume/termination 复用进程内 `Execution`，supervisor 另行校验归属、就绪与确认删除。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
 
 Sandbox 生命周期、不可变 backing 和活动 RAM 分别由各自的所有者管理，具有不同的故障边界。接入新路径时，需要明确获取、取消、终止与 pin 释放的合同，并通过固定预算测量评估。统一打包、启动入口或端口本身不会补齐 runtime 适配器；接管 live VM、仲裁共享 cold-pool 和自动获取 node 资源都需要各自的适配器与验证，启动、内存与密度收益也需单独测量。
 
@@ -101,9 +101,9 @@ OpenSandbox 发布 44772/18080 两个逻辑端点，E2B 发布 49983。它们均
 
 ## 独立执行语义 {#integration}
 
-原生 pause/resume 通过 RunHandle 控制同一 Attempt 的 live vCPU，不是 cgroup freeze、内存 offload、checkpoint/restore 或重建 VM。准入记账保留。Execd 转发不是 Gateway 路由、捕获或推理空闲 CPU 释放。
+原生 pause/resume 通过 RunHandle 控制同一 Execution 的 live vCPU，不是 cgroup freeze、内存 offload、checkpoint/restore 或重建 VM。准入记账保留。Execd 转发不是 Gateway 路由、捕获或推理空闲 CPU 释放。
 
-普通 Job 保持独立的[checkpoint/fork 语义](../execution-model.md)。Daemon 不能 stage/apply 文件、恢复原生 VM 状态、获取 node backing 或协调模型响应。接入这些路径需要显式适配器及生命周期／证据合同，不能靠重命名已退役的分布式控制完成。
+普通 Session 保持独立的[checkpoint/fork 语义](../execution-model.md)。Daemon 不能 stage/apply 文件、恢复原生 VM 状态、获取 node backing 或协调模型响应。接入这些路径需要显式适配器及生命周期／证据合同，不能靠重命名已退役的分布式控制完成。
 
 ## 兼容性与证据 {#invariants}
 

@@ -117,7 +117,7 @@ def paired_interval(differences):
 
 
 def analyze(report):
-    rows = report["attempts"]
+    rows = report["executions"]
     required = {
         (r, p, a) for r in range(report["samples"]) for p in PATTERNS for a in report["arms"]
     }
@@ -275,9 +275,9 @@ def main():
             swap_max=0,
         ),
         interference="30s quiet admission; reject any visible foreign VM/build; retain all failures, stop campaign",
-        cpu_scope="group CPU includes SDK/VM/daemon; ksmd is global and outside group quota, separately recorded over admission and whole attempt",
+        cpu_scope="group CPU includes SDK/VM/daemon; ksmd is global and outside group quota, separately recorded over admission and whole execution",
         harness_sha256={f.name: digest(f) for f in harness.iterdir()},
-        attempts=[],
+        executions=[],
         complete=False,
     )
     save(args.output / "report.json", report)
@@ -286,7 +286,7 @@ def main():
         cells = [(pattern, arm) for pattern in PATTERNS for arm in arms]
         random.Random(20261018 + round_id).shuffle(cells)
         for pattern, arm in cells:
-            output = args.output / str(len(report["attempts"]))
+            output = args.output / str(len(report["executions"]))
             condition = dict(
                 vms=4,
                 mode="pool" if arm == "adaptive" else "fresh",
@@ -333,7 +333,7 @@ def main():
                 row["metrics"]["global_ksmd_cpu_seconds"] = (
                     after["cpu_seconds"] - before["cpu_seconds"]
                 )
-            report["attempts"].append(row)
+            report["executions"].append(row)
             save(args.output / "report.json", report)
             print(f"round={round_id} {pattern}/{arm}: {row['status']}", file=sys.stderr, flush=True)
             if row["status"] != "successful":
@@ -351,7 +351,7 @@ def main():
     print(
         json.dumps(
             dict(
-                conditions=len(report["attempts"]),
+                conditions=len(report["executions"]),
                 samples_per_condition=args.samples,
                 complete=report["complete"],
                 evidence=str(args.output),

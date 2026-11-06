@@ -93,7 +93,7 @@ def validate_observation(rows, guards, *, tasks_max=128):
             or budget["pids.max"] != "256"
         ):
             raise ValueError("installed resource budget mismatch")
-    if not guards or any(item.get("jobs", []) for item in guards):
+    if not guards or any(item.get("sessions", []) for item in guards):
         raise ValueError("foreign VM/build or missing host guard during sampling")
 
 
@@ -654,7 +654,7 @@ def pss_observer(unit, stop, root):
     save(root / "pss.json", rows)
 
 
-def attempt(
+def execution(
     inputs, root, arm, pattern, hashes, harness, *, library_variant=None, docker_inputs=None
 ):
     root.mkdir()
@@ -885,7 +885,7 @@ def main():
         patterns=patterns,
         receipt=receipt,
         harness_sha256=digest(Path(__file__)),
-        attempts=[],
+        executions=[],
         complete=False,
         harness_files=harness,
         host=host_identity(),
@@ -916,9 +916,9 @@ def main():
                 report["error"] = "source/input changed between conditions"
                 save(output / "report.json", report)
                 return 1
-            row = attempt(
+            row = execution(
                 inputs,
-                output / str(len(report["attempts"])),
+                output / str(len(report["executions"])),
                 arm,
                 pattern,
                 hashes[pattern],
@@ -926,7 +926,7 @@ def main():
                 docker_inputs=docker_inputs,
             )
             row["round"] = r
-            report["attempts"].append(row)
+            report["executions"].append(row)
             save(output / "report.json", report)
             print(f"round={r} {pattern}/{arm}: {row['status']}", file=sys.stderr, flush=True)
             if row["status"] != "successful":
@@ -940,7 +940,7 @@ def main():
         json.dumps(
             dict(
                 complete=report["complete"],
-                conditions=len(report["attempts"]),
+                conditions=len(report["executions"]),
                 evidence=str(output),
             )
         )

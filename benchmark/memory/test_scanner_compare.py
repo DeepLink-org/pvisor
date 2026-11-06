@@ -33,7 +33,7 @@ def cohort():
                         },
                     )
                 )
-    return dict(complete=True, preflight=False, samples=5, arms=subject.ARMS, attempts=rows)
+    return dict(complete=True, preflight=False, samples=5, arms=subject.ARMS, executions=rows)
 
 
 class ComparisonTests(unittest.TestCase):
@@ -106,11 +106,11 @@ class ComparisonTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 report = copy.deepcopy(cohort())
                 if kind == "missing":
-                    report["attempts"].pop()
+                    report["executions"].pop()
                 if kind == "failed":
-                    report["attempts"][0]["status"] = "failed"
+                    report["executions"][0]["status"] = "failed"
                 if kind == "duplicate":
-                    report["attempts"][-1] = report["attempts"][0]
+                    report["executions"][-1] = report["executions"][0]
                 if kind == "incomplete":
                     report["complete"] = False
                 with self.assertRaises(ValueError):

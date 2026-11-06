@@ -97,8 +97,8 @@ def execute(task, candidate_patch):
         "task_id": task["task_id"],
         "sample_id": root.name,
         "records_dir": str(root),
-        "job_id": bundle["run"]["run_id"],
-        "attempt_id": bundle["run"]["attempt_id"],
+        "session_id": bundle["run"]["run_id"],
+        "execution_id": bundle["run"]["execution_id"],
         "steps": result["steps"],
     }
     (root / "sample.json").write_text(json.dumps(sample, indent=2))

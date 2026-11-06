@@ -7,18 +7,18 @@ PolicyVisor (pVisor) manages execution for Agent CLIs, scripts, and automation
 commands. The **p** stands for **Policy**: connect requested capabilities,
 effective runtime controls, and reviewable results.
 
-Owns one Job, its internal Run record and Attempts, capability admission,
+Owns one Session, its internal Run record and Executions, capability admission,
 filesystem Effects, and execution placement. It is an embeddable library, not
 an application frontend. The host CLI (`pvisor`) lives in
 [`pvisor-cli`](../pvisor-cli/README.md). The runtime can
-place Jobs on host, native OCI container, and `pvisor-vm` executors while preserving one
+place Sessions on host, native OCI container, and `pvisor-vm` executors while preserving one
 Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
 owns Session lifecycle, scheduling, policy adaptation and execution. The
-`pvisor-cli` application owns Job lifecycle commands, the per-Job owner
+`pvisor-cli` application owns Session lifecycle commands, the per-Session owner
 bootstrap, terminal/rendering code and companion discovery.
 Cache storage and the optional node resource client remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
@@ -33,7 +33,7 @@ Pruning takes an exclusive lease, waits for builds, and never removes published
 image pool data. This is not the distributed `pvisor cache` service. See the
 [build command profile](../pvisor-cli/README.md#vm-isolated-image-builds-experimental)
 for invalidation, cleanup controls and compatibility limits.
-Native Jobs and Docker-style VM launches authenticate and negotiate a selected
+Native Sessions and Docker-style VM launches authenticate and negotiate a selected
 RAM pool before constructing the VMM, then transfer that same owned session to
 the pager. A dead or invalid pool rejects startup without booting a guest,
 reconnecting, deleting its socket or replacing pool ownership. Pool loss after
@@ -41,51 +41,60 @@ VM entry still terminates dependent runners; it is not automatic recovery.
 Container logs remain cumulative across restarts, while startup errors include
 only the current generation's stderr (up to 32 KiB), not earlier workload or
 pool-loss diagnostics.
-Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
+Session commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. Replay is a
-Job frontend, not a runtime dependency. Cross-node placement and distributed scheduling
+Session frontend, not a runtime dependency. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
 
 The private Agent adapter owns client compatibility policy, preset routes,
 catalog schemas and client-specific proxy environment. Gateway configuration
-keeps its serialized fields and public `GatewayProfile` contract. Attempt
+keeps its serialized fields and public `GatewayProfile` contract. Execution
 preparation passes the bound listener to the adapter without interpreting
 provider profiles or catalogs. Catalog copies are Run-local; credentials,
 installed catalogs and personal model selections remain client-owned.
 
+The public lifecycle is a Session. `Session` retains durable continuation state;
+`SessionService` coordinates lifecycle and workspace operations, and `SessionRun`
+owns managed completion. Executors receive an `ExecutionContext` for the current
+execution. Its `execution_id` changes across restored executions so stale replies
+cannot affect a successor. Teardown releases live resources while retained stages
+remain available for review, apply and drop. Source and wire formats changed;
+see [stability](../../docs/src/en/reference/stability.md) before upgrading.
+
 ```mermaid
 flowchart TD
-    Entry[CLI / PVisor API] --> Session[Session: one Attempt]
+    Entry[CLI / PVisor API] --> Session[Session: persistent state]
     Core[pvisor-core contracts and policies] -.-> Session
-    Session --> Executor[Host / OCI container / pvisor-vm]
-    Session --> Drivers[OverlayFS / OverlayNet / optional Gateway]
+    Session --> Context[ExecutionContext: current execution]
+    Context --> Executor[Host / OCI container / pvisor-vm]
+    Context --> Drivers[OverlayFS / OverlayNet / optional Gateway]
     Session --> Records[Run record / Run Bundle / optional Event Journal]
     Records --> Review[status / inspect / apply / drop]
 ```
 
 | Product area | Current responsibility |
 | --- | --- |
-| Run lifecycle | One logical `Run`, currently one `Attempt` per execution, cancellation, deadlines, terminal publication, and parent lineage |
-| Agent control | Host AgentCtl v1 for typed Job CLI authority; isolated optional Guest AgentCtl for client state, directives and cooperative quiescence |
+| Run lifecycle | One logical `Run`, currently one `Execution` per execution, cancellation, deadlines, terminal publication, and parent lineage |
+| Agent control | Host AgentCtl v2 for typed Session CLI authority; isolated optional Guest AgentCtl for client state, directives and cooperative quiescence |
 | Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
 | Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
 | Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
 | Execution placement | Host process, native OCI container executor, or `pvisor-vm` (Linux KVM / macOS HVF) using an OCI image, prepared rootfs, or Linux host rootfs |
 | Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
-With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
+With `--stage PATH`, the product loop is `RunSpec → admission → Execution →
 RunResult + private Run Bundle + staged Effects → review/apply/drop`. Ordinary
-host Jobs without staging write through to the workspace. `--safe`
-retains the workspace stage in Job storage by default; `--stage PATH` selects
+host Sessions without staging write through to the workspace. `--safe`
+retains the workspace stage in Session storage by default; `--stage PATH` selects
 another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
-New Attempts use Run record schema 2, Bundle schema 5 and completion protocol 1.
+New Executions use Run record schema 3, Bundle schema 6 and completion protocol 2.
 Older readers reject these schemas instead of bypassing the completion check.
 Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
-Session durably prepares the Bundle and terminal Run projection, then atomically
+ExecutionContext durably prepares the Bundle and terminal Run projection, then atomically
 publishes `completion.json` binding the typed result to the Bundle's BLAKE3 digest.
 Only after that receipt commits does it publish the Completed fact and terminal
 run event. An unconfirmed receipt suppresses both notifications and retains the
@@ -100,17 +109,17 @@ Post-commit audit gaps appear in the returned result's warnings, without rewriti
 the immutable Bundle/receipt. They are not appended to the committed Bundle;
 automatic event backfill after a crash is not implemented.
 Readers reject missing/changed Bundles and
-foreign Attempt receipts. An offline Attempt without a receipt is `Unknown`,
+foreign Execution receipts. An offline Execution without a receipt is `Unknown`,
 with its stage retained and workspace mutation refused. `status` reconciles stale
-Run/Job projections under their metadata and Attempt leases; it never takes a live
-Attempt's lease or infers success from owner death. Review and mutation readers
-also validate completion after acquiring their own Attempt lease; that lease is
+Run/Session projections under their metadata and Execution leases; it never takes a live
+Execution's lease or infers success from owner death. Review and mutation readers
+also validate completion after acquiring their own Execution lease; that lease is
 not evidence of another live execution. Review returns a typed `ReviewUnavailable`
 for uncommitted completion; corruption and unsupported schemas remain errors.
 Legacy records without the
 protocol marker retain their original read rules. This is local crash consistency,
 not authentication against another process with unrestricted access as the host UID.
-Job metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
+Session metadata lock waits are bounded to five seconds and preserve uncertain outcomes.
 Publishing a sealed execution snapshot appends a new immutable object and can
 coexist with readers restoring an earlier snapshot from the same store. Atomic
 no-replace publication keeps partial objects invisible; live writer leases and
@@ -143,13 +152,13 @@ proxy may still be cooperative. `PolicyMode::Enforce` independently requires
 non-bypassable controls. Bundle `safe_profile_requested` comes from this typed
 request. `RunConfig.run.profile = "safe"` selects the CLI preset.
 
-`RuntimeJobService::apply_command(context, request)` is the only runtime Job
+`SessionService::apply_command(context, request)` is the only runtime Session
 apply service. It separates read-only planning from execution; terminal interaction
 and picker policy belong to the frontend, not the runtime. There is no compatibility
 apply adapter or target-override execution path. The effects mutation response is
 used only by drop (`Dropped` / `AlreadyDropped`).
 
-`ApplyCommandRequest` contains `job: JobSelection`, `rootfs: bool`,
+`ApplyCommandRequest` contains `session: SessionSelection`, `rootfs: bool`,
 `selection: ApplySelection`, `all: bool`, `dry_run: bool`, and
 `expected_plan: Option<String>`. There is no `target` request field: destinations
 come exclusively from the recorded project/system-root scope or the ordinary
@@ -162,7 +171,7 @@ candidates: it never interprets an empty selection as an all-changes plan. Glob 
 root-overlay paths, retaining exclusions through dependency closure. Hardlink or
 other dependencies cannot enlarge project authority or revive excluded paths.
 
-Apply sources are Job IDs, stage directories or registered workspaces (including
+Apply sources are Session IDs, stage directories or registered workspaces (including
 the normal-workspace owning target). `last` and omitted selectors keep their
 workspace-local resolution. An upper directory, any path inside it, or a symlink
 alias into it is not an apply source, even if review/status can resolve that path.
@@ -176,7 +185,7 @@ The schema-1 `ApplyCommandResponse` is serializable JSON:
 - `operation = "apply"`, `mode = "preview" | "execute"`, and
   `status = "ready" | "applied" | "no_changes" | "blocked" | "error"`;
   successful previews, including picker and zero-match previews, are `ready`;
-- `source { job_id, stage, attempt_id, generation }` pins the resolved Attempt;
+- `source { session_id, stage, execution_id, generation }` pins the resolved Execution;
 - `scope { kind, target }` identifies the `project` or `rootfs` authority (target
   may be null when authorization failed);
 - `selected`, `required`, and `candidates` contain scope-relative `ChangeEntry`
@@ -198,7 +207,7 @@ Rootstage project apply requires explicit launch-time opt-in: capture
 `ProjectApplyScope::capture(root)` and serialize it into RunSpec metadata key
 `pvisor.project_apply_scope`. Version 1 records an existing canonical absolute,
 non-symlink, non-`/` directory plus its device/inode. The runtime validates it at
-Attempt preparation, requires its root to match the recorded workspace, persists
+Execution preparation, requires its root to match the recorded workspace, persists
 `RunRecord.project_apply_scope` and the same optional
 field in the completion-bound Run Bundle, and compares that binding on reads even
 when Bundle semantic validation was memoized. An absent field means no contract;
@@ -212,21 +221,21 @@ core apply target contract; they do not require a new launch scope. No caller ca
 redirect writeback to an override path, and rootstage records without a
 completion-bound project contract do not gain authority from cwd or workspace
 inference.
-System-root apply still needs explicit `rootfs`, effective UID 0, same-UID Job
+System-root apply still needs explicit `rootfs`, effective UID 0, same-UID Session
 ownership and root-controlled storage; sudo of user stages is not authorized.
 
 Planning and execution share the same preflight with identity/admission checks
-repeated under exclusive locks. Lock order is Job-directory `job.lock`, optional
-ExecutionJob `execution-operation/lease.lock`, then Attempt `lease.lock`. Preview
+repeated under exclusive locks. Lock order is Session-directory `session.lock`, optional
+ExecutionSession `execution-operation/lease.lock`, then Execution `lease.lock`. Preview
 uses read-only descriptors and exclusive nonblocking flock on **existing** inodes:
 it does not create directories/files, write diagnostic owners, truncate on drop,
 or sync lock files. These locks exclude the same mutators as execution without
 initializing anything in a project that contains its own stage (for example
 `./experiment`). Execution retains its diagnostic-owner and mutation lock APIs.
 
-Explicit project-scope stage preparation initializes the Job-directory and
-ExecutionJob observation locks while holding the new Attempt lease, before
-publishing the Run record. The Attempt lease is already created by launch.
+Explicit project-scope stage preparation initializes the Session-directory and
+ExecutionSession observation locks while holding the new Execution lease, before
+publishing the Run record. The Execution lease is already created by launch.
 Ordinary spawn without that explicit scope does not gain lock-initialization side
 effects. Stages missing any required lock fail preview closed with an
 existing-lock error; preview never initializes the missing locks. Recreate such a stage
@@ -240,12 +249,12 @@ mtime and lock owner records remain unchanged. This entry point conservatively
 blocks **both** preview and execution while any pending
 intent exists; it never uses project authority to recover unrelated system-root
 work. Recovery is an explicit lower-level core operation, not an implicit runtime
-Job apply or drop action. Failures retain staged intent
+Session apply or drop action. Failures retain staged intent
 and expose execution uncertainty instead of inventing “no changes”. Completion
-receipts are still required for new stopped Attempts, including failed/cancelled
+receipts are still required for new stopped Executions, including failed/cancelled
 ones; missing, unknown or contradictory completion is not review approval.
 
-Admission carries the final network configuration into every Attempt driver;
+Admission carries the final network configuration into every Execution driver;
 preparation does not re-resolve policy from mutable Run metadata or configuration.
 Guest workspace overlays require `RunExecutor::supports_guest_workspace_overlay`
 (default false), independently of VM network attachment support. Executor names
@@ -258,12 +267,12 @@ including with a prepared rootfs or custom injected pVisor. It does not enable
 cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
-The OCI executor injects the `pvisor` executable and delegates the Job through
+The OCI executor injects the `pvisor` executable and delegates the Session through
 `spawn --executor host --spec ... --result-file ...` inside the container.
 Only the spec file is mounted read-only; a separate output directory is writable.
 OCI bundle/state directories remain private and overlapping rootfs/mount sources
 are rejected. Delegated JSON is bounded to 16 MiB, opened without following a
-symlink or blocking on a FIFO, and checked for Run/inner-Attempt consistency.
+symlink or blocking on a FIFO, and checked for Run/inner-Execution consistency.
 It supplies output text only: host-observed runtime exit status decides the
 outcome, and guest-produced controls, metrics, artifacts and AgentCtl snapshots
 are not accepted as host enforcement evidence. Enforce mode still requires
@@ -287,10 +296,10 @@ pvisor --feature workload-aware-memory-offloading --executor vm -- /bin/sleep 10
 
 `--feature NAME` is global, repeatable, accepts comma-separated names and rejects
 unknown names. Arguments after `--` belong to the guest and are never feature
-options. Feature queries run locally without starting a Job or contacting its
+options. Feature queries run locally without starting a Session or contacting its
 owner. Their `enabled` column means registry defaults plus this invocation's
 CLI enables, not a live VM status or a scan of personal/project config files.
-Global enables are supported by `spawn` and feature queries, not other Job actions
+Global enables are supported by `spawn` and feature queries, not other Session actions
 or extensions; extension arguments and help requests are forwarded to
 companions. Companion help also supports leading feature options, without
 forwarding those options as runtime enables; use `pvisor help COMMAND` or
@@ -337,30 +346,30 @@ reclamation, or automatic offload. Embedded callers query observations through
 flags are independent and are not implicitly enabled. Parser/config/control unit tests are not
 real-guest, macOS platform, energy/density, or upstream validation evidence.
 
-## Job owners and AgentCtl
+## Session owners and AgentCtl
 
 `pvisor spawn` starts a terminal frontend and one owner over an inherited private
 socketpair. The owner stays in the original session, in its own process group;
 Linux makes it the subreaper and retains pidfd-based descendant cleanup. For an
-interactive Job the frontend gives the original controlling terminal to the
+interactive Session the frontend gives the original controlling terminal to the
 owner/workload, so terminal Ctrl-C can reach the workload, and restores the
 foreground group at exit. Pipes inherit their descriptors directly. The owner
 installs signal handlers before unblocking SIGINT/SIGTERM/SIGHUP. Frontend
-cancellation and disconnection are handled by the owner. No user-wide Job
-listener or per-command worker is required. Once the Attempt has published
+cancellation and disconnection are handled by the owner. No user-wide Session
+listener or per-command worker is required. Once the Execution has published
 terminal status, owner escalation allows the runtime's bounded RAM/macFUSE
-resource teardown to finish before forced exit and Job completion publication.
+resource teardown to finish before forced exit and Session completion publication.
 
-Each running Job publishes `live_control` in its host-only Run record before
+Each running Session publishes `live_control` in its host-only Run record before
 executor entry. It contains the canonical path, device/inode, protocol
-`pvisor-instance-control-2`, owner PID, executable path and BLAKE3 digest:
+`pvisor-instance-control-3`, owner PID, executable path and BLAKE3 digest:
 
 ```text
-/tmp/pvisor-host-<UID>/jobs/<job-id>/<attempt-id>/control.sock
+/tmp/pvisor-host-<UID>/sessions/<session-id>/<execution-id>/control.sock
 ```
 
 The root and every directory are owned by the effective UID, non-symlink and
-`0700`; sockets are `0600`. Long Job/Attempt paths are accessed through a checked
+`0700`; sockets are `0600`. Long Session/Execution paths are accessed through a checked
 directory descriptor rather than truncating the canonical address. Clients check
 socket identity before and after connecting and authenticate the peer UID.
 Executors exclude the entire private authority root from guest projections.
@@ -371,32 +380,32 @@ to the CLI only through durable state.
 
 Live status, kill, VM pause/resume/offload, execution checkpoint/suspend and live
 inspect connect to the recorded owner. Operations execute in the binary that
-started the Job. Compatible protocol versions allow a different caller binary;
-an incompatible Job protocol reports that owner's binary without blocking other
-Jobs. The socket accepts no terminal descriptors. It uses the existing correlated
+started the Session. Compatible protocol versions allow a different caller binary;
+an incompatible Session protocol reports that owner's binary without blocking other
+Sessions. The socket accepts no terminal descriptors. It uses the existing correlated
 Host envelopes and newline JSON codec, with a 1 MiB frame limit and at most eight
 accepted connections. Existing native operation locks serialize transitions.
-The process-local owner table holds weak references keyed by exact Job/Attempt identity.
-The actual Attempt task registers and unregisters its owner; retained handles do
+The process-local owner table holds weak references keyed by exact Session/Execution identity.
+The actual Execution task registers and unregisters its owner; retained handles do
 not prolong discovery after completion.
 
 The instance socket is the only host control listener. Same-process status,
-workspace observations/inspect and native capture call that Attempt's owner
+workspace observations/inspect and native capture call that Execution's owner
 objects directly, including when external instance control is disabled. The old
 Overlay listener, stage `control.sock` discovery link and `execution.sock` listener
 are removed. Both local and external inspect share one bounded mount table,
 closed before writable workspace teardown. Capture retains request receipts,
-Job locks and detached operation ownership after frontend timeout. Guest
+Session locks and detached operation ownership after frontend timeout. Guest
 AgentCtl retains its separate guest-facing trust boundary.
 
 Stopped status, review, apply, drop and inspect execute in the calling process.
 Checkpoint restoration/fork starts a new owner directly. Durable operations take
-exclusive `flock` on the Job root's `job.lock`: same UID, `0600`, one hard link,
+exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
 lock. Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
-the Attempt lease remains an additional fence. Read-only inspect uses the stage's
+the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.
 Read-only sharing does not guarantee freshness.
 
@@ -415,7 +424,7 @@ Ctrl-C does not interrupt its response wait, and disconnect errors may omit that
 warning. Unifying this path is pending. Reconcile state before
 resubmitting; scoped checkpoint receipts are not universal exactly-once delivery.
 
-Before replacing an installation, drain Jobs and stop `--pvisor-internal-host`
+Before replacing an installation, drain Sessions and stop `--pvisor-internal-host`
 using its owning executable. CLIs never connect to `<generation>.sock`.
 Records without `live_control` expose disk state only; their running VMs are not
 automatically discovered. The daemon supervisor has separate listener, framing
@@ -423,16 +432,16 @@ and admission contracts.
 
 ### Shared runtime implementation
 
-`Execution` owns Attempt status, cancellation, history and live VM controls.
-`Session::execution()` and `RunHandle::execution()` select that same owner;
+`Execution` owns Execution status, cancellation, history and live VM controls.
+`ExecutionContext::execution()` and `RunHandle::execution()` select that same owner;
 RunHandle retains completion, checkpoint and event-subscription ownership.
 Executors report `starting`/`ready` directly to Execution, and frontends use its
 status, subscription and control methods. There are no RunControlHandle,
-RunCancellation or AttemptService compatibility types or RunHandle control aliases.
+RunCancellation or ExecutionService compatibility types or RunHandle control aliases.
 The old M0 native-wait adapter and header-declaration switch are removed; built-in
 model waits use the single Host-observed coordinator.
 
-Session lifecycle and live VM controls share that Attempt-local execution owner.
+Session lifecycle and live VM controls share that Execution-local execution owner.
 One transition function applies typed lifecycle, queued/dispatched control,
 success/failure and completion facts. The watch snapshot is its projection; no
 executor or control adapter writes that channel directly. Existing VM transition
@@ -445,21 +454,21 @@ pending controls, uncertainty and applied journal position. `subscribe()` publis
 that same `ExecutionSnapshot`; subscribers read its `status` field. Publication
 occurs under the transition lock, so local queries need neither socket I/O nor
 waiting on journal writes. The independently sampled progress accessor is removed. Controls record their manual/model-wait origin. Only Execution decides
-failure policy: known manual rejection preserves the live Attempt; uncertain
+failure policy: known manual rejection preserves the live Execution; uncertain
 effects or an automatic pause that cannot be released latch cancellation. The
 wait coordinator retains arbitration, not a second generic-error cancellation rule.
 
-`JobExecution` owns durable continuation transitions across Attempts. Its phase
+`Session` owns durable continuation transitions across Executions. Its phase
 is private and queried with `state()`; capture admission/acknowledgement/failure,
 restore admission/start/rollback, completion recovery and continuation withdrawal
-apply typed transitions before storage writes. The old storage-owned Job type and
-mutable phase field are removed. Journal, metadata and Attempt lease boundaries
+apply typed transitions before storage writes. The old storage-owned Session type and
+mutable phase field are removed. Journal, metadata and Execution lease boundaries
 are unchanged. Run record reads and locked reconciliation both validate completion
 receipts then use the same pure execution projection; missing receipts remain
-Unknown and an old Attempt cannot overwrite a successor or withdrawn continuation.
+Unknown and an old Execution cannot overwrite a successor or withdrawn continuation.
 
-Retained Attempts write `execution-ATTEMPT_ID.jsonl` through `pvisor-journal`;
-unstored Attempts use a memory journal. Each record has its own event identity
+Retained Executions write `execution-EXECUTION_ID.jsonl` through `pvisor-journal`;
+unstored Executions use a memory journal. Each record has its own event identity
 and ordered journal position. Accepted commits retain both append and projection
 ownership after their caller stops waiting. Replaying transition facts rebuilds
 state without invoking a backend. Incomplete operations are not automatically
@@ -473,7 +482,7 @@ allows later controls.
 Failed history writes do not prevent resource teardown or replace a confirmed
 native result; local progress explicitly marks the history gap.
 
-Job status is schema 2 and uses a dedicated summary rather than RunRecord and
+Session status is schema 3 and uses a dedicated summary rather than RunRecord and
 historical maps. Its top-level `state` is projected by the execution query model:
 `paused` means a live vCPU pause, `hibernated` means confirmed native termination,
 and missing authoritative observations remain `unknown`. Liveness is separate;
@@ -486,19 +495,19 @@ journal position. Base summaries are capped at 256 KiB before the 1 MiB Host
 envelope limit. Text/JSON rendering uses the same summary. Full launch settings,
 request receipts and per-path observations remain in their owning records.
 Protocol 2 rejects old live owners explicitly; offline record/completion schemas
-are unchanged. Status still reads existing Job/checkpoint/apply storage to count
+are unchanged. Status still reads existing Session/checkpoint/apply storage to count
 records; this step bounds the response, not all collection/recovery work.
 
-`runtime/job_service.rs::RuntimeJobService` provides typed persisted-Job status,
+`runtime/session_service.rs::SessionService` provides typed persisted-Session status,
 review, apply/drop, workspace checkpoint mutations, native capture and execution
 resume/fork operations without CLI argument or rendering dependencies. Request-local
-`ServiceContext` hooks retain cancellation and exact Job/Attempt/generation fences;
+`ServiceContext` hooks retain cancellation and exact Session/Execution/generation fences;
 mutations recheck admission under their leases. Capture rechecks before sending,
 not after an effectful request has been sent. Scoped receipts and lost-response
 ambiguity remain; this is not a universal exactly-once dispatcher.
 
 `lookup_run_id` performs strict, read-only discovery across the selected storage
-and default Job roots. Only `Ok(None)` permits trying another selector namespace;
+and default Session roots. Only `Ok(None)` permits trying another selector namespace;
 corrupt records/indexes, conflicting owners, duplicate IDs and discovery I/O
 failures return `RunLookupError`. The result is not a lock or reservation.
 Ordinary `resolve_run` retains its path, workspace and `last` behavior.
@@ -511,22 +520,22 @@ admission failure, including pending apply and discarded stage. It is not apply
 authorization: every preview and execution repeats validation and execution
 still checks the expected-plan token.
 
-Ordinary Job execution uses `RuntimeJobService::start_managed()` and
-`ManagedJobRun`. The runtime retains the actual Attempt completion task, installs
-the durable execution Job server for VM Attempts and publishes its completion
+Ordinary Session execution uses `SessionService::start_managed()` and
+`SessionRun`. The runtime retains the actual Execution completion task, installs
+the durable execution Session server for VM Executions and publishes its completion
 after native teardown. The server binds to the runtime's prepared record, not a
-frontend selector or caller-supplied stage metadata. Non-VM Attempts retain their
+frontend selector or caller-supplied stage metadata. Non-VM Executions retain their
 Session-owned record/Bundle publication without creating an execution checkpoint
 ledger. Managed VM starts require durable Run storage. The supplied `RunConfig`
 is retained for execution restoration; it does not configure or replace the
 caller's already-built `PVisor`.
 
-Restored execution uses `RestoredAttempt::start_with()` to project the captured
+Restored execution uses `RestoredExecution::start_with()` to project the captured
 environment and restore metadata, then enters the same managed completion path.
-`ManagedRestoredRun` remains a compatibility alias for `ManagedJobRun`. Frontends
+`ManagedRestoredRun` remains a compatibility alias for `SessionRun`. Frontends
 supply runtime configuration, terminal/cancellation adapters and rendering; they
-do not install or finish the execution Job server. Failed handoff cancels and
-drains the accepted Attempt; partially published Job state is retained for
+do not install or finish the execution Session server. Failed handoff cancels and
+drains the accepted Execution; partially published Session state is retained for
 reconciliation rather than forged into a completed receipt. Frontend wait errors
 and early success cannot bypass native teardown or hide publication failures.
 Dropping the managed run or its wait future requests cancellation; the completion
@@ -540,7 +549,7 @@ caller's restoration `RunConfig`. Workspace fork reconstructs supported network,
 filesystem, resource and environment-projection policy without loading current
 user/workspace defaults. It does not retain environment values or Gateway
 credentials, and it is not an enforcement attestation. The reconstruction path
-currently supports standard host execution with an OverlayNet proxy; legacy Jobs
+currently supports standard host execution with an OverlayNet proxy; legacy Sessions
 without this snapshot and unsupported VM/container/custom executor, Gateway or
 unrepresentable controls are refused before checkpoint/stage mutation rather
 than silently downgraded.
@@ -551,17 +560,17 @@ contents. Wall-clock timestamps can move backwards and are not a monotonic audit
 clock. Capture completion and replay tool receipts have narrower scopes than a
 complete-run capture or an exactly-once external side-effect guarantee.
 
-New durable Attempts write Run schema 2 with `completion_protocol = 1` and Bundle
-schema 5. After native teardown, the runtime writes the Bundle, commits a private
+New durable Executions write Run schema 3 with `completion_protocol = 2` and Bundle
+schema 6. After native teardown, the runtime writes the Bundle, commits a private
 `completion.json` binding the exact Bundle BLAKE3 digest and terminal RunResult,
 then publishes completion notifications. Once committed, Bundle bytes and the
 completion result are immutable; later audit publication failures are returned
 as warnings and do not replace the terminal outcome. Completion reads are bounded
 to 64 MiB and reject symlinks, FIFOs and other non-regular files.
 
-Stopped status reconciles Run and active Job projections from the receipt under
+Stopped status reconciles Run and active Session projections from the receipt under
 their mutation leases; it never re-executes the workload or overwrites a successor
-Attempt. Before a receipt is confirmed, an owner lost to a crash is `Unknown`:
+Execution. Before a receipt is confirmed, an owner lost to a crash is `Unknown`:
 retained files are not approved, and review/apply/drop/checkpoint refuse mutation.
 A Bundle or terminal Run record alone does not prove completion. A failed final
 sync may leave a receipt visible; reopening validates its full binding before
@@ -569,27 +578,27 @@ projecting it. Legacy Run schema 1 and Bundle schema 4 remain readable with thei
 original guarantees. These local receipts do not make remote side effects or
 event delivery exactly once, and are not power-loss acceptance evidence.
 
-The lower-level `PVisor::run()` and `RuntimeJobService::start()` still return a bare
-`RunHandle`. Embedded Attempt callers and daemon detached supervisors retain their
+The lower-level `PVisor::run()` and `SessionService::start()` still return a bare
+`RunHandle`. Embedded Execution callers and daemon detached supervisors retain their
 own lifecycle and resource ownership; they are not implicitly enrolled in the
-managed Job/checkpoint server.
+managed Session/checkpoint server.
 
 `Execution` is the shared state owner and in-process dispatcher for live status, termination
 and native controls. Host VM and daemon supervisor endpoints adapt their own
 command/authentication contracts to it. Termination requests cancellation, not
-reaping, cgroup absence or resource-release proof. CLI `JobCommand` and daemon
+reaping, cgroup absence or resource-release proof. CLI `SessionCommand` and daemon
 Sandbox registry/lifecycle remain separate; Guest AgentCtl remains isolated.
 The daemon does not acquire checkpoint/fork or apply/drop API support merely by
 linking these services.
 
 ## Per-instance VM controls and memory CLI
 
-By default every native VM Attempt gets a host-only Unix control endpoint, even
-for embedded runs without retained Job storage. Embedded owners with their own
+By default every native VM Execution gets a host-only Unix control endpoint, even
+for embedded runs without retained Session storage. Embedded owners with their own
 authenticated control endpoint may use `PVisorBuilder::instance_control(false)`;
 a custom `control_socket` combined with this setting is rejected at admission.
 Native control authority remains available through the handle/service. The daemon disables the extra instance endpoint because it already owns a
-supervisor endpoint. Ordinary CLI controls discover the owner from the Job:
+supervisor endpoint. Ordinary CLI controls discover the owner from the Session:
 
 ```bash
 pvisor spawn --executor vm -- /bin/sleep 600
@@ -601,19 +610,19 @@ pvisor resume last --vm-load
 ```
 
 The live VM flags are command-local: `status` accepts only `--vm-socket`,
-`--vm-job-id` and `--vm-attempt-id`; `suspend` accepts those identity flags plus
+`--vm-session-id` and `--vm-execution-id`; `suspend` accepts those identity flags plus
 `--vm-pause`, `--vm-offload` and `--vm-ram-file`; `resume` accepts the identity
 flags plus `--vm-load`. Place them after the command. Root-prefixed live VM
 flags and live VM flags on other commands are rejected.
 
-`--vm-socket` is a debugging override and requires explicit `--vm-job-id` and
-`--vm-attempt-id`; a positional selector must match that explicit Job ID. Its
+`--vm-socket` is a debugging override and requires explicit `--vm-session-id` and
+`--vm-execution-id`; a positional selector must match that explicit Session ID. Its
 path must remain inside the private authority root. Normal commands need none
 of these addressing options. Pause/offload are mutually exclusive;
-`--vm-ram-file` requires offload. Live resume continues the same Attempt. When
+`--vm-ram-file` requires offload. Live resume continues the same Execution. When
 there is no valid live owner, ordinary resume restores a sealed execution
 checkpoint. Ordinary suspend captures an execution checkpoint and stops the
-Attempt; `--vm-pause` pauses without capturing.
+Execution; `--vm-pause` pauses without capturing.
 Pause stops vCPUs; offload uses the
 stronger CPU/device quiescence boundary. Successful live replies are JSON;
 typed Host errors and transport/parsing failures exit nonzero but need not
@@ -627,8 +636,8 @@ The exchange takes an `AgentCtlHostRequest<HostVmCommand>` and returns an
 
 | Run CLI | `[vm]` field | Default |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | Unset: owner uses `/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock` (canonical `/tmp`) |
-| `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local file in ordinary file-backed mode |
+| `--vm-control-socket PATH` | `control_socket` | Unset: owner uses `/tmp/pvisor-host-<effective-UID>/sessions/<session-id>/<execution-id>/control.sock` (canonical `/tmp`) |
+| `--vm-ram-backing FILE` | `ram_backing` | Unset: execution-local file in ordinary file-backed mode |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local cold pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host advice |
@@ -650,7 +659,7 @@ The local cold pager has one combined reclaim/compression toggle; it conflicts
 with dedup, file/FUSE backing, external pools, snapshot capture/restore, snapshot
 filesystem pools and whole-VM offload. Dedup conflicts with both compression
 modes and external pools. The snapshot filesystem pool must be host-owned,
-outside VM-writable roots and snapshot stores, and on the Job's volume. Conflicts
+outside VM-writable roots and snapshot stores, and on the Session's volume. Conflicts
 apply after config/CLI merging. Existing storage/control tests and compressed
 artifacts provide limited evidence, not end-to-end guest correctness or memory
 savings; compressed exit still does not commit writes after the last resume.
@@ -660,14 +669,14 @@ and [configuration example](../../docs/src/en/reference/config.md#vm-control-mem
 ## Cooperative model waits (opt-in Rust API)
 
 With the `gateway` Cargo feature, an embedded native VM owner can install an
-Attempt-local wait coordinator. It is disabled by default and is separate from
+Execution-local wait coordinator. It is disabled by default and is separate from
 the `workload-aware-memory-offloading` observation experiment. The first version
-optimizes one outstanding Host-observed model call per Attempt and requires a
+optimizes one outstanding Host-observed model call per Execution and requires a
 one/two-vCPU guest-kernel idle handoff. Agent/client code needs no declaration.
 Two vCPUs support pause/resume only, retain normal PSI/TX-watchdog behavior,
 and need matching ABI-v3 firmware. Automatic offload remains single-vCPU.
 Overlapping calls keep forwarding but disable automatic transitions for the
-remainder of that Attempt. There is no new CLI/TOML switch, daemon integration,
+remainder of that Execution. There is no new CLI/TOML switch, daemon integration,
 or scheduler-budget release. The Rust API type is `CooperativeModelWait`;
 cooperation is between pVisor's VMM and guest kernel, not the Agent application.
 
@@ -707,18 +716,18 @@ and repeated rounds with a 100 ms recheck interval and five-second offload coold
 Enabled policy requires a VM and an enabled Gateway; a simultaneous custom
 `model_wait` lifecycle is rejected before startup.
 
-The Host enables observation per Attempt. Gateway recognizes authorized model
+The Host enables observation per Execution. Gateway recognizes authorized model
 requests and reports their lifecycle automatically. No client header or explicit
 rollout wait/resume call is required; this mode ignores and strips the legacy
 `x-pvisor-inference-idle` header. Model JSON/SSE is unchanged. Model waiting alone cannot
 authorize pause: the patched guest kernel must hand off an idle vCPU and timer.
 On overlap the old wait is woken and native cleanup finishes before responses
 are delivered; new calls are not rejected for being concurrent. Automatic
-optimization stays disabled for the remainder of the Attempt, even after the
+optimization stays disabled for the remainder of the Execution, even after the
 calls become serial again. Manual pause still holds all delivery barriers.
 
 Requests must traverse pVisor's model-aware Gateway, already bound by Host to
-the target Attempt. Opaque TLS traffic or requests bypassing that Gateway do not
+the target Execution. Opaque TLS traffic or requests bypassing that Gateway do not
 provide model lifecycle evidence. An external rollout's model request cannot be
 mapped to an unrelated VM from timing or caller-supplied session headers. A
 pVisor-owned per-VM route/binding is required; a general external-rollout binding
@@ -789,8 +798,8 @@ waits for its cleanup; native transitions are never dropped halfway. The one-sec
 limit now bounds acquisition only. Accepted handoffs use the real guest timer
 or explicit no-timer state; there is no fixed periodic resume. `recheck_after` must
 be 10 ms..60 s. `offload_cooldown` must be >= that interval and <= one day. It is
-measured from completion of an automatic offload attempt (including rejection)
-and persists across model requests in the Attempt. During cooldown rounds may
+measured from completion of an automatic offload execution (including rejection)
+and persists across model requests in the Execution. During cooldown rounds may
 pause, but skip offload; they reconsider it in a later round. These defaults are
 policy choices, not measured performance thresholds. `rounds: None` retains
 single-round behavior for comparison. Manual control, overlap and request
@@ -800,10 +809,10 @@ Explicit controls through Execution and the Host VM endpoint
 share the coordinator. Human pause/offload holds delivery until explicit resume;
 resume invalidates the old wait timers. Checkpoint/save-and-stop conflicts with
 an active wait or a manual pause. Invalid primitives are rejected before effects.
-Control failures after admission conservatively cancel the Attempt because a
+Control failures after admission conservatively cancel the Execution because a
 generic error can follow a native effect or failed event publication. Request
 drop/shutdown cleanup is latched and runs on the Session runtime, independently
-of the Gateway runtime. Attempt cancellation/termination never triggers resume;
+of the Gateway runtime. Execution cancellation/termination never triggers resume;
 this is live-process coordination, not restart or crash recovery.
 
 Coordinator tests cover timer/ownership/cancellation races and real local HTTP
@@ -827,7 +836,7 @@ before touching guest RAM. This covers a running VM's lazy reads, not initial
 image preparation before a VM exists. Cached/short work normally ends before
 pause grace. Mutations/copy-up retain their existing RAM ownership.
 
-All three hints feed one Attempt-local coordinator and the same kernel idle
+All three hints feed one Execution-local coordinator and the same kernel idle
 handoff, epoch fences, native pause/offload/resume, cooldown, manual ownership
 and termination paths. A hint alone never proves idleness. Filesystem observation
 skips reservation while another wait owns the coordinator; overlapping explicit
@@ -964,8 +973,8 @@ for standalone startup, manager restart, budgets and experimental limitations.
 The experimental `docker` module owns the user-private image catalog, pinned
 container configuration, writable uppers, managed volumes and launch generation
 records used by the top-level container commands. The CLI owns Docker argument parsing, rendering
-and terminal adapters. This profile does not convert ordinary Jobs or alter
-`spawn`, native Job staging, capture or existing daemon APIs. Linux containers
+and terminal adapters. This profile does not convert ordinary Sessions or alter
+`spawn`, native Session staging, capture or existing daemon APIs. Linux containers
 can opt into generation-scoped staged binds through the extension below.
 `Store::pull_with_progress` and `create_with_progress` emit synchronous OCI
 preparation observations for frontend rendering; existing `pull`/`create` callers
@@ -974,7 +983,7 @@ follows verification and extraction rather than merely reaching an expected size
 Registry connections have a ten-second connect bound and a thirty-second
 blocking request/body-read idle bound; a progressing large layer is not limited
 to thirty seconds in total. Idempotent blob transfers retry once after a timeout,
-broken connection or interrupted HTTP body. Each attempt discards its temporary
+broken connection or interrupted HTTP body. Each execution discards its temporary
 bytes and restarts hashing from zero. Digest/size mismatches, authentication/status
 errors and permanent local storage failures are not retried, except that 429/503
 GET responses allow one retry honoring a valid `Retry-After` up to ten seconds
@@ -988,10 +997,10 @@ atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
-Docker pull/build, daemonless Job image preparation and the cache service share
+Docker pull/build, daemonless Session image preparation and the cache service share
 one local V2 image store under the user data directory, `pvisor/docker/images`.
 `PVISOR_IMAGE_STORE` overrides this root for all three entry points. An explicit
-Job/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
+Session/cache image-store option takes precedence. With only `PVISOR_DOCKER_HOME`
 set, the common image root is that directory's `images`, preserving isolated
 stores; embedded `Store::open(root)` always keeps images under `root/images`
 and ignores environment defaults. See [local image storage](../../docs/src/en/reference/shared-image-cache.md#local-image-store)
@@ -1003,7 +1012,7 @@ temporary OCI store and remove downloaded layers/extracted roots on normal
 success/failure. Docker pull still resolves manifest/config, then reuses a
 matching shared pool revision without downloading layers. Local pool tags remain
 available offline until an explicit pull/refresh or another publication replaces
-them. Build tags also publish V2 references usable by Jobs without a registry.
+them. Build tags also publish V2 references usable by Sessions without a registry.
 Short and fully qualified Docker Hub aliases use the OCI parser's canonical
 registry/repository/tag identity for catalog lookup, replacement and removal.
 Equivalent build tags publish once; distinct tags remain independent. Catalogs
@@ -1253,10 +1262,10 @@ diagnostic instead of silently leaving a live VM with an unavailable endpoint.
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
 an image or explicit value/unset wins. The guest has one launcher and
-PID-1 reaper shared by Jobs, the initial workload and exec. An optional host-CID
+PID-1 reaper shared by Sessions, the initial workload and exec. An optional host-CID
 vsock adapter adds same-VM exec, stdin, signal delivery and TCP publication;
 it owns no separate process lifecycle or host filesystem/lifecycle authority.
-Ordinary Job configurations retain inherited identity/session/stdio defaults.
+Ordinary Session configurations retain inherited identity/session/stdio defaults.
 
 The Docker network resolver lower keeps its host directories private (`0700`)
 while carrying the image's guest ownership and permissions for `/` and `/etc`.
@@ -1289,7 +1298,7 @@ directory independently of the container image rootfs. `docker::Mount.staged`
 selects this path; ordinary `ro`/`rw` binds and named/anonymous volumes keep their
 existing behavior. Managed volumes cannot opt into `stage`.
 
-Each staged bind gets its own Job stage and completion-bound project scope,
+Each staged bind gets its own Session stage and completion-bound project scope,
 recording the canonical source, instance identity, guest target, mount index and
 launch generation. The container owner holds the stage leases while the VMM is
 live, then seals the stages and publishes completion evidence. Apply writes only
@@ -1300,7 +1309,7 @@ Neither guest rootfs writes nor bind staging authorizes writeback to host `/`;
 `Store::staged_mount_stage` resolves an instance name/ID and an optional exact
 absolute guest target (`--mount` in the CLI). Omission requires exactly one
 staged bind; direct binds and managed volumes are not review/apply/drop sources.
-Resolution and shared Job operations recheck the generation binding, leases and
+Resolution and shared Session operations recheck the generation binding, leases and
 completion evidence; a live instance refuses review/apply/drop.
 
 Admission rejects `--rm` with staging, any mixture of staged and direct-writable
@@ -1325,8 +1334,8 @@ Docker SDK conformance, database durability or performance.
 
 ## Source and application boundary
 
-Runtime APIs are exported explicitly from `src/lib.rs`: `PVisor`, Session/Attempt
-handles, configuration and feature settings, `job_service`, durable Job/checkpoint
+Runtime APIs are exported explicitly from `src/lib.rs`: `PVisor`, Session/Execution
+handles, configuration and feature settings, `session_service`, durable Session/checkpoint
 records, transport, and filesystem review primitives. The implementation module
 `runtime` remains private. The runtime library has no Clap dependency and does
 not depend on `pvisor-cli`; application enums are parsed by app-local Clap
@@ -1334,7 +1343,7 @@ adapters. Clap is retained only as a development dependency for standalone
 runtime demonstration/measurement examples.
 
 The supervisor retains `GatewayDriverConfig` as one configuration owner rather
-than copying its fields into a second configuration model. Attempt-local bound
+than copying its fields into a second configuration model. Execution-local bound
 wait adapters and listening endpoints are runtime state. Binding ephemeral ports
 does not rewrite the configured policy or credentials; the diagnostic snapshot
 uses a separate copy with the actual endpoints and existing credential redaction.
@@ -1445,7 +1454,7 @@ not retryable. Prepare/Open and ordinary clients retain no-replay semantics.
 Old private bindings without retry context default to no replay.
 
 The allowance is per hop, not a propagated end-to-end budget: failure on both
-legs can produce up to four upstream read attempts. A downstream timeout does
+legs can produce up to four upstream read executions. A downstream timeout does
 not cancel already queued/executing upstream work, whose outcome may be unknown.
 Only immutable read operations qualify; no mutation is replayed. Detached bridge
 threads live in the dedicated child process, never the pre-namespace VM runner.
@@ -1490,7 +1499,7 @@ No host-root permissions or temporary-directory environment workaround is used.
 
 Embedded callers may set `OverlayHint::lower_mutability` to a per-physical-lower
 `Vec<pvisor_overlay_core::LayerMutability>` in `lower_dirs` order. Empty defaults
-to all mutable. Attempt preparation validates nonempty length and exact canonical
+to all mutable. Execution preparation validates nonempty length and exact canonical
 identity/order against the final normalized stack; promises cannot silently
 transfer to inserted targets or frozen copies. Host mounts receive the declarations
 through `OverlayMountConfig`; native VM handoff serializes `lower_mutability`
@@ -1502,7 +1511,7 @@ New low-level host/VM mount APIs default their lowers to Immutable. The runtime
 expands unspecified transparent rootfs/live workspace declarations to explicit
 Mutable at handoff, preserving external-edit visibility on startup and restoration.
 Authenticated prepared bases retain their explicit Immutable declarations.
-When VM networking prepends the attempt-owned synthetic resolver lower, it prepends
+When VM networking prepends the execution-owned synthetic resolver lower, it prepends
 an immutable declaration to an explicit mutability vector as well. Existing
 declarations keep their original physical-layer association. Empty vectors stay empty.
 Resolver preparation tests exercise the production preparation function and VM
@@ -1527,7 +1536,7 @@ For a sealed root lower, embedded callers can explicitly transfer a
 exact canonical generation; a different directory or restored executor is
 rejected. The executor and its clones retain the base GC lease through native
 teardown. Ordinary rootfs paths and `rootfs_immutable` do not opt in. The owned
-store must remain private and unmodified by external writers. An attempt-owned
+store must remain private and unmodified by external writers. An execution-owned
 synthetic resolver lower, when needed, is fully written before VM entry and
 retains its owner through exit; its declaration preserves the lower stack's
 identity and order. Writable uppers retain their normal behavior.
@@ -1547,18 +1556,18 @@ special objects fail. `SnapshotStore::prepare_rootfs` imports and durably pins
 the generation; `retain_prepared_rootfs` idempotently pins an existing owner from
 the same store. The private catalog atomically publishes a versioned record and
 a hardlink to the base reference marker. No removal API is provided: these pins
-survive preparer/process exit, GC and stopped Jobs until a future controlled
+survive preparer/process exit, GC and stopped Sessions until a future controlled
 deletion mechanism. A saved JSON path/id alone does not retain an ordinary base.
 
 `open_prepared_rootfs` checks the bounded record, pin identity and small seal,
 then acquires a lease without a full tree audit. External store mutation is
-unsupported; use `SnapshotBase::verify` for an explicit audit. CLI Job owners
+unsupported; use `SnapshotBase::verify` for an explicit audit. CLI Session owners
 open before resolving their layout; `VmExecutor::new` also consumes the typed
 `VmSettings::prepared_rootfs` selector for SDK callers and retains the owner.
 Its optional resolved `rootfs` must match exactly; `image` conflicts. A restored
 executor rejects the selector override. This source does not support native
 execution checkpoint capture/restore: capabilities report capture unavailable,
-Job capture admission rejects it, and no native capture binding is installed.
+Session capture admission rejects it, and no native capture binding is installed.
 Ordinary workspace logical checkpoints retain their separate behavior.
 Native runners independently re-lease
 the base before their sandbox and retain it until teardown.
@@ -1594,7 +1603,7 @@ unrelated page-mapping or writeback behavior. Launch-environment contract tests
 do not establish additional platform or workload performance coverage.
 Local CLI preparation rejects both source and destination paths that overlap
 the canonical Host authority before any store initialization or copying, even
-without an active Job owner. It never copies Host credentials into a base.
+without an active Session owner. It never copies Host credentials into a base.
 
 The runtime also exposes `SnapshotStore::prepare_workspace`,
 `retain_prepared_workspace` and `open_prepared_workspace`, returning the existing
@@ -1623,7 +1632,7 @@ unsupported. Explicit durable storage and a fresh stage are required. Existing
 canonical writable/control/Gateway paths must not overlap either private store.
 
 The runtime retains the workspace and rootfs owners through the builder, admitted
-Attempt and native teardown. Under the original RunLease, it creates a new compact
+Execution and native teardown. Under the original RunLease, it creates a new compact
 Core/stage with the sealed generation as its single Immutable lower and frozen
 baseline; `live_target` remains the separate writable apply destination. This is
 fresh initialization, not `ExecutionOverlayHint` restoration. Ordinary SDK RunSpec
@@ -1636,7 +1645,7 @@ Reads stay on the selected generation while external edits to the live target
 remain external. Mutations retain normal copy-up/preimage behavior, and applying
 selected changes rejects conflicting target edits. This is not whole-read-set
 transaction isolation. A private `workspace-baseline.json` records the exact
-workspace/rootfs selectors and live target. Stopped-Job apply reauthenticates both
+workspace/rootfs selectors and live target. Stopped-Session apply reauthenticates both
 catalogs and their relationship to the record under the existing lease, retaining
 both owners through commit; a receipt path alone is no proof. Apply uses only the
 recorded live target, and target-contract tampering is rejected against that
@@ -1650,7 +1659,7 @@ longer present. Native capture/fork/resume independently reject the actual owned
 stage receipt, even if a supplied restoration config omits the selector.
 Relaunch must explicitly reconstruct supported ownership, not promote saved
 paths; a managed prepared-workspace selector without a matching runtime owner is
-refused before starting an Attempt. This entry alone adds no CLI selection, automatic reimport, cache switch
+refused before starting an Execution. This entry alone adds no CLI selection, automatic reimport, cache switch
 or measured performance benefit.
 
 `PVisorBuilder::on_executor_output(Fn(&ExecutorOutput) + Send + Sync + 'static)`
@@ -1673,13 +1682,13 @@ trial lower and live-baseline read observations. Workspace/both attach a sealed
 copy of the same fixture with an independent trial workspace apply destination;
 this treatment combines immutable caching and frozen-baseline observation
 semantics. Each run owns a fresh upper, authenticates seals without a full
-content rescan, and retains both leases until managed Job completion. Explicit
+content rescan, and retains both leases until managed Session completion. Explicit
 `PVISOR_VM_FS_WRITEBACK=0` is required; the normal VM overlay runner keeps DAX
 disabled. The optional
 `PVISOR_FS_OWNED_INPUTS_RECEIPT` selects a fresh JSON receipt path; otherwise it
 uses `stage/owned-inputs-receipt.json`. The receipt records actual generation
 identities, condition and manifest digest after teardown. This entry preserves
-PVisor, managed Job completion, compact journals, Bundle generation and self-exec
+PVisor, managed Session completion, compact journals, Bundle generation and self-exec
 VM isolation, but omits CLI frontend/owner orchestration. Its Ready timings are
 comparable within this four-condition cohort, not to previous CLI Ready measurements.
 
@@ -1881,8 +1890,8 @@ its first use as read-only returns an explicit error before VM launch.
 
 ## Explicit same-host VM peer networks
 
-Native VM Jobs and container VMs can join the same user-private network without
-a central forwarding process. For Jobs, add this to each `spawn --config FILE`
+Native VM Sessions and container VMs can join the same user-private network without
+a central forwarding process. For Sessions, add this to each `spawn --config FILE`
 TOML configuration, selecting a different address for every live instance:
 
 ```toml
@@ -1954,7 +1963,7 @@ DHCP and packet classification use the selected subnet/gateway. See the
 `VmExecutor::with_vsock_ports` explicitly publishing reserved control port 1025
 also enables `GuestConfig.control` and a session-owned workload process group.
 This selects the shared host-only guest process/file engine used by the native
-daemon. Other published ports and ordinary Jobs do not enable it. Guest control
+daemon. Other published ports and ordinary Sessions do not enable it. Guest control
 requests stay inside the VM; no host process or filesystem fallback is provided.
 
 ## 启动阶段诊断
@@ -2009,7 +2018,7 @@ The retained `Staged` record describes lifecycle state, not crash durability;
 consumers requiring durable artifacts must continue to call `require_sealed`.
 Auto-apply is rejected before stage preparation. Stopped and live logical
 checkpoints reject this policy before copying; execution-checkpoint sealing and
-Attempt reuse also reject it. Read-only inspection and discard remain available.
+Execution reuse also reject it. Read-only inspection and discard remain available.
 Normal `Checkpoint`/`Strict` behavior and all offload safety barriers are unchanged.
 This removes only automatic stage completion synchronization: preimage hashing,
 explicit workload fsync, normal I/O, and metadata/audit persistence remain.
@@ -2064,7 +2073,7 @@ read observations, mutation preimages, sealing and policy checks are unchanged.
 The shared tree uses the existing verified filesystem pool and durable references.
 Native restore still sets `protect_target=true`: review is supported, apply to
 this baseline remains rejected. This does not introduce a writable target binding
-or change ordinary Job apply/conflict/ledger semantics. The private engineering
+or change ordinary Session apply/conflict/ledger semantics. The private engineering
 control `PVISOR_SNAPSHOT_WORKSPACE_SHARING=0` forces the existing copy path; unset
 or `1` allows qualified seeds, and other values fail restore. No offload or RAM
 mapping contract changes. First publication cost remains and is measured separately
@@ -2096,7 +2105,7 @@ coordinated, so their later reads may refault; no cross-process performance clai
 is made. Advice is not a data deletion or permission change.
 
 There is one worker per owner process, at most eight tracked snapshots, and at
-most 131072 paths / 16 MiB path bytes per pending job; overflow skips advice.
+most 131072 paths / 16 MiB path bytes per pending session; overflow skips advice.
 Already-referenced pool layers, same-inode files and multiply-linked source files
 are skipped. Files are opened beneath pinned directory FDs with no symlinks;
 unsupported kernels/path errors stop optional cleanup rather than weakening

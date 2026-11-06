@@ -272,7 +272,7 @@ class ResourceBudget:
         """Enumerate the whole private subtree, including detached helpers.
 
         A group/process disappearing during the scan is unknown, not an empty
-        successful observation. The caller must retain such failed attempts.
+        successful observation. The caller must retain such failed executions.
         """
         membership = {}
         for directory in [self.group, *sorted(self.group.rglob("*"))]:

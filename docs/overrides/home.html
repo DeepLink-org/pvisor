@@ -37,9 +37,9 @@ brew install DeepLink-org/formula/pvisor</code></pre>
       <div class="pc-home-terminal-wrap pc-home-examples" role="group" aria-label="{% if zh %}命令示例{% else %}Command examples{% endif %}">
         <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-docker" aria-controls="pc-home-docker-example" checked>
         <label class="pc-home-example-label" for="pc-home-docker">Docker style sandbox</label>
-        <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-job" aria-controls="pc-home-job-example">
-        <label class="pc-home-example-label" for="pc-home-job">Agent style stagebox</label>
-        <div class="pc-home-job-example" id="pc-home-job-example">
+        <input class="pc-home-example-radio" type="radio" name="pc-home-example" id="pc-home-session" aria-controls="pc-home-session-example">
+        <label class="pc-home-example-label" for="pc-home-session">Agent style stagebox</label>
+        <div class="pc-home-session-example" id="pc-home-session-example">
         <div class="pc-home-terminal" data-ui>
           <div class="pc-home-terminal-bar">{% if zh %}改动先暂存，成果由你选{% else %}Changes stay staged. You decide what to keep.{% endif %}</div>
           <pre class="pc-home-terminal-body"><code><span class="pc-home-comment"># {% if zh %}运行 Agent，文件写入暂存区{% else %}Run your agent with staged writes{% endif %}</span>
@@ -107,7 +107,7 @@ pvisor rm demo</code></pre>
         <strong>Agent style stagebox</strong>
         <span class="pc-home-mode-feature">{% if zh %}沉浸式氛围编程{% else %}Hands-off vibe coding.{% endif %}</span>
         <span>{% if zh %}无需反复权限确认{% else %}Coding without sandbox approvals.{% endif %}</span>
-        <span>{% if zh %}pVisor 独创的沙盘模式：Agent 在预设边界内尝试，原生 Job 保存候选文件，你审查后只接收需要的成果。执行隔离由所选执行器提供。{% else %}pVisor's original stagebox mode: let agents experiment within defined boundaries, retain candidate files in a native Job, then review and accept selected results. The chosen executor provides isolation.{% endif %}</span>
+        <span>{% if zh %}pVisor 独创的沙盘模式：Agent 在预设边界内尝试，原生 Session 保存候选文件，你审查后只接收需要的成果。执行隔离由所选执行器提供。{% else %}pVisor's original stagebox mode: let agents experiment within defined boundaries, retain candidate files in a native Session, then review and accept selected results. The chosen executor provides isolation.{% endif %}</span>
       </a>
     </div>
   <aside class="pc-home-preview">

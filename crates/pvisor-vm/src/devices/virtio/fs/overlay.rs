@@ -1054,9 +1054,9 @@ impl OverlayFs {
             "host_writeback_backing_errors",
             "host_writeback_queue_sessions",
             "host_writeback_queue_peak_bytes_sum",
-            "host_writeback_queue_peak_jobs_sum",
+            "host_writeback_queue_peak_tasks_sum",
             "host_writeback_queue_batches",
-            "host_writeback_queue_jobs",
+            "host_writeback_queue_tasks",
             "host_writeback_reserve_wait_count",
             "host_writeback_reserve_wait_ns",
         ] {
@@ -1064,7 +1064,7 @@ impl OverlayFs {
         }
         for (name, value) in [
             ("host_writeback_capacity_bytes", options.budget_bytes as u64),
-            ("host_writeback_max_jobs", options.max_jobs as u64),
+            ("host_writeback_max_tasks", options.max_tasks as u64),
             ("host_writeback_batch_bytes", options.batch_bytes as u64),
             ("host_writeback_max_chunks", options.max_chunks as u64),
             (
@@ -3612,7 +3612,7 @@ impl FileSystem for OverlayFs {
         if let Some(previous) = previous {
             if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
                 // OCI ownership belongs to the guest, not the invoking host
-                // user. Never attempt an unmapped host chown, or swallow its
+                // user. Never execution an unmapped host chown, or swallow its
                 // EPERM. Guest root may assign owners; an unprivileged owner
                 // may retain its UID and select its primary group.
                 // Linux idmapped FUSE requests may omit credentials after the
@@ -6406,7 +6406,7 @@ mod tests {
         let mut fs = negative_entry_fixture(temp.path());
         fs.snapshot_config
             .access_policy
-            .bind_session("run", "attempt", "workspace");
+            .bind_session("run", "execution", "workspace");
         fs.snapshot_config.access_policy = fs.snapshot_config.access_policy.for_view("rootfs");
         fs.configure_negative_entry_cache(true, true, false, vec![PathBuf::from("once")])
             .unwrap();
@@ -8654,11 +8654,11 @@ mod tests {
             assert_ne!(first.handle, second.handle);
             let profile = fs.profile.report().unwrap();
             for (label, legacy, combined) in [
-                ("open_qualification_fgetfl_attempts", 4, 2),
-                ("open_qualification_fstat_attempts", 4, 0),
-                ("open_qualification_statx_attempts", 2, 2),
-                ("open_qualification_fstatfs_attempts", 4, 2),
-                ("open_qualification_shared_attempts", 0, 2),
+                ("open_qualification_fgetfl_executions", 4, 2),
+                ("open_qualification_fstat_executions", 4, 0),
+                ("open_qualification_statx_executions", 2, 2),
+                ("open_qualification_fstatfs_executions", 4, 2),
+                ("open_qualification_shared_executions", 0, 2),
                 ("open_qualification_receipt_hits", 0, 2),
             ] {
                 assert_eq!(
@@ -8682,10 +8682,10 @@ mod tests {
             );
             let after = fs.profile.report().unwrap();
             for label in [
-                "open_qualification_fgetfl_attempts",
-                "open_qualification_fstat_attempts",
-                "open_qualification_statx_attempts",
-                "open_qualification_fstatfs_attempts",
+                "open_qualification_fgetfl_executions",
+                "open_qualification_fstat_executions",
+                "open_qualification_statx_executions",
+                "open_qualification_fstatfs_executions",
             ] {
                 assert_eq!(
                     after.measurements[label].units,
@@ -8754,19 +8754,19 @@ mod tests {
             );
             let profile = fs.profile.report().unwrap();
             assert_eq!(
-                profile.measurements["open_qualification_fgetfl_attempts"].units,
+                profile.measurements["open_qualification_fgetfl_executions"].units,
                 u64::from(data || flush)
             );
             assert_eq!(
-                profile.measurements["open_qualification_fstat_attempts"].units,
+                profile.measurements["open_qualification_fstat_executions"].units,
                 u64::from(!data && flush)
             );
             assert_eq!(
-                profile.measurements["open_qualification_statx_attempts"].units,
+                profile.measurements["open_qualification_statx_executions"].units,
                 u64::from(data)
             );
             assert_eq!(
-                profile.measurements["open_qualification_fstatfs_attempts"].units,
+                profile.measurements["open_qualification_fstatfs_executions"].units,
                 u64::from(data || flush)
             );
             let linked = fs.lookup(ctx, fuse::ROOT_ID, c"linked").unwrap().inode;
@@ -8951,7 +8951,7 @@ mod tests {
         assert!(fs.lower_data_object(inode, handle).is_some());
         let after = fs.profile.report().unwrap();
         assert_eq!(
-            after.measurements["open_qualification_legacy_data_attempts"].units,
+            after.measurements["open_qualification_legacy_data_executions"].units,
             1
         );
         fs.release(ctx, inode, 0, handle, false, false, None)
@@ -9003,11 +9003,11 @@ mod tests {
             .into_iter()
             .find(|p| {
                 p.measurements
-                    .contains_key("open_qualification_shared_attempts")
+                    .contains_key("open_qualification_shared_executions")
             })
             .unwrap();
         assert_eq!(
-            profile.measurements["open_qualification_shared_attempts"].units,
+            profile.measurements["open_qualification_shared_executions"].units,
             1
         );
         for (inode, reply, expected) in [

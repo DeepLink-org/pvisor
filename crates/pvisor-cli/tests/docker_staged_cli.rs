@@ -38,18 +38,18 @@ impl Fixture {
             let binding = json!({"version":1,"store":store,"instance_id":id,"generation":"generation",
                 "mount_index":index,"guest_target":target,"source":source});
             let record: RunRecord = serde_json::from_value(json!({
-                "schema_version":2,"completion_protocol":1,"run_id":format!("bind-{index}"),
-                "session_id":id,"attempt_id":format!("attempt-{index}"),"agent":"fixture","pid":0,
+                "schema_version":3,"completion_protocol":2,"run_id":format!("bind-{index}"),
+                "session_id":id,"execution_id":format!("execution-{index}"),"agent":"fixture","pid":0,
                 "command":["/bin/true"],"state":"completed","started_at_unix_ms":10,"finished_at_unix_ms":20,
                 "storage":stage,"workspace":source,"network":{},"overlay_lowers":[source],
-                "project_apply_scope":pvisor::job_service::ProjectApplyScope::capture(&source).unwrap(),
+                "project_apply_scope":pvisor::session_service::ProjectApplyScope::capture(&source).unwrap(),
                 "orchestration":{"pvisor.docker_staged_bind":binding},
                 "overlay":{"id":format!("bind-{index}"),"generation":0,"target":source,
                     "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
                     "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
             })).unwrap();
             record.write().unwrap();
-            for name in ["job.lock", "lease.lock"] {
+            for name in ["session.lock", "lease.lock"] {
                 fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -75,10 +75,10 @@ impl Fixture {
             drop(core);
             fs::write(stage.join("upper/result"), format!("result-{index}")).unwrap();
             pvisor_overlay_core::stage::seal(&stage.join("upper"), &journal).unwrap();
-            let result = json!({"run_id":record.run_id,"attempt_id":record.attempt_id,"state":"completed",
+            let result = json!({"run_id":record.run_id,"execution_id":record.execution_id,"state":"completed",
                 "started_at_unix_ms":10,"finished_at_unix_ms":20,"exit_code":0});
             let snapshot = serde_json::from_value(
-                json!({"run_id":record.run_id,"attempt_id":record.attempt_id,
+                json!({"run_id":record.run_id,"execution_id":record.execution_id,
                 "directive":{"kind":"continue"},"clients":[]}),
             )
             .unwrap();
@@ -91,7 +91,7 @@ impl Fixture {
             .unwrap()
             .write(&stage)
             .unwrap();
-            fs::write(stage.join("completion.json"), serde_json::to_vec(&json!({"version":1,"result":result,
+            fs::write(stage.join("completion.json"), serde_json::to_vec(&json!({"version":2,"result":result,
                 "bundle_blake3":blake3::hash(&fs::read(RunBundle::path(&stage)).unwrap()).to_hex().to_string()})).unwrap()).unwrap();
             mounts.push(json!({"source":source,"target":target,"read_only":false,"staged":true,"volume":null}));
             sources.push(source);
@@ -293,12 +293,12 @@ fn active_or_uncommitted_container_selection_fails_closed() {
 }
 
 #[test]
-fn job_sources_are_preserved_and_mount_explicitly_selects_container() {
+fn session_sources_are_preserved_and_mount_explicitly_selects_container() {
     let f = Fixture::new(1);
-    // A corrupt same-named Job path must not be reinterpreted as a container.
-    let job = f.root.path().join("staged");
-    fs::create_dir(&job).unwrap();
-    fs::write(job.join("run.json"), b"corrupt").unwrap();
+    // A corrupt same-named Session path must not be reinterpreted as a container.
+    let session = f.root.path().join("staged");
+    fs::create_dir(&session).unwrap();
+    fs::write(session.join("run.json"), b"corrupt").unwrap();
     for operation in ["review", "apply", "drop"] {
         let args = if operation == "apply" {
             vec!["--all", "--json"]
@@ -321,7 +321,7 @@ fn job_sources_are_preserved_and_mount_explicitly_selects_container() {
 }
 
 #[test]
-fn default_job_corruption_and_ambiguity_never_fall_back() {
+fn default_session_corruption_and_ambiguity_never_fall_back() {
     for corrupt in [true, false] {
         let f = Fixture::new(1);
         for name in ["one", "two"] {
@@ -344,14 +344,14 @@ fn default_job_corruption_and_ambiguity_never_fall_back() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains(if corrupt {
-                "read Job"
+                "read Session"
             } else {
-                "ambiguous existing Job"
+                "ambiguous existing Session"
             }),
             "{output:?}"
         );
         assert!(
-            error.contains("cannot safely resolve Job identity"),
+            error.contains("cannot safely resolve Session identity"),
             "{output:?}"
         );
         assert!(!error.contains("No such container"), "{output:?}");
@@ -437,15 +437,15 @@ signal.signal(signal.SIGALRM, timed_out)
 signal.setitimer(signal.ITIMER_REAL, 15)
 reaped = False
 try:
-    for attempt in range(2):
-        picker(checked=attempt != 0)
+    for execution in range(2):
+        picker(checked=execution != 0)
         os.write(master, b'a')
         # Selecting all redraws the picker; wait for its checked row before
         # Enter, rather than treating the header as a complete screen.
         picker(checked=True)
         os.write(master, b'\r')
         read_until(b'[a] apply  [b] back  [d] diff  [q] quit\r\n')
-        os.write(master, b'b' if attempt == 0 else b'a')
+        os.write(master, b'b' if execution == 0 else b'a')
     while read_chunk(): pass
     _, status = os.waitpid(pid, 0)
     reaped = True
@@ -481,9 +481,9 @@ finally:
 }
 
 #[test]
-fn corrupt_job_index_never_falls_back_to_container() {
+fn corrupt_session_index_never_falls_back_to_container() {
     let f = Fixture::new(1);
-    let storage = f.root.path().join("jobs");
+    let storage = f.root.path().join("sessions");
     let index = storage.join(".pvisor/runs");
     fs::create_dir_all(&index).unwrap();
     fs::write(index.join("737461676564.json"), "corrupt").unwrap();

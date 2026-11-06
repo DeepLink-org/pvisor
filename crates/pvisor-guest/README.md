@@ -56,7 +56,7 @@ mount and checks its result. This drains guest writes that outlive ordinary
 file closes. A writeback failure is reported and changes the final status to
 125, including when the workload itself exited successfully. Mount paths are
 decoded from the bounded kernel mount table; a failure on one mount does not
-skip attempts to drain the others. The host stage must be consumed after this
+skip tries to drain the others. The host stage must be consumed after this
 completion boundary, rather than after a guest close or a host-queue drain.
 
 ## Private temporary filesystem
@@ -103,7 +103,7 @@ mount is fatal).
 
 ## One workload supervisor
 
-Jobs and controlled workloads enter the same `workload` function and use
+Sessions and controlled workloads enter the same `workload` function and use
 `linux/process.rs` for command validation, resource limits, process creation,
 signals, terminal allocation and reaping. There is no Docker-specific guest
 entry point or supervisor. The host translates Docker image/CLI policy into
@@ -125,7 +125,7 @@ launches keep their existing attachment ownership.
 
 The VM executor privately deserializes `pvisor.vm.stage_stdio` as
 `{"interactive":bool,"tty":[rows,cols]|null}` and translates it to these options;
-zero dimensions fail launch validation. No metadata means ordinary Job behavior.
+zero dimensions fail launch validation. No metadata means ordinary Session behavior.
 The host must hand foreground ownership through both CLI → owner and owner → VM
 runner when stage output inherits a controlling terminal, even with closed stdin:
 the VMM configures that terminal via `tcsetattr`, which can otherwise stop its
@@ -198,7 +198,7 @@ daemon supervisor. Host protocol validation is separate from guest transport tes
 ## Startup diagnostics
 
 Host-selected `GuestConfig.env["PVISOR_STARTUP_PROFILE"] = "1"` enables optional
-`pvisor-startup-profile` JSON on guest stderr. The native Job runner copies the host profiling switch into this launch setting,
+`pvisor-startup-profile` JSON on guest stderr. The native Session runner copies the host profiling switch into this launch setting,
 including when ordinary environment projection omits host variables. Other
 GuestConfig consumers may explicitly supply it. No launch-message field or guest protocol changes.
 Private spans cover config read/validation, virtual filesystems and console/stdio

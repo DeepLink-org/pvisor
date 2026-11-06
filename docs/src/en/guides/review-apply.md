@@ -1,5 +1,5 @@
 ---
-description: Review a staged Job's file changes, apply selected paths, and handle preimage conflicts through the recovery ledger.
+description: Review a staged Session's file changes, apply selected paths, and handle preimage conflicts through the recovery ledger.
 ---
 
 # Review and apply changes
@@ -12,9 +12,9 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-Without `--stage`, `--safe` keeps workspace changes in the Job store. To choose a location, pass `--stage PATH`, using a fresh directory outside the project for each Run.
+Without `--stage`, `--safe` keeps workspace changes in the Session store. To choose a location, pass `--stage PATH`, using a fresh directory outside the project for each Run.
 
-`last` resolves the most recent Job for the current workspace. If you passed `--stage`, address that path instead of `last`. `status --review` shows evidence and changes, and `inspect` runs check commands in a read-only view. See [Jobs and storage](../concepts/jobs.md).
+`last` resolves the most recent Session for the current workspace. If you passed `--stage`, address that path instead of `last`. `status --review` shows evidence and changes, and `inspect` runs check commands in a read-only view. See [Sessions and storage](../concepts/sessions.md).
 
 ## Apply in batches
 
@@ -42,7 +42,7 @@ Drop removes only the staged changes that have not been applied. It cannot undo 
 
 ## Review order and expected results
 
-Confirm the Job has stopped, then read the record in this order: outcome and exit code → actual file and network boundaries and warnings → denied or failed accesses → net file changes. Allow rules and captures do not replace mandatory-control evidence.
+Confirm the Session has stopped, then read the record in this order: outcome and exit code → actual file and network boundaries and warnings → denied or failed accesses → net file changes. Allow rules and captures do not replace mandatory-control evidence.
 
 ```bash
 pvisor status --review --diff ../stage-001
@@ -55,6 +55,6 @@ After a successful selective apply, the host `src` shows the selected changes an
 
 ## Handling conflicts
 
-When a conflict occurs, keep the current workspace and stage; do not delete the preimage or hand-edit the ledger. Compare the host's current files, the staged files, and the original task to decide what to keep. To combine changes from both sides, resolve them explicitly in a fresh Job or a normal Git workflow and then retry; pVisor never performs an automatic three-way merge.
+When a conflict occurs, keep the current workspace and stage; do not delete the preimage or hand-edit the ledger. Compare the host's current files, the staged files, and the original task to decide what to keep. To combine changes from both sides, resolve them explicitly in a fresh Session or a normal Git workflow and then retry; pVisor never performs an automatic three-way merge.
 
-Record your final decision before dropping. Applied batches cannot be rolled back by drop, and a full apply or drop cleans the one-time staging data, so fork first when you need another attempt.
+Record your final decision before dropping. Applied batches cannot be rolled back by drop, and a full apply or drop cleans the one-time staging data, so fork first when you need another execution.

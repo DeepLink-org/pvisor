@@ -1,0 +1,586 @@
+//! Native Session CLI acceptance. No legacy snapshot frontend or substitute runner.
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Child, Command, Output, Stdio},
+    time::{Duration, Instant},
+};
+
+fn command() -> Command {
+    // Native compatibility binds the executable contents. Keep this test's
+    // binary immutable while unrelated builds may replace target/debug/pvisor.
+    // Unlike process statics, a test-thread local is dropped when that test
+    // finishes. Keep one pinned copy for all commands in the same test.
+    thread_local! {
+        static BINARY: tempfile::TempDir = {
+            let directory = tempfile::tempdir().unwrap();
+            fs::copy(
+                env!("CARGO_BIN_EXE_pvisor"),
+                directory.path().join("pvisor"),
+            )
+            .unwrap();
+            directory
+        };
+    }
+    BINARY.with(|directory| {
+        let mut command = Command::new(directory.path().join("pvisor"));
+        command.env("PVISOR_STARTUP_TIMING", "0");
+        command
+    })
+}
+
+#[test]
+fn pinned_cli_copy_is_removed_when_its_test_thread_finishes() {
+    let binary = std::thread::spawn(|| {
+        let path = PathBuf::from(command().get_program());
+        assert!(path.is_file());
+        path
+    })
+    .join()
+    .unwrap();
+    assert!(
+        !binary.parent().unwrap().exists(),
+        "test-owned CLI copy leaked: {}",
+        binary.display()
+    );
+}
+
+fn invoke(stage: &Path, args: &[&str]) -> Output {
+    let mut cmd = command();
+    let offset = if args[0] == "checkpoint" { 2 } else { 1 };
+    cmd.args(&args[..offset]).arg(stage).args(&args[offset..]);
+    cmd.output().unwrap()
+}
+fn json(output: Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+struct Running {
+    child: Child,
+    stage: PathBuf,
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        let _ = invoke(&self.stage, &["kill"]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+fn wait_for<T>(mut action: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(value) = action() {
+            return value;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native Session acceptance deadline"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+fn native_stderr(stage: &Path) -> String {
+    let result = (|| -> Option<String> {
+        let record = pvisor::RunRecord::read(stage).ok()?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(record.stage_dir().join("run-bundle.json")).ok()?)
+                .ok()?;
+        value
+            .pointer("/run/output/stderr")?
+            .as_str()
+            .map(|text| text.chars().take(4096).collect())
+    })();
+    result.unwrap_or_default()
+}
+
+fn counter(stage: &Path) -> Option<u64> {
+    let record = pvisor::RunRecord::read(stage).ok()?;
+    let upper = &record.overlay.as_ref()?.upper.upper_dir;
+    fs::read_to_string(upper.join("counter"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[test]
+#[ignore = "real KVM and /dev/fuse; static C compiler; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn native_session_capture_suspend_resume_and_execution_fork_preserve_process_and_files() {
+    acceptance(false, false);
+}
+#[test]
+#[ignore = "real KVM and /dev/fuse; static C compiler; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn native_session_nested_stage_preserves_guest_projection() {
+    acceptance(true, false);
+}
+#[test]
+#[ignore = "real KVM and /dev/fuse; static C compiler; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn native_session_nested_stage_chunked_filesystems_preserve_guest_projection() {
+    acceptance(true, true);
+}
+
+#[test]
+#[ignore = "real KVM; static C compiler; PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
+fn minimal_guest_without_dev_repeatedly_reaches_ready_with_captured_stdio() {
+    let temp = tempfile::tempdir().unwrap();
+    let rootfs = temp.path().join("rootfs");
+    let workspace = temp.path().join("workspace");
+    let home = temp.path().join("home");
+    for path in [rootfs.join("bin"), workspace.clone(), home.clone()] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let source = temp.path().join("ready.c");
+    fs::write(
+        &source,
+        "#include <stdio.h>\nint main(void) { puts(\"PVISOR_STARTUP_READY\"); return fflush(stdout) != 0; }\n",
+    )
+    .unwrap();
+    assert!(
+        Command::new("cc")
+            .args(["-O2", "-static"])
+            .arg(&source)
+            .arg("-o")
+            .arg(rootfs.join("bin/ready"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // No /dev, /proc, /sys, shell or init is supplied by the image. Captured
+    // streams also exercise the transition from bootstrap fds to named ports.
+    for cpus in [1, 2] {
+        for trial in 0..10 {
+            let execution = temp.path().join(format!("{cpus}cpu-{trial}"));
+            fs::create_dir(&execution).unwrap();
+            let mut cmd = command();
+            cmd.current_dir(&workspace)
+                .env("HOME", &home)
+                .env("PVISOR_RUN_HOME", execution.join("runs"))
+                .env("PVISOR_STARTUP_PROFILE", "0")
+                .args([
+                    "spawn",
+                    "--no-agent-defaults",
+                    "--vm",
+                    "--overlaynet",
+                    "off",
+                    "--stdio",
+                    "inherit",
+                    "--memory",
+                    "128MiB",
+                    "--cpu",
+                ])
+                .arg(cpus.to_string())
+                .arg("--timeout")
+                .arg("10s")
+                .arg("--rootfs")
+                .arg(&rootfs)
+                .arg("--stage")
+                .arg(execution.join("stage"))
+                .stdin(Stdio::null());
+            if let Some(directory) = std::env::var_os("PVISOR_TEST_LIBRARY_DIR") {
+                cmd.arg("--vm-library-dir").arg(directory);
+            }
+            let output = cmd.args(["--", "/bin/ready"]).output().unwrap();
+            fs::write(execution.join("stdout.log"), &output.stdout).unwrap();
+            fs::write(execution.join("stderr.log"), &output.stderr).unwrap();
+            let ready = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| *line == "PVISOR_STARTUP_READY")
+                .count();
+            if !output.status.success() || ready != 1 {
+                let artifacts = temp.keep();
+                panic!(
+                    "minimal guest {cpus}cpu trial {trial}: {}, Ready={ready}; evidence: {}\n{}",
+                    output.status,
+                    artifacts.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert!(!rootfs.join("dev").exists(), "guest modified image lower");
+        }
+    }
+    if std::env::var("PVISOR_TEST_KEEP_SESSION_ARTIFACTS").as_deref() == Ok("1") {
+        eprintln!("minimal guest artifacts: {}", temp.keep().display());
+    }
+}
+
+fn acceptance(nested: bool, pooled: bool) {
+    struct Artifacts(Option<tempfile::TempDir>);
+    impl Artifacts {
+        fn path(&self) -> &Path {
+            self.0.as_ref().unwrap().path()
+        }
+    }
+    impl Drop for Artifacts {
+        fn drop(&mut self) {
+            if std::env::var("PVISOR_TEST_KEEP_SESSION_ARTIFACTS").as_deref() == Ok("1") {
+                eprintln!(
+                    "native Session artifacts: {}",
+                    self.0.take().unwrap().keep().display()
+                );
+            }
+        }
+    }
+    let temp = Artifacts(Some(tempfile::tempdir().unwrap()));
+    let rootfs = temp.path().join("rootfs");
+    for directory in ["bin", "dev", "proc", "tmp"] {
+        fs::create_dir_all(rootfs.join(directory)).unwrap();
+    }
+    let guest = temp.path().join("guest.c");
+    fs::write(
+        &guest,
+        r#"
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
+int main(void) {
+    /* A restart fails; only saved CPU/RAM and the already open descriptor can continue. */
+    int started=open("started-once",O_CREAT|O_EXCL|O_WRONLY,0644);
+    if(started<0) return 88;
+    close(started);
+    int fd=open("counter",O_CREAT|O_RDWR,0644);
+    if(fd<0) return 89;
+    unsigned long counter=1000;
+    for(;;) {
+        char data[64];int size=snprintf(data,sizeof(data),"%lu\n",counter++);
+        if(pwrite(fd,data,size,0)!=size || ftruncate(fd,size)) return 90;
+        struct timespec delay={0,100000000};nanosleep(&delay,0);
+    }
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        Command::new("cc")
+            .args(["-O2", "-static"])
+            .arg(&guest)
+            .arg("-o")
+            .arg(rootfs.join("bin/probe"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let stage = if nested {
+        workspace.join("stage/session")
+    } else {
+        temp.path().join("session")
+    };
+    let log = temp.path().join("source.log");
+    let mut cmd = command();
+    if pooled {
+        let config = temp.path().join("pool.toml");
+        fs::write(
+            &config,
+            format!(
+                "[vm]\nsnapshot_filesystem_pool = {:?}\n",
+                temp.path().join("pool")
+            ),
+        )
+        .unwrap();
+        cmd.arg("spawn").arg("--config").arg(config);
+    }
+    if !pooled {
+        cmd.arg("spawn");
+    }
+    cmd.current_dir(&workspace)
+        .env("SESSION_CAPTURE_ENV", "original")
+        .args([
+            "--executor",
+            "vm",
+            "--overlaynet",
+            "off",
+            "--memory",
+            "128MiB",
+            "--stdio",
+            "capture",
+            "--rootfs",
+        ])
+        .arg(&rootfs)
+        .arg("--stage")
+        .arg(&stage);
+    if let Some(directory) = std::env::var_os("PVISOR_TEST_LIBRARY_DIR") {
+        cmd.arg("--vm-library-dir").arg(directory);
+    }
+    cmd.args(["--", "/bin/probe"])
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap());
+    let mut source = Running {
+        child: cmd.spawn().unwrap(),
+        stage: stage.clone(),
+    };
+    let first = wait_for(|| {
+        if let Some(status) = source.child.try_wait().unwrap() {
+            panic!(
+                "source exited {status}: {}",
+                fs::read_to_string(&log).unwrap()
+            );
+        }
+        counter(&stage)
+    });
+    assert!(first >= 1000);
+    let original = pvisor::RunRecord::read(&stage).unwrap();
+    let cp = json(invoke(
+        &stage,
+        &[
+            "checkpoint",
+            "create",
+            "--kind",
+            "execution",
+            "--ram-storage",
+            "compressed",
+            "--request-id",
+            "capture-one",
+            "--json",
+        ],
+    ));
+    let id = cp["checkpoint_id"].as_str().unwrap();
+    assert_eq!(cp["checkpoint"]["ram_storage"], "compressed");
+    wait_for(|| counter(&stage).filter(|current| *current > first));
+    let replay = json(invoke(
+        &stage,
+        &[
+            "checkpoint",
+            "create",
+            "--kind",
+            "execution",
+            "--ram-storage",
+            "compressed",
+            "--request-id",
+            "capture-one",
+            "--json",
+        ],
+    ));
+    assert_eq!(replay["checkpoint_id"], id);
+    assert!(
+        !invoke(
+            &stage,
+            &[
+                "checkpoint",
+                "create",
+                "--kind",
+                "execution",
+                "--ram-storage",
+                "raw",
+                "--request-id",
+                "capture-one"
+            ]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        json(invoke(&stage, &["checkpoint", "verify", id, "--json"]))["verified"],
+        true
+    );
+
+    let child_stage = temp.path().join("branch");
+    let child_log = temp.path().join("branch.log");
+    let child = command()
+        .arg("fork")
+        .arg(&stage)
+        .args([
+            "--state",
+            "execution",
+            "--checkpoint",
+            id,
+            "--request-id",
+            "branch-one",
+            "--eager-ram",
+            "--stage",
+        ])
+        .arg(&child_stage)
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&child_log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut branch = Running {
+        child,
+        stage: child_stage.clone(),
+    };
+    wait_for(|| {
+        if let Some(status) = branch.child.try_wait().unwrap() {
+            panic!(
+                "branch exited {status}: {}",
+                fs::read_to_string(&child_log).unwrap()
+            );
+        }
+        counter(&child_stage)
+    });
+    let child_record = pvisor::RunRecord::read(&child_stage).unwrap();
+    assert_ne!(child_record.run_id, original.run_id);
+    assert_eq!(child_record.lineage.as_ref().unwrap().checkpoint_id, id);
+    assert_ne!(
+        child_record.overlay.as_ref().unwrap().upper.upper_dir,
+        original.overlay.as_ref().unwrap().upper.upper_dir
+    );
+    assert!(source.child.try_wait().unwrap().is_none());
+    assert!(
+        invoke(
+            &stage,
+            &[
+                "fork",
+                "--state",
+                "execution",
+                "--checkpoint",
+                id,
+                "--stage",
+                child_stage.to_str().unwrap(),
+                "--request-id",
+                "branch-one",
+                "--eager-ram"
+            ]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        !invoke(&stage, &["checkpoint", "delete", id])
+            .status
+            .success()
+    );
+
+    let suspended = json(invoke(
+        &stage,
+        &[
+            "suspend",
+            "--ram-storage",
+            "raw",
+            "--request-id",
+            "suspend-one",
+            "--json",
+        ],
+    ));
+    assert_eq!(suspended["state"], "suspended");
+    assert_eq!(suspended["checkpoint"]["ram_storage"], "raw");
+    let frozen = counter(&stage).unwrap();
+    let status = wait_for(|| source.child.try_wait().unwrap());
+    assert!(status.success(), "{}", fs::read_to_string(&log).unwrap());
+    assert_eq!(json(invoke(&stage, &["status", "--json"]))["live"], false);
+    assert!(!invoke(&stage, &["drop"]).status.success());
+    assert!(!invoke(&stage, &["apply"]).status.success());
+    let head = suspended["checkpoint_id"].as_str().unwrap();
+    assert!(
+        !invoke(&stage, &["checkpoint", "delete", head])
+            .status
+            .success()
+    );
+    assert_eq!(
+        json(invoke(&stage, &["suspend", "--json"]))["checkpoint_id"],
+        head
+    );
+    // Restore reads the owned object; it must not need the launch rootfs.
+    fs::remove_dir_all(&rootfs).unwrap();
+
+    let resume_log = temp.path().join("resume.log");
+    let resumed = command()
+        .arg("resume")
+        .arg(&stage)
+        .args(["--request-id", "resume-one"])
+        .env("SESSION_CAPTURE_ENV", "changed")
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&resume_log).unwrap())
+        .spawn()
+        .unwrap();
+    source = Running {
+        child: resumed,
+        stage: stage.clone(),
+    };
+    wait_for(|| {
+        if let Some(status) = source.child.try_wait().unwrap() {
+            panic!(
+                "resume exited {status}: {}\nNative stderr: {}",
+                fs::read_to_string(&resume_log).unwrap(),
+                native_stderr(&stage)
+            );
+        }
+        counter(&stage).filter(|current| *current > frozen)
+    });
+    let active = pvisor::RunRecord::read(&stage).unwrap();
+    assert!(
+        source.child.try_wait().unwrap().is_none(),
+        "{}",
+        fs::read_to_string(&resume_log).unwrap()
+    );
+    assert_eq!(active.run_id, original.run_id);
+    assert_ne!(active.execution_id, original.execution_id);
+    assert_ne!(active.stage_dir(), original.stage_dir());
+    assert!(original.stage_dir().join("run-bundle.json").exists());
+    assert!(
+        invoke(&stage, &["resume", "--request-id", "resume-one"])
+            .status
+            .success()
+    );
+    assert!(
+        !invoke(&stage, &["resume", "--request-id", "another"])
+            .status
+            .success()
+    );
+    let advanced = json(invoke(
+        &stage,
+        &[
+            "checkpoint",
+            "create",
+            "--kind",
+            "execution",
+            "--ram-storage",
+            "compressed",
+            "--request-id",
+            "capture-resumed",
+            "--json",
+        ],
+    ));
+    assert_eq!(
+        advanced["checkpoint"]["source_execution_id"],
+        active.execution_id.unwrap()
+    );
+    assert_eq!(
+        json(invoke(
+            &stage,
+            &["checkpoint", "list", "--kind", "execution", "--json"]
+        ))["checkpoints"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let unreferenced = advanced["checkpoint_id"].as_str().unwrap();
+    assert!(
+        invoke(&stage, &["checkpoint", "delete", unreferenced])
+            .status
+            .success()
+    );
+    // The two saved machines retain independent upper files and private RAM.
+    json(invoke(
+        &child_stage,
+        &["suspend", "--request-id", "branch-stop", "--json"],
+    ));
+    wait_for(|| branch.child.try_wait().unwrap());
+    let branch_frozen = counter(&child_stage).unwrap();
+    let source_before = counter(&stage).unwrap();
+    wait_for(|| counter(&stage).filter(|current| *current > source_before));
+    assert_eq!(counter(&child_stage), Some(branch_frozen));
+    assert!(invoke(&child_stage, &["kill"]).status.success());
+    assert!(!invoke(&child_stage, &["resume"]).status.success());
+    assert!(!workspace.join("counter").exists());
+    fs::write(workspace.join("counter"), b"external change").unwrap();
+    assert!(!invoke(&child_stage, &["apply"]).status.success());
+    assert_eq!(
+        fs::read(workspace.join("counter")).unwrap(),
+        b"external change"
+    );
+    assert!(invoke(&child_stage, &["drop"]).status.success());
+}

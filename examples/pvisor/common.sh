@@ -42,7 +42,7 @@ PY
 
 pvisor_wait_http() {
   local url="$1"
-  for ((attempt = 0; attempt < 50; attempt++)); do
+  for ((execution = 0; execution < 50; execution++)); do
     if curl --fail --silent "$url" >/dev/null 2>&1; then
       return 0
     fi
@@ -54,7 +54,7 @@ pvisor_wait_http() {
 
 pvisor_wait_tcp() {
   local port="$1"
-  for ((attempt = 0; attempt < 50; attempt++)); do
+  for ((execution = 0; execution < 50; execution++)); do
     if python3 - "$port" >/dev/null 2>&1 <<'PY'
 import socket
 import sys

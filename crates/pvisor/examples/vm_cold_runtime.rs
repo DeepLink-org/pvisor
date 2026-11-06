@@ -657,7 +657,7 @@ async fn run(a: Args) -> anyhow::Result<()> {
         );
         eprintln!("cold-runtime: {e:#}");
     }
-    // Cancel all unfinished attempts first, then reap concurrently under ONE
+    // Cancel all unfinished executions first, then reap concurrently under ONE
     // cleanup deadline. The terminal result is the public native-reaping fence.
     for w in &mut workers {
         if w.handle.is_some() || w.waiter.is_some() {

@@ -1,7 +1,7 @@
 # 平台与执行器支持矩阵
 
 Linux x86_64 和 macOS Apple Silicon 提供完整 CLI 安装。Windows x86_64 目前只支持
-源码构建的 `pvisor vm-run`，还不能运行 Job、TUI、replay 或本地 Daemon。
+源码构建的 `pvisor vm-run`，还不能运行 Session、TUI、replay 或本地 Daemon。
 
 一个 `pvisor.exe` 足够运行这个 VM 入口，但仍需 `libkrunfw.dll`、Linux rootfs 和
 其中的工作负载。CI 自动运行 Linux/KVM 和 Windows/WHP 的共同 VM 负载。
@@ -11,13 +11,13 @@ macOS 托管 runner 保留构建和常规测试，暂不运行 HVF 实机用例�
 ## 安装组件 {#binaries}
 
 Linux/macOS 的完整 wheel 和 native archive 包含四个同版本、同目录的宿主程序。
-普通非交互 Job 不要求常驻 Daemon；其他组件按所用功能调用。
+普通非交互 Session 不要求常驻 Daemon；其他组件按所用功能调用。
 
 | 程序与归属 | 何时使用 | Windows 状态 |
 | --- | --- | --- |
-| `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Job owner，`vm-run` 在当前进程执行 VM | 仅 `pvisor.exe` 的 `vm-run`、help/version |
+| `pvisor` / `pvisor-cli` | 命令入口；自行启动普通 Session owner，`vm-run` 在当前进程执行 VM | 仅 `pvisor.exe` 的 `vm-run`、help/version |
 | `pvisor-tui` / `pvisor-cli` | `pvisor tui`、`spawn --tui/--ask`、交互 resume；TUI 启动同目录 `pvisor`，管理 PTY、终端和审查面板 | 未移植 |
-| `pvisor-replay` / `pvisor-cli` | `pvisor replay`；managed replay 再调用同目录 `pvisor`，沿用 Job/轨迹契约 | 未移植 |
+| `pvisor-replay` / `pvisor-cli` | `pvisor replay`；managed replay 再调用同目录 `pvisor`，沿用 Session/轨迹契约 | 未移植 |
 | `pvisor-daemon` / 独立 crate | `pvisor daemon`、cache/sandbox 服务；`--vm-memory-pool auto` 通过它发现或启动共享内存池 | 未移植 |
 
 只复制主程序会使依赖 companion 的命令不可用。Windows CI 使用 `--bin pvisor`；
@@ -38,20 +38,20 @@ Linux payload，不需要安装宿主 `pvisor-guest.exe`。`whp_smoke.exe` 是 C
 | 功能 | Linux x86_64 | macOS Apple Silicon | Windows x86_64 |
 | --- | --- | --- | --- |
 | `vm-run` | KVM、可读写 `/dev/kvm`；Linux x86_64 guest | HVF、Hypervisor 签名；Linux aarch64 guest，不需要 macFUSE | WHP；启用功能并重启，嵌套 VM 需虚拟化透传；Linux x86_64 guest |
-| Host Job（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
-| 原生 OCI Job（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
+| Host Session（`spawn`）、OverlayFS、review/apply/drop | 暂存需要 FUSE；sandbox 需要 user namespace 和 Landlock | 暂存需要 macFUSE 5.4.0+ FSKit；文件/网络控制使用 Seatbelt | 未移植 |
+| 原生 OCI Session（`container` / `--executor container`） | `crun`/`runc` 和匹配的静态 Linux 注入程序 | 不支持 | 不支持 |
 | Docker 风格 VM 容器及网络策略 | 有实现和独立契约 | 有实现，各能力需 HVF 验证 | 未移植 |
 | Linux host-root `stage`、`:stage` bind | Linux 专用路径 | 不支持 Linux host-root；staged bind 不推定与 Linux 等价 | 不支持 |
 | VM 快照、恢复、冷 RAM | 有 API 和测试，受 backing/profile 限制 | 有 API 和测试，受 HVF/backing 限制 | Unsupported；仅有暂停/继续 |
 | Gateway | 按所选执行器和配置启用 | 有宿主执行路径 | 此次 CLI 不包含 |
 
 [Docker 风格容器命令](cli.md#container-commands)中的 `pvisor run` 每个容器使用
-独立 Linux VM，与原生 OCI Job 分开，也不实现 Docker Engine API。
+独立 Linux VM，与原生 OCI Session 分开，也不实现 Docker Engine API。
 Linux arm64 有源码路径，需核对该宿主的构建/KVM 测试及匹配 rootfs；OCI 还需
 `linux/arm64` 注入程序。x86_64 wheel 不覆盖 arm64。Intel macOS 无当前发布支持
 承诺，也不在 `vm-run` 范围内。
 
-安装后先运行 `pvisor --version`。Job 的有效控制查看 Run Bundle；`vm-run` 的
+安装后先运行 `pvisor --version`。Session 的有效控制查看 Run Bundle；`vm-run` 的
 结果通过退出码和宿主文件检查。
 
 ## 平台实现差异 {#implementation-parity}
@@ -62,7 +62,7 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 
 | 实现层 | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| CLI 与进程 | 完整命令树、Job owner、信号和后代清理 | 相同 Job/companion 结构，终端与资源控制受 macOS 限制 | 最小命令树调用共享 `vm-run`；无 Job owner、控制 socket 或 Job 状态记录 |
+| CLI 与进程 | 完整命令树、Session owner、信号和后代清理 | 相同 Session/companion 结构，终端与资源控制受 macOS 限制 | 最小命令树调用共享 `vm-run`；无 Session owner、控制 socket 或 Session 状态记录 |
 | companion | 同目录发现、Unix uid/mode 检查、`exec` 派发 | 相同检查；解析 Homebrew 入口的真实安装目录 | 无 companion 派发；完整移植需定义 `.exe` 查找、ACL 信任及进程启动/退出传播 |
 | 终端 | PTY、终端前台归属和信号 | PTY、终端恢复；TUI 为独立程序 | 未接入 Windows 控制台/PTY 生命周期 |
 | 共享服务 | Unix socket、同用户认证、锁和 readiness；sandbox 另需 cgroup/KVM | 使用 Unix IPC；支持缓存/池，sandbox API 不支持 | IPC、端点 ACL、锁、取消和服务回收尚未移植；连接远端 Linux API 不等于本地服务可用 |
@@ -74,13 +74,13 @@ virtio-fs → Rust PID 1 supervisor → Linux workload → token 认证退出`�
 
 完整 Windows 移植还需验证同目录安装、版本/权限检查，以及 CLI→TUI→CLI、
 CLI→replay→CLI、CLI→Daemon 的实际调用。测试须覆盖终端恢复、取消/超时、
-后代回收、服务就绪和失败恢复，并分别核对 Job JSON/Bundle、review/apply 和
+后代回收、服务就绪和失败恢复，并分别核对 Session JSON/Bundle、review/apply 和
 服务协议。只有 `--help` 或 VM 负载通过，尚不足以验收这些调用。
 
 ## 三平台的特性集合与关键路径
 
-`vm-run` 直接修改调用方提供的 rootfs，不创建 Job、Bundle、stage 或容器实例。
-它不提供网络/vsock、交互 stdin、独立 task stdio、容器生命周期、快照或 Job 策略。
+`vm-run` 直接修改调用方提供的 rootfs，不创建 Session、Bundle、stage 或容器实例。
+它不提供网络/vsock、交互 stdin、独立 task stdio、容器生命周期、快照或 Session 策略。
 输出走 VM 控制台，可能含内核日志。workload 退出码直接返回；参数错误为 2、
 准备/运行错误为 1，退出认证失败或 VM 异常终止为 125。超时和进程终止由外部调用方负责。
 

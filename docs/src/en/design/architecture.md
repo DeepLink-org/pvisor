@@ -1,6 +1,6 @@
 # Core architecture
 
-pVisor organizes Agent CLIs, scripts and automation commands into manageable Jobs: it resolves policy and execution boundaries before launch, manages file, network and machine resources during execution, and retains reviewable results afterward. Operations describe requests; Events describe facts observed while processing them.
+pVisor organizes Agent CLIs, scripts and automation commands into manageable Sessions: it resolves policy and execution boundaries before launch, manages file, network and machine resources during execution, and retains reviewable results afterward. Operations describe requests; Events describe facts observed while processing them.
 
 There are two responsibilities: **core provides definitions; pvisor provides implementation.** External callers submit execution requests, control execution through a run handle and observe progress and results through Events.
 
@@ -11,7 +11,7 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 | Owner | Responsibility |
 | --- | --- |
 | `pvisor-core` | Operation, policy decisions, Placement, Outcome, Event and shared interaction contracts; pure validation and policy evaluation |
-| `pvisor` | Request parsing, capability admission, actual policy rewrites, placement selection, scheduling, execution and Attempt lifecycle |
+| `pvisor` | Request parsing, capability admission, actual policy rewrites, placement selection, scheduling, execution and Execution lifecycle |
 | `pvisor-journal` | Event commit, receipts, deduplication, causal reference validation and recovery |
 | `pvisor-overlay-core` | File authorization integration, copy-on-write, preimages, review/apply/recovery/drop |
 | `pvisor-overlayfs` | Host FUSE mounts and file operation integration |
@@ -19,12 +19,12 @@ For the overall diagram and an end-to-end task walkthrough see [Design and inter
 | `pvisor-guest` | VM PID 1 and command launch contract |
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
-| `pvisor-cli` | CLI, cache/replay frontends and Host Job application adapters; consumes the runtime |
+| `pvisor-cli` | CLI, cache/replay frontends and Host Session application adapters; consumes the runtime |
 | `pvisor-shim` | containerd Runtime v2 shim (`io.containerd.pvisor.v2`); lifecycle, exec and FIFO/PTY IO for OCI container and optional VM execution tiers |
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
-The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `RuntimeJobService` in independent supervisors and reuses in-process `Execution` for controls on the same live Attempt. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Job stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
+The [daemon](daemon/index.md) VM-only `NativeRuntime` starts execution through durable `SessionService` in independent supervisors and reuses in-process `Execution` for controls on the same live Execution. It retains RunHandles and VMs across API restart; the daemon separately owns SDK authentication, admission and confirmed cleanup. Native Session stage/apply, checkpoint/fork and Gateway interfaces keep separate ownership and are not automatically exposed through runtime reuse.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers; embedding callers supply Core approval channels. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway or replay; the `gateway` feature enables capture.
 
@@ -32,7 +32,7 @@ Core neither owns the execution loop nor starts processes or opens control socke
 
 ![Execution entries, Runtime, host services and the CPU, RAM, devices and platform implementations inside a VM](assets/pvisor-architecture.svg)
 
-Entries submit configuration, Runtime organizes Sessions and Attempts, and host services provide files, networking, images and durable storage. Host, OCI and VM are distinct execution paths; the diagram expands VM state and its host relationships below. Crate dependencies express code reuse. Resource ownership determines who stops, synchronizes and releases state.
+Entries submit configuration, Runtime organizes Sessions and Executions, and host services provide files, networking, images and durable storage. Host, OCI and VM are distinct execution paths; the diagram expands VM state and its host relationships below. Crate dependencies express code reuse. Resource ownership determines who stops, synchronizes and releases state.
 
 ### Host data services {#host-services}
 
@@ -56,7 +56,7 @@ The image cache supplies pinned-revision metadata and verified content reads to 
 
 Ordinary pause confirms CPU parking while devices may still access RAM. Full freeze must also handle queues and memory references. Restore validates compatibility, installs mappings/device state while paused, then explicitly resumes. Physical sharing, cold pages and offload depend on platform, backing and profile; they cannot be assumed simultaneously available. [VM design](vm-runtime.md#freeze) and [Environment snapshots](environment-snapshot.md) own call ordering and post-failure state.
 
-Source entry points: `pvisor/src/session/lifecycle.rs`, `pvisor-overlay-core/src/service.rs`, `pvisor/src/image/cache/backend.rs`, `pvisor-vm/src/api.rs`, `handle.rs` and `devices/virtio/`.
+Source entry points: `pvisor/src/execution_context/lifecycle.rs`, `pvisor-overlay-core/src/service.rs`, `pvisor/src/image/cache/backend.rs`, `pvisor-vm/src/api.rs`, `handle.rs` and `devices/virtio/`.
 
 ## API boundaries and migration status {#api-boundaries}
 
@@ -79,14 +79,14 @@ This Rust boundary does not automatically establish stable wire protocols or old
 
 ## Host and Guest AgentCtl {#host-agentctl}
 
-Host AgentCtl is the authority path for built-in Job CLI operations. Guest
-AgentCtl is the per-Attempt cooperation path for workload `Hello`/`Sync`, client
+Host AgentCtl is the authority path for built-in Session CLI operations. Guest
+AgentCtl is the per-Execution cooperation path for workload `Hello`/`Sync`, client
 state, directives and checkpoint quiescence. They have separate schemas,
-credentials and endpoints: a guest cooperation token never authorizes host Job,
+credentials and endpoints: a guest cooperation token never authorizes host Session,
 VM, staged-file or daemon-supervisor controls. The Bundle's `agentctl` snapshot
 still describes Guest cooperation, not a Host authorization receipt.
 
-### Job owner and request ownership {#host-job-service}
+### Session owner and request ownership {#host-session-service}
 
 `pvisor spawn` keeps a terminal frontend and one self-executed owner. They inherit
 stdio and exchange cancellation/exit information over a private socketpair. The
@@ -96,10 +96,10 @@ restored at exit; terminal Ctrl-C may reach the workload directly. Linux makes
 the owner the subreaper and retains pidfd-based descendant cleanup.
 
 Before executor entry, the owner binds a private socket and writes `live_control`
-to the host-only Job record. The canonical address is:
+to the host-only Session record. The canonical address is:
 
 ```text
-/tmp/pvisor-host-<UID>/jobs/<job-id>/<attempt-id>/control.sock
+/tmp/pvisor-host-<UID>/sessions/<session-id>/<execution-id>/control.sock
 ```
 
 Directories are same-UID, non-symlink and `0700`; the socket is `0600`. The record
@@ -113,28 +113,28 @@ Live status, kill, native VM transitions, execution capture and running inspect
 execute in the starting owner binary. Stopped status, review, apply, drop and
 inspect run directly in the calling process. Sealed checkpoint restoration/fork
 starts a new owner. Apply/drop refuse a valid owner still holding stage. Durable
-operations use exclusive `flock` on the Job root's `job.lock`, validated as an
+operations use exclusive `flock` on the Session root's `session.lock`, validated as an
 owned `0600` file with one hard link. Its diagnostic record contains the lock
-protocol, PID and operation. Unknown Job schemas refuse mutation. Residual owner
+protocol, PID and operation. Unknown Session schemas refuse mutation. Residual owner
 metadata can be cleared only after its process dies and no valid control endpoint
 remains. Read-only inspect uses stage-declared lower mutability, defaulting to
 Mutable for missing or rebound declarations; freshness is not guaranteed.
 
 ### Owner control and remaining adapters {#owner-internal-control}
 
-Each Attempt has one host instance listener. Local calls select its owner by exact
-Job/Attempt and stage identity without connecting to that listener. The Attempt
+Each Execution has one host instance listener. Local calls select its owner by exact
+Session/Execution and stage identity without connecting to that listener. The Execution
 task owns registration; its teardown removes discovery even if callers retain
 owner references. Guest AgentCtl retains its separate trust boundary.
 
 | Path | Implementation and ownership |
 | --- | --- |
 | Workspace control | `instance_control.rs` owns observations and one bounded inspect mount table; `registry.rs` routes local calls directly and external calls through the recorded instance socket. The old Overlay listener and stage discovery link are removed. |
-| Native execution capture | `job_execution.rs` owns durable receipts and Job locks; local requests call the execution owner directly. Accepted tasks outlive frontend timeout. External requests use the same instance socket. There is no `execution.sock` listener. |
+| Native execution capture | `session_execution.rs` owns durable receipts and Session locks; local requests call the execution owner directly. Accepted tasks outlive frontend timeout. External requests use the same instance socket. There is no `execution.sock` listener. |
 | Explicit VM debugging | `--vm-socket` and embedded `host_vm_exchange` remain asynchronous adapters to the same host instance listener, using the shared Host envelope and bounded codec. |
 
 Further cleanup can narrow owner bootstrap messages to
-run, fork and resume. `JobCommand` currently serializes all commands although
+run, fork and resume. `SessionCommand` currently serializes all commands although
 only those three cross the socketpair; other commands' serialization, owner
 terminal branches and round-trip tests can then be removed. Production callers
 always pass zero for `OwnedTree.excluded`; `Completion.signal` has no reader,
@@ -143,16 +143,16 @@ are pending for the bootstrap path.
 
 ### Wire contract and upgrades {#host-wire}
 
-The instance contract is named `pvisor-instance-control-2`. Core's version-1 Host
-envelopes carry correlation, exact Job/Attempt targets and typed results/errors.
+The instance contract is named `pvisor-instance-control-3`. Core's version-1 Host
+envelopes carry correlation, exact Session/Execution targets and typed results/errors.
 `runtime/host_transport.rs` retains newline JSON framing with a 1 MiB frame limit.
 The owner admits at most eight connections and uses existing operation locks for
 mutations. The public socket receives no terminal descriptors or guest tokens.
 Internal CLI DTOs bootstrap only the self-executed owner.
 
 Caller and owner binaries may differ when the instance protocol matches. An
-incompatible Job protocol identifies that owner's recorded binary; it does not
-block other Jobs. Before upgrading, drain old Jobs and stop the old
+incompatible Session protocol identifies that owner's recorded binary; it does not
+block other Sessions. Before upgrading, drain old Sessions and stop the old
 `--pvisor-internal-host` with the old binary. New CLIs never connect to old
 `<generation>.sock` endpoints. Records without live discovery expose disk state
 only, and do not discover old running VMs. The daemon supervisor's listener,
@@ -185,7 +185,7 @@ The executor returns `ExecutorOutput`; the Session continues with cleanup, obser
 
 For example, when a request allows networking but workspace policy denies it, admission derives an effective network configuration and passes the same configuration to the network driver and executor. Preparation must not reread mutable configuration and allow recorded decisions to diverge from installed egress.
 
-Source entry points: `pvisor/src/runtime/run.rs::resolve_run`, `pvisor/src/session.rs` and `pvisor/src/runtime/job_service/managed.rs`.
+Source entry points: `pvisor/src/runtime/run.rs::resolve_run`, `pvisor/src/execution_context.rs` and `pvisor/src/runtime/session_service/managed.rs`.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 
@@ -195,9 +195,9 @@ For example, the network driver narrows requested Ambient capability to Deny. Re
 
 ## One lifecycle owner
 
-Each current `PVisor::run` creates one Attempt owned and managed by pvisor's `Session`. See [Execution model](execution-model.md) for Job, Run and Attempt identities.
+Each current `PVisor::run` creates one Execution managed through pvisor's `ExecutionContext`. See [Execution model](execution-model.md) for Session, Run and Execution identities.
 
-Session owns driver preparation, the Guest AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Job/Attempt identities nor publish terminal state. `RunHandle` retains completion, checkpoints and event subscriptions; `RunHandle::execution()` supplies the shared Execution owner for status, cancellation and controls. Requesting cancellation does not mean execution has stopped.
+ExecutionContext owns driver preparation, the Guest AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Session/Execution identities nor publish terminal state. `RunHandle` retains completion, checkpoints and event subscriptions; `RunHandle::execution()` supplies the shared Execution owner for status, cancellation and controls. Requesting cancellation does not mean execution has stopped.
 
 Process/VM executors clean up their managed process groups; containers use the runtime termination interface. See [Isolation design](isolation.md) for descendants outside the group and platform gaps. Guest AgentCtl provides workload cooperation and checkpoint quiescence, not mandatory enforcement; Host AgentCtl is the separate host-authority path described above.
 
@@ -215,12 +215,12 @@ Core shares file/network policy evaluation. User, workspace, session and executo
 
 | Record | Question answered |
 | --- | --- |
-| `run.json` | What are the Job's identity, state, executor and local resources? |
-| `completion.json` | Which result and exact Bundle bytes have committed together for this Attempt? |
+| `run.json` | What are the Session's identity, state, executor and local resources? |
+| `completion.json` | Which result and exact Bundle bytes have committed together for this Execution? |
 | Run Bundle | What are the result, control observations, artifacts and file/network summaries? |
 | Event Journal/Trace | Which facts were published and how are they related? |
 | Overlay diff/preimages | Which changes await review and what original state must apply check? |
 
-A durable Attempt's completion receipt binds its result and Bundle. Run and execution Job records retain state projections; Events supply fact observations. [Attempt completion](execution-model.md#attempt-completion) owns commit ordering and reconciliation when a receipt is absent. Reconstructing external state also requires the corresponding inputs and execution mechanisms. [Replay design](replay.md) owns native agent trajectory recovery scope.
+A durable Execution's completion receipt binds its result and Bundle. Run and execution Session records retain state projections; Events supply fact observations. [Execution completion](execution-model.md#execution-completion) owns commit ordering and reconciliation when a receipt is absent. Reconstructing external state also requires the corresponding inputs and execution mechanisms. [Replay design](replay.md) owns native agent trajectory recovery scope.
 
 Review staged files before applying them. OverlayCore validates targets, persists apply intent, updates files and recovers. A batch is not an atomic filesystem transaction. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for `apply`/`drop`/checkpoint recovery and irreversible effects; see [Review and apply](../guides/review-apply.md) for the workflow.

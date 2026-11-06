@@ -2,7 +2,7 @@
 
 <span id="state-reuse-and-resource-optimization"></span>
 
-After an Agent has completed part of a task, it may need to preserve progress, try another approach or continue later. pVisor uses checkpoints to save a starting point and branches to isolate subsequent changes, allowing attempts to proceed independently, be reviewed separately and retain their provenance.
+After an Agent has completed part of a task, it may need to preserve progress, try another approach or continue later. pVisor uses checkpoints to save a starting point and branches to isolate subsequent changes, allowing tries to proceed independently, be reviewed separately and retain their provenance.
 
 ## Workspace checkpoints: preserve file progress {#state-scope}
 
@@ -10,15 +10,15 @@ A workspace checkpoint saves staged file changes, conflict baselines and provena
 
 For example, an Agent has produced a code change but tests still fail. Save the current file state, let another branch try a different repair, then review both approaches.
 
-This checkpoint does not preserve process memory or model conversations. Base files may still reference external paths, so it is not an immutable backup of the entire environment. Ordinary workspace branching requires the source Job to have stopped; capture during execution requires a cooperative quiescence point. See [Logical checkpoints and forks](../guides/fork-checkpoint.md) for operations and saved state.
+This checkpoint does not preserve process memory or model conversations. Base files may still reference external paths, so it is not an immutable backup of the entire environment. Ordinary workspace branching requires the source Session to have stopped; capture during execution requires a cooperative quiescence point. See [Logical checkpoints and forks](../guides/fork-checkpoint.md) for operations and saved state.
 
 ## VM execution checkpoints: preserve execution progress {#execution-checkpoints}
 
-Under supported configurations, a VM execution checkpoint consistently captures CPU, RAM, device and filesystem state. Restoration rebuilds an execution instance and continues from the saved position; execution branching can create an independent Job from the same checkpoint.
+Under supported configurations, a VM execution checkpoint consistently captures CPU, RAM, device and filesystem state. Restoration rebuilds an execution instance and continues from the saved position; execution branching can create an independent Session from the same checkpoint.
 
 For example, save execution state after environment initialization or loading data into memory, then use it for restoration or branching. Whereas workspace branching starts a new command, execution branching continues the saved program and does not accept a replacement command.
 
-Creating an execution checkpoint can leave the original VM running. Suspending saves the checkpoint and waits for that VM to exit. Restoring a suspended task preserves Job identity and creates a new Attempt; execution branching creates an independent Job. [Live Resume](lifecycle.md#checkpoint-boundary) continues the original live instance and the same Attempt.
+Creating an execution checkpoint can leave the original VM running. Suspending saves the checkpoint and waits for that VM to exit. Restoring a suspended task preserves Session identity and creates a new Execution; execution branching creates an independent Session. [Live Resume](lifecycle.md#checkpoint-boundary) continues the original live instance and the same Execution.
 
 ## Create independent branches from the same starting point {#shared-bases}
 

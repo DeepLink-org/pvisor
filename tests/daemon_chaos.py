@@ -453,21 +453,21 @@ async def worker(cfg):
         ), repr(result)
         record("command", id=sb.id, seed=seed, exit_code=code)
 
-    async def jobs(sb, seed):
+    async def sessions(sb, seed):
         token = f"background-{seed}"
-        job = await sb.commands.run(
+        session = await sb.commands.run(
             f"sleep 0.03; printf %s {token}", opts=RunCommandOpts(background=True)
         )
         for _ in range(200):
-            status = await sb.commands.get_command_status(job.id)
+            status = await sb.commands.get_command_status(session.id)
             if not status.running:
                 break
             await asyncio.sleep(0.01)
         assert not status.running and status.exit_code == 0, status
-        log = await sb.commands.get_background_command_logs(job.id)
+        log = await sb.commands.get_background_command_logs(session.id)
         assert log.content == token, log
         assert (
-            await sb.commands.get_background_command_logs(job.id, cursor=log.cursor)
+            await sb.commands.get_background_command_logs(session.id, cursor=log.cursor)
         ).content == ""
         record("background_command", id=sb.id)
 
@@ -555,7 +555,7 @@ async def worker(cfg):
         cases = [
             "files",
             "commands",
-            "jobs",
+            "sessions",
             "pause",
             "restart_api",
             "recreate",
@@ -565,7 +565,7 @@ async def worker(cfg):
         ]
         weights = [12, 8, 3, 1, 1, 1, 1, 3, 1]
         if cfg.get("profile", "chaos") == "steady":
-            cases = ["files", "commands", "jobs", "pause", "cancel", "append"]
+            cases = ["files", "commands", "sessions", "pause", "cancel", "append"]
             weights = [12, 8, 3, 1, 1, 3]
         schedule = cases + rng.choices(cases, weights=weights, k=max(0, cfg["rounds"] - len(cases)))
         save(root / "schedule.json", schedule)
@@ -597,11 +597,11 @@ async def worker(cfg):
                             commit_path = f"/tmp/chaos/background-{commit_seed}"
                             gate = commit_path + ".gate"
                             token = f"commit-{commit_seed:x}"
-                            job = await sb.commands.run(
+                            session = await sb.commands.run(
                                 f"while ! test -e {gate}; do sleep 0.01; done; printf %s {token} > {commit_path}.next && mv {commit_path}.next {commit_path} && printf %s {token}",
                                 opts=RunCommandOpts(background=True),
                             )
-                            assert (await sb.commands.get_command_status(job.id)).running
+                            assert (await sb.commands.get_command_status(session.id)).running
                         await asyncio.to_thread(crash_api, cfg)
                         for _ in range(200):
                             try:
@@ -618,17 +618,17 @@ async def worker(cfg):
                         else:
                             raise TimeoutError("daemon did not recover owned identities")
                         if case == "background_crash":
-                            assert (await sb.commands.get_command_status(job.id)).running, (
+                            assert (await sb.commands.get_command_status(session.id)).running, (
                                 "API death terminated the acknowledged background process"
                             )
                             await sb.files.write_file(gate, b"commit", mode=600)
                             for _ in range(200):
-                                status = await sb.commands.get_command_status(job.id)
+                                status = await sb.commands.get_command_status(session.id)
                                 if not status.running:
                                     break
                                 await asyncio.sleep(0.01)
                             assert not status.running and status.exit_code == 0, status
-                            logs = await sb.commands.get_background_command_logs(job.id)
+                            logs = await sb.commands.get_background_command_logs(session.id)
                             actual = await sb.files.read_bytes(commit_path)
                             assert logs.content == token and actual == token.encode()
                             record(
@@ -693,8 +693,8 @@ async def worker(cfg):
                 for result in results:
                     if isinstance(result, BaseException):
                         raise result
-            elif case == "jobs":
-                await asyncio.gather(*(jobs(s, rng.getrandbits(32)) for s in sandboxes))
+            elif case == "sessions":
+                await asyncio.gather(*(sessions(s, rng.getrandbits(32)) for s in sandboxes))
             elif case == "append":
                 results = await asyncio.gather(
                     *(append(s, rng.getrandbits(64)) for s in sandboxes), return_exceptions=True

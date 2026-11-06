@@ -14,11 +14,11 @@ Requests describe intent, policy decisions describe effective constraints, Place
 
 ## Preserve known causal dependencies
 
-If a step depends on an earlier result, it must wait for that result. Placement, forwarding and recording cannot reverse the dependency. Causal references express known dependencies, Journal positions express commit order, and timestamps express observation time. None replaces another or establishes a global order of effects across Jobs.
+If a step depends on an earlier result, it must wait for that result. Placement, forwarding and recording cannot reverse the dependency. Causal references express known dependencies, Journal positions express commit order, and timestamps express observation time. None replaces another or establishes a global order of effects across Sessions.
 
 ## One lifecycle owner
 
-Session owns resource preparation, execution, cancellation, cleanup and terminal publication for an Attempt. Drivers report output and observations rather than publishing the terminal state of the entire Job. Cancellation is a request; completion is a result. Recording failures and execution failures are reported separately.
+Session owns resource preparation, execution, cancellation, cleanup and terminal publication for an Execution. Drivers report output and observations rather than publishing the terminal state of the entire Session. Cancellation is a request; completion is a result. Recording failures and execution failures are reported separately.
 
 ## Guarantees require actual boundaries
 

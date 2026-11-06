@@ -1,6 +1,6 @@
 //! Optional, cooperative Run-scoped Guest AgentCtl channel owned by pVisor.
 //!
-//! Guest `Hello`/`Sync` tokens authorize workload cooperation only, not Host Job,
+//! Guest `Hello`/`Sync` tokens authorize workload cooperation only, not Host Session,
 //! VM or supervisor operations. Host transport and live VM exchange are owned by
 //! the separate `host_transport` and `instance_control` runtime modules.
 
@@ -8,7 +8,7 @@ pub use pvisor_core::{
     AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,
     AgentResponse, AgentState,
 };
-use pvisor_core::{AttemptId, RunId};
+use pvisor_core::{ExecutionId, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -46,8 +46,8 @@ pub struct AgentClientSnapshot {
 pub struct AgentCtlSnapshot {
     /// Owning Run identity.
     pub run_id: String,
-    /// Owning Attempt identity.
-    pub attempt_id: String,
+    /// Owning Execution identity.
+    pub execution_id: String,
     /// Current pVisor directive.
     pub directive: AgentDirective,
     /// Runtime clients sorted by `client_id`.
@@ -80,7 +80,7 @@ struct ActiveCheckpoint {
 #[derive(Debug)]
 struct AgentCtlState {
     run_id: String,
-    attempt_id: String,
+    execution_id: String,
     token: String,
     directive: AgentDirective,
     sessions: HashMap<String, ClientSession>,
@@ -89,10 +89,10 @@ struct AgentCtlState {
 }
 
 impl AgentCtlState {
-    fn new(run_id: &RunId, attempt_id: &AttemptId, token: String) -> Self {
+    fn new(run_id: &RunId, execution_id: &ExecutionId, token: String) -> Self {
         Self {
             run_id: run_id.as_str().to_string(),
-            attempt_id: attempt_id.as_str().to_string(),
+            execution_id: execution_id.as_str().to_string(),
             token,
             directive: AgentDirective::Continue,
             sessions: HashMap::new(),
@@ -116,7 +116,7 @@ impl AgentCtlState {
         clients.sort_by(|left, right| left.client_id.cmp(&right.client_id));
         AgentCtlSnapshot {
             run_id: self.run_id.clone(),
-            attempt_id: self.attempt_id.clone(),
+            execution_id: self.execution_id.clone(),
             directive: self.directive.clone(),
             clients,
         }
@@ -334,7 +334,7 @@ pub struct AgentCtlServer {
 
 impl AgentCtlServer {
     /// Create and start one Run-scoped AgentCtl server.
-    pub fn start(run_id: &RunId, attempt_id: &AttemptId) -> anyhow::Result<Self> {
+    pub fn start(run_id: &RunId, execution_id: &ExecutionId) -> anyhow::Result<Self> {
         // macOS `sockaddr_un` paths are capped at SUN_LEN (~104 bytes), so bind in
         // the fixed, short `/tmp` directory rather than `std::env::temp_dir()`,
         // which can point at a deep per-user path (e.g. `/var/folders/.../T/`).
@@ -345,7 +345,7 @@ impl AgentCtlServer {
         let token = uuid::Uuid::new_v4().to_string();
         let state = Arc::new(Mutex::new(AgentCtlState::new(
             run_id,
-            attempt_id,
+            execution_id,
             token.clone(),
         )));
         // Allocate the private wake channel before binding so setup failures do
@@ -485,7 +485,7 @@ fn wait_for_connection(listener: &UnixListener, wake: &UnixStream) -> std::io::R
     ];
     loop {
         // Both descriptors remain owned by this thread throughout the blocking
-        // wait. No timeout: idle Attempts generate no periodic wakeups.
+        // wait. No timeout: idle Executions generate no periodic wakeups.
         let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
         if result < 0 {
             let error = std::io::Error::last_os_error();
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn idle_stop_wakes_without_discovery_path() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let environment = server.environment();
         assert_eq!(
             environment[pvisor_core::AGENTCTL_ENDPOINT_ENV],
@@ -794,7 +794,8 @@ mod tests {
     fn stop_interrupts_silent_and_partial_requests() {
         for partial in [false, true] {
             let server =
-                AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+                AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1"))
+                    .unwrap();
             let mut client = UnixStream::connect(&server.socket_path).unwrap();
             if partial {
                 client.write_all(b"{\"version\":1").unwrap();
@@ -821,7 +822,8 @@ mod tests {
     fn stop_races_with_accept_and_queued_clients() {
         for _ in 0..32 {
             let server =
-                AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+                AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1"))
+                    .unwrap();
             let first = UnixStream::connect(&server.socket_path).unwrap();
             let queued = UnixStream::connect(&server.socket_path).unwrap();
             drop_promptly(server);
@@ -832,7 +834,7 @@ mod tests {
     #[test]
     fn blocking_listener_serves_repeated_hello_sync_and_malformed_requests() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let mut malformed = UnixStream::connect(&server.socket_path).unwrap();
         malformed
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -872,7 +874,7 @@ mod tests {
     #[test]
     fn rejects_invalid_token_and_protocol_version_with_typed_codes() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         assert!(matches!(
             exchange(
                 &server.socket_path,
@@ -906,7 +908,7 @@ mod tests {
     #[test]
     fn request_quiesce_purges_sessions_that_were_already_stale() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let stale_id = connect(&server, "stale");
         let live_id = connect(&server, "live");
         {
@@ -925,7 +927,7 @@ mod tests {
     #[test]
     fn checkpoint_never_expires_a_frozen_participant() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let session_id = connect(&server, "participant");
         server.control.request_quiesce("cp", None).unwrap();
         lock_state(&server.control.state)
@@ -942,7 +944,7 @@ mod tests {
     #[test]
     fn retrying_a_checkpoint_id_requires_a_fresh_acknowledgement() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let session_id = connect(&server, "participant");
         let deadline = crate::util::unix_now_ms().saturating_add(10_000);
         let first = server
@@ -987,7 +989,7 @@ mod tests {
     #[test]
     fn checkpoint_guard_drop_releases_only_its_own_quiesce() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         connect(&server, "participant");
         let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
         drop(checkpoint);
@@ -1016,7 +1018,7 @@ mod tests {
     #[test]
     fn checkpoint_copy_holds_transition_ownership_until_capture_finishes() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let session_id = connect(&server, "participant");
         let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
         exchange(
@@ -1068,7 +1070,7 @@ mod tests {
     #[test]
     fn acknowledgement_after_deadline_cannot_satisfy_checkpoint() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         let session_id = connect(&server, "participant");
         let deadline = crate::util::unix_now_ms();
         let checkpoint = server
@@ -1094,7 +1096,7 @@ mod tests {
     #[test]
     fn hello_purges_all_stale_sessions_before_enforcing_capacity() {
         let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &ExecutionId::new("execution-1")).unwrap();
         for index in 0..AGENTCTL_MAX_SESSIONS {
             connect(&server, &format!("stale-{index}"));
         }

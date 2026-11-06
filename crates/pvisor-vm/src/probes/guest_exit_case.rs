@@ -1,4 +1,4 @@
-//! Real guest root attempts to forge success, then exits with the requested code.
+//! Real guest root tries to forge success, then exits with the requested code.
 use pvisor_vm::api::{RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform, VmRuntime};
 use std::{
     path::PathBuf,

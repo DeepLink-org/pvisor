@@ -537,11 +537,11 @@ class Product:
             assert len(required) >= 2 * len(names), "missing live owner/VMM scope"
         if not required:
             return {"members": self.budget.members()}
-        for attempt in range(3):
+        for execution in range(3):
             try:
                 return self.budget.witness_all_members(required)
             except ObservationChanged:
-                if attempt == 2:
+                if execution == 2:
                     raise
                 time.sleep(0.05)
 

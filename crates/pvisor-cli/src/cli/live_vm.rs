@@ -1,4 +1,4 @@
-//! Foreground live-VM controls, independent of durable Job lifecycle requests.
+//! Foreground live-VM controls, independent of durable Session lifecycle requests.
 use anyhow::Context;
 use clap::Args;
 use pvisor::host_transport::{InstanceCommand, LiveControlRecord};
@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Args)]
 #[command(next_help_heading = "Live VM")]
 pub(super) struct VmOptions {
-    /// Host-only live VM endpoint (requires explicit Job and Attempt identities).
-    #[arg(long, requires_all = ["vm_job_id", "vm_attempt_id"])]
+    /// Host-only live VM endpoint (requires explicit Session and Execution identities).
+    #[arg(long, requires_all = ["vm_session_id", "vm_execution_id"])]
     pub vm_socket: Option<PathBuf>,
-    /// Explicit Job identity served by the live VM endpoint.
+    /// Explicit Session identity served by the live VM endpoint.
     #[arg(long, requires = "vm_socket")]
-    pub vm_job_id: Option<String>,
-    /// Explicit Attempt identity for the debug socket override.
+    pub vm_session_id: Option<String>,
+    /// Explicit Execution identity for the debug socket override.
     #[arg(long, requires = "vm_socket")]
-    pub vm_attempt_id: Option<String>,
+    pub vm_execution_id: Option<String>,
 }
 
 #[derive(Debug, Default, Args)]
@@ -42,7 +42,7 @@ pub(super) struct SuspendVmOptions {
 pub(super) struct ResumeVmOptions {
     #[command(flatten)]
     pub identity: VmOptions,
-    /// Reload/unpause the same live Attempt, not snapshot restoration (resume only).
+    /// Reload/unpause the same live Execution, not snapshot restoration (resume only).
     #[arg(long)]
     pub vm_load: bool,
 }
@@ -53,7 +53,7 @@ enum Endpoint {
     Debug(PathBuf),
 }
 
-/// Not a bootstrap DTO: live controls never launch or restore a Job owner.
+/// Not a bootstrap DTO: live controls never launch or restore a Session owner.
 #[derive(Debug)]
 pub(super) struct VmRequest {
     endpoint: Endpoint,
@@ -70,11 +70,11 @@ impl VmRequest {
     pub(super) fn validate_target(&self, target: Option<&AgentCtlTarget>) -> anyhow::Result<()> {
         pvisor::host_transport::validate_host_target(
             target,
-            &self.target.job_id,
+            &self.target.session_id,
             self.target
-                .attempt_id
+                .execution_id
                 .as_deref()
-                .context("VM target has no Attempt")?,
+                .context("VM target has no Execution")?,
         )?;
         Ok(())
     }
@@ -84,11 +84,11 @@ impl VmRequest {
         match &self.endpoint {
             Endpoint::Recorded(endpoint) => print_result(
                 &endpoint.exchange_checked(
-                    &self.target.job_id,
+                    &self.target.session_id,
                     self.target
-                        .attempt_id
+                        .execution_id
                         .as_deref()
-                        .context("VM target has no Attempt")?,
+                        .context("VM target has no Execution")?,
                     match &self.command {
                         HostVmCommand::Status => InstanceCommand::Status {},
                         HostVmCommand::Pause => InstanceCommand::Pause {},
@@ -137,24 +137,27 @@ impl VmOptions {
         let Some(socket) = &self.vm_socket else {
             return Ok(None);
         };
-        let job_id = self.vm_job_id.as_ref().context("--vm-job-id is required")?;
-        let attempt_id = self
-            .vm_attempt_id
+        let session_id = self
+            .vm_session_id
             .as_ref()
-            .context("--vm-attempt-id is required")?;
+            .context("--vm-session-id is required")?;
+        let execution_id = self
+            .vm_execution_id
+            .as_ref()
+            .context("--vm-execution-id is required")?;
         anyhow::ensure!(
-            selector.is_none_or(|selector| selector == Path::new(job_id)),
-            "live VM command selector must match the explicit --vm-job-id"
+            selector.is_none_or(|selector| selector == Path::new(session_id)),
+            "live VM command selector must match the explicit --vm-session-id"
         );
         anyhow::ensure!(
-            !job_id.trim().is_empty() && !attempt_id.trim().is_empty(),
+            !session_id.trim().is_empty() && !execution_id.trim().is_empty(),
             "VM identities must not be empty"
         );
         Ok(Some(VmRequest {
             endpoint: Endpoint::Debug(socket.clone()),
             target: AgentCtlTarget {
-                job_id: job_id.clone(),
-                attempt_id: Some(attempt_id.clone()),
+                session_id: session_id.clone(),
+                execution_id: Some(execution_id.clone()),
                 generation: None,
             },
             command,
@@ -179,16 +182,16 @@ fn request_for_record(
         .live_control
         .as_ref()
         .filter(|endpoint| endpoint.is_available())
-        .context("Job has no valid recorded owner")?;
+        .context("Session has no valid recorded owner")?;
     Ok(VmRequest {
         endpoint: Endpoint::Recorded(endpoint.clone()),
         target: AgentCtlTarget {
-            job_id: record.run_id.clone(),
-            attempt_id: Some(
+            session_id: record.run_id.clone(),
+            execution_id: Some(
                 record
-                    .attempt_id
+                    .execution_id
                     .clone()
-                    .context("Job has no Attempt identity")?,
+                    .context("Session has no Execution identity")?,
             ),
             generation: None,
         },
@@ -217,20 +220,20 @@ pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<VmRe
             if args.vm.identity.vm_socket.is_none() {
                 return recorded_vm(
                     command,
-                    args.args.job_selector(),
+                    args.args.session_selector(),
                     &args.args.selection().output_dir,
                 );
             }
             args.vm
                 .identity
-                .request(command, Some(args.args.job_selector()))
+                .request(command, Some(args.args.session_selector()))
         }
         super::Command::Resume(args) => {
             if args.vm.identity.vm_socket.is_none() {
                 if args.vm.vm_load {
                     return recorded_vm(
                         HostVmCommand::Resume,
-                        args.args.job_selector(),
+                        args.args.session_selector(),
                         &args.args.selection().output_dir,
                     );
                 }
@@ -239,7 +242,7 @@ pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<VmRe
             anyhow::ensure!(args.vm.vm_load, "live VM resume requires --vm-load");
             args.vm
                 .identity
-                .request(HostVmCommand::Resume, Some(args.args.job_selector()))
+                .request(HostVmCommand::Resume, Some(args.args.session_selector()))
         }
         _ => Ok(None),
     }
@@ -282,14 +285,14 @@ mod tests {
 
     fn target() -> AgentCtlTarget {
         AgentCtlTarget {
-            job_id: "job-one".into(),
-            attempt_id: Some("attempt-one".into()),
+            session_id: "session-one".into(),
+            execution_id: Some("execution-one".into()),
             generation: None,
         }
     }
 
     #[test]
-    fn recorded_controls_send_one_exactly_targeted_request_without_job_bootstrap() {
+    fn recorded_controls_send_one_exactly_targeted_request_without_session_bootstrap() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

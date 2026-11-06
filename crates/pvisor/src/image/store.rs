@@ -1,4 +1,4 @@
-//! One local image namespace for container commands, Jobs and the cache service.
+//! One local image namespace for container commands, Sessions and the cache service.
 use anyhow::{Context, ensure};
 use fs2::FileExt;
 use pvisor_journal::api::{DurableFiles, Persistence};

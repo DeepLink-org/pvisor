@@ -22,7 +22,7 @@ Agent 修改工作区时，开发者通常希望先看结果，再决定合入�
 | `apply.rs` | changeset、依赖闭合选择集合、apply ledger | 审查、冲突检测、目标写入、恢复与 drop |
 | `sys.rs` | syscall 包装、POSIX 元数据与 xattr 操作 | 集中 Unix 平台差异及 unsafe 边界 |
 | `pvisor-core::overlay` | `OverlayRecord`、`ApplyRecord`、指纹与路径编码 | 跨 runtime / driver 共享的序列化合同 |
-| runtime / 文件服务适配器 | Attempt lease、mount、文件 handle、请求与观察 | 停止写入、挂载生命周期、调用共享 core |
+| runtime / 文件服务适配器 | Execution lease、mount、文件 handle、请求与观察 | 停止写入、挂载生命周期、调用共享 core |
 
 OverlayCore 不拥有 FUSE mount、Run 调度或公开 Event Journal。它借用 `pvisor-journal::atomic_write` 持久化元数据，但 `apply-ledger.json` 不是 [Event Journal](journal.md)：前者整体替换 JSON，后者逐行追加事件。
 
@@ -46,7 +46,7 @@ FUSE 在这里同时指请求协议和宿主挂载入口：virtio-fs 使用 FUSE
 |---|---|
 | 入口适配器 | FUSE 或 virtqueue 收发、请求参数与凭据转换、errno/属性编码、挂载和队列生命周期；保留 Linux guest 与宿主平台能力差异 |
 | 统一文件服务 | 通过 OverlayCore 共享路径解析、目录合成、权限/别名策略、原像记录与 copy-up；统一本地和远程读取合同 |
-| 本地与远程后端 | 本地文件 I/O；不可变镜像的 stat/list/read、符号链接、对象身份、内容块校验和缓存；修改仍落入每个 Attempt 独立的本地 upper |
+| 本地与远程后端 | 本地文件 I/O；不可变镜像的 stat/list/read、符号链接、对象身份、内容块校验和缓存；修改仍落入每个 Execution 独立的本地 upper |
 
 公共接口使用文件操作、元数据、对象身份和读写结果表达能力，不依赖
 `fuser::Reply*`、guest descriptor 或某个挂载点。统一是同一套实现及合同，
@@ -248,7 +248,7 @@ Prepared 恢复不能接受任意目标新状态：目标必须仍匹配原像�
 
 ### drop 与适配器边界 {#adapters}
 
-pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Discarded 的 drop 幂等；已 Applied 不能靠 drop 撤销。清理 upper/work 后写入 Discarded；merged 只尝试移除空占位，不递归删除可能仍挂载的目录。调用方必须先停止实际写入并完成卸载；Core API 的 Active 分支本身不代替 Attempt lease 和执行生命周期协调。
+pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Discarded 的 drop 幂等；已 Applied 不能靠 drop 撤销。清理 upper/work 后写入 Discarded；merged 只尝试移除空占位，不递归删除可能仍挂载的目录。调用方必须先停止实际写入并完成卸载；Core API 的 Active 分支本身不代替 Execution lease 和执行生命周期协调。
 
 宿主 `pvisor-overlayfs` 将 FUSE 请求、inode/handle 与权限转换接到共享 core；Linux FUSE、macFUSE kernel / FSKit 的挂载约束由适配器处理。仓库 FSKit 入口默认选择 fskit，并按实现中的版本检查拒绝低于 5.4.0 的 macFUSE。VM 的 `crates/pvisor-vm/src/devices/virtio/fs/overlay.rs` 使用相同 Core，经 virtio-fs 服务 guest，不需要宿主 FUSE union mount；guest errno 转换、设备队列与 handle 生命周期属于该适配器。
 

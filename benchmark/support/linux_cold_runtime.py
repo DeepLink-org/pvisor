@@ -36,9 +36,9 @@ def inventory(root):
     return entries
 
 
-def competing_jobs(group):
+def competing_sessions(group):
     """Read-only same-user process/FD guard; inaccessible processes are explicit."""
-    jobs, errors = [], []
+    sessions, errors = [], []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
@@ -55,7 +55,7 @@ def competing_jobs(group):
                 continue
             args = proc.joinpath("cmdline").read_bytes().split(b"\0")
             if args and Path(os.fsdecode(args[0])).name in ("cargo", "rustc", "cargo-nextest"):
-                jobs.append(
+                sessions.append(
                     dict(pid=int(proc.name), kind="build/test", args=[os.fsdecode(a) for a in args])
                 )
             for fd in proc.joinpath("fd").iterdir():
@@ -64,7 +64,7 @@ def competing_jobs(group):
                 except FileNotFoundError:
                     continue
                 if target in ("/dev/kvm", "anon_inode:kvm-vm", "anon_inode:kvm-vcpu"):
-                    jobs.append(
+                    sessions.append(
                         dict(
                             pid=int(proc.name), kind="other VM", args=[os.fsdecode(a) for a in args]
                         )
@@ -74,7 +74,7 @@ def competing_jobs(group):
             continue
         except OSError as error:
             errors.append(dict(pid=int(proc.name), error=str(error)))
-    return dict(time_ns=time.time_ns(), jobs=jobs, inspection_errors=errors)
+    return dict(time_ns=time.time_ns(), sessions=sessions, inspection_errors=errors)
 
 
 def settle_unit(unit, logs):

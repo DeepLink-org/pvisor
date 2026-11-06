@@ -2,9 +2,9 @@
 
 这些规格表达设计承诺；测试通过不等于经过人工批准。
 
-### S-STAGE-001：暂存 Job 不改变工作区
+### S-STAGE-001：暂存 Session 不改变工作区
 
-**语义**：Job 成功、非零退出或被信号终止后，apply 前的路径、类型、完整内容、权限位和链接目标均与开始前一致。
+**语义**：Session 成功、非零退出或被信号终止后，apply 前的路径、类型、完整内容、权限位和链接目标均与开始前一致。
 
 **违反示例**：删除穿透 lower，或异常清理把 upper 自动合并到工作区。
 
@@ -21,9 +21,9 @@ expect_refused stage "$CASE_ROOT/signal" 'printf changed > edit; rm -rf d; kill 
 assert_unchanged before "$WS"
 ```
 
-### S-STAGE-002：Job 读取自己的变更
+### S-STAGE-002：Session 读取自己的变更
 
-**语义**：Job 内读取看到自己的写入、删除和重命名；apply 前宿主工作区不变。
+**语义**：Session 内读取看到自己的写入、删除和重命名；apply 前宿主工作区不变。
 
 **违反示例**：写完读取旧内容，删除后仍可见，或重命名后找不到新路径。
 
@@ -262,7 +262,7 @@ mise run cases -- --suite stage --case S-STAGE-008 --keep
 <!-- semspec: setup -->
 ````bash
 export RUST_LOG=warn
-# Public CLI only; all personal settings and Job records stay in CASE_ROOT.
+# Public CLI only; all personal settings and Session records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" command "${SUBJECT_BIN:-pvisor}" "$@"; }
 stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {

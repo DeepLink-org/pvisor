@@ -10,17 +10,17 @@ VM 的网络控制点位于 virtio-net 之后：guest 输出 Ethernet frame，Ov
 | --- | --- | --- |
 | `pvisor-guest` / guest Linux | 接口地址、路由、应用 socket 与 guest TCP | 跟随 guest；静态网络配置不等待 DHCP |
 | `pvisor-vm` virtio-net | descriptor、帧收发与虚拟设备 | 跟随 VM；按设备合同访问 guest RAM |
-| OverlayNet `VmNetwork` | smoltcp、DNS 映射、flow 表、连接任务和有界缓冲 | 每个 Attempt 独立准备与关闭 |
-| egress policy / connector | 逻辑目标授权、宿主解析、具体地址检查和连接 | 使用本次 Attempt 的有效策略与预算 |
+| OverlayNet `VmNetwork` | smoltcp、DNS 映射、flow 表、连接任务和有界缓冲 | 每个 Execution 独立准备与关闭 |
+| egress policy / connector | 逻辑目标授权、宿主解析、具体地址检查和连接 | 使用本次 Execution 的有效策略与预算 |
 
 层间传递帧与字节，宿主出口服务不持有 guest RAM 裸指针。虚拟网卡所在的执行边界见[VM 子系统](vm-runtime.md#virtio)；显式代理与 VM 的用户可见边界见[网络控制](../guides/policies/network.md)。
 
 ## 已实现的 VM driver
 
-原生 pvisor-vm Attempt 在 `[overlaynet].mode = "auto"` 时使用 `vm-smoltcp`。
+原生 pvisor-vm Execution 在 `[overlaynet].mode = "auto"` 时使用 `vm-smoltcp`。
 guest virtio-net 设备通过 pvisor-vm 带长度前缀的 UnixStream Ethernet 传输连到
 pVisor。Rust guest supervisor 直接配置 `192.0.2.2/24` 和路由器 `192.0.2.1`，
-不等待 DHCP。pVisor 提供合成 DNS（`198.18.0.0/15`，每个 Attempt 稳定）
+不等待 DHCP。pVisor 提供合成 DNS（`198.18.0.0/15`，每个 Execution 稳定）
 以及 IPv4 TCP。SYN 会在 smoltcp 中暂停，
 直到 hostname/IP、解析后的地址或 scoped host connector alias、端口以及注入的
 core 策略全部授权，并且 host 连接成功。TSI 保持关闭，因此不存在绕过该
@@ -45,7 +45,7 @@ host 与 container 透明拦截仍是后续工作。
 
 ![合成 DNS、guest SYN、出口授权和宿主连接](assets/network-path.svg)
 
-`connect` 接收 IP 地址，域名策略却需要知道应用原先查询的名称。合成 DNS 因此保留 Attempt 内的名称—地址映射；收到 SYN 时，OverlayNet 先还原逻辑目标，再经统一 egress 授权与宿主解析检查。配置了不透明 connector alias 时，最终真实地址仍受前述可见性限制。
+`connect` 接收 IP 地址，域名策略却需要知道应用原先查询的名称。合成 DNS 因此保留 Execution 内的名称—地址映射；收到 SYN 时，OverlayNet 先还原逻辑目标，再经统一 egress 授权与宿主解析检查。配置了不透明 connector alias 时，最终真实地址仍受前述可见性限制。
 
 smoltcp 终止 guest TCP，宿主创建另一条 upstream TCP；两条连接的缓冲、握手和关闭分别管理。只有授权与 upstream 建立成功，guest 握手才继续。随后桥接字节并记录计数，TLS 内容仍由应用端点加解密。Gateway 明文 capture 需要单独的显式协议路由。
 
@@ -75,7 +75,7 @@ RFC1918 指 `10.0.0.0/8`、`172.16.0.0/12` 和 `192.168.0.0/16`。例如批准�
 1. 收到初始 SYN，恢复域名或识别 IP 字面量，建立受容量限制的 flow。
 2. 连接任务在策略门后执行宿主 connect；失败不会被伪装成已经成功的 guest 连接。
 3. 成功后事件推进 flow，两个方向通过有界通道与缓冲交换字节；暂时无法写出的内容保留并等待后续推进。
-4. EOF、错误、超时或 Attempt 结束触发各自关闭与回收。对端已经接受的字节和外部效果不会因为取消而撤销。
+4. EOF、错误、超时或 Execution 结束触发各自关闭与回收。对端已经接受的字节和外部效果不会因为取消而撤销。
 
 默认 flow 上限是 256，合成 DNS 映射容量是 4096。容量耗尽、协议不支持与策略拒绝都不能改走宿主直连。计数描述实际经过本数据面的流量；模型明文捕获与连接授权分别记录。
 
@@ -125,7 +125,7 @@ transports = ["tcp_tunnel"]
 
 ## 回到整体架构与源码 {#integration}
 
-OverlayNet 接在 VM 设备后，由 Session 准备并在 Attempt 结束时收回。它与文件服务平行：文件可暂存后 apply，网络请求通常在执行时就产生外部效果。完整机器快照无法回退远端 TCP 对端，因此当前原生 Job execution checkpoint 排除网络设备，见[快照一致性切面](environment-snapshot.md#consistent-cut)。
+OverlayNet 接在 VM 设备后，由 Session 准备并在 Execution 结束时收回。它与文件服务平行：文件可暂存后 apply，网络请求通常在执行时就产生外部效果。完整机器快照无法回退远端 TCP 对端，因此当前原生 Session execution checkpoint 排除网络设备，见[快照一致性切面](environment-snapshot.md#consistent-cut)。
 
 源码入口：`crates/pvisor-overlaynet/src/vm.rs` 的 `ensure_listener`、`connect_vm_egress`、`drive_flows` 与 `SyntheticDns`；`egress.rs` 拥有共享出口连接路径，`interception.rs` 定义实际 driver 的观察。`crates/pvisor-vm/src/devices/virtio/net/` 只拥有虚拟网卡和帧传输，网络策略不由设备自行推断。
 
@@ -156,7 +156,7 @@ network:    pVisor embeds a userspace TCP/IP stack and IS the child's network
 
 ### 机制
 
-1. Attempt 子进程以 `CLONE_NEWUSER | CLONE_NEWNET` 派生。在新的 user
+1. Execution 子进程以 `CLONE_NEWUSER | CLONE_NEWNET` 派生。在新的 user
    namespace 内创建 network namespace **不需要特权**；namespace 所有者在其中
    持有 `CAP_NET_ADMIN`。
 2. 在 namespace 内，setup 代码创建 `tun` 设备，分配 link-local 子网，并安装
@@ -190,7 +190,7 @@ network:    pVisor embeds a userspace TCP/IP stack and IS the child's network
 
 ### 失败与探测
 
-Driver 可用性在 Attempt prepare 时探测。若 user namespace 不可用，行为取决于
+Driver 可用性在 Execution prepare 时探测。若 user namespace 不可用，行为取决于
 请求的策略模式：
 
 - `PolicyMode::Observe`：回退到显式代理 driver，并在 implant plan notes 中
@@ -205,7 +205,7 @@ socket 面。除非未覆盖通道都被拒绝，它不被视为与 netns driver
 
 ### 机制
 
-1. Attempt 子进程安装 seccomp filter，把 `socket`、`connect`、`sendto` 和
+1. Execution 子进程安装 seccomp filter，把 `socket`、`connect`、`sendto` 和
    `sendmsg` 路由到 `SECCOMP_RET_USER_NOTIF`。当该 driver 声称 enforcement
    时，`io_uring_setup`、原始 packet socket、namespace 变更和未中介的描述符
    传递都被拒绝。
@@ -227,7 +227,7 @@ socket 面。除非未覆盖通道都被拒绝，它不被视为与 netns driver
   DNS 和 `io_uring` 必须全部关闭或中介，该 driver 才能被描述为不可绕过。
 - Seccomp 在 `connect` 时看到的是 IP 地址，不是应用最初解析的 hostname。域名
   allowlist 需要中介 DNS、显式代理流量或 SNI 关联；IP/CIDR 策略可以直接强制。
-- 按 Attempt 选择；两者都可用时仍优先 Design A。
+- 按 Execution 选择；两者都可用时仍优先 Design A。
 
 ## 非目标
 

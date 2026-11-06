@@ -189,7 +189,7 @@ with separate default-path levels and coverage limits. It does not replace the n
 
 This comparison uses the common directory rootfs, without lazy cache. Compressed-image access costs are measured separately in the [image experiment](lazy-image-startup.md#local-access).
 
-Native/host output uses Btrfs; staged uses FUSE; both pVisor VM modes use virtio-fs, OverlayFS and staged output. Ordinary CLI Jobs use `spawn`; host writeback and product DAX are disabled, with guest writeback requested off/on. Docker uses a new private rootless overlay2 daemon, writable-layer output and read-only bound input; output is copied out after exit for the common oracle.
+Native/host output uses Btrfs; staged uses FUSE; both pVisor VM modes use virtio-fs, OverlayFS and staged output. Ordinary CLI Sessions use `spawn`; host writeback and product DAX are disabled, with guest writeback requested off/on. Docker uses a new private rootless overlay2 daemon, writable-layer output and read-only bound input; output is copied out after exit for the common oracle.
 
 Firecracker, QEMU q35 and QEMU microvm share an unmodified official stock kernel, matching module initrd, minimal PID1 and private ext4 root/work disks. virtio-blk, FLUSH and clean unmount remain enabled. QEMU microvm uses ACPI device discovery. Disk preparation, container creation and output export are excluded from Ready/task clocks. Tool, kernel and storage-stack differences belong to the measured configurations; they are not pure VMM overhead.
 

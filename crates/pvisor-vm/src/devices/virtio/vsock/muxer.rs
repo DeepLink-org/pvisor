@@ -734,7 +734,7 @@ impl VsockMuxer {
                 let mem = self.mem.as_ref().unwrap();
                 let queue = self.queue.as_ref().unwrap();
                 if *listen {
-                    warn!("Attempting to connect a socket that is listening, sending rst");
+                    warn!("Trying to connect a socket that is listening, sending rst");
                     let rx = MuxerRx::Reset {
                         local_port: pkt.dst_port(),
                         peer_port: pkt.src_port(),

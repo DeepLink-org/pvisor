@@ -1,3 +1,4 @@
+use crate::execution_context::lifecycle::terminate_process_tree;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::executor::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
@@ -7,8 +8,9 @@ use crate::executor::sandbox::{
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 #[cfg(target_os = "linux")]
 use crate::executor::sandbox::{SandboxPlan, landlock_runtime_available};
-use crate::executor::{Captured, ExecutorOutput, RunExecutor, Session, SessionEnd as End, stdio};
-use crate::session::lifecycle::terminate_process_tree;
+use crate::executor::{
+    Captured, ExecutionContext, ExecutorOutput, RunExecutor, SessionEnd as End, stdio,
+};
 use async_trait::async_trait;
 use pvisor_core::{
     CapabilityDimension, CapabilityEnforcementEvidence, CapabilityEnforcementPlan, ExecutorKind,
@@ -1481,7 +1483,7 @@ impl RunExecutor for ProcessExecutor {
         matches!(invocation, RunInvocation::Process(_))
     }
 
-    async fn execute(&self, context: &Session) -> ExecutorOutput {
+    async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
         let mut startup = crate::startup_profile::Span::start("process.prepare");
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
@@ -1726,7 +1728,7 @@ impl RunExecutor for ProcessExecutor {
                     Some(RunFailure {
                         kind: RunFailureKind::DeadlineExceeded,
                         message: format!(
-                            "attempt exceeded {} ms deadline",
+                            "execution exceeded {} ms deadline",
                             spec.runtime.timeout_ms.unwrap_or_default()
                         ),
                         retryable: false,

@@ -22,7 +22,7 @@ chmod +x ci-agent.sh
 ```yaml
 name: Staged task
 on: workflow_dispatch
-jobs:
+sessions:
   run:
     runs-on: [self-hosted, linux, pvisor]
     steps:

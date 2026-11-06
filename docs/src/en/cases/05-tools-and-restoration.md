@@ -1,6 +1,6 @@
 # 5. Replay trajectories and choose restoration tools
 
-Choose whether you need a file proposal, Agent history, or full machine execution state. Workspace checkpoints save files; pvisor-replay handles Agent-native trajectories; Job execution checkpoints save full state for supported VMs. Use review/apply/drop for staged files. Gateway handles model routing and capture, and cache/memory-pool serve execution infrastructure.
+Choose whether you need a file proposal, Agent history, or full machine execution state. Workspace checkpoints save files; pvisor-replay handles Agent-native trajectories; Session execution checkpoints save full state for supported VMs. Use review/apply/drop for staged files. Gateway handles model routing and capture, and cache/memory-pool serve execution infrastructure.
 
 ### S-USE-015: Prepare a trajectory without rerunning historical tools
 
@@ -24,11 +24,11 @@ json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
 
 ### S-USE-016: Check full execution checkpoint capabilities
 
-The host Job in this example does not support CPU/RAM save and restore; compatible native VM Jobs do. Check capability and require explicit rejection instead of silently falling back to workspace fork.
+The host Session in this example does not support CPU/RAM save and restore; compatible native VM Sessions do. Check capability and require explicit rejection instead of silently falling back to workspace fork.
 
-**Contract**: Execution checkpoint, suspend, resume, and execution fork all report CAPABILITY_UNSUPPORTED and leave the Job tree unchanged.
+**Contract**: Execution checkpoint, suspend, resume, and execution fork all report CAPABILITY_UNSUPPORTED and leave the Session tree unchanged.
 
-**Violation**: An execution option is ignored or a refusal changes the Job.
+**Violation**: An execution option is ignored or a refusal changes the Session.
 
 <!-- semspec: case id=S-USE-016 -->
 ```bash

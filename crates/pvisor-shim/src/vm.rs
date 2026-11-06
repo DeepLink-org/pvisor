@@ -203,7 +203,7 @@ pub fn boot_vm(
         .context("prepare guest resolv.conf without following image symlinks")?;
         std::io::Write::write_all(
             &mut resolver,
-            b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
+            b"nameserver 192.0.2.1\noptions timeout:2 executions:2\n",
         )
         .context("write guest resolv.conf")?;
     }

@@ -302,10 +302,11 @@ def trial_evidence(batch, protocol, record, validate_row):
         and integer(resource.get("sampled_memory_current_peak")),
         "actual resource measurements missing",
     )
-    for key in ("ready_ms", "job_ms", "exit_after_done_ms"):
+    for key in ("ready_ms", "session_ms", "exit_after_done_ms"):
         require(number(record.get(key)), f"missing or invalid environment clock {key}")
     require(
-        record["ready_ms"] <= record["job_ms"] and record["exit_after_done_ms"] <= record["job_ms"],
+        record["ready_ms"] <= record["session_ms"]
+        and record["exit_after_done_ms"] <= record["session_ms"],
         "Ready/exit clock outside environment",
     )
     lines = (folder / "stdout.log").read_text().splitlines()
@@ -333,7 +334,7 @@ def trial_evidence(batch, protocol, record, validate_row):
     for row in rows:
         row_contract(row, case, validate_row)
     require(
-        sum(row["completed_ns"] for row in rows) / 1e6 <= record["job_ms"],
+        sum(row["completed_ns"] for row in rows) / 1e6 <= record["session_ms"],
         "dependent task clocks exceed environment lifetime",
     )
     host = events(

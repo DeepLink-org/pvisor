@@ -32,7 +32,7 @@ does not mean interactive approval is supported by the shipped CLI or runtime.
 
 Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
 
-The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
+The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 2 generic request/response envelopes with request correlation, optional Session/Execution/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Session, Execution and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
 
 ## Local resource contracts
 
@@ -50,7 +50,7 @@ ownership and snapshot implementation belong to `pvisor`. The separate
 
 Cgroup observation directories use Linux path syntax even when validated on a
 Windows host. Snapshot stores and live RAM backing files instead use the local
-host's absolute-path rules. Attempt-bound file-policy preparation is portable.
+host's absolute-path rules. Execution-bound file-policy preparation is portable.
 
 ```sh
 mise run test -- core

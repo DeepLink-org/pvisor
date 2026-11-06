@@ -1,4 +1,4 @@
-//! Authenticated immutable tree copies with durable per-Attempt references.
+//! Authenticated immutable tree copies with durable per-Execution references.
 //! Only marker inodes are hard-linked; filesystem data/topology stays intact.
 use super::{TreeInventory, copy_guest_tree, native_path, store, verify_tree};
 use anyhow::{Context, ensure};
@@ -16,7 +16,7 @@ pub struct SharedFilesystemLayer {
     root: PathBuf,
     pub(super) pool: PathBuf,
     // The disk reference survives supervisor exit for retained Run records. This
-    // lock additionally fences GC if an active Attempt's reference is removed.
+    // lock additionally fences GC if an active Execution's reference is removed.
     _active: File,
     #[cfg(target_os = "linux")]
     pub(super) preparation_cache: std::sync::atomic::AtomicBool,
@@ -111,7 +111,7 @@ pub(super) fn share(
     let references = references.canonicalize()?;
     ensure!(
         !references.starts_with(store_root),
-        "Attempt references must be outside the snapshot store"
+        "Execution references must be outside the snapshot store"
     );
     ensure!(
         super::inventory_projected(source, excluded)? == *expected,
@@ -241,7 +241,7 @@ pub(super) fn share(
     })
 }
 
-/// Snapshot references are separate from Attempt references. A child keeps its
+/// Snapshot references are separate from Execution references. A child keeps its
 /// own marker inode link; deleting an ancestor cannot drop the child's data.
 pub(super) fn retain(
     pool: &Path,
@@ -310,7 +310,7 @@ pub(super) fn retain(
     })
 }
 
-/// Read metadata only when sealing a new checkpoint. Live Attempt owners stay
+/// Read metadata only when sealing a new checkpoint. Live Execution owners stay
 /// small and do not retain a complete lower inventory per running VM.
 pub(super) fn seal(owner: &SharedFilesystemLayer) -> anyhow::Result<(Vec<u8>, TreeInventory)> {
     ensure!(

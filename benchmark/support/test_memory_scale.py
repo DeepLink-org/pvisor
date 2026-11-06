@@ -157,7 +157,7 @@ def valid(mode="baseline", n=2, scanner="0"):
             snapshot_id="c" * 64,
             store="/checkpoint",
             source_run_id="run0",
-            source_attempt_id="attempt0",
+            source_execution_id="execution0",
             created_at_unix_ms=1,
             ram_storage="raw",
         )
@@ -247,7 +247,7 @@ def valid(mode="baseline", n=2, scanner="0"):
     for i in ([0] if restored_mode else []) + list(range(1, n + 1)):
         result = dict(
             run_id=f"run{i}",
-            attempt_id=f"attempt{i}",
+            execution_id=f"execution{i}",
             started_at_unix_ms=1 if i == 0 else 3,
             finished_at_unix_ms=2 if i == 0 else 10,
             state="hibernated" if i == 0 else "cancelled" if i == 1 else "completed",

@@ -1,7 +1,7 @@
 use pvisor_journal::api::JournalStore;
 mod safe;
 
-use pvisor::job_service::policy::PolicySource;
+use pvisor::session_service::policy::PolicySource;
 use std::path::{Path, PathBuf};
 
 const STAGE_OWNER_FILE: &str = ".pvisor-stage-owner";
@@ -106,15 +106,15 @@ macro_rules! run_log {
     }};
 }
 
-fn announce_job_started(handle: &pvisor::RunHandle) {
+fn announce_session_started(handle: &pvisor::RunHandle) {
     super::host_service::observe_run(handle);
     super::host_service::release_source_lock();
-    if handle.execution().status().attempt.executor.kind
+    if handle.execution().status().execution.executor.kind
         == pvisor_core::ExecutorKind::VirtualMachine
     {
-        let job = handle.run_id();
+        let session = handle.run_id();
         eprintln!(
-            "VM controls: pvisor status {job}; pvisor suspend {job} --vm-pause; pvisor resume {job}"
+            "VM controls: pvisor status {session}; pvisor suspend {session} --vm-pause; pvisor resume {session}"
         );
     }
 }
@@ -126,21 +126,21 @@ pub(super) use lifecycle::{fork, resume_execution};
 
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with independent filesystem, staging, and network policies";
+    "Start one Agent Session with independent filesystem, staging, and network policies";
 #[cfg(target_os = "linux")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Session under pVisor management. Host execution preserves the host filesystem view by default; use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.";
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Start one Agent Job with independent filesystem, staging, and network policies";
+    "Start one Agent Session with independent filesystem, staging, and network policies";
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
 
 #[cfg(any(target_os = "macos", test))]
-const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Job under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Job-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Job to fail before Agent execution.";
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Start one Agent Session under pVisor management. Host execution preserves the host filesystem view by default. Use --filesystem sandbox for filesystem access restrictions, --stage for change staging, and --overlaynet for network policy.\n\nOn macOS, staged workspace views use macFUSE when requested, and Seatbelt is used for requested filesystem sandboxing or deny-all network isolation. Full-disk reads remain ambient unless filesystem sandboxing is requested; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks non-loopback IP traffic and ambient host Unix sockets while permitting loopback proxy access and Session-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Session to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor management";
+pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Session under pVisor management";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
 
@@ -187,7 +187,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     stage: Option<PathBuf>,
 
-    #[command(flatten, next_help_heading = "Job options")]
+    #[command(flatten, next_help_heading = "Session options")]
     run: RunOverrides,
     #[command(flatten, next_help_heading = "Container executor options")]
     container: ContainerOverrides,
@@ -292,7 +292,7 @@ struct RunOverrides {
     /// Require sandbox isolation and apply Agent-aware network/file presets; explicit CLI overrides win. Does not select an executor.
     #[arg(long)]
     safe: bool,
-    /// Human-readable Job/Agent name.
+    /// Human-readable Session/Agent name.
     #[arg(long)]
     name: Option<String>,
     #[arg(long, value_parser = super::values::run_executor_kind(), help = EXECUTOR_HELP)]
@@ -300,10 +300,10 @@ struct RunOverrides {
     /// Filesystem access policy; independent from OverlayNet and OverlayFS staging.
     #[arg(long, value_parser = super::values::filesystem_mode())]
     filesystem: Option<FilesystemMode>,
-    /// Fail the Job when it runs longer than DURATION (for example `30s` or `5m`).
+    /// Fail the Session when it runs longer than DURATION (for example `30s` or `5m`).
     #[arg(long, value_name = "DURATION")]
     timeout: Option<DurationMs>,
-    /// Agent stdio: `inherit` keeps the terminal, `capture` records output into the Job record.
+    /// Agent stdio: `inherit` keeps the terminal, `capture` records output into the Session record.
     #[arg(long, value_parser = super::values::run_stdio())]
     stdio: Option<RunStdio>,
     /// Fail before execution unless every requested capability has a non-bypassable boundary.
@@ -322,7 +322,7 @@ struct RunOverrides {
     /// The --safe preset clears this list internally; this flag also works on its own.
     #[arg(long, hide = true)]
     clear_pass_env: bool,
-    /// Maximum processes/threads admitted for the Job.
+    /// Maximum processes/threads admitted for the Session.
     #[arg(long, value_name = "COUNT")]
     max_processes: Option<u64>,
     /// CPU-time budget (for example `500ms`, `5s`, or `1m`).
@@ -402,7 +402,7 @@ struct VmOverrides {
     #[arg(long = "vm-node-socket", value_name = "SOCKET")]
     vm_node_socket: Option<PathBuf>,
     /// Immutable filesystem pool for Linux x86_64 no-network native checkpoints.
-    /// Must be independent of VM-writable roots and on the Job's volume.
+    /// Must be independent of VM-writable roots and on the Session's volume.
     #[arg(long = "vm-snapshot-filesystem-pool", value_name = "DIR")]
     vm_snapshot_filesystem_pool: Option<PathBuf>,
     /// Shorthand for `--executor vm`.
@@ -560,7 +560,7 @@ struct OverlayFsOverrides {
     /// Explicitly remove default/config file rules before adding --access rules.
     #[arg(long)]
     clear_access: bool,
-    /// Aggregate byte budget for the staged filesystem; the Job fails once the
+    /// Aggregate byte budget for the staged filesystem; the Session fails once the
     /// stage exceeds it.
     #[arg(long = "overlayfs-max-size", value_name = "SIZE")]
     max_size: Option<ByteSize>,
@@ -1085,10 +1085,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         (builder.build(), config)
     };
     let managed =
-        pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
-    announce_job_started(managed.handle());
+        pvisor::session_service::SessionService::start_managed(&pvisor, spec, config).await?;
+    announce_session_started(managed.handle());
     let agentctl = managed.handle().agentctl();
-    let result = wait_cli_job(managed).await?;
+    let result = wait_cli_session(managed).await?;
     let output = pvisor::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
@@ -1222,7 +1222,7 @@ impl RunExecutor for TerminalReportingExecutor {
     fn supports_cpu_qos(&self) -> bool {
         self.0.supports_cpu_qos()
     }
-    async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
+    async fn execute(&self, session: &pvisor::ExecutionContext) -> pvisor::ExecutorOutput {
         let output = self.0.execute(session).await;
         notify_executor_output(&output);
         output
@@ -1233,8 +1233,8 @@ pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExec
     Arc::new(TerminalReportingExecutor(executor))
 }
 
-pub(super) async fn wait_cli_job(
-    managed: pvisor::job_service::ManagedJobRun,
+pub(super) async fn wait_cli_session(
+    managed: pvisor::session_service::SessionRun,
 ) -> anyhow::Result<pvisor_core::RunResult> {
     let result = managed.wait_with(wait_cli_run).await?;
     if result.state == pvisor_core::RunState::Cancelled {
@@ -1655,7 +1655,7 @@ async fn execute_config(
     {
         let store = execution_store_location(&config, &workspace, &storage, &run_id)?;
         spec.metadata.insert(
-            pvisor::job_execution::STORE_KEY.into(),
+            pvisor::session_execution::STORE_KEY.into(),
             serde_json::to_value(store)?,
         );
     }
@@ -1729,9 +1729,9 @@ async fn execute_config(
     if config.run.executor == RunExecutorKind::Vm {
         if let Some(stage) = &stage_launch {
             if workspace != Path::new("/") {
-                let scope = pvisor::job_service::ProjectApplyScope::capture(&workspace)?;
+                let scope = pvisor::session_service::ProjectApplyScope::capture(&workspace)?;
                 spec.metadata.insert(
-                    pvisor::job_service::PROJECT_APPLY_SCOPE_KEY.into(),
+                    pvisor::session_service::PROJECT_APPLY_SCOPE_KEY.into(),
                     serde_json::to_value(scope)?,
                 );
             }
@@ -1830,7 +1830,7 @@ async fn execute_config(
         };
         run_log!("pVisor safe profile: {filesystem_boundary} + {staging} + {network_boundary}");
         run_log!("workspace: {}", workspace.display());
-        run_log!("Job storage: {}", storage.display());
+        run_log!("Session storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
@@ -1881,11 +1881,11 @@ async fn execute_config(
     }
     pvisor::startup_mark_run("cli.session_begin", &run_id);
     let managed =
-        pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config.clone())
+        pvisor::session_service::SessionService::start_managed(&pvisor, spec, config.clone())
             .await?;
-    announce_job_started(managed.handle());
+    announce_session_started(managed.handle());
     pvisor::startup_mark_run("cli.session_started", &run_id);
-    let result = wait_cli_job(managed).await?;
+    let result = wait_cli_session(managed).await?;
     pvisor::startup_mark_run("cli.run_finished", &run_id);
     drop(pvisor);
     if let Some(writer) = json_writer {
@@ -1927,7 +1927,7 @@ async fn execute_config(
     if bundle.filesystem.is_some() {
         if stage_launch.is_some() {
             run_log!(
-                "Stage retained: {} (Job {})",
+                "Stage retained: {} (Session {})",
                 record.stage_dir().display(),
                 record.run_id
             );
@@ -1963,10 +1963,14 @@ async fn execute_config(
 
     if result.state != RunState::Completed {
         if let Some(failure) = &result.failure {
-            run_log!("pVisor Job failed: {:?}: {}", failure.kind, failure.message);
+            run_log!(
+                "pVisor Session failed: {:?}: {}",
+                failure.kind,
+                failure.message
+            );
         }
         for warning in &result.warnings {
-            run_log!("pVisor Job warning: {warning}");
+            run_log!("pVisor Session warning: {warning}");
         }
     }
     Ok(match result.state {
@@ -3193,10 +3197,10 @@ fn configured_runtime_builder(
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(storage)
-        .with_context(|| format!("create pVisor Job storage {}", storage.display()))?;
+        .with_context(|| format!("create pVisor Session storage {}", storage.display()))?;
     storage
         .canonicalize()
-        .with_context(|| format!("resolve pVisor Job storage {}", storage.display()))
+        .with_context(|| format!("resolve pVisor Session storage {}", storage.display()))
 }
 
 fn select_run_storage(
@@ -3395,7 +3399,7 @@ fn resolve_filesystem_grants(
                     .as_ref()
                     .is_some_and(|filesystem| filesystem.base.as_ref() == Some(&path)))
                     || (!paths_overlap(&path, workspace) && !paths_overlap(&path, storage)),
-                "filesystem grant overlaps project or Job storage: {}",
+                "filesystem grant overlaps project or Session storage: {}",
                 path.display()
             );
             Ok(FilesystemCapability {
@@ -4117,10 +4121,10 @@ mod tests {
     }
 
     #[test]
-    fn safe_runs_use_persistent_job_storage() {
+    fn safe_runs_use_persistent_session_storage() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
-        let storage = temporary.path().join("job");
+        let storage = temporary.path().join("session");
         std::fs::create_dir(&workspace).unwrap();
         let mut config = RunConfig::default();
         apply_run_options(&mut config, preset_args(&["--safe", "--", "bash"])).unwrap();
@@ -5162,7 +5166,7 @@ sandbox = "required""#
     }
 
     #[test]
-    fn safe_environment_uses_the_command_identity_not_the_job_name() {
+    fn safe_environment_uses_the_command_identity_not_the_session_name() {
         let mut codex = RunConfig::default();
         apply_run_options(
             &mut codex,
@@ -5284,7 +5288,7 @@ sandbox = "required""#
             "Full-disk reads remain ambient",
             "selective network policies remain cooperative",
             "ambient host Unix sockets",
-            "Job-scoped Unix IPC",
+            "Session-scoped Unix IPC",
             "reported as warnings in best-effort mode",
             "With --strict",
             "fail before Agent execution",

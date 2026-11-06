@@ -62,10 +62,10 @@ pub(crate) async fn authorize_target_with_policy(
                     scope: request
                         .run_id
                         .as_ref()
-                        .zip(request.attempt_id.as_ref())
-                        .map(|(run_id, attempt_id)| pvisor_core::audit::AuditScope {
+                        .zip(request.execution_id.as_ref())
+                        .map(|(run_id, execution_id)| pvisor_core::audit::AuditScope {
                             run_id: run_id.to_string(),
-                            attempt_id: attempt_id.to_string(),
+                            execution_id: execution_id.to_string(),
                             view: "network".into(),
                         }),
                     kind: pvisor_core::audit::AuditKind::Network,
@@ -191,7 +191,7 @@ mod tests {
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,

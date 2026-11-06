@@ -387,7 +387,7 @@ fn set_host_stat(
     mode: Option<u32>,
 ) -> io::Result<()> {
     // We're only using set_host_stat for LinuxSimplified semantics, and in this
-    // mode we ignore the host's owner bits, so don't attempt to write them here.
+    // mode we ignore the host's owner bits, so don't try to write them here.
 
     if let Some(mode) = mode {
         let res = match file {

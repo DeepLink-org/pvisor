@@ -13,12 +13,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// Private, session-local bounds for host-owned staging and write coalescing.
-/// A single job is never split to meet `batch_bytes`: a larger accepted job is
+/// A single task is never split to meet `batch_bytes`: a larger accepted task is
 /// executed alone. `max_chunks = 1` and zero delay disable coalescing.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WriteBufferOptions {
     pub(crate) budget_bytes: usize,
-    pub(crate) max_jobs: usize,
+    pub(crate) max_tasks: usize,
     pub(crate) batch_bytes: usize,
     pub(crate) max_chunks: usize,
     pub(crate) max_delay: Duration,
@@ -29,7 +29,7 @@ impl Default for WriteBufferOptions {
     fn default() -> Self {
         Self {
             budget_bytes: 64 * 1024 * 1024,
-            max_jobs: 1024,
+            max_tasks: 1024,
             batch_bytes: 1024 * 1024,
             max_chunks: 64,
             max_delay: Duration::from_millis(10),
@@ -43,8 +43,8 @@ impl WriteBufferOptions {
     pub(crate) fn validate(&self) -> io::Result<()> {
         let invalid = if !(4 * 1024 * 1024..=256 * 1024 * 1024).contains(&self.budget_bytes) {
             Some("write-buffer budget_bytes must be between 4 MiB and 256 MiB")
-        } else if !(1..=4096).contains(&self.max_jobs) {
-            Some("write-buffer max_jobs must be between 1 and 4096")
+        } else if !(1..=4096).contains(&self.max_tasks) {
+            Some("write-buffer max_tasks must be between 1 and 4096")
         } else if !(4 * 1024..=4 * 1024 * 1024).contains(&self.batch_bytes) {
             Some("write-buffer batch_bytes must be between 4 KiB and 4 MiB")
         } else if self.batch_bytes > self.budget_bytes {
@@ -64,14 +64,14 @@ impl WriteBufferOptions {
 }
 
 /// Cumulative session diagnostics. Peaks include reserved, queued and executing
-/// work; jobs count accepted submissions, and batches count native write calls
+/// work; tasks count accepted submissions, and batches count native write calls
 /// started, including calls that fail or unwind. Counters saturate, never reset.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct WriteBufferStats {
     pub(super) peak_bytes: usize,
-    pub(super) peak_jobs: usize,
+    pub(super) peak_tasks: usize,
     pub(super) batches: u64,
-    pub(super) total_jobs: u64,
+    pub(super) total_tasks: u64,
     /// Number of reserve calls that waited for capacity, including failed calls.
     pub(super) reserve_wait_count: u64,
     /// Time inside capacity waits, including mutex reacquisition after wakeup;
@@ -114,7 +114,7 @@ impl Failure {
     }
 }
 
-struct Job {
+struct Task {
     sequence: u64,
     key: (u64, bool),
     object: u64,
@@ -125,12 +125,12 @@ struct Job {
 }
 
 struct State {
-    queue: VecDeque<Job>,
-    // Includes reservations, queued jobs and the currently executing batch.
+    queue: VecDeque<Task>,
+    // Includes reservations, queued tasks and the currently executing batch.
     bytes: usize,
-    jobs: usize,
+    tasks: usize,
     inflight_bytes: usize,
-    inflight_jobs: usize,
+    inflight_tasks: usize,
     accepted: u64,
     completed: u64,
     accepting: bool,
@@ -141,7 +141,7 @@ struct State {
     // joining its batch, so continuous producers cannot starve a barrier.
     cuts: BTreeMap<u64, usize>,
     // Latest accepted sequence per pending object, including in-flight work.
-    // Completed objects are removed; entries therefore never exceed max_jobs.
+    // Completed objects are removed; entries therefore never exceed max_tasks.
     objects: BTreeMap<u64, u64>,
 }
 
@@ -183,9 +183,9 @@ pub(super) struct WriteBuffer {
     profile: Option<pvisor_overlay_core::profile::Profile>,
 }
 
-/// One byte-and-job reservation, acquired before allocating/copying guest bytes.
+/// One byte-and-task reservation, acquired before allocating/copying guest bytes.
 /// Dropping it without submission refunds both budgets. Stop invalidates pending
-/// permits and drains accepted jobs without waiting for a caller still copying.
+/// permits and drains accepted tasks without waiting for a caller still copying.
 pub(super) struct Permit {
     shared: Arc<Shared>,
     size: usize,
@@ -217,9 +217,9 @@ impl WriteBuffer {
             state: Mutex::new(State {
                 queue: VecDeque::new(),
                 bytes: 0,
-                jobs: 0,
+                tasks: 0,
                 inflight_bytes: 0,
-                inflight_jobs: 0,
+                inflight_tasks: 0,
                 accepted: 0,
                 completed: 0,
                 accepting: true,
@@ -246,11 +246,11 @@ impl WriteBuffer {
     // Tiny budgets make accounting/failure tests independent of MiB allocations.
     // Production construction always validates the supported options above.
     #[cfg(test)]
-    fn with_limits(max_bytes: usize, max_jobs: usize) -> io::Result<Self> {
-        assert!(max_bytes != 0 && max_jobs != 0);
+    fn with_limits(max_bytes: usize, max_tasks: usize) -> io::Result<Self> {
+        assert!(max_bytes != 0 && max_tasks != 0);
         Self::start(WriteBufferOptions {
             budget_bytes: max_bytes,
-            max_jobs,
+            max_tasks,
             batch_bytes: max_bytes,
             ..WriteBufferOptions::default()
         })
@@ -272,13 +272,13 @@ impl WriteBuffer {
         let mut waited = false;
         loop {
             admit(&state)?;
-            if state.jobs < self.shared.options.max_jobs
+            if state.tasks < self.shared.options.max_tasks
                 && size <= self.shared.options.budget_bytes - state.bytes
             {
                 state.bytes += size;
-                state.jobs += 1;
+                state.tasks += 1;
                 state.stats.peak_bytes = state.stats.peak_bytes.max(state.bytes);
-                state.stats.peak_jobs = state.stats.peak_jobs.max(state.jobs);
+                state.stats.peak_tasks = state.stats.peak_tasks.max(state.tasks);
                 return Ok(Permit {
                     shared: self.shared.clone(),
                     size,
@@ -379,9 +379,9 @@ impl Drop for WriteBuffer {
                     "host_writeback_queue_peak_bytes_sum",
                     stats.peak_bytes as u64,
                 ),
-                ("host_writeback_queue_peak_jobs_sum", stats.peak_jobs as u64),
+                ("host_writeback_queue_peak_tasks_sum", stats.peak_tasks as u64),
                 ("host_writeback_queue_batches", stats.batches),
-                ("host_writeback_queue_jobs", stats.total_jobs),
+                ("host_writeback_queue_tasks", stats.total_tasks),
                 (
                     "host_writeback_reserve_wait_count",
                     stats.reserve_wait_count,
@@ -427,7 +427,7 @@ impl Permit {
         let sequence = state.accepted.checked_add(1).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "write sequence exhausted")
         })?;
-        state.queue.push_back(Job {
+        state.queue.push_back(Task {
             sequence,
             key,
             object,
@@ -438,7 +438,7 @@ impl Permit {
         });
         state.accepted = sequence;
         if self.shared.options.object_barriers { state.objects.insert(object, sequence); }
-        state.stats.total_jobs = sequence;
+        state.stats.total_tasks = sequence;
         self.held = false;
         self.shared.changed.notify_all();
         Ok(sequence)
@@ -450,7 +450,7 @@ impl Drop for Permit {
         if self.held {
             let mut state = self.shared.lock();
             state.bytes -= self.size;
-            state.jobs -= 1;
+            state.tasks -= 1;
             self.shared.changed.notify_all();
         }
     }
@@ -491,20 +491,20 @@ fn batch_shape(state: &State, options: &WriteBufferOptions) -> (usize, usize, bo
     let mut count = 0;
     let mut next_offset = first.offset;
     let mut sealed = !state.accepting || cut.is_some();
-    for job in &state.queue {
+    for task in &state.queue {
         if (count != 0
-            && (job.key != first.key
-                || job.offset != next_offset
-                || bytes + job.bytes.len() > options.batch_bytes))
+            && (task.key != first.key
+                || task.offset != next_offset
+                || bytes + task.bytes.len() > options.batch_bytes))
             || count == options.max_chunks
-            || cut.is_some_and(|cut| job.sequence > cut)
+            || cut.is_some_and(|cut| task.sequence > cut)
         {
             sealed = true;
             break;
         }
         count += 1;
-        bytes += job.bytes.len();
-        next_offset += job.bytes.len() as u64;
+        bytes += task.bytes.len();
+        next_offset += task.bytes.len() as u64;
         if bytes >= options.batch_bytes || count == options.max_chunks {
             sealed = true;
             break;
@@ -544,7 +544,7 @@ fn worker_loop(shared: &Shared) {
         };
         let batch = state.queue.drain(..count).collect::<Vec<_>>();
         state.inflight_bytes = bytes;
-        state.inflight_jobs = count;
+        state.inflight_tasks = count;
         state.stats.batches = state.stats.batches.saturating_add(1);
         drop(state);
 
@@ -552,7 +552,7 @@ fn worker_loop(shared: &Shared) {
         let object = batch[0].object;
         let chunks = batch
             .iter()
-            .map(|job| job.bytes.as_slice())
+            .map(|task| task.bytes.as_slice())
             .collect::<Vec<_>>();
         let result = batch[0].target.write(&chunks, batch[0].offset);
         let error = match result {
@@ -576,9 +576,9 @@ fn worker_loop(shared: &Shared) {
             state.objects.remove(&object);
         }
         state.bytes -= bytes;
-        state.jobs -= count;
+        state.tasks -= count;
         state.inflight_bytes = 0;
-        state.inflight_jobs = 0;
+        state.inflight_tasks = 0;
         shared.changed.notify_all();
     }
 }
@@ -592,13 +592,13 @@ fn fail_worker(shared: &Shared) {
         state.accepting = false;
         state.exited = true;
         let queue = std::mem::take(&mut state.queue);
-        let bytes = queue.iter().map(|job| job.bytes.len()).sum::<usize>();
+        let bytes = queue.iter().map(|task| task.bytes.len()).sum::<usize>();
         let inflight_bytes = state.inflight_bytes;
-        let inflight_jobs = state.inflight_jobs;
+        let inflight_tasks = state.inflight_tasks;
         state.bytes -= bytes + inflight_bytes;
-        state.jobs -= queue.len() + inflight_jobs;
+        state.tasks -= queue.len() + inflight_tasks;
         state.inflight_bytes = 0;
-        state.inflight_jobs = 0;
+        state.inflight_tasks = 0;
         state.objects.clear();
         shared.changed.notify_all();
         queue
@@ -702,14 +702,14 @@ mod tests {
     fn options_preserve_defaults_and_accept_supported_boundaries() {
         let defaults = WriteBufferOptions::default();
         assert_eq!(defaults.budget_bytes, 64 * 1024 * 1024);
-        assert_eq!(defaults.max_jobs, 1024);
+        assert_eq!(defaults.max_tasks, 1024);
         assert_eq!(defaults.batch_bytes, 1024 * 1024);
         assert_eq!(defaults.max_chunks, 64);
         assert_eq!(defaults.max_delay, Duration::from_millis(10));
         defaults.validate().unwrap();
         let minimum = WriteBufferOptions {
             budget_bytes: 4 * 1024 * 1024,
-            max_jobs: 1,
+            max_tasks: 1,
             batch_bytes: 4 * 1024,
             max_chunks: 1,
             max_delay: Duration::ZERO,
@@ -717,7 +717,7 @@ mod tests {
         };
         let maximum = WriteBufferOptions {
             budget_bytes: 256 * 1024 * 1024,
-            max_jobs: 4096,
+            max_tasks: 4096,
             batch_bytes: 4 * 1024 * 1024,
             max_chunks: 64,
             max_delay: Duration::from_millis(50),
@@ -727,7 +727,7 @@ mod tests {
             options.validate().unwrap();
             let buffer = WriteBuffer::with_options(options).unwrap();
             assert_eq!(buffer.shared.options.budget_bytes, options.budget_bytes);
-            assert_eq!(buffer.shared.options.max_jobs, options.max_jobs);
+            assert_eq!(buffer.shared.options.max_tasks, options.max_tasks);
             assert_eq!(buffer.shared.options.batch_bytes, options.batch_bytes);
             assert_eq!(buffer.shared.options.max_chunks, options.max_chunks);
             assert_eq!(buffer.shared.options.max_delay, options.max_delay);
@@ -748,11 +748,11 @@ mod tests {
                 ..defaults
             },
             WriteBufferOptions {
-                max_jobs: 0,
+                max_tasks: 0,
                 ..defaults
             },
             WriteBufferOptions {
-                max_jobs: 4097,
+                max_tasks: 4097,
                 ..defaults
             },
             WriteBufferOptions {
@@ -799,7 +799,7 @@ mod tests {
         ] {
             let buffer = WriteBuffer::with_options(WriteBufferOptions {
                 budget_bytes: 4 * 1024 * 1024,
-                max_jobs: 6,
+                max_tasks: 6,
                 batch_bytes,
                 max_chunks,
                 max_delay: Duration::ZERO,
@@ -833,8 +833,8 @@ mod tests {
             }
             let pending = buffer.stats();
             assert_eq!(pending.peak_bytes, 5 + 5 * bytes.len());
-            assert_eq!(pending.peak_jobs, 6);
-            assert_eq!((pending.batches, pending.total_jobs), (1, 6));
+            assert_eq!(pending.peak_tasks, 6);
+            assert_eq!((pending.batches, pending.total_tasks), (1, 6));
             release.send(()).unwrap();
             buffer.flush().unwrap();
             let calls = calls.lock().unwrap();
@@ -845,8 +845,8 @@ mod tests {
             assert_eq!(calls.iter().flat_map(|call| &call.bytes).count(), 10240);
             let stats = buffer.stats();
             assert_eq!(stats.peak_bytes, pending.peak_bytes);
-            assert_eq!(stats.peak_jobs, pending.peak_jobs);
-            assert_eq!(stats.total_jobs, 6);
+            assert_eq!(stats.peak_tasks, pending.peak_tasks);
+            assert_eq!(stats.total_tasks, 6);
             assert_eq!(stats.batches, 1 + calls.len() as u64);
             assert_eq!(stats.reserve_wait_count, 0);
             assert_eq!(stats.reserve_wait_ns, 0);
@@ -862,7 +862,7 @@ mod tests {
             WriteBuffer::with_profile(WriteBufferOptions::default(), profile.clone()).unwrap(),
         );
         // The unused reservation contributes to the true peak, but is not an
-        // accepted job. It may safely outlive the stopped buffer owner.
+        // accepted task. It may safely outlive the stopped buffer owner.
         let reserved = buffer.reserve(3).unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         submit(&buffer, recording((1, false), &calls), b"data", 0);
@@ -870,8 +870,8 @@ mod tests {
         buffer.stop().unwrap();
         buffer.stop().unwrap();
         let stats = buffer.stats();
-        assert_eq!((stats.peak_bytes, stats.peak_jobs), (7, 2));
-        assert_eq!((stats.total_jobs, stats.batches), (1, 1));
+        assert_eq!((stats.peak_bytes, stats.peak_tasks), (7, 2));
+        assert_eq!((stats.total_tasks, stats.batches), (1, 1));
         let units = |name| {
             profile
                 .report()
@@ -888,8 +888,8 @@ mod tests {
         for (name, expected) in [
             ("host_writeback_queue_sessions", 1),
             ("host_writeback_queue_peak_bytes_sum", 7),
-            ("host_writeback_queue_peak_jobs_sum", 2),
-            ("host_writeback_queue_jobs", 1),
+            ("host_writeback_queue_peak_tasks_sum", 2),
+            ("host_writeback_queue_tasks", 1),
             ("host_writeback_queue_batches", 1),
             ("host_writeback_reserve_wait_count", 0),
             ("host_writeback_reserve_wait_ns", 0),
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(calls.lock().unwrap()[0].bytes, bytes);
         assert!(gate.is_idle_closed());
         let state = buffer.shared.lock();
-        assert_eq!((state.bytes, state.jobs), (0, 0));
+        assert_eq!((state.bytes, state.tasks), (0, 0));
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
         started.recv_timeout(Duration::from_secs(2)).unwrap();
         {
             let state = buffer.shared.lock();
-            assert_eq!((state.bytes, state.jobs), (4, 1));
+            assert_eq!((state.bytes, state.tasks), (4, 1));
         }
         assert!(result.recv_timeout(Duration::from_millis(20)).is_err());
         release.send(()).unwrap();
@@ -1085,8 +1085,8 @@ mod tests {
         buffer.stop().unwrap();
         assert_eq!(buffer.shared.lock().bytes, 0);
         let stats = buffer.stats();
-        assert_eq!((stats.peak_bytes, stats.peak_jobs), (4, 1));
-        assert_eq!((stats.total_jobs, stats.batches), (1, 1));
+        assert_eq!((stats.peak_bytes, stats.peak_tasks), (4, 1));
+        assert_eq!((stats.total_tasks, stats.batches), (1, 1));
         assert_eq!(stats.reserve_wait_count, 1);
         assert!(stats.reserve_wait_ns > 0);
     }
@@ -1204,7 +1204,7 @@ mod tests {
         assert_eq!(buffer.stop().unwrap_err().raw_os_error(), Some(libc::EIO));
         {
             let state = buffer.shared.lock();
-            assert_eq!((state.bytes, state.jobs), (0, 0));
+            assert_eq!((state.bytes, state.tasks), (0, 0));
         }
     }
 
@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn allocation_and_reservation_rejection_refund_bytes_and_job_slots() {
+    fn allocation_and_reservation_rejection_refund_bytes_and_task_slots() {
         let buffer = WriteBuffer::with_limits(4, 2).unwrap();
         assert!(buffer.reserve(5).is_err());
         let permit = buffer.reserve(1).unwrap();
@@ -1243,7 +1243,7 @@ mod tests {
         let permit = buffer.reserve(4).unwrap();
         drop(permit);
         let state = buffer.shared.lock();
-        assert_eq!((state.bytes, state.jobs), (0, 0));
+        assert_eq!((state.bytes, state.tasks), (0, 0));
     }
 
     #[test]

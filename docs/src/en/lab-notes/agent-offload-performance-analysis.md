@@ -69,7 +69,7 @@ Both cohorts replay the same `qutebrowser-667` trajectory: 44 fixed model respon
 | Storage | HDD RAM backing for baseline/pause; SSD for offload | Same; workspace, overlay and logs remain on HDD |
 | Binary hash prefix | `cd7a875a7202` | `430fa7bde1e58`, control/logging fixes |
 
-After about 20 ms of model waiting, management attempts idle handoff and pause. Offload may be attempted after about 50 ms, with at least one second of real-timer budget and a five-second cooldown. Response delivery, real timers, external events or fail-safe handling can resume the VM; a request may have multiple handoffs. Download/file-read triggers and streaming buffers are disabled.
+After about 20 ms of model waiting, management executions idle handoff and pause. Offload may be attempted after about 50 ms, with at least one second of real-timer budget and a five-second cooldown. Response delivery, real timers, external events or fail-safe handling can resume the VM; a request may have multiple handoffs. Download/file-read triggers and streaming buffers are disabled.
 
 The 16 services share Host CPUs 16–31 with a one-core quota each, not exclusive core binding. Host Agent/replay uses 0–7 and 10–15; BPF uses 14–15. Other evaluations on 8, 9, 40 and 41 are avoided, but shared disks and memory bandwidth remain potential interference sources.
 

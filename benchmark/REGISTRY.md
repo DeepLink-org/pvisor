@@ -199,7 +199,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   逐环境三轮与中位数/范围，N3不提供可靠尾延迟和普遍排名。大规模单轴曲线、
   网络IOCP未测；Docker必须记录工作区存储方式与daemon预算，参考VM必须记录
   stock内核来源、virtio-blk与ext4磁盘路径，不能解释为纯VMM开销。
-  当前 main rebase 后复测使用静态 musl release 的 `spawn` Job 入口和内嵌固件；
+  当前 main rebase 后复测使用静态 musl release 的 `spawn` Session 入口和内嵌固件；
   QEMU microvm 开启 ACPI，供未修改的 stock 内核枚举 virtio-mmio；stock 内核、
   initrd、工具版本及实际配置单独冻结，不与历史动态构建／ACPI 关闭批次拼样本或计算优化比例。
   不沿用历史七工具数字补格。
@@ -435,7 +435,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   frozen baseline 和 Immutable 声明，apply target 仍是独立的 trial 工作区。
   工作区对照同时改变缓存资格和 frozen-baseline 的读观察/journal 工作，结果属于
   联合处理收益，不能单独归因于 metadata cache；不把活跃目录声明为 Immutable。
-  工程入口使用正常 PVisor Job、stage/journal、
+  工程入口使用正常 PVisor Session、stage/journal、
   VmExecutor 和 native runner；省略 CLI Host 服务，绝对 Ready 不与 CLI 用户表混用。
   封存 generation 的导入/准备单独记录，所有权 lease 持续到 native teardown。
   每条件五个新环境，同轮 seeded 随机交替，每环境沿用九操作三轮，先逐环境合计
@@ -479,7 +479,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   worker 保持原任务时钟，stream_write 保留自身 fsync/close。2 vCPU/16 GiB、
   父预算 CPU0/1 两核及 swap0，WB=0、DAX=0、容量256、guest cache=1；
   新 DATA、只读 FLUSH 消除、标准负项 entry、两项 Core 缺失缓存及同次 OPEN
-  资格复用全部关闭。保留唯一 Ready/Result、正常退出、terminal Job/Bundle、
+  资格复用全部关闭。保留唯一 Ready/Result、正常退出、terminal Session/Bundle、
   实际 selector/lower/baseline/live target、工具缓存、lower 隔离以及全部写文件和
   stream 字节检查，无安静期、干扰或全量清单门禁，保留全部有效慢样本。
   三轮不作为独立样本；5000 次环境块配对 bootstrap，32 个区间不校正多重比较，
@@ -487,7 +487,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   注册/final/phase、挂载实际开关、OPEN/READ/LOOKUP/GETATTR 与 Core/journal
   请求，inclusive spans 不相加。新制品、准备、harness 和失败留在 `.data/pw17-cli/`，
   不复用历史计时；结果仅进入工程分析，不更新跨运行时用户表。
-- **目录 FD 缓存容量快速 A/B：** 复用封存输入对照的正常 Job/Overlay/VM 工程入口，
+- **目录 FD 缓存容量快速 A/B：** 复用封存输入对照的正常 Session/Overlay/VM 工程入口，
   固定 rootfs 与 workspace 均为真实 owned Immutable、workspace 使用 frozen baseline，
   同一 host/0045 固件，仅将有界 native directory-FD cache 容量设为 256 / 1024。
   每组五个 fresh 环境、每环境原九操作三轮，同轮随机配对；WB=0、DAX=0，
@@ -576,7 +576,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   每个对照保留32指标、五对原值与5000次环境块配对 bootstrap，区间不作多重
   比较校正，三轮不作独立样本。Ready 包含 fresh Host+VM 并排除退出，worker
   保持原时钟，stream_write 保留自身 fsync/close。先每组一个真实 CLI 正确性
-  预检，保留正常退出、唯一 Ready/Result、terminal Job/Bundle、来源 receipt、
+  预检，保留正常退出、唯一 Ready/Result、terminal Session/Bundle、来源 receipt、
   lower/cache 隔离及全部写/stream 字节检查；不放宽已有 fd/mmap/copy-up oracle。
   无安静期、干扰或每轮全量清单门禁，保留全部有效慢样本。另每组一个独立计数
   环境，按源码构造库存核对全部注册/final/phase 与每挂载 DATA/FLUSH 实际协商，
@@ -629,7 +629,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   环境块配对 bootstrap、区间不校正多重比较，三轮不作独立样本。
   Ready 包含 fresh Host+VM 并排除退出，worker 保持原时钟，stream_write
   保留自身 fsync/close。每组另跑一个正确性预检和一个独立计数环境，保留正常
-  退出、唯一 Ready/Result、terminal Job/Bundle、两来源 selector/receipt、
+  退出、唯一 Ready/Result、terminal Session/Bundle、两来源 selector/receipt、
   lower/cache 隔离及全部写/stream 字节检查；核对每挂载 NE requested/enabled、
   DATA0/FLUSH1、完整注册/final/phase、LOOKUP/GETATTR/OPEN/READ/FLUSH/
   RELEASE 与 Core 缺项/父叶查询。LOOKUP 不等于 ENOENT，miss 不等于唯一名字，
@@ -650,7 +650,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   Ready 包含 fresh Host+VM 并排除退出，worker 保留原时钟及 stream 自身
   fsync/close。各臂另一个正确性预检和独立计数环境，核对 caller 的变量真缺省、
   owner 的 requested/enabled/marked OPEN、全部注册/final/phase 和协议请求；
-  profile 不计入性能。保留正常退出、唯一 Ready/Result、terminal Job/Bundle、
+  profile 不计入性能。保留正常退出、唯一 Ready/Result、terminal Session/Bundle、
   selector/baseline receipt、lower/cache 隔离及全部写/stream 字节校验，无安静期、
   干扰或每轮全量清单门禁，保留全部有效慢样本。证据在 `.data/af17-cli/`，
   结果仅进入工程分析，不改用户跨运行时表。
@@ -749,7 +749,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
 - **历史入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
 
-- **共享 VM 启动优化的同引擎对照：** 使用同一原生 guest 模板与压缩池、官方 OpenSandbox SDK 1.1.0、performance 构建和 1 CPU/512 MiB 预算，比较本轮 FD/checkpoint/早期标准流修复前后；不更换执行引擎或上游服务。基线从同份源码单独冻结，恢复串行全内容校验并撤下 pre-Rust 标准流 constructor；daemon 未调用的 CLI FD 预扩容按实际产品路径保持未接入。记录 vsock 条件导致的 checkpoint 路径跳过，不据 Job 阶段诊断推算 API 收益。3 对预热、20 对正式随机交替，每臂每轮新启独立 API，分别测首个和随后的新 VM 创建；计时 SDK create、首/次命令及同次 create→首命令完成，验证真实 stdout、私有文件、资源上限和删除 404。失败保留并使 cohort 无效，不剔除慢样本；冻结源/制品/模板/harness、SDK 依赖、亲和性、负载和配对 bootstrap 95% CI，结果仅存 `.data/` 工程分析，不混入 Docker 或更换引擎的历史批次。
+- **共享 VM 启动优化的同引擎对照：** 使用同一原生 guest 模板与压缩池、官方 OpenSandbox SDK 1.1.0、performance 构建和 1 CPU/512 MiB 预算，比较本轮 FD/checkpoint/早期标准流修复前后；不更换执行引擎或上游服务。基线从同份源码单独冻结，恢复串行全内容校验并撤下 pre-Rust 标准流 constructor；daemon 未调用的 CLI FD 预扩容按实际产品路径保持未接入。记录 vsock 条件导致的 checkpoint 路径跳过，不据 Session 阶段诊断推算 API 收益。3 对预热、20 对正式随机交替，每臂每轮新启独立 API，分别测首个和随后的新 VM 创建；计时 SDK create、首/次命令及同次 create→首命令完成，验证真实 stdout、私有文件、资源上限和删除 404。失败保留并使 cohort 无效，不剔除慢样本；冻结源/制品/模板/harness、SDK 依赖、亲和性、负载和配对 bootstrap 95% CI，结果仅存 `.data/` 工程分析，不混入 Docker 或更换引擎的历史批次。
 - **daemon FD 预扩容接入对照：** 延续上述同引擎、同模板、SDK 与资源/采样/正确性协议，仅比较 native-supervisor 在 Tokio 之前是否调用现有 `VmExecutor::prepare_process`；两臂均保留 checkpoint 并行校验与 guest 早期标准流修复。冻结接入前后源码和 performance 制品，独立随机交替新批次，不合并先前未接入 daemon 的结果；首个/后续新建分别给出 SDK create 与 create→首命令的配对 bootstrap 95% CI，失败完整保留，原始证据留 `.data/`。
 
 ### B-OPENSANDBOX-BURST-DIAG：低内存预算下十请求突发 {#b-opensandbox-burst-diag}
@@ -931,7 +931,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 先测空闲探针，再测带真实工具负载的情况；两者分别报告。
   - 成功率与资源一起报告，不能只报告成功的样本。
 - **历史入口：** `density.py`，worker 为 `density_worker.py`。每批使用独立、固定 CPU/内存预算且禁用 swap 的 cgroup；所有任务到达 readiness barrier 后才一起释放。空闲与 Python/Git 修改和校验任务分开报告。OCI 对照必须证明 payload 与 conmon 没有逃离资源预算。记录整个 cgroup、完整 VM backing、RSS、OOM、尝试与完成数量。共享的预先准备工具/镜像缓存可能由父 cgroup 计费，不能把受限 cgroup 的容量换算为整机净内存节省。
-- **暂停等待的容量另测：** `parked_density.py` 使用相同静态 worker（`parked_memory_probe.rs`）、64 MiB 完整触碰和校验的数据、64 个文件与四个恢复后改动；重复与确定性随机数据分开。逐个创建并暂停到共同 parked barrier，比较当前 Job raw/压缩执行快照、native SIGSTOP 和 Podman pause；统一包含协调器、辅助进程、backing/页缓存的两核、2 GiB、零 swap 预算。随后以固定一个恢复槽逐个恢复，校验同一执行 token、全部内存和文件结果；分别报告停驻容量、准备成本、恢复至完整结果的成本、失败/未知/OOM，不能称为活跃并发或用快照文件大小推算物理密度。先单独验证四类机制的 stdin barrier 可保存/恢复；不支持的机制明确为未测，不改用计时 sleep。OCI payload/conmon 与 pause 使用的子 cgroup 必须都处于同一总预算。完整容量扫描每格至少五个批次；共享预备工具缓存的计费范围和快照相对容器 pause 的语义差异需明确。SDK offload 与自动冷页压缩不包含在此快照对照中。
+- **暂停等待的容量另测：** `parked_density.py` 使用相同静态 worker（`parked_memory_probe.rs`）、64 MiB 完整触碰和校验的数据、64 个文件与四个恢复后改动；重复与确定性随机数据分开。逐个创建并暂停到共同 parked barrier，比较当前 Session raw/压缩执行快照、native SIGSTOP 和 Podman pause；统一包含协调器、辅助进程、backing/页缓存的两核、2 GiB、零 swap 预算。随后以固定一个恢复槽逐个恢复，校验同一执行 token、全部内存和文件结果；分别报告停驻容量、准备成本、恢复至完整结果的成本、失败/未知/OOM，不能称为活跃并发或用快照文件大小推算物理密度。先单独验证四类机制的 stdin barrier 可保存/恢复；不支持的机制明确为未测，不改用计时 sleep。OCI payload/conmon 与 pause 使用的子 cgroup 必须都处于同一总预算。完整容量扫描每格至少五个批次；共享预备工具缓存的计费范围和快照相对容器 pause 的语义差异需明确。SDK offload 与自动冷页压缩不包含在此快照对照中。
 
 ### B-ISOLATION：隔离是否真的生效 {#b-isolation}
 
@@ -996,7 +996,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 每次试验使用新的 VM，并校验数据完整性。
   - `memory_savings.py` / `vm_memory_savings` 提供当前 Linux 默认回收、live 压缩、暂停和 raw/compressed offload 用户对照。每格先预检，再 3 次预热、30 次正式样本；完整组四核/2 GiB/零 swap，512 MiB/2 vCPU guest、64 MiB 应用数据、固定 60 秒闲置窗。逐块独立摘要、全量工具写入/读回和原生 reap 为成功门禁，观察者与协调器在组外。新制品与既有快照/offload 批次分开保留。`publish_memory_savings.py` 校验完整条件、预热与正式样本、来源和干扰门禁后导出阶段/峰值/CPU/存储分布及相对默认模式的配对 bootstrap 区间。
   - `memory_sharing.py` 使用同一 SDK worker 的独立用户协议：1/2/4 个 2 vCPU/512 MiB VM，重复、相同随机和独有随机 64 MiB 数据；同一 sealed 快照的共同 inode 与全字节复制的独立 inode 对照，动态私有页 KSM advice off/on。完整组四核/2 GiB/零 swap、扫描器状态只读、每个扫描窗 30 秒；独立 inode 不是独立启动捕获，ready 与动态改写阶段不能混作同一比较。每格 3 次预热、30 个新组，独立恢复/写入/退出校验、全组内存与 CPU 和组外干扰观察；不得将 B-MEMORY-SCALE 工程批次或建议登记字节替代为这些用户数据。
-- **历史入口：** `memory_savings.py`（历史 Linux 单实例回收、压缩、暂停和卸载）、`memory_sharing.py`（共享基线和动态 KSM 的独立用户协议）、`macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（历史 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（历史 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
+- **历史入口：** `memory_savings.py`（历史 Linux 单实例回收、压缩、暂停和卸载）、`memory_sharing.py`（共享基线和动态 KSM 的独立用户协议）、`macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（历史 Session API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（历史 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
 ### B-MEMORY-SCALE：最多四个 VM 的共享、写入退化与卸载恢复 {#b-memory-scale}
 

@@ -1,7 +1,7 @@
 //! Files and result hand-off for a pVisor delegated through an OCI container or libkrun VM.
 
 use crate::util::write_private_json;
-use pvisor_core::{AttemptId, RunInvocation, RunResult, RunSpec};
+use pvisor_core::{ExecutionId, RunInvocation, RunResult, RunSpec};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ pub(crate) struct DelegatedRunFiles {
 impl DelegatedRunFiles {
     /// Create delegated files, optionally capturing the injected pVisor's output.
     /// The outer transport owns the real terminal; inheriting it in the nested
-    /// process makes rootless OCI runs attempt tty process-group operations.
+    /// process makes rootless OCI runs execution tty process-group operations.
     pub(crate) fn new_with_stdio(spec: &RunSpec, capture: bool) -> anyhow::Result<Self> {
         let temporary = tempfile::Builder::new()
             .prefix("pvisor-delegated-")
@@ -60,7 +60,7 @@ impl DelegatedRunFiles {
     pub(crate) fn read_result(
         &self,
         run_id: &pvisor_core::RunId,
-        attempt_id: &AttemptId,
+        execution_id: &ExecutionId,
     ) -> anyhow::Result<DelegatedRunOutput> {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -85,11 +85,11 @@ impl DelegatedRunFiles {
         anyhow::ensure!(
             output.result.run_id == *run_id
                 && output.agentctl.run_id == run_id.as_str()
-                && output.agentctl.attempt_id == output.result.attempt_id.as_str(),
+                && output.agentctl.execution_id == output.result.execution_id.as_str(),
             "delegated result identity mismatch"
         );
-        output.result.attempt_id = attempt_id.clone();
-        output.agentctl.attempt_id = attempt_id.to_string();
+        output.result.execution_id = execution_id.clone();
+        output.agentctl.execution_id = execution_id.to_string();
         Ok(output)
     }
 }
@@ -99,42 +99,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delegated_result_uses_the_owning_local_attempt_identity() {
+    fn delegated_result_uses_the_owning_local_execution_identity() {
         let spec = RunSpec::process("outer-run", "agent", "/bin/sh");
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let output = serde_json::json!({
-            "result": {"run_id":"outer-run", "attempt_id":"inner-attempt", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
-            "agentctl": {"run_id":"outer-run", "attempt_id":"inner-attempt", "directive":crate::AgentDirective::Continue, "clients":[]}
+            "result": {"run_id":"outer-run", "execution_id":"inner-execution", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
+            "agentctl": {"run_id":"outer-run", "execution_id":"inner-execution", "directive":crate::AgentDirective::Continue, "clients":[]}
         });
         write_private_json(&files.result_path, &output).unwrap();
-        let attempt_id = AttemptId::new("outer-attempt");
-        let output = files.read_result(&spec.run_id, &attempt_id).unwrap();
+        let execution_id = ExecutionId::new("outer-execution");
+        let output = files.read_result(&spec.run_id, &execution_id).unwrap();
         assert_eq!(output.result.run_id, spec.run_id);
-        assert_eq!(output.result.attempt_id, attempt_id);
+        assert_eq!(output.result.execution_id, execution_id);
         assert_eq!(output.agentctl.run_id, "outer-run");
-        assert_eq!(output.agentctl.attempt_id, "outer-attempt");
+        assert_eq!(output.agentctl.execution_id, "outer-execution");
     }
 
     #[test]
     fn delegated_results_reject_foreign_identity_symlinks_and_oversized_files() {
         let spec = RunSpec::process("outer-run", "agent", "/bin/sh");
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
-        let attempt = AttemptId::new("outer-attempt");
+        let execution = ExecutionId::new("outer-execution");
         let foreign = serde_json::json!({
-            "result": {"run_id":"foreign", "attempt_id":"inner", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
-            "agentctl": {"run_id":"foreign", "attempt_id":"inner", "directive":crate::AgentDirective::Continue, "clients":[]}
+            "result": {"run_id":"foreign", "execution_id":"inner", "state":"completed", "started_at_unix_ms":1, "finished_at_unix_ms":2},
+            "agentctl": {"run_id":"foreign", "execution_id":"inner", "directive":crate::AgentDirective::Continue, "clients":[]}
         });
         write_private_json(&files.result_path, &foreign).unwrap();
         assert!(
             files
-                .read_result(&spec.run_id, &attempt)
+                .read_result(&spec.run_id, &execution)
                 .unwrap_err()
                 .to_string()
                 .contains("identity")
         );
         std::fs::remove_file(&files.result_path).unwrap();
         std::os::unix::fs::symlink(&files.spec_path, &files.result_path).unwrap();
-        assert!(files.read_result(&spec.run_id, &attempt).is_err());
+        assert!(files.read_result(&spec.run_id, &execution).is_err());
         std::fs::remove_file(&files.result_path).unwrap();
         std::fs::File::create(&files.result_path)
             .unwrap()
@@ -142,7 +142,7 @@ mod tests {
             .unwrap();
         assert!(
             files
-                .read_result(&spec.run_id, &attempt)
+                .read_result(&spec.run_id, &execution)
                 .unwrap_err()
                 .to_string()
                 .contains("size limit")

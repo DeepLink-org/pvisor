@@ -1,7 +1,7 @@
 # 跨平台 VM 支持审查
 
 Windows 的 `pvisor.exe` 已能构建并通过 WHP 的共同负载，支持范围为直接 VM
-执行。完整 Job、TUI、replay 和 Daemon 仍需移植。托管 CI 现在只对 Linux/KVM
+执行。完整 Session、TUI、replay 和 Daemon 仍需移植。托管 CI 现在只对 Linux/KVM
 和 Windows/WHP 做共同 VM 验证；macOS 保留构建与常规测试，HVF 用例改为手动运行。
 
 审查基线为 `a2f6bb81`，重点检查 Windows 后端 `482d7b25`（#84）和 CI 门禁

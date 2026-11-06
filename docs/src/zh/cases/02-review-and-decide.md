@@ -28,7 +28,7 @@ json_paths "$CASE_ROOT/review.json" report.txt
 
 Agent 同时修改正文和实验文件时，可以只接受正文，再丢弃剩余改动。
 
-**语义**：apply --path 只提交 report.txt，剩余 scratch.txt 被 drop 丢弃，Job 记录仍可查询。
+**语义**：apply --path 只提交 report.txt，剩余 scratch.txt 被 drop 丢弃，Session 记录仍可查询。
 
 **违反示例**：选择性 apply 提交所有文件，或 drop 删除记录。
 
@@ -69,9 +69,9 @@ assert_content "$CASE_ROOT/view.txt" agent
 
 ### S-USE-008：终止任务后再决定
 
-任务卡住时，先 `kill`，确认已经停止，再丢弃文件。不要对 live Job 做提交。
+任务卡住时，先 `kill`，确认已经停止，再丢弃文件。不要对 live Session 做提交。
 
-**语义**：live Job 拒绝 apply；kill 后状态为 cancelled 且 live 为 false，原件没有改动。
+**语义**：live Session 拒绝 apply；kill 后状态为 cancelled 且 live 为 false，原件没有改动。
 
 **违反示例**：live apply 成功，kill 后仍在运行或文件穿透。
 

@@ -1,8 +1,8 @@
 //! Apply presentation and terminal ownership. Runtime owns planning and mutation.
 use super::runtime::ApplyArgs;
 use anyhow::Context;
-use pvisor::job_service::{
-    ApplyCommandRequest, ApplyCommandResponse, JobSelection, RuntimeJobService,
+use pvisor::session_service::{
+    ApplyCommandRequest, ApplyCommandResponse, SessionSelection, SessionService,
 };
 use pvisor::{ApplySelection, RunRecord};
 use pvisor_core::overlay::{ChangeEntry, ChangeEntryType};
@@ -92,10 +92,10 @@ fn request(
     dry_run: bool,
     expected_plan: Option<String>,
 ) -> anyhow::Result<ApplyCommandResponse> {
-    RuntimeJobService::apply_command(
+    SessionService::apply_command(
         &super::host::service_context(),
         ApplyCommandRequest {
-            job: JobSelection {
+            session: SessionSelection {
                 selector: Some(args.selector.clone()),
                 storage: args.store.clone(),
             },
@@ -133,7 +133,7 @@ fn render(response: &ApplyCommandResponse, json: bool) {
         return;
     }
     println!("apply: {}", response.status);
-    println!("Source: {}", response.source.job_id);
+    println!("Source: {}", response.source.session_id);
     println!("Stage: {}", response.source.stage.display());
     if let Some(target) = &response.scope.target {
         println!("{} target: {}", response.scope.kind, target.display());

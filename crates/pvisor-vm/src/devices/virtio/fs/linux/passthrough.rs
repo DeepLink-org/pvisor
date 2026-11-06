@@ -68,13 +68,13 @@ pub(in crate::devices::virtio::fs) struct ReadonlyOpenQualification {
 }
 
 pub(in crate::devices::virtio::fs) const OPEN_QUALIFICATION_COUNTERS: &[&str] = &[
-    "open_qualification_fgetfl_attempts",
-    "open_qualification_fstat_attempts",
-    "open_qualification_statx_attempts",
-    "open_qualification_fstatfs_attempts",
-    "open_qualification_shared_attempts",
-    "open_qualification_legacy_flush_attempts",
-    "open_qualification_legacy_data_attempts",
+    "open_qualification_fgetfl_executions",
+    "open_qualification_fstat_executions",
+    "open_qualification_statx_executions",
+    "open_qualification_fstatfs_executions",
+    "open_qualification_shared_executions",
+    "open_qualification_legacy_flush_executions",
+    "open_qualification_legacy_data_executions",
     "open_qualification_receipt_hits",
     "open_qualification_receipt_misses",
 ];
@@ -425,14 +425,14 @@ fn qualify_readonly_file_evidence(
     let flush_regular = want_flush
         && flags & libc::O_ACCMODE == libc::O_RDONLY
         && regular.unwrap_or_else(|| {
-            profile.add("open_qualification_fstat_attempts", 1);
+            profile.add("open_qualification_fstat_executions", 1);
             file.metadata().is_ok_and(|metadata| metadata.is_file())
         });
     if data_identity.is_none() && !flush_regular {
         return ReadonlyOpenQualification::default();
     }
     let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
-    profile.add("open_qualification_fstatfs_attempts", 1);
+    profile.add("open_qualification_fstatfs_executions", 1);
     // SAFETY: caller pins the file; initialized output remains writable.
     if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
         return ReadonlyOpenQualification::default();
@@ -757,25 +757,25 @@ impl PassthroughFs {
         handle: Handle,
         profile: &pvisor_overlay_core::profile::Profile,
     ) -> bool {
-        profile.add("open_qualification_legacy_flush_attempts", 1);
+        profile.add("open_qualification_legacy_flush_executions", 1);
         let Ok(lease) = self.lease_handle(inode, handle) else {
             return false;
         };
         let file = lease.0.file.read().unwrap();
-        profile.add("open_qualification_fstat_attempts", 1);
+        profile.add("open_qualification_fstat_executions", 1);
         if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
             return false;
         }
         // SAFETY: the lease and read guard pin this descriptor throughout all
         // evidence queries. No descriptor flags or file contents are changed.
-        profile.add("open_qualification_fgetfl_attempts", 1);
+        profile.add("open_qualification_fgetfl_executions", 1);
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
             return false;
         }
         let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
         // SAFETY: the output is writable and the descriptor remains pinned.
-        profile.add("open_qualification_fstatfs_attempts", 1);
+        profile.add("open_qualification_fstatfs_executions", 1);
         if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
             return false;
         }
@@ -791,12 +791,12 @@ impl PassthroughFs {
         profile: &pvisor_overlay_core::profile::Profile,
     ) -> bool {
         let file = lease.0.file.read().unwrap();
-        profile.add("open_qualification_fgetfl_attempts", 1);
+        profile.add("open_qualification_fgetfl_executions", 1);
         // SAFETY: the existing I/O admission/read guard pins this description.
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_DIRECT | libc::O_PATH) != 0 { return false; }
-        profile.add("open_qualification_fstat_attempts", 1);
+        profile.add("open_qualification_fstat_executions", 1);
         file.metadata().is_ok_and(|m| m.is_file() && m.len() == size && m.nlink() != 0)
         // Native link count may include the projection's private object alias.
         // Content identity/immutability comes from the separate logical lease,
@@ -811,11 +811,11 @@ impl PassthroughFs {
         handle: Handle,
         profile: &pvisor_overlay_core::profile::Profile,
     ) -> Option<LowerDataIdentity> {
-        profile.add("open_qualification_legacy_data_attempts", 1);
+        profile.add("open_qualification_legacy_data_executions", 1);
         let lease = self.lease_handle(inode, handle).ok()?;
         let file = lease.0.file.read().unwrap();
         // SAFETY: the Arc lease and read guard pin the open description.
-        profile.add("open_qualification_fgetfl_attempts", 1);
+        profile.add("open_qualification_fgetfl_executions", 1);
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         if flags < 0
             || flags & libc::O_ACCMODE != libc::O_RDONLY
@@ -823,12 +823,12 @@ impl PassthroughFs {
         {
             return None;
         }
-        profile.add("open_qualification_fstat_attempts", 1);
+        profile.add("open_qualification_fstat_executions", 1);
         let metadata = file.metadata().ok()?;
         if !metadata.is_file() || metadata.nlink() != 1 {
             return None;
         }
-        profile.add("open_qualification_statx_attempts", 1);
+        profile.add("open_qualification_statx_executions", 1);
         let (stat, mount_id, mask) = statx_evidence(&file).ok()?;
         const REQUIRED: u32 = 0x0001 | 0x0004 | 0x0100 | 0x0200 | STATX_MNT_ID;
         if mask & REQUIRED != REQUIRED
@@ -843,7 +843,7 @@ impl PassthroughFs {
         }
         let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
         // SAFETY: initialized output storage; the descriptor remains pinned.
-        profile.add("open_qualification_fstatfs_attempts", 1);
+        profile.add("open_qualification_fstatfs_executions", 1);
         if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
             return None;
         }
@@ -870,18 +870,18 @@ impl PassthroughFs {
         want_flush: bool,
         profile: &pvisor_overlay_core::profile::Profile,
     ) -> ReadonlyOpenQualification {
-        profile.add("open_qualification_shared_attempts", 1);
+        profile.add("open_qualification_shared_executions", 1);
         let Ok(lease) = self.lease_handle(inode, handle) else {
             return ReadonlyOpenQualification::default();
         };
         let file = lease.0.file.read().unwrap();
-        profile.add("open_qualification_fgetfl_attempts", 1);
+        profile.add("open_qualification_fgetfl_executions", 1);
         // SAFETY: the lease/read guard pins this actual open description.
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
             return ReadonlyOpenQualification::default();
         }
-        profile.add("open_qualification_statx_attempts", 1);
+        profile.add("open_qualification_statx_executions", 1);
         let evidence = statx_evidence(&file);
         qualify_readonly_file_evidence(&file, flags, evidence, want_flush, profile)
     }
@@ -3464,10 +3464,10 @@ mod tests {
         let legacy = legacy.report().unwrap();
         let shared = shared.report().unwrap();
         for (label, separate, combined) in [
-            ("open_qualification_fgetfl_attempts", 2, 1),
-            ("open_qualification_fstat_attempts", 2, 0),
-            ("open_qualification_statx_attempts", 1, 1),
-            ("open_qualification_fstatfs_attempts", 2, 1),
+            ("open_qualification_fgetfl_executions", 2, 1),
+            ("open_qualification_fstat_executions", 2, 0),
+            ("open_qualification_statx_executions", 1, 1),
+            ("open_qualification_fstatfs_executions", 2, 1),
         ] {
             assert_eq!(legacy.measurements[label].units, separate);
             assert_eq!(shared.measurements[label].units, combined);
@@ -3575,11 +3575,11 @@ mod tests {
             assert!(qualified.local_flush);
             let report = profile.report().unwrap();
             assert_eq!(
-                report.measurements["open_qualification_fstat_attempts"].units,
+                report.measurements["open_qualification_fstat_executions"].units,
                 u64::from(missing == 0x0001)
             );
             assert_eq!(
-                report.measurements["open_qualification_fstatfs_attempts"].units,
+                report.measurements["open_qualification_fstatfs_executions"].units,
                 1
             );
         }
@@ -3596,8 +3596,8 @@ mod tests {
             assert_eq!(qualified.local_flush, want_flush);
             let report = profile.report().unwrap();
             for label in [
-                "open_qualification_fstat_attempts",
-                "open_qualification_fstatfs_attempts",
+                "open_qualification_fstat_executions",
+                "open_qualification_fstatfs_executions",
             ] {
                 assert_eq!(report.measurements[label].units, u64::from(want_flush));
             }

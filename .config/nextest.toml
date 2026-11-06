@@ -8,5 +8,5 @@ threads-required = "num-test-threads"
 # _dyld_start longer than the readiness budget, before the resolver is invoked.
 # Reserve the runner's slots rather than weakening deadlines or skipping checks.
 [[profile.default.overrides]]
-filter = 'package(=pvisor-cli) & binary(=command_extensions) & test(=job_pool_startup_remains_cancellable_while_the_companion_waits)'
+filter = 'package(=pvisor-cli) & binary(=command_extensions) & test(=session_pool_startup_remains_cancellable_while_the_companion_waits)'
 threads-required = "num-test-threads"

@@ -60,20 +60,20 @@ A successful Outcome includes terminal state and exit code. Errors distinguish F
 | `id` | Event identity for correlation and deduplication |
 | `trace_id` | Owning execution record; current run streams filter by Run |
 | `producer`, `observed_at_unix_ms` | Producer and observation time |
-| `scope` | Event scope; operation facts use Run/Attempt scope |
+| `scope` | Event scope; operation facts use Run/Execution scope |
 | `context`, `operation` | Context/operation identities, not complete payloads |
 | `caused_by` | Event IDs of known prerequisite facts |
 | `level`, `granularity` | Display/filter information |
 
-Facts for the same Attempt share an operation identity and chain causal references. Context facts have no operation reference; domain Observations can lack execution references. Journal validates events/references; commit positions express order in that log.
+Facts for the same Execution share an operation identity and chain causal references. Context facts have no operation reference; domain Observations can lack execution references. Journal validates events/references; commit positions express order in that log.
 
-Processing dependent on an earlier result must wait until that result is determined. Placement/forwarding cannot reverse this dependency. Independent concurrent operations do not become causally related just because timestamps differ. The current mechanism maintains committed facts and known dependencies, without global ordering across Jobs or interception of every syscall inside a command.
+Processing dependent on an earlier result must wait until that result is determined. Placement/forwarding cannot reverse this dependency. Independent concurrent operations do not become causally related just because timestamps differ. The current mechanism maintains committed facts and known dependencies, without global ordering across Sessions or interception of every syscall inside a command.
 
 ## Commit, subscription and failure
 
 After preparing drivers, pvisor commits startup facts before calling the executor. Required-fact commit failure prevents dispatch and requires cleanup. Recording failure after execution is reported as a failure/warning; it cannot undo effects that already happened.
 
-An Attempt with retained storage commits its [completion receipt](execution-model.md#attempt-completion) before publishing `Completed` and lifecycle terminal events. If terminal-event writing then fails, the result remains valid while event coverage has an audit gap. Subscribers reconcile completion against durable results; a missing event does not establish that a command never ran.
+An Execution with retained storage commits its [completion receipt](execution-model.md#execution-completion) before publishing `Completed` and lifecycle terminal events. If terminal-event writing then fails, the result remains valid while event coverage has an audit gap. Subscribers reconcile completion against durable results; a missing event does not establish that a command never ran.
 
 Journal uses one writer and commit receipts, with event deduplication and tail recovery. When commit status is unknown, reconcile effects already performed before deciding whether to retry an external operation. `RunHandle` subscriptions provide committed events for this Run, including Gateway observations in the shared Journal. Live consumers must handle disconnection and lag; read complete history from Journal.
 
@@ -94,7 +94,7 @@ Each reader owns its format rules: Bundle completion bindings and legacy reads a
 | `pvisor_core::operation`, `pvisor_core::event` | Public structures and validation |
 | `pvisor_core::execution` | Execution inputs, capability plans and outputs |
 | pvisor `runtime/operation.rs` | Operation/observation construction for requests and actual boundaries |
-| pvisor `runtime/event.rs`, `session/lifecycle.rs` | Fact publication, dispatch and completion |
+| pvisor `runtime/event.rs`, `execution_context/lifecycle.rs` | Fact publication, dispatch and completion |
 | `pvisor-journal` | Commit, reference validation and recovery |
 
 ```sh

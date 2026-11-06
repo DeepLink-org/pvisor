@@ -119,16 +119,16 @@ impl Daemon {
         let weak = Arc::downgrade(&daemon);
         tokio::spawn(async move {
             let mut ids = ids.into_iter();
-            let mut jobs = tokio::task::JoinSet::new();
+            let mut sessions = tokio::task::JoinSet::new();
             loop {
-                while jobs.len() < BACKGROUND_CONCURRENCY {
+                while sessions.len() < BACKGROUND_CONCURRENCY {
                     let Some(id) = ids.next() else {
                         break;
                     };
                     let Some(this) = weak.upgrade() else {
                         return;
                     };
-                    jobs.spawn(async move {
+                    sessions.spawn(async move {
                         // Public lifecycle entry points detach accepted work: cancelling
                         // this coordinator must not interrupt a disk commit.
                         let outcome = match this.record(&id).await {
@@ -144,7 +144,7 @@ impl Daemon {
                         }
                     });
                 }
-                if jobs.join_next().await.is_none() {
+                if sessions.join_next().await.is_none() {
                     break;
                 }
             }
@@ -837,7 +837,7 @@ impl Daemon {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut jobs = tokio::task::JoinSet::new();
+            let mut sessions = tokio::task::JoinSet::new();
             let mut in_flight = std::collections::BTreeSet::new();
             let mut cursor = String::new();
             loop {
@@ -848,7 +848,7 @@ impl Daemon {
                         let start = sandboxes.partition_point(|sandbox| sandbox.id <= cursor);
                         sandboxes.rotate_left(start);
                         for sandbox in sandboxes {
-                            if jobs.len() >= BACKGROUND_CONCURRENCY { break; }
+                            if sessions.len() >= BACKGROUND_CONCURRENCY { break; }
                             cursor = sandbox.id.clone();
                             if !in_flight.contains(&sandbox.id)
                                 && (sandbox.expires_at.is_some_and(|deadline| deadline <= Utc::now())
@@ -856,14 +856,14 @@ impl Daemon {
                                 let id = sandbox.id;
                                 in_flight.insert(id.clone());
                                 let this = this.clone();
-                                jobs.spawn(async move {
+                                sessions.spawn(async move {
                                     let outcome = this.delete_conditionally(&id, true).await;
                                     (id, outcome)
                                 });
                             }
                         }
                     }
-                    Some(completed) = jobs.join_next(), if !jobs.is_empty() => {
+                    Some(completed) = sessions.join_next(), if !sessions.is_empty() => {
                         match completed {
                             Ok((id, outcome)) => {
                                 in_flight.remove(&id);

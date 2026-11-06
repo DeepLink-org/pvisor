@@ -26,7 +26,7 @@ Public entry points live in `pvisor_vm::api`: traits declare configuration, exec
 2. The builder establishes RAM regions, kernel and boot parameters, installs selected devices, and asks the platform backend to register memory and create vCPUs.
 3. `VmRuntime::run(self, on_ready)` consumes the configuration and delivers `VmmHandle` through its ready callback. The callback must return promptly so the event loop can progress. The function returns an execution result, not a handle.
 4. vCPUs enter hardware virtualization. CPU threads or the event loop handle exits requiring host work, device notifications, interrupts and control requests.
-5. The guest `pvisor-guest` supervisor manages guest startup and process context; the host Session retains ownership of Attempt cleanup and result publication.
+5. The guest `pvisor-guest` supervisor manages guest startup and process context; the host Session retains ownership of Execution cleanup and result publication.
 
 Ordinary guest instructions and most system calls execute inside the guest. A guest `read` reaches virtio-fs when an exported tree requires backend I/O; cached pages, tmpfs or procfs operations may complete locally. Network connections cross guest TCP/IP and virtio-net to host egress.
 
@@ -62,11 +62,11 @@ This connects three subjects: [Memory](memory-optimization/index.md) defines map
 
 Freeze proceeds through **vCPU acknowledgement → device drain → RAM gate closure**. Existing completion paths must be able to progress during drain; their required RAM access cannot be closed prematurely. `VmmHandle` control transactions serialize transitions and release the VMM lock while awaiting workers so device cleanup can execute.
 
-A freeze timeout or failed control state requires the caller to terminate the failed runner, rather than resuming a guest alongside unknown device state. Complete snapshots also need filesystem state within their capture profile and compatibility bindings. Network peers do not roll back with local RAM, so the current native Job execution profile excludes network devices. [Environment snapshots](environment-snapshot.md) owns durable publication and restore contracts.
+A freeze timeout or failed control state requires the caller to terminate the failed runner, rather than resuming a guest alongside unknown device state. Complete snapshots also need filesystem state within their capture profile and compatibility bindings. Network peers do not roll back with local RAM, so the current native Session execution profile excludes network devices. [Environment snapshots](environment-snapshot.md) owns durable publication and restore contracts.
 
 ## System connections and source map {#integration}
 
-The VM exclusively owns machine state; its caller selects files, networking, storage and failure handling for the Attempt. Memory optimizations pass through VM consistency boundaries. File and network services must not independently retain raw guest pointers. Snapshot stores pin objects and publish recoverable state. Host services and storage can evolve while guest address spaces and queue lifecycles remain centrally managed.
+The VM exclusively owns machine state; its caller selects files, networking, storage and failure handling for the Execution. Memory optimizations pass through VM consistency boundaries. File and network services must not independently retain raw guest pointers. Snapshot stores pin objects and publish recoverable state. Host services and storage can evolve while guest address spaces and queue lifecycles remain centrally managed.
 
 | Source entry, relative to `crates/pvisor-vm/src/` | Focus |
 | --- | --- |

@@ -1696,8 +1696,8 @@ fn settle_owner_generation(
     result: anyhow::Result<i32>,
     spawned: bool,
 ) -> anyhow::Result<()> {
-    // ChildGuard has reaped the VMM before sealing any Job. A seal failure is
-    // an instance failure, not permission to invent an uncommitted Job receipt.
+    // ChildGuard has reaped the VMM before sealing any Session. A seal failure is
+    // an instance failure, not permission to invent an uncommitted Session receipt.
     let result = if spawned {
         result.and_then(|code| {
             staging::complete(stages, code)?;
@@ -1728,7 +1728,7 @@ fn settle_owner_generation(
 }
 
 // Caller holds the catalog lock. This receipt describes the instance only;
-// stopped Job authorization still requires each stage's own sealed receipt.
+// stopped Session authorization still requires each stage's own sealed receipt.
 fn finish_instance(
     store: &Store,
     instance: &mut Instance,
@@ -2042,7 +2042,7 @@ fn run_vm<Backing>(
             egress,
             EgressContext {
                 run_id: Some(instance.id.clone()),
-                attempt_id: Some(instance.generation.clone()),
+                execution_id: Some(instance.generation.clone()),
             },
         );
         config.peer_network = instance
@@ -2582,7 +2582,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn docker_staged_pre_vm_failure_keeps_unsealed_job_unauthorized() {
+    fn docker_staged_pre_vm_failure_keeps_unsealed_session_unauthorized() {
         let (_tmp, store, mut instance, _source) = staged_fixture();
         let mut stages = staging::prepare(&store, &instance).unwrap();
         settle_owner_generation(
@@ -2620,7 +2620,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn docker_staged_seal_failure_finalizes_instance_but_retains_unknown_job() {
+    fn docker_staged_seal_failure_finalizes_instance_but_retains_unknown_session() {
         let (_tmp, store, mut instance, _source) = staged_fixture();
         let mut stages = staging::prepare(&store, &instance).unwrap();
         let stage = store.staged_mounts(&instance.id).unwrap()[0]
@@ -2642,8 +2642,8 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn docker_staged_deleted_or_replaced_source_allows_drop_and_remove_not_apply() {
-        use crate::job_service::{
-            ApplyCommandRequest, DropRequest, JobSelection, RuntimeJobService, ServiceContext,
+        use crate::session_service::{
+            ApplyCommandRequest, DropRequest, ServiceContext, SessionSelection, SessionService,
         };
         for replaced in [false, true] {
             for remove_directly in [false, true] {
@@ -2665,15 +2665,15 @@ mod tests {
                 }
                 let selected = store.staged_mount_stage(&instance.id, None).unwrap();
                 assert_eq!(selected, stage);
-                let job = || JobSelection {
+                let session = || SessionSelection {
                     selector: Some(stage.clone()),
                     storage: stage.clone(),
                 };
                 for dry_run in [false, true] {
-                    let response = RuntimeJobService::apply_command(
+                    let response = SessionService::apply_command(
                         &ServiceContext::default(),
                         ApplyCommandRequest {
-                            job: job(),
+                            session: session(),
                             rootfs: false,
                             selection: Default::default(),
                             all: true,
@@ -2685,8 +2685,11 @@ mod tests {
                     assert_eq!(response.status, "blocked", "{:?}", response.blockers);
                 }
                 if !remove_directly {
-                    RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job: job() })
-                        .unwrap();
+                    SessionService::drop(
+                        &ServiceContext::default(),
+                        DropRequest { session: session() },
+                    )
+                    .unwrap();
                 }
                 store.remove(&instance.id, false).unwrap();
                 if replaced {
@@ -2706,7 +2709,9 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn docker_staged_deleted_source_with_pending_ledger_blocks_drop_and_remove() {
-        use crate::job_service::{DropRequest, JobSelection, RuntimeJobService, ServiceContext};
+        use crate::session_service::{
+            DropRequest, ServiceContext, SessionSelection, SessionService,
+        };
         let (_tmp, store, mut instance, source) = staged_fixture();
         let mut stages = staging::prepare(&store, &instance).unwrap();
         let stage = store.staged_mounts(&instance.id).unwrap()[0]
@@ -2751,10 +2756,10 @@ mod tests {
         assert!(pvisor_overlay_core::apply::has_pending_applies(&overlay).unwrap());
         fs::remove_dir_all(source.path()).unwrap();
         let before = fs::read(&ledger_path).unwrap();
-        let error = RuntimeJobService::drop(
+        let error = SessionService::drop(
             &ServiceContext::default(),
             DropRequest {
-                job: JobSelection {
+                session: SessionSelection {
                     selector: Some(stage.clone()),
                     storage: stage.clone(),
                 },
@@ -2775,7 +2780,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn docker_staged_unknown_missing_job_and_active_failed_admission_are_retained() {
+    fn docker_staged_unknown_missing_session_and_active_failed_admission_are_retained() {
         let (_tmp, store, mut instance, _source) = staged_fixture();
         finish_instance(&store, &mut instance, 125, Some("unknown".into())).unwrap();
         assert!(staging::lock_previous(&store, &instance, false).is_err());
@@ -2791,10 +2796,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn docker_staged_selector_and_apply_preview_preserve_lock_metadata() {
-        use crate::job_service::{
-            ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+        use crate::runtime::SessionDirectoryLock;
+        use crate::session_service::{
+            ApplyCommandRequest, ServiceContext, SessionSelection, SessionService,
         };
-        use crate::runtime::JobDirectoryLock;
 
         let (_tmp, store, mut instance, _source) = staged_fixture();
         let mut stages = staging::prepare(&store, &instance).unwrap();
@@ -2806,7 +2811,7 @@ mod tests {
         drop(stages);
         finish_instance(&store, &mut instance, 0, None).unwrap();
         let snapshot = || {
-            ["job.lock", "lease.lock", "run.json"].map(|name| {
+            ["session.lock", "lease.lock", "run.json"].map(|name| {
                 let path = stage.join(name);
                 let metadata = fs::metadata(&path).unwrap();
                 (
@@ -2827,10 +2832,10 @@ mod tests {
                 store.staged_mount_stage(&instance.id, mount).unwrap(),
                 stage
             );
-            let response = RuntimeJobService::apply_command(
+            let response = SessionService::apply_command(
                 &ServiceContext::default(),
                 ApplyCommandRequest {
-                    job: JobSelection {
+                    session: SessionSelection {
                         selector: Some(stage.clone()),
                         storage: stage.clone(),
                     },
@@ -2847,7 +2852,7 @@ mod tests {
         }
 
         let record = crate::RunRecord::read(&stage).unwrap();
-        let directory = JobDirectoryLock::observe_existing(&record).unwrap();
+        let directory = SessionDirectoryLock::observe_existing(&record).unwrap();
         assert!(store.staged_mount_stage(&instance.id, None).is_err());
         drop(directory);
         let (_record, lease) = record.observe_current().unwrap();
@@ -2856,7 +2861,7 @@ mod tests {
         assert_eq!(snapshot(), before);
 
         // Selector resolution must not repair either missing lock inode.
-        for name in ["job.lock", "lease.lock"] {
+        for name in ["session.lock", "lease.lock"] {
             let path = stage.join(name);
             let saved = stage.join(format!("{name}.saved"));
             fs::rename(&path, &saved).unwrap();
@@ -2869,7 +2874,9 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn docker_staged_owner_receipt_and_generation_locks_are_real() {
-        use crate::job_service::{DropRequest, JobSelection, RuntimeJobService, ServiceContext};
+        use crate::session_service::{
+            DropRequest, ServiceContext, SessionSelection, SessionService,
+        };
         let (_tmp, store, _) = fixture();
         let source = tempfile::tempdir().unwrap();
         let mut config = request();
@@ -2924,11 +2931,11 @@ mod tests {
         let bundle = crate::RunBundle::read(&stage).unwrap();
         assert!(!bundle.safety.filesystem_non_bypassable);
         assert!(staging::lock_previous(&store, &instance, false).is_ok());
-        let job = JobSelection {
+        let session = SessionSelection {
             selector: Some(stage.clone()),
             storage: stage.clone(),
         };
-        RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job }).unwrap();
+        SessionService::drop(&ServiceContext::default(), DropRequest { session }).unwrap();
         assert!(staging::lock_previous(&store, &instance, false).is_ok());
         let mut successor = instance.clone();
         successor.generation = uuid();
@@ -2943,8 +2950,8 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn docker_staged_changes_require_acceptance_and_apply_uses_recorded_source() {
-        use crate::job_service::{
-            ApplyCommandRequest, JobSelection, RuntimeJobService, ServiceContext,
+        use crate::session_service::{
+            ApplyCommandRequest, ServiceContext, SessionSelection, SessionService,
         };
         let (_tmp, store, _) = fixture();
         let source = tempfile::tempdir().unwrap();
@@ -3011,7 +3018,7 @@ mod tests {
                 .contains("unaccepted")
         );
         let request = |rootfs| ApplyCommandRequest {
-            job: JobSelection {
+            session: SessionSelection {
                 selector: Some(stage.clone()),
                 storage: stage.clone(),
             },
@@ -3022,14 +3029,14 @@ mod tests {
             expected_plan: None,
         };
         assert_eq!(
-            RuntimeJobService::apply_command(&ServiceContext::default(), request(true))
+            SessionService::apply_command(&ServiceContext::default(), request(true))
                 .unwrap()
                 .status,
             "blocked"
         );
         assert!(!source.path().join("accepted").exists());
         let response =
-            RuntimeJobService::apply_command(&ServiceContext::default(), request(false)).unwrap();
+            SessionService::apply_command(&ServiceContext::default(), request(false)).unwrap();
         assert_eq!(response.status, "applied", "{:?}", response.blockers);
         assert_eq!(
             fs::read(source.path().join("accepted")).unwrap(),

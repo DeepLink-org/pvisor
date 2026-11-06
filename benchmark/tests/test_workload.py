@@ -118,7 +118,7 @@ class WorkloadTests(unittest.TestCase):
         self.assertTrue(r["evaluator_healthy"])
         self.assertFalse(r["official"]["passed"])
 
-    def test_creation_failure_attempts_cleanup_and_keeps_failure(self):
+    def test_creation_failure_executions_cleanup_and_keeps_failure(self):
         r, b = self.run_case("create")
         self.assertEqual(b.calls, ["create", "delete"])
         self.assertFalse(r["execution_completed"])

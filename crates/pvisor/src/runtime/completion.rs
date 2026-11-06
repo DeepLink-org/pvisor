@@ -1,5 +1,5 @@
-//! Attempt completion commits the Bundle before terminal event publication.
-//! The receipt binds the result to immutable Bundle bytes; Run/Job state is a projection.
+//! Execution completion commits the Bundle before terminal event publication.
+//! The receipt binds the result to immutable Bundle bytes; Run/Session state is a projection.
 
 use super::RunRecord;
 #[cfg(test)]
@@ -12,7 +12,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Mutex;
 
-pub(crate) const VERSION: u16 = 1;
+pub(crate) const VERSION: u16 = 2;
 const FILENAME: &str = "completion.json";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 // Reuse only pure semantic validation of exact bytes, never file or record checks.
@@ -21,7 +21,7 @@ static VALIDATED_COMPLETION: Mutex<Option<ValidatedCompletion>> = Mutex::new(Non
 #[derive(Clone)]
 struct ValidatedCompletion {
     key: (blake3::Hash, blake3::Hash),
-    project_apply_scope: Option<super::job_service::ProjectApplyScope>,
+    project_apply_scope: Option<super::session_service::ProjectApplyScope>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +60,7 @@ impl Completion {
         if let Some(committed) = Self::load(record)? {
             ensure!(
                 serde_json::to_value(&committed.result)? == serde_json::to_value(result)?,
-                "Attempt completion is already committed with a different result"
+                "Execution completion is already committed with a different result"
             );
             return Ok(());
         }
@@ -139,7 +139,7 @@ impl Completion {
         );
         ensure!(
             bundle.run.run_id == self.result.run_id.as_str()
-                && bundle.run.attempt_id == self.result.attempt_id.as_str()
+                && bundle.run.execution_id == self.result.execution_id.as_str()
                 && bundle.run.state == self.result.state
                 && bundle.run.exit_code == self.result.exit_code
                 && bundle.run.started_at_unix_ms == self.result.started_at_unix_ms
@@ -156,8 +156,8 @@ impl Completion {
         );
         ensure!(
             self.result.run_id.as_str() == record.run_id
-                && Some(self.result.attempt_id.as_str()) == record.attempt_id.as_deref(),
-            "completion Attempt identity mismatch"
+                && Some(self.result.execution_id.as_str()) == record.execution_id.as_deref(),
+            "completion Execution identity mismatch"
         );
         super::execution::record_state(self.result.state)?;
         if self.result.state == RunState::Hibernated {
@@ -177,21 +177,21 @@ impl Completion {
     }
 }
 
-/// Called only under both the Job metadata lock (if present) and Attempt lease.
+/// Called only under both the Session metadata lock (if present) and Execution lease.
 pub(crate) fn reconcile(record: &mut RunRecord) -> anyhow::Result<()> {
     if record.completion_protocol.is_none() {
         return Ok(());
     }
     let previous = serde_json::to_value(&*record)?;
     let completion =
-        Completion::observe_record(record).context("read committed Attempt completion")?;
-    if let Some(mut job) = crate::JobExecution::read(record)? {
-        let changed = job.apply(super::execution::JobTransition::CompletionObserved {
+        Completion::observe_record(record).context("read committed Execution completion")?;
+    if let Some(mut session) = crate::Session::read(record)? {
+        let changed = session.apply(super::execution::SessionTransition::CompletionObserved {
             record,
             result: completion.as_ref().map(|receipt| &receipt.result),
         })?;
         if changed {
-            job.write()?;
+            session.write()?;
         }
     }
     if serde_json::to_value(&*record)? != previous {
@@ -243,8 +243,8 @@ mod tests {
 
     fn fixture(root: &Path) -> (RunRecord, RunResult) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":2,"completion_protocol":VERSION,"run_id":"run-completion",
-            "attempt_id":"attempt-completion","session_id":"run-completion","agent":"test",
+            "schema_version":3,"completion_protocol":VERSION,"run_id":"run-completion",
+            "execution_id":"execution-completion","session_id":"run-completion","agent":"test",
             "pid":0,"command":["true"],"state":"running","started_at_unix_ms":1,
             "finished_at_unix_ms":null,"storage":root,"gateway_listen":null,
             "network":{},"overlay":null
@@ -252,12 +252,12 @@ mod tests {
         .unwrap();
         record.write().unwrap();
         let result: RunResult = serde_json::from_value(serde_json::json!({
-            "run_id":record.run_id,"attempt_id":record.attempt_id,"state":"completed",
+            "run_id":record.run_id,"execution_id":record.execution_id,"state":"completed",
             "started_at_unix_ms":1,"finished_at_unix_ms":2,"exit_code":0
         }))
         .unwrap();
         let agentctl = serde_json::from_value(serde_json::json!({
-            "run_id":record.run_id,"attempt_id":record.attempt_id,
+            "run_id":record.run_id,"execution_id":record.execution_id,
             "directive":crate::AgentDirective::Continue,"clients":[]
         }))
         .unwrap();
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_result_recovers_stale_record_and_rejects_changed_bundle_or_attempt() {
+    fn committed_result_recovers_stale_record_and_rejects_changed_bundle_or_execution() {
         let root = tempfile::tempdir().unwrap();
         let (record, result) = fixture(root.path());
         Completion::commit(&record, &result).unwrap();
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(recovered.finished_at_unix_ms, Some(2));
         RunBundle::read(root.path()).unwrap();
         let mut foreign = record.clone();
-        foreign.attempt_id = Some("foreign-attempt".into());
+        foreign.execution_id = Some("foreign-execution".into());
         assert!(Completion::load(&foreign).is_err());
         let path = RunBundle::path(root.path());
         let original = std::fs::read(&path).unwrap();
@@ -426,7 +426,7 @@ mod tests {
     fn repeated_reads_recheck_current_project_scope_against_bound_bundle() {
         let root = tempfile::tempdir().unwrap();
         let (mut record, result) = fixture(root.path());
-        let scope = super::super::job_service::ProjectApplyScope::capture(root.path()).unwrap();
+        let scope = super::super::session_service::ProjectApplyScope::capture(root.path()).unwrap();
         for bound_scope in [None, Some(scope.clone())] {
             record.project_apply_scope = bound_scope.clone();
             record.write().unwrap();
@@ -473,9 +473,9 @@ mod tests {
         let (mut record, result) = fixture(root.path());
         Completion::commit(&record, &result).unwrap();
         Completion::load(&record).unwrap().unwrap();
-        record.attempt_id = Some("foreign-attempt".into());
+        record.execution_id = Some("foreign-execution".into());
         assert!(Completion::load(&record).is_err());
-        record.attempt_id = Some(result.attempt_id.to_string());
+        record.execution_id = Some(result.execution_id.to_string());
 
         for path in [RunBundle::path(root.path()), root.path().join(FILENAME)] {
             let moved = path.with_extension("original");
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn live_attempt_without_completion_is_not_reconciled_as_dead() {
+    fn live_execution_without_completion_is_not_reconciled_as_dead() {
         let root = tempfile::tempdir().unwrap();
         let (_, _) = fixture(root.path());
         let _lease = super::super::registry::RunLease::acquire(root.path()).unwrap();
@@ -521,30 +521,32 @@ mod tests {
     }
 
     #[test]
-    fn status_reconciles_job_state_from_the_receipt_or_marks_it_unknown() {
-        use super::super::job_execution::JOB_SCHEMA_VERSION;
-        use crate::job_service::{JobSelection, RuntimeJobService, ServiceContext, StatusRequest};
-        use crate::{JobExecution, JobState};
+    fn status_reconciles_session_state_from_the_receipt_or_marks_it_unknown() {
+        use super::super::session_execution::SESSION_SCHEMA_VERSION;
+        use crate::session_service::{
+            ServiceContext, SessionSelection, SessionService, StatusRequest,
+        };
+        use crate::{Session, SessionState};
         for committed in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let (record, result) = fixture(root.path());
             let mut config = crate::RunConfig::default();
             config.run.executor = crate::RunExecutorKind::Vm;
-            let job: JobExecution = serde_json::from_value(serde_json::json!({
-                "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
-                "active_stage":root.path(),"previous_stage":root.path(),"active_attempt":record.attempt_id,
+            let session: Session = serde_json::from_value(serde_json::json!({
+                "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root.path(),
+                "active_stage":root.path(),"previous_stage":root.path(),"active_execution":record.execution_id,
                 "config":config,"spec":pvisor_core::RunSpec::process("run-completion", "test", "true"),
                 "state":"running","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
             })).unwrap();
-            job.write().unwrap();
+            session.write().unwrap();
             if committed {
                 Completion::commit(&record, &result).unwrap();
             }
             for _ in 0..2 {
-                let status = RuntimeJobService::status(
+                let status = SessionService::status(
                     &ServiceContext::default(),
                     StatusRequest {
-                        job: JobSelection {
+                        session: SessionSelection {
                             selector: Some(root.path().into()),
                             storage: root.path().into(),
                         },
@@ -560,28 +562,28 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    JobExecution::read(&record).unwrap().unwrap().state(),
+                    Session::read(&record).unwrap().unwrap().state(),
                     if committed {
-                        JobState::Terminal
+                        SessionState::Terminal
                     } else {
-                        JobState::Unknown
+                        SessionState::Unknown
                     }
                 );
             }
             if committed {
-                let mut successor = JobExecution::read(&record).unwrap().unwrap();
+                let mut successor = Session::read(&record).unwrap().unwrap();
                 let mut stored = serde_json::to_value(&successor).unwrap();
-                stored["state"] = serde_json::to_value(JobState::Restoring).unwrap();
+                stored["state"] = serde_json::to_value(SessionState::Restoring).unwrap();
                 successor = serde_json::from_value(stored).unwrap();
-                successor.active_stage = root.path().join("attempts/successor");
+                successor.active_stage = root.path().join("executions/successor");
                 successor.previous_stage = root.path().into();
                 successor.write().unwrap();
-                let _job = successor.lock().unwrap();
-                let _attempt = super::super::registry::RunLease::acquire(root.path()).unwrap();
+                let _session = successor.lock().unwrap();
+                let _execution = super::super::registry::RunLease::acquire(root.path()).unwrap();
                 let mut original = record.clone();
                 reconcile(&mut original).unwrap();
-                let unchanged = JobExecution::read(&record).unwrap().unwrap();
-                assert_eq!(unchanged.state(), JobState::Restoring);
+                let unchanged = Session::read(&record).unwrap().unwrap();
+                assert_eq!(unchanged.state(), SessionState::Restoring);
                 assert_eq!(unchanged.active_stage, successor.active_stage);
             }
         }

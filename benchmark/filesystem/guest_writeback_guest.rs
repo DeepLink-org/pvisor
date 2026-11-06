@@ -260,7 +260,7 @@ impl Stats {
     }
 }
 
-struct Job {
+struct Session {
     cell: Cell,
     directory: PathBuf,
     data: Vec<u8>,
@@ -268,7 +268,7 @@ struct Job {
     file: Option<File>,
 }
 
-impl Job {
+impl Session {
     fn prepare(cell: &Cell, worker: usize, round: usize, directory: PathBuf) -> io::Result<Self> {
         let pattern_round = if cell.workload == Workload::Read {
             0
@@ -443,8 +443,8 @@ struct Team {
 }
 
 impl Team {
-    fn new(jobs: Vec<Job>) -> io::Result<Self> {
-        let workers = jobs.len();
+    fn new(sessions: Vec<Session>) -> io::Result<Self> {
+        let workers = sessions.len();
         let (sender, receiver) = mpsc::channel();
         let mut team = Self {
             control: Arc::new((
@@ -459,7 +459,7 @@ impl Team {
             threads: Vec::new(),
             workers,
         };
-        for (worker, mut job) in jobs.into_iter().enumerate() {
+        for (worker, mut session) in sessions.into_iter().enumerate() {
             let control = team.control.clone();
             let events = sender.clone();
             let failure = sender.clone();
@@ -494,7 +494,7 @@ impl Team {
                                         generation = state.generation;
                                         state.phase
                                     };
-                                    let stats = job
+                                    let stats = session
                                         .execute(phase)
                                         .map_err(|error| format!("{phase:?}: {error}"))?;
                                     events
@@ -650,10 +650,10 @@ fn run_cell(
     if round == 1 || cell.workload != Workload::Read {
         fs::create_dir(&round_dir)?;
     }
-    let jobs = (0..cell.workers)
-        .map(|worker| Job::prepare(cell, worker, round, round_dir.join(format!("w{worker:03}"))))
+    let sessions = (0..cell.workers)
+        .map(|worker| Session::prepare(cell, worker, round, round_dir.join(format!("w{worker:03}"))))
         .collect::<io::Result<Vec<_>>>()?;
-    let team = Team::new(jobs)?;
+    let team = Team::new(sessions)?;
     let preparation_ns = preparation.elapsed().as_nanos();
     let token = (2 * ((round - 1) * cell_count + index) + 1) as u64;
     markers.checkpoint(token)?;

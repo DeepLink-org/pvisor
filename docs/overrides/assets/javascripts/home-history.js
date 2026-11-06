@@ -22,28 +22,28 @@ export function historySVG(state, { width = 500, left = 0, fit = false, selected
   parts.push(`<rect x="0" y="${mainY - 15}" width="${w}" height="30" fill="#80dac00a"/>`);
   parts.push(path(`M${x(0)} ${mainY}H${x(state.time)}`, '#80dac0', 'pv-trunk'));
   parts.push(text(12, mainY - 25, t('你的工作区', 'your workspace'), 'pv-main-label'));
-  const jobs = Object.values(state.jobs);
-  const related = new Set(selected ? [selected, state.jobs[selected]?.parent].filter(Boolean) : []);
-  if (selected) jobs.filter(j => j.parent === selected).forEach(j => related.add(j.id));
-  for (const job of jobs) {
-    const jy = y(job), sx = x(job.start);
-    const parent = state.jobs[job.parent];
+  const sessions = Object.values(state.sessions);
+  const related = new Set(selected ? [selected, state.sessions[selected]?.parent].filter(Boolean) : []);
+  if (selected) sessions.filter(j => j.parent === selected).forEach(j => related.add(j.id));
+  for (const session of sessions) {
+    const jy = y(session), sx = x(session.start);
+    const parent = state.sessions[session.parent];
     const originY = parent ? y(parent) : mainY;
-    const last = job.log.at(-1)?.t || job.start;
-    const until = job.end === null ? state.time : Math.max(job.end, last);
-    if (until < start - 12 || job.start > start + span) continue;
-    const color = job.status === 'dropped' ? '#61748c' : job.color;
+    const last = session.log.at(-1)?.t || session.start;
+    const until = session.end === null ? state.time : Math.max(session.end, last);
+    if (until < start - 12 || session.start > start + span) continue;
+    const color = session.status === 'dropped' ? '#61748c' : session.color;
     const bend = Math.min(22, Math.max(3, (x(until) - sx) / 2));
-    const opacity = !selected || related.has(job.id) ? 1 : .3;
+    const opacity = !selected || related.has(session.id) ? 1 : .3;
     parts.push(`<g opacity="${opacity}">`);
     parts.push(path(`M${sx} ${originY}C${sx + bend} ${originY} ${sx + bend} ${jy} ${sx + bend * 2} ${jy}H${Math.max(sx + bend * 2, x(until))}`, color, 'pv-branch-line'));
-    if (job.end !== null && until > job.end) parts.push(path(`M${x(job.end)} ${jy}H${x(until)}`, '#0d1b30', '', 'stroke-width="3" stroke-dasharray="3 4"'));
-    for (const event of job.log) {
+    if (session.end !== null && until > session.end) parts.push(path(`M${x(session.end)} ${jy}H${x(until)}`, '#0d1b30', '', 'stroke-width="3" stroke-dasharray="3 4"'));
+    for (const event of session.log) {
       const ex = x(event.t);
       if (ex < 8 || ex > w - 30 || ['start', 'fork', 'read'].includes(event.type)) continue;
       const fail = event.type === 'conflict' || (event.type === 'test' && event.passed < event.total);
       const ec = fail ? '#ffaba5' : color;
-      parts.push(`<g data-pick="${job.id}">${title(`${job.code} · ${label(event.message, locale)}`)}`);
+      parts.push(`<g data-pick="${session.id}">${title(`${session.code} · ${label(event.message, locale)}`)}`);
       if (event.type === 'apply') {
         parts.push(path(`M${ex} ${jy}C${ex + 18} ${jy} ${ex + 18} ${mainY} ${ex} ${mainY}`, color, 'pv-apply-link', 'stroke-dasharray="3 3"'));
         parts.push(`<rect x="${ex - 3}" y="${mainY - 6}" width="6" height="12" rx="1" fill="${color}"/>`);
@@ -53,8 +53,8 @@ export function historySVG(state, { width = 500, left = 0, fit = false, selected
       parts.push('</g>');
     }
     const ex = Math.max(30, Math.min(w - 45, x(until) + 8));
-    parts.push(`<g data-pick="${job.id}" class="pv-history-tag" role="button" tabindex="0" aria-label="${escapeHTML(job.code + ' ' + label(job.title, locale))}" aria-pressed="${selected === job.id}">${title(label(job.task, locale))}<rect x="${ex}" y="${jy - 10}" width="34" height="20" rx="4" fill="${color}"/>${text(ex + 17, jy + 4, job.code, 'pv-tag-text', 'text-anchor="middle"')}</g>`);
-    if (job.end === null) parts.push(`<circle class="pv-live-head" cx="${x(state.time)}" cy="${jy}" r="5" fill="${color}"/>`);
+    parts.push(`<g data-pick="${session.id}" class="pv-history-tag" role="button" tabindex="0" aria-label="${escapeHTML(session.code + ' ' + label(session.title, locale))}" aria-pressed="${selected === session.id}">${title(label(session.task, locale))}<rect x="${ex}" y="${jy - 10}" width="34" height="20" rx="4" fill="${color}"/>${text(ex + 17, jy + 4, session.code, 'pv-tag-text', 'text-anchor="middle"')}</g>`);
+    if (session.end === null) parts.push(`<circle class="pv-live-head" cx="${x(state.time)}" cy="${jy}" r="5" fill="${color}"/>`);
     parts.push('</g>');
   }
   for (const event of state.history.filter(e => e.type === 'edit' || e.type === 'verify')) {
@@ -67,5 +67,5 @@ export function historySVG(state, { width = 500, left = 0, fit = false, selected
     parts.push(path(`M${nowX} 34V433`, '#a8cefa55', '', 'stroke-dasharray="2 5"'));
     parts.push(text(nowX, 451, t('现在', 'now'), 'pv-axis', 'text-anchor="middle"'));
   }
-  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${t('任务历史：私有尝试、用户修改和选择性接收', 'Job history: private attempts, your edits, and selective apply')}"><desc>${t('点击任务编号查看。菱形表示写入或测试，叉号表示失败或冲突，虚线回到主线表示接收文件。', 'Select a Job to inspect it. Diamonds mark edits or tests, crosses mark failure or conflict, and dashed returns accept files.')}</desc>${parts.join('')}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${t('任务历史：私有尝试、用户修改和选择性接收', 'Session history: private executions, your edits, and selective apply')}"><desc>${t('点击任务编号查看。菱形表示写入或测试，叉号表示失败或冲突，虚线回到主线表示接收文件。', 'Select a Session to inspect it. Diamonds mark edits or tests, crosses mark failure or conflict, and dashed returns accept files.')}</desc>${parts.join('')}</svg>`;
 }

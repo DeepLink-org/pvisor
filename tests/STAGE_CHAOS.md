@@ -57,7 +57,7 @@ first assertion, command timeout or safety failure. A time-only run stops betwee
 complete cases when less than 60 seconds remain, recording `budget_complete`
 rather than starting a case that cannot receive its full bound. Actual elapsed
 time, not the requested budget, remains authoritative. Exit status is 0 for all
-finished attempts passing, 1 for failure/abort, and 2 for finished runs containing
+finished executions passing, 1 for failure/abort, and 2 for finished runs containing
 misses or unknown-verified outcomes (not passes). A missed injection need not
 stop a longer run, but remains visibly incomplete in its final exit/summary.
 
@@ -70,7 +70,7 @@ stop a longer run, but remains visibly incomplete in its final exit/summary.
    content/type/mode/file set, verify unselected retention, apply again, drop and
    repeat drop without undoing applied files.
 2. **conflict**: external target edit must block apply without overwrite or
-   ledger/upper writes. Existing `job.lock` owner bookkeeping (body/size,
+   ledger/upper writes. Existing `session.lock` owner bookkeeping (body/size,
    mtime/ctime) may refresh or be cleared on *execution* refusals after a kill;
    inode, owner and permissions must stay identical. Previews have no exception.
 3. **symlink**: prove nested-file preview ready before replacing its ancestor
@@ -168,7 +168,7 @@ revision, failures and aborted runs separately. No three-hour run is claimed her
 
 Successful ordinary/race/known-cancel cases are fd-safely removed after guarded
 ownership/direct-child checks and complete process cleanup. Every kill-apply
-attempt (including misses), unknown branch and failure is retained. JSONL,
+execution (including misses), unknown branch and failure is retained. JSONL,
 frozen inputs and summary always remain. The JSONL cap does not bound all retained
 VM backing files: provision disk, monitor `retained_cases`, and let the supervising
 agent reconcile its own roots. Never traverse upper symlinks for manual cleanup.
@@ -201,7 +201,7 @@ config and command events. Seed 314159, `artifacts/stage-chaos-fault-20261031-*`
 | 05 | live_cancel | Pass, 4.76 s active; real ready, live refusal, known committed cancellation and complete cleanup. |
 | 06 | kill_apply | Prepared observed and SIGKILL sent, but driver log-key collision failed diagnostics. Preserve ledger; this old summary incorrectly reported zero injections. Fixed by nested gate telemetry and immediate injection accounting. |
 | 07 | kill_apply | Pass, 5.73 s active; one observed-Prepared injection, pending preview/drop refusal, complete cleanup; full case retained. |
-| 08 | kill_apply | Seed 271828, injection observed; stricter full-stage comparison found stale `job.lock` owner text truncated on refused drop. Ledger/upper/target unchanged. Corrected the execution-only bookkeeping exception, preserving lock identity/permissions. |
+| 08 | kill_apply | Seed 271828, injection observed; stricter full-stage comparison found stale `session.lock` owner text truncated on refused drop. Ledger/upper/target unchanged. Corrected the execution-only bookkeeping exception, preserving lock identity/permissions. |
 | 09 | kill_apply | Seed 271828, pass, 5.75 s active; injected=1, pending preview/drop refused, upper/ledger retained, cleanup complete. |
 | 10 | parallel_drop | Seed 3, pass, 4.55 s active; observed overlap with drop launched first, but apply won. |
 

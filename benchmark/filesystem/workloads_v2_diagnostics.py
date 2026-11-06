@@ -96,10 +96,10 @@ def collect(batch):
                         "RELEASE",
                     )
                 },
-                layer_parent_stat_attempts=by_component["overlay-core"]
+                layer_parent_stat_executions=by_component["overlay-core"]
                 .get("layer_parent_stats", {})
                 .get("units"),
-                layer_leaf_stat_attempts=by_component["overlay-core"]
+                layer_leaf_stat_executions=by_component["overlay-core"]
                 .get("layer_leaf_stats", {})
                 .get("units"),
                 backing_lookup_spans=by_component["virtio-fs-overlay"]

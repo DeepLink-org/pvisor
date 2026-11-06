@@ -13,7 +13,7 @@ SH
 chmod +x ci-agent.sh
 ```
 
-After a successful workflow, download the artifact and check the `result.txt` change and terminal Run status. A nonzero script exit fails the job, while the `always()` step still collects records that were produced. A setup failure may occur before a Bundle exists.
+After a successful workflow, download the artifact and check the `result.txt` change and terminal Run status. A nonzero script exit fails the session, while the `always()` step still collects records that were produced. A setup failure may occur before a Bundle exists.
 
 ## Minimal flow you can use today
 
@@ -22,7 +22,7 @@ Assign the `pvisor` label to the prepared runner, commit executable `ci-agent.sh
 ```yaml
 name: Staged task
 on: workflow_dispatch
-jobs:
+sessions:
   run:
     runs-on: [self-hosted, linux, pvisor]
     steps:

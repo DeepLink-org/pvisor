@@ -19,7 +19,7 @@ pub(crate) struct Build {
     /// Native platform assertion; does not enable CPU emulation.
     #[arg(long)]
     platform: Option<String>,
-    /// Always attempt to pull registry base images.
+    /// Always try to pull registry base images.
     #[arg(long)]
     pull: bool,
     /// Do not reuse RUN checkpoints; successful steps still refresh the cache.

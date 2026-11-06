@@ -43,7 +43,7 @@ snapshots do not use an additional 60-second convergence window.
 PSS includes daemon/process mappings; cgroup memory also captures charged cache
 and kernel memory. Neither alone measures all host costs. Whole-group CPU during
 the scan window includes guest heartbeat and observer work. Global ksmd CPU is
-recorded separately across admission and the whole attempt, outside the group's
+recorded separately across admission and the whole execution, outside the group's
 quota; it cannot be attributed exactly to this group or compared as a pure
 algorithm CPU cost. Global KSM page counters likewise are not group savings.
 The native worker verifies positive accepted advice and mergeable VM mappings.
@@ -329,6 +329,6 @@ The documentation before cleanup is preserved in
 `.data/docs-cleanup-20261018/`, with original paths and SHA-256 values in
 `manifest.json`. It retains historical macOS/snapshot sections, the older
 512 MiB user comparison, intermediate cohorts and failure investigations.
-Original reports, failed attempts, frozen sources and raw curves remain in their
+Original reports, failed executions, frozen sources and raw curves remain in their
 own directories. Historical and incomplete measurements are excluded from the
 current comparison. This documentation cleanup starts no new measurements.

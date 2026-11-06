@@ -1,5 +1,5 @@
 //! Observed native process mappings, not an admission budget or reclaim proof.
-use crate::{AttemptId, RunId};
+use crate::{ExecutionId, RunId};
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 
@@ -278,7 +278,7 @@ impl NativeVmMemory {
 #[serde(deny_unknown_fields)]
 pub struct RunMemorySample {
     pub run_id: RunId,
-    pub attempt_id: AttemptId,
+    pub execution_id: ExecutionId,
     pub sampled_at_unix_ms: u64,
     pub usage: Option<NativeVmMemory>,
     pub error: Option<String>,
@@ -287,9 +287,9 @@ impl RunMemorySample {
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(
             !self.run_id.is_empty()
-                && !self.attempt_id.is_empty()
+                && !self.execution_id.is_empty()
                 && self.run_id.as_str().len() <= 256
-                && self.attempt_id.as_str().len() <= 256
+                && self.execution_id.as_str().len() <= 256
                 && self.sampled_at_unix_ms > 0,
             "invalid memory sample identity"
         );
@@ -443,7 +443,7 @@ mod tests {
         };
         let valid = RunMemorySample {
             run_id: "run".into(),
-            attempt_id: "attempt".into(),
+            execution_id: "execution".into(),
             sampled_at_unix_ms: 1,
             usage: Some(NativeVmMemory {
                 pid: 123,

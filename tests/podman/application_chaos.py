@@ -357,18 +357,20 @@ class ApplicationChaos:
 
     def ready(self):
         self.discover_port()
-        attempts = []
+        executions = []
 
         def check():
             try:
                 self.http(self.expected)
                 return True
             except (OSError, http.client.HTTPException) as error:
-                attempts.append(repr(error))
+                executions.append(repr(error))
                 return False
 
         wait_until(check)
-        save(self.output / f"ready-{self.serial}.json", {"attempts": attempts, "port": self.port})
+        save(
+            self.output / f"ready-{self.serial}.json", {"executions": executions, "port": self.port}
+        )
         # Membership's documented generation/negative-cache TTL is 250ms.
         time.sleep(0.3)
 

@@ -1,16 +1,16 @@
 # Run Bundle format
 
-A Run Bundle is the handoff record for a task: what ran, how it ended, which changes remain, and which controls were installed. Reviews, CI, and batch jobs can consume the same record.
+A Run Bundle is the handoff record for a task: what ran, how it ended, which changes remain, and which controls were installed. Reviews, CI, and batch sessions can consume the same record.
 
 Start with `pvisor status --review STAGE` for a summary. Automation can use `--json` and select its reader by `schema_version`. The full file is the `run-bundle.json` path printed with the task output.
 
-## Top-level schema-5 records
+## Top-level schema-6 records
 
 | Field | Source and purpose |
 | --- | --- |
 | `schema_version` / `generated_at_unix_ms` | Format and generation time; current version 5 |
 | `project_apply_scope` | Optional launch-time project writeback authority; omitted without explicit opt-in |
-| `run` | Run/Attempt/Session identity, command, terminal state, times, exit/failure, output, metrics, result artifacts |
+| `run` | Run/Execution/Session identity, command, terminal state, times, exit/failure, output, metrics, result artifacts |
 | `executor_plan` | Optional admission plan; not installation evidence |
 | `executor_observations` | Required executor observations; sole enforcement source |
 | `safety` | Derived file/network booleans and warnings |
@@ -32,9 +32,9 @@ pvisor status --review --json ../stage-001 > ../bundle-001.json
 jq '{schema_version, run: {id: .run.run_id, state: .run.state}, safety, resources}' ../bundle-001.json
 ```
 
-Bundles are written with mode `0600`. New schema-5 Bundles require the matching schema-2 Run/Attempt and protocol-1 `completion.json` receipt, including the Bundle digest. Legacy schema-4 Bundles retain their original reading rules. Unknown versions, corrupt bindings and missing required observation contracts reject; missing fields do not mean safe. After owner exit, an Attempt without a committed receipt remains Unknown and cannot apply workspace effects.
+Bundles are written with mode `0600`. New schema-6 Bundles require the matching schema-3 Run/Execution and protocol-2 `completion.json` receipt, including the Bundle digest. Legacy schema-4 Bundles retain their original reading rules. Unknown versions, corrupt bindings and missing required observation contracts reject; missing fields do not mean safe. After owner exit, an Execution without a committed receipt remains Unknown and cannot apply workspace effects.
 
-Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting environment values does not redact the entire Bundle. Inspect it and referenced artifacts before sharing. Types: `crates/pvisor/src/runtime/bundle.rs`; retention: [Jobs](../concepts/jobs.md).
+Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting environment values does not redact the entire Bundle. Inspect it and referenced artifacts before sharing. Types: `crates/pvisor/src/runtime/bundle.rs`; retention: [Sessions](../concepts/sessions.md).
 
 ## Field types and presence {#fields}
 
@@ -46,7 +46,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 | --- | --- | --- | --- |
 | `schema_version` | `u32` | required | 5 for new records; legacy 4 is accepted under its original contract |
 | `generated_at_unix_ms` | `u64` | required | Bundle generation wall-clock time, Unix milliseconds |
-| `project_apply_scope` | `Option<super::job_service::ProjectApplyScope>` | defaulted; omitted when None | Launch-time project writeback scope; absence defaults to None and grants no project authority |
+| `project_apply_scope` | `Option<super::session_service::ProjectApplyScope>` | defaulted; omitted when None | Launch-time project writeback scope; absence defaults to None and grants no project authority |
 | `run` | `BundleRun` | required | Execution outcome and identity |
 | `lineage` | `Option<RunLineage>` | omitted when empty | Parent Run and checkpoint identity, when forked |
 | `executor_observations` | `ExecutorObservations` | required | Executor receipt; authoritative installed controls |
@@ -67,7 +67,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 | `run.run_id` | `String` | required | Run identity |
 | `run.parent_run_id` | `Option<String>` | omitted when empty | Parent identity when supplied |
 | `run.task_id` | `Option<String>` | omitted when empty | Task identity when supplied |
-| `run.attempt_id` | `String` | required | Attempt identity |
+| `run.execution_id` | `String` | required | Execution identity |
 | `run.session_id` | `String` | required | Session identity |
 | `run.agent` | `String` | required | Agent label |
 | `run.command` | `Vec<String>` | required | Exact argument vector |
@@ -138,7 +138,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 
 | JSON path | Rust type | Presence | Meaning |
 | --- | --- | --- | --- |
-| `lineage.parent_run_id` | `String` | required | Parent Job identity |
+| `lineage.parent_run_id` | `String` | required | Parent Session identity |
 | `lineage.checkpoint_id` | `String` | required | Checkpoint used for the fork |
 
 | JSON path | Rust type | Presence | Meaning |

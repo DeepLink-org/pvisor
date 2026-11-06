@@ -43,7 +43,7 @@
 <text x="720.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Immutable Image Lower</text>
 <text x="720.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">metadata → chunks → cache</text>
 <rect x="956" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
-<text x="1171.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Attempt-private Upper</text>
+<text x="1171.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Execution-private Upper</text>
 <text x="1171.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">Writes · whiteout · work / seal</text>
 <path d="M1171 943 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
 <rect x="30" y="977" width="1380" height="148" rx="38" fill="#1a3d68" stroke="#416080" stroke-width="7"/>

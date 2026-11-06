@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Unified Session lifecycle terminology
+
+- Use `Session` for durable work, `SessionService` for lifecycle operations and
+  `ExecutionContext` for the current executor context. Execution identities use
+  `execution_id`; CLI selectors and control targets use Session terminology.
+- This is a source and wire compatibility break: Host AgentCtl is version 2,
+  instance control is version 3, modern Run records are schema 3, Run Bundles are
+  schema 6, completion receipts are version 2 and Session continuation records
+  are version 3. Status output is schema 3. Keep the matching old binary for
+  existing records; no records or snapshot stores are automatically rewritten.
+- Build-tool parallelism options and imported third-party formats retain their
+  upstream names. Existing historical evidence and human approval ledgers remain
+  unchanged; updated semantic specifications require human review again.
+
 ### Landlock-only filesystem isolation
 
 - Add a filesystem policy that installs Landlock against the host view without
@@ -51,8 +65,8 @@
 - Added a deterministic ZCode CLI integration example covering staged writes,
   Gateway SSE capture, apply/drop, persistent state, and timeout cleanup.
 - Unified filesystem configuration around `--stage`, `--mount`, and `--access`.
-  Ordinary host Jobs write through; `--safe` retains workspace
-  changes in Job storage by default. `--stage` selects an explicit stage.
+  Ordinary host Sessions write through; `--safe` retains workspace
+  changes in Session storage by default. `--stage` selects an explicit stage.
 
 Contributors: [zhaoyuuu0624](https://github.com/zhaoyuuu0624) (original
 ZCode CLI integration and Gateway response decoding contribution); pVisor

@@ -15,7 +15,7 @@ Expect a completed task, exit code zero, and a staged `answer.txt`. Have the eva
 
 ## How to assemble one rollout today
 
-An evaluation sample today can be one command execution, its model traffic capture, and the native agent trajectory. Prepare a clean workspace for the sample, then run the command and keep the Job ID, Run Bundle, Event Journal, and native agent trajectory. Reward computation, the task queue, model training, and cross-node scheduling stay with your existing framework.
+An evaluation sample today can be one command execution, its model traffic capture, and the native agent trajectory. Prepare a clean workspace for the sample, then run the command and keep the Session ID, Run Bundle, Event Journal, and native agent trajectory. Reward computation, the task queue, model training, and cross-node scheduling stay with your existing framework.
 
 | Artifact | Purpose | Does not replace |
 | --- | --- | --- |
@@ -50,4 +50,4 @@ pvisor drop ../rollout-001
 
 This reward checks content only; replace it with unit tests, environment scores, or human labels for real tasks. If execution checks or file reading fail, retain diagnostics as a failed sample and stop normal scoring. In CI, use `set -e` or explicitly check every return value.
 
-Configure the agent's native trajectory output using [Agent integrations](agents/index.md); follow [Model traffic capture](capture.md) for Gateway recording. Associate trajectories, Bundles, and scores with one task/attempt ID. For batches, reuse the [parallel workspace workflow](parallel-agents.md#batch) with a fresh Stage for every sample.
+Configure the agent's native trajectory output using [Agent integrations](agents/index.md); follow [Model traffic capture](capture.md) for Gateway recording. Associate trajectories, Bundles, and scores with one task/execution ID. For batches, reuse the [parallel workspace workflow](parallel-agents.md#batch) with a fresh Stage for every sample.

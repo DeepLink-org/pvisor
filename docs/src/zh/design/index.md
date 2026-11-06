@@ -22,27 +22,27 @@ Runtime 通过 Executor 启动并管理执行环境。在 VM 路径中，VMM 驱
 
 以一次 VM 工具执行为例：Agent 读取 `config.toml`，通过 HTTPS 查询外部服务，再修改配置。执行启用工作区暂存，文件修改保留为候选结果，等待后续审查。暂存的启用方式和默认写入行为见[本地工作流快速开始](../start/first-run.md)。
 
-### Job、Attempt 与 Session
+### Session、Execution 与 Session
 
 这次执行通过三个概念连接任务身份、实际运行和资源管理：
 
 | 概念 | 在这次执行中的作用 |
 | --- | --- |
-| **Job** | 为受管理的任务提供持续身份，关联状态、记录和候选结果。 |
-| **Attempt** | 标识一次实际执行；示例中的读取、查询和修改发生在该次执行中。 |
+| **Session** | 为受管理的任务提供持续身份，关联状态、记录和候选结果。 |
+| **Execution** | 标识一次实际执行；示例中的读取、查询和修改发生在该次执行中。 |
 | **Session** | Runtime 内部管理该次执行资源的对象，组织准备、执行后的清理和结果保存。 |
 
-一个 Agent 业务任务可以包含多轮模型交互与工具调用，如何将它们映射到 Job 由调用方决定。检查点恢复与分叉时的 Job／Attempt 身份变化见[执行模型](execution-model.md)。
+一个 Agent 业务任务可以包含多轮模型交互与工具调用，如何将它们映射到 Session 由调用方决定。检查点恢复与分叉时的 Session／Execution 身份变化见[执行模型](execution-model.md)。
 
 ![从 RunSpec 到准备、启动事实、执行、清理和终态的时序](assets/execution-sequence.svg)
 
 执行按三个阶段推进：
 
 1. **准备。** 解析请求和策略，确认执行器能力，准备文件、网络及运行资源。
-2. **执行。** 提交必要启动记录后启动工具，将运行过程关联到当前 Attempt；工具读取配置、查询服务，并将文件修改保留在暂存层。
-3. **收尾。** 工具退出后，完成资源清理与实际控制核对；保留存储时，先保存 Bundle，再提交绑定执行结果与 Bundle 摘要的 Attempt 完成回执，最后发布终态事件。文件候选仍等待调用方审查与接受，具体协议见[Attempt 完成协议](execution-model.md#attempt-completion)。
+2. **执行。** 提交必要启动记录后启动工具，将运行过程关联到当前 Execution；工具读取配置、查询服务，并将文件修改保留在暂存层。
+3. **收尾。** 工具退出后，完成资源清理与实际控制核对；保留存储时，先保存 Bundle，再提交绑定执行结果与 Bundle 摘要的 Execution 完成回执，最后发布终态事件。文件候选仍等待调用方审查与接受，具体协议见[Execution 完成协议](execution-model.md#execution-completion)。
 
-取消请求、工具退出和任务完成是不同事件；Runtime 及持久 Job 服务仍需完成清理和结果保存。准备失败的清理、取消与收尾规则见[执行模型](execution-model.md)，调用顺序见[核心架构](architecture.md)。
+取消请求、工具退出和任务完成是不同事件；Runtime 及持久 Session 服务仍需完成清理和结果保存。准备失败的清理、取消与收尾规则见[执行模型](execution-model.md)，调用顺序见[核心架构](architecture.md)。
 
 ### 有效策略与实际控制 {#_2}
 
@@ -128,7 +128,7 @@ Docker-style 本地存储同样使用 V2 压缩池，但 pull 后保留完整编
 
 ### 从域名到两条 TCP 连接
 
-以 `api.example.com:443` 为例，应用请求的是域名，而建立连接时使用的是 IP 地址。pVisor 的合成 DNS 保留 Attempt 内稳定的名称与地址映射，使 OverlayNet 能在收到连接请求时找回逻辑目标。合成地址用于关联域名身份，并不是外部服务的真实地址。
+以 `api.example.com:443` 为例，应用请求的是域名，而建立连接时使用的是 IP 地址。pVisor 的合成 DNS 保留 Execution 内稳定的名称与地址映射，使 OverlayNet 能在收到连接请求时找回逻辑目标。合成地址用于关联域名身份，并不是外部服务的真实地址。
 
 ![DNS 名称、合成地址、guest SYN、策略门和宿主 TCP 的关系](assets/network-path.svg)
 
@@ -191,7 +191,7 @@ GVA 是 guest 进程的虚拟地址，GPA 是 guest 物理地址，HVA 是 Host 
 
 VMM 先停止 vCPU，协调设备完成在途处理，使机器状态可以一致地捕获；上层状态存储保存捕获内容、文件状态及恢复所需的引用，再发布检查点。恢复时先校验兼容性，在暂停状态下装入内存、CPU、设备与文件状态，完成后再继续执行。冻结失败或恢复校验未通过时，不能放行执行。设备访问协调与失败处理见[VM 请求与一致性](vm-runtime.md#freeze)，状态捕获和持久发布见[快照子系统](environment-snapshot.md#consistent-cut)。
 
-执行检查点只能恢复捕获范围内的机器与文件状态，不能回退远程服务已经产生的变化。当前原生 Job 的完整 VM 检查点要求无网络设备、私有 RAM 和由其完整持有的 rootfs，因此前述联网任务不能直接套用这一能力。完整支持条件见[Job 检查点设计](job-checkpoint-cli.md)。
+执行检查点只能恢复捕获范围内的机器与文件状态，不能回退远程服务已经产生的变化。当前原生 Session 的完整 VM 检查点要求无网络设备、私有 RAM 和由其完整持有的 rootfs，因此前述联网任务不能直接套用这一能力。完整支持条件见[Session 检查点设计](session-checkpoint-cli.md)。
 
 工作区检查点只保存文件进展，不续接 CPU 与内存中的执行位置；两者的适用场景见[状态保存与分支复用](../concepts/resource-reuse.md)。模型上下文与工具历史的复用见[轨迹回放](replay.md)。
 
@@ -205,7 +205,7 @@ VMM 先停止 vCPU，协调设备完成在途处理，使机器状态可以一�
 
 记录可能已经写入，但调用方没有收到回执，此时不能直接认定记录未提交。恢复后使用原事件 ID 和相同内容重试：已有记录返回原位置，尚未保存的事件可以重新追加，同 ID 不同内容则被拒绝。提交结果未知时的句柄处理与文件恢复规则见[Journal 恢复](journal.md#recovery)。
 
-Journal 提交回执确认一条事件的记录位置与持久化状态；Attempt 完成回执则绑定执行结果与 Bundle，两者用途不同。Attempt 回执不覆盖 Journal、文件接受记录和外部效果的一笔总事务；缺少终态事件不能直接推断任务未完成，应核对[Attempt 完成协议](execution-model.md#attempt-completion)。事件去重只约束记录追加，不保证命令或远程请求只执行一次。发生故障时需分别核对记录与实际效果，见[失败语义与重试](failure-semantics.md#reconciliation)及[记录与版本矩阵](records-and-versions.md)。
+Journal 提交回执确认一条事件的记录位置与持久化状态；Execution 完成回执则绑定执行结果与 Bundle，两者用途不同。Execution 回执不覆盖 Journal、文件接受记录和外部效果的一笔总事务；缺少终态事件不能直接推断任务未完成，应核对[Execution 完成协议](execution-model.md#execution-completion)。事件去重只约束记录追加，不保证命令或远程请求只执行一次。发生故障时需分别核对记录与实际效果，见[失败语义与重试](failure-semantics.md#reconciliation)及[记录与版本矩阵](records-and-versions.md)。
 
 检查点保存可恢复的执行状态，Journal 保存已观察到的执行事件；读取事件历史本身不会恢复 VM，也不会重做外部操作。
 

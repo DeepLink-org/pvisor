@@ -54,7 +54,7 @@ def vm_payload_argv(case, backend, rounds=3, ram_mib=512):
     """Build the exact ordinary CLI command inside the shared prepared root.
 
     The caller must set its cwd to the fresh ``/bench-trial/work`` and install
-    private HOME/XDG/Job paths.  The directory rootfs is the namespace's prepared
+    private HOME/XDG/Session paths.  The directory rootfs is the namespace's prepared
     root.  Relative output and input paths follow the workspace selected by the
     ordinary CLI.  The shared wrapper resolves both against that actual cwd
     before entering the static payload; reads and writes therefore traverse the

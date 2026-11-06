@@ -14,7 +14,7 @@ The task prints its own Run ID. For network credentials, use `--pass-env` as des
 | Variable | Current behavior |
 | --- | --- |
 | `PVISOR_RUN_HOME` | Default Run root; otherwise `~/.pvisor/runs`, or system temporary storage without HOME |
-| `PVISOR_IMAGE_STORE` | Common local image directory; explicit Job/cache image-store options win; see [path precedence](shared-image-cache.md#local-image-store) |
+| `PVISOR_IMAGE_STORE` | Common local image directory; explicit Session/cache image-store options win; see [path precedence](shared-image-cache.md#local-image-store) |
 | `PVISOR_CACHE_SERVER` | Shared cache endpoint; `off` selects the local V2 pool; unset probes the per-user Unix socket, then uses the local pool if absent |
 | `PVISOR_CACHE_TOKEN` | Shared secret for TCP cache endpoints; do not pass it to agents with `--pass-env` |
 | `PVISOR_BIN` | Obsolete Python-launcher override; installed native scripts do not read it. Invoke the binary path directly or select it through `PATH` |
@@ -27,11 +27,11 @@ See [shared cache](shared-image-cache.md) for endpoint grammar, security, and fa
 
 `OPEN_SANDBOX_API_KEY` supplies the standalone `pvisor-daemon serve` lifecycle key. Use a protected random secret of at least 32 bytes; do not pass it in argv or project it to workloads. Clients send it as the `OPEN-SANDBOX-API-KEY` HTTP header. The environment name uses underscores; the HTTP name uses hyphens.
 
-Default daemon endpoints return a sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in endpoint headers; clients must preserve it. It is not a host environment setting or a lifecycle credential. See [endpoint authentication](../guides/daemon/index.md#endpoints). Native cache/pool credentials and Job environment projection remain separate.
+Default daemon endpoints return a sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in endpoint headers; clients must preserve it. It is not a host environment setting or a lifecycle credential. See [endpoint authentication](../guides/daemon/index.md#endpoints). Native cache/pool credentials and Session environment projection remain separate.
 
 ## Runtime injection
 
-`PVISOR_RUN_ID`, `PVISOR_RUNTIME`, `PVISOR_STORAGE`, `PVISOR_AGENT`, and `PVISOR_ROLE` identify runtime context. `PVISOR_AGENTCTL_ENDPOINT`, `PVISOR_AGENTCTL_TOKEN`, `PVISOR_AGENTCTL_TRANSPORT`, and `PVISOR_AGENTCTL_VERSION` support the optional cooperative Guest AgentCtl channel. The token is a Guest-only credential: it cannot authorize Host Job, VM or daemon-supervisor operations and should not be logged.
+`PVISOR_RUN_ID`, `PVISOR_RUNTIME`, `PVISOR_STORAGE`, `PVISOR_AGENT`, and `PVISOR_ROLE` identify runtime context. `PVISOR_AGENTCTL_ENDPOINT`, `PVISOR_AGENTCTL_TOKEN`, `PVISOR_AGENTCTL_TRANSPORT`, and `PVISOR_AGENTCTL_VERSION` support the optional cooperative Guest AgentCtl channel. The token is a Guest-only credential: it cannot authorize Host Session, VM or daemon-supervisor operations and should not be logged.
 
 Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`. These direct cooperating clients; they do not establish mandatory isolation alone. The Bundle `environment` field lists the actual projected names.
 
@@ -43,7 +43,7 @@ Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PR
 
 `PVISOR_VM_FS_WRITEBACK` controls guest writeback. New staged VM sessions default to off; `1` explicitly requests it and `0` disables it. Restored sessions without an override preserve their negotiated mode; explicit `0` rejects a writeback-enabled snapshot. It is mutually exclusive with the host write cache below. Validation covers Linux x86_64/KVM, without extending that evidence to macOS.
 
-The firmware negotiates bit 42 and applies pressure using actual dirty pages and temporary FUSE WRITE pages, without accumulating user write bytes. Each connection/BDI has a soft pressure target of one eighth of actual kernel RAM, clamped to 16–256 MiB, and retains at most 256 handle leases. Submission and completion use separate queues. Clean pagecache is outside this target; independent rootfs/workspace BDIs can each have a target, while Linux global dirty/reclaim rules still constrain the total. The native BDI separately attempts a 16 MiB minimum reservation, warning on failure; it is not a fixed-byte guarantee.
+The firmware negotiates bit 42 and applies pressure using actual dirty pages and temporary FUSE WRITE pages, without accumulating user write bytes. Each connection/BDI has a soft pressure target of one eighth of actual kernel RAM, clamped to 16–256 MiB, and retains at most 256 handle leases. Submission and completion use separate queues. Clean pagecache is outside this target; independent rootfs/workspace BDIs can each have a target, while Linux global dirty/reclaim rules still constrain the total. The native BDI separately executions a 16 MiB minimum reservation, warning on failure; it is not a fixed-byte guarantee.
 
 The early-submission hint is one quarter of the pressure target, clamped to 1–16 MiB. Small writes progress on the 10 ms timer, and the negotiated maximum WRITE is 1 MiB. Queue admission reads an approximate dirty-page counter outside the connection lock, avoids repeating the per-folio pressure check, and does not schedule an empty pending list. Actual pressure checks, both WRITE barriers around integrity writeback, and error propagation remain. Bounded scatterlist metadata is preallocated before starting request virtqueues and reused under the VQ lock. File pages and per-request argument buffers retain completion ownership; other atomic allocations remain.
 
@@ -53,7 +53,7 @@ Read `/sys/module/fuse/parameters/pvisor_wb_budget_bytes` inside the guest to in
 
 `PVISOR_VM_FS_HOST_WRITEBACK` enables an experimental host write cache, disabled by default: unset or `0` disables it, `1` enables it, and other values are rejected. It currently requires Linux staged virtio-fs, guest writeback disabled and DAX disabled. Each connection allows 64 MiB of payload and 1024 outstanding items; adjacent contiguous writes batch up to 1 MiB or 10 ms. Explicit synchronization and exit still observe background errors. Complete Agent IOCP and automatic offload remain pending. See [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer) for scope and synchronization contracts.
 
-`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` is a private engineering JSON control accepting five fields: `capacity_mib` is 4–256, `jobs` 1–4096, `batch_kib` 4–4096 and no larger than capacity, `chunks` 1–64, and `delay_us` 0–50000. Unset preserves the defaults above; unknown or duplicate fields, incorrect types and out-of-range values are rejected. Frontend qualification does not acquire the native write-I/O lock, while the worker rechecks eligibility and synchronization barriers report errors. These are not stable product settings. See the [filesystem I/O experiments](../lab-notes/filesystem-io-performance-analysis.md) for curves and scope.
+`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` is a private engineering JSON control accepting five fields: `capacity_mib` is 4–256, `sessions` 1–4096, `batch_kib` 4–4096 and no larger than capacity, `chunks` 1–64, and `delay_us` 0–50000. Unset preserves the defaults above; unknown or duplicate fields, incorrect types and out-of-range values are rejected. Frontend qualification does not acquire the native write-I/O lock, while the worker rechecks eligibility and synchronization barriers report errors. These are not stable product settings. See the [filesystem I/O experiments](../lab-notes/filesystem-io-performance-analysis.md) for curves and scope.
 
 The following configure the guest kernel embedded **at build time** in Linux x86_64 musl and macOS ARM64 product builds:
 

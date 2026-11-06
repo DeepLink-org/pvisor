@@ -36,7 +36,7 @@ Run Codex in your project, inspect its staged changes, and accept selected files
     '
     ```
 
-    Authentication and Codex run in the same Job's private HOME. Login reads the key from standard input, keeping it out of command arguments. See [official OpenAI authentication guidance](https://developers.openai.com/codex/auth/).
+    Authentication and Codex run in the same Session's private HOME. Login reads the key from standard input, keeping it out of command arguments. See [official OpenAI authentication guidance](https://developers.openai.com/codex/auth/).
 
     !!! tip "Authentication state"
         `--safe` discards HOME writes at task end, so authenticate again on the next launch. This example allows only the model API; configure dependency downloads and other destinations separately using [network policy](../policies/network.md).
@@ -50,7 +50,7 @@ Run Codex in your project, inspect its staged changes, and accept selected files
     pvisor review last --diff
     ```
 
-    Check task status, file differences, and actual test results. Files should remain staged, with no changes accepted into the original directory yet. `last` selects the most recently registered Job for this workspace; finish review before starting another Job here.
+    Check task status, file differences, and actual test results. Files should remain staged, with no changes accepted into the original directory yet. `last` selects the most recently registered Session for this workspace; finish review before starting another Session here.
 
 1. ### Accept selected files {#accept-task}
 
@@ -91,7 +91,7 @@ The image must contain Codex. See [libkrun VM](../executors/vm.md) for prerequis
 
 ## Fork
 
-To keep file state and try another approach, first confirm that the stopped host Job meets the [workspace fork prerequisites](../fork-checkpoint.md):
+To keep file state and try another approach, first confirm that the stopped host Session meets the [workspace fork prerequisites](../fork-checkpoint.md):
 
 ```bash
 pvisor fork last -- codex

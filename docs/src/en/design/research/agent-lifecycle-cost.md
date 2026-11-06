@@ -48,7 +48,7 @@ Consider a model request on a supported proxy path. The Agent issues the request
 
 ![Two views: Agent A waits for its original call; the host advances I/O and runs B and C during the wait, then restores A to resume in place](assets/agent-transparent-scheduling.svg)
 
-A shared execution engine manages physical resources for several Agents, each retaining its own progress. Resumption continues the same process and execution attempt: the VM preserves machine context across the wait, and the host retains the I/O state needed to keep the operation progressing.
+A shared execution engine manages physical resources for several Agents, each retaining its own progress. Resumption continues the same process and execution execution: the VM preserves machine context across the wait, and the host retains the I/O state needed to keep the operation progressing.
 
 Transparency is bounded by the original call's semantics: results, errors, file ordering and synchronization requirements must remain intact. The host must own independent requests and data before removing I/O's dependency on guest RAM. Model requests also require protocol integration; ordinary TCP forwarding cannot automatically take over a TLS session inside the guest. A guest with runnable background work continues executing.
 

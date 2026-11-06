@@ -183,7 +183,7 @@ pub(crate) mod fs {
     #[serde(default, deny_unknown_fields)]
     pub(crate) struct HostWritebackConfig {
         capacity_mib: usize,
-        jobs: usize,
+        tasks: usize,
         batch_kib: usize,
         chunks: usize,
         delay_us: u64,
@@ -193,7 +193,7 @@ pub(crate) mod fs {
         fn default() -> Self {
             Self {
                 capacity_mib: 64,
-                jobs: 1024,
+                tasks: 1024,
                 batch_kib: 1024,
                 chunks: 64,
                 delay_us: 10_000,
@@ -210,7 +210,7 @@ pub(crate) mod fs {
                     .capacity_mib
                     .checked_mul(1024 * 1024)
                     .ok_or_else(invalid)?,
-                max_jobs: self.jobs,
+                max_tasks: self.tasks,
                 batch_bytes: self.batch_kib.checked_mul(1024).ok_or_else(invalid)?,
                 max_chunks: self.chunks,
                 max_delay: std::time::Duration::from_micros(self.delay_us),

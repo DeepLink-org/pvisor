@@ -9,12 +9,12 @@ fn owner_requires_non_writable_installation_ancestors() {
     fs::create_dir_all(&installation).unwrap();
     let kernel = installation.join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
-    let jobs = temporary.path().join("jobs");
+    let sessions = temporary.path().join("sessions");
     let run = || {
         Command::new(&kernel)
             .args(["spawn", "--executor", "host", "--", "/bin/echo", "hello"])
             .current_dir(temporary.path())
-            .env("PVISOR_RUN_HOME", &jobs)
+            .env("PVISOR_RUN_HOME", &sessions)
             .output()
             .unwrap()
     };
@@ -25,7 +25,10 @@ fn owner_requires_non_writable_installation_ancestors() {
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("unsafe owner executable ancestor")
         );
-        assert!(!jobs.exists(), "untrusted installation admitted a Job");
+        assert!(
+            !sessions.exists(),
+            "untrusted installation admitted a Session"
+        );
     }
     fs::set_permissions(&cellar, fs::Permissions::from_mode(0o755)).unwrap();
     let output = run();
@@ -69,7 +72,7 @@ fn linked_frontend_dispatches_companions_from_the_real_installation() {
 }
 
 #[test]
-fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
+fn container_run_and_session_spawn_have_distinct_help_and_argument_contracts() {
     let temporary = tempfile::tempdir().unwrap();
     for (name, expected, absent) in [
         ("run", "--platform", "--safe"),
@@ -86,13 +89,13 @@ fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
     }
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["run", "--safe", "--", "/bin/true"])
-        .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+        .env("PVISOR_RUN_HOME", temporary.path().join("sessions"))
         .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(125));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
-    assert!(!temporary.path().join("jobs").exists());
+    assert!(!temporary.path().join("sessions").exists());
     assert!(!temporary.path().join("containers").exists());
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["images", "-q"])
@@ -197,7 +200,7 @@ fn daemon_companion_is_discovered_inertly_and_forwards_management_commands() {
 }
 
 #[test]
-fn automatic_pool_selection_reaches_daemon_for_jobs_and_containers_and_propagates_errors() {
+fn automatic_pool_selection_reaches_daemon_for_sessions_and_containers_and_propagates_errors() {
     let temporary = tempfile::tempdir().unwrap();
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
@@ -225,7 +228,7 @@ fn automatic_pool_selection_reaches_daemon_for_jobs_and_containers_and_propagate
         let child = Command::new(&kernel)
             .args(args)
             .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
-            .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+            .env("PVISOR_RUN_HOME", temporary.path().join("sessions"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -242,7 +245,7 @@ fn automatic_pool_selection_reaches_daemon_for_jobs_and_containers_and_propagate
         assert_eq!(
             fs::read_to_string(&parent_marker).unwrap(),
             frontend_pid.to_string(),
-            "user-wide services must start outside the Job owner's cleanup tree"
+            "user-wide services must start outside the Session owner's cleanup tree"
         );
         fs::remove_file(&marker).unwrap();
     }
@@ -267,7 +270,7 @@ fn automatic_pool_selection_reaches_daemon_for_jobs_and_containers_and_propagate
 }
 
 #[test]
-fn job_pool_startup_remains_cancellable_while_the_companion_waits() {
+fn session_pool_startup_remains_cancellable_while_the_companion_waits() {
     use std::time::{Duration, Instant};
     let temporary = tempfile::tempdir().unwrap();
     let binary = temporary.path().join("pvisor");
@@ -300,7 +303,7 @@ fn job_pool_startup_remains_cancellable_while_the_companion_waits() {
     fs::set_permissions(&companion, fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = Command::new(binary)
         .args(["spawn", "-M", "--rootfs", "/", "--", "/bin/true"])
-        .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+        .env("PVISOR_RUN_HOME", temporary.path().join("sessions"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -413,7 +416,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
     for heading in [
         "Changes:",
         "Checkpoints:",
-        "Jobs:",
+        "Sessions:",
         "Filesystems:",
         "Services:",
         "Trajectories:",
@@ -482,7 +485,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
         .unwrap();
         fs::set_permissions(companion, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    // A PATH workload named service must not turn a retired command into a Job.
+    // A PATH workload named service must not turn a retired command into a Session.
     let workload = temporary.path().join("service");
     fs::write(
         &workload,
@@ -599,7 +602,7 @@ fn cli_has_two_binaries_and_integrates_cache() {
 }
 
 #[test]
-fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
+fn isolated_core_keeps_session_commands_and_runs_without_extensions() {
     let temporary = tempfile::tempdir().unwrap();
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
@@ -697,7 +700,7 @@ fn unregistered_names_follow_default_execution_without_command_aliases() {
         "env",
         "ir",
         "trace",
-        "job",
+        "session",
     ] {
         let workload = temporary.path().join(name);
         fs::write(&workload, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 42\n").unwrap();

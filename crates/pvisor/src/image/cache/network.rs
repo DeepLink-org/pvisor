@@ -253,7 +253,7 @@ fn forward_measured(
     })
 }
 type Reply = (Response, Vec<u8>);
-struct Job {
+struct Task {
     request: Request,
     reply: mpsc::SyncSender<Reply>,
     queued: Option<Instant>,
@@ -270,7 +270,7 @@ impl Drop for Permit {
 }
 struct Scheduler {
     active: Arc<AtomicUsize>,
-    jobs: mpsc::SyncSender<Job>,
+    tasks: mpsc::SyncSender<Task>,
     metrics: Telemetry,
 }
 impl Scheduler {
@@ -278,7 +278,7 @@ impl Scheduler {
         execute: impl Fn(Request) -> Reply + Send + Sync + 'static,
         metrics: Telemetry,
     ) -> Self {
-        let (jobs, receive) = mpsc::sync_channel::<Job>(QUEUE_LIMIT);
+        let (tasks, receive) = mpsc::sync_channel::<Task>(QUEUE_LIMIT);
         let receive = Arc::new(Mutex::new(receive));
         let execute = Arc::new(execute);
         for _ in 0..WORKERS {
@@ -287,24 +287,24 @@ impl Scheduler {
             let metrics = metrics.clone();
             std::thread::spawn(move || {
                 loop {
-                    let Ok(job) = receive.lock().unwrap().recv() else {
+                    let Ok(task) = receive.lock().unwrap().recv() else {
                         break;
                     };
                     count(&metrics, 14, u64::MAX);
                     count(&metrics, 13, 1);
-                    if let Some(start) = job.queued {
+                    if let Some(start) = task.queued {
                         count(&metrics, 8, elapsed(start));
                     }
-                    let result = execute(job.request);
+                    let result = execute(task.request);
                     count(&metrics, 13, u64::MAX);
                     // A single response slot: delivery never waits for guest I/O.
-                    let _ = job.reply.try_send(result);
+                    let _ = task.reply.try_send(result);
                 }
             });
         }
         Self {
             active: Arc::new(AtomicUsize::new(0)),
-            jobs,
+            tasks,
             metrics,
         }
     }
@@ -326,14 +326,14 @@ impl Scheduler {
             active: self.active.clone(),
             metrics: self.metrics.clone(),
         };
-        let jobs = self.jobs.clone();
+        let tasks = self.tasks.clone();
         let metrics = self.metrics.clone();
         Ok(std::thread::Builder::new()
             .name("image-bridge-connection".into())
             .spawn(move || {
                 let _permit = permit;
                 // Transport/framing failure closes, never retries an actual request.
-                let _ = persistent_connection(socket, &jobs, &metrics);
+                let _ = persistent_connection(socket, &tasks, &metrics);
             })?)
     }
 }
@@ -348,7 +348,7 @@ fn busy() -> Reply {
 }
 fn persistent_connection(
     mut socket: UnixStream,
-    jobs: &mpsc::SyncSender<Job>,
+    tasks: &mpsc::SyncSender<Task>,
     metrics: &Telemetry,
 ) -> anyhow::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -367,14 +367,14 @@ fn persistent_connection(
         }
         count(metrics, 3, 1);
         let (reply, receive) = mpsc::sync_channel(1);
-        let job = Job {
+        let task = Task {
             request: envelope.request,
             reply,
             queued: metrics.as_ref().map(|_| Instant::now()),
         };
         // Increment before publishing so a fast worker cannot underflow the gauge.
         count(metrics, 14, 1);
-        let (response, body) = match jobs.try_send(job) {
+        let (response, body) = match tasks.try_send(task) {
             Ok(()) => receive
                 .recv_timeout(WAIT)
                 .context("wait for bridge request; outcome may be unknown")?,

@@ -1,4 +1,4 @@
-//! Application frontends for pVisor. Embed `pvisor` for runtime and Job APIs.
+//! Application frontends for pVisor. Embed `pvisor` for runtime and Session APIs.
 #[cfg(not(windows))]
 pub mod cli;
 #[cfg(windows)]

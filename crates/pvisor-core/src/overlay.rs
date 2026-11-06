@@ -50,7 +50,7 @@ impl std::str::FromStr for StageDurability {
     }
 }
 
-/// Durable record of one overlay staging workspace (survives Attempt teardown).
+/// Durable record of one overlay staging workspace (survives Execution teardown).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayRecord {
     pub id: String,
@@ -426,7 +426,7 @@ pub struct OverlayConfig {
     pub recording: StageRecording,
     #[serde(default)]
     pub access_policy: FileAccessPolicy,
-    /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
+    /// When true, pVisor mounts its embedded OverlayFS for the Execution.
     #[serde(default)]
     pub enabled: bool,
     /// Target filesystem: primary lower layer and destination for `apply`.
@@ -452,11 +452,11 @@ pub struct OverlayConfig {
     /// Merged mount point (overrides `{stage_dir}/merged` when set).
     #[serde(default)]
     pub merged_dir: Option<String>,
-    /// If true, apply staging onto `target` automatically when the Attempt ends.
+    /// If true, apply staging onto `target` automatically when the Execution ends.
     /// Default false — review then `pvisor apply` or `pvisor drop`.
     #[serde(default)]
     pub auto_apply: bool,
-    /// If true, discard staging automatically when the Attempt ends.
+    /// If true, discard staging automatically when the Execution ends.
     #[serde(default)]
     pub auto_discard: bool,
 }

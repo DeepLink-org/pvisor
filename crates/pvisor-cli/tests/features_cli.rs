@@ -1,4 +1,4 @@
-//! Feature discovery is frontend-local, independent of the persistent Job service.
+//! Feature discovery is frontend-local, independent of the persistent Session service.
 use std::process::Command;
 
 fn cli(args: &[&str]) -> std::process::Output {
@@ -70,7 +70,7 @@ fn listing_synonyms_json_and_explicit_enable_are_local() {
 }
 
 #[test]
-fn unknown_features_and_help_never_need_a_job_service() {
+fn unknown_features_and_help_never_need_a_session_service() {
     for args in [
         vec!["--feature", "unknown", "feature"],
         vec!["spawn", "--feature", "unknown", "--", "true"],

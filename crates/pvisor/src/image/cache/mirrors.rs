@@ -8,7 +8,7 @@ use std::{
 };
 
 pub(super) const MAX_MIRRORS: usize = 8;
-const ATTEMPT: Duration = Duration::from_secs(5);
+const EXECUTION: Duration = Duration::from_secs(5);
 const TOTAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct Mirrors {
@@ -92,7 +92,7 @@ impl Mirrors {
         for (location, slot) in &self.sources {
             let budget = deadline
                 .saturating_duration_since(Instant::now())
-                .min(ATTEMPT);
+                .min(EXECUTION);
             if budget.is_zero() {
                 break;
             }
@@ -108,7 +108,7 @@ impl Mirrors {
                 };
                 let budget = deadline
                     .saturating_duration_since(Instant::now())
-                    .min(ATTEMPT);
+                    .min(EXECUTION);
                 ensure!(!budget.is_zero(), "mirror read deadline exhausted");
                 storage
                     .read_timed(key, range.clone(), limit, budget)?

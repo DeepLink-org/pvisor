@@ -57,8 +57,8 @@ explicitly after diagnosis; they are excluded from successful suite counts.
 
 ## CI
 
-The required `podman-contracts` jobs in `.github/workflows/ci.yml` run all
-active adapted contracts on every covered push/pull request. The Linux CLI job
+The required `podman-contracts` sessions in `.github/workflows/ci.yml` run all
+active adapted contracts on every covered push/pull request. The Linux CLI session
 builds and smoke-tests the product once, archives the original static musl CLI
 and adjacent daemon before native Cargo tests, and publishes that tarball.
 Three independent Linux/KVM runners reuse it: Bats, Go shard 0, and Go shard 1.
@@ -77,7 +77,7 @@ The archived executable comes from `target/x86_64-unknown-linux-musl/debug/`
 and embeds its firmware. Native Cargo tests can overwrite `target/debug/pvisor`
 with a dynamically linked build, so that path is never used for these gates.
 
-All shards are attempted even when another fails (`fail-fast: false`). Each job
+All shards are attempted even when another fails (`fail-fast: false`). Each session
 is bounded by 30 minutes; Go retains its 20-minute suite timeout and `-count=1`.
 Per-command timeouts and test-owned cleanup remain in effect. Artifacts named
 `podman-contracts-linux-amd64-<suite>` retain TAP or Go JSON, environment/version
@@ -194,10 +194,10 @@ recorded commands, with no unexpected failures or cleanup errors. It included
 198 pressure pauses (approximately 49.5 minutes); these count toward the wall
 window. Campaign memory peaked at 217.8 MiB under the limits above. The audit
 independently rechecked 547 stdin round trips and 448 validation-error causes.
-Supplementary checks exposed rejected Docker `stop -t -1` and Job cleanup
+Supplementary checks exposed rejected Docker `stop -t -1` and Session cleanup
 terminating an implicitly started shared daemon. Both were repaired, with
 graceful-stop, frontend process-ownership and blocked-startup cancellation
-regressions. Two real Jobs (exit 0 and 7) then preserved the same daemon identity.
+regressions. Two real Sessions (exit 0 and 7) then preserved the same daemon identity.
 Final candidate `c02e470e9aa0` passed a separate 182.02-second, 140-round,
 933-command follow-up, including physical pool loss and refused replacement;
 this is not a two-hour run of the repaired candidate. Both windows passed the
@@ -348,7 +348,7 @@ lookup/publication while termination waits remain outside the lock. The new
 eight-iteration removal regression passed without retries or relaxed assertions.
 
 All 31 selected Rust Docker/VM contract and boundary tests, both native HVF
-container/Job acceptance cases and all four Python adapter/source-integrity
+container/Session acceptance cases and all four Python adapter/source-integrity
 checks passed. Clippy, rustdoc with warnings denied, formatting and CI budgets
 passed. Guest code and upstream sources were unchanged. Linux/KVM execution,
 cross-VM open-mapping coherence and performance effects remain unvalidated.
@@ -384,12 +384,12 @@ used throughout each run. Read-only observation of 115 private test stores
 confirmed pooled catalog entries and no persistent legacy blob/rootfs/build-image
 directories. This validates the active profile, not the entire upstream corpus.
 
-The same candidate passed all four opt-in native Docker/Job acceptance cases
+The same candidate passed all four opt-in native Docker/Session acceptance cases
 and a real-guest mmap probe spanning multiple 1 MiB pool blocks, including
 read-after-close, private COW, shared-write/msync copy-up and original-image
 preservation in a fresh container. The regression found and fixed local cache
 diagnostics leaking into workload stderr and Linux rootless virtual CHOWN.
 These are correctness results; they establish no mmap performance advantage.
-Separate workspace benchmark-registration, CPUID doctest and opt-in Job
+Separate workspace benchmark-registration, CPUID doctest and opt-in Session
 execution-fork failures, plus an intermittent filesystem/S3 cache-guest exit
 125, remain outside this passing container profile.

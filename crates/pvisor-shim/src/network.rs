@@ -181,7 +181,7 @@ impl VmNetworkAttachment {
             egress.clone(),
             pvisor_overlaynet::EgressContext {
                 run_id: Some(run_id.to_string()),
-                attempt_id: Some("containerd-shim".to_string()),
+                execution_id: Some("containerd-shim".to_string()),
             },
         );
         let (backend, guest_stream) = pvisor_overlaynet::vm::VmNetwork::start(vm_config)?;
@@ -316,7 +316,7 @@ mod tests {
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,

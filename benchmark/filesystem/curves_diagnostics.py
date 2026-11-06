@@ -28,9 +28,9 @@ HOST_COUNTERS = (
     "host_writeback_backing_errors",
     "host_writeback_queue_sessions",
     "host_writeback_queue_peak_bytes_sum",
-    "host_writeback_queue_peak_jobs_sum",
+    "host_writeback_queue_peak_tasks_sum",
     "host_writeback_queue_batches",
-    "host_writeback_queue_jobs",
+    "host_writeback_queue_tasks",
     "host_writeback_reserve_wait_count",
     "host_writeback_reserve_wait_ns",
 )
@@ -259,7 +259,7 @@ def host_writeback(components, enabled):
             raise ValueError("host-writeback profile disagrees with condition")
         if (
             result["host_writeback_accepted_bytes"] != result["host_writeback_backing_bytes"]
-            or result["host_writeback_accepted_requests"] != result["host_writeback_queue_jobs"]
+            or result["host_writeback_accepted_requests"] != result["host_writeback_queue_tasks"]
             or result["host_writeback_backing_batches"] != result["host_writeback_queue_batches"]
             or result["host_writeback_backing_errors"] != 0
         ):
@@ -327,7 +327,7 @@ def summarize_batch(batch):
         counter_scope="final totals include preparation/verification; phase deltas exclude them",
         aggregation="condition/total counters sum independent diagnostic trials, not averages",
         marker_correction="one IOCTL, 80 request bytes and one direct request per cell interval",
-        queue_peaks="peak_bytes_sum/peak_jobs_sum add per-session peaks; not one simultaneous peak",
+        queue_peaks="peak_bytes_sum/peak_tasks_sum add per-session peaks; not one simultaneous peak",
         durations="inclusive per-label diagnostics; never add labels or use as timing samples",
     )
 

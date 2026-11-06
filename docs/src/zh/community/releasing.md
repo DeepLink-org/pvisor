@@ -68,7 +68,7 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 ## 恢复失败的发布 {#channel-recovery}
 
 在 `main` 修复发布脚本后，从 `main` 新建一次 **Publish Release** 运行。
-GitHub 的 **Re-run jobs** 仍使用原提交，无法带上修复。不要为了重试 Homebrew
+GitHub 的 **Re-run sessions** 仍使用原提交，无法带上修复。不要为了重试 Homebrew
 或 PyPI 移动已发布的 tag，也不要重新构建同版本：新 wheel 的字节可能改变，
 与已发布的不可变文件冲突。
 
@@ -121,8 +121,8 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 构建 wheel、平台验收、完整发布集校验，以及原生归档和校验清单生成。
 发布任务下载这批已验证制品，不重新构建。每个最终 wheel 在对应
 GitHub 托管 runner 的全新环境中安装。Linux 验收覆盖 host 退出码、strict host 执行拒绝、真实
-VM 启动、暂停／冷恢复后内存进度继续、Job 身份保持且 Attempt 更换、文件暂存、
-review。另一条新 VM Job 验证选择性 apply；恢复后的叠层 Job 必须拒绝当前不支持
+VM 启动、暂停／冷恢复后内存进度继续、Session 身份保持且 Execution 更换、文件暂存、
+review。另一条新 VM Session 验证选择性 apply；恢复后的叠层 Session 必须拒绝当前不支持
 的 apply。小型静态 guest 由仓库源码编译，缺少 KVM 权限会导致 Linux 验收失败。
 macOS 校验原生载荷、签名 entitlement、安装、版本和命令转发；托管 runner
 不执行真实 VM 验收。`release-acceptance-*` 或 `nightly-acceptance-*` 制品保存 Linux 的 wheel 与安装后
@@ -137,7 +137,7 @@ macOS VM 验收仍需独立的硬件验证记录。
 定位。归档原样复制已签名的 macOS 程序；guest 内核已内嵌，来源记录保留在可执行文件旁。稳定发布的
 Homebrew 任务在 macOS 下载并安装已发布的归档，移除 runner 的 Cellar 组写和其他用户写权限，
 随后运行 `brew test`，在 Homebrew 沙箱内检查版本、协议和 companion 帮助。
-任务再从沙箱外执行真实 host Job，检查退出码和 `hello` 输出，卸载配方后才更新 tap。
+任务再从沙箱外执行真实 host Session，检查退出码和 `hello` 输出，卸载配方后才更新 tap。
 Homebrew 的 Seatbelt 沙箱不能嵌套 pVisor 的沙箱；目录权限要求见[安装指南](../start/installation.md)。
 Linux Homebrew 安装及升级／回退仍缺少原生验收。
 
@@ -148,7 +148,7 @@ PyPI 发布 wheel。配置了门禁不等于验收已经通过。
 
 Linux x86_64 daemon 使用原生 `pvisor-vm`，需要 KVM 和委派 cgroup v2。新模板
 使用共享 Rust guest 引擎与宿主协议适配，显式提供 execd/envd 时保留上游后端。
-wheel 验收覆盖原生 Job；daemon SDK 兼容性、containerd 集成和密度仍需各自的
+wheel 验收覆盖原生 Session；daemon SDK 兼容性、containerd 集成和密度仍需各自的
 验收证据。见 [daemon 准备](../guides/daemon/index.md)。
 
 ## Nightly 构建
@@ -187,7 +187,7 @@ daemon 与固件作为一个安装单元升级，避免部分更新造成不兼�
 
 最终布局 smoke test 覆盖原生归档软链接和 Python 环境中的 companion 定位；
 稳定发布还在 macOS 执行 Homebrew 安装测试。安装器应支持指定版本、用户级目录、校验、升级、回退和
-卸载；卸载保留 Job 与用户缓存。包管理器安装的程序由该包管理器升级。
+卸载；卸载保留 Session 与用户缓存。包管理器安装的程序由该包管理器升级。
 安装 daemon 可执行文件与注册、启动系统服务分开进行。
 
 首批继续覆盖 Linux x86_64 与 macOS arm64。扩大平台支持前，增加相应原生验收。

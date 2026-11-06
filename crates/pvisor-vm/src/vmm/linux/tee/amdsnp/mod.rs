@@ -356,7 +356,7 @@ impl AmdSnp {
             &mut launcher,
             PageType::Cpuid,
         ) {
-            // The PSP fixes the tables itself, so a second attempt should succeed.
+            // The PSP fixes the tables itself, so a second execution should succeed.
             warn!("PSP rejected the CPUID page ({e:?}). Trying again.");
 
             self.check_cpuid_page(guest_mem, old_cpuid)?;

@@ -170,9 +170,9 @@ def raw_row(batch, phase, arm, pair, row, config, runner, reference, rounds, sou
         and argv[argv.index("--vm-library-dir") + 1] == firmware_dir,
         "CLI did not select the frozen runtime firmware",
     )
-    job = load(root / "stage/execution-job.json")
+    session = load(root / "stage/execution-session.json")
     require(
-        job["config"]["vm"]["library_dir"] == firmware_dir,
+        session["config"]["vm"]["library_dir"] == firmware_dir,
         "persisted final firmware selector differs",
     )
     bundles = list((root / "runs").glob("*/run-bundle.json")) + list(
@@ -201,7 +201,7 @@ def raw_row(batch, phase, arm, pair, row, config, runner, reference, rounds, sou
         stdout_sha256=sha(root / "stdout.log"),
         stderr_sha256=sha(root / "stderr.log"),
         Bundle_sha256=sha(bundles[0]),
-        Job_sha256=sha(root / "stage/execution-job.json"),
+        Session_sha256=sha(root / "stage/execution-session.json"),
         run_sha256=sha(root / "stage/run.json"),
         overlay_sha256=sha(root / "stage/overlay.json"),
         workspace_receipt_sha256=sha(root / "stage/workspace-baseline.json"),
@@ -313,7 +313,7 @@ def counters(batch, runner, inherited):
                                 "layer_parent_stats",
                                 "layer_leaf_stats",
                                 "parent_identity_statx_calls",
-                                "mount_identity_attempts",
+                                "mount_identity_executions",
                                 "immutable_lower_cache_misses_missing_leaf",
                             )
                         },
@@ -332,10 +332,10 @@ def counters(batch, runner, inherited):
                         **{
                             label: value(overlay, label, "units")
                             for label in (
-                                "open_qualification_fgetfl_attempts",
-                                "open_qualification_fstat_attempts",
-                                "open_qualification_statx_attempts",
-                                "open_qualification_fstatfs_attempts",
+                                "open_qualification_fgetfl_executions",
+                                "open_qualification_fstat_executions",
+                                "open_qualification_statx_executions",
+                                "open_qualification_fstatfs_executions",
                             )
                         },
                     )
@@ -567,7 +567,7 @@ def project(batch):
         input_scope="same existing owned rootfs/workspace generations and frozen baseline; independent live apply target. Generation import/seal not repeated or charged; trial targets/caches and CLI copies still prepared.",
         clock="Ready includes fresh private Host+VM and excludes exit. Worker clocks retain original workload synchronization/close, three resident rounds per environment. Small-file write uses write/close/stat without explicit fsync; stream_write includes file fsync+close. Seven-tool sum is tool responsiveness, not a completed-durability clock; full host bytes verified after normal exit.",
         statistical_scope="N5 fresh paired environment blocks, not N15; 32 pointwise uncorrected percentile-bootstrap intervals, one preregistered sum-of-three-round-seven-tools primary; all five values retained.",
-        diagnostic_scope="Independent N1 per arm; counts include checked subprocess startup/validation. WRITE bytes/buckets describe protocol attempts, not physical disk I/O. No exact maximum inferred from cumulative maxima.",
+        diagnostic_scope="Independent N1 per arm; counts include checked subprocess startup/validation. WRITE bytes/buckets describe protocol executions, not physical disk I/O. No exact maximum inferred from cumulative maxima.",
         fingerprint_scope="generic fingerprint.calls and fingerprint_content.calls are distinct; compact content fingerprints must not be inferred from generic0.",
         checkpoint_scope="Bundle supports_checkpoint=false is a declared plan; actual native checkpoint binding unobserved. Native GNU firmware file mapping observed independently in diagnostics.",
         exclusion_scope="no quiet/interference/full-inventory gates; all valid slow samples retained; no historical CLI/SDK timing pooled",

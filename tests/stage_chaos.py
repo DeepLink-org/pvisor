@@ -427,7 +427,7 @@ def committed_completion(run, completion):
         and bool(run.get("finished_at_unix_ms"))
         and bool(result.get("finished_at_unix_ms"))
         and all(
-            run.get(key) and run.get(key) == result.get(key) for key in ("run_id", "attempt_id")
+            run.get(key) and run.get(key) == result.get(key) for key in ("run_id", "execution_id")
         )
         and len(completion.get("bundle_blake3", "")) == 64
         and "unknown" not in json.dumps(result.get("failure", {})).lower()
@@ -631,7 +631,7 @@ class Driver:
                 # after a kill, but cannot replace the lock inode or mutate any
                 # ledger, upper or target file on refusal.
                 for tree in (before, after):
-                    lock = tree["stage"].get("job.lock", {})
+                    lock = tree["stage"].get("session.lock", {})
                     lock.pop("mtime_ns", None)
                     lock.pop("ctime_ns", None)
                     lock.pop("size", None)
@@ -1112,10 +1112,10 @@ class Driver:
         self.drop(success=False)
         after = snapshot(self.stage)
         for tree in (before, after):
-            tree.get("job.lock", {}).pop("mtime_ns", None)
-            tree.get("job.lock", {}).pop("ctime_ns", None)
-            tree.get("job.lock", {}).pop("size", None)
-            tree.get("job.lock", {}).pop("sha256", None)
+            tree.get("session.lock", {}).pop("mtime_ns", None)
+            tree.get("session.lock", {}).pop("ctime_ns", None)
+            tree.get("session.lock", {}).pop("size", None)
+            tree.get("session.lock", {}).pop("sha256", None)
         self.oracle("unknown drop retains stage", after, before)
         return self.finish_case("unknown_verified", retain=True)
 
@@ -1216,10 +1216,10 @@ class Driver:
             self.drop(success=False)
             after = snapshot(self.stage)
             for tree in (before, after):
-                tree.get("job.lock", {}).pop("mtime_ns", None)
-                tree.get("job.lock", {}).pop("ctime_ns", None)
-                tree.get("job.lock", {}).pop("size", None)
-                tree.get("job.lock", {}).pop("sha256", None)
+                tree.get("session.lock", {}).pop("mtime_ns", None)
+                tree.get("session.lock", {}).pop("ctime_ns", None)
+                tree.get("session.lock", {}).pop("size", None)
+                tree.get("session.lock", {}).pop("sha256", None)
             self.oracle("pending drop retains ledger and upper", after, before)
         else:
             require(

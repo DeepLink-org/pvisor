@@ -1,15 +1,15 @@
-//! Adapter from the existing Gateway delivery barrier to Attempt VM ownership.
+//! Adapter from the existing Gateway delivery barrier to Execution VM ownership.
 
 use super::wait_coordinator::{WaitCoordinator, WaitEntry};
 use async_trait::async_trait;
-use pvisor_core::{AttemptId, ModelCallRequest};
+use pvisor_core::{ExecutionId, ModelCallRequest};
 use pvisor_gateway::model_wait::{ModelWait, ModelWaitLifecycle};
 use std::sync::Arc;
 
 #[derive(Debug)]
 pub(super) struct ModelWaitAdapter {
     pub coordinator: Arc<WaitCoordinator>,
-    pub attempt_id: AttemptId,
+    pub execution_id: ExecutionId,
 }
 
 impl ModelWaitLifecycle for ModelWaitAdapter {
@@ -28,8 +28,8 @@ impl ModelWaitLifecycle for ModelWaitAdapter {
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>> {
         // The coordinator was bound by Session, never selected by session headers.
         anyhow::ensure!(
-            request.attempt_id.as_ref() == Some(&self.attempt_id),
-            "model wait Attempt mismatch"
+            request.execution_id.as_ref() == Some(&self.execution_id),
+            "model wait Execution mismatch"
         );
         match self.coordinator.observe()? {
             Some(entry) => Ok(Box::new(NativeWait(entry, 0))),

@@ -1,6 +1,6 @@
 //! Keep the optional control transport from becoming a second guest runtime.
 #[test]
-fn jobs_and_controlled_workloads_share_launch_and_reaping() {
+fn sessions_and_controlled_workloads_share_launch_and_reaping() {
     let boot = include_str!("../src/linux.rs");
     let control = include_str!("../src/linux/control.rs");
     assert!(!boot.contains("container::run"));

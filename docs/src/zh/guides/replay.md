@@ -2,7 +2,7 @@
 
 要复现一次失败或从历史步骤重试，先准备新沙箱和 Agent 的原生轨迹，再运行 `pvisor replay`。默认会重新执行选定边界之前的工具调用，用新沙箱的结果重建上下文，然后让 Agent 继续。工具调用可能再次产生文件或远程副作用，运行前应按任务需要设置沙箱权限。
 
-原生轨迹由 Agent 自身保存；[Gateway capture](capture.md)产生的是模型流量 Event Journal。SandboxReplay 通过原生轨迹适配器处理会话，并在 [Run 与 Attempt 模型](../design/execution-model.md) 中创建派生 Run。
+原生轨迹由 Agent 自身保存；[Gateway capture](capture.md)产生的是模型流量 Event Journal。SandboxReplay 通过原生轨迹适配器处理会话，并在 [Run 与 Execution 模型](../design/execution-model.md) 中创建派生 Run。
 
 <span id="3"></span>
 

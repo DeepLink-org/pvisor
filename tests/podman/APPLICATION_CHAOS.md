@@ -18,7 +18,7 @@ with COPY-only instructions, freezes provenance and a seeded schedule, then runs
 every scenario once before randomized repeats. Runtime failures are never skipped
 or retried as successful rounds. Explicit readiness waits have bounded deadlines.
 Commands, streams, HTTP results, cgroup samples and owner diagnostics are retained
-on both success and failure. Cleanup attempts every exact owned name and network;
+on both success and failure. Cleanup executions every exact owned name and network;
 it never deletes the store or hides a cleanup error.
 
 ```sh
@@ -62,7 +62,7 @@ whole new body. Background responses must match a known published SHA-256.
 | Scenario | Required behavior |
 |---|---|
 | Streams | Concurrent binary stdin/stdout, distinct exits 17/29 and missing executable 127 remain correctly routed |
-| Atomic volume | Variable-length atomic replacement is visible through HTTP and a second VM; read-only mutation attempts fail |
+| Atomic volume | Variable-length atomic replacement is visible through HTTP and a second VM; read-only mutation executions fail |
 | Restart | Four simultaneous starts join one generation; entrypoint counter advances exactly once and host port stays fixed |
 | VMM death | Kill only the verified owned VMM through pidfd; healthy peers survive and acknowledged state remains after restart |
 | Owner death | Owner lifetime-pipe closure terminates its VMM; port is released and a new generation recovers |

@@ -293,7 +293,7 @@ async fn run() -> anyhow::Result<()> {
                 ..Default::default()
             },
         ))
-        .storage(root.join("jobs"))
+        .storage(root.join("sessions"))
         .overlay(OverlayHint {
             lower_dirs: vec![workspace.clone()],
             stage_dir: Some(stage.clone()),

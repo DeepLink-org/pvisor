@@ -1,4 +1,4 @@
-//! The common, direct VM execution profile. No Job owner or host executor is involved.
+//! The common, direct VM execution profile. No Session owner or host executor is involved.
 use std::path::PathBuf;
 
 use pvisor_vm::api::{RuntimeSupport, VmBuilder, VmConfiguration, VmRuntime};

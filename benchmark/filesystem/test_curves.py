@@ -485,7 +485,7 @@ class CurvesDiagnosticContracts(unittest.TestCase):
             ("accepted_requests", 2),
             ("accepted_bytes", 8192),
             ("backing_bytes", 8192),
-            ("queue_jobs", 2),
+            ("queue_tasks", 2),
             ("backing_batches", 1),
             ("queue_batches", 1),
         ):

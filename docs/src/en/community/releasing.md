@@ -53,7 +53,7 @@ Before pushing the first release tag, verify that the `pvisor-sandbox` Trusted P
 ## Recover a failed publication {#channel-recovery}
 
 Fix publication scripts on `main`, then start a new **Publish Release** run on
-`main`. GitHub's **Re-run jobs** uses the original commit and does not pick up
+`main`. GitHub's **Re-run sessions** uses the original commit and does not pick up
 the fix. Do not move a published tag or rebuild an existing version to retry
 Homebrew or PyPI: rebuilding can change wheel bytes under an immutable filename.
 
@@ -67,7 +67,7 @@ Set `release_tag=vX.Y.Z`, set `source_run_id` to the original tag-triggered
 | `homebrew` | Restore artifacts, check/complete GitHub Release, regenerate tap metadata with current scripts, test installation and update the configured tap |
 
 Recovery skips required CI, compilation and platform wheel acceptance. It requires
-the source run's **Verify release artifact set** job to have passed; that job
+the source run's **Verify release artifact set** session to have passed; that session
 depends on the full shared distribution pipeline. The source must be a completed
 tag run in this repository, and the tag must still identify that run's commit.
 The overall run may have failed in a downstream publisher. Build-only manual runs,
@@ -106,8 +106,8 @@ validation and native archive/checksum generation. Publication downloads this
 verified set without rebuilding it. Each final wheel is installed in a fresh environment on a
 GitHub-hosted runner. Linux acceptance checks host exit status, refusal of strict host execution,
 real VM startup, suspend/cold restore with continuing in-memory progress, stable
-Job/new Attempt identity, staged writes and review. A separate fresh VM Job
-checks selective apply; the restored layered Job must refuse its unsupported
+Session/new Execution identity, staged writes and review. A separate fresh VM Session
+checks selective apply; the restored layered Session must refuse its unsupported
 apply path. It uses a
 small static guest compiled from repository-owned source; unavailable KVM access
 fails Linux acceptance. macOS verifies native payloads, code-signing entitlements,
@@ -123,7 +123,7 @@ Release-set validation requires exactly one supported wheel per platform,
 matching versions, valid metadata and bounded artifact sizes. Both platform
 acceptances and the complete set must pass before either publication channel.
 
-Native archives are also tested on the build runners through a Homebrew-style symlink layout, including host execution and companion discovery. Archives copy signed macOS binaries unchanged; their guest kernel is embedded and the provenance receipt remains beside the executables. The stable Homebrew job downloads the published archive, installs it, removes group/other write permission from the runner's Cellar, and runs `brew test`. Formula tests check versions, protocol and companion help inside Homebrew's sandbox. The job then executes a real host Job outside that sandbox, checks its exit status and `hello` output, and uninstalls the formula before updating the tap. Homebrew's Seatbelt sandbox cannot nest pVisor's; installation permissions are covered in the [installation guide](../start/installation.md). Linux Homebrew installation and upgrade/rollback acceptance still need native coverage.
+Native archives are also tested on the build runners through a Homebrew-style symlink layout, including host execution and companion discovery. Archives copy signed macOS binaries unchanged; their guest kernel is embedded and the provenance receipt remains beside the executables. The stable Homebrew session downloads the published archive, installs it, removes group/other write permission from the runner's Cellar, and runs `brew test`. Formula tests check versions, protocol and companion help inside Homebrew's sandbox. The session then executes a real host Session outside that sandbox, checks its exit status and `hello` output, and uninstalls the formula before updating the tap. Homebrew's Seatbelt sandbox cannot nest pVisor's; installation permissions are covered in the [installation guide](../start/installation.md). Linux Homebrew installation and upgrade/rollback acceptance still need native coverage.
 
 Stable versions are immutable. A retry verifies existing GitHub/PyPI file
 SHA-256 values before publishing. Identical files are retained and missing files
@@ -135,7 +135,7 @@ PyPI wheels. A configured gate is not evidence that acceptance has passed.
 The Linux x86_64 daemon uses native `pvisor-vm` with KVM and delegated cgroup v2.
 New templates use the shared Rust guest engine and host protocol adapters;
 explicit execd/envd binaries retain their upstream backend. Wheel acceptance
-covers native Jobs; daemon SDK conformance, containerd integration and density
+covers native Sessions; daemon SDK conformance, containerd integration and density
 require their own acceptance evidence. See [daemon setup](../guides/daemon/index.md).
 
 ## Nightly builds
@@ -175,7 +175,7 @@ The release workflow now derives native downloads and the Homebrew formula from 
 
 After each platform's native build, wheels, binary archives and package-manager entry points reuse the same component set. A proposed release manifest records the version, commit, platform, component hashes and firmware sources; each archive has its own SHA-256. Publication uploads accepted artifacts without recompiling. Upgrade the matching CLI, companions, daemon and firmware as one installation unit to avoid incompatible partial updates.
 
-Final-layout smoke tests cover companion discovery through native archive symlinks and Python environments; stable releases additionally run Homebrew installation tests on macOS. The installer should support version selection, user-level directories, verification, upgrades, rollback and removal while retaining Jobs and user caches. Package-manager installations use that manager for upgrades. Installing the daemon executable remains separate from registering and starting a system service.
+Final-layout smoke tests cover companion discovery through native archive symlinks and Python environments; stable releases additionally run Homebrew installation tests on macOS. The installer should support version selection, user-level directories, verification, upgrades, rollback and removal while retaining Sessions and user caches. Package-manager installations use that manager for upgrades. Installing the daemon executable remains separate from registering and starting a system service.
 
 Keep the initial matrix at Linux x86_64 and macOS arm64. Add native acceptance before expanding platform support. Channel acceptance should cover first useful execution, the existing staged-review workflow, upgrades and removal as well as version output. VM capabilities retain real-hardware acceptance. Stable releases remain immutable, with a separate nightly entry point.
 

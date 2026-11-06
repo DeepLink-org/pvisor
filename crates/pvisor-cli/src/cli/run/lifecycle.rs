@@ -1,16 +1,16 @@
-//! Workspace branches and native execution restoration for CLI Jobs.
+//! Workspace branches and native execution restoration for CLI Sessions.
 #[cfg(feature = "gateway")]
 use super::resolve_proxy;
 use super::{
-    announce_job_started, execute_config, paths_overlap, report_terminal, resolve_workspace,
-    select_run_storage, wait_cli_job,
+    announce_session_started, execute_config, paths_overlap, report_terminal, resolve_workspace,
+    select_run_storage, wait_cli_session,
 };
 use crate::cli::trajectory::JournalRecording;
 #[cfg(test)]
-use pvisor::JobState;
-#[cfg(test)]
 use pvisor::RunExecutorKind;
-use pvisor::job_service::paths::fork_stage_candidate;
+#[cfg(test)]
+use pvisor::SessionState;
+use pvisor::session_service::paths::fork_stage_candidate;
 use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, RunConfig};
 use pvisor::{RunBundle, restore_logical_checkpoint};
 use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
@@ -27,18 +27,18 @@ use std::{
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkArgs {
-    /// Source Job id, workspace, run.json, or path inside the source Job.
+    /// Source Session id, workspace, run.json, or path inside the source Session.
     source: PathBuf,
     /// Workspace starts a new command; execution continues saved CPU/RAM state.
     #[arg(long, value_enum, default_value = "workspace")]
     state: crate::cli::checkpoint::Kind,
-    /// Existing logical checkpoint id; when omitted, snapshot the stopped source Job now.
+    /// Existing logical checkpoint id; when omitted, snapshot the stopped source Session now.
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
-    /// Empty or new directory for the child Job's independent stage.
+    /// Empty or new directory for the child Session's independent stage.
     #[arg(long)]
     stage: Option<PathBuf>,
-    /// Human-readable child Job name.
+    /// Human-readable child Session name.
     #[arg(long)]
     name: Option<String>,
     /// Encoding for a newly captured execution checkpoint only.
@@ -52,7 +52,7 @@ pub struct ForkArgs {
     request_id: Option<String>,
     #[arg(long, short = 'o', default_value = ".pvisor/capture")]
     output_dir: PathBuf,
-    /// Agent command; defaults to the source Job command.
+    /// Agent command; defaults to the source Session command.
     #[arg(last = true, allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -96,21 +96,22 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     if args.state == crate::cli::checkpoint::Kind::Execution {
         return fork_execution(args, source).await;
     }
-    let source_job = crate::cli::host::lock_selected_job(&source)?;
+    let source_session = crate::cli::host::lock_selected_session(&source)?;
     anyhow::ensure!(
-        source_job.as_ref().is_none_or(|(job, _)| job
+        source_session.as_ref().is_none_or(|(session, _)| session
             .config
             .overlayfs
             .as_ref()
             .is_none_or(|overlay| overlay.prepared_workspace.is_none())),
-        "CAPABILITY_UNSUPPORTED: prepared workspace checkpoint fork is not supported; start a fresh Job with the selector"
+        "CAPABILITY_UNSUPPORTED: prepared workspace checkpoint fork is not supported; start a fresh Session with the selector"
     );
     // Hold ownership from selection through copy and durable source retention.
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
     crate::cli::host_service::check_record(&source)?;
     // Fail before checkpoint/stage mutations when the recorded policy cannot be reconstructed.
-    let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
+    let (mut config, required_sandbox) =
+        pvisor::session_service::policy::workspace_config(&source)?;
     super::reject_ask_config(&config)?;
     let selected_checkpoint = match args.checkpoint.as_deref() {
         Some(id) => {
@@ -125,7 +126,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             None
         }
     };
-    // Inherited policy omits attempt-local endpoints. Allocate before any stage
+    // Inherited policy omits execution-local endpoints. Allocate before any stage
     // mutation; normal launch validation must still reject user-supplied port 0.
     if config.overlaynet.mode == pvisor::OverlayNetMode::Proxy {
         config.overlaynet.listen = super::free_loopback_address()?;
@@ -141,7 +142,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     };
     anyhow::ensure!(
         checkpoint.run_id == source.run_id,
-        "checkpoint {} belongs to Job {}, not {}",
+        "checkpoint {} belongs to Session {}, not {}",
         checkpoint.checkpoint_id,
         checkpoint.run_id,
         source.run_id
@@ -199,7 +200,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
                 .lower_dirs
                 .iter()
                 .all(|lower| !lower.starts_with(&stage)),
-        "child stage must not overlap the source Job or contain its filesystem layers"
+        "child stage must not overlap the source Session or contain its filesystem layers"
     );
     Persistence::create_dir_all_durable(&stage)?;
     let upper = stage.join("upper");
@@ -212,7 +213,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     }
     config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
     drop(source_lease);
-    drop(source_job);
+    drop(source_session);
     execute_config(
         config,
         run_id,
@@ -221,7 +222,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             parent_run_id: source.run_id,
             checkpoint_id: checkpoint.checkpoint_id,
         }),
-        pvisor::job_service::policy::PolicySource::Inherited(parent_isolation),
+        pvisor::session_service::policy::PolicySource::Inherited(parent_isolation),
         None,
     )
     .await
@@ -248,12 +249,14 @@ pub(in crate::cli) async fn resume_execution(
     request_id: Option<String>,
     eager_ram: bool,
 ) -> anyhow::Result<i32> {
-    use pvisor::job_service::{JobSelection, ResumeRequest, ResumeResponse, RuntimeJobService};
+    use pvisor::session_service::{
+        ResumeRequest, ResumeResponse, SessionSelection, SessionService,
+    };
     reject_ask_restore_source(&source)?;
-    let response = RuntimeJobService::resume(
+    let response = SessionService::resume(
         &crate::cli::host::service_context(),
         ResumeRequest {
-            job: JobSelection {
+            session: SessionSelection {
                 selector: Some(source.stage_dir()),
                 storage: source.storage,
             },
@@ -273,14 +276,14 @@ pub(in crate::cli) async fn resume_execution(
 }
 
 async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32> {
-    use pvisor::job_service::{
-        ExecutionForkRequest, ExecutionForkResponse, JobSelection, RuntimeJobService,
+    use pvisor::session_service::{
+        ExecutionForkRequest, ExecutionForkResponse, SessionSelection, SessionService,
     };
     reject_ask_restore_source(&source)?;
-    let response = RuntimeJobService::fork_execution(
+    let response = SessionService::fork_execution(
         &crate::cli::host::service_context(),
         ExecutionForkRequest {
-            job: JobSelection {
+            session: SessionSelection {
                 selector: Some(source.stage_dir()),
                 storage: source.storage,
             },
@@ -295,10 +298,10 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
     )
     .await?;
     match response {
-        ExecutionForkResponse::AlreadyAdmitted { job_id, stage } => {
+        ExecutionForkResponse::AlreadyAdmitted { session_id, stage } => {
             run_log!(
-                "fork request already admitted: Job {} at {}",
-                job_id,
+                "fork request already admitted: Session {} at {}",
+                session_id,
                 stage.display()
             );
             Ok(0)
@@ -308,8 +311,8 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
 }
 
 fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
-    let job = crate::cli::host::lock_selected_job(source)?;
-    // Policy inspection does not mutate the Attempt. The execution-operation
+    let session = crate::cli::host::lock_selected_session(source)?;
+    // Policy inspection does not mutate the Execution. The execution-operation
     // lease above fences its identity/config while a live source keeps its RAM
     // and workspace lease. Restore/fork admission takes its own runtime locks.
     let current = RunRecord::read(&source.stage_dir())?;
@@ -318,19 +321,21 @@ fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
     if let Some(overlay) = &current.overlay {
         super::reject_ask_file_policy(&overlay.access_policy)?;
     }
-    if let Some((job, _)) = &job {
-        super::reject_ask_config(&job.config)?;
-        super::reject_ask_policies(&job.spec.policies, &Default::default())?;
+    if let Some((session, _)) = &session {
+        super::reject_ask_config(&session.config)?;
+        super::reject_ask_policies(&session.spec.policies, &Default::default())?;
     }
     Ok(())
 }
 
-async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyhow::Result<i32> {
-    super::reject_ask_config(&attempt.config)?;
-    super::reject_ask_policies(&attempt.spec.policies, &attempt.overlay.access_policy)?;
-    let stage = attempt.stage.clone();
+async fn execute_restored(
+    execution: pvisor::session_service::RestoredExecution,
+) -> anyhow::Result<i32> {
+    super::reject_ask_config(&execution.config)?;
+    super::reject_ask_policies(&execution.spec.policies, &execution.overlay.access_policy)?;
+    let stage = execution.stage.clone();
     let mut recording = None;
-    let managed = attempt
+    let managed = execution
         .start_with(|config, stage, executor, overlay| {
             super::reject_ask_config(config)?;
             let event_sink: Arc<dyn pvisor::EventSink> = if config.gateway.mode
@@ -364,14 +369,18 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
             Ok(builder.build())
         })
         .await?;
-    announce_job_started(managed.handle());
-    let result = wait_cli_job(managed).await?;
+    announce_session_started(managed.handle());
+    let result = wait_cli_session(managed).await?;
     if let Some(writer) = recording {
         writer.finish()?;
     }
     run_log!("Run Bundle: {}", RunBundle::path(&stage).display());
     if let Some(failure) = &result.failure {
-        run_log!("pVisor Job failed: {:?}: {}", failure.kind, failure.message);
+        run_log!(
+            "pVisor Session failed: {:?}: {}",
+            failure.kind,
+            failure.message
+        );
     }
     Ok(match result.state {
         RunState::Completed => result.exit_code.unwrap_or(0),
@@ -443,11 +452,13 @@ pub(super) fn execution_store_location(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor::JobExecution;
-    use pvisor::job_execution::{ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, ResumeRequest};
-    fn fixture(root: &Path) -> (RunRecord, JobExecution) {
+    use pvisor::Session;
+    use pvisor::session_execution::{
+        ForkOptions, ForkRequest, ResumeRequest, SESSION_SCHEMA_VERSION,
+    };
+    fn fixture(root: &Path) -> (RunRecord, Session) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":1,"run_id":"job-fence","attempt_id":"attempt-old","session_id":"job-fence",
+            "schema_version":1,"run_id":"session-fence","execution_id":"execution-old","session_id":"session-fence",
             "agent":"probe","pid":0,"command":["probe"],"state":"hibernated",
             "started_at_unix_ms":1,"finished_at_unix_ms":2,"storage":root,"network":{},"gateway_listen":null,"overlay":null
         })).unwrap();
@@ -455,13 +466,13 @@ mod tests {
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
         config.overlaynet.mode = pvisor::OverlayNetMode::Off;
-        let job: JobExecution = serde_json::from_value(serde_json::json!({
-            "version":JOB_SCHEMA_VERSION,"run_id":record.run_id,"root":root,
-            "active_stage":root,"previous_stage":root,"active_attempt":"attempt-current",
-            "config":config,"spec":pvisor_core::RunSpec::process("job-fence", "probe", "probe"),
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "version":SESSION_SCHEMA_VERSION,"run_id":record.run_id,"root":root,
+            "active_stage":root,"previous_stage":root,"active_execution":"execution-current",
+            "config":config,"spec":pvisor_core::RunSpec::process("session-fence", "probe", "probe"),
             "state":"suspended","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[root.join("execution-snapshots")]
         })).unwrap();
-        (record, job)
+        (record, session)
     }
     fn assert_conflict(error: anyhow::Error) {
         assert_eq!(
@@ -476,16 +487,16 @@ mod tests {
     #[tokio::test]
     async fn workspace_selector_fork_rejects_before_checkpoint_or_child_stage() {
         let root = tempfile::tempdir().unwrap();
-        let (source, mut job) = fixture(root.path());
-        job.active_attempt = source.attempt_id.clone().unwrap();
-        job.config.overlayfs = Some(OverlayFsSettings {
+        let (source, mut session) = fixture(root.path());
+        session.active_execution = source.execution_id.clone().unwrap();
+        session.config.overlayfs = Some(OverlayFsSettings {
             prepared_workspace: Some(pvisor::PreparedBase {
                 store: root.path().join("private-workspace-store"),
                 base: pvisor::BaseReference { id: "a".repeat(64) },
             }),
             ..Default::default()
         });
-        job.write().unwrap();
+        session.write().unwrap();
         let checkpoints = root.path().join("checkpoints");
         std::fs::create_dir(&checkpoints).unwrap();
         std::fs::write(
@@ -495,7 +506,7 @@ mod tests {
         .unwrap();
         let child = root.path().join("uncreated-child");
         let before_record = serde_json::to_value(&source).unwrap();
-        let before_job = serde_json::to_value(&job).unwrap();
+        let before_session = serde_json::to_value(&session).unwrap();
         let error = fork(ForkArgs {
             source: root.path().into(),
             state: crate::cli::checkpoint::Kind::Workspace,
@@ -527,45 +538,45 @@ mod tests {
             before_record
         );
         assert_eq!(
-            serde_json::to_value(job.current().unwrap()).unwrap(),
-            before_job
+            serde_json::to_value(session.current().unwrap()).unwrap(),
+            before_session
         );
     }
 
     #[tokio::test]
-    async fn execution_fork_policy_check_preserves_the_live_attempt_lease() {
+    async fn execution_fork_policy_check_preserves_the_live_execution_lease() {
         let root = tempfile::tempdir().unwrap();
-        let (source, mut job) = fixture(root.path());
-        job.active_attempt = source.attempt_id.clone().unwrap();
-        let mut stored = serde_json::to_value(&job).unwrap();
-        stored["state"] = serde_json::to_value(JobState::Running).unwrap();
-        job = serde_json::from_value(stored).unwrap();
-        job.write().unwrap();
-        let (_, live_attempt) = source.lock_current().unwrap();
+        let (source, mut session) = fixture(root.path());
+        session.active_execution = source.execution_id.clone().unwrap();
+        let mut stored = serde_json::to_value(&session).unwrap();
+        stored["state"] = serde_json::to_value(SessionState::Running).unwrap();
+        session = serde_json::from_value(stored).unwrap();
+        session.write().unwrap();
+        let (_, live_execution) = source.lock_current().unwrap();
         let before = std::fs::read(root.path().join("run.json")).unwrap();
 
         reject_ask_restore_source(&source).unwrap();
 
         assert!(source.lock_current().is_err());
         assert_eq!(std::fs::read(root.path().join("run.json")).unwrap(), before);
-        drop(live_attempt);
+        drop(live_execution);
     }
 
     #[tokio::test]
     async fn execution_restore_rejects_recorded_and_spec_asks_before_service_mutation() {
         for location in ["recorded", "spec"] {
             let root = tempfile::tempdir().unwrap();
-            let (mut source, mut job) = fixture(root.path());
-            job.active_attempt = source.attempt_id.clone().unwrap();
+            let (mut source, mut session) = fixture(root.path());
+            session.active_execution = source.execution_id.clone().unwrap();
             let ask =
                 pvisor_core::FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![])
                     .unwrap();
             if location == "spec" {
-                job.spec.policies.session.filesystem = Some(ask);
+                session.spec.policies.session.filesystem = Some(ask);
             } else {
                 source.overlay = Some(
                     serde_json::from_value(serde_json::json!({
-                        "id":"job-fence","target":root.path(),
+                        "id":"session-fence","target":root.path(),
                         "upper":{"upper_dir":root.path().join("upper"),"work_dir":root.path().join("work")},
                         "merged_dir":root.path().join("merged"),"stage_dir":root.path(),
                         "auto_apply":false,"state":"staged","access_policy":ask
@@ -574,9 +585,9 @@ mod tests {
                 );
                 source.write().unwrap();
             }
-            job.write().unwrap();
-            assert!(job.config.overlayfs.is_none());
-            let before_job = serde_json::to_value(job.current().unwrap()).unwrap();
+            session.write().unwrap();
+            assert!(session.config.overlayfs.is_none());
+            let before_session = serde_json::to_value(session.current().unwrap()).unwrap();
             let before_record = std::fs::read(root.path().join("run.json")).unwrap();
             for _ in 0..2 {
                 let error = resume_execution(source.clone(), Some("retry".into()), false)
@@ -602,31 +613,31 @@ mod tests {
                 .unwrap_err();
                 assert!(error.to_string().contains("ask file policies"), "{error:#}");
                 assert_eq!(
-                    serde_json::to_value(job.current().unwrap()).unwrap(),
-                    before_job
+                    serde_json::to_value(session.current().unwrap()).unwrap(),
+                    before_session
                 );
                 assert_eq!(
                     std::fs::read(root.path().join("run.json")).unwrap(),
                     before_record
                 );
                 assert!(!root.path().join("child").exists());
-                assert!(!root.path().join("attempts").exists());
+                assert!(!root.path().join("executions").exists());
             }
         }
     }
 
     #[tokio::test]
-    async fn cached_resume_and_fork_replays_are_fenced_under_job_lock() {
+    async fn cached_resume_and_fork_replays_are_fenced_under_session_lock() {
         let root = tempfile::tempdir().unwrap();
-        let (source, mut job) = fixture(root.path());
-        job.resumes.insert(
+        let (source, mut session) = fixture(root.path());
+        session.resumes.insert(
             "replay".into(),
             ResumeRequest {
                 stage: root.path().into(),
                 eager_ram: false,
             },
         );
-        job.forks.insert(
+        session.forks.insert(
             "replay".into(),
             ForkRequest {
                 options: ForkOptions {
@@ -637,11 +648,11 @@ mod tests {
                     eager_ram: false,
                 },
                 stage: root.path().join("unconfirmed-child"),
-                job_id: "child".into(),
+                session_id: "child".into(),
                 checkpoint_id: "checkpoint".into(),
             },
         );
-        job.write().unwrap();
+        session.write().unwrap();
         let before = std::fs::read_dir(root.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -664,7 +675,10 @@ mod tests {
             command: vec![],
         };
         assert_conflict(fork_execution(args, source).await.unwrap_err());
-        assert_eq!(job.current().unwrap().active_attempt, "attempt-current");
+        assert_eq!(
+            session.current().unwrap().active_execution,
+            "execution-current"
+        );
         // The operation lease may be created, but no branch or restore is staged.
         assert!(!root.path().join("unconfirmed-child").exists());
         assert!(before.iter().all(|name| root.path().join(name).exists()));

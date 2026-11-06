@@ -313,7 +313,7 @@ def measure(batch):
         if digest(batch / name) != expected:
             raise ValueError(f"frozen input changed: {name}")
     if (batch / "records.json").exists():
-        raise ValueError("refusing to overwrite a previous attempt")
+        raise ValueError("refusing to overwrite a previous execution")
     records = []
     rng = random.Random(manifest["seed"])
     try:

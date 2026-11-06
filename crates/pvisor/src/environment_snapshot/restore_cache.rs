@@ -23,17 +23,17 @@ type Key = (PathBuf, String);
 struct Slot<T> {
     active: usize,
     deadline: Instant,
-    job: Option<T>,
+    task: Option<T>,
     releasing: bool,
 }
 fn ready_key<T>(slots: &BTreeMap<Key, Slot<T>>, now: Instant) -> Option<Key> {
     slots
         .iter()
-        .find(|(_, s)| s.active == 0 && !s.releasing && s.job.is_some() && s.deadline <= now)
+        .find(|(_, s)| s.active == 0 && !s.releasing && s.task.is_some() && s.deadline <= now)
         .map(|(k, _)| k.clone())
 }
 struct Coordinator {
-    slots: Mutex<BTreeMap<Key, Slot<Job>>>,
+    slots: Mutex<BTreeMap<Key, Slot<Task>>>,
     wake: Condvar,
 }
 
@@ -82,7 +82,7 @@ impl RestoreCacheWindow {
             .or_insert_with(|| Slot {
                 active: 0,
                 deadline: Instant::now() + QUIET,
-                job: None,
+                task: None,
                 releasing: false,
             })
             .active += 1;
@@ -95,18 +95,18 @@ impl RestoreCacheWindow {
         published: &PublishedEnvironment,
         layers: &[(PathBuf, Arc<SharedFilesystemLayer>)],
     ) {
-        match published.source_cache_job(layers) {
-            Ok(Some(mut job)) => {
+        match published.source_cache_session(layers) {
+            Ok(Some(mut task)) => {
                 let mut slots = self
                     .coordinator
                     .slots
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 if let Some(slot) = slots.get_mut(&self.key) {
-                    if let Some(previous) = slot.job.take() {
-                        job.absorb_new_pools(previous);
+                    if let Some(previous) = slot.task.take() {
+                        task.absorb_new_pools(previous);
                     }
-                    slot.job = Some(job);
+                    slot.task = Some(task);
                 }
             }
             Ok(None) => {}
@@ -124,7 +124,7 @@ impl Drop for RestoreCacheWindow {
         if let Some(slot) = slots.get_mut(&self.key) {
             slot.active -= 1;
             slot.deadline = Instant::now() + QUIET;
-            if slot.active == 0 && slot.job.is_none() {
+            if slot.active == 0 && slot.task.is_none() {
                 slots.remove(&self.key);
             }
         }
@@ -141,7 +141,7 @@ impl Coordinator {
                 }
                 let wait = slots
                     .values()
-                    .filter(|s| s.active == 0 && s.job.is_some())
+                    .filter(|s| s.active == 0 && s.task.is_some())
                     .map(|s| s.deadline.saturating_duration_since(Instant::now()))
                     .min()
                     .unwrap_or(Duration::from_secs(3600));
@@ -153,9 +153,9 @@ impl Coordinator {
             };
             let slot = slots.get_mut(&key).unwrap();
             slot.releasing = true;
-            let job = slot.job.take().unwrap();
+            let task = slot.task.take().unwrap();
             drop(slots);
-            job.release();
+            task.release();
             let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             slots.remove(&key);
             self.wake.notify_all();
@@ -169,7 +169,7 @@ pub(super) struct SourceLayer {
     pub paths: Vec<PathBuf>,
     pub _owner: Arc<SharedFilesystemLayer>,
 }
-pub(super) struct Job {
+pub(super) struct Task {
     pub layers: Vec<SourceLayer>,
     pub new_pools: Vec<PoolLayer>,
     pub _reference: File,
@@ -269,7 +269,7 @@ fn open_beneath(root: &File, relative: &Path) -> std::io::Result<File> {
     // SAFETY: successful openat2 returns a fresh owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd as i32) })
 }
-impl Job {
+impl Task {
     pub(super) fn absorb_new_pools(&mut self, previous: Self) {
         self.new_pools.extend(previous.new_pools);
         let files: usize = self.new_pools.iter().map(|p| p.paths.len()).sum();
@@ -349,7 +349,7 @@ mod tests {
             Slot {
                 active: 2,
                 deadline: now,
-                job: Some(1),
+                task: Some(1),
                 releasing: false,
             },
         )]);
@@ -370,7 +370,7 @@ mod tests {
                 Slot {
                     active: 2,
                     deadline: Instant::now(),
-                    job: None,
+                    task: None,
                     releasing: false,
                 },
             )])),

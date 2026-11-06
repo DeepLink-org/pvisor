@@ -30,8 +30,8 @@
 //! work, and report [`AgentState::Quiesced`] with the same checkpoint ID.
 //! pVisor freezes that participant set, rejects every new or replacement
 //! `Hello`, and never expires a participant until the checkpoint completes or
-//! is abandoned. Each checkpoint attempt requires a fresh matching report;
-//! an acknowledgement retained from an earlier attempt cannot satisfy it.
+//! is abandoned. Each checkpoint execution requires a fresh matching report;
+//! an acknowledgement retained from an earlier execution cannot satisfy it.
 //!
 //! A new `Quiesced` report whose ID does not match the active checkpoint is a
 //! conflict. Repeating the exact accepted report is idempotent, including

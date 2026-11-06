@@ -92,7 +92,7 @@ def audit(root, *, formal=False, arms=None):
         for a in report["arms"]
         for p in report["patterns"]
     }
-    rows = report["attempts"]
+    rows = report["executions"]
     if (
         len(rows) != len(expected)
         or {

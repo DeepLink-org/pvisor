@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from linux_cold_runtime import competing_jobs, digest, settle_unit
+from linux_cold_runtime import competing_sessions, digest, settle_unit
 
 
 def host_identity():
@@ -99,14 +99,18 @@ def validate(raw, condition):
 def wait_for_quiet(output, quiet_seconds=30, deadline_seconds=180, allow_builds=False):
     deadline, quiet_since, rows = time.monotonic() + deadline_seconds, None, []
     while True:
-        row = competing_jobs(Path("/sys/fs/cgroup/pvisor-no-owned-service"))
+        row = competing_sessions(Path("/sys/fs/cgroup/pvisor-no-owned-service"))
         rows.append(row)
         (output / "prelaunch-wait.json").write_text(json.dumps(rows) + "\n")
         now = time.monotonic()
-        jobs = [job for job in row["jobs"] if not allow_builds or job.get("kind") != "build/test"]
+        sessions = [
+            session
+            for session in row["sessions"]
+            if not allow_builds or session.get("kind") != "build/test"
+        ]
         if quiet_seconds == 0:
-            return not jobs
-        if jobs:
+            return not sessions
+        if sessions:
             quiet_since = None
         elif quiet_since is None:
             quiet_since = now
@@ -134,10 +138,10 @@ def validate_observation(rows, guards, allow_builds=False, memory_max=2147483648
         ):
             raise ValueError("installed resource budget mismatch")
     if not guards or any(
-        job
+        session
         for item in guards
-        for job in item.get("jobs", [])
-        if not allow_builds or job.get("kind") != "build/test"
+        for session in item.get("sessions", [])
+        if not allow_builds or session.get("kind") != "build/test"
     ):
         raise ValueError("foreign VM/build or missing host guard during sampling")
 
@@ -187,13 +191,13 @@ def observer(unit, stop, output):
                         rows.append(dict(error=str(error)))
             if now - last_guard >= 0.5:
                 guards.append(
-                    competing_jobs(group or Path("/sys/fs/cgroup/pvisor-no-owned-service"))
+                    competing_sessions(group or Path("/sys/fs/cgroup/pvisor-no-owned-service"))
                 )
                 last_guard = now
     except Exception as error:
         rows.append(dict(error=str(error)))
     finally:
-        guards.append(competing_jobs(group or Path("/sys/fs/cgroup/pvisor-no-owned-service")))
+        guards.append(competing_sessions(group or Path("/sys/fs/cgroup/pvisor-no-owned-service")))
         (output / "monitor.json").write_text(json.dumps(rows) + "\n")
         (output / "guard.json").write_text(json.dumps(guards, indent=2) + "\n")
 

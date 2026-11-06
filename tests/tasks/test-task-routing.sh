@@ -12,7 +12,7 @@ grep -Fq 'Task: fmt' "$work/task-info"
 MISE_DATA_DIR="$work/uninstalled-tools" mise -C "$MISE_PROJECT_ROOT" env --json > "$work/env.json"
 jq -e '.UV_PYTHON == "python3"' "$work/env.json" > /dev/null
 # Run a release check with only Python present; nested task startup must not
-# install Rust, Zig or the Cargo plugins in an explicitly provisioned CI job.
+# install Rust, Zig or the Cargo plugins in an explicitly provisioned CI session.
 python_install=$(mise where python)
 mkdir -p "$work/python-only/installs/python"
 ln -s "$python_install" "$work/python-only/installs/python/${python_install##*/}"

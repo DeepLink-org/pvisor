@@ -153,10 +153,10 @@ fn inspect_reads_controlling_terminal_ctrl_c_and_restores_foreground() {
     std::fs::create_dir_all(stage.join("upper")).unwrap();
     std::fs::create_dir(&target).unwrap();
     let record: pvisor::RunRecord = serde_json::from_value(serde_json::json!({
-        "schema_version":1,"run_id":"job-pty-inspect","session_id":"session-pty","agent":"sh",
+        "schema_version":1,"run_id":"session-pty-inspect","session_id":"session-pty","agent":"sh",
         "pid":0,"command":["/bin/sh"],"state":"completed","started_at_unix_ms":1,
         "finished_at_unix_ms":2,"storage":stage,"network":{},"gateway_listen":null,
-        "overlay":{"id":"job-pty-inspect","generation":7,"target":target,
+        "overlay":{"id":"session-pty-inspect","generation":7,"target":target,
             "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
             "merged_dir":stage.join("merged"),"stage_dir":stage,"auto_apply":false,"state":"staged"}
     }))

@@ -66,7 +66,7 @@ With Header JSON length H and Record JSON lengths Rᵢ, logical file length is `
 
 ### Open, locking and initialization {#open}
 
-`Journal::open()` creates parents and opens the log read/write/create with mode 0600 and `O_NOFOLLOW`, reapplies permissions and attempts an exclusive lock. `O_NOFOLLOW` constrains the final path component rather than authenticating the whole directory chain. A second cooperating writer cannot simultaneously open the locked file; bypassing programs remain outside the lock protocol.
+`Journal::open()` creates parents and opens the log read/write/create with mode 0600 and `O_NOFOLLOW`, reapplies permissions and executions an exclusive lock. `O_NOFOLLOW` constrains the final path component rather than authenticating the whole directory chain. A second cooperating writer cannot simultaneously open the locked file; bypassing programs remain outside the lock protocol.
 
 Empty files receive Header/LF followed by file and parent-directory sync. Nonempty files undergo tail-repair scan and another `sync_all`, ensuring a recovered complete record is synced before a retry can receive LocalSync. It then rebuilds seen, causes and unresolved.
 

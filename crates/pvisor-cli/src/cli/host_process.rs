@@ -698,7 +698,7 @@ impl TerminalOwner {
         }
         ensure!(
             original == unsafe { libc::getpgrp() },
-            "interactive Job requires the frontend foreground process group; bring it to the foreground first"
+            "interactive Session requires the frontend foreground process group; bring it to the foreground first"
         );
         Ok(Some(original))
     }

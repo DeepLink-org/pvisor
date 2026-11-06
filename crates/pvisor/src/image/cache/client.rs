@@ -438,12 +438,12 @@ impl CacheClient {
             .is_some_and(|handle| pinned_read(handle, &request));
         // The one-retry limit and total budget are per hop. A downstream retry
         // may start another upstream call with its own budget; no end-to-end
-        // deadline or attempt count is carried by the bridge protocol.
+        // deadline or execution count is carried by the bridge protocol.
         let deadline = retry.then(|| Instant::now() + timeout);
         let mut retries = 0;
         let result = loop {
-            // The attempt owns its lease; it is dropped before another reservation.
-            let attempt = (|| {
+            // The execution owns its lease; it is dropped before another reservation.
+            let execution = (|| {
                 let budget = || match deadline {
                     Some(deadline) => remaining(deadline),
                     None => Ok(timeout),
@@ -483,7 +483,7 @@ impl CacheClient {
                 lease.reusable = pool.enabled;
                 Ok::<_, anyhow::Error>(result)
             })();
-            match attempt {
+            match execution {
                 Ok(result) => break result,
                 Err(error) if retry && retries == 0 && transport_disconnect(&error) => {
                     retries = 1;
@@ -1048,7 +1048,7 @@ pub(super) mod retry_tests {
                 assert_eq!(
                     check.accept().unwrap_err().kind(),
                     std::io::ErrorKind::WouldBlock,
-                    "unexpected extra attempt for {sha256:?}"
+                    "unexpected extra execution for {sha256:?}"
                 );
             }
         }
@@ -1168,7 +1168,7 @@ pub(super) mod retry_tests {
         let client = tests::use_server_reuse(CacheClient::from_binding(binding).unwrap(), true);
         let server = std::thread::spawn(move || {
             let mut original = None;
-            for attempt in 0..2 {
+            for execution in 0..2 {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(3)))
@@ -1178,7 +1178,7 @@ pub(super) mod retry_tests {
                 write_frame(&mut socket, &Response::Ready).unwrap();
                 let envelope: Envelope = read_frame(&mut socket).unwrap();
                 let value = serde_json::to_value(envelope).unwrap();
-                if attempt == 0 {
+                if execution == 0 {
                     original = Some(value);
                 } else {
                     assert_eq!(original.as_ref().unwrap(), &value);

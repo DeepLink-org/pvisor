@@ -105,7 +105,7 @@ fn forward_causal_references_resolve_but_cycles_are_rejected() {
 async fn concurrent_appends_have_unique_positions_and_duplicate_retries_converge() {
     let trace = Trace::new(Journal::memory(), "test");
     let shared = event(&trace);
-    let mut jobs = Vec::new();
+    let mut sessions = Vec::new();
     for i in 0..40 {
         let journal = trace.journal().clone();
         let value = if i % 2 == 0 {
@@ -113,13 +113,13 @@ async fn concurrent_appends_have_unique_positions_and_duplicate_retries_converge
         } else {
             event(&trace)
         };
-        jobs.push(tokio::spawn(async move {
+        sessions.push(tokio::spawn(async move {
             journal.append_async(value).await.unwrap()
         }));
     }
     let mut shared_position = None;
-    for job in jobs {
-        let receipt = job.await.unwrap();
+    for session in sessions {
+        let receipt = session.await.unwrap();
         if receipt.event == shared.id {
             if let Some(prior) = &shared_position {
                 assert_eq!(prior, &receipt.position);

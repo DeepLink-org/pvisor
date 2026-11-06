@@ -113,7 +113,7 @@ pub struct ProcessConfig {
     /// Capture workload output for bootstrap attachment even without a control
     /// adapter. Without a PTY stdout/stderr are separate pipes (not terminals).
     /// With no control adapter, Pipe stdin is pumped from bootstrap stdin and
-    /// cancelled on workload completion. Defaults to false for ordinary Jobs.
+    /// cancelled on workload completion. Defaults to false for ordinary Sessions.
     /// With a PTY and Closed stdin, input is /dev/null so reads observe EOF;
     /// stdout/stderr still share the terminal and its configured dimensions.
     pub attached: bool,
@@ -128,7 +128,7 @@ pub struct ProcessConfig {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StdinMode {
-    /// Inherit the bootstrap console, retaining ordinary Job terminal behavior.
+    /// Inherit the bootstrap console, retaining ordinary Session terminal behavior.
     #[default]
     Inherit,
     /// Open /dev/null for noninteractive workloads.

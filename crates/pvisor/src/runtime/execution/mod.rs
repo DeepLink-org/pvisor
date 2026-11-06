@@ -1,4 +1,4 @@
-//! Attempt-local execution facts and their single state projection.
+//! Execution-local execution facts and their single state projection.
 //!
 //! Native effects run outside the state lock. The existing VM transition/idle
 //! fences still order those effects; this owner records admission and results.
@@ -34,7 +34,7 @@ pub struct ExecutionProgress {
     pub outcome_unknown: bool,
 }
 
-/// One coherent observation of an Attempt and the history position that produced it.
+/// One coherent observation of an Execution and the history position that produced it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionSnapshot {
     /// Status at `progress.applied`, including any explicitly marked local history gap.
@@ -146,14 +146,15 @@ impl State {
             );
             ensure!(
                 matches!(self.status.state, RunState::Running | RunState::Suspended),
-                "attempt is not running or suspended"
+                "execution is not running or suspended"
             );
         }
         match input {
             Input::Initialized { .. } => anyhow::bail!("execution is already initialized"),
             Input::Queued { id, kind, .. } => {
                 ensure!(
-                    self.status.attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
+                    self.status.execution.executor.kind
+                        == pvisor_core::ExecutorKind::VirtualMachine,
                     "live VM controls require a VM executor"
                 );
                 kind.validate()?;
@@ -212,9 +213,9 @@ impl State {
                         checkpoint.validate()?;
                         ensure!(
                             checkpoint.source_run_id == self.status.run_id.as_str()
-                                && checkpoint.source_attempt_id
-                                    == self.status.attempt.attempt_id.as_str(),
-                            "checkpoint belongs to another attempt"
+                                && checkpoint.source_execution_id
+                                    == self.status.execution.execution_id.as_str(),
+                            "checkpoint belongs to another execution"
                         );
                     }
                     (
@@ -300,9 +301,9 @@ impl State {
                     self.status.message = message.clone();
                     self.status.updated_at_unix_ms = *at;
                     if matches!(state, RunState::Starting | RunState::Running)
-                        && self.status.attempt.started_at_unix_ms.is_none()
+                        && self.status.execution.started_at_unix_ms.is_none()
                     {
-                        self.status.attempt.started_at_unix_ms = Some(*at);
+                        self.status.execution.started_at_unix_ms = Some(*at);
                     }
                 }
             }
@@ -325,7 +326,7 @@ impl State {
                     self.status.state = *state;
                     self.status.message = message.clone();
                     self.status.updated_at_unix_ms = *at;
-                    self.status.attempt.finished_at_unix_ms = Some(*at);
+                    self.status.execution.finished_at_unix_ms = Some(*at);
                 }
             }
         }
@@ -338,7 +339,7 @@ struct Owner {
     trace: Trace,
 }
 
-/// Attempt-local execution owner for status, history, cancellation and native controls.
+/// Execution-local execution owner for status, history, cancellation and native controls.
 /// Clones share one state projection and the same native transition fence. Accepted
 /// controls continue after a dropped waiter while the Tokio runtime remains alive.
 /// Terminal publication follows resource teardown and completion evidence; history
@@ -457,13 +458,13 @@ impl Execution {
         self.status.borrow().clone()
     }
 
-    /// Fresh Attempts only. A retained stage gets its own per-Attempt journal;
+    /// Fresh Executions only. A retained stage gets its own per-Execution journal;
     /// prior histories are never truncated or silently reused.
     pub(crate) async fn retain(&self, record: Option<&super::RunRecord>) -> anyhow::Result<()> {
         let Some(record) = record else { return Ok(()) };
         let path = record.stage_dir().join(format!(
             "execution-{}.jsonl",
-            self.status().attempt.attempt_id
+            self.status().execution.execution_id
         ));
         let journal = tokio::task::spawn_blocking(move || {
             let journal = Journal::open(&path)?;
@@ -686,8 +687,8 @@ fn event(trace: &Trace, status: &RunStatus, input: &Input) -> anyhow::Result<Eve
         vec![
             "run".into(),
             status.run_id.to_string(),
-            "attempt".into(),
-            status.attempt.attempt_id.to_string(),
+            "execution".into(),
+            status.execution.execution_id.to_string(),
         ],
         None,
         None,
@@ -732,8 +733,8 @@ fn replay(records: &[Record]) -> anyhow::Result<State> {
                     == [
                         "run",
                         state.status.run_id.as_str(),
-                        "attempt",
-                        state.status.attempt.attempt_id.as_str()
+                        "execution",
+                        state.status.execution.execution_id.as_str()
                     ],
             "foreign execution history record"
         );
@@ -746,9 +747,9 @@ fn replay(records: &[Record]) -> anyhow::Result<State> {
 mod tests;
 mod vm;
 
-mod job;
-pub(crate) use job::JobTransition;
-pub use job::{JobExecution, JobState};
+mod session;
+pub(crate) use session::SessionTransition;
+pub use session::{Session, SessionState};
 
 mod record;
 pub use record::RunRecordState;

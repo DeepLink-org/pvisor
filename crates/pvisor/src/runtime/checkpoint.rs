@@ -29,7 +29,7 @@ pub struct LogicalCheckpoint {
     pub schema_version: u32,
     pub kind: WorkspaceCheckpointKind,
     #[serde(deserialize_with = "Option::<String>::deserialize")]
-    pub source_attempt_id: Option<String>,
+    pub source_execution_id: Option<String>,
     pub workspace_generation: u64,
     pub checkpoint_id: String,
     pub run_id: String,
@@ -87,7 +87,7 @@ pub fn create_logical_checkpoint(
     create_stopped_checkpoint_locked(&current, requested_id)
 }
 
-/// Caller retains the Job lease through publication and any branch pin/copy.
+/// Caller retains the Session lease through publication and any branch pin/copy.
 pub fn create_stopped_checkpoint_locked(
     record: &RunRecord,
     requested_id: Option<&str>,
@@ -162,7 +162,7 @@ fn create_checkpoint(
         let checkpoint = LogicalCheckpoint {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
             kind: WorkspaceCheckpointKind::Workspace,
-            source_attempt_id: record.attempt_id.clone(),
+            source_execution_id: record.execution_id.clone(),
             workspace_generation: overlay.generation,
             checkpoint_id,
             run_id: record.run_id.clone(),
@@ -230,7 +230,7 @@ fn validate_owned_checkpoint(
     anyhow::ensure!(
         checkpoint.run_id == record.run_id
             && root.file_name().and_then(|s| s.to_str()) == Some(&checkpoint.checkpoint_id),
-        "checkpoint identity or Job ownership mismatch"
+        "checkpoint identity or Session ownership mismatch"
     );
     let root = root.canonicalize()?;
     anyhow::ensure!(
@@ -278,9 +278,9 @@ pub fn resolve_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<Logica
                 .strip_prefix("checkpoint-")
                 .is_some_and(|suffix| suffix.starts_with(id))
     });
-    let checkpoint = candidates
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Job {} has no checkpoint matching {id}", record.run_id))?;
+    let checkpoint = candidates.next().ok_or_else(|| {
+        anyhow::anyhow!("Session {} has no checkpoint matching {id}", record.run_id)
+    })?;
     anyhow::ensure!(
         candidates.next().is_none(),
         "ambiguous checkpoint prefix {id}"
@@ -289,7 +289,7 @@ pub fn resolve_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<Logica
 }
 
 /// A hard link is a durable branch retention reference, including when the
-/// child fails before its runner starts. Job lease serializes pin vs delete.
+/// child fails before its runner starts. Session lease serializes pin vs delete.
 pub fn pin_checkpoint(checkpoint: &LogicalCheckpoint, child_stage: &Path) -> anyhow::Result<()> {
     fs::hard_link(checkpoint.manifest_path(), child_stage.join(SOURCE_CHECKPOINT_PIN))
         .map_err(|e| anyhow::anyhow!("retain source checkpoint: {e}; workspace branches currently require a stage on the same filesystem"))?;
@@ -303,7 +303,7 @@ pub fn checkpoint_branch_refs(checkpoint: &LogicalCheckpoint) -> anyhow::Result<
         .saturating_sub(1))
 }
 
-/// In-memory read-only projection, never a replacement Job/Attempt record.
+/// In-memory read-only projection, never a replacement Session/Execution record.
 pub fn workspace_view(
     record: &RunRecord,
     checkpoint: &LogicalCheckpoint,
@@ -312,7 +312,7 @@ pub fn workspace_view(
     let overlay = view
         .overlay
         .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("Job has no staged filesystem"))?;
+        .ok_or_else(|| anyhow::anyhow!("Session has no staged filesystem"))?;
     overlay.upper.upper_dir = checkpoint.upper_snapshot.clone();
     overlay.target = checkpoint.target.clone();
     overlay.access_policy = checkpoint.access_policy.clone();
@@ -400,7 +400,7 @@ pub(crate) fn validate_checkpoint_id(id: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::job_service::{RuntimeJobService, ServiceContext};
+    use crate::runtime::session_service::{ServiceContext, SessionService};
     use crate::runtime::{OverlayRecord, OverlayUpper, RunLineage};
     use std::os::unix::fs::MetadataExt;
 
@@ -483,7 +483,7 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&upper).unwrap();
         RunRecord {
-            attempt_id: None,
+            execution_id: None,
             schema_version: 1,
             completion_protocol: None,
             live_control: None,
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_lease_does_not_make_an_unconfirmed_attempt_stopped() {
+    fn missing_lease_does_not_make_an_unconfirmed_execution_stopped() {
         let temp = tempfile::tempdir().unwrap();
         let mut record = stopped_record(temp.path());
         record.state = crate::RunRecordState::Running;
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(checkpoint_branch_refs(&cp).unwrap(), 1);
         let context = ServiceContext::default();
         assert!(
-            RuntimeJobService::delete_selected_workspace_checkpoint(
+            SessionService::delete_selected_workspace_checkpoint(
                 &context,
                 &reopened,
                 "branch-point",
@@ -641,12 +641,8 @@ mod tests {
             .contains("CHECKPOINT_REFERENCED")
         );
         fs::remove_file(child.join(SOURCE_CHECKPOINT_PIN)).unwrap();
-        RuntimeJobService::delete_selected_workspace_checkpoint(
-            &context,
-            &reopened,
-            "branch-point",
-        )
-        .unwrap();
+        SessionService::delete_selected_workspace_checkpoint(&context, &reopened, "branch-point")
+            .unwrap();
         assert_eq!(fs::read(child.join("upper/file")).unwrap(), b"child");
     }
 
@@ -696,7 +692,7 @@ mod tests {
         let cp = create_logical_checkpoint(&record, None).unwrap();
         for field in [
             "kind",
-            "source_attempt_id",
+            "source_execution_id",
             "workspace_generation",
             "lower_dirs",
             "protect_target",

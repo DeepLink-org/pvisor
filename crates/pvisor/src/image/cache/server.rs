@@ -77,7 +77,7 @@ const PREPARE_WORKERS: usize = 2;
 type ExchangeResult = anyhow::Result<(Response, Vec<u8>)>;
 
 // Connections keep their sockets and admission permits; workers return results.
-type PrepareJob = (mpsc::SyncSender<ExchangeResult>, Request);
+type PrepareTask = (mpsc::SyncSender<ExchangeResult>, Request);
 
 struct ConnectionPermit(Arc<AtomicUsize>);
 impl ConnectionPermit {
@@ -102,8 +102,8 @@ struct ConnectionHandlers {
     active: Arc<AtomicUsize>,
     store: Arc<PortableCache>,
     token: Arc<Option<String>>,
-    files: mpsc::SyncSender<PrepareJob>,
-    prepare: mpsc::SyncSender<PrepareJob>,
+    files: mpsc::SyncSender<PrepareTask>,
+    prepare: mpsc::SyncSender<PrepareTask>,
 }
 impl ConnectionHandlers {
     fn dispatch(&self, stream: Stream) -> anyhow::Result<std::thread::JoinHandle<()>> {
@@ -135,10 +135,10 @@ fn start_request_workers(
     count: usize,
     execute: impl Fn(Request) -> ExchangeResult + Send + Sync + 'static,
 ) -> (
-    mpsc::SyncSender<PrepareJob>,
+    mpsc::SyncSender<PrepareTask>,
     Vec<std::thread::JoinHandle<()>>,
 ) {
-    let (send, receive) = mpsc::sync_channel::<PrepareJob>(REQUEST_QUEUE_LIMIT);
+    let (send, receive) = mpsc::sync_channel::<PrepareTask>(REQUEST_QUEUE_LIMIT);
     let receive = Arc::new(Mutex::new(receive));
     let execute = Arc::new(execute);
     let workers = (0..count)
@@ -147,8 +147,8 @@ fn start_request_workers(
             let execute = execute.clone();
             std::thread::spawn(move || {
                 loop {
-                    let job = receive.lock().unwrap().recv();
-                    let Ok((reply, request)) = job else { break };
+                    let task = receive.lock().unwrap().recv();
+                    let Ok((reply, request)) = task else { break };
                     let result = execute(request);
                     let _ = reply.send(result);
                 }
@@ -163,7 +163,7 @@ fn serve_connection(
     stream: Stream,
     store: &PortableCache,
     token: Option<&str>,
-    prepare: Option<&mpsc::SyncSender<PrepareJob>>,
+    prepare: Option<&mpsc::SyncSender<PrepareTask>>,
 ) -> anyhow::Result<()> {
     serve_connection_queued(stream, store, token, prepare, None, None)
 }
@@ -172,8 +172,8 @@ fn serve_connection_queued(
     mut stream: Stream,
     store: &PortableCache,
     token: Option<&str>,
-    prepare: Option<&mpsc::SyncSender<PrepareJob>>,
-    files: Option<&mpsc::SyncSender<PrepareJob>>,
+    prepare: Option<&mpsc::SyncSender<PrepareTask>>,
+    files: Option<&mpsc::SyncSender<PrepareTask>>,
     _permit: Option<ConnectionPermit>,
 ) -> anyhow::Result<()> {
     stream.nodelay()?;

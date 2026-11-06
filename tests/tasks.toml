@@ -161,9 +161,9 @@ case_run success <<'COMMAND'
 pvisor
 COMMAND
 stdout_has 'chosen subject'
-mkdir -p "$PVISOR_CASE_RECORDS/job"
-printf '%s' '{"run":{"state":"completed","exit_code":0},"safety":{"enabled":true},"changes":[{"path":"note"}]}' > "$PVISOR_CASE_RECORDS/job/run-bundle.json"
-printf '%s' '{"overlay":null}' > "$PVISOR_CASE_RECORDS/job/run.json"
+mkdir -p "$PVISOR_CASE_RECORDS/session"
+printf '%s' '{"run":{"state":"completed","exit_code":0},"safety":{"enabled":true},"changes":[{"path":"note"}]}' > "$PVISOR_CASE_RECORDS/session/run-bundle.json"
+printf '%s' '{"overlay":null}' > "$PVISOR_CASE_RECORDS/session/run.json"
 bundle_expect run.state completed
 bundle_expect run.exit_code 0
 bundle_expect safety.enabled true

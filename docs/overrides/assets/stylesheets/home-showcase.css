@@ -95,24 +95,24 @@
 .pv-demo input[type="range"] { min-width: 0; width: 100%; accent-color: #81b8ff; cursor: pointer; }
 .pv-history-legend { display: flex; flex-wrap: wrap; gap: 7px 12px; padding: 9px 12px 12px; color: #8ea5c1; font: 10px/1.4 ui-monospace, monospace; }
 .pv-sim-workspace { background: radial-gradient(#8dbbf01b .65px, transparent .65px) 0 0 / 8px 8px; }
-.pv-sim-jobs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px; }
-.pv-demo .pv-sim-job { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; min-height: 108px; padding: 10px; background: #13263c; border-color: #344f6b; text-align: left; overflow: hidden; }
-.pv-demo .pv-sim-job[aria-pressed="true"] { border-color: var(--job-color); box-shadow: inset 2px 0 var(--job-color); background: #1a334e; }
-.pv-job-top { display: flex; gap: 7px; align-items: center; }
-.pv-job-top strong { color: var(--job-color); font-weight: 600; }
-.pv-job-top > span { color: #8ea5c1; font-size: 10px; margin-left: auto; }
+.pv-sim-sessions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px; }
+.pv-demo .pv-sim-session { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; min-height: 108px; padding: 10px; background: #13263c; border-color: #344f6b; text-align: left; overflow: hidden; }
+.pv-demo .pv-sim-session[aria-pressed="true"] { border-color: var(--session-color); box-shadow: inset 2px 0 var(--session-color); background: #1a334e; }
+.pv-session-top { display: flex; gap: 7px; align-items: center; }
+.pv-session-top strong { color: var(--session-color); font-weight: 600; }
+.pv-session-top > span { color: #8ea5c1; font-size: 10px; margin-left: auto; }
 .pv-agent-icon { display: inline-block; width: 24px; height: 21px; flex: 0 0 24px; shape-rendering: crispEdges; }
-.pv-job-name { color: #e0e9f7; font: 12px/1.5 ui-sans-serif, system-ui, sans-serif; }
-.pv-job-status { color: #abc1db; font-size: 10px; }
-.pv-job-bottom { color: #8ea5c1; font-size: 9px; margin-top: auto; }
-.pv-job-progress { height: 2px; background: #223951; position: absolute; bottom: 0; left: 0; right: 0; }
-.pv-job-progress i { display: block; height: 100%; background: var(--job-color); opacity: .6; transition: width .6s; }
-.pv-sim-job[data-state="conflict"] .pv-job-status, .pv-sim-job[data-state="failed"] .pv-job-status { color: #ffaba5; }
-.pv-sim-job[data-state="applied"] .pv-job-status { color: #80dac0; }
-.pv-sim-job[data-state="dropped"] { opacity: .6; }
-.pv-job-placeholder { display: flex; flex-wrap: wrap; align-items: center; align-content: center; gap: 7px; min-height: 108px; padding: 10px; border: 1px dashed #2a405a; border-radius: 4px; box-sizing: border-box; color: #7f96b1; font-size: 10px; }
-.pv-job-placeholder .pv-agent-icon { opacity: .3; width: 20px; }
-.pv-job-placeholder small { flex-basis: 100%; font-size: 9px; opacity: .7; }
+.pv-session-name { color: #e0e9f7; font: 12px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.pv-session-status { color: #abc1db; font-size: 10px; }
+.pv-session-bottom { color: #8ea5c1; font-size: 9px; margin-top: auto; }
+.pv-session-progress { height: 2px; background: #223951; position: absolute; bottom: 0; left: 0; right: 0; }
+.pv-session-progress i { display: block; height: 100%; background: var(--session-color); opacity: .6; transition: width .6s; }
+.pv-sim-session[data-state="conflict"] .pv-session-status, .pv-sim-session[data-state="failed"] .pv-session-status { color: #ffaba5; }
+.pv-sim-session[data-state="applied"] .pv-session-status { color: #80dac0; }
+.pv-sim-session[data-state="dropped"] { opacity: .6; }
+.pv-session-placeholder { display: flex; flex-wrap: wrap; align-items: center; align-content: center; gap: 7px; min-height: 108px; padding: 10px; border: 1px dashed #2a405a; border-radius: 4px; box-sizing: border-box; color: #7f96b1; font-size: 10px; }
+.pv-session-placeholder .pv-agent-icon { opacity: .3; width: 20px; }
+.pv-session-placeholder small { flex-basis: 100%; font-size: 9px; opacity: .7; }
 .pv-project-summary { margin: 0 12px 12px; padding: 12px; background: #102138; border: 1px solid #304964; border-radius: 4px; }
 .pv-project-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 9px; font-size: 11px; }
 .pv-project-heading strong { color: #cddbec; font-weight: 500; }
@@ -199,7 +199,7 @@
   .pv-mechanism-actions { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pc-home a.pv-idea, .pv-job-progress i { transition: none; }
+  .pc-home a.pv-idea, .pv-session-progress i { transition: none; }
 }
 /* Short, independent process loops. Their static state remains readable. */
 .pv-phase-b, .pv-phase-c { opacity: 1; }

@@ -50,7 +50,7 @@ pub struct ExecutionCheckpoint {
     pub snapshot_id: String,
     pub store: std::path::PathBuf,
     pub source_run_id: String,
-    pub source_attempt_id: String,
+    pub source_execution_id: String,
     pub created_at_unix_ms: u64,
     pub ram_storage: SnapshotRamStorage,
 }
@@ -70,8 +70,8 @@ impl ExecutionCheckpoint {
                 && self.store.as_os_str().len() <= 4096
                 && !self.source_run_id.trim().is_empty()
                 && self.source_run_id.len() <= 256
-                && !self.source_attempt_id.trim().is_empty()
-                && self.source_attempt_id.len() <= 256
+                && !self.source_execution_id.trim().is_empty()
+                && self.source_execution_id.len() <= 256
                 && self.created_at_unix_ms > 0,
             "incomplete execution checkpoint binding"
         );
@@ -107,8 +107,8 @@ impl ExecutionSuspension {
             !receipt.request_id.trim().is_empty()
                 && receipt.request_id.len() <= 256
                 && receipt.checkpoint.source_run_id == result.run_id.as_str()
-                && receipt.checkpoint.source_attempt_id == result.attempt_id.as_str(),
-            "suspension receipt belongs to another Run/Attempt or request"
+                && receipt.checkpoint.source_execution_id == result.execution_id.as_str(),
+            "suspension receipt belongs to another Run/Execution or request"
         );
         Ok(receipt)
     }

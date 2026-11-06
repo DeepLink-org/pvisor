@@ -22,14 +22,14 @@
       <div class="pv-sim-metrics" data-metrics></div>
       <div class="pv-sim-columns">
         <section class="pv-sim-history" aria-labelledby="history-title">
-          <div class="pv-pane-heading"><h3 id="history-title">{% if zh %}尝试与接收{% else %}Attempts & acceptance{% endif %}</h3><button type="button" data-action="fit" aria-pressed="false">{% if zh %}全部历史{% else %}Fit history{% endif %}</button></div>
+          <div class="pv-pane-heading"><h3 id="history-title">{% if zh %}尝试与接收{% else %}Executions & acceptance{% endif %}</h3><button type="button" data-action="fit" aria-pressed="false">{% if zh %}全部历史{% else %}Fit history{% endif %}</button></div>
           <div class="pv-history-canvas" data-history-canvas></div>
           <div class="pv-history-navigation"><label for="pv-history-range">{% if zh %}浏览历史{% else %}Browse history{% endif %}</label><input id="pv-history-range" data-history-range type="range" min="0" max="0" value="0" step="1"><button type="button" data-action="follow">{% if zh %}回到现在{% else %}Follow{% endif %}</button></div>
           <div class="pv-history-legend"><span>◇ {% if zh %}写入 / 测试{% else %}edit / test{% endif %}</span><span>× {% if zh %}失败 / 冲突{% else %}failure / conflict{% endif %}</span><span>┈ {% if zh %}接收{% else %}apply{% endif %}</span><span>○ {% if zh %}丢弃{% else %}drop{% endif %}</span></div>
         </section>
-        <section class="pv-sim-workspace" aria-labelledby="jobs-title">
-          <div class="pv-pane-heading"><h3 id="jobs-title">{% if zh %}任务与暂存区{% else %}Jobs & stages{% endif %}</h3><button type="button" data-action="overview">{% if zh %}总览{% else %}Overview{% endif %}</button></div>
-          <div class="pv-sim-jobs" data-jobs></div>
+        <section class="pv-sim-workspace" aria-labelledby="sessions-title">
+          <div class="pv-pane-heading"><h3 id="sessions-title">{% if zh %}任务与暂存区{% else %}Sessions & stages{% endif %}</h3><button type="button" data-action="overview">{% if zh %}总览{% else %}Overview{% endif %}</button></div>
+          <div class="pv-sim-sessions" data-sessions></div>
           <div class="pv-project-summary" data-project></div>
         </section>
         <section class="pv-sim-inspector" aria-labelledby="inspector-title">
@@ -43,5 +43,5 @@
       <div class="pv-visually-hidden" data-announcement aria-live="polite"></div>
     </div>
   </div>
-  <p class="pv-demo-footnote">{% if zh %}浏览器内的工作流示意，使用 Host Jobs 与文件暂存；任务调度和测试输出为示例。分叉从已停止任务的文件检查点开始，接收前先审查，网络访问另受策略约束。{% else %}A browser simulation of Host Jobs and staged files, with example coordination and test output. File forks start from stopped Jobs; acceptance follows review. Network access has separate policy controls.{% endif %} <a href="guides/fork-checkpoint/">{% if zh %}文件分叉的条件 ↗{% else %}File-fork requirements ↗{% endif %}</a></p>
+  <p class="pv-demo-footnote">{% if zh %}浏览器内的工作流示意，使用 Host Sessions 与文件暂存；任务调度和测试输出为示例。分叉从已停止任务的文件检查点开始，接收前先审查，网络访问另受策略约束。{% else %}A browser simulation of Host Sessions and staged files, with example coordination and test output. File forks start from stopped Sessions; acceptance follows review. Network access has separate policy controls.{% endif %} <a href="guides/fork-checkpoint/">{% if zh %}文件分叉的条件 ↗{% else %}File-fork requirements ↗{% endif %}</a></p>
 </section>

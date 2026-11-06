@@ -372,7 +372,7 @@ impl Drop for FingerprintFlight<'_> {
 }
 
 /// Private file contents prepared without publishing an upper namespace entry.
-/// Drop attempts to remove its private file and, for the last receipt, the
+/// Drop tries to remove its private file and, for the last receipt, the
 /// exclusively created batch directory. Baseline observations survive failure.
 #[derive(Debug)]
 pub struct PreparedCopyUp {
@@ -651,7 +651,7 @@ fn layer_metadata_with_parents(
                     }
                     if let Some(parents) = &mut parents {
                         if cfg!(target_os = "linux") {
-                            profile.add("mount_identity_attempts", 1);
+                            profile.add("mount_identity_executions", 1);
                         }
                         parents.push(identity);
                     }
@@ -1740,10 +1740,10 @@ impl OverlayCore {
             // and direct mutation publication on the established link path:
             // paired repair/diff trials regressed when those also used rename.
             let publication = if !durable && !observed_absent {
-                self.profile.add("journal_rename_attempts", 1);
+                self.profile.add("journal_rename_executions", 1);
                 sys::publish_no_replace(&temporary, &destination)
             } else {
-                self.profile.add("journal_link_attempts", 1);
+                self.profile.add("journal_link_executions", 1);
                 sys::publish_by_link(&temporary, &destination)
             };
             drop(publish);

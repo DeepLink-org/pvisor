@@ -12,7 +12,7 @@ Known gaps are listed with their impact, source, and mitigation. Report new find
 | Renames appear in the review list as a deletion plus an addition | Review cannot tell that a rename happened | Judge by content | [Staging and apply semantics](../concepts/staging.md) |
 | With deny rules enabled, multi-hard-link files and new hard links are conservatively rejected | Tools that rely on hard links may fail | Disable the rule for that tool or use another execution path | [File access rules](../reference/cli.md) |
 | File rules do not promise to resist a race with another host process rewriting the underlying file | Rules may fail when the lower layer is rewritten concurrently | Leave the lower directory under a trusted supervisor | [File access rules](../reference/cli.md) |
-| `warn` counts filesystem access attempts, not content reads | Counts are imprecise; the kernel cache may merge accesses | Treat them as a signal only | [File access rules](../reference/cli.md) |
+| `warn` counts filesystem access executions, not content reads | Counts are imprecise; the kernel cache may merge accesses | Treat them as a signal only | [File access rules](../reference/cli.md) |
 | macOS host `--safe` is documented as enforcing a Seatbelt read scope, but Run evidence reports reads as ambient | Documentation and evidence disagree, so the read boundary must follow the evidence | Read the Safety boundary in `status --review`; use the VM when you need a read boundary | October 2026 measured `--safe` Run output; pending implementation confirmation |
 
 ## Credentials and sensitive files

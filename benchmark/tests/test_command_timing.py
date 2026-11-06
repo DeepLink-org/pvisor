@@ -32,22 +32,22 @@ class RegistryTests(unittest.TestCase):
         }
         self.assertEqual(COMMON.artifact_summary(artifacts), {"inputs/rootfs.img": "input-bytes"})
 
-    def test_process_baselines_select_job_entry_from_inert_root_help(self):
+    def test_process_baselines_select_session_entry_from_inert_root_help(self):
         spec = importlib.util.spec_from_file_location(
             "process_prepare", ROOT / "process/prepare.py"
         )
         prepare = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(prepare)
         for help_text, expected in [
-            ("Execution:\n  run    Run a Job\nExamples:\n  pvisor spawn\n", "run"),
-            ("Commands:\n  run    Run a container\n  spawn  Run a Job\n", "spawn"),
+            ("Execution:\n  run    Run a Session\nExamples:\n  pvisor spawn\n", "run"),
+            ("Commands:\n  run    Run a container\n  spawn  Run a Session\n", "spawn"),
         ]:
             with patch.object(
                 prepare.subprocess,
                 "run",
                 return_value=subprocess.CompletedProcess([], 0, help_text),
             ) as probe:
-                self.assertEqual(prepare.job_command(Path("/frozen/pvisor")), expected)
+                self.assertEqual(prepare.session_command(Path("/frozen/pvisor")), expected)
                 self.assertEqual(probe.call_args.args[0], ["/frozen/pvisor", "--help"])
         with patch.object(
             prepare.subprocess,
@@ -55,7 +55,7 @@ class RegistryTests(unittest.TestCase):
             return_value=subprocess.CompletedProcess([], 0, "Examples only"),
         ):
             with self.assertRaisesRegex(ValueError, "does not list"):
-                prepare.job_command(Path("/frozen/pvisor"))
+                prepare.session_command(Path("/frozen/pvisor"))
 
     def test_every_active_id_has_a_registered_spec_and_retired_ids_do_not(self):
         registry = (ROOT.parent / "benchmark/REGISTRY.md").read_text()

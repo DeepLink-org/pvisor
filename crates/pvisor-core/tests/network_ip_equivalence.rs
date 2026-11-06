@@ -31,7 +31,7 @@ fn ipv4_and_mapped_ipv6_share_exact_and_cidr_authorization() {
                 for literal in [false, true] {
                     let request = NetworkAccessRequest {
                         run_id: None,
-                        attempt_id: None,
+                        execution_id: None,
                         host: if literal { address } else { "service.example" }.into(),
                         port: Some(443),
                         transport: NetworkTransport::TcpTunnel,
@@ -76,7 +76,7 @@ fn native_ipv6_and_ipv4_compatible_addresses_do_not_gain_ipv4_grants() {
     for address in ["::10.1.2.3", "2001:db8::a01:203", "::1", "::ffff:11.1.2.3"] {
         let request = NetworkAccessRequest {
             run_id: None,
-            attempt_id: None,
+            execution_id: None,
             host: address.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
@@ -92,7 +92,7 @@ fn native_ipv6_and_ipv4_compatible_addresses_do_not_gain_ipv4_grants() {
     .unwrap();
     let request = NetworkAccessRequest {
         run_id: None,
-        attempt_id: None,
+        execution_id: None,
         host: "dns.example".into(),
         port: Some(443),
         transport: NetworkTransport::TcpTunnel,

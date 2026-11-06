@@ -1,19 +1,19 @@
 # Records and version matrix
 
-pVisor execution identity, fact logs, file publication and machine snapshots each own their records. One Job may contain schema-2 `run.json` with completion protocol 1, a schema-5 Bundle, version-5 Events and a version-2 execution Job. Those numbers constrain separate readers; they neither substitute for each other nor equal the Cargo package version.
+pVisor execution identity, fact logs, file publication and machine snapshots each own their records. One Session may contain schema-3 `run.json` with completion protocol 2, a schema-6 Bundle, version-5 Events and a version-3 Session. Those numbers constrain separate readers; they neither substitute for each other nor equal the Cargo package version.
 
 ## What each record establishes {#ownership}
 
 | Record or protocol | Question answered | What it does not establish |
 | --- | --- | --- |
 | RunSpec / Operation | What is requested, with which effective policy and placement? | Installed controls or a started workload |
-| `run.json` / execution Job | Which Attempt, lifecycle, head and request ownership are current? | Successful external effects or atomic commit across all records |
+| `run.json` / execution Session | Which Execution, lifecycle, head and request ownership are current? | Successful external effects or atomic commit across all records |
 | Bundle / Event Journal | What was observed, and which facts committed? | Complete machine restoration or exactly-once external requests |
 | Stage / preimage / apply ledger | What are candidate files based on, and which target updates occurred? | Atomic multi-file visibility to external readers |
 | Checkpoint / snapshot manifest | Which file or machine state can be restored under a profile? | Restoration across arbitrary hosts, binaries or architectures |
 | Host / Guest AgentCtl | Which endpoint receives which control or cooperation requests? | Equal permissions or payloads merely because version numbers match |
 
-Event IDs and Journal positions, Host `request_id`, Job lifecycle request IDs and checkpoint IDs occupy separate namespaces. Record correlation checks Job, Attempt, generation and target ownership together rather than comparing one string. The [Execution model](execution-model.md) owns identities; [Operation and Event](operations-events.md) owns event relationships.
+Event IDs and Journal positions, Host `request_id`, Session lifecycle request IDs and checkpoint IDs occupy separate namespaces. Record correlation checks Session, Execution, generation and target ownership together rather than comparing one string. The [Execution model](execution-model.md) owns identities; [Operation and Event](operations-events.md) owns event relationships.
 
 ## Execution and fact records {#execution-records}
 
@@ -25,10 +25,10 @@ The matrix follows current source declarations and reader branches. Format chang
 | Operation | `version = 1` | Exact `OPERATION_VERSION` check plus identity, kind and rewrite validation | `pvisor-core/src/operation.rs` |
 | Event | `version = 5` | Exact `VERSION` check; Observation `domain/name/version` separately identifies its payload | `pvisor-core/src/event.rs` |
 | Journal Header / Record | `pvisor.trace/5` | Header and Event validation work together; complete old formats are rejected rather than truncated as incomplete tails | `pvisor-journal/src/journal.rs` |
-| Run Bundle | `schema_version = 5` | Requires matching Run/Attempt completion receipt and Bundle digest; legacy 4 retains its original rules; unknown versions reject | `pvisor/src/runtime/bundle.rs` |
-| RunRecord (`run.json`) | `schema_version = 2` | Completion protocol 1 binds the terminal result and Bundle; a dead owner without a receipt yields Unknown; schema 1 retains legacy rules; live control is cleared at termination | `pvisor/src/runtime/registry.rs` |
-| Attempt completion receipt (`completion.json`) | `version = 1` | Binds `RunResult` and Bundle BLAKE3; missing or inconsistent data cannot establish success | `pvisor/src/runtime/completion.rs` |
-| Execution Job (`execution-job.json`) | `version = 2` | Exact version and Job/root/stage binding checks; no automatic old-record conversion | `pvisor/src/runtime/job_execution.rs` |
+| Run Bundle | `schema_version = 6` | Requires matching Run/Execution completion receipt and Bundle digest; legacy 4 retains its original rules; unknown versions reject | `pvisor/src/runtime/bundle.rs` |
+| RunRecord (`run.json`) | `schema_version = 3` | Completion protocol 2 binds the terminal result and Bundle; a dead owner without a receipt yields Unknown; schema 1 retains legacy rules; live control is cleared at termination | `pvisor/src/runtime/registry.rs` |
+| Execution completion receipt (`completion.json`) | `version = 2` | Binds `RunResult` and Bundle BLAKE3; missing or inconsistent data cannot establish success | `pvisor/src/runtime/completion.rs` |
+| Execution Session (`execution-session.json`) | `version = 3` | Exact version and Session/root/stage binding checks; no automatic old-record conversion | `pvisor/src/runtime/session_execution.rs` |
 
 Event version 5 and Journal format 5 currently share the Event version constant. Other versions have no such relationship. An Observation payload change also cannot be judged compatible solely from outer Event version 5. Successful JSON parsing establishes syntax; each record still needs its own validation.
 
@@ -46,21 +46,21 @@ Public persisted fields are in [Run Bundle](../reference/run-bundle.md); event b
 | Apply ledger / ApplyRecord | Current schema 2; reader accepts 1 or 2 | Compatibility does not invent new guarantees for old records; recovery follows recorded phases under the target lock | `pvisor-overlay-core/src/apply.rs` |
 | `vm.ram` descriptor | `PVZRAM`, descriptor version 2 | Validates descriptor, absolute generation directory and head records; versioning is separate from environment manifests | `pvisor/src/ram_backing.rs` |
 
-Environment manifest versions describe different RAM/filesystem combinations. A maximum version of 5 does not mean every new snapshot writes 5. Stage profiles use v4 for raw RAM and v5 for compressed RAM; other profiles follow their field combinations. SDK readability of a storage format does not mean the current Job CLI can adopt arbitrary historical standalone snapshot stores.
+Environment manifest versions describe different RAM/filesystem combinations. A maximum version of 5 does not mean every new snapshot writes 5. Stage profiles use v4 for raw RAM and v5 for compressed RAM; other profiles follow their field combinations. SDK readability of a storage format does not mean the current Session CLI can adopt arbitrary historical standalone snapshot stores.
 
-[Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) owns entries and compatible profiles. [Environment snapshots](environment-snapshot.md#storage-contract) owns machine and file references, [Offload format](offload/disk-layout-and-schema.md) owns RAM subformats, and [Shared image cache](lazy-image-v2.md) owns image metadata/content versions.
+[Session checkpoint design](session-checkpoint-cli.md#10-当前实现与验收边界) owns entries and compatible profiles. [Environment snapshots](environment-snapshot.md#storage-contract) owns machine and file references, [Offload format](offload/disk-layout-and-schema.md) owns RAM subformats, and [Shared image cache](lazy-image-v2.md) owns image metadata/content versions.
 
 ## Control protocols and build identity {#control-protocols}
 
 | Image index/content pool | `format_version=2`, `pvisor-radix-v2`, `pvisor-v2:` | V1 explicitly rejected; republish OCI into a new prefix, HEAD CAS commits; transport versions are independent | `pvisor/src/image/cache/portable.rs`, `portable/`, `pool.rs` |
 | Protocol | Version and additional bindings | Authority and compatibility scope |
 | --- | --- | --- |
-| Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Endpoint owners validate Job/Attempt/generation targets; Guest tokens grant no Host authority |
+| Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 2` | Endpoint owners validate Session/Execution/generation targets; Guest tokens grant no Host authority |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | Workload `Hello`/`Sync`, state and cooperation; a separate protocol from Host |
-| Job owner instance control | `pvisor-instance-control-2`, version-1 Host envelope, exact Job/Attempt and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Job |
+| Session owner instance control | `pvisor-instance-control-3`, version-2 Host envelope, exact Session/Execution and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Session |
 | CLI owner bootstrap | Inherited private socketpair, internal DTO and same-binary BLAKE3 check | Only the frontend launches its own owner; subsequent commands do not use this DTO |
-| Durable Job operation lock | `job.lock` diagnostic protocol `pvisor-job-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link; different binaries with compatible disk readers share the lock; unknown formats reject mutation |
-| Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Job owner protocol; no transparent legacy-supervisor adoption |
+| Durable Session operation lock | `session.lock` diagnostic protocol `pvisor-session-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link; different binaries with compatible disk readers share the lock; unknown formats reject mutation |
+| Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Session owner protocol; no transparent legacy-supervisor adoption |
 
 Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cli/src/cli/host_service.rs` and `host_transport.rs`, `registry.rs` and `supervisor.rs` under `pvisor/src/runtime/`. [Host AgentCtl](architecture.md#host-wire) owns wire framing, same-UID boundaries and upgrade order. Rust `api` organization and wire compatibility are separate concerns; see [API boundaries and migration status](architecture.md#api-boundaries).
 
@@ -68,6 +68,6 @@ Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cl
 
 1. Identify whether the change affects an input DTO, stored object, domain payload or live protocol, and locate its actual reader.
 2. Explicitly choose old-format acceptance, conversion or rejection. Changing a version number cannot bypass structural or binding checks.
-3. For stored objects, check digests, dependency references, stage/Attempt ownership and restore profile. For live protocols, check authority, endpoint-supported target fields, instance-protocol name and socket identity. Same-binary verification applies only when the frontend launches its own owner.
+3. For stored objects, check digests, dependency references, stage/Execution ownership and restore profile. For live protocols, check authority, endpoint-supported target fields, instance-protocol name and socket identity. Same-binary verification applies only when the frontend launches its own owner.
 4. Handle active requests and instances belonging to old listeners/supervisors before upgrades. File compatibility does not establish live-process takeover.
 5. After timeout, disconnect or publication failure, locate the original request's commit boundary and reconcile it using [Failure semantics and retries](failure-semantics.md) before retrying.

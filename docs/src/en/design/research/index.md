@@ -14,11 +14,11 @@ A useful hypothesis specifies workloads and counterexamples. VMs with equal base
 
 pVisor owns individual execution boundaries and observations; the node-local daemon owns sandbox identity and lifecycle. External orchestration (Kubernetes, Ray or training frameworks) owns host selection, queues, dependencies and application retries; trainers own models, sampling, reward and evaluator versions. pVisor does not replace them with a distributed product control plane.
 
-The [daemon API](../daemon/index.md) does not expose native Job staging, execution checkpoints or Run Bundle export, so research integration needs an explicit execution/evidence handoff. Current responsibilities and open items per layer:
+The [daemon API](../daemon/index.md) does not expose native Session staging, execution checkpoints or Run Bundle export, so research integration needs an explicit execution/evidence handoff. Current responsibilities and open items per layer:
 
 | Layer | Current responsibility | To integrate / validate |
 | --- | --- | --- |
-| Native pVisor execution | Job lifecycle, executor control, staging, optional Gateway and recording | Orchestration adapters and representative workload acceptance |
+| Native pVisor execution | Session lifecycle, executor control, staging, optional Gateway and recording | Orchestration adapters and representative workload acceptance |
 | Sandbox daemon | VM admission, persistent supervisors, image preparation and tested OpenSandbox/E2B core flows | Full protocol and production-density acceptance; stage/checkpoint APIs remain unwired |
 | Optional node resource client | Connection pins for a caller-provided same-host service; no bundled server or bounded warming | External owner implementation, daemon integration, complete transient accounting and workload measurement |
 | External orchestration | Host selection, queues, dependencies, retries and tenants | Explicit execution/evidence handoff and business side-effect reconciliation |
@@ -38,9 +38,9 @@ Tool re-execution produces fresh observations; remote service state and training
 
 ## The execution contract of one rollout {#rollout-contract}
 
-Inputs include the task ID, attempt ID, repository commit or image digest, workspace, agent command, policy, resource budget and random seed. Outputs include the end state, exit code, file candidates, the Run Bundle, the native trajectory, and the Gateway Journal when capture is enabled. The trainer associates these artifacts with model versions, sampling parameters, reward and evaluator versions. Environment-preparation failures, permission denials and upstream request failures have their own categories; infrastructure failures are handled by predetermined rules when evaluating model problem-solving.
+Inputs include the task ID, execution ID, repository commit or image digest, workspace, agent command, policy, resource budget and random seed. Outputs include the end state, exit code, file candidates, the Run Bundle, the native trajectory, and the Gateway Journal when capture is enabled. The trainer associates these artifacts with model versions, sampling parameters, reward and evaluator versions. Environment-preparation failures, permission denials and upstream request failures have their own categories; infrastructure failures are handled by predetermined rules when evaluating model problem-solving.
 
-The minimal integration order: first follow the [rollout guide](../../guides/rl-rollouts.md) to collect and score candidates for one offline task; then increase concurrency with separate workspaces so each attempt's files and records stay independent; finally attach native Agent trajectories and validate prefix preparation, tool re-execution and model continuation separately. Replay tools produce fresh observations, so a replayed run's new observations and the old session text are not simply the same experimental input.
+The minimal integration order: first follow the [rollout guide](../../guides/rl-rollouts.md) to collect and score candidates for one offline task; then increase concurrency with separate workspaces so each execution's files and records stay independent; finally attach native Agent trajectories and validate prefix preparation, tool re-execution and model continuation separately. Replay tools produce fresh observations, so a replayed run's new observations and the old session text are not simply the same experimental input.
 
 What still needs experimental evidence: completed rollouts per second, tail latency, disk and resident memory per candidate, fork/checkpoint cost, tool re-execution cost and reward delta. Pin model-serving capacity and separate substrate bottlenecks from model-serving bottlenecks. Async queues, cross-node fault tolerance, reward deduplication, shared-prefix benefits and large-scale sampling still require integration and measurement.
 

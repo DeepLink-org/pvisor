@@ -18,7 +18,7 @@ impl Fixture {
         fs::create_dir_all(stage.join("upper")).unwrap();
         let record: RunRecord = serde_json::from_value(json!({
             "schema_version": 1, "run_id": "review-fixture", "session_id": "review-session",
-            "attempt_id": "review-attempt", "agent": "fixture-agent", "pid": 0,
+            "execution_id": "review-execution", "agent": "fixture-agent", "pid": 0,
             "command": ["/bin/true"], "state": "completed", "started_at_unix_ms": 10,
             "finished_at_unix_ms": 20, "storage": stage, "workspace": workspace,
             "network": {}, "gateway_listen": null, "overlay": null
@@ -267,7 +267,7 @@ fn root_stage_recorded_apply_scope_does_not_override_platform_support() {
     let workspace = workspace.canonicalize().unwrap();
     fixture.record.workspace = Some(workspace.clone());
     fixture.record.project_apply_scope =
-        Some(pvisor::job_service::ProjectApplyScope::capture(&workspace).unwrap());
+        Some(pvisor::session_service::ProjectApplyScope::capture(&workspace).unwrap());
     fixture.bundle["project_apply_scope"] =
         serde_json::to_value(&fixture.record.project_apply_scope).unwrap();
     let relative = workspace.strip_prefix("/").unwrap().join("result");

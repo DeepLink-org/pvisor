@@ -4,7 +4,7 @@
 
 pVisor 适合需要本地受控执行、可审查改动，或希望用现有 SDK 管理本机 VM 沙箱的场景。先按需要的接口选择：
 
-- **工作区改动要审查后合入**：用原生 Job 的暂存、冲突检查和按路径 apply。
+- **工作区改动要审查后合入**：用原生 Session 的暂存、冲突检查和按路径 apply。
 - **脚本已有 Docker 命令**：核对实验性 CLI 子集和逐容器 VM 的差异。
 - **应用已有 OpenSandbox/E2B SDK**：核对 daemon 已测试的核心协议、Linux/KVM 前提与不支持的 API。
 - **需要托管云服务或敌对多租户保证**：服务运营、安全审计与隔离要求需要单独评估；当前本地接口不提供这些保证。
@@ -22,7 +22,7 @@ pVisor 适合需要本地受控执行、可审查改动，或希望用现有 SDK
 ## 与 Anthropic Sandbox Runtime 对照 {#sandbox-runtime}
 
 需要保留本机工具链、限制命令或 MCP Server 的访问范围时，可评估 SRT；需要执行后
-审查并选择接受文件改动时，pVisor 的暂存与 Job 记录提供相应流程。
+审查并选择接受文件改动时，pVisor 的暂存与 Session 记录提供相应流程。
 
 对照依据为 2026-10-25 的源码审阅：SRT
 [`c66fb77`](https://github.com/anthropics/sandbox-runtime/tree/c66fb77b28fdbea8b9788aca72377238ae67ca20)
@@ -33,7 +33,7 @@ pVisor 适合需要本地受控执行、可审查改动，或希望用现有 SDK
 | Linux host 选择性出口 | network namespace 隔离直接网络，经 Unix socket 桥接到宿主代理；忽略代理的客户端通常连接失败 | 选择性代理仍属 cooperative；强制路径需选 VM 或 host 全部拒绝模式 |
 | 文件修改 | 在允许写入的路径直接修改 | 启用暂存后支持 review、按路径 apply、冲突检查与 drop |
 | HTTPS 与凭据 | 可配置 TLS termination、请求过滤、凭据替身与出口注入 | Gateway 侧重 LLM 协议、供应商凭据路由和轨迹捕获 |
-| 状态与恢复 | 进程内代理／配置管理及违规记录；持久化由嵌入方承担 | 持久化 Job、Run Bundle 与受条件约束的 checkpoint/restore |
+| 状态与恢复 | 进程内代理／配置管理及违规记录；持久化由嵌入方承担 | 持久化 Session、Run Bundle 与受条件约束的 checkpoint/restore |
 | 接入 | npm CLI 与 TypeScript 库；另有独立代理接口 | 原生 CLI、Rust runtime 与单节点 daemon；运行 Agent CLI 不要求语言 SDK |
 
 SRT 的机制见其
@@ -52,7 +52,7 @@ pVisor host 与 VM 分别提供不同控制，实际强度见[网络边界](../g
 ## 使用问题 {#usage-help}
 
 - 接入 Agent 或 CI：[Agent 接入指南](../guides/agents/index.md)、[CI 工作流](../guides/ci.md)。
-- 文件暂存、改动接受与 Job 查找：[暂存与 apply](../concepts/staging.md)、[Job 与存储](../concepts/jobs.md)。
+- 文件暂存、改动接受与 Session 查找：[暂存与 apply](../concepts/staging.md)、[Session 与存储](../concepts/sessions.md)。
 - 网络访问与数据边界：[安全概览](../security/index.md)、[网络策略](../guides/policies/network.md)。
 - 启动与文件操作开销：[启动延迟](../benchmarks/startup.md)、[文件系统任务](../benchmarks/filesystem.md)。
 

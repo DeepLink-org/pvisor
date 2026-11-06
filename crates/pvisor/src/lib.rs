@@ -1,4 +1,4 @@
-//! pVisor — embeddable execution runtime and durable Job service.
+//! pVisor — embeddable execution runtime and durable Session service.
 //!
 //! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
 //! network, filesystem, and the optional internal Gateway driver. Durable
@@ -11,12 +11,12 @@
 pub mod environment_snapshot;
 mod runtime;
 pub use runtime::execution::{
-    Execution, ExecutionProgress, ExecutionSnapshot, JobExecution, JobState, StatusState,
+    Execution, ExecutionProgress, ExecutionSnapshot, Session, SessionState, StatusState,
 };
-pub mod session;
+pub mod execution_context;
 mod startup_profile;
 pub mod trace;
-pub use session::Session;
+pub use execution_context::ExecutionContext;
 
 mod agent;
 mod config;
@@ -102,8 +102,8 @@ pub use runtime::event::{
 pub use runtime::host_transport;
 #[cfg(unix)]
 pub use runtime::instance_control::exchange as host_vm_exchange;
-pub use runtime::job_service;
 pub use runtime::run::{PVisor, PVisorBuilder, PVisorError, RunEventStream, RunHandle};
+pub use runtime::session_service;
 pub use runtime::{
     ChangeEntry, ChangeEntryType, ChangeKind, ExecutionOverlayHint, ImplantPlan, OverlayHint,
     RunLineage, RuntimeCapabilities,
@@ -111,7 +111,7 @@ pub use runtime::{
 pub use util::unix_now_ms;
 
 #[doc(hidden)]
-pub use runtime::{JobDirectoryLock, RunRecord, RunRecordState, control_observations};
+pub use runtime::{RunRecord, RunRecordState, SessionDirectoryLock, control_observations};
 
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
@@ -126,5 +126,5 @@ pub use runtime::{
 };
 #[cfg(target_os = "linux")]
 pub use runtime::{LEASE_FILENAME, RunLease};
-pub use runtime::{checkpoint, job_execution};
+pub use runtime::{checkpoint, session_execution};
 pub use util::{startup_mark, startup_mark_run, write_private_json};

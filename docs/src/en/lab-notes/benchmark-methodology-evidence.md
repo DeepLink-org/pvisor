@@ -63,7 +63,7 @@ The first product measurements are recorded below; real-model success, human sup
 
 ## Product benchmark first version, 2026-10-04 {#product-v1}
 
-Host tool time is close to native. Staging adds tens of milliseconds for sequential reads/offline npm and about 150–190 ms for small-file operations. Most measured small VM jobs take 0.5–1 second. Applying 10/1,000/100,000 files costs roughly 15 ms/0.84 seconds/5.5 minutes. These describe this configuration, not all repositories.
+Host tool time is close to native. Staging adds tens of milliseconds for sequential reads/offline npm and about 150–190 ms for small-file operations. Most measured small VM sessions take 0.5–1 second. Applying 10/1,000/100,000 files costs roughly 15 ms/0.84 seconds/5.5 minutes. These describe this configuration, not all repositories.
 
 ### Environment and identity
 
@@ -90,13 +90,13 @@ Host tool time is close to native. Staging adds tens of milliseconds for sequent
 | safe | Rootless filesystem sandbox, stage and proxy; read-only Rust toolchain share |
 | vm | libkrun/KVM, 2 vCPU; main tools use 1 GiB and host rootfs `/` plus stage; isolation uses a prepared rootfs; idle probe uses 128 MiB |
 | podman | Prepared local OCI image, workspace bind mount, crun; network none for tools, host network for networking |
-| container | pVisor OCI/crun, writable workspace mount, network none/host; wall includes per-Job private rootfs copying |
+| container | pVisor OCI/crun, writable workspace mount, network none/host; wall includes per-Session private rootfs copying |
 
 These groups have different boundaries. A successful pVisor sample requires a completed zero-exit Bundle and the requested observed executor; staged/safe/VM also require observed staging. File data, tool output or network hashes must validate before entering rows.
 
 ### Sampling
 
-Warm host caches, no eviction. Image construction/import and input preparation are outside timed tasks; cargo's workload compilation is inside tool time. Filesystem/network use 3 warmups/30 samples with randomized backend order. Apply uses N=30/10/3 for 10/1,000/100,000 files, one warmup for smaller cases and none for the largest. Density has five batches per cell, agent/replay three repetitions per task, supervision thirty; these have no warmups. Quantiles interpolate linearly. Nested requests/jobs may correlate; no independent-sample confidence intervals are claimed.
+Warm host caches, no eviction. Image construction/import and input preparation are outside timed tasks; cargo's workload compilation is inside tool time. Filesystem/network use 3 warmups/30 samples with randomized backend order. Apply uses N=30/10/3 for 10/1,000/100,000 files, one warmup for smaller cases and none for the largest. Density has five batches per cell, agent/replay three repetitions per task, supervision thirty; these have no warmups. Quantiles interpolate linearly. Nested requests/sessions may correlate; no independent-sample confidence intervals are claimed.
 
 Wall covers command launch through exit. Worker covers internal tool execution/validation. Failed batches retain attempted/completed counts and diagnostics. Memory guards are not successes or zero-cost results. An inaccessible Docker daemon, missing image tools and Node address-space failures are explained separately.
 
@@ -124,7 +124,7 @@ Complete tool tasks reuse the same project, inputs and grading. Rust/Cargo 1.98.
 
 Firecracker has a TAP and static NIC in private user/network namespaces. A QEMU `-machine none` process supplies user-mode DNS/NAT so Ubuntu default services have working connectivity. There is no second guest VM; helper startup, CPU and RSS are included in the Firecracker group. Host routes and network services are unchanged. Preflight found that dead DNS caused a 30-second snapd wait; formal batches use functionally verified DNS/NAT. Earlier PCI trials hung in device reset during normal reboot and contribute N=0. Default MMIO exits normally with zero status. Firecracker runs without jailer; production security deployment is not assessed.
 
-The successful provisioning step boots QEMU, copies installed Rust/CLI/fixtures, and apt-installs distribution tools in **85.8 seconds**, recorded separately. It excludes the 825 MiB official qcow2 download, format conversion, tool payload creation, host prerequisite installation and failed diagnostic attempts. It is not total deployment cost from an empty machine. pVisor needs no OS image preparation, while still requiring installed host tools.
+The successful provisioning step boots QEMU, copies installed Rust/CLI/fixtures, and apt-installs distribution tools in **85.8 seconds**, recorded separately. It excludes the 825 MiB official qcow2 download, format conversion, tool payload creation, host prerequisite installation and failed diagnostic executions. It is not total deployment cost from an empty machine. pVisor needs no OS image preparation, while still requiring installed host tools.
 
 Image/kernel/initrd hashes and sources are in the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/assets.tsv`. Official HTTPS SHA256SUMS are checked; GPG signatures are not verified. The full Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-generic.config` and per-trial proofs are available. The separate archive uses `pvisor-full-ubuntu-reference/v1`, retaining harness snapshots, failures, commands, OS proofs and minimized runtime evidence without pooling with the trimmed-kernel batch. Initial Ubuntu client sampling missed endpoints when the serial prompt/terminal control sequences shared a result line. After fixing the collector, Claude/Codex are each repeated at N=10 with identical parameters. Published client cells use only the follow-up distributions without pooling old samples. The original main report and invalid trials remain available; the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/manifest.tsv` records the selected batch per case.
 

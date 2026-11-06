@@ -31,7 +31,7 @@ pub struct ProxyConfig {
     /// Harbor-aligned egress policy for forward-proxy traffic (`CONNECT` + absolute-URI).
     #[serde(default)]
     pub network: NetworkConfig,
-    /// Optional embedded OverlayFS mount for the Attempt (consumed by pVisor).
+    /// Optional embedded OverlayFS mount for the Execution (consumed by pVisor).
     #[serde(default)]
     pub overlay: OverlayConfig,
     pub models: Vec<ModelRoute>,

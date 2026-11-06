@@ -1,6 +1,6 @@
-//! A terminal frontend starts exactly one Job owner over an inherited socketpair.
+//! A terminal frontend starts exactly one Session owner over an inherited socketpair.
 //! Running commands address that owner's recorded socket; stopped commands run here.
-use super::{host::JobCommand, host_process::TerminalOwner};
+use super::{host::SessionCommand, host_process::TerminalOwner};
 use anyhow::{Context, ensure};
 pub(super) use pvisor::host_transport::read_host_frame_sync as read_frame;
 use pvisor::host_transport::write_host_frame_sync as write_frame;
@@ -44,7 +44,7 @@ static OWNER_EVENTS: OnceLock<Arc<Mutex<UnixStream>>> = OnceLock::new();
 type PoolReply = Result<PathBuf, String>;
 static OWNER_POOL_REPLY: Mutex<Option<std::sync::mpsc::SyncSender<PoolReply>>> = Mutex::new(None);
 static OWNER_READY: AtomicBool = AtomicBool::new(false);
-static SOURCE_LOCK: Mutex<Option<pvisor::JobDirectoryLock>> = Mutex::new(None);
+static SOURCE_LOCK: Mutex<Option<pvisor::SessionDirectoryLock>> = Mutex::new(None);
 static OWNER_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static OWNER_FINALIZING: AtomicBool = AtomicBool::new(false);
 
@@ -120,7 +120,7 @@ pub(super) fn check_cancelled() -> anyhow::Result<()> {
         !REQUEST_CANCEL
             .get()
             .is_some_and(|token| token.is_cancelled()),
-        "Job operation cancelled; effects may be uncertain; not retried"
+        "Session operation cancelled; effects may be uncertain; not retried"
     );
     Ok(())
 }
@@ -161,7 +161,7 @@ struct ContextData {
     binary_digest: String,
     cwd: PathBuf,
     environment: Vec<(Vec<u8>, Vec<u8>)>,
-    command: JobCommand,
+    command: SessionCommand,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -447,7 +447,7 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
     pvisor::diagnostics::init_inherited();
     super::terminal::init_output();
     // Do this after self-exec and before Tokio shares the descriptor table.
-    // It is optional: a low RLIMIT_NOFILE must not prevent ordinary host Jobs.
+    // It is optional: a low RLIMIT_NOFILE must not prevent ordinary host Sessions.
     let _ = pvisor::VmExecutor::prepare_process();
     let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let thread_gate = gate.clone();
@@ -638,7 +638,7 @@ impl Drop for FrontOwner {
 
 fn launch(
     signal: Arc<AtomicI32>,
-    command: JobCommand,
+    command: SessionCommand,
     target: Option<AgentCtlTarget>,
 ) -> anyhow::Result<i32> {
     let interactive = command.inherits_terminal_input()?;
@@ -734,7 +734,9 @@ fn launch(
                     write_frame(
                         &mut channel,
                         &OwnerInstruction::MemoryPool {
-                            result: Err("Job cancelled before memory-pool resolution".to_owned()),
+                            result: Err(
+                                "Session cancelled before memory-pool resolution".to_owned()
+                            ),
                         },
                     )?;
                 } else {
@@ -755,7 +757,7 @@ fn launch(
                 let result = match response.result {
                     Ok(result) => result,
                     Err(error) if cancelled.is_some() => {
-                        eprintln!("Job cancellation outcome uncertain; not retried: {error}");
+                        eprintln!("Session cancellation outcome uncertain; not retried: {error}");
                         return Ok(128 + cancelled.unwrap());
                     }
                     Err(error) => return Err(error.into()),
@@ -768,7 +770,7 @@ fn launch(
             Ok(Err(error)) => {
                 if let Some(signal) = cancelled {
                     eprintln!(
-                        "Job cancellation response lost; effects may be uncertain; not retried"
+                        "Session cancellation response lost; effects may be uncertain; not retried"
                     );
                     return Ok(128 + signal);
                 }
@@ -796,7 +798,7 @@ fn frontend() -> anyhow::Result<(tokio::runtime::Runtime, Arc<AtomicI32>)> {
     Ok((rt, signal))
 }
 
-/// Live controls stay in the foreground; they never enter owner launch or Job locking.
+/// Live controls stay in the foreground; they never enter owner launch or Session locking.
 pub(super) fn call_vm(command: super::live_vm::VmRequest) -> anyhow::Result<i32> {
     let (rt, signal) = frontend()?;
     let target = command.target()?;
@@ -810,9 +812,9 @@ pub(super) fn call_vm(command: super::live_vm::VmRequest) -> anyhow::Result<i32>
     command.execute(&rt)
 }
 
-pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
+pub(crate) fn call(mut command: SessionCommand) -> anyhow::Result<i32> {
     let (rt, signal) = frontend()?;
-    if let JobCommand::Review(args) = &mut command {
+    if let SessionCommand::Review(args) = &mut command {
         args.selector = super::stage_source::resolve(
             args.selector.as_deref(),
             &args.output_dir,
@@ -820,7 +822,7 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         )?;
         args.mount = None;
     }
-    if let JobCommand::Drop(args) = &mut command {
+    if let SessionCommand::Drop(args) = &mut command {
         args.selector = super::stage_source::resolve(
             Some(&args.selector),
             &args.output_dir,
@@ -844,13 +846,13 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
         .as_ref()
         .and_then(|record| record.live_control.as_ref())
         .is_some_and(|endpoint| endpoint.is_available());
-    if matches!(&command, JobCommand::Resume(_)) && live {
+    if matches!(&command, SessionCommand::Resume(_)) && live {
         let record = record.as_ref().unwrap();
-        let JobCommand::Resume(args) = command else {
+        let SessionCommand::Resume(args) = command else {
             unreachable!();
         };
         if args.has_restore_options() {
-            // Durable request replay must retain the runtime's option/Attempt
+            // Durable request replay must retain the runtime's option/Execution
             // fences, not be mistaken for an ordinary live-VM unpause.
             return rt.block_on(super::checkpoint::resume(args));
         }
@@ -861,12 +863,12 @@ pub(crate) fn call(mut command: JobCommand) -> anyhow::Result<i32> {
     }
     if matches!(
         &command,
-        JobCommand::Run(_) | JobCommand::Fork(_) | JobCommand::Resume(_)
+        SessionCommand::Run(_) | SessionCommand::Fork(_) | SessionCommand::Resume(_)
     ) {
         return launch(signal, command, target);
     }
-    if live && matches!(&command, JobCommand::Drop(_)) {
-        anyhow::bail!("Job owner still holds stage; drop refused while it is running");
+    if live && matches!(&command, SessionCommand::Drop(_)) {
+        anyhow::bail!("Session owner still holds stage; drop refused while it is running");
     }
     let _lock = if !live {
         record
@@ -916,7 +918,7 @@ mod tests {
             fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
                 pvisor::ProcessExecutor::default().supports(invocation)
             }
-            async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
+            async fn execute(&self, session: &pvisor::ExecutionContext) -> pvisor::ExecutorOutput {
                 pvisor::ProcessExecutor::default().execute(session).await
             }
         }
@@ -930,7 +932,7 @@ mod tests {
             let mut spec = pvisor_core::RunSpec::process("slow-release", "sh", "/bin/sh");
             let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
             process.args = vec!["-c".into(), "exit 0".into()];
-            let managed = pvisor::job_service::RuntimeJobService::start_managed(
+            let managed = pvisor::session_service::SessionService::start_managed(
                 &visor,
                 spec,
                 pvisor::RunConfig::default(),
@@ -1130,7 +1132,7 @@ mod tests {
     #[test]
     fn core_identity_boundaries_and_correlation() {
         let mut request = AgentCtlHostRequest {
-            version: 1,
+            version: AGENTCTL_HOST_VERSION,
             request_id: "x".repeat(256),
             target: None,
             command: (),
@@ -1141,7 +1143,7 @@ mod tests {
         request.request_id = "bad\nidentity".into();
         assert!(request.validate().is_err());
         let response: AgentCtlHostResponse<()> = AgentCtlHostResponse {
-            version: 1,
+            version: AGENTCTL_HOST_VERSION,
             request_id: "x".repeat(256),
             result: Err(AgentCtlHostError::new(
                 AgentCtlHostErrorCode::Conflict,

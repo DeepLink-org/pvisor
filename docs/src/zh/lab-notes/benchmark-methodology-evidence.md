@@ -90,13 +90,13 @@ mise run benchmark -- startup/timing --output benchmark/startup/.data/measuremen
 | safe | rootless 文件沙箱 + stage + proxy；只读 Rust 工具链 share |
 | vm | libkrun/KVM，2 vCPU；工具主批次 1 GiB、host rootfs `/` + stage；隔离另用准备好的 rootfs；idle probe 128 MiB |
 | podman | 预制本机 OCI 工具镜像，工作区 bind mount，crun，普通任务 network none、网络实验 host network |
-| container | pVisor OCI + crun，工作区 writable mount，network none/host；每 Job 私有 rootfs 复制计入 wall |
+| container | pVisor OCI + crun，工作区 writable mount，network none/host；每 Session 私有 rootfs 复制计入 wall |
 
 不能把全部组别称为同样的隔离级别。每个 pVisor 成功样本要求 completed/零退出 Bundle、实际执行器身份与请求一致；staged/safe/VM 还检查暂存生效。文件数据、工具输出或网络摘要正确才进入 rows。
 
 ### 采样与解释
 
-热宿主缓存，不主动驱逐。镜像构建/导入、输入准备、代码编译的构建阶段不进入启动计时；cargo 工作负载自己的编译当然计入工具时间。filesystem/network 每格 3 次预热/30 次采样，随机组别顺序。apply 为 30/10/3 次（10/1,000/100,000 文件）；前两组 1 次预热、最大组无预热。density 每格 5 个批次，agent/replay 每任务 3 次，supervision 30 次，这些套件无预热。性能表使用线性插值 P50/P95/P99；嵌套请求/并发 Job 可能相关，未给独立样本置信区间。
+热宿主缓存，不主动驱逐。镜像构建/导入、输入准备、代码编译的构建阶段不进入启动计时；cargo 工作负载自己的编译当然计入工具时间。filesystem/network 每格 3 次预热/30 次采样，随机组别顺序。apply 为 30/10/3 次（10/1,000/100,000 文件）；前两组 1 次预热、最大组无预热。density 每格 5 个批次，agent/replay 每任务 3 次，supervision 30 次，这些套件无预热。性能表使用线性插值 P50/P95/P99；嵌套请求/并发 Session 可能相关，未给独立样本置信区间。
 
 wall 是一项命令从启动到退出的总成本，worker 是内部工具运行与校验成本；两者分别呈现。失败 batch 保留原因和尝试/成功数，内存 guard 不算成功或零成本。不可用的 Docker daemon、缺少工具的镜像、VM 地址空间失败分别解释，不能当作竞争方案慢或产品兼容失败。
 

@@ -17,7 +17,7 @@ pvisor apply ../stage-reference-001 --path report.txt
 
 `status --json` 提供状态概况；`status --review --json` 提供完整 Run Bundle。自动化先识别格式版本和必需字段，再检查执行状态、实际控制与净文件改动；缺失观察不能当成零或通过。字段与查询分别见 [Run Bundle](run-bundle.md)和[机器可读输出](json-output.md)。
 
-共享镜像缓存的 handle、认证和失败行为遵循[缓存协议](shared-image-cache.md)，与 Job 的暂存和 apply 生命周期分开。完整机器状态的保存与恢复还需要对应能力；workspace checkpoint 只保存文件提案，不继续旧进程内存，使用前按 [CLI 的 execution checkpoint 契约](cli.md#full-vm-execution-checkpoints)检查支持条件。
+共享镜像缓存的 handle、认证和失败行为遵循[缓存协议](shared-image-cache.md)，与 Session 的暂存和 apply 生命周期分开。完整机器状态的保存与恢复还需要对应能力；workspace checkpoint 只保存文件提案，不继续旧进程内存，使用前按 [CLI 的 execution checkpoint 契约](cli.md#full-vm-execution-checkpoints)检查支持条件。
 
 ## 核对可执行行为
 
@@ -224,7 +224,7 @@ assert_content() {
 }
 assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi; }
 
-# Public CLI only; all personal settings and Job records stay in CASE_ROOT.
+# Public CLI only; all personal settings and Session records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" "$SUBJECT_BIN" "$@"; }
 stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {

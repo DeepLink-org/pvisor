@@ -77,7 +77,7 @@ class GuestWritebackCliContracts(unittest.TestCase):
                 )
 
     def test_primary_sums_three_resident_rounds_without_exit(self):
-        row = {"ready_ms": 4, "job_ms": 99999, "result": {"filesystem": {}}}
+        row = {"ready_ms": 4, "session_ms": 99999, "result": {"filesystem": {}}}
         for operation in SUBJECT.OPERATIONS:
             row["result"]["filesystem"][operation] = {
                 "rounds": [{"worker_ms": value} for value in (1, 2, 3)]
@@ -86,7 +86,7 @@ class GuestWritebackCliContracts(unittest.TestCase):
         self.assertEqual(len(metrics), 32)
         self.assertEqual(metrics["ready_ms"], 4)
         self.assertEqual(metrics["three_rounds.seven_tools_ms"], 7 * (1 + 2 + 3))
-        self.assertNotIn("job_ms", metrics)
+        self.assertNotIn("session_ms", metrics)
 
     def test_btrfs_mapping_requires_process_mount_and_byte_proof(self):
         from types import SimpleNamespace
