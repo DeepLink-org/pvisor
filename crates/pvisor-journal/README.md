@@ -27,7 +27,10 @@ an incomplete final record, not a corrupt complete record or incomplete header.
 Complete recovered records are synced before a retry can receive LocalSync.
 
 Append validates Core bounds and causality, accepts unresolved forward references,
-and rejects cycles. Identical event-ID/content retries return the original
+and rejects cycles. Before committing on either backend it also deserializes the
+complete serialized record with the reader's rules, rejecting excessive JSON
+nesting rather than acknowledging a record that cannot be recovered.
+Identical event-ID/content retries return the original
 position without new notifications; changed content is rejected. JSON parsing
 explicitly preserves finite floating point values across close/reopen so the
 same event retains its content digest. Rejected means this request did not commit.

@@ -92,6 +92,8 @@ pub trait JournalStore {
     /// causal IDs, each at most 256 bytes and not self; optional context/operation
     /// IDs nonempty and at most 256 bytes; valid fact-specific contracts; serialized
     /// event at most MAX_EVENT_BYTES (currently 1 MiB). Positions must fit u64.
+    /// Before committing, the complete serialized record must also pass the
+    /// reader's JSON deserializer, including its nesting limit, on both backends.
     /// Serialize writes, assign zero-based contiguous positions, allow unresolved
     /// forward causes, and reject cycles. Same ID and serialized content returns
     /// its prior position without rewriting or notification; different content

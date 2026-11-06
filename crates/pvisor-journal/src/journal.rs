@@ -206,6 +206,10 @@ impl JournalStore for Journal {
         };
         let mut bytes =
             serde_json::to_vec(&record).map_err(|e| AppendError::Rejected(e.to_string()))?;
+        // Serialization accepts deeper JSON than recovery can deserialize.
+        // Apply the reader's rules before committing to either storage backend.
+        serde_json::from_slice::<Record>(&bytes)
+            .map_err(|e| AppendError::Rejected(format!("unreadable trace record: {e}")))?;
         bytes.push(b'\n');
         if let Some(file) = state.file.as_mut() {
             let result = (|| -> std::io::Result<()> {

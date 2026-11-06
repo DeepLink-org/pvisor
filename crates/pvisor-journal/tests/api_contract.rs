@@ -54,6 +54,102 @@ fn floating_payload_retries_keep_their_receipt_after_reopen() {
 }
 
 #[test]
+fn deeply_nested_payload_is_rejected_before_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    for journal in [Journal::memory(), Journal::open(&path).unwrap()] {
+        let mut live = journal.subscribe();
+        let mut before = Vec::new();
+        let durable = journal.snapshot_to(&mut before, u64::MAX).is_ok();
+        let mut nested = event(&journal);
+        let mut payload = serde_json::Value::Null;
+        for _ in 0..160 {
+            payload = serde_json::json!([payload]);
+        }
+        nested.data = Fact::Observation {
+            domain: "test".into(),
+            name: "nested".into(),
+            version: 1,
+            payload,
+        };
+        assert!(matches!(
+            journal.append(nested.clone()),
+            Err(AppendError::Rejected(_))
+        ));
+        assert!(live.try_recv().is_err());
+        assert!(journal.records().unwrap().is_empty());
+        if durable {
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        if let Fact::Observation { payload, .. } = &mut nested.data {
+            *payload = serde_json::Value::Null;
+            for _ in 0..32 {
+                *payload = serde_json::json!([payload.take()]);
+            }
+        }
+        assert_eq!(journal.append(nested).unwrap().position.offset, 0);
+    }
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.records().unwrap().len(), 1);
+}
+
+#[test]
+fn interrupted_record_writes_recover_only_complete_prefixes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    let journal = Journal::open(&path).unwrap();
+    let mut events = Vec::new();
+    let mut receipts = Vec::new();
+    for _ in 0..3 {
+        let e = event(&journal);
+        receipts.push(journal.append(e.clone()).unwrap());
+        events.push(e);
+    }
+    drop(journal);
+    let good = std::fs::read(&path).unwrap();
+    let boundaries: Vec<_> = good
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| (*b == b'\n').then_some(i + 1))
+        .collect();
+    let header_end = boundaries[0];
+    let mut cuts = boundaries.clone();
+    for boundary in &boundaries {
+        cuts.push(boundary - 1);
+    }
+    // Deterministic fault locations across headers and all three records.
+    for i in 1..=64 {
+        cuts.push(1 + i * (good.len() - 1) / 64);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    for cut in cuts {
+        std::fs::write(&path, &good[..cut]).unwrap();
+        if cut < header_end {
+            assert!(Journal::open(&path).is_err(), "header cut at {cut}");
+            assert_eq!(std::fs::read(&path).unwrap(), good[..cut]);
+            continue;
+        }
+        let complete_end = *boundaries.iter().rfind(|b| **b <= cut).unwrap();
+        let committed = boundaries.iter().filter(|b| **b <= cut).count() - 1;
+        if cut != complete_end {
+            assert!(Journal::read(&path).is_err(), "tail cut at {cut}");
+            assert!(Journal::validate(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), good[..cut]);
+        }
+        let recovered = Journal::open(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), good[..complete_end]);
+        assert_eq!(recovered.records().unwrap().len(), committed);
+        for (e, receipt) in events.iter().zip(&receipts) {
+            assert_eq!(recovered.append(e.clone()).unwrap(), *receipt);
+        }
+        drop(recovered);
+        assert_eq!(Journal::read(&path).unwrap().len(), 3);
+        Journal::validate(&path).unwrap();
+    }
+}
+
+#[test]
 fn api_is_unconditional_declarations_and_only_public_root() {
     struct Guard;
     impl<'ast> Visit<'ast> for Guard {
