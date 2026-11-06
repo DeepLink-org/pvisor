@@ -693,10 +693,10 @@ fn host_buffer_custom_options_survive_destroy_and_new_init() {
         // One blocking control target plus two accepted native writes. The
         // custom one-chunk limit must apply after both INITs, rather than
         // silently returning to default coalescing after DESTROY.
-        assert_eq!(buffer.stats().peak_sessions, 3);
+        assert_eq!(buffer.stats().peak_tasks, 3);
         gate.release();
         fs.flush(host_buffer_context(), inode, handle, 0).unwrap();
-        assert_eq!((buffer.stats().total_sessions, buffer.stats().batches), (3, 3));
+        assert_eq!((buffer.stats().total_tasks, buffer.stats().batches), (3, 3));
         assert_eq!(
             std::fs::read(temp.path().join("upper/file")).unwrap(),
             b"aabb"
