@@ -135,6 +135,138 @@ fn mutable_source_change_is_rejected_before_publishing_upper_parents() {
 }
 
 #[test]
+fn mutable_source_disappearance_and_substitution_cancel_then_reopen_without_rebasing() {
+    use pvisor_overlay_core::{fingerprint_at, load_preimages};
+    for compact in [false, true] {
+        for mutation in ["missing", "replacement", "symlink"] {
+            let root = tempfile::tempdir().unwrap();
+            let lower = root.path().join("lower");
+            let upper = root.path().join("upper");
+            let work = root.path().join("work");
+            let journal = root.path().join("preimages");
+            fs::create_dir_all(lower.join("nested")).unwrap();
+            fs::write(lower.join("nested/file"), b"original").unwrap();
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![lower.clone()],
+                upper.clone(),
+                Some(work.clone()),
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
+            let service = FilesystemService::new(core);
+            let path = Path::new("nested/file");
+            let original = fingerprint_at(&lower, path).unwrap();
+            let copies = service.prepare_copy_ups(&[path.into()], false).unwrap();
+            let held = root.path().join("held");
+            fs::rename(lower.join(path), &held).unwrap();
+            let unrelated = work.join("unrelated");
+            fs::write(&unrelated, b"keep").unwrap();
+            match mutation {
+                "missing" => {}
+                "replacement" => fs::write(lower.join(path), b"replacement").unwrap(),
+                "symlink" => std::os::unix::fs::symlink(&held, lower.join(path)).unwrap(),
+                _ => unreachable!(),
+            }
+            let guard = service.use_prepared_copy_ups(copies).unwrap();
+            assert_eq!(
+                service.copy_up(path).unwrap_err().raw_os_error(),
+                Some(if mutation == "missing" {
+                    libc::ENOENT
+                } else {
+                    libc::EAGAIN
+                }),
+                "{mutation}, compact={compact}"
+            );
+            assert!(!upper.join("nested").exists());
+            drop(guard);
+            assert_eq!(fs::read_dir(&work).unwrap().count(), 1);
+            assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
+            assert_eq!(fs::read(&held).unwrap(), b"original");
+            drop(service);
+
+            // Restore a usable regular source, but never reuse the stale receipt.
+            if mutation == "symlink" {
+                fs::remove_file(lower.join(path)).unwrap();
+            }
+            if mutation != "replacement" {
+                fs::rename(&held, lower.join(path)).unwrap();
+            }
+            let service = FilesystemService::new(
+                OverlayCore::open_existing(
+                    vec![lower.clone()],
+                    upper.clone(),
+                    Some(work.clone()),
+                    vec![],
+                    Some(journal.clone()),
+                )
+                .unwrap(),
+            );
+            let copies = service.prepare_copy_ups(&[path.into()], false).unwrap();
+            let guard = service.use_prepared_copy_ups(copies).unwrap();
+            let published = service.copy_up(path).unwrap();
+            assert_eq!(
+                fs::read(&published).unwrap(),
+                if mutation == "replacement" {
+                    b"replacement".as_slice()
+                } else {
+                    b"original".as_slice()
+                }
+            );
+            drop(guard);
+            drop(service);
+            assert_eq!(fs::read_dir(&work).unwrap().count(), 1);
+            assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
+            let observed = load_preimages(&journal)
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.relative_path() == path)
+                .unwrap();
+            assert_eq!(observed.state, original);
+            assert_eq!(
+                observed
+                    .state
+                    .matches(&fingerprint_at(&lower, path).unwrap()),
+                mutation != "replacement",
+                "fresh copying must not rebase a conflicting first observation"
+            );
+        }
+    }
+}
+
+#[test]
+fn receipts_outliving_their_owner_are_rejected_after_reopening_the_same_backing() {
+    let (root, service, _) = fixture();
+    let copies = service.prepare_copy_ups(&["file".into()], false).unwrap();
+    drop(service);
+    let lower = root.path().join("lower");
+    let upper = root.path().join("upper");
+    let reopened = FilesystemService::new(
+        OverlayCore::open_existing(vec![lower], upper.clone(), None, vec![], None).unwrap(),
+    );
+    // Reopening does not adopt or sweep the old owner's still-owned copies.
+    assert_eq!(fs::read_dir(&upper).unwrap().count(), 1);
+    assert_eq!(
+        reopened
+            .use_prepared_copy_ups(copies)
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EINVAL)
+    );
+    assert_eq!(fs::read_dir(&upper).unwrap().count(), 0);
+    assert_eq!(
+        fs::read(reopened.copy_up(Path::new("file")).unwrap()).unwrap(),
+        b"original"
+    );
+}
+
+#[test]
 fn late_hardlink_alias_consumes_the_prepared_inode_and_preserves_sharing() {
     let (root, service, profile) = fixture();
     fs::hard_link(
