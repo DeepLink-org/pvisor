@@ -91,7 +91,7 @@ impl Fixture {
             .unwrap()
             .write(&stage)
             .unwrap();
-            fs::write(stage.join("completion.json"), serde_json::to_vec(&json!({"version":1,"result":result,
+            fs::write(stage.join("completion.json"), serde_json::to_vec(&json!({"version":2,"result":result,
                 "bundle_blake3":blake3::hash(&fs::read(RunBundle::path(&stage)).unwrap()).to_hex().to_string()})).unwrap()).unwrap();
             mounts.push(json!({"source":source,"target":target,"read_only":false,"staged":true,"volume":null}));
             sources.push(source);

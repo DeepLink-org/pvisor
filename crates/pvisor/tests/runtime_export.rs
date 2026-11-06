@@ -72,13 +72,13 @@ impl Fixture {
         serde_json::to_value(result).unwrap()
     }
     fn completion(&mut self, state: &str, exit_code: Option<i32>) {
-        self.record.schema_version = 2;
-        self.record.completion_protocol = Some(1);
+        self.record.schema_version = 3;
+        self.record.completion_protocol = Some(2);
         self.record.write().unwrap();
         let result = self.bundle_outcome(state, exit_code);
         let bytes = fs::read(RunBundle::path(&self.stage)).unwrap();
         fs::write(self.stage.join("completion.json"), serde_json::to_vec(&json!({
-            "version":1, "result":result, "bundle_blake3":blake3::hash(&bytes).to_hex().to_string()
+            "version":2, "result":result, "bundle_blake3":blake3::hash(&bytes).to_hex().to_string()
         })).unwrap()).unwrap();
     }
     fn request(&self, paths: &[&str], all: bool) -> ExportRequest {

@@ -306,7 +306,7 @@ mod linux {
             fs::write(
                 stage.join("completion.json"),
                 serde_json::to_vec(&json!({
-                    "version": 1,
+                    "version": 2,
                     "result": result,
                     "bundle_blake3": blake3::hash(&bundle_bytes).to_hex().to_string()
                 }))

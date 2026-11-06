@@ -256,7 +256,7 @@ fn validate_record(record: &RunRecord, bound: &Binding) -> anyhow::Result<()> {
         "staged bind apply authority changed"
     );
     ensure!(
-        record.completion_protocol == Some(1),
+        record.completion_protocol == Some(crate::runtime::completion::VERSION),
         "container stage requires completion receipt"
     );
     if runtime::completion::Completion::load(record)?.is_some() {
@@ -309,7 +309,7 @@ pub(super) fn prepare(store: &Store, instance: &Instance) -> anyhow::Result<Vec<
             &[pvisor_overlay_core::LayerMutability::Mutable],
         )?;
         let record: RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":2,"completion_protocol":1,"run_id":id,"execution_id":uuid(),
+            "schema_version":3,"completion_protocol":crate::runtime::completion::VERSION,"run_id":id,"execution_id":uuid(),
             "session_id":instance.id,"agent":"docker-staged-bind-owner","pid":std::process::id(),
             "command":instance.argv,"state":"running","started_at_unix_ms":instance.started_ms,
             "finished_at_unix_ms":null,"storage":stage,"workspace":mount.source,
