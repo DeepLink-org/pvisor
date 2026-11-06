@@ -20,6 +20,11 @@ ports and garbage after a bracketed host, return 400 instead of being authorized
 under a fallback port or delivered to an accepting sink. Legal URL spellings
 (including an empty port or leading port zeroes) retain their existing defaults
 and policy semantics; the `Host` header does not select the destination.
+As with CONNECT, absolute IPv6 authorities lose only their enclosing brackets
+before authorization and resolution. The bare literal resolves without DNS;
+expanded/compressed spellings keep the same IP, port and HTTP/HTTPS transport
+when the forwarding client canonicalizes the URL. Exact IP grants and explicit
+address denies retain their existing policy meaning.
 
 Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
 429 without waiting in an unbounded queue. A permit remains owned by the HTTP body

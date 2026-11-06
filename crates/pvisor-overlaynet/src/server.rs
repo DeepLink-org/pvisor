@@ -326,7 +326,18 @@ where
             )
                 .into_response());
         }
-        let host = request.uri().host().map(str::to_string).unwrap_or_default();
+        // URI authorities retain IPv6 brackets; policy controllers and the
+        // tuple resolver take a bare host, just as in the CONNECT path.
+        let host = request
+            .uri()
+            .host()
+            .map(|host| {
+                host.strip_prefix('[')
+                    .and_then(|host| host.strip_suffix(']'))
+                    .unwrap_or(host)
+                    .to_string()
+            })
+            .unwrap_or_default();
         let transport = if request.uri().scheme_str() == Some("https") {
             NetworkTransport::Https
         } else {
@@ -1041,6 +1052,137 @@ mod tests {
             assert_eq!(snapshot.failures, 2);
             assert_eq!(snapshot.policy_allowed, 0);
             assert_eq!(snapshot.policy_denied, 0);
+        });
+    }
+
+    #[test]
+    fn absolute_ipv6_uses_a_bare_ip_through_authorization_and_forwarding() {
+        #[derive(Clone)]
+        struct LiteralSink {
+            port: u16,
+            deny: bool,
+        }
+
+        #[async_trait]
+        impl OverlaySink for LiteralSink {
+            type RequestContext = ();
+
+            fn request_context(
+                &self,
+                _request: &Request,
+            ) -> anyhow::Result<OverlayRequestContext<()>> {
+                let rule = crate::policy::NetworkAccessRule {
+                    host: "::1".into(),
+                    ports: vec![self.port],
+                    transports: vec![NetworkTransport::Http],
+                    allow_private_ips: false,
+                };
+                Ok(OverlayRequestContext {
+                    policy: NetworkPolicy::compile(&NetworkConfig {
+                        mode: NetworkMode::Allowlist,
+                        rules: vec![rule.clone()],
+                        deny_rules: if self.deny { vec![rule] } else { Vec::new() },
+                        ..NetworkConfig::default()
+                    })?,
+                    run_id: None,
+                    execution_id: None,
+                    session_id: "ipv6-literal-regression".into(),
+                    sink: (),
+                })
+            }
+
+            async fn handle(
+                &self,
+                _request: Request,
+                _peer: SocketAddr,
+                _context: &OverlayRequestContext<()>,
+            ) -> anyhow::Result<Response> {
+                unreachable!("literal traffic must use transparent forwarding")
+            }
+        }
+
+        struct LiteralController(u16);
+        impl ControlController for LiteralController {
+            fn authorize(
+                &self,
+                request: pvisor_core::ControlRequest<'_>,
+            ) -> pvisor_core::ControlTransition {
+                if let pvisor_core::ControlRequest::Network { request, .. } = &request {
+                    // Fail before resolution if URI brackets leaked into the
+                    // logical host. This also prevents accidental DNS in the repro.
+                    assert_eq!(
+                        request.host.parse::<std::net::IpAddr>().unwrap(),
+                        "::1".parse::<std::net::IpAddr>().unwrap()
+                    );
+                    assert_eq!(request.port, Some(self.0));
+                    assert_eq!(request.transport, NetworkTransport::Http);
+                    if let Some(ip) = request.resolved_ip {
+                        assert_eq!(ip, "::1".parse::<std::net::IpAddr>().unwrap());
+                    }
+                }
+                PolicyControlController.authorize(request)
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio::time::{Duration, timeout};
+
+            let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let mut server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                assert!(socket.read(&mut buffer).await.unwrap() > 0);
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await
+                    .unwrap();
+            });
+            for deny in [false, true] {
+                let state = OverlayServerState::new(
+                    Arc::new(LiteralController(port)),
+                    LiteralSink { port, deny },
+                    Arc::new(AtomicUsize::new(0)),
+                );
+                let request = Request::builder()
+                    .uri(format!("http://[0:0:0:0:0:0:0:1]:{port}/"))
+                    .header("host", "other.invalid")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = timeout(
+                    Duration::from_secs(3),
+                    dispatch(&state, request, "[::1]:40000".parse().unwrap()),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    response.status(),
+                    if deny {
+                        StatusCode::FORBIDDEN
+                    } else {
+                        StatusCode::OK
+                    }
+                );
+                if !deny {
+                    let body = timeout(Duration::from_secs(3), response.into_body().collect())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .to_bytes();
+                    assert_eq!(body, "ok");
+                }
+            }
+            let result = timeout(Duration::from_secs(3), &mut server).await;
+            server.abort();
+            result.unwrap().unwrap();
         });
     }
 
