@@ -10,7 +10,12 @@ Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Execution execution 
 `session_service::SessionService`. This application library exposes frontend
 modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
-ownership. Each running Session owns its recorded private control socket; stopped Session operations
+ownership. Managed startup consumes the runtime's admitted Session plan;
+executor wrappers forward the selected executor's continuation settings. Session
+state is read through immutable accessors, and native checkpoint deletion delegates
+to the runtime service with the same request-local admission hooks. VM launch options are assembled through
+`VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while
+runtime admission validates the typed inputs before starting any drivers. Each running Session owns its recorded private control socket; stopped Session operations
 run directly in the caller. Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint

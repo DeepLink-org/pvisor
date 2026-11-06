@@ -289,6 +289,46 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    pub(crate) fn continuation_drivers(&self, config: &mut crate::RunConfig) {
+        #[allow(unused_mut)]
+        let mut network = self.network.clone().unwrap_or_default();
+        #[cfg(feature = "gateway")]
+        if self.network.is_none()
+            && let Some(gateway) = &self.gateway
+        {
+            network.network = gateway.proxy.network.clone();
+            network.listen = gateway.proxy.listen.clone();
+        }
+        config.overlaynet = crate::OverlayNetSettings {
+            mode: network.mode,
+            listen: network.listen,
+            policy: match network.network.mode {
+                pvisor_core::NetworkMode::Public => crate::OverlayNetPolicy::Public,
+                pvisor_core::NetworkMode::NoNetwork => crate::OverlayNetPolicy::Deny,
+                pvisor_core::NetworkMode::Allowlist => crate::OverlayNetPolicy::Allowlist,
+            },
+            allow: network.network.allowed_hosts,
+            rules: network.network.rules,
+            deny: network.network.deny_rules,
+            limits: network.network.limits,
+            peers: network.peers,
+        };
+        config.gateway = crate::GatewaySettings::default();
+        #[cfg(feature = "gateway")]
+        if let Some(gateway) = &self.gateway {
+            config.gateway.mode = if gateway.gateway_enabled {
+                crate::GatewayMode::Capture
+            } else {
+                crate::GatewayMode::Off
+            };
+            config.gateway.admin_listen = gateway.proxy.admin_listen.clone();
+            config.gateway.level = gateway.proxy.capture_level;
+            config.gateway.session_header = gateway.proxy.session_header.clone();
+            config.gateway.debug = gateway.proxy.debug;
+            config.gateway.routes = gateway.proxy.models.clone();
+        }
+    }
+
     pub(crate) fn storage_path(&self) -> Option<&std::path::Path> {
         self.storage.as_deref()
     }

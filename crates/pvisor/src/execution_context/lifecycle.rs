@@ -184,6 +184,7 @@ impl ExecutionContext {
             execution
         };
         let mut context = ExecutionContext {
+            vm_inputs: preparation.vm_inputs.clone(),
             spec: Arc::new(spec),
             created_at_unix_ms: now,
             execution_id: execution_id.clone(),

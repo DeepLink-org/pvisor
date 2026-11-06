@@ -150,7 +150,7 @@ impl SessionDirectoryLock {
             "Session owner still holds stage; operation {operation} refused"
         );
         let root = crate::Session::read(&current)?
-            .map(|session| session.root)
+            .map(|session| session.root().to_path_buf())
             .unwrap_or_else(|| current.stage_dir());
         let path = root.join("session.lock");
         let mut file = OpenOptions::new()
@@ -376,11 +376,11 @@ impl RunRecord {
         let active = crate::Session::read_stage(stage)?;
         let stage = active.as_ref().map_or(stage, |session| {
             if session.state() == crate::SessionState::Restoring
-                && !session.active_stage.join(RUN_META_FILENAME).exists()
+                && !session.active_stage().join(RUN_META_FILENAME).exists()
             {
-                session.previous_stage.as_path()
+                session.previous_stage()
             } else {
-                session.active_stage.as_path()
+                session.active_stage()
             }
         });
         let path = stage.join(RUN_META_FILENAME);
@@ -388,7 +388,7 @@ impl RunRecord {
         record.validate_schema()?;
         if let Some(session) = &active {
             anyhow::ensure!(
-                record.run_id == session.run_id,
+                record.run_id == session.run_id(),
                 "execution Session record owner mismatch"
             );
         }

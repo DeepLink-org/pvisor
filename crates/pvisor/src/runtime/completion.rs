@@ -574,9 +574,10 @@ mod tests {
                 let mut successor = Session::read(&record).unwrap().unwrap();
                 let mut stored = serde_json::to_value(&successor).unwrap();
                 stored["state"] = serde_json::to_value(SessionState::Restoring).unwrap();
+                stored["active_stage"] =
+                    serde_json::json!(root.path().join("executions/successor"));
+                stored["previous_stage"] = serde_json::json!(root.path());
                 successor = serde_json::from_value(stored).unwrap();
-                successor.active_stage = root.path().join("executions/successor");
-                successor.previous_stage = root.path().into();
                 successor.write().unwrap();
                 let _session = successor.lock().unwrap();
                 let _execution = super::super::registry::RunLease::acquire(root.path()).unwrap();
@@ -584,7 +585,7 @@ mod tests {
                 reconcile(&mut original).unwrap();
                 let unchanged = Session::read(&record).unwrap().unwrap();
                 assert_eq!(unchanged.state(), SessionState::Restoring);
-                assert_eq!(unchanged.active_stage, successor.active_stage);
+                assert_eq!(unchanged.active_stage(), successor.active_stage());
             }
         }
     }

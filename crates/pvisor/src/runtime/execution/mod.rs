@@ -749,7 +749,7 @@ mod vm;
 
 mod session;
 pub(crate) use session::SessionTransition;
-pub use session::{Session, SessionState};
+pub use session::{Session, SessionState, session_execution};
 
 mod record;
 pub use record::RunRecordState;

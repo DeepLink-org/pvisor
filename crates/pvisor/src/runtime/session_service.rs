@@ -31,7 +31,7 @@ pub use capture::{CaptureRequest, CaptureResponse};
 pub(crate) use lifecycle::preserve_apply_target;
 pub use lifecycle::{RestoredExecution, ResumeRequest, ResumeResponse};
 mod managed;
-pub use managed::SessionRun;
+pub use managed::{PreparedSession, SessionRun};
 mod restored;
 mod workspace;
 pub use effects::{DropRequest, MutationOutcome, MutationResponse};
@@ -165,13 +165,13 @@ fn lock_selected_session_mode(
         return Ok(None);
     };
     let lease = if observe {
-        super::registry::RunLease::observe_existing(&template.root.join("execution-operation"))?
+        super::registry::RunLease::observe_existing(&template.root().join("execution-operation"))?
     } else {
         template.lock()?
     };
     let current = template.current()?;
     current.validate_record_target(record)?;
-    let current_record = RunRecord::read(&current.active_stage)?;
+    let current_record = RunRecord::read(&current.active_stage())?;
     check_selected_record(record, &current_record)?;
     context.check(&current_record)?;
     Ok(Some((current, lease)))
@@ -185,7 +185,7 @@ pub fn execution_blocker(record: &RunRecord) -> Option<String> {
         Ok(session) => session,
         Err(error) => return Some(format!("{error:#}")),
     };
-    if session.config.vm.prepared_rootfs.is_some() {
+    if session.config().vm.prepared_rootfs.is_some() {
         return Some(
             "native execution capture/restore is unsupported for prepared rootfs sources".into(),
         );
@@ -196,17 +196,17 @@ pub fn execution_blocker(record: &RunRecord) -> Option<String> {
     )) {
         return Some("native execution checkpoints are unsupported on this platform".into());
     }
-    if session.config.overlaynet.mode != crate::OverlayNetMode::Off {
+    if session.config().overlaynet.mode != crate::OverlayNetMode::Off {
         return Some("native execution checkpoints require --overlaynet off; the Session's networking is retained".into());
     }
-    if session.config.vm.rootfs.as_deref() == Some(Path::new("/")) {
+    if session.config().vm.rootfs.as_deref() == Some(Path::new("/")) {
         return Some(
             "native execution checkpoints require an owned rootfs; host root is unsupported".into(),
         );
     }
-    if session.config.vm.cold_pager_requested()
-        || session.config.vm.ram_backing.is_some()
-        || session.config.vm.ram_compression
+    if session.config().vm.cold_pager_requested()
+        || session.config().vm.ram_backing.is_some()
+        || session.config().vm.ram_compression
     {
         return Some("native restore requires private RAM without live writable backing, a memory pool or cold pager".into());
     }

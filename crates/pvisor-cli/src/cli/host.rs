@@ -41,7 +41,7 @@ impl SessionCommand {
                 let Some(session) = pvisor::Session::read(&record)? else {
                     return Ok(false);
                 };
-                let pvisor_core::RunInvocation::Process(process) = &session.spec.invocation;
+                let pvisor_core::RunInvocation::Process(process) = &session.spec().invocation;
                 Ok(process.stdin == pvisor_core::StdioMode::Inherit)
             }
             _ => Ok(false),
@@ -132,7 +132,7 @@ impl SessionCommand {
         };
         let record = pvisor::resolve_run(selector, output)?;
         let root = pvisor::Session::read(&record)?
-            .map(|session| session.root)
+            .map(|session| session.root().to_path_buf())
             .unwrap_or_else(|| record.stage_dir());
         let root = std::fs::canonicalize(&root)
             .with_context(|| format!("resolve durable Session root {}", root.display()))?;

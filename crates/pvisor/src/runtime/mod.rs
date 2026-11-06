@@ -24,13 +24,13 @@ pub(crate) mod owned_workspace;
 mod proxy;
 mod registry;
 pub(crate) mod run;
-pub mod session_execution;
+pub use execution::session_execution;
 pub mod session_service;
 mod supervisor;
 #[cfg(feature = "gateway")]
 mod wait_coordinator;
 
-pub(crate) use drivers::VmNetworkAttachment;
+pub use drivers::VmNetworkAttachment;
 pub(crate) use drivers::{ExecutionTeardown, SessionDrivers};
 pub(crate) use overlay::{
     prepare_overlay_record_mountless, save_lower_mutability, stage_overlay_record,

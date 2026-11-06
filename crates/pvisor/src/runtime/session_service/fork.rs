@@ -62,10 +62,10 @@ impl SessionService {
         let selection_lease = template.lock()?;
         let selected = template.current()?;
         selected.validate_record_target(&source)?;
-        let current_record = RunRecord::read(&selected.active_stage)?;
+        let current_record = RunRecord::read(selected.active_stage())?;
         check_selected_record(&source, &current_record)?;
         context.check(&current_record)?;
-        if let Some(previous) = selected.forks.get(&request_id) {
+        if let Some(previous) = selected.forks().get(&request_id) {
             anyhow::ensure!(
                 previous.options == options,
                 "REQUEST_ID_CONFLICT: execution fork options changed"
@@ -83,9 +83,12 @@ impl SessionService {
         }
         let checkpoint = match args.checkpoint.as_deref() {
             Some(id) => selected.checkpoint(id)?,
-            None if selected.state() == SessionState::Suspended => {
-                selected.checkpoint(selected.head.as_deref().context("missing suspended head")?)?
-            }
+            None if selected.state() == SessionState::Suspended => selected.checkpoint(
+                selected
+                    .head()
+                    .as_deref()
+                    .context("missing suspended head")?,
+            )?,
             None => {
                 // Capture acquires the same Session lease internally and fences the
                 // selected record there. Never await capture while holding it.
@@ -137,10 +140,10 @@ where
     let _lease = template.lock()?;
     let mut parent = template.current()?;
     parent.validate_record_target(&source)?;
-    let current_record = RunRecord::read(&parent.active_stage)?;
+    let current_record = RunRecord::read(parent.active_stage())?;
     check_selected_record(&source, &current_record)?;
     context.check(&current_record)?;
-    if let Some(previous) = parent.forks.get(&request_id) {
+    if let Some(previous) = parent.forks().get(&request_id) {
         anyhow::ensure!(
             previous.options == options,
             "REQUEST_ID_CONFLICT: execution fork options changed"
@@ -158,7 +161,7 @@ where
             .unwrap_or_else(|| default_run_home().join(&run_id)),
     )?;
     anyhow::ensure!(
-        !paths_overlap(&stage, &parent.root) && !paths_overlap(&stage, &checkpoint.store),
+        !paths_overlap(&stage, &parent.root()) && !paths_overlap(&stage, &checkpoint.store),
         "execution fork stage overlaps its source Session"
     );
     anyhow::ensure!(
@@ -166,19 +169,19 @@ where
         "execution fork requires an empty stage"
     );
     let (mut executor, mut overlay) =
-        VmExecutor::restore(parent.config.vm.clone(), checkpoint.clone(), &stage)?;
-    executor = executor.with_features(parent.config.features.clone())?;
+        VmExecutor::restore(parent.config().vm.clone(), checkpoint.clone(), &stage)?;
+    executor = executor.with_features(parent.config().features.clone())?;
     if args.eager_ram {
         executor.materialize_restore_ram(&stage)?;
     }
     super::preserve_apply_target(&source, &mut overlay);
-    let mut spec = parent.spec.clone();
+    let mut spec = parent.spec().clone();
     spec.metadata.remove(session_execution::STORE_KEY);
     spec.run_id = run_id.clone().into();
-    spec.parent_run_id = Some(parent.run_id.clone().into());
+    spec.parent_run_id = Some(parent.run_id().to_owned().into());
     spec.metadata.insert(
         "pvisor.lineage".into(),
-        serde_json::json!({"parent_run_id":parent.run_id,"checkpoint_id":checkpoint.snapshot_id}),
+        serde_json::json!({"parent_run_id":parent.run_id(),"checkpoint_id":checkpoint.snapshot_id}),
     );
     if let Some(name) = args.name {
         spec.metadata.insert(
@@ -190,35 +193,31 @@ where
         run_id.clone(),
         stage.clone(),
         None,
-        parent.config.clone(),
+        parent.config().clone(),
         spec,
     )?;
-    child.stores.insert(stage.join("execution-snapshots"));
+    child.apply(crate::runtime::execution::SessionTransition::StoreBound {
+        store: &stage.join("execution-snapshots"),
+    })?;
     child.write()?;
     child.link_stage(&stage)?;
     // Pin before launching; a crash cannot leave a child with a deletable source.
-    parent
-        .checkpoints
-        .get_mut(&checkpoint.snapshot_id)
-        .context("checkpoint disappeared")?
-        .branches
-        .insert(run_id, stage.clone());
-    parent.forks.insert(
-        request_id,
-        session_execution::ForkRequest {
+    parent.apply(crate::runtime::execution::SessionTransition::ForkAdmitted {
+        id: &request_id,
+        request: &session_execution::ForkRequest {
             options,
             stage: stage.clone(),
-            session_id: child.run_id.clone(),
+            session_id: child.run_id().to_owned(),
             checkpoint_id: checkpoint.snapshot_id.clone(),
         },
-    );
+    })?;
     parent.write()?;
     drop(_lease);
     let completed_stage = stage.clone();
-    let child_id = child.run_id.clone();
+    let child_id = child.run_id().to_owned();
     let exit_code = launch(RestoredExecution {
-        config: child.config,
-        spec: child.spec,
+        config: child.config().clone(),
+        spec: child.spec().clone(),
         stage,
         executor,
         overlay,

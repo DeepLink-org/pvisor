@@ -296,7 +296,7 @@ impl CheckpointArgs {
         // workspace fallback must still acquire stopped-Execution ownership.
         let execution_delete = match &self.command {
             CheckpointCommand::Delete { id, .. } => {
-                Session::read(record)?.is_some_and(|session| session.checkpoints.contains_key(id))
+                Session::read(record)?.is_some_and(|session| session.checkpoints().contains_key(id))
             }
             _ => false,
         };
@@ -417,7 +417,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             if kind != Some(Kind::Workspace)
                 && let Some(session) = Session::read(&record)?
             {
-                checkpoints.extend(session.checkpoints.values().map(|capture| serde_json::json!({"checkpoint_id":capture.checkpoint.snapshot_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches})));
+                checkpoints.extend(session.checkpoints().values().map(|capture| serde_json::json!({"checkpoint_id":capture.checkpoint.snapshot_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches})));
             }
             emit(
                 json,
@@ -432,11 +432,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
         } => {
             let record = selection.resolve()?;
             if let Some(session) = Session::read(&record)?
-                && let Some(capture) = session.checkpoints.get(&id)
+                && let Some(capture) = session.checkpoints().get(&id)
             {
                 return emit(
                     json,
-                    serde_json::json!({"schema_version":1,"operation":"checkpoint.show","session_id":record.run_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches,"suspended_head":session.head.as_deref()==Some(&id)}),
+                    serde_json::json!({"schema_version":1,"operation":"checkpoint.show","session_id":record.run_id,"kind":"execution","checkpoint":capture.checkpoint,"branch_references":capture.branches,"suspended_head":session.head()==Some(&id)}),
                 );
             }
             // Keep the source manifest alive while computing reference information.
@@ -456,43 +456,19 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let template = Session::read(&record)?;
-            let _session_lease = template.as_ref().map(Session::lock).transpose()?;
-            let session = template.map(|session| session.current()).transpose()?;
-            if let Some(session) = &session {
-                session.validate_record_target(&record)?;
-                let current = RunRecord::read(&session.active_stage)?;
-                super::host::check_selected_record(&record, &current)?;
-                super::host_service::check_record(&current)?;
-            }
-            if let Some(mut session) = session
-                && session.checkpoints.contains_key(&id)
-            {
-                let capture = session
-                    .checkpoints
-                    .get(&id)
-                    .context("checkpoint disappeared")?;
-                anyhow::ensure!(
-                    session.head.as_deref() != Some(&id) && capture.branches.is_empty(),
-                    "CHECKPOINT_REFERENCED: retained by suspended head or child Sessions"
-                );
-                // Store-level reader leases also protect active native restores.
-                let store = checkpoint_store(&session, &capture.checkpoint.store)?;
-                store.delete(&id)?;
-                session.checkpoints.remove(&id);
-                // Keep admitted request ids fenced after deletion.
-                for request in session.requests.values_mut() {
-                    if request.checkpoint.as_deref() == Some(&id) {
-                        request.checkpoint = None;
-                        request.error = Some("checkpoint deleted".into());
-                    }
-                }
-                session.write()?;
+            if pvisor::session_service::SessionService::delete_selected_execution_checkpoint(
+                &super::host::service_context(),
+                &record,
+                &id,
+            )? {
                 return emit(
                     json,
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","session_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
                 );
             }
+            // Native lookup releases its lease on a miss; reacquire and revalidate
+            // before the workspace fallback, which expects this fence.
+            let _session = super::host::lock_selected_session(&record)?;
             let id = pvisor::session_service::SessionService::delete_selected_workspace_checkpoint(
                 &super::host::service_context(),
                 &record,
@@ -515,7 +491,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let session = template.map(|session| session.current()).transpose()?;
             if let Some(session) = &session {
                 session.validate_record_target(&record)?;
-                let current = RunRecord::read(&session.active_stage)?;
+                let current = RunRecord::read(session.active_stage())?;
                 super::host::check_selected_record(&record, &current)?;
                 super::host_service::check_record(&current)?;
             }
@@ -536,11 +512,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             if kind != Some(Kind::Workspace)
                 && let Some(session) = session
             {
-                let mut stores = session.stores.clone();
-                stores.insert(session.active_stage.join("execution-snapshots"));
+                let mut stores = session.stores().clone();
+                stores.insert(session.active_stage().join("execution-snapshots"));
                 stores.extend(
                     session
-                        .checkpoints
+                        .checkpoints()
                         .values()
                         .map(|capture| capture.checkpoint.store.clone()),
                 );
@@ -566,14 +542,14 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let _lease = template.lock()?;
             let session = template.current()?;
             session.validate_record_target(&record)?;
-            super::host_service::check_record(&RunRecord::read(&session.active_stage)?)?;
+            super::host_service::check_record(&RunRecord::read(session.active_stage())?)?;
             let checkpoint = session.checkpoint(&id)?;
-            let compatibility = pvisor::VmExecutor::checkpoint_compatibility(&session.config.vm)?;
+            let compatibility = pvisor::VmExecutor::checkpoint_compatibility(&session.config().vm)?;
             let object =
                 checkpoint_store(&session, &checkpoint.store)?.open(&id, &compatibility)?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.verify","session_id":session.run_id,"checkpoint_id":id,"verified":true,"manifest":object.manifest()}),
+                serde_json::json!({"operation":"checkpoint.verify","session_id":session.run_id(),"checkpoint_id":id,"verified":true,"manifest":object.manifest()}),
             )
         }
         CheckpointCommand::ImportBase {
@@ -590,7 +566,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                 checkpoint_store(&session, &session.primary_store()?)?.import_base(&rootfs)?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.import_base","session_id":session.run_id,"base":base.reference(),"rootfs":base.root()}),
+                serde_json::json!({"operation":"checkpoint.import_base","session_id":session.run_id(),"base":base.reference(),"rootfs":base.root()}),
             )
         }
         CheckpointCommand::VerifyBase {
@@ -604,7 +580,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                 .open_base(&pvisor::environment_snapshot::BaseReference { id })?;
             emit(
                 json,
-                serde_json::json!({"operation":"checkpoint.verify_base","session_id":session.run_id,"base":base.reference(),"verified":true}),
+                serde_json::json!({"operation":"checkpoint.verify_base","session_id":session.run_id(),"base":base.reference(),"verified":true}),
             )
         }
     }
@@ -614,7 +590,7 @@ fn checkpoint_store(
     session: &Session,
     path: &std::path::Path,
 ) -> anyhow::Result<pvisor::environment_snapshot::SnapshotStore> {
-    match session.config.vm.snapshot_filesystem_pool.as_deref() {
+    match session.config().vm.snapshot_filesystem_pool.as_deref() {
         Some(pool) => pvisor::environment_snapshot::SnapshotStore::with_filesystem_pool(path, pool),
         None => pvisor::environment_snapshot::SnapshotStore::new(path),
     }

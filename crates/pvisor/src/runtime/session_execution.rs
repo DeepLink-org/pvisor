@@ -1,10 +1,10 @@
 //! Ordinary CLI Sessions own native checkpoints; the VM executor owns capture/restore.
 //! A sealed checkpoint is not suspension evidence. Only the terminal native
 //! receipt grants a new Execution the right to resume.
-use super::RunRecord;
-use super::execution::{Execution, Session, SessionState, SessionTransition};
-use super::registry::RunLease;
 use crate::config::{RunConfig, RunExecutorKind};
+use crate::runtime::RunRecord;
+use crate::runtime::execution::{Execution, Session, SessionState, SessionTransition};
+use crate::runtime::registry::RunLease;
 use anyhow::{Context, ensure};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
@@ -115,7 +115,7 @@ impl Session {
         );
         Ok(Some(session))
     }
-    pub fn write(&self) -> anyhow::Result<()> {
+    pub(crate) fn write(&self) -> anyhow::Result<()> {
         crate::util::write_run_json(
             &self.root.join(STATE),
             self,
@@ -196,7 +196,7 @@ impl Session {
     pub fn primary_store(&self) -> anyhow::Result<PathBuf> {
         snapshot_store(&self.root, &self.spec.metadata)
     }
-    pub fn link_stage(&self, stage: &Path) -> anyhow::Result<()> {
+    pub(crate) fn link_stage(&self, stage: &Path) -> anyhow::Result<()> {
         crate::util::write_run_json(
             &stage.join(ROOT),
             &self.root,
@@ -305,7 +305,7 @@ impl Session {
                 spec,
             )?,
         };
-        session.stores.insert(store);
+        session.apply(SessionTransition::StoreBound { store: &store })?;
         session.write()?;
         session.link_stage(&stage)?;
         Ok(session)
@@ -417,7 +417,7 @@ async fn handle_request(
 
 /// Timeout abandons only the client's wait, never cancels or repeats capture.
 pub(crate) async fn capture(
-    context: &super::session_service::ServiceContext<'_>,
+    context: &crate::runtime::session_service::ServiceContext<'_>,
     record: &RunRecord,
     suspend: bool,
     ram_storage: SnapshotRamStorage,
@@ -445,7 +445,7 @@ pub(crate) async fn capture(
             let current = session.current()?;
             current.validate_record_target(record)?;
             let current_record = RunRecord::read(&current.active_stage)?;
-            super::session_service::check_selected_record(record, &current_record)?;
+            crate::runtime::session_service::check_selected_record(record, &current_record)?;
             context.check(&current_record)?;
             current
         };
@@ -483,7 +483,7 @@ pub(crate) async fn capture(
             let mut current = session.current()?;
             current.validate_record_target(record)?;
             let current_record = RunRecord::read(&current.active_stage)?;
-            super::session_service::check_selected_record(record, &current_record)?;
+            crate::runtime::session_service::check_selected_record(record, &current_record)?;
             context.check(&current_record)?;
             ensure!(
                 current.state() == SessionState::Suspended,
@@ -499,15 +499,11 @@ pub(crate) async fn capture(
                     "REQUEST_ID_CONFLICT: request options changed"
                 );
             } else {
-                current.requests.insert(
-                    request_id.clone(),
-                    Request {
-                        suspend,
-                        ram_storage,
-                        checkpoint: Some(checkpoint.snapshot_id.clone()),
-                        error: None,
-                    },
-                );
+                current.apply(SessionTransition::CaptureReused {
+                    id: &request_id,
+                    suspend,
+                    ram_storage,
+                })?;
                 current.write()?;
             }
             checkpoint
@@ -523,59 +519,60 @@ pub(crate) async fn capture(
             let current = session.current()?;
             current.validate_record_target(record)?;
             let current_record = RunRecord::read(&current.active_stage)?;
-            super::session_service::check_selected_record(record, &current_record)?;
+            crate::runtime::session_service::check_selected_record(record, &current_record)?;
             context.check(&current_record)?;
-            let checkpoint = if let Some(owner) = super::instance_control::local_owner(record) {
-                let permit = owner.admit_capture()?;
-                let request = ControlRequest {
-                    run_id: record.run_id.clone(),
-                    execution_id: record
+            let checkpoint =
+                if let Some(owner) = crate::runtime::instance_control::local_owner(record) {
+                    let permit = owner.admit_capture()?;
+                    let request = ControlRequest {
+                        run_id: record.run_id.clone(),
+                        execution_id: record
+                            .execution_id
+                            .clone()
+                            .context("missing Execution identity")?,
+                        request_id: request_id.clone(),
+                        suspend,
+                        ram_storage,
+                    };
+                    let work = tokio::spawn(async move {
+                        let _permit = permit;
+                        handle_request(&current, owner.execution.clone(), request).await
+                    });
+                    drop(lease);
+                    work.await?.map_err(capture_error)?
+                } else {
+                    let endpoint = current_record.live_control.clone().context(
+                        "EXECUTION_UNKNOWN: owning Session control endpoint unavailable",
+                    )?;
+                    ensure!(
+                        endpoint.pid != std::process::id(),
+                        "local Session owner unavailable"
+                    );
+                    let session_id = current_record.run_id;
+                    let execution_id = current_record
                         .execution_id
-                        .clone()
-                        .context("missing Execution identity")?,
-                    request_id: request_id.clone(),
-                    suspend,
-                    ram_storage,
+                        .context("missing Execution identity")?;
+                    let command = crate::runtime::host_transport::InstanceCommand::Capture {
+                        suspend,
+                        ram_storage,
+                        timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
+                        request_id: request_id.clone(),
+                    };
+                    drop(lease);
+                    let reply = tokio::task::spawn_blocking(move || {
+                        endpoint.exchange(&session_id, &execution_id, command)
+                    })
+                    .await??;
+                    let reply: crate::runtime::session_service::CaptureResponse =
+                        serde_json::from_value(reply)?;
+                    ensure!(
+                        reply.session_id == record.run_id
+                            && reply.request_id == request_id
+                            && reply.suspended == suspend,
+                        "execution control capture receipt mismatch"
+                    );
+                    reply.checkpoint
                 };
-                let work = tokio::spawn(async move {
-                    let _permit = permit;
-                    handle_request(&current, owner.execution.clone(), request).await
-                });
-                drop(lease);
-                work.await?.map_err(capture_error)?
-            } else {
-                let endpoint = current_record
-                    .live_control
-                    .clone()
-                    .context("EXECUTION_UNKNOWN: owning Session control endpoint unavailable")?;
-                ensure!(
-                    endpoint.pid != std::process::id(),
-                    "local Session owner unavailable"
-                );
-                let session_id = current_record.run_id;
-                let execution_id = current_record
-                    .execution_id
-                    .context("missing Execution identity")?;
-                let command = super::host_transport::InstanceCommand::Capture {
-                    suspend,
-                    ram_storage,
-                    timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
-                    request_id: request_id.clone(),
-                };
-                drop(lease);
-                let reply = tokio::task::spawn_blocking(move || {
-                    endpoint.exchange(&session_id, &execution_id, command)
-                })
-                .await??;
-                let reply: super::session_service::CaptureResponse = serde_json::from_value(reply)?;
-                ensure!(
-                    reply.session_id == record.run_id
-                        && reply.request_id == request_id
-                        && reply.suspended == suspend,
-                    "execution control capture receipt mismatch"
-                );
-                reply.checkpoint
-            };
             checkpoint.validate()?;
             ensure!(
                 checkpoint.source_run_id == session.run_id
@@ -591,7 +588,7 @@ pub(crate) async fn capture(
                 current.validate_record_target(record)?;
                 if current.state() == SessionState::Suspended
                     && current.head.as_deref() == Some(&checkpoint.snapshot_id)
-                    && !super::is_live(&current.active_stage)?
+                    && !crate::runtime::is_live(&current.active_stage)?
                 {
                     break;
                 }
@@ -630,8 +627,8 @@ pub fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::host_transport::{read_host_frame, write_host_frame};
     use super::*;
+    use crate::runtime::host_transport::{read_host_frame, write_host_frame};
     use pvisor_core::host_protocol::AgentCtlHostResponse;
 
     #[tokio::test(start_paused = true)]
@@ -873,7 +870,7 @@ mod tests {
             }
             session.write().unwrap();
             let lease = session.lock().unwrap();
-            let context = super::super::session_service::ServiceContext::default();
+            let context = crate::runtime::session_service::ServiceContext::default();
             let mut pending = Box::pin(capture(
                 &context,
                 &record,
@@ -959,17 +956,17 @@ mod tests {
     fn remote_endpoint(record: &mut RunRecord) -> (tokio::net::UnixListener, tempfile::TempDir) {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let directory =
-            super::super::host_transport::allocate_host_directory("capture-test-").unwrap();
+            crate::runtime::host_transport::allocate_host_directory("capture-test-").unwrap();
         let path = directory.path().join("control.sock");
-        let listener = super::super::host_transport::bind_instance_socket(&path).unwrap();
+        let listener = crate::runtime::host_transport::bind_instance_socket(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let metadata = std::fs::symlink_metadata(&path).unwrap();
-        record.live_control = Some(super::super::host_transport::LiveControlRecord {
+        record.live_control = Some(crate::runtime::host_transport::LiveControlRecord {
             path,
             device: metadata.dev(),
             inode: metadata.ino(),
-            protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            protocol: crate::runtime::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
             binary: std::env::current_exe().unwrap(),
             binary_digest: "test".into(),
             pid: std::os::unix::process::parent_id(),
@@ -998,7 +995,7 @@ mod tests {
             let mut checkpoint = checkpoint(temp.path());
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let request: AgentCtlHostRequest<super::super::host_transport::InstanceCommand> =
+                let request: AgentCtlHostRequest<crate::runtime::host_transport::InstanceCommand> =
                     read_host_frame(&mut stream).await.unwrap();
                 assert_eq!(
                     request.target.unwrap().execution_id.as_deref(),
@@ -1018,7 +1015,7 @@ mod tests {
                     } else {
                         request.request_id
                     },
-                    result: Ok(super::super::session_service::CaptureResponse {
+                    result: Ok(crate::runtime::session_service::CaptureResponse {
                         session_id: "session".into(),
                         request_id: "capture".into(),
                         suspended: false,
@@ -1028,7 +1025,7 @@ mod tests {
                 write_host_frame(&mut stream, &response).await.unwrap();
             });
             let error = capture(
-                &super::super::session_service::ServiceContext::default(),
+                &crate::runtime::session_service::ServiceContext::default(),
                 &record,
                 false,
                 SnapshotRamStorage::Raw,
@@ -1067,7 +1064,7 @@ mod tests {
         let server_cancelled = cancelled.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request: AgentCtlHostRequest<super::super::host_transport::InstanceCommand> =
+            let request: AgentCtlHostRequest<crate::runtime::host_transport::InstanceCommand> =
                 read_host_frame(&mut stream).await.unwrap();
             server_cancelled.store(true, Ordering::SeqCst);
             write_host_frame(
@@ -1075,7 +1072,7 @@ mod tests {
                 &AgentCtlHostResponse {
                     version: AGENTCTL_HOST_VERSION,
                     request_id: request.request_id,
-                    result: Ok(super::super::session_service::CaptureResponse {
+                    result: Ok(crate::runtime::session_service::CaptureResponse {
                         session_id: "session".into(),
                         request_id: "admitted-capture".into(),
                         suspended: false,
@@ -1090,7 +1087,7 @@ mod tests {
             ensure!(!cancelled.load(Ordering::SeqCst), "request cancelled");
             Ok(())
         };
-        let context = super::super::session_service::ServiceContext {
+        let context = crate::runtime::session_service::ServiceContext {
             check_cancelled: Some(&check),
             ..Default::default()
         };
@@ -1136,7 +1133,7 @@ mod tests {
         );
         session.write().unwrap();
         let result = capture(
-            &super::super::session_service::ServiceContext::default(),
+            &crate::runtime::session_service::ServiceContext::default(),
             &record,
             false,
             SnapshotRamStorage::Raw,
@@ -1147,7 +1144,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.snapshot_id, id);
         let error = capture(
-            &super::super::session_service::ServiceContext::default(),
+            &crate::runtime::session_service::ServiceContext::default(),
             &record,
             true,
             SnapshotRamStorage::Raw,
@@ -1158,7 +1155,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("REQUEST_ID_CONFLICT"));
         let error = capture(
-            &super::super::session_service::ServiceContext::default(),
+            &crate::runtime::session_service::ServiceContext::default(),
             &record,
             false,
             SnapshotRamStorage::Compressed,

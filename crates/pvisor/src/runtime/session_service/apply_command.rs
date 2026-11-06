@@ -540,7 +540,7 @@ fn validate_apply_source(record: &RunRecord, selection: &SessionSelection) -> an
             allowed.push(overlay.target.clone());
         }
         if let Some(session) = crate::Session::read(record)? {
-            allowed.push(session.root);
+            allowed.push(session.root().to_path_buf());
         }
         ensure!(
             allowed
@@ -1337,7 +1337,7 @@ mod tests {
         {
             let session = crate::Session::read(&record).unwrap().unwrap();
             let _execution = crate::runtime::registry::RunLease::observe_existing(
-                &session.root.join("execution-operation"),
+                &session.root().join("execution-operation"),
             )
             .unwrap();
             assert!(session.lock().is_err());

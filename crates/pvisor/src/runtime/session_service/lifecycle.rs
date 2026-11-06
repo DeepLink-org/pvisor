@@ -49,12 +49,12 @@ impl SessionService {
         let lease = template.lock()?;
         let mut session = template.current()?;
         session.validate_record_target(&source)?;
-        let current_record = RunRecord::read(&session.active_stage)?;
+        let current_record = RunRecord::read(session.active_stage())?;
         check_selected_record(&source, &current_record)?;
         context.check(&current_record)?;
         let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         validate_request_id(&request_id)?;
-        if let Some(request) = session.resumes.get(&request_id) {
+        if let Some(request) = session.resumes().get(&request_id) {
             let stage = &request.stage;
             anyhow::ensure!(
                 request.eager_ram == eager_ram,
@@ -75,20 +75,24 @@ impl SessionService {
             session.state()
         );
         super::require_execution(&source)?;
-        let checkpoint =
-            session.checkpoint(session.head.as_deref().context("missing suspended head")?)?;
+        let checkpoint = session.checkpoint(
+            session
+                .head()
+                .as_deref()
+                .context("missing suspended head")?,
+        )?;
         let (current_source, source_lease) = source.lock_current()?;
         check_selected_record(&source, &current_source)?;
         let source = current_source;
         session.validate_record_target(&source)?;
         context.check(&source)?;
         let stage = session
-            .root
+            .root()
             .join("executions")
             .join(uuid::Uuid::new_v4().to_string());
         let (mut executor, mut overlay) =
-            VmExecutor::restore(session.config.vm.clone(), checkpoint.clone(), &stage)?;
-        executor = executor.with_features(session.config.features.clone())?;
+            VmExecutor::restore(session.config().vm.clone(), checkpoint.clone(), &stage)?;
+        executor = executor.with_features(session.config().features.clone())?;
         if eager_ram {
             executor.materialize_restore_ram(&stage)?;
         }
@@ -105,8 +109,8 @@ impl SessionService {
         // Keep the previous Execution's lease until the successor has completed.
         // The new Execution acquires its own lease through normal runtime admission.
         let result = launch(RestoredExecution {
-            config: session.config.clone(),
-            spec: session.spec.clone(),
+            config: session.config().clone(),
+            spec: session.spec().clone(),
             stage,
             executor,
             overlay,
@@ -118,8 +122,8 @@ impl SessionService {
             let _lease = session.lock()?;
             let mut current = session.current()?;
             let no_successor = current.owns_restore_transition(&session, &request_id)
-                && !crate::runtime::is_live(&session.active_stage)?
-                && !session.active_stage.join("run.json").try_exists()?;
+                && !crate::runtime::is_live(session.active_stage())?
+                && !session.active_stage().join("run.json").try_exists()?;
             if current.apply(SessionTransition::RestoreAborted {
                 admitted: &session,
                 previous: &previous,
@@ -132,7 +136,7 @@ impl SessionService {
         let exit_code = result?;
         // A launcher returning success without starting/draining the managed run
         // is not a completed restore. Do not turn an empty callback into Finished.
-        confirm_restored_completion(&session.active_stage, &session.run_id)?;
+        confirm_restored_completion(session.active_stage(), &session.run_id())?;
         Ok(ResumeResponse::Finished { exit_code })
     }
 }
@@ -148,11 +152,11 @@ pub(super) fn confirm_restored_completion(
     let record = RunRecord::read(stage)
         .context("EXECUTION_UNKNOWN: restored launcher returned without a successor record")?;
     anyhow::ensure!(
-        current.run_id == session_id
+        current.run_id() == session_id
             && record.run_id == session_id
-            && current.active_stage == stage
-            && !current.active_execution.is_empty()
-            && record.execution_id.as_deref() == Some(current.active_execution.as_str())
+            && current.active_stage() == stage
+            && !current.active_execution().is_empty()
+            && record.execution_id.as_deref() == Some(current.active_execution())
             && matches!(
                 current.state(),
                 SessionState::Terminal | SessionState::Suspended

@@ -1207,6 +1207,11 @@ fn notify_executor_output(output: &pvisor::ExecutorOutput) {
 
 #[async_trait::async_trait]
 impl RunExecutor for TerminalReportingExecutor {
+    fn continuation_settings(
+        &self,
+    ) -> Option<(pvisor::VmSettings, pvisor::features::FeatureSettings)> {
+        self.0.continuation_settings()
+    }
     fn descriptor(&self) -> pvisor_core::ExecutorPlan {
         self.0.descriptor()
     }
@@ -1727,6 +1732,7 @@ async fn execute_config(
         }),
     );
     if config.run.executor == RunExecutorKind::Vm {
+        let mut vm_inputs = pvisor::VmExecutionInputs::default();
         if let Some(stage) = &stage_launch {
             if workspace != Path::new("/") {
                 let scope = pvisor::session_service::ProjectApplyScope::capture(&workspace)?;
@@ -1735,42 +1741,28 @@ async fn execute_config(
                     serde_json::to_value(scope)?,
                 );
             }
-            spec.metadata.insert(
-                "pvisor.vm.env_unset".into(),
-                serde_json::to_value(&stage.unset_env)?,
-            );
-            spec.metadata.insert(
-                "pvisor.vm.stage_stdio".into(),
-                serde_json::json!({
-                    "interactive": stage.interactive,
-                    "tty": stage.tty,
-                }),
-            );
+            vm_inputs.env_unset = stage.unset_env.clone();
+            vm_inputs.stage_stdio = Some(pvisor::VmStageStdio {
+                interactive: stage.interactive,
+                tty: stage.tty,
+            });
         }
         if let Some(target) = config
             .overlayfs
             .as_ref()
             .and_then(|overlay| overlay.target.as_ref())
         {
-            spec.metadata.insert(
-                "pvisor.vm.overlay_target".into(),
-                serde_json::Value::String(target.display().to_string()),
-            );
-            spec.metadata.insert(
-                "pvisor.vm.guest_cwd".into(),
-                serde_json::Value::String(target.display().to_string()),
-            );
+            vm_inputs.overlay_target = Some(target.clone());
+            vm_inputs.guest_cwd = Some(target.clone());
         } else {
-            spec.metadata.insert(
-                "pvisor.vm.guest_cwd".into(),
-                serde_json::to_value(
-                    stage_launch
-                        .as_ref()
-                        .map(|stage| stage.cwd.as_path())
-                        .unwrap_or(Path::new("/")),
-                )?,
+            vm_inputs.guest_cwd = Some(
+                stage_launch
+                    .as_ref()
+                    .map(|stage| stage.cwd.clone())
+                    .unwrap_or_else(|| PathBuf::from("/")),
             );
         }
+        vm_inputs.apply_to(&mut spec)?;
         if let Some(image) = &prepared_image {
             spec.metadata.insert(
                 "pvisor.vm.image_digest".into(),

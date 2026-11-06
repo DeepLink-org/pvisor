@@ -401,18 +401,18 @@ impl SessionService {
         let execution = crate::Session::read(&record)?
             .map(|session| {
                 ensure!(
-                    session.active_execution.len() <= 256
-                        && session.head.as_ref().is_none_or(|head| head.len() <= 256),
+                    session.active_execution().len() <= 256
+                        && session.head().is_none_or(|head| head.len() <= 256),
                     "invalid execution summary identity"
                 );
                 Ok::<_, anyhow::Error>(ExecutionSummary {
                     state: session.state(),
-                    suspended_head: session.head,
-                    active_execution: session.active_execution,
-                    checkpoint_count: session.checkpoints.len(),
-                    capture_request_count: session.requests.len(),
-                    resume_request_count: session.resumes.len(),
-                    fork_request_count: session.forks.len(),
+                    suspended_head: session.head().map(str::to_owned),
+                    active_execution: session.active_execution().to_owned(),
+                    checkpoint_count: session.checkpoints().len(),
+                    capture_request_count: session.requests().len(),
+                    resume_request_count: session.resumes().len(),
+                    fork_request_count: session.forks().len(),
                 })
             })
             .transpose()?;

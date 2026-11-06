@@ -45,38 +45,55 @@ impl std::fmt::Display for SessionState {
 /// Persistent execution aggregate. State changes require typed transitions; callers
 /// retain the Session lease through applying a transition and writing the resulting record.
 /// Deserialization preserves the existing schema; reading storage validates its binding.
+/// Related identities, continuation heads and request ledgers are read-only to callers.
+/// Accessors observe this loaded snapshot without I/O or implicit refresh. Clones
+/// are independent snapshots; persistent operations reread under their own leases.
+///
+/// ```compile_fail
+/// fn replace_execution(session: &mut pvisor::Session) {
+///     session.active_execution = "unadmitted-successor".into();
+/// }
+/// ```
+///
+/// Raw persistence is also internal; callers mutate through SessionService.
+///
+/// ```compile_fail
+/// fn persist_unadmitted_state(session: &pvisor::Session) {
+///     session.write().unwrap();
+/// }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
     /// Durable record schema version.
-    pub version: u16,
+    version: u16,
     /// Logical Session identity shared by its Executions.
-    pub run_id: String,
+    run_id: String,
     /// Canonical Session storage root.
-    pub root: PathBuf,
+    root: PathBuf,
     /// Stage selected for the current or admitted successor Execution.
-    pub active_stage: PathBuf,
+    active_stage: PathBuf,
     /// Previous stage retained during successor admission.
-    pub previous_stage: PathBuf,
+    previous_stage: PathBuf,
     /// Execution identity selected by confirmed startup.
-    pub active_execution: String,
+    active_execution: String,
     /// Captured execution configuration, not frontend override authority.
-    pub config: crate::RunConfig,
+    config: crate::RunConfig,
     /// Captured invocation and policy inputs for continuation.
-    pub spec: RunSpec,
+    spec: RunSpec,
     state: SessionState,
     /// Confirmed suspended checkpoint; usable only in Suspended phase.
-    pub head: Option<String>,
+    head: Option<String>,
     /// Published checkpoints and their retained file branches.
-    pub checkpoints: BTreeMap<String, Capture>,
+    checkpoints: BTreeMap<String, Capture>,
     /// Scoped capture admission and result receipts.
-    pub requests: BTreeMap<String, Request>,
+    requests: BTreeMap<String, Request>,
     /// Scoped successor admission receipts.
-    pub resumes: BTreeMap<String, ResumeRequest>,
+    resumes: BTreeMap<String, ResumeRequest>,
     /// Scoped execution-fork receipts.
-    pub forks: BTreeMap<String, ForkRequest>,
+    forks: BTreeMap<String, ForkRequest>,
     /// Snapshot stores pinned by this Session's records.
-    pub stores: BTreeSet<PathBuf>,
+    stores: BTreeSet<PathBuf>,
 }
 
 pub(crate) enum SessionTransition<'a> {
@@ -112,12 +129,100 @@ pub(crate) enum SessionTransition<'a> {
         record: &'a RunRecord,
         result: Option<&'a RunResult>,
     },
+    StoreBound {
+        store: &'a Path,
+    },
+    CaptureReused {
+        id: &'a str,
+        suspend: bool,
+        ram_storage: SnapshotRamStorage,
+    },
+    ForkAdmitted {
+        id: &'a str,
+        request: &'a ForkRequest,
+    },
+    CheckpointDeleted {
+        id: &'a str,
+    },
     Terminated,
 }
+#[path = "../session_execution.rs"]
+pub mod session_execution;
+
 impl Session {
     /// Read the durable continuation phase. A live pause is reported by Execution.
     pub fn state(&self) -> SessionState {
         self.state
+    }
+
+    /// Read the Session's version; mutation belongs to typed transitions.
+    pub fn version(&self) -> u16 {
+        self.version
+    }
+
+    /// Read the Session's run id; mutation belongs to typed transitions.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Read the Session's root; mutation belongs to typed transitions.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Read the Session's active stage; mutation belongs to typed transitions.
+    pub fn active_stage(&self) -> &Path {
+        &self.active_stage
+    }
+
+    /// Read the Session's previous stage; mutation belongs to typed transitions.
+    pub fn previous_stage(&self) -> &Path {
+        &self.previous_stage
+    }
+
+    /// Read the Session's active execution; mutation belongs to typed transitions.
+    pub fn active_execution(&self) -> &str {
+        &self.active_execution
+    }
+
+    /// Read the Session's config; mutation belongs to typed transitions.
+    pub fn config(&self) -> &crate::RunConfig {
+        &self.config
+    }
+
+    /// Read the Session's spec; mutation belongs to typed transitions.
+    pub fn spec(&self) -> &RunSpec {
+        &self.spec
+    }
+
+    /// Read the Session's head; mutation belongs to typed transitions.
+    pub fn head(&self) -> Option<&str> {
+        self.head.as_deref()
+    }
+
+    /// Read the Session's checkpoints; mutation belongs to typed transitions.
+    pub fn checkpoints(&self) -> &BTreeMap<String, Capture> {
+        &self.checkpoints
+    }
+
+    /// Read the Session's requests; mutation belongs to typed transitions.
+    pub fn requests(&self) -> &BTreeMap<String, Request> {
+        &self.requests
+    }
+
+    /// Read the Session's resumes; mutation belongs to typed transitions.
+    pub fn resumes(&self) -> &BTreeMap<String, ResumeRequest> {
+        &self.resumes
+    }
+
+    /// Read the Session's forks; mutation belongs to typed transitions.
+    pub fn forks(&self) -> &BTreeMap<String, ForkRequest> {
+        &self.forks
+    }
+
+    /// Read the Session's stores; mutation belongs to typed transitions.
+    pub fn stores(&self) -> &BTreeSet<PathBuf> {
+        &self.stores
     }
 
     pub(crate) fn new(
@@ -310,6 +415,71 @@ impl Session {
                     None => self.state = SessionState::Unknown,
                 }
             }
+            SessionTransition::StoreBound { store } => {
+                ensure!(store.is_absolute(), "invalid Session snapshot store");
+                self.stores.insert(store.to_owned());
+            }
+            SessionTransition::CaptureReused {
+                id,
+                suspend,
+                ram_storage,
+            } => {
+                ensure!(
+                    self.state == SessionState::Suspended,
+                    "Session has no suspended continuation"
+                );
+                ensure!(
+                    !id.trim().is_empty() && id.len() <= 256 && !self.requests.contains_key(id),
+                    "duplicate or invalid capture admission"
+                );
+                let checkpoint =
+                    self.checkpoint(self.head.as_deref().context("missing suspended head")?)?;
+                self.requests.insert(
+                    id.into(),
+                    Request {
+                        suspend,
+                        ram_storage,
+                        checkpoint: Some(checkpoint.snapshot_id),
+                        error: None,
+                    },
+                );
+            }
+            SessionTransition::ForkAdmitted { id, request } => {
+                ensure!(
+                    !id.trim().is_empty() && id.len() <= 256 && !self.forks.contains_key(id),
+                    "duplicate or invalid fork admission"
+                );
+                ensure!(
+                    !request.session_id.is_empty()
+                        && request.session_id != self.run_id
+                        && request.stage.is_absolute()
+                        && !request.stage.starts_with(&self.root)
+                        && !self.root.starts_with(&request.stage),
+                    "invalid child Session binding"
+                );
+                let capture = self
+                    .checkpoints
+                    .get_mut(&request.checkpoint_id)
+                    .context("checkpoint disappeared")?;
+                ensure!(
+                    !capture.branches.contains_key(&request.session_id),
+                    "child Session already pinned"
+                );
+                capture
+                    .branches
+                    .insert(request.session_id.clone(), request.stage.clone());
+                self.forks.insert(id.into(), request.clone());
+            }
+            SessionTransition::CheckpointDeleted { id } => {
+                self.check_deletable_checkpoint(id)?;
+                self.checkpoints.remove(id);
+                for request in self.requests.values_mut() {
+                    if request.checkpoint.as_deref() == Some(id) {
+                        request.checkpoint = None;
+                        request.error = Some("checkpoint deleted".into());
+                    }
+                }
+            }
             SessionTransition::Terminated => {
                 ensure!(
                     self.state == SessionState::Suspended,
@@ -321,6 +491,15 @@ impl Session {
         }
         Ok(true)
     }
+    pub(crate) fn check_deletable_checkpoint(&self, id: &str) -> anyhow::Result<()> {
+        let capture = self.checkpoints.get(id).context("checkpoint disappeared")?;
+        ensure!(
+            self.head.as_deref() != Some(id) && capture.branches.is_empty(),
+            "CHECKPOINT_REFERENCED: retained by suspended head or child Sessions"
+        );
+        Ok(())
+    }
+
     fn complete(&mut self, result: &RunResult) -> anyhow::Result<()> {
         ensure!(
             result.state.is_terminal(),
@@ -407,6 +586,78 @@ mod tests {
         session.apply(SessionTransition::Completed(result)).unwrap();
         assert_eq!(session.state(), SessionState::Suspended);
     }
+    #[test]
+    fn checkpoint_deletion_retains_request_fences_and_rejects_references_atomically() {
+        let (root, mut session, _, checkpoint, result) = fixture();
+        session
+            .apply(SessionTransition::StoreBound {
+                store: &checkpoint.store,
+            })
+            .unwrap();
+        suspend(&mut session, &checkpoint, &result);
+        let before = serde_json::to_value(&session).unwrap();
+        assert!(
+            session
+                .apply(SessionTransition::CheckpointDeleted {
+                    id: &checkpoint.snapshot_id
+                })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&session).unwrap(), before);
+        session.apply(SessionTransition::Terminated).unwrap();
+        let mut unreferenced = session.clone();
+        unreferenced
+            .apply(SessionTransition::CheckpointDeleted {
+                id: &checkpoint.snapshot_id,
+            })
+            .unwrap();
+        assert!(unreferenced.checkpoints().is_empty());
+        assert!(unreferenced.requests()["suspend"].checkpoint.is_none());
+        assert_eq!(
+            unreferenced.requests()["suspend"].error.as_deref(),
+            Some("checkpoint deleted")
+        );
+        let request = ForkRequest {
+            options: crate::runtime::session_execution::ForkOptions {
+                checkpoint: Some(checkpoint.snapshot_id.clone()),
+                stage: None,
+                name: None,
+                ram_storage: None,
+                eager_ram: false,
+            },
+            stage: root.path().with_extension("child"),
+            session_id: "child".into(),
+            checkpoint_id: checkpoint.snapshot_id.clone(),
+        };
+        session
+            .apply(SessionTransition::ForkAdmitted {
+                id: "fork",
+                request: &request,
+            })
+            .unwrap();
+        assert_eq!(
+            session.checkpoints()[&checkpoint.snapshot_id].branches["child"],
+            request.stage
+        );
+        let before = serde_json::to_value(&session).unwrap();
+        assert!(
+            session
+                .apply(SessionTransition::CheckpointDeleted {
+                    id: &checkpoint.snapshot_id
+                })
+                .is_err()
+        );
+        assert!(
+            session
+                .apply(SessionTransition::ForkAdmitted {
+                    id: "fork",
+                    request: &request
+                })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&session).unwrap(), before);
+    }
+
     #[test]
     fn termination_withdraws_continuation_without_erasing_history_or_reviving_old_receipts() {
         let (_root, mut session, record, checkpoint, result) = fixture();
