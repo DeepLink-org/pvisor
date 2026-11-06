@@ -2043,7 +2043,7 @@ impl PublishedEnvironment {
         layers: &[(PathBuf, std::sync::Arc<super::SharedFilesystemLayer>)],
     ) -> anyhow::Result<Option<super::restore_cache::Task>> {
         use super::TreeObject;
-        use super::restore_cache::{MAX_FILES, MAX_PATH_BYTES, Session, SourceLayer};
+        use super::restore_cache::{MAX_FILES, MAX_PATH_BYTES, SourceLayer, Task};
         use std::os::unix::fs::MetadataExt;
         if layers.is_empty() {
             return Ok(None);
@@ -2101,7 +2101,7 @@ impl PublishedEnvironment {
         if result.is_empty() && new_pools.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Session {
+        Ok(Some(Task {
             layers: result,
             new_pools,
             _reference: self._reference.try_clone()?,
