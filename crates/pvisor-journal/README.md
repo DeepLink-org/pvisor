@@ -25,6 +25,9 @@ lasts until the last owner (including a Trace or accepted blocking task) drops.
 Closed-file read/validate use shared locks and never repair. Open repairs only
 an incomplete final record, not a corrupt complete record or incomplete header.
 Complete recovered records are synced before a retry can receive LocalSync.
+Open/read/validate require regular files. They open with nonblocking semantics
+and check the descriptor type before journal I/O (or chmod for writers), so a
+FIFO is rejected without waiting for a peer or changing its permissions.
 
 Append validates Core bounds and causality, accepts unresolved forward references,
 and rejects cycles. Before committing on either backend it also deserializes the

@@ -50,10 +50,12 @@ pub trait JournalStore {
     where
         Self: Sized;
 
-    /// Open/create a mode-0600 file without following a final-path symlink and
+    /// Open/create a mode-0600 regular file without following a final-path symlink and
     /// acquire a nonblocking exclusive writer lock. Creates/syncs parent entries;
-    /// even failure may leave directories/files or changed permissions. An empty
-    /// file receives a synced header. Existing complete records are validated
+    /// even failure may leave directories/files or changed permissions. A
+    /// FIFO or other nonregular target is rejected before chmod or journal I/O;
+    /// opening a FIFO does not wait for a peer. An empty regular file receives a
+    /// synced header. Existing complete records are validated
     /// (Core bounds, contiguous positions, unique IDs, acyclic causal graph) and
     /// synced before use. Only a non-newline-terminated final record is truncated
     /// and synced; oversized tails, incomplete headers and corrupt complete
@@ -65,6 +67,7 @@ pub trait JournalStore {
     /// Read a closed file under a nonblocking shared lock. Validate header and
     /// records as open does, but never repair or modify bytes/permissions. A live
     /// writer, incomplete tail, unsupported format or corruption returns error.
+    /// Reject nonregular targets without waiting for a FIFO peer.
     /// Retains all records and identity/causality indexes in memory.
     fn read(path: &Path) -> anyhow::Result<Vec<Record>>
     where
