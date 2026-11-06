@@ -810,6 +810,43 @@ fn durable_open_permissions_symlink_rejection_and_partial_parent_errors() {
 }
 
 #[test]
+fn atomic_write_accepts_a_bare_relative_filename() {
+    // Isolate cwd in a subprocess so parallel tests never observe a cwd change.
+    const CHILD: &str = "PVISOR_TEST_RELATIVE_ATOMIC_WRITE";
+    if std::env::var_os(CHILD).is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "atomic_write_accepts_a_bare_relative_filename",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let path = Path::new("record");
+    Persistence::atomic_write(path, b"old", 0o600).unwrap();
+    let mut phases = Vec::new();
+    Persistence::atomic_write_observed(path, b"new", 0o640, |phase, _, ok| {
+        phases.push((phase, ok));
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), b"new");
+    assert_eq!(phases.last(), Some(&("directory_sync", true)));
+    assert!(phases.iter().all(|(_, ok)| *ok));
+    assert_eq!(std::fs::read_dir(".").unwrap().count(), 1);
+}
+
+#[test]
 fn durable_helpers_observe_after_cleanup_and_preserve_destinations_on_failure() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();

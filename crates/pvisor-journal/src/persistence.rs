@@ -43,6 +43,13 @@ impl DurableFiles for Persistence {
             let parent = path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+            // A bare filename has an empty Path parent, which denotes cwd but
+            // cannot itself be opened for a directory durability barrier.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             let start = Instant::now();
             let mut directory_sync = std::time::Duration::ZERO;
             let prepared = create_dir_all_durable_using(parent, |directory| {

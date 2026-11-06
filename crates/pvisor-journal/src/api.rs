@@ -200,6 +200,7 @@ pub trait DurableFiles {
     /// Before rename failure the destination is unchanged (parent entries may
     /// exist); temporary removal on error is best effort. Does not preserve the
     /// old file's mode or follow a final destination symlink as a write target.
+    /// A bare relative filename uses the current directory as its parent.
     fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()>;
 
     /// Same replacement semantics as atomic_write, reporting attempted phases
