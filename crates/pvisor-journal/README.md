@@ -59,7 +59,9 @@ without requiring its trace/producer identity to match the producer.
 
 `DurableFiles` provides Unix directory barriers and atomic replacement. Bare
 relative destination filenames use the current directory for temporary files and
-the parent durability barrier, just as explicitly `./`-prefixed paths do. Failures
+the parent durability barrier, just as explicitly `./`-prefixed paths do. Temporary
+basenames have fixed length rather than extending the destination name, so long
+valid destination names do not exceed the basename limit during replacement. Failures
 are not rollback transactions: created directories may remain, temporary cleanup
 is best effort, and rename success followed by directory-sync failure leaves the
 new destination visible with uncertain crash durability. Observers run after

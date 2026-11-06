@@ -65,11 +65,8 @@ impl DurableFiles for Persistence {
             ));
             timings.push(("directory_prepare_sync", directory_sync, prepared.is_ok()));
             prepared?;
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("pvisor");
-            let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+            // Do not amplify a valid destination basename past NAME_MAX.
+            let temporary = parent.join(format!(".pvisor.{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> anyhow::Result<()> {
                 let file = step!(
                     "file_write",

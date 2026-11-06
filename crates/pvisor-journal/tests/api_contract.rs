@@ -847,6 +847,25 @@ fn atomic_write_accepts_a_bare_relative_filename() {
 }
 
 #[test]
+fn atomic_write_handles_long_valid_destination_names() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["x".repeat(240), "é".repeat(120)] {
+        let path = root.path().join(name);
+        // Establish that the filesystem accepts this destination basename.
+        std::fs::write(&path, b"old").unwrap();
+        let mut phases = Vec::new();
+        Persistence::atomic_write_observed(&path, b"new", 0o600, |phase, _, ok| {
+            phases.push((phase, ok));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(phases.last(), Some(&("directory_sync", true)));
+        assert!(phases.iter().all(|(_, ok)| *ok));
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+}
+
+#[test]
 fn durable_helpers_observe_after_cleanup_and_preserve_destinations_on_failure() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();

@@ -201,6 +201,8 @@ pub trait DurableFiles {
     /// exist); temporary removal on error is best effort. Does not preserve the
     /// old file's mode or follow a final destination symlink as a write target.
     /// A bare relative filename uses the current directory as its parent.
+    /// Temporary basenames have fixed length independent of the destination name,
+    /// so appending a random suffix cannot overflow an otherwise valid basename.
     fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()>;
 
     /// Same replacement semantics as atomic_write, reporting attempted phases
