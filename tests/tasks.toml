@@ -104,7 +104,13 @@ mise run test-task-routing --
 mise run test-vocabulary --
 mise run test-nightly-installer --
 mise run test-fw-make --
+mise run test-windows-fw-deps --
 '''
+
+[test-windows-fw-deps]
+description = "Windows firmware CI prerequisite setup without apt or sudo"
+hide = true
+file = "tests/tasks/test-windows-fw-deps.sh"
 
 [test-task-routing]
 description = "test-task-routing"
