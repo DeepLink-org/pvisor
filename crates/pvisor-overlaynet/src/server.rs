@@ -514,6 +514,113 @@ mod tests {
         connect_forwarding_ownership(false).await;
     }
 
+    #[tokio::test]
+    async fn http2_connect_upstream_half_close_preserves_upload_and_admission() {
+        use hyper_util::rt::{TokioExecutor, TokioIo};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{Duration, timeout};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let service_counter = counter.clone();
+        let service_slots = slots.clone();
+        let service =
+            hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let counter = service_counter.clone();
+                let slots = service_slots.clone();
+                async move {
+                    let mut request = request.map(axum::body::Body::new);
+                    let mut guard = ActiveRequestGuard::new(counter);
+                    guard._permit = Some(slots.try_acquire_owned().unwrap());
+                    request.extensions_mut().insert(Arc::new(guard));
+                    handle_connect_authorized(
+                        request,
+                        parse_connect_target(&address.to_string()).unwrap(),
+                        &AuthorizedTarget {
+                            host: address.ip().to_string(),
+                            addresses: vec![address],
+                        },
+                        BandwidthRegistry::default().session(vec![]).await,
+                        None,
+                    )
+                    .await
+                    .map_err(std::io::Error::other)
+                }
+            });
+        let (client, server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(server), service)
+                .await
+        });
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(client))
+                .await
+                .unwrap();
+        let client_task = tokio::spawn(connection);
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(address.to_string())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let mut response = timeout(Duration::from_secs(2), sender.send_request(request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let upgraded = timeout(Duration::from_secs(2), hyper::upgrade::on(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        // Hyper's HTTP/2 CONNECT body is empty; the tunnel belongs to the
+        // stream-level upgrade, not the response body.
+        drop(response);
+        let mut tunnel = TokioIo::new(upgraded);
+        let (mut upstream, _) = timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        upstream.write_all(b"accepted response").await.unwrap();
+        upstream.shutdown().await.unwrap();
+        let mut downloaded = Vec::new();
+        timeout(Duration::from_secs(2), tunnel.read_to_end(&mut downloaded))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(downloaded, b"accepted response");
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(slots.available_permits(), 0);
+        // Response EOF is only a half-close. Upload is still usable after
+        // the accepted response has been drained.
+        tunnel
+            .write_all(b"upload after response EOF")
+            .await
+            .unwrap();
+        tunnel.shutdown().await.unwrap();
+        let mut uploaded = Vec::new();
+        timeout(Duration::from_secs(2), upstream.read_to_end(&mut uploaded))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(uploaded, b"upload after response EOF");
+        timeout(Duration::from_secs(2), async {
+            while counter.load(Ordering::Relaxed) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(slots.available_permits(), 1);
+        drop(tunnel);
+        drop(sender);
+        client_task.abort();
+        let _ = client_task.await;
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
     async fn connect_forwarding_ownership(fail_resume: bool) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::time::{Duration, timeout};

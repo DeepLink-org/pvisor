@@ -7,7 +7,6 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http_body_util::BodyExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
@@ -25,13 +24,6 @@ pub(crate) struct ConnectTarget {
     pub authority: String,
 }
 
-struct UploadTask(tokio::task::JoinHandle<()>);
-impl Drop for UploadTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 pub(crate) async fn handle_connect_authorized(
     mut req: Request,
     target: ConnectTarget,
@@ -42,73 +34,9 @@ pub(crate) async fn handle_connect_authorized(
     let guard = req
         .extensions_mut()
         .remove::<std::sync::Arc<crate::server::ActiveRequestGuard>>();
-    // HTTP/1 CONNECT uses hyper's connection upgrade. HTTP/2 has no
-    // connection-wide upgrade; extended CONNECT carries the tunnel in the
-    // request and response bodies, so it must be bridged as a duplex stream.
-    if req.version() == axum::http::Version::HTTP_2 {
-        let (_parts, body) = req.into_parts();
-        let destination =
-            match connect_via_ambient_http_proxy(&target.host, &authorized.addresses).await {
-                Some(Ok(stream)) => stream,
-                Some(Err(error)) => {
-                    return Err(anyhow::anyhow!(
-                        "CONNECT to {} through the host proxy failed: {error}",
-                        target.authority
-                    ));
-                }
-                None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
-                    .await
-                    .map_err(|error| {
-                        anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority)
-                    })?,
-            };
-        let (destination_read, mut destination_write) = destination.into_split();
-        let mut upload = body.into_data_stream();
-        let upload_bandwidth = bandwidth.clone();
-        let upload_task = UploadTask(tokio::spawn(async move {
-            while let Some(chunk) = upload.next().await {
-                let Ok(chunk) = chunk else { break };
-                upload_bandwidth.throttle(chunk.len()).await;
-                if destination_write.write_all(&chunk).await.is_err() {
-                    break;
-                }
-            }
-            let _ = destination_write.shutdown().await;
-        }));
-        let stream = futures_util::stream::unfold(
-            (destination_read, bandwidth, wait, false),
-            |(mut reader, bandwidth, mut wait, stopped)| async move {
-                if stopped {
-                    return None;
-                }
-                let mut buffer = vec![0_u8; 16 * 1024];
-                match managed_read(&mut reader, &mut buffer, &mut wait).await {
-                    Ok(0) => None,
-                    Ok(read) => {
-                        bandwidth.throttle(read).await;
-                        Some((
-                            Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
-                            (reader, bandwidth, wait, false),
-                        ))
-                    }
-                    // A read error terminates the tunnel. Returning the same
-                    // reader here would make `Stream` yield the error forever.
-                    Err(error) => Some((Err(error), (reader, bandwidth, wait, true))),
-                }
-            },
-        );
-        return Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::new(Body::from_stream(stream).map_frame(
-                move |frame| {
-                    let _ = &guard;
-                    let _ = &upload_task;
-                    frame
-                },
-            )))
-            .map_err(|error| anyhow::anyhow!("build HTTP/2 CONNECT response: {error}"))
-            .map(IntoResponse::into_response);
-    }
+    // Hyper exposes both HTTP/1 connection upgrades and HTTP/2 CONNECT
+    // stream upgrades through OnUpgrade. For HTTP/2 it supplies an empty
+    // request body and ignores a successful CONNECT response body.
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
@@ -431,6 +359,7 @@ mod tests {
 mod download_wait_tests {
     use super::*;
     use crate::server::{DownloadGuard, DownloadWait};
+    use http_body_util::BodyExt;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},

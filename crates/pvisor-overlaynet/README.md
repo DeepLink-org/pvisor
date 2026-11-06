@@ -13,7 +13,8 @@ or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not
 node-wide memory budget. HTTP upstreams have a ten-minute read-inactivity timeout;
 active responses can exceed ten minutes. CONNECT retains its existing transport
 lifecycle and does not yet have a shared bidirectional inactivity deadline.
-HTTP/1 CONNECT preserves successful half-close: the opposite direction drains
+HTTP/1 and HTTP/2 CONNECT use Hyper's upgraded streams, not HTTP bodies, and
+preserve successful half-close: the opposite direction drains
 before tunnel ownership is released. A copy or download-resume error instead
 cancels the companion direction and releases the tunnel's admission permit.
 
