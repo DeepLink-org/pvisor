@@ -773,6 +773,99 @@ fn native_jsonl_replay_records_effects_and_preserves_uncertain_failures() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn reused_native_call_id_does_not_resolve_a_later_failed_operation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("blocked"), "not a directory").unwrap();
+    let entrypoint = temporary.path().join("version-only-agent");
+    fs::write(
+        &entrypoint,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.149.0; else exit 97; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut events = vec![
+        json!({"type":"session_meta","payload":{"id":"reused-call"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"replay"}]}}),
+    ];
+    // These are distinct accepted operations in consecutive native turns.
+    for path in ["effect", "blocked/child"] {
+        events.extend([
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"write"}]}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"reused","name":"write","arguments":json!({"path":path,"content":"effect"}).to_string()}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"reused","output":"old"}}),
+        ]);
+    }
+    let trajectory = temporary.path().join("trajectory.jsonl");
+    fs::write(
+        &trajectory,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let mut request = PlaybackRequest {
+        agent: AgentKind::Codex,
+        trajectory,
+        after_step: 2,
+        workspace: workspace.clone(),
+        state_dir: temporary.path().join("state"),
+        output_dir: temporary.path().join("output"),
+        agent_entrypoint: Some(entrypoint),
+        agent_runtime: None,
+        disallowed_tools: Vec::new(),
+        trajectory_assets: None,
+        session_id: None,
+        max_steps: None,
+        mode: ReplayMode::ReplayOnly,
+        allow_stale_observations: false,
+        run_id: Some("reused-call".into()),
+        disable_thinking: false,
+        boundary_user_prompt: None,
+    };
+    let report = execute(request.clone()).unwrap();
+    assert_eq!(
+        fs::read_to_string(workspace.join("effect")).unwrap(),
+        "effect"
+    );
+    let journal_path = report.result.state_dir.join("replay-events.jsonl");
+    let journal = fs::read_to_string(&journal_path).unwrap();
+    assert_eq!(journal.matches("\"name\":\"tool_started\"").count(), 2);
+    assert_eq!(journal.matches("\"name\":\"tool_finished\"").count(), 1);
+    assert_eq!(report.exit_code, 31);
+    assert_eq!(
+        report.result.failure.unwrap().category,
+        "ambiguous_execution"
+    );
+    assert!(!report.result.retryable);
+
+    // A distinct output root must not bypass admission after recovery of a
+    // torn next record. The failed admission must also release its run lock.
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .unwrap()
+        .write_all(b"{\"interrupted\":")
+        .unwrap();
+    request.output_dir = temporary.path().join("retry-output");
+    for _ in 0..2 {
+        let error = execute(request.clone()).unwrap_err();
+        assert_eq!(
+            error.kind,
+            pvisor_replay::ReplayErrorKind::AmbiguousExecution
+        );
+        assert!(error.message.contains("reused"));
+        assert!(!request.output_dir.join("reused-call").exists());
+    }
+}
+
 #[test]
 fn native_json_prepare_only_preserves_complete_batch_observations() {
     for agent in [AgentKind::MiniSweAgent, AgentKind::Openhands] {
