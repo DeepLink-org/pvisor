@@ -929,6 +929,208 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[tokio::test]
+    async fn confirmed_control_survives_completion_sink_failure_and_dropped_waiter() {
+        use crate::runtime::event::{EventSink, RunEventPublisher};
+        use pvisor_core::event::{Event, Fact, Receipt};
+        use pvisor_core::{
+            ExecutionId, ExecutionInfo, ExecutorKind, ExecutorPlan, IsolationKind, RunId, RunState,
+            RunStatus,
+        };
+        use pvisor_journal::api::{Journal, JournalStore};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct CompletionGate {
+            fault: &'static str,
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            first: AtomicBool,
+            journal: Journal,
+        }
+
+        #[async_trait::async_trait]
+        impl EventSink for CompletionGate {
+            async fn append(&self, event: &Event) -> anyhow::Result<Receipt> {
+                let gated = matches!(&event.data, Fact::Observation { name, .. } if name == "vm.control_completed")
+                    && self.first.swap(false, Ordering::SeqCst);
+                if gated {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    if self.fault == "reject" {
+                        return Err(pvisor_journal::api::AppendError::Rejected(
+                            "injected control-completion rejection".into(),
+                        )
+                        .into());
+                    }
+                }
+                let mut receipt = self.journal.append_async(event.clone()).await?;
+                if gated && self.fault == "receipt" {
+                    // The event exists, but its returned acknowledgement is invalid.
+                    receipt.event = "wrong-event".into();
+                }
+                Ok(receipt)
+            }
+        }
+
+        for fault in ["reject", "receipt", "drop"] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let directory = tempfile::tempdir().unwrap();
+                let cancellation = CancellationToken::new();
+                let control = VmControl::new(cancellation.clone());
+                let (host, mut runner) = UnixStream::pair().unwrap();
+                control
+                    .attach(
+                        host,
+                        RamBacking::create(Some(&directory.path().join("ram"))).unwrap(),
+                    )
+                    .await;
+                let gate = Arc::new(CompletionGate {
+                    fault,
+                    entered: tokio::sync::Notify::new(),
+                    release: tokio::sync::Notify::new(),
+                    first: AtomicBool::new(true),
+                    journal: Journal::memory(),
+                });
+                let status = RunStatus {
+                    run_id: RunId::from("completion-boundary"),
+                    state: RunState::Running,
+                    execution: ExecutionInfo {
+                        execution_id: ExecutionId::from("completion-boundary"),
+                        number: 1,
+                        executor: ExecutorPlan {
+                            name: "socketpair".into(),
+                            kind: ExecutorKind::VirtualMachine,
+                            isolation: IsolationKind::VirtualMachine,
+                            capability_plan: Default::default(),
+                            supports_checkpoint: false,
+                            supports_migration: false,
+                        },
+                        started_at_unix_ms: Some(1),
+                        finished_at_unix_ms: None,
+                    },
+                    updated_at_unix_ms: 1,
+                    message: None,
+                };
+                let events = RunEventPublisher::new(
+                    status.run_id.clone(),
+                    status.execution.execution_id.clone(),
+                    "completion-boundary",
+                    gate.clone(),
+                    tokio::sync::broadcast::channel(16).0,
+                );
+                let execution = crate::runtime::execution::Execution::new(
+                    status,
+                    control.clone(),
+                    crate::PVisor::new()
+                        .resolve_operation(pvisor_core::RunSpec::process(
+                            "completion-boundary",
+                            "test",
+                            "/bin/true",
+                        ))
+                        .unwrap(),
+                    events,
+                    cancellation.clone(),
+                )
+                .unwrap();
+                let peer = tokio::spawn(async move {
+                    for (operation, state) in [
+                        (OperationKind::RunPause, VmState::Paused),
+                        (OperationKind::RunResume, VmState::Running),
+                    ] {
+                        // An automatic replay of pause fails this exact sequence.
+                        assert_eq!(read_request(&mut runner).await, operation);
+                        send_reply(
+                            &mut runner,
+                            ControlReply {
+                                idle_epoch: None,
+                                state: Some(state),
+                                memory: None,
+                                error: None,
+                                capture: None,
+                                checkpoint: None,
+                            },
+                        )
+                        .await;
+                    }
+                });
+                let caller = execution.clone();
+                let waiting = tokio::spawn(async move { caller.pause().await });
+                gate.entered.notified().await;
+                let confirmed = execution.snapshot();
+                assert_eq!(confirmed.status.state, RunState::Suspended, "{fault}");
+                assert_eq!(confirmed.progress.queued, 0);
+                assert_eq!(confirmed.progress.in_flight, 0);
+                assert!(!confirmed.progress.outcome_unknown);
+                assert!(!confirmed.progress.history_gap);
+                assert!(confirmed.status.execution.finished_at_unix_ms.is_none());
+                assert_eq!(gate.journal.records().unwrap().len(), 1);
+                if fault == "drop" {
+                    waiting.abort();
+                    assert!(waiting.await.unwrap_err().is_cancelled());
+                } else {
+                    gate.release.notify_one();
+                    let error = waiting.await.unwrap().unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("VM control completed but observation failed"),
+                        "{fault}: {error:#}"
+                    );
+                    let after = execution.snapshot();
+                    assert_eq!(after.progress.applied, confirmed.progress.applied);
+                    assert_eq!(after.status.state, RunState::Suspended);
+                    assert!(!after.progress.history_gap);
+                    assert!(!after.progress.outcome_unknown);
+                    assert_eq!(
+                        gate.journal.records().unwrap().len(),
+                        if fault == "reject" { 1 } else { 2 }
+                    );
+                }
+                assert!(!cancellation.is_cancelled(), "{fault}");
+                if fault == "drop" {
+                    gate.release.notify_one();
+                }
+                execution.resume().await.unwrap();
+                peer.await.unwrap();
+                assert_eq!(execution.status().state, RunState::Running);
+                let resumed = execution.snapshot();
+                assert_eq!(resumed.progress.queued, 0);
+                assert_eq!(resumed.progress.in_flight, 0);
+                assert!(!resumed.progress.outcome_unknown);
+                assert!(!resumed.progress.history_gap);
+                assert!(!cancellation.is_cancelled());
+                let records = gate.journal.records().unwrap();
+                let names: Vec<&str> = records
+                    .iter()
+                    .map(|record| match &record.event.data {
+                        Fact::Observation { name, .. } => name.as_str(),
+                        _ => panic!("unexpected control fact"),
+                    })
+                    .collect();
+                assert_eq!(
+                    names,
+                    if fault == "reject" {
+                        vec![
+                            "vm.control_requested",
+                            "vm.control_requested",
+                            "vm.control_completed",
+                        ]
+                    } else {
+                        vec![
+                            "vm.control_requested",
+                            "vm.control_completed",
+                            "vm.control_requested",
+                            "vm.control_completed",
+                        ]
+                    }
+                );
+                control.detach().await;
+            })
+            .await
+            .expect("completion boundary exceeded five seconds");
+        }
+    }
+
+    #[tokio::test]
     async fn unsupported_checkpoint_never_writes_to_or_cancels_live_connection() {
         let cancellation = tokio_util::sync::CancellationToken::new();
         let control = VmControl::new(cancellation.clone());
