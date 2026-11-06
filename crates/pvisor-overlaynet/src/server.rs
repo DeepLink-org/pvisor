@@ -315,6 +315,17 @@ where
 
     if is_forward_proxy_request(request.method(), request.uri()) {
         state.interception_metrics.absolute_http_request();
+        // http::Uri admits authorities that the forwarding client's URL parser
+        // rejects (for example an overflowing port). Validate before deriving
+        // default ports or allowing a sink to consume the absolute request.
+        if let Err(error) = reqwest::Url::parse(&request.uri().to_string()) {
+            state.interception_metrics.failure();
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                format!("pvisor-overlaynet: invalid absolute proxy URL: {error}"),
+            )
+                .into_response());
+        }
         let host = request.uri().host().map(str::to_string).unwrap_or_default();
         let transport = if request.uri().scheme_str() == Some("https") {
             NetworkTransport::Https
@@ -1030,6 +1041,150 @@ mod tests {
             assert_eq!(snapshot.failures, 2);
             assert_eq!(snapshot.policy_allowed, 0);
             assert_eq!(snapshot.policy_denied, 0);
+        });
+    }
+
+    #[test]
+    fn malformed_absolute_url_cannot_dispatch_to_an_accepting_sink() {
+        #[derive(Clone)]
+        struct LocalSink;
+
+        #[async_trait]
+        impl OverlaySink for LocalSink {
+            type RequestContext = ();
+
+            fn request_context(
+                &self,
+                _request: &Request,
+            ) -> anyhow::Result<OverlayRequestContext<()>> {
+                Ok(OverlayRequestContext {
+                    policy: NetworkPolicy::compile(&NetworkConfig {
+                        mode: NetworkMode::Allowlist,
+                        rules: vec![crate::policy::NetworkAccessRule {
+                            host: "127.0.0.1".into(),
+                            ports: vec![80],
+                            transports: vec![NetworkTransport::Http],
+                            allow_private_ips: true,
+                        }],
+                        ..NetworkConfig::default()
+                    })?,
+                    run_id: None,
+                    execution_id: None,
+                    session_id: "absolute-url-regression".into(),
+                    sink: (),
+                })
+            }
+
+            fn accepts(&self, _request: &Request) -> bool {
+                true
+            }
+
+            async fn handle(
+                &self,
+                _request: Request,
+                _peer: SocketAddr,
+                _context: &OverlayRequestContext<()>,
+            ) -> anyhow::Result<Response> {
+                Ok(StatusCode::OK.into_response())
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let metrics = InterceptionMetrics::default();
+            let state = OverlayServerState::new(
+                Arc::new(PolicyControlController),
+                LocalSink,
+                Arc::new(AtomicUsize::new(0)),
+            )
+            .with_interception_metrics(metrics.clone());
+            // Numeric IP resolution is entirely in process: no DNS or sockets.
+            for (uri, status) in [
+                ("http://127.0.0.1:65536/", StatusCode::BAD_REQUEST),
+                ("http://127.0.0.1:00080/", StatusCode::OK),
+            ] {
+                let request = Request::builder()
+                    .uri(uri)
+                    .header("host", "other.invalid:443")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status, "{uri}");
+            }
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.policy_allowed, 1);
+            assert_eq!(snapshot.targets["HTTP 127.0.0.1:80"].allowed, 1);
+        });
+    }
+
+    #[test]
+    fn malformed_absolute_url_is_400_before_authorization() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let metrics = InterceptionMetrics::default();
+            let state = OverlayServerState::new(
+                Arc::new(PolicyControlController),
+                PolicySink,
+                Arc::new(AtomicUsize::new(0)),
+            )
+            .with_interception_metrics(metrics.clone());
+            let mut malformed = vec![
+                "http://example.invalid:65536/".to_string(),
+                "https://example.invalid:99999999999999999999/".to_string(),
+                "http://[::1]suffix:8080/".to_string(),
+            ];
+            let mut seed = 0x5552_4c32_u32;
+            for _ in 0..32 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let port = 65_536_u64 + u64::from(seed);
+                malformed.push(format!("http://example.invalid:{port}/"));
+            }
+            for uri in &malformed {
+                let request = Request::builder()
+                    .uri(uri.as_str())
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            }
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.failures, malformed.len() as u64);
+            assert_eq!(snapshot.policy_allowed, 0);
+            assert_eq!(snapshot.policy_denied, 0);
+            assert!(snapshot.targets.is_empty());
+            // Legal URL spellings still proceed to policy, which denies here
+            // before resolution. Host headers never select the target.
+            for uri in [
+                "HTTP://EXAMPLE.invalid/",
+                "https://example.invalid:443/",
+                "http://example.invalid:/",
+                "http://example.invalid:00080/",
+                "http://user%40name:pass@example.invalid/",
+                "http://[2001:0db8::1]:8080/",
+                "http://2130706433/",
+                "http://example.invalid/a%20b",
+            ] {
+                let request = Request::builder()
+                    .uri(uri)
+                    .header("host", "other.invalid:443")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+            }
+            assert_eq!(metrics.snapshot().policy_denied, 8);
         });
     }
 

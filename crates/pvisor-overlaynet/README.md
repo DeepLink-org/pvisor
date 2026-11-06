@@ -14,6 +14,13 @@ authorization or upstream dispatch, rather than discarded into a default-port
 target. Authorization and the connector use the same unbracketed host and
 effective port.
 
+Absolute-URI requests must also parse with the forwarding client's URL grammar
+before authorization or sink selection. Invalid URLs, including overflowing
+ports and garbage after a bracketed host, return 400 instead of being authorized
+under a fallback port or delivered to an accepting sink. Legal URL spellings
+(including an empty port or leading port zeroes) retain their existing defaults
+and policy semantics; the `Host` header does not select the destination.
+
 Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
 429 without waiting in an unbounded queue. A permit remains owned by the HTTP body
 or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not a
