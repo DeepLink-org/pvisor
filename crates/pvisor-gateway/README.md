@@ -15,6 +15,12 @@ Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 
+Capture observers run after Journal commit. An observer failure is logged and
+attempts a trajectory dead letter containing the already-retained, redacted
+event; it does not undo or retry that append or fail an otherwise successful
+HTTP call. Diagnostic-write failures are also warning-only. These post-commit
+failures alone do not turn flush/shutdown into capture-admission gap errors.
+
 Gateway does not bundle a mock upstream service; HTTP tests own their controlled
 upstream fixtures.
 

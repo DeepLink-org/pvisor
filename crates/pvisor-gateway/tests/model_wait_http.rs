@@ -125,10 +125,14 @@ impl ModelWait for Wait {
     }
 }
 
+type SupplierReceiver =
+    Arc<tokio::sync::Mutex<Option<mpsc::Receiver<Result<Bytes, std::io::Error>>>>>;
+
 struct Fixture {
     captured: Arc<std::sync::Mutex<Vec<pvisor_core::event::Event>>>,
     proxy: Option<InProcessCapture>,
     upstream: tokio::task::JoinHandle<()>,
+    upstream_body: SupplierReceiver,
     body: mpsc::Sender<Result<Bytes, std::io::Error>>,
     received: mpsc::Receiver<(axum::http::HeaderMap, serde_json::Value)>,
     _storage: tempfile::TempDir,
@@ -138,6 +142,8 @@ struct Fixture {
 #[derive(Default)]
 struct CaptureGate {
     entered: Notify,
+    failed: Notify,
+    fail_after_release: bool,
     held: std::sync::atomic::AtomicBool,
     committed: std::sync::Mutex<Option<pvisor_core::event::Event>>,
     released: std::sync::Mutex<bool>,
@@ -155,6 +161,10 @@ impl CaptureGate {
                 .wait_timeout_while(released, LIMIT, |released| !*released)
                 .unwrap();
             anyhow::ensure!(*released, "capture observer gate timed out");
+            if self.fail_after_release {
+                self.failed.notify_one();
+                anyhow::bail!("synthetic post-commit observer failure");
+            }
         }
         Ok(())
     }
@@ -207,6 +217,7 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let (body, body_rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(8);
         let body_rx = Arc::new(tokio::sync::Mutex::new(Some(body_rx)));
+        let upstream_body = body_rx.clone();
         let (received_tx, received) = mpsc::channel(8);
         let app = Router::new().fallback(move |request: Request| {
             let body_rx = body_rx.clone();
@@ -280,6 +291,7 @@ impl Fixture {
             captured,
             proxy: Some(proxy),
             upstream,
+            upstream_body,
             body,
             received,
             _storage: storage,
@@ -340,8 +352,163 @@ impl Fixture {
         drop(std::mem::replace(&mut self.body, mpsc::channel(1).0));
     }
 
+    async fn next_reply(&mut self) {
+        let (sender, receiver) = mpsc::channel(8);
+        assert!(self.upstream_body.lock().await.replace(receiver).is_none());
+        self.body = sender;
+    }
+
     fn stop(&mut self) {
         self.proxy.take().unwrap().shutdown().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn post_commit_observer_failure_preserves_http_capture_and_later_calls() {
+    use pvisor_gateway::dead_letter::{
+        read_dead_letter_entries, read_trajectory_dead_letter_entries, trajectory_dead_letter_path,
+    };
+    use pvisor_gateway::record::CaptureRecord;
+    use pvisor_journal::api::{Journal, JournalStore};
+
+    for diagnostic_writable in [true, false] {
+        let gate = Arc::new(CaptureGate {
+            fail_after_release: true,
+            ..Default::default()
+        });
+        let mut fixture = Fixture::with_capture_gate(
+            false,
+            StatusCode::OK,
+            Admission::default(),
+            true,
+            Arc::new(pvisor_core::PolicyControlController),
+            Some(gate.clone()),
+        )
+        .await;
+        let _release = ReleaseCaptureOnDrop(gate.clone());
+        let diagnostic = trajectory_dead_letter_path(fixture._storage.path());
+        if !diagnostic_writable {
+            // An owned temporary-directory conflict, not a host filesystem fault.
+            std::fs::create_dir(&diagnostic).unwrap();
+        }
+        fixture.admission.enter_gate.add_permits(2);
+        fixture.admission.resume_gate.add_permits(2);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(LIMIT)
+            .build()
+            .unwrap();
+        let address = fixture.proxy.as_ref().unwrap().listen.clone();
+        for call in 0..2 {
+            if call == 1 {
+                tokio::time::timeout(LIMIT, fixture.next_reply())
+                    .await
+                    .unwrap();
+            }
+            let request = client
+                .post(format!("http://{address}/v1/chat/completions"))
+                .header("x-pvisor-session-id", "observer-recovery")
+                .bearer_auth("synthetic-client-key")
+                .json(&serde_json::json!({
+                    "model": "test-model",
+                    "api_key": "wire-only-observer-marker",
+                    "messages": [{"role": "user", "content": "observer-visible-dialogue"}]
+                }));
+            let response = tokio::spawn(async move { request.send().await.unwrap() });
+            if call == 0 {
+                notified(&gate.entered).await;
+                gate.release();
+                notified(&gate.failed).await;
+            }
+            fixture.upstream_received().await;
+            fixture.chunk(REPLY).await;
+            fixture.finish_body();
+            let response = tokio::time::timeout(LIMIT, response)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                tokio::time::timeout(LIMIT, response.text())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                REPLY
+            );
+        }
+        let proxy = fixture.proxy.take().unwrap();
+        tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || proxy.shutdown()))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        fixture.upstream.abort();
+        assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
+        assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
+        let records =
+            Journal::read(&fixture._storage.path().join(".capture/events.trace.jsonl")).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.event.name())
+                .collect::<Vec<_>>(),
+            ["llm.request", "llm.response", "llm.request", "llm.response"]
+        );
+        assert_eq!(
+            records[0].event.id,
+            gate.committed.lock().unwrap().as_ref().unwrap().id
+        );
+        for (request, response) in [(0, 1), (2, 3)] {
+            assert_eq!(
+                records[response].event.caused_by,
+                vec![records[request].event.id.clone()]
+            );
+        }
+        let observed = fixture.captured.lock().unwrap();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>(),
+            records
+                .iter()
+                .skip(1)
+                .map(|record| record.event.id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            read_dead_letter_entries(fixture._storage.path())
+                .unwrap()
+                .is_empty()
+        );
+        let retained = CaptureRecord::from_event(&records[0].event, 0).unwrap();
+        assert_eq!(
+            retained.payload["user_content"],
+            "observer-visible-dialogue"
+        );
+        assert!(retained.payload.get("body").is_none());
+        assert!(retained.payload.get("llm_request").is_none());
+        assert!(retained.payload["http"].get("request_body").is_none());
+        let journal_json = serde_json::to_string(&records).unwrap();
+        assert!(!journal_json.contains("synthetic-client-key"));
+        assert!(!journal_json.contains("wire-only-observer-marker"));
+        if diagnostic_writable {
+            let entries = read_trajectory_dead_letter_entries(fixture._storage.path()).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].error, "synthetic post-commit observer failure");
+            assert_eq!(entries[0].session_id, "observer-recovery");
+            assert_eq!(
+                serde_json::to_value(&entries[0].records).unwrap(),
+                serde_json::json!([records[0].event])
+            );
+        } else {
+            assert!(
+                diagnostic.is_dir(),
+                "diagnostic failure must not rewrite its destination"
+            );
+        }
     }
 }
 

@@ -92,3 +92,9 @@ shutdown 已进入 transport teardown，此时 shutdown 仍须等待 capture gat
 释放后检查 Journal 与 observer 的四条记录及因果 ID 完全一致：
 首个请求及取消、后续请求及完成。此用例最多四条 loopback 连接，gate、
 HTTP 操作和清理均使用五秒上限，且 unwind 会释放 observer。
+
+Observer 故障用例令首个 HTTP 请求的 post-commit observer 返回合成错误，
+随后同 story 的健康请求继续完成。分别覆盖可写 trajectory dead letter
+和临时目录内的目标路径冲突：两者都不得重试/抹除 Journal append、伪造
+取消或令 shutdown 失败。可写诊断只包含一次原始已提交 event，沿用
+Dialogue retention 与凭据脱敏；不能写诊断时仅告警，不改写冲突目录。
