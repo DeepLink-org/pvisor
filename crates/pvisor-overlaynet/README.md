@@ -7,6 +7,13 @@ absolute-URI forwarding, access enforcement through
 [`pvisor-core`](../pvisor-core/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
+CONNECT authorities accept a hostname or bracketed IPv6 host with an optional
+nonzero `u16` port (443 when omitted). Only an empty suffix or `:port` may follow
+the closing IPv6 bracket; trailing garbage is rejected with 400 before
+authorization or upstream dispatch, rather than discarded into a default-port
+target. Authorization and the connector use the same unbracketed host and
+effective port.
+
 Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
 429 without waiting in an unbounded queue. A permit remains owned by the HTTP body
 or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not a

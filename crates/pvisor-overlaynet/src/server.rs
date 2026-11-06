@@ -1002,6 +1002,38 @@ mod tests {
     }
 
     #[test]
+    fn malformed_connect_bracket_suffix_is_400_before_authorization() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let metrics = InterceptionMetrics::default();
+            let state = OverlayServerState::new(
+                Arc::new(PolicyControlController),
+                PolicySink,
+                Arc::new(AtomicUsize::new(0)),
+            )
+            .with_interception_metrics(metrics.clone());
+            for authority in ["[::1]suffix:8443", "[2001:db8::1]443"] {
+                let request = Request::builder()
+                    .method(Method::CONNECT)
+                    .uri(authority)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{authority}");
+            }
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.failures, 2);
+            assert_eq!(snapshot.policy_allowed, 0);
+            assert_eq!(snapshot.policy_denied, 0);
+        });
+    }
+
+    #[test]
     fn malformed_connect_is_400_and_never_reaches_policy() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -92,9 +92,15 @@ pub(crate) fn parse_connect_target(authority: &str) -> anyhow::Result<ConnectTar
         anyhow::bail!("CONNECT authority must include a host");
     }
     let explicit_port = if authority.starts_with('[') {
-        authority
-            .find(']')
-            .and_then(|end| authority[end + 1..].strip_prefix(':'))
+        let end = authority.find(']').expect("Authority validates brackets");
+        let suffix = &authority[end + 1..];
+        if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':').ok_or_else(|| {
+                anyhow::anyhow!("CONNECT bracketed host must be followed by a colon and port")
+            })?)
+        }
     } else {
         authority.rsplit_once(':').map(|(_, port)| port)
     };
@@ -299,6 +305,36 @@ mod tests {
         assert!(parse_connect_target(":443").is_err());
         assert!(parse_connect_target("example.com:0").is_err());
         assert!(parse_connect_target("user@example.com:443").is_err());
+    }
+
+    #[test]
+    fn connect_bracket_suffix_must_not_be_discarded() {
+        for authority in ["[::1]suffix:8443", "[2001:db8::1]443"] {
+            assert!(
+                parse_connect_target(authority).is_err(),
+                "discarded suffix of malformed authority {authority:?}"
+            );
+        }
+        // Bounded deterministic mutations accepted by http::uri::Authority.
+        // Any non-colon suffix must fail rather than silently default to 443.
+        let mut seed = 0x5041_5554_u32;
+        for _ in 0..32 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let authority = format!("[2001:db8::1]x{seed}:8443");
+            assert!(authority.parse::<Authority>().is_ok());
+            assert!(parse_connect_target(&authority).is_err(), "{authority}");
+        }
+        for (authority, host, port) in [
+            ("[::1]", "::1", 443),
+            ("[::1]:8443", "::1", 8443),
+            ("[2001:db8::1]", "2001:db8::1", 443),
+            ("[2001:db8::1]:65535", "2001:db8::1", 65535),
+        ] {
+            let target = parse_connect_target(authority).unwrap();
+            assert_eq!(target.host, host);
+            assert_eq!(target.port, port);
+            assert_eq!(target.authority, format!("[{host}]:{port}"));
+        }
     }
 
     #[test]
