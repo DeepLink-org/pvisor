@@ -14,6 +14,11 @@ An unresolved start remains ambiguous after run failure and blocks retry in
 that state directory; use a new sandbox and run ID rather than silently
 repeating uncertain side effects.
 
+Supervised process timeouts and output draining remain active while configured
+stdin is being delivered. Pipe backpressure does not suspend wall or idle
+deadlines. Successful delivery closes stdin to signal EOF; write failures remain
+executor errors, and timeout termination does not claim that all input arrived.
+
 ## Local continuation bridges
 
 Claude, Codex and OpenCode use private loopback bridges. Their protocol handlers
