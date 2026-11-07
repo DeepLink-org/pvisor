@@ -14,8 +14,19 @@ import tomllib
 from pathlib import Path
 
 root, work = map(Path, sys.argv[1:])
-task = tomllib.loads((root / "mise.toml").read_text())["tasks"]["set-nightly-version"]
-(work / "mise.toml").write_text("[tasks.set-nightly-version]\nrun = " + json.dumps(task["run"]) + "\n")
+config = tomllib.loads((root / "mise.toml").read_text())
+task = config["tasks"]["set-nightly-version"]
+# Nested mise tasks resolve shims in this project, not in the parent repository.
+# Declare the same tool versions so CI needs no global tool configuration.
+tools = []
+for name in ("python", "uv", "rust"):
+    setting = config["tools"][name]
+    version = setting["version"] if isinstance(setting, dict) else setting
+    tools.append(f"{name} = {json.dumps(version)}\n")
+(work / "mise.toml").write_text(
+    "[tools]\n" + "".join(tools)
+    + "[tasks.set-nightly-version]\nrun = " + json.dumps(task["run"]) + "\n"
+)
 (work / "pyproject.toml").write_text(
     '[project]\nname = "pvisor-sandbox"\nversion = "1.2.3"\n'
     'requires-python = ">=3.10"\n[dependency-groups]\ndev = []\n'
