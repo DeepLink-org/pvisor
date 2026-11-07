@@ -583,3 +583,45 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: contention after a writer enters writeback, all possible
   interleavings, interrupted processes, macOS/VM/FUSE or workspace tests.
   Known fixed /tmp apply locks were used, not removed.
+
+### 018 — Host background-child teardown
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABIMD5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; target teardown contract passed, no tracked code change.
+- Budget: 30 minutes.
+- Assignment: inspect and test a documented Host Session teardown boundary with
+  background descendants/held pipes, bounded to six serial Sessions and at most
+  three processes each. Descendants must naturally stop within three seconds;
+  no unrelated process signaling. Check stage retention and healthy reuse.
+- Worker actual CLI scenarios: background child holds directory/file fds,
+  inherited stdout/stderr and a local listener, signals readiness, then has
+  a three-second natural deadline. Foreground normal exit, exit 7, and
+  public owner cancellation completed in 0.168–0.184 seconds; later healthy
+  safe Session completed in 0.151 seconds. Expected completed/failed/cancelled
+  states, retained initial staged write, unchanged lower and review/drop passed.
+- Process identities (PID plus starttime) disappeared, listener closed,
+  no fixture mounts/processes remained, six stages had no live control/socket.
+  Six Session-start cap included two unsuccessful probes, not six target passes.
+- Non-counted attempts: initial cwd/stage layout setup failed; one probe
+  executable had not been written; a checker hit Unix socket path length
+  (rechecked in the same Session using relative path). Initial layout failure
+  is not classified as expected or a bug yet; round 019 investigates.
+- Worker built actual CLI offline with one job/nice 15 (116.19 seconds).
+  No `mise run test` was executed this round: evidence is actual workflows,
+  not a conventional test-suite pass. Existing related tests were read only.
+- Worker resources: available memory 17.6–18.2 GiB, load1 0.98–1.84,
+  free disk 328–329 GiB. Ignored `target/chaos018/` holds local probes;
+  no need to merge them as permanent tests. Coordinator did not duplicate
+  real Session runs.
+- Not covered: setsid escape, signal-ignoring descendants, sustained writes,
+  macOS/OCI/VM or full suite.
+
+### 019 — Host cwd/stage layout failure
+
+- Worker: same subthread as 018, follow-up turn.
+- Status: dispatched; no result yet.
+- Budget: 20 minutes, at most six serial Session starts.
+- Assignment: reproduce and classify round 018's setup failure with exact
+  cwd/HOME/TMPDIR/stage topology, comparing documented supported layouts.
+  Do not relax recursive-backing safety or misclassify a rejected configuration.
+- Checks, findings, fixes, and PR updates: pending worker evidence.
