@@ -98,6 +98,8 @@ Before preview, the adapter calls native status to reconcile Session control sta
 
 The state directory must be owned by the current user with mode 0700. Tasks cannot read another project's adapter records. Task records do not persist argv or credentials. Native runtime output and records retain their existing rules; avoid printing secrets.
 
+Each task gets a fresh private HOME and XDG state paths, without host HOME login state, user configuration or caches. Durable stages stay in the configured state directory. Failed/interrupted execution may retain scratch HOME; it is not a candidate project result. Prepare tools that depend on user HOME configuration separately instead of disabling isolation.
+
 These task adapters do not override native filesystem, Shell, patch, background-job or other MCP tools. Networked tasks, VM selection, PTYs, stdin, live Session continuation and per-tool savepoints are not exposed yet. For whole-Codex staging, use the existing [managed Codex launch](codex.md#run-codex), without nesting task plugins.
 
 ## Validate and maintain {#verify}

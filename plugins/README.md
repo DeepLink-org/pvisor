@@ -92,7 +92,11 @@ project-controlled config file:
 Run commands always use Host execution, `--safe`, `--no-agent-defaults`,
 deny-all networking, captured stdio and a runtime deadline (1–600 seconds,
 default 120). Personal Agent presets are not loaded. No credentials are
-explicitly passed into the task. Networked tasks, VM selection, interactive
+explicitly passed into the task. Each task gets a fresh private HOME and XDG
+state paths; host login state, user configuration and HOME caches are not inherited.
+Durable workspace stages stay in the configured state directory. Scratch HOME
+may remain after a failed/interrupted execution; it is not an accepted project
+result. Networked tasks, VM selection, interactive
 input, PTYs, and live Session continuation are not exposed in this first version.
 Do not remove safety flags to make a failed task work.
 

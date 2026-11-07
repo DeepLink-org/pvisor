@@ -43,6 +43,7 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-08 | Unsafe state permissions, replaced directories, foreign project/selector and path traversal fail closed | Adapter boundary tests; no fallback execution |
 | DOC-PLUGINS-09 | Runtime deadlines fail without accepting output | Real native deadline |
 | DOC-PLUGINS-10 | MCP shutdown does not accept or discard pending results | Real stdio shutdown, reopened adapter and native review |
+| DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
 
 The npm fixture verifies real package-manager installation and dependency
 selection, not native file semantics or an already-published registry release.

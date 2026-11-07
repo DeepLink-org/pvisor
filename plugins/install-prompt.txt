@@ -38,6 +38,8 @@ Harness (DSH), or Codex. Use the registry release, not a source checkout.
 8. Report exact installed versions, host/profile, runtime selection, config
    changes, verification results and remaining checks. These task tools do not
    intercept native Agent tools. Every spawn is an independent Session.
+   Task HOME/XDG state is fresh and private, not the host's login/config/cache
+   directory. Workspace stages remain persistent in the configured state root.
 
 Missing native dependencies or failed confinement are errors. Never substitute
 host execution, remove --safe, automatically retry uncertain side effects,

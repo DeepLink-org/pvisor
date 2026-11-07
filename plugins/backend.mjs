@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveRuntime } from "./runtime.mjs";
 
@@ -29,6 +29,34 @@ function fields(value, allowed) {
       Object.keys(value).some((key) => !allowed.includes(key))) {
     throw new Error(`Expected an object with only: ${allowed.join(", ")}`);
   }
+}
+
+async function privateHome(project) {
+  // Staging the caller's HOME would inherit the workspace FUSE mount when
+  // durable stages live there. Keep native nested-mount rejection intact.
+  for (const candidate of [...new Set([tmpdir(), "/tmp", "/var/tmp"])]) {
+    let base;
+    try { base = await realpath(candidate); }
+    catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (within(project, base)) continue;
+    return realpath(await mkdtemp(path.join(base, "pvisor-agent-home-")));
+  }
+  throw new Error("No private temporary HOME is available outside the project");
+}
+
+function taskEnvironment(home) {
+  return {
+    ...process.env,
+    HOME: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_DATA_HOME: path.join(home, ".local/share"),
+    XDG_STATE_HOME: path.join(home, ".local/state"),
+    XDG_CACHE_HOME: path.join(home, ".cache"),
+  };
 }
 
 /** Validate exact project-relative apply selections before spawning a process. */
@@ -195,12 +223,21 @@ export class Backend {
       "--timeout", `${seconds}s`, "--", ...argv,
     ];
     try {
-      return {
+      const binary = await resolveRuntime(this.binary);
+      const home = await privateHome(project);
+      const result = {
         selector: stage, stage, project,
-        ...await execute(await resolveRuntime(this.binary), args, {
-          cwd: project, signal, deadlineMs: seconds * 1000 + 30_000,
+        ...await execute(binary, args, {
+          cwd: project, env: taskEnvironment(home), signal, deadlineMs: seconds * 1000 + 30_000,
         }),
       };
+      // Keep scratch after uncertain/failed execution. Workspace candidates
+      // always remain in their persistent stage; never remove those here.
+      if (result.exit_code === 0 && !result.interrupted && !result.signal) {
+        try { await rm(home, { recursive: true }); }
+        catch (error) { result.stderr += `\nRetained private task HOME ${home}: ${error.message}`; }
+      }
+      return result;
     } catch (error) {
       throw new Error(`Stage ${stage}; execution failed, do not retry automatically: ${error.message}`);
     }

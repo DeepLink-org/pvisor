@@ -98,6 +98,8 @@ DSH 的 `pvisor_apply` 和 `pvisor_drop` 复用 Harness 审批，仅 `Allow once
 
 状态目录要求当前用户所有、权限 0700。任务不能读取其他项目的插件记录。任务记录不保存 argv 或凭据，runtime 输出和记录仍按原有规则保留，避免输出密钥。
 
+每个任务使用新的私有 HOME 和 XDG 状态路径，不继承宿主 HOME 的登录状态、用户配置或缓存。持久化 stage 仍在配置的状态目录中；失败或中断后可能保留临时 HOME，它不属于待接收的项目成果。依赖用户 HOME 配置的工具需要单独准备，不应通过关闭隔离绕过。
+
 这些是任务级适配器，不覆盖宿主的内置文件、Shell、补丁、后台任务或其他 MCP 工具。尚未提供网络任务、VM 选择、PTY、stdin、运行中 Session 延续或工具级保存点。需要整个 Codex 进入 stagebox 时使用已有 [Codex 托管启动](codex.md#run-codex)，不要嵌套任务插件。
 
 ## 验证与维护 {#verify}

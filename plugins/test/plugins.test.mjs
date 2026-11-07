@@ -22,7 +22,7 @@ async function fixture(t) {
   await writeFile(binary, `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, cwd: process.cwd() })+"\\n");
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, cwd: process.cwd(), home: process.env.HOME, cache: process.env.XDG_CACHE_HOME })+"\\n");
 if (args.includes("wait")) { setTimeout(() => {}, 120000); }
 else if (args[0] === "--version") console.log("pvisor fixture");
 else if (args[0] === "review") console.log("--- accepted.txt\\n+++ accepted.txt\\n+candidate");
@@ -44,6 +44,9 @@ test("run always selects safe Host staging, exact argv, deny-all and deadline", 
   assert.equal(result.exit_code, 0);
   const [call] = await f.calls();
   assert.equal(call.cwd, await f.backend.project());
+  assert.notEqual(call.home, process.env.HOME);
+  assert.equal(call.cache, path.join(call.home, ".cache"));
+  await assert.rejects(readFile(call.home), { code: "ENOENT" });
   assert.deepEqual(call.args, [
     "spawn", "--no-agent-defaults", "--safe", "--executor", "host",
     "--overlaynet-deny-all", "--stdio", "capture", "--stage", result.stage,

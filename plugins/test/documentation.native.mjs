@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Backend, execute } from "../backend.mjs";
 import registerPi from "../pi.mjs";
 import { registerDsh } from "../dsh.mjs";
@@ -234,4 +235,35 @@ test("DOC-PLUGINS-10: MCP shutdown leaves pending candidates available for nativ
   const reopened = new Backend(f.project, f.options);
   assert.match(ok(await reopened.operate("review", { selector: run.selector })).stdout, /discarded\.txt/);
   ok(await reopened.operate("drop", { selector: run.selector }));
+});
+
+test("DOC-PLUGINS-11: a project and default persistent state under HOME support the complete task lifecycle", { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const home = path.join(f.root, "home");
+  const project = path.join(home, "project");
+  await mkdir(project, { recursive: true });
+  const env = { ...process.env, HOME: home };
+  delete env.PVISOR_PLUGIN_STATE_DIR;
+  const script = `
+    import assert from "node:assert/strict";
+    import {readFile,stat} from "node:fs/promises";
+    import {pathToFileURL} from "node:url";
+    const {Backend}=await import(pathToFileURL(process.argv[1]));
+    const b=new Backend(process.argv[2],{binary:process.argv[3]});
+    const r=await b.run(JSON.parse(process.argv[4]));
+    assert.equal(r.exit_code,0,JSON.stringify(r));
+    assert.ok(r.selector.startsWith(process.env.HOME+"/.local/state/pvisor/agent-plugins/v1/"));
+    await assert.rejects(stat(process.argv[2]+"/accepted.txt"),{code:"ENOENT"});
+    const selected={selector:r.selector,paths:["accepted.txt"]};
+    for(const [action,input] of [["preview",selected],["apply",selected],["drop",{selector:r.selector}]]) {
+      const result=await b.operate(action,input);
+      assert.equal(result.exit_code,0,JSON.stringify(result));
+    }
+    assert.equal(await readFile(process.argv[2]+"/accepted.txt","utf8"),"candidate\\n");
+    await assert.rejects(stat(process.argv[2]+"/discarded.txt"),{code:"ENOENT"});
+  `;
+  ok(await execute(process.execPath, [
+    "--input-type=module", "-e", script, fileURLToPath(new URL("../backend.mjs", import.meta.url)),
+    project, f.binary, JSON.stringify(examples.spawn),
+  ], { cwd: project, env }));
 });
