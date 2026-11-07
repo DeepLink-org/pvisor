@@ -1931,12 +1931,10 @@ impl Vcpu {
     // Transition to the exited state.
     fn exit(&mut self, exit_code: u8) -> StateMachine<Self> {
         self.observe(crate::api::VcpuObservedState::Stopped);
-        self.response_sender
-            .send(VcpuResponse::Exited(exit_code))
-            .expect("failed to send Exited status");
-
-        if let Err(e) = self.exit_evt.write(1) {
-            error!("Failed signaling vcpu exit event: {e}");
+        if !notify_vcpu_exit(&self.response_sender, &self.exit_evt, exit_code) {
+            // Startup may be aborted by on_ready after vCPU threads are installed.
+            // With no owner left, neither panic nor wait for process-wide exit.
+            return StateMachine::finish();
         }
 
         // State machine reached its end.
@@ -1969,6 +1967,18 @@ impl Vcpu {
         // State machine reached its end.
         StateMachine::finish()
     }
+}
+
+// A disconnected response channel means the VMM owner has already gone away.
+// Return whether that owner was notified and will arrange process-wide exit.
+fn notify_vcpu_exit(sender: &Sender<VcpuResponse>, event: &EventFd, exit_code: u8) -> bool {
+    if sender.send(VcpuResponse::Exited(exit_code)).is_err() {
+        return false;
+    }
+    if let Err(e) = event.write(1) {
+        error!("Failed signaling vcpu exit event: {e}");
+    }
+    true
 }
 
 impl Drop for Vcpu {
@@ -2127,6 +2137,31 @@ mod tests {
     use crate::vmm::resources::VmResources;
 
     use crate::utils::signal::validate_signal_num;
+
+    #[test]
+    fn exit_notification_without_owner_finishes_without_signaling() {
+        let (sender, receiver) = unbounded();
+        let event = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap();
+        drop(receiver);
+        assert!(!notify_vcpu_exit(
+            &sender,
+            &event,
+            FC_EXIT_CODE_GENERIC_ERROR
+        ));
+        assert_eq!(
+            event.read().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn exit_notification_preserves_status_and_wakes_live_owner() {
+        let (sender, receiver) = unbounded();
+        let event = EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap();
+        assert!(notify_vcpu_exit(&sender, &event, 7));
+        assert_eq!(receiver.try_recv().unwrap(), VcpuResponse::Exited(7));
+        assert_eq!(event.read().unwrap(), 1);
+    }
 
     // In tests we need to close any pending Vcpu threads on test completion.
     impl Drop for VcpuHandle {

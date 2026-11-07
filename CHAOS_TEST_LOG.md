@@ -426,3 +426,70 @@ not establish that an end-to-end VM/FUSE workflow works.
   load1 0.77 / 1.05; free disk 361,650,708,480 / 361,606,340,608 bytes.
 - Not covered: budget accounting, cancel/complete idempotency, real DNS/network,
   cross-crate execution, concurrency, other platforms, workspace/Python/doctest.
+
+### 013 — VM lifecycle faults
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABDeeJIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; second product defect reproduced and minimally fixed,
+  with post-fix real-boot acceptance assigned to round 014.
+- Budget: 30 minutes.
+- Assignment: check existing local KVM boot dependencies without downloading
+  images/firmware. If available, exercise at most four serial tiny VM failure/
+  healthy lifecycles; otherwise record the boot blocker and test public API
+  initialization failure separately. Reuse sufficient existing coverage.
+- Local KVM API 12 and existing firmware/musl tooling enabled real boot without
+  downloads. Four VM constructions across three bounded runners, each 256 MiB
+  and one vCPU: missing init returned 125; real guest marker and exit 7 were
+  observed; ready-callback Interrupted returned the original error, invalidated
+  the stale control handle and released KVM fds, then same-process healthy
+  boot produced a guest marker and exit 0.
+- Defect: callback abort drops the exit-status receiver; the vCPU exit path's
+  send `expect` panics with `failed to send Exited status: SendError(..)`.
+  Minimal Linux implementation change finishes the state machine when the
+  owner is disconnected; live-owner status delivery/event notification stay
+  intact. Two private no-hardware tests cover disconnected and live owners.
+- Worker post-fix validation: targeted `mise run test -- pvisor-vm --
+  --offline -E 'test(exit_notification_) | binary(api_contract) |
+  binary(api_boundary) | binary(repository_boundary)'` passed 24 tests,
+  651 skipped, in 35.06 seconds. CLI/daemon/shim consumers compiled in
+  46.07 seconds; rustdoc with warnings denied passed in 7.05 seconds;
+  edition-2024 rustfmt and diff checks passed. Initial edition-2021 format
+  invocation was the wrong check, corrected without changing old code.
+- Worker resources initially/finally: available memory
+  19,216,632 / 19,150,592 KiB; load1 0.68 / 3.52; free disk
+  361,584,832,512 / 358,922,768,384 bytes. All runners reaped, KVM fd count
+  returned to zero on abort; owned rootfs fixtures removed with no mounts.
+- Ignored `target/chaos013/` holds temporary harness sources; do not commit
+  these machine-specific probes as portable product tests.
+- Limitation: the four-VM cap was reached before the fix. Round 013's real
+  boots are pre-fix evidence, not post-fix acceptance. No whole-workspace,
+  cross-platform or power-loss validation.
+
+### 014 — Post-fix real KVM acceptance
+
+- Worker: same subthread as 013, follow-up turn.
+- Status: completed; post-fix real KVM acceptance passed.
+- Budget: 20 minutes, at most four VM constructions.
+- Assignment: rebuild/relink from repaired source and run callback-abort then
+  same-process healthy boot twice. Check original error, invalid stale handle,
+  KVM fd release, absence of background panic and real guest success.
+- Worker execution: 02:01:00–02:02:33 UTC. Rebuilt repaired library and
+  relinked the temporary probe from fresh Cargo artifact paths. Two serial
+  abort-then-boot runners (four VM constructions) passed in 0.156/0.113 seconds,
+  each 256 MiB/one vCPU. Original Interrupted preserved, stale handle invalid,
+  KVM fds zero, actual aborted vCPU TID disappeared after bounded wait,
+  subsequent guest printed `VM_EXIT_SOURCE_OK` and exited zero. Both complete
+  stderr captures were empty. Unlike round 013, this is post-fix evidence.
+- Worker repeated the 24 selected VM/API/boundary tests: 24 passed, 651 skipped.
+  Runners reaped, owned rootfs removed, no fixture mounts. No new tracked
+  implementation changes; hardware evidence is worker-run, not coordinator-run.
+- Coordinator reviewed the implementation and independently reran the same
+  targeted `mise run test -- pvisor-vm -- --offline -E FILTER`:
+  24 passed, 651 skipped; compilation 32.70 seconds, tests 2.378 seconds.
+  Nextest ID: `140acd2c-e886-4f35-9fdf-4b6d5aa71253`.
+  Diff check passed; constrained parallelism, offline Cargo, nice and
+  180-second timeout maintained.
+- Coordinator available memory before/after: 19,213,792 / 18,927,140 KiB;
+  load1 0.75 / 1.46; free disk 358,174,982,144 / 358,174,674,944 bytes.
+- Not covered: SMP, snapshots, running-VM forced abort, other platforms or
+  whole-workspace tests. No additional permanent probe was added.
