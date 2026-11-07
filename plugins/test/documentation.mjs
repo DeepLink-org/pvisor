@@ -15,9 +15,9 @@ export async function documentationCases() {
     assert.equal(handoffs.length, 1, "Expected one native CLI handoff example");
     const commands = blocks.filter((block) => block[1] === "text" && block[2].startsWith("/pvisor status "));
     assert.equal(commands.length, 1, "Expected one Pi handoff example");
-    const installs = blocks.filter((block) => block[1] === "sh" && block[2].startsWith("npm install --global "));
-    assert.equal(installs.length, 1, "Expected one public npm CLI installation example");
-    return { spawn: tasks[0], handoff: handoffs[0][2], pi: commands[0][2].trim().split("\n"), install: installs[0][2] };
+    const runtimes = blocks.filter((block) => block[1] === "sh" && block[2].startsWith("pvisor --version"));
+    assert.equal(runtimes.length, 1, "Expected a separately installed native CLI check");
+    return { spawn: tasks[0], handoff: handoffs[0][2], pi: commands[0][2].trim().split("\n"), runtime: runtimes[0][2] };
   });
   assert.deepEqual(cases[0], cases[1], "English and Chinese executable cases must agree");
   return cases[0];

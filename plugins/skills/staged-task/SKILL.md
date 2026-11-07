@@ -25,14 +25,16 @@ Do not change Codex's approval settings.
 The user can preview, accept explicit paths, or discard remaining candidates:
 
 ```sh
-npx --yes --package pvisor-agent-plugins@0.1.0 pvisor review "$stage" --diff
-npx --yes --package pvisor-agent-plugins@0.1.0 pvisor apply "$stage" --path src --dry-run --diff
-npx --yes --package pvisor-agent-plugins@0.1.0 pvisor apply "$stage" --path src
-npx --yes --package pvisor-agent-plugins@0.1.0 pvisor drop "$stage"
+pvisor review "$stage" --diff
+pvisor apply "$stage" --path src --dry-run --diff
+pvisor apply "$stage" --path src
+pvisor drop "$stage"
 ```
 
 The user saves the exact returned selector as the terminal variable `stage`.
-The plugin tools and native CLI take the same selector. npm automatically
-installs the matching native runtime; no source checkout is needed. Previously
+The plugin tools and native CLI take the same selector. The user installs the
+native runtime separately through Homebrew or pip; npm supplies only the plugin.
+Use the runtime selected by Doctor; missing or incompatible runtimes require
+operator installation or upgrade, never a safety downgrade. Previously
 applied files, network effects and external API effects are not reverted by drop.
 Do not automatically discard on session shutdown.

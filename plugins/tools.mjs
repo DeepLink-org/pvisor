@@ -8,7 +8,7 @@ const object = (properties, required = []) => ({ type: "object", properties, req
 export const tools = [
   {
     name: "pvisor_doctor",
-    description: "Check the pVisor CLI version and bound project. Reports task-only scope; does not certify mount availability or interception of native Agent tools.",
+    description: "Check the installed pVisor CLI capabilities, binary path, version and bound project. Missing/incompatible runtime requires Homebrew or pip installation/upgrade. Reports task-only scope; does not certify mount availability or interception of native Agent tools.",
     inputSchema: object({}),
   },
   {

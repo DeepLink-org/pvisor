@@ -1,71 +1,65 @@
-import { access, lstat, readFile } from "node:fs/promises";
-import { constants, readFileSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { constants } from "node:fs";
 import { execFile } from "node:child_process";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 
-const require = createRequire(import.meta.url);
-export const runtime = JSON.parse(readFileSync(new URL("./runtime.json", import.meta.url), "utf8"));
-const plugin = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
-const components = ["pvisor", "pvisor-replay", "pvisor-daemon", "libkrunfw.SOURCE"];
-let installed;
+const installation = "Install or upgrade pVisor through Homebrew or pip (pvisor-sandbox): https://deeplink-org.github.io/pvisor/start/installation/. Restart the Agent host after changing PATH, or set PVISOR_PLUGIN_BINARY to an absolute executable path.";
 
-/** Select npm's matching, version-pinned native payload; never fetch at tool time. */
-export async function bundledRuntime({
-  platform = process.platform,
-  arch = process.arch,
-  resolve = (name) => require.resolve(`${name}/package.json`),
-} = {}) {
-  const target = runtime.platforms[`${platform}-${arch}`];
-  if (!target) {
-    throw new Error(`pVisor task plugins do not support ${platform}/${arch}; supported: Linux x64 and macOS arm64`);
+async function executable(binary) {
+  if (!(await stat(binary)).isFile()) {
+    throw Object.assign(new Error("Not a regular executable"), { code: "EACCES" });
   }
-  let metadata;
-  try {
-    metadata = resolve(target.package);
-  } catch {
-    throw new Error(`Missing ${target.package}@${plugin.version}. Reinstall pvisor-agent-plugins with optional dependencies enabled; no host-execution fallback is allowed.`);
-  }
-  const manifest = JSON.parse(await readFile(metadata, "utf8"));
-  if (manifest.name !== target.package || manifest.version !== plugin.version ||
-      manifest.pvisorRuntimeVersion !== runtime.version ||
-      !/^[0-9a-f]{40}$/.test(manifest.pvisorRuntimeCommit || "") ||
-      !manifest.pvisorRuntimeDistribution?.startsWith(`${runtime.version}+g`)) {
-    throw new Error("pVisor plugin/native package version mismatch; reinstall the matching plugin release");
-  }
-  const bin = path.join(path.dirname(metadata), "bin");
-  for (const component of components) {
-    const file = path.join(bin, component);
-    const info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o022) !== 0) {
-      throw new Error(`Unsafe or incomplete native runtime component: ${component}`);
-    }
-    if (component !== "libkrunfw.SOURCE") await access(file, constants.X_OK);
-  }
-  return path.join(bin, "pvisor");
+  await access(binary, constants.X_OK);
+  return binary;
 }
 
-/** Probe the required inert CLI surface before a bundled runtime can start work. */
+/** Probe required CLI capabilities; package and runtime versions are independent. */
 export async function checkRuntimeContract(binary) {
   const run = promisify(execFile);
-  for (const [command, flags] of [
-    ["spawn", ["--safe", "--no-agent-defaults", "--stage", "--timeout", "--overlaynet-deny-all"]],
-    ["apply", ["--path", "--dry-run", "--json"]],
-  ]) {
-    const { stdout } = await run(binary, [command, "--help"], { timeout: 10_000, maxBuffer: 256 * 1024 });
-    for (const flag of flags) {
-      if (!stdout.includes(`${flag} `) && !stdout.includes(`${flag}\n`)) {
-        throw new Error(`Incompatible bundled pVisor: ${command} lacks ${flag}; no downgraded execution is allowed`);
+  try {
+    for (const [command, flags] of [
+      ["spawn", ["--safe", "--no-agent-defaults", "--stage", "--timeout", "--overlaynet-deny-all"]],
+      ["apply", ["--path", "--dry-run", "--json"]],
+    ]) {
+      const { stdout } = await run(binary, [command, "--help"], { timeout: 10_000, maxBuffer: 256 * 1024 });
+      for (const flag of flags) {
+        if (!stdout.includes(`${flag} `) && !stdout.includes(`${flag}\n`)) {
+          throw new Error(`${command} lacks ${flag}`);
+        }
       }
     }
+  } catch (error) {
+    throw new Error(`Incompatible pVisor at ${binary}: ${error.message}. ${installation} No downgraded execution is allowed.`);
   }
   return binary;
 }
 
-/** An explicit operator override is never replaced silently by another runtime. */
-export async function resolveRuntime(override) {
-  if (override) return override;
-  installed ??= bundledRuntime().then(checkRuntimeContract).catch((error) => { installed = undefined; throw error; });
-  return installed;
+/** Use an operator override or the host PATH; never install or download a runtime. */
+export async function resolveRuntime(override, { searchPath = process.env.PATH || "" } = {}) {
+  let binary;
+  if (override !== undefined) {
+    if (typeof override !== "string" || !path.isAbsolute(override) || override.includes("\0")) {
+      throw new Error("PVISOR_PLUGIN_BINARY must be an absolute executable path");
+    }
+    try {
+      binary = await executable(override);
+    } catch (error) {
+      throw new Error(`Cannot execute PVISOR_PLUGIN_BINARY ${override}: ${error.message}. ${installation}`);
+    }
+  } else {
+    // Ignore cwd-dependent PATH entries. Allow Homebrew and venv symlinks.
+    for (const directory of searchPath.split(path.delimiter)) {
+      if (!path.isAbsolute(directory)) continue;
+      try {
+        binary = await executable(path.join(directory, "pvisor"));
+        break;
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR", "EACCES"].includes(error.code)) throw error;
+      }
+    }
+    if (!binary) throw new Error(`pVisor was not found on the Agent host PATH. ${installation}`);
+  }
+  // Revalidate separately upgraded runtimes; never fall back from incompatibility.
+  return checkRuntimeContract(binary);
 }

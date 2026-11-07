@@ -22,6 +22,10 @@ async function fixture(t) {
   await writeFile(binary, `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
+if (args.includes("--help")) {
+  console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json ");
+  process.exit(0);
+}
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, cwd: process.cwd(), home: process.env.HOME, cache: process.env.XDG_CACHE_HOME })+"\\n");
 if (args.includes("wait")) { setTimeout(() => {}, 120000); }
 else if (args[0] === "--version") console.log("pvisor fixture");
@@ -36,6 +40,13 @@ else {
   const calls = async () => (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
   return { root, project, binary, options, backend, calls };
 }
+
+test("an empty operator binary override fails instead of selecting a PATH runtime", async (t) => {
+  const f = await fixture(t);
+  const backend = new Backend(f.project, { ...f.options, binary: "" });
+  await assert.rejects(backend.doctor(), /absolute executable path/);
+  await assert.rejects(readFile(path.join(f.root, "calls.jsonl")), { code: "ENOENT" });
+});
 
 test("run always selects safe Host staging, exact argv, deny-all and deadline", async (t) => {
   const f = await fixture(t);
