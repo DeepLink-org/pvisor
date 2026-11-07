@@ -1404,3 +1404,198 @@ sixfixes. Pending045/062decisions unchanged, campaignnotfinished.
 
 Assigned same worker after069. Owned-entry replacements bothdirections with
 separatereferentcandidate, nofollowdiff/preimage/selection and hostreferentpreservation.
+
+Result: no defect, two real default-safe Host Sessions19:34:03–19:34:13 UTC.
+from-link symlink->target.txt becomes regularmode0640/29bytes; from-file regular
+becomes symlink->target.txt; referentedit separate/unaccepted. Reviewtypesexact,
+reviewdiff skipstransitionswhensymlinkside, applydiff shows onlyregularside/not
+referentbytes. Fourpreviewstrictinert; eachselectionrequiredempty; acceptingboth
+leaves exactlyreferentedit. Drop preservestypechanges/referentoriginalidentity,
+contents/mode/ownership/nlink and sentinel. Healthychecks/keepaccept/scratchdrop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+20CLI+one nativetwotestselectionall0(2passed21filtered),diffpassed.
+Minmemory20,642,361,344bytes,maxload1.03955,mindisk350,877,847,552bytes,42gatespassed.
+No sourcechanges/rebuild/lint, ignored evidenceonly. No concurrentpreimage/
+outsidefixturelinks/chains/loops/nonLinux coverage.
+
+### 071 — Real regular-file/directory transitions
+
+Assigned same worker after070. Inspect documented closure rules then tiny
+file-to-directory/children and directory-to-file replacements, explicit selection,
+candidate retention or required whole-group behavior, safe acceptance/drop.
+
+Result: no defect, two default-safe Host Sessions19:36:38–19:36:54 UTC. Recreated
+file->directory isopaque, not ordinary newancestor: childonlyselectionblocks3
+"insideopaque;selectdirectoryatomicunit", excludeonechildblocks3"cannotexclude".
+Responsesexecutionnull/selected-requiredempty, no manufacturedclosure. Whole
+from-file accepts0750directory/opaque/typechange+both0644children, requiredempty;
+directory->0640regular31bytes replacesoldsubtree, unrelatedcandidatepending/drop.
+Fivepreviewsincludingrefusalsstrictinert, hostunchangedbeforeapply, drop preserves
+acceptedtransitions/sentinel. Healthychecks subtree/absence then keepaccept/drop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+20CLI+one nativethreetestselectionexpectedstatuses(3passed176filtered),diffpassed.
+Minmemory20,649,103,360bytes,maxload0.94678,mindisk350,845,947,904bytes,42gatespassed.
+No sourcechanges, ignored evidenceonly. No concurrentwriter/interruptedapply
+in realtrace; conventionaldescendantconflict/recoverytests separate.
+
+### 072 — Real timestamp-only metadata intent
+
+Assigned same worker after071. Fixedpast nanosecondtimestamps only in fixture,
+derive supportedfile/directory intent/selection before assertion, preserve bytes/
+inode/mode and document filesystemresolution without changing hostclock.
+
+Result: supportedmtimeworkflow passes, two real safe Host Sessions19:39:59–
+19:40:09 UTC, no defectestablished. Explicitfilemtime1610000000987654321ns and
+dirmtime1620000000876543219ns acceptedexact/no rounding. Childonlyapply requires
+no parentmetadata and keepsdirmtimeintent staged; filethen directory selections
+independent, scratchdrop preservescontent/mtimes, healthyverifies/keepaccept.
+Threepreviews preservebytes/mode/uidgid/identity/size/mtime, separatelyrecorded
+hostatimesunchanged; stageatimesexcludedfromstrictcomparison.
+
+AtimeNOTpreservedexactly: requested1610000000123456789/1620000000234567891ns,
+accepted1794080399844239167/1794080399871238882ns afterbackingreads/enumeration.
+AtimeonlySETATTR intentionallynocopyup; no unsupportedguarantee manufactured.
+Regularfileinodebeforeapplystable then replacement285835114→285835186 expected;
+directoryinode285835113/mode0700 retained, sentinelidentity/content/mtimeunchanged.
+
+19CLI+one nativetwotestselectionall0(2passed177filtered),40gatesminmemory
+21,385,003,008bytes,maxload1.16650,mindisk350,765,895,680bytes,diffpassed.
+Receiptscompleted0, firstdiscarded/healthyapplied/empty, owners/resourcesgone.
+No sourcechanges, ignored evidenceonly. No atimeonly/ctime/timestampconflict/
+nonLinuxresolution guarantee.
+
+### 073 — User-xattr intent or explicit unsupported recovery
+
+Assigned same worker after072. Inspect capability first, tiny owned usernamespace
+attributes only; preserve state on explicit unsupported errors or validate exact
+supported intent/selection. No security/system/trusted attribute changes.
+
+Result: backing and realdefaultsafeFUSE support testeduserattr, no defect. Owned
+backingprobe set/read/remove binaryvalue thenENODATA61. Guestadds hex006163636570746564ff80
+tofileadd, removes existingbinaryvaluefromremove, stages directorybinaryvalue.
+Reviewretainsfileattr/directmetadataintent. Childonlyapply leavesdirectoryintent,
+then independentfileattradd/removeaccepts unchangedfilebytes/mode/ownership.
+Threepreviewsstrictinertincluding exacttestedxattr (atimeexcludedas072).
+Drop discardsdirectoryattr/scratch, preserveschild/fileattreffects; healthyreads
+exactbinaryvalues/ENODATA then keepaccept. Onlyuser.fixture-round073 touched.
+
+TwoHostSessions/19CLI+twobackingprobes+one nativetwotestselectionall0, 19:42:41–
+19:43:13 UTC. Initialharnessmissingstat/hashlib stoppedbeforeHoststart, corrected/
+backingproberepeated, not productdefect. Minmemory21,438,033,920bytes,maxload0.85791,
+mindisk350,732,521,472bytes,44gatespassed. Receiptscompleted0, stagesdiscarded/applied
+empty, owners/processes/mounts/socketsgone, diffpassed. No sourcechanges, ignored
+evidenceonly. Unsupportedrefusal/oversizedattrs/flags/conflict/nonLinuxnotcovered.
+
+### 074 — Real stopped Host workspace checkpoint lifecycle
+
+Assigned same worker after073. Inspect capability/CLI first, distinguish workspace
+snapshots from unsupported Host RAM checkpoints. Tiny owned stage/snapshot/
+reference lifecycle; existing integration or explicit capability gap if unavailable.
+
+Result: realworkspacecheckpoint/forkpasses, threeHostSessions19:46:09–19:46:22 UTC.
+Sourcea/b/scratch, accepta, disposablecheckpoint0refsdeletepasses; retainedrequest
+idretrysameID/reusedtrue/listone. Snapshot onlyb/scratch40bytesplus5preimagefiles
+859bytes, notacceptedaupper. Workspacefork copiesindependentupper, childsees
+hostacceptedaplus savedproposals and writesbranch-only. Parentupper/hostunchanged.
+Refs1 blocksdeleteCHECKPOINT_REFERENCED/exit1. Sourceacceptb/dropscratch; snapshot
+review/content/checkedmetadataunchanged. Childacceptbranch-only/dropsinherited,
+lineagerefstill1/deleteblocked. Healthyverifiesacceptedhost/a/b/branch/sentinel,
+absentscratchthen healthaccept. Filesystemproposal/preimage only, notHostRAM.
+
+32workflowCLI/sixhelpcalls/one nativetwocheckpointtestselection(2passed5filtered),
+diffpassed. 68gatesminmemory21,479,354,368bytes,maxload0.66748,mindisk350,842,138,624bytes.
+Receiptscompleted0, source/childdiscardedhealthapplied/empty, owners/resourcesgone.
+Referencedcheckpoint/lineagerecordsintentionallyownedignored evidence, no liveowner
+or mountreference. No source/artifactadds. No crashpublication/lowerimmutability/
+explicitbranch-reference-release/execution-RAMcheckpoint proof.
+
+### 075 — Read-only stopped inspect and checkpoint
+
+Assigned same worker after074. Documented noninteractive inspect, tiny owned
+write/metadata attempts, correctsavedview and checkpoint/host preservation,
+ownedinspectmount cleanup and no invented completion authority.
+
+Result: tworealreadonlyinspectpasses19:48:41–19:49:03 UTC, zero newSessions.
+Savedb/scratchupperplus currenthostlowera/branch/health viewed correctly:
+workspaceproposalview, NOT frozenlower. Each write/truncate/chmodb, unlinkscratch,
+createentry,writelowersentinel returnedEROFS30,12/12refusals. Firstinspect0,
+seconddeliberate37 forwardedunchanged. Host/checkpointupper/preimage/manifest
+bytes/mode/uidgid/identity/size/mtime unchanged; source/child/healthrecord+receipt
+hashesunchanged, refs1, absentterminaluppersnotrecreated, no newproposal/authority.
+Inspectmountpoints/parentsremoved, children/originalownergone, noresourceleft.
+
+Atimeseparate: firstread advancesonlyhealthloweratime, secondnone; excludedfrom
+strictcomparison, notclaimedimmutable. Sevencommandsincludingone nativeinspect
+declarationtest1passed765filtered;14gatesminmemory21,523,435,520bytes,maxload0.84033,
+mindisk350,718,005,248bytes,diffpassed. No sourceadds, priorcheckpointevidencekept.
+No liveinspect/terminal/arbitrarypathsandbox/frozenlower guarantee.
+
+### 076 — Retained-current-proposal inspect interruption
+
+Assigned same worker after075. Inspect documented cleanup/signal behavior,
+bounded ownedchild cancellation/earlyexit with safe cleanup plan, retainedcurrent
+proposal/records usable afterward. No unsupported SIGKILL guarantee invented.
+
+Result: no defect, real retainedcurrentproposalinspectroottermination19:51:56–
+19:52:23 UTC. Readinesspipe, root547453/start2276898+descendant547454/start2276899
+verifiedpidfds/token/cwd, SIGTERM onlyroot while frontendstaysnormalowner. Both
+8snaturalfallback, inspect143in0.046s, descendantsreapedbeforefallback, mountand
+parentremoved. NOT frontendtermination/SIGKILLcoverage. Inspectreadcorrectcurrent
+proposal, writeEROFS; host/upper/preimage/Run/receipthashes+metadataunchanged
+(atimeexcluded). Sourcecompleted unchanged/candidatesretained, subsequentreview/
+strictpreview/acceptproposal/dropscratch/healthy verifies. TwoSessionreceipts
+completed0, sourcediscardedhealthapplied/empty, owners/resourcesgone.
+
+14CLI+one native rootexit/reapingtest1passed149filtered,30gatesminmemory
+21,613,936,640bytes,maxload0.42334,mindisk350,790,250,496bytes,diffpassed.
+No source/artifactadds, ignored evidenceonly. No frontendSIGINT/death/ignoredTERM/
+SIGKILL guarantee.
+
+### 077 — Inspect launch failure and full package validation
+
+Assigned same worker after076. Brief bounded executable-launch failure with
+retainedproposal, teardown/successfulretry/acceptance, then exact full default
+`mise run test -- pvisor-cli` and `mise run test -- pvisor` serially if first
+passes and task review confirms safe defaults. No ignored/externalmodel cases.
+
+Confirmed small inspect cleanup defect: actualENOENT/EACCESlaunchfailures unmount
+and leave no children/datachanges, but each retains empty owned
+stage/inspect/PID-UUID directory. Command.spawn()? returns before explicitclose;
+innerRAIIunmounts, outerrootcleanup missed. Laterinspect/accept/drop/healthy works,
+host/upper/preimage/receiptunchanged; not data-loss or mountleak.
+
+Parent authorized focused sharedRAII cleanup for uniqueownedroot/all earlyreturns,
+unmountbeforedelete, nonpanickingDrop/preservedprimaryerror/no sharedpathdelete,
+red/green regression+realrebuiltvalidation. FullCLI/runtimepackage runs held until
+targetedrepairpasses; freshindependentreview required before publication.
+
+Targeted077repairgreen: newlauncherrorregressionredbeforefix(rootcount2versus
+sharedsentinel1), completecheckpointCLI8/8,fmt/Clippy-Dwarningspassed.
+SharedoneshotInspectCleanupRAII coverslocal/remoteearlyreturns, localownedroot
+cleanupnotrecursiveover sharedcontent, leasesoutlivemountcleanup. Rebuiltstatic
+SHA39a7e34b9583f15ff6dd470cf1fe2e14b0c3ea49ebbe3f15d48dc2ddc8320272 actualENOENT/
+EACCES/success leaveszeroinvocationroots and preservesproposal/receipts/host,
+accept/drop/healthy pass.
+
+Exactfull`mise run test -- pvisor-cli`19:58:57–19:59:20 UTC FAILED, notpasses:
+220passed/1failed/40ignored/98unrunfailfast. documentation_json test
+documented_ci_failure_and_timeout_keep_reviewable_candidates expects guest7 but
+nativeGNU Session1 reportsInfrastructure local-sandbox-setup failurebeforeexecution.
+Not yet classified environmental/product. Worker investigating actualinnerreason,
+no assertionweakening; fullpvisorheldbygate. Resourcegates safe(minsamplememory
+21.540GB,maxload1.053,mindisk350.805GB). Targetedcleanupfix remains separatepassing
+evidence; not published pending diagnosis/independentreview.
+
+FullCLIblockerclassifiedwithtwonarrowprobes: same nativeGNU+privateHOME returns
+expectedguest7; realinheritedHOME=/home/reiase plus ownedstageunder.t077 fails.
+Bundle stderr saysstagingHOMErejects five inheritednestedmounts, allOWN merged
+FUSE/sandboxtmpfsundercheckout/TMPDIR, EINVAL22. Not missingnativelibraries or
+inspectRAIIfix. Existingmountsafetypolicy remains unchanged.
+
+Parentapproved controlledfullvalidationHOME adjustment: dedicatedownedprivateHOME
+nonancestorofstage/TMPDIR (siblingfixtures), preserveinstalledCargo/Rustup/misetool
+dirs explicitly/offline/noinstalls, exactfullpackagecommands/no testweakening.
+Originalfailure remainsreal evidence; privateHOMEpass willnotclaim fullsuitepassed
+underactualHOMEancestor topology.
