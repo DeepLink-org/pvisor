@@ -303,3 +303,35 @@ private regression and README.
 Assigned after round 038 workloads ended. Explore managed sealed-v1 publication
 obstruction, completion refusal, retained candidates and admission/retry behavior,
 avoiding prior round 029 completion-publication coverage.
+
+Result: no confirmed defect. An external contract test covers checkpoint and
+strict policies, using a nonempty owned `sealed-v1` directory. Repeated atomic
+marker replacement failures after journal drain preserve bytes, inode/UID/GID,
+directory identities, policy and observations, without temporary leaks.
+Invalid seal blocks writable reopen/reuse. Removing obstruction alone does not
+complete the stage; exclusive unsealed reopen can mutate, completion retry
+succeeds, sealed reopen rejects mutation with EROFS, and explicit reuse clears seal.
+
+Worker checks within 15:13:27–15:17:07 UTC, standard resource limits:
+
+- `mise run test -- pvisor-overlay-core -- --test seal_publication`,
+  1 passed, zero skipped.
+- Selected stage library tests plus seal-publication binary, 13 passed,
+  164 skipped. Existing apply-executing cases excluded to avoid global apply-lock
+  effects; this was not a full package run.
+- `mise run lint-rust -- -p pvisor-overlay-core`, package fmt and diff passed.
+- An initial argument-separator mistake failed before compilation, then was
+  corrected. New-file format differences fixed before final passing checks.
+- Minimum MemAvailable 23,748,448 KiB; maximum load1 1.68;
+  minimum free disk 360,972,212 KiB. No mounts/children; fixtures cleaned.
+- No device/power-loss/runtime-receipt/FUSE/VM/macOS/workspace validation.
+
+Parent reviewed the public-contract assertions and integrated the new test/README.
+At 15:17 UTC published round 038 CI had no failures, with several checks still
+in progress; final CI success remains unconfirmed.
+
+### 040 — OverlayNet malformed-fragment isolation
+
+Assigned after round 039 workloads ended. Explore a new bounded packet/state
+boundary and healthy-flow recovery after malformed input, avoiding round 008/015
+coverage. No host networking changes or live external traffic.

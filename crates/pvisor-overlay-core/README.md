@@ -660,6 +660,17 @@ and atomic `sealed-v1` publication. Errors (including worker startup/panic) do
 not publish a new seal. Explicit workload fsync and journal synchronization do
 not use this pool. The caller still owns the stage lease and must stop writers.
 
+`tests/seal_publication.rs` obstructs the final `sealed-v1` replacement with a
+small owned nonempty directory after staged writes and compact-journal drain,
+for checkpoint and strict policies. Repeated completion failures retain candidate
+bytes/inode ownership, backing directories, policy and observations, and clean
+the atomic writer's temporary entry. The invalid seal blocks writable reopen
+and reuse. Removing only that obstruction does not establish completion:
+an exclusively owned unsealed reopen can resume mutations, but reuse remains
+rejected until completion succeeds. Successful retry blocks mutations on reopen;
+explicit same-policy reuse clears the seal. This covers a real namespace
+publication error, not host storage failure, power loss or runtime receipts.
+
 The inventory holds O(files + directories) paths and inode identities; regular-file
 descriptors and worker threads are bounded by the selected worker count. Directory
 iteration additionally holds O(tree depth) directory descriptors. Hard links are deduplicated, symlink/FIFO/device targets are never synced, and reopened
