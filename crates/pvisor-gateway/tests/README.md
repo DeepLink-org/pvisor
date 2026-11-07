@@ -84,6 +84,13 @@ lifecycle 都须在 Gateway 仍运行时取消一次、释放已建立的上游 
 私有 body reader 用小字节上限检查精确边界、超限 413、读取错误 400，
 并检查失败会释放仍未 EOF 的输入 owner。
 
+`raw_supplier_eof_boundaries_record_failure_and_allow_the_next_call` 使用真实
+loopback TCP 上游，完整读取请求后分别直接 EOF、截断响应头、截断声明了
+Content-Length 的响应体。每次故障后同一 Gateway、同一 story 的正常请求
+必须成功；共六个串行请求，每次 HTTP/上游操作及最终 shutdown/join 均有
+五秒上限。检查 502、精确的 connect/read 失败原因、逐请求唯一的因果终结
+记录、六次 lifecycle 交付及有界排空；不是供应商崩溃或十分钟超时的实测。
+
 HTTP/capture 交叉用例在首个请求的 Journal commit 之后阻塞 observer，
 再关闭正在等待 lifecycle entry 的真实客户端 socket。该 HTTP wait 只取消
 一次，已接受的 capture 不回滚；同 story 的后续健康 HTTP 请求仍可完成，
@@ -98,3 +105,15 @@ Observer 故障用例令首个 HTTP 请求的 post-commit observer 返回合成�
 和临时目录内的目标路径冲突：两者都不得重试/抹除 Journal append、伪造
 取消或令 shutdown 失败。可写诊断只包含一次原始已提交 event，沿用
 Dialogue retention 与凭据脱敏；不能写诊断时仅告警，不改写冲突目录。
+
+`disconnect_after_protocol_terminal_before_http_eof_allows_same_story_recovery`
+覆盖客户端已读到合法 `finish_reason` 和 `[DONE]`、供应商 HTTP body 仍保持
+打开时的下游断连。无 lifecycle、单次交付和多批交付三种模式各执行故障/
+健康两个串行请求，复用同一 Gateway 与显式 story。逐字节内容接收作为
+断连 handshake，多批模式还等待 drain 与下一次实际 buffering 通知；
+不靠 sleep、供应商 EOF 或 shutdown 触发取消。五秒内必须释放供应商 body，
+后续健康流必须完整结束，且 shutdown 前已观察到两个请求各自唯一的因果
+终结记录。断连记录须为 `client_disconnected` 并保留精确接收字节数；
+单次 lifecycle 已在首批交付时退休，不应再 cancel，多批 lifecycle 则
+须取消一次。最后有界 shutdown 再检查无额外终结。此用例不覆盖 TCP
+半关闭、HTTP/2、VM 回收或真实供应商的取消计费。

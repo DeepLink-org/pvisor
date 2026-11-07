@@ -32,3 +32,4 @@ h2.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tower = { version = "0.5", features = ["util"] }

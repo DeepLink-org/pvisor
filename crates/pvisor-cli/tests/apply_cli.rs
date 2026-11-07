@@ -73,6 +73,43 @@ impl Fixture {
     fn run(&self, options: &[&str]) -> Output {
         cli(self.root.path(), &self.stage, options)
     }
+    fn invoke(&self, command: &str, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .arg(command)
+            .arg(&self.stage)
+            .args(args)
+            .current_dir(self.root.path())
+            .env("HOME", self.root.path())
+            .env("PVISOR_RUN_HOME", self.root.path().join("runs"))
+            .env_remove("PVISOR_STARTUP_TIMING")
+            .env_remove("PVISOR_STARTUP_PROFILE")
+            .output()
+            .unwrap()
+    }
+    fn write_review_bundle(&self) {
+        let record = pvisor::RunRecord::read(&self.stage).unwrap();
+        let mut bundle: Value = serde_json::from_str(include_str!(
+            "../../pvisor/tests/fixtures/bundles/v1-minimal.json"
+        ))
+        .unwrap();
+        bundle["schema_version"] = json!(4);
+        bundle["run"]["run_id"] = json!(record.run_id);
+        bundle["run"]["session_id"] = json!(record.session_id);
+        bundle["run"]["execution_id"] = json!(record.execution_id);
+        bundle["agentctl"]["run_id"] = json!(record.run_id);
+        bundle["agentctl"]["execution_id"] = json!(record.execution_id);
+        bundle["executor_observations"] =
+            serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
+        bundle["safety"]["filesystem_changes_staged"] = json!(true);
+        bundle["filesystem"] = json!({
+            "state": "staged", "target": self.target, "upper": self.stage.join("upper"),
+            "changed_files": 2, "whiteouts": 0, "changes": [], "sample_paths": []
+        });
+        serde_json::from_value::<pvisor::RunBundle>(bundle)
+            .unwrap()
+            .write(&self.stage)
+            .unwrap();
+    }
     fn unchanged(&self) {
         assert_eq!(fs::read_dir(&self.target).unwrap().count(), 0);
         assert_eq!(
@@ -401,39 +438,8 @@ fn picker_inventory_is_unavailable_after_admission_failure() {
 fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     let f = Fixture::new();
     // A sealed, stopped stage exercises the CLI handoff without FUSE, KVM or a model.
-    let record = pvisor::RunRecord::read(&f.stage).unwrap();
-    let mut bundle: Value = serde_json::from_str(include_str!(
-        "../../pvisor/tests/fixtures/bundles/v1-minimal.json"
-    ))
-    .unwrap();
-    bundle["schema_version"] = json!(4);
-    bundle["run"]["run_id"] = json!(record.run_id);
-    bundle["run"]["session_id"] = json!(record.session_id);
-    bundle["run"]["execution_id"] = json!(record.execution_id);
-    bundle["agentctl"]["run_id"] = json!(record.run_id);
-    bundle["agentctl"]["execution_id"] = json!(record.execution_id);
-    bundle["executor_observations"] =
-        serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
-    bundle["safety"]["filesystem_changes_staged"] = json!(true);
-    bundle["filesystem"] = json!({
-        "state": "staged", "target": f.target, "upper": f.stage.join("upper"),
-        "changed_files": 2, "whiteouts": 0, "changes": [], "sample_paths": []
-    });
-    serde_json::from_value::<pvisor::RunBundle>(bundle)
-        .unwrap()
-        .write(&f.stage)
-        .unwrap();
-    let invoke = |command: &str, args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .arg(command)
-            .arg(&f.stage)
-            .args(args)
-            .current_dir(f.root.path())
-            .env("HOME", f.root.path())
-            .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
-            .output()
-            .unwrap()
-    };
+    f.write_review_bundle();
+    let invoke = |command: &str, args: &[&str]| f.invoke(command, args);
 
     let review = invoke("review", &["--diff"]);
     assert!(review.status.success(), "{review:?}");
@@ -475,6 +481,241 @@ fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     );
     assert_eq!(review["filesystem"]["state"], "discarded");
     assert_eq!(review["run"]["state"], "completed");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mutation_admission_rejects_competing_cli_requests_and_releases_for_retry() {
+    use fs2::FileExt;
+
+    for contender in ["drop", "apply"] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        // Hold the actual admission inode before either CLI starts. This proves
+        // contention without a scheduling delay or a production test hook.
+        let admission = fs::File::open(f.stage.join("session.lock")).unwrap();
+        admission.try_lock_exclusive().unwrap();
+        let before = tree_snapshot(f.root.path());
+        let invoke = |command: &str, args: &[&str]| {
+            Command::new("timeout")
+                .args(["--kill-after=1s", "8s", env!("CARGO_BIN_EXE_pvisor")])
+                .arg(command)
+                .arg(&f.stage)
+                .args(args)
+                .current_dir(f.root.path())
+                .env("HOME", f.root.path())
+                .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
+                .env_remove("PVISOR_STARTUP_TIMING")
+                .env_remove("PVISOR_STARTUP_PROFILE")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let (apply, other) = std::thread::scope(|scope| {
+            let apply = scope.spawn(|| invoke("apply", &["--path", "keep.txt", "--json"]));
+            let other = scope.spawn(|| {
+                let args: &[&str] = if contender == "apply" {
+                    &["--path", "skip.txt", "--json"]
+                } else {
+                    &[]
+                };
+                invoke(contender, args)
+            });
+            (apply.join().unwrap(), other.join().unwrap())
+        });
+        let blocked = object(&apply, 3);
+        assert_eq!(blocked["status"], "blocked");
+        assert!(blocked["execution"].is_null());
+        assert!(
+            blocked["blockers"].as_array().unwrap().iter().any(|b| b
+                .as_str()
+                .unwrap()
+                .contains("Session operation already in progress")),
+            "{blocked}"
+        );
+        if contender == "apply" {
+            let blocked = object(&other, 3);
+            assert_eq!(blocked["status"], "blocked");
+            assert!(blocked["execution"].is_null());
+            assert!(
+                blocked["blockers"]
+                    .to_string()
+                    .contains("Session operation already in progress")
+            );
+        } else {
+            assert_eq!(other.status.code(), Some(1), "{other:?}");
+            assert!(
+                String::from_utf8_lossy(&other.stderr)
+                    .contains("Session operation already in progress"),
+                "{other:?}"
+            );
+        }
+        assert_eq!(tree_snapshot(f.root.path()), before);
+        f.unchanged();
+        drop(admission);
+
+        let applied = object(&invoke("apply", &["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(applied["status"], "applied");
+        assert_eq!(applied["remaining"]["in_scope"], 1);
+        // Failure and successful retry must not strand a diagnostic owner or
+        // either lease. Opening separate descriptors also checks the real flock.
+        assert!(fs::read(f.stage.join("session.lock")).unwrap().is_empty());
+        for name in ["session.lock", "lease.lock"] {
+            fs::File::open(f.stage.join(name))
+                .unwrap()
+                .try_lock_exclusive()
+                .unwrap();
+        }
+        let dropped = invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        let ledger = pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap();
+        assert_eq!(ledger.len(), 1, "only the retry may consume keep.txt");
+        let review = object(&invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["state"], "discarded");
+        assert!(
+            review["filesystem"]["changes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn truncated_run_record_refuses_review_apply_and_drop_until_bytes_are_restored() {
+    for prefix in [0, 1, 32] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        let path = f.stage.join("run.json");
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, &original[..prefix]).unwrap();
+        assert!(format!("{:#}", pvisor::RunRecord::read(&f.stage).unwrap_err()).contains("EOF"));
+        let before = tree_snapshot(f.root.path());
+        for (command, args) in [
+            ("review", vec!["--json"]),
+            ("apply", vec!["--all", "--dry-run", "--json"]),
+            ("apply", vec!["--all", "--json"]),
+            ("drop", vec![]),
+        ] {
+            let output = f.invoke(command, &args);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{prefix}, {command}: {output:?}"
+            );
+            // This fixture also has a discovery index. A corrupt indexed record
+            // is omitted by legacy discovery, which reports no readable Runs
+            // rather than exposing the underlying serde error.
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains(&format!("no pVisor Runs found under {}", f.stage.display())),
+                "{prefix}, {command}: {output:?}"
+            );
+            assert_eq!(tree_snapshot(f.root.path()), before, "{prefix}, {command}");
+        }
+        f.unchanged();
+
+        // This is restoration of known-good metadata, not implicit crash recovery.
+        fs::write(&path, original).unwrap();
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["changes"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            object(&f.run(&["--path", "keep.txt", "--json"]), 0)["status"],
+            "applied"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+    }
+}
+
+#[test]
+fn truncated_committed_ledger_blocks_mutation_and_preserves_accepted_files() {
+    for prefix in [0, 1, 32] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        assert_eq!(
+            object(&f.run(&["--path", "keep.txt", "--json"]), 0)["status"],
+            "applied"
+        );
+        let path = f.stage.join("apply-ledger.json");
+        let original = fs::read(&path).unwrap();
+        let records = pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].state,
+            pvisor_core::overlay::ApplyRecordState::Committed
+        );
+        fs::write(&path, &original[..prefix]).unwrap();
+        let target_before = tree_snapshot(&f.target);
+        let upper_before = tree_snapshot(&f.stage.join("upper"));
+        let run_before = fs::read(f.stage.join("run.json")).unwrap();
+
+        // Review inspects the upper and historical bundle, not ledger validity.
+        // A readable inventory is not admission to write or discard anything.
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(review["filesystem"]["changes"][0]["path"], "skip.txt");
+        for dry_run in [true, false, false] {
+            let mut options = vec!["--all", "--json"];
+            if dry_run {
+                options.push("--dry-run");
+            }
+            let value = object(&f.run(&options), 3);
+            assert_eq!(value["status"], "blocked");
+            assert!(value["execution"].is_null());
+            assert!(value["picker"].is_null());
+            assert!(
+                value["blockers"].as_array().unwrap().iter().any(|blocker| {
+                    blocker.as_str().is_some_and(|text| {
+                        text.contains("apply-ledger.json") && text.contains("EOF")
+                    })
+                }),
+                "{prefix}: {value}"
+            );
+            assert_eq!(tree_snapshot(&f.target), target_before);
+            assert_eq!(tree_snapshot(&f.stage.join("upper")), upper_before);
+            assert_eq!(fs::read(&path).unwrap(), original[..prefix]);
+            assert_eq!(fs::read(f.stage.join("run.json")).unwrap(), run_before);
+        }
+        let dropped = f.invoke("drop", &[]);
+        assert_eq!(dropped.status.code(), Some(1), "{dropped:?}");
+        let error = String::from_utf8_lossy(&dropped.stderr);
+        assert!(
+            error.contains("apply-ledger.json") && error.contains("EOF"),
+            "{dropped:?}"
+        );
+        assert_eq!(tree_snapshot(&f.target), target_before);
+        assert_eq!(tree_snapshot(&f.stage.join("upper")), upper_before);
+        assert_eq!(fs::read(&path).unwrap(), original[..prefix]);
+        assert_eq!(fs::read(f.stage.join("run.json")).unwrap(), run_before);
+
+        fs::write(&path, original).unwrap();
+        assert_eq!(
+            object(&f.run(&["--all", "--dry-run", "--json"]), 0)["status"],
+            "ready"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(tree_snapshot(&f.target), target_before);
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        assert_eq!(
+            pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap(),
+            records
+        );
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["state"], "discarded");
+        assert!(
+            review["filesystem"]["changes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -600,6 +841,278 @@ fn unresolved_source_is_one_json_error_and_diff_is_bounded_text() {
     let output = f.run(&["--path", "keep.txt", "--dry-run", "--diff"]);
     assert!(String::from_utf8_lossy(&output.stdout).contains("binary (text diff unavailable)"));
     assert_eq!(fs::read_dir(&f.target).unwrap().count(), 0);
+}
+
+#[test]
+fn hardlink_dependency_selection_rechecks_host_alias_after_preview_and_preserves_pending() {
+    for host_edit in [false, true] {
+        let f = Fixture::new();
+        fs::write(f.target.join("source"), b"original").unwrap();
+        fs::hard_link(f.target.join("source"), f.target.join("host-alias")).unwrap();
+        let journal = f.stage.join("preimages");
+        pvisor_overlay_core::stage::begin(&journal, pvisor_core::overlay::StageDurability::Strict)
+            .unwrap();
+        let core = pvisor_overlay_core::OverlayCore::open_existing(
+            vec![f.target.clone()],
+            f.stage.join("upper"),
+            Some(f.stage.join("work")),
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        core.hard_link(Path::new("source"), Path::new("staged-alias"))
+            .unwrap();
+        fs::write(core.copy_up(Path::new("source")).unwrap(), b"staged").unwrap();
+        drop(core);
+        pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &journal).unwrap();
+
+        // The upper hardlink group is an atomic dependency, not permission to
+        // revive an explicitly excluded sibling.
+        let blocked = object(
+            &f.run(&[
+                "--path",
+                "staged-alias",
+                "--exclude",
+                "source",
+                "--dry-run",
+                "--json",
+            ]),
+            3,
+        );
+        assert_eq!(blocked["status"], "blocked", "{blocked}");
+        assert!(
+            blocked["blockers"]
+                .to_string()
+                .contains("hard-link sibling"),
+            "{blocked}"
+        );
+        let preview = object(
+            &f.run(&["--path", "staged-alias", "--dry-run", "--json"]),
+            0,
+        );
+        assert_eq!(preview["status"], "ready", "{preview}");
+        assert_eq!(preview["selected"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["required"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["selected"][0]["path"], "staged-alias");
+        assert_eq!(preview["required"][0]["path"], "source");
+        assert_eq!(preview["remaining"]["in_scope"], 2);
+        assert_eq!(fs::read(f.target.join("source")).unwrap(), b"original");
+        assert_eq!(fs::read(f.target.join("host-alias")).unwrap(), b"original");
+
+        if host_edit {
+            // Preview is not a reservation. Mutating the unselected host name
+            // changes the selected source inode and must block the whole group.
+            fs::write(f.target.join("host-alias"), b"later host edit").unwrap();
+        }
+        let value = object(
+            &f.run(&["--path", "staged-alias", "--json"]),
+            if host_edit { 3 } else { 0 },
+        );
+        if host_edit {
+            assert_eq!(value["status"], "blocked", "{value}");
+            assert!(value["execution"].is_null(), "{value}");
+            assert!(!f.target.join("staged-alias").exists());
+            assert_eq!(
+                fs::read(f.target.join("source")).unwrap(),
+                b"later host edit"
+            );
+            assert_eq!(fs::read(f.stage.join("upper/source")).unwrap(), b"staged");
+            assert_eq!(
+                fs::read(f.stage.join("upper/staged-alias")).unwrap(),
+                b"staged"
+            );
+        } else {
+            assert_eq!(value["status"], "applied", "{value}");
+            assert_eq!(value["remaining"]["in_scope"], 2);
+            assert_eq!(fs::read(f.target.join("source")).unwrap(), b"staged");
+            assert_eq!(
+                fs::metadata(f.target.join("source")).unwrap().ino(),
+                fs::metadata(f.target.join("staged-alias")).unwrap().ino()
+            );
+            // Only copied-up aliases participate in upper dependency closure;
+            // publication replaces a name, never writes through its host inode.
+            assert_eq!(fs::read(f.target.join("host-alias")).unwrap(), b"original");
+        }
+        let accepted = object(&f.run(&["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(accepted["status"], "applied", "{accepted}");
+        assert_eq!(
+            accepted["remaining"]["in_scope"],
+            if host_edit { 3 } else { 1 }
+        );
+        assert_eq!(
+            fs::read(f.stage.join("upper/skip.txt")).unwrap(),
+            b"skipped\n"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        assert_eq!(
+            fs::read(f.target.join("host-alias")).unwrap(),
+            if host_edit {
+                b"later host edit".as_slice()
+            } else {
+                b"original"
+            }
+        );
+        assert_eq!(
+            fs::read(f.target.join("source")).unwrap(),
+            if host_edit {
+                b"later host edit".as_slice()
+            } else {
+                b"staged"
+            }
+        );
+        assert_eq!(f.target.join("staged-alias").exists(), !host_edit);
+    }
+}
+
+#[test]
+fn selected_symlinks_do_not_accept_referents_or_write_through_host_aliases() {
+    let f = Fixture::new();
+    let sentinel = f.root.path().join("sentinel");
+    fs::write(&sentinel, b"outside project").unwrap();
+    let journal = f.stage.join("preimages");
+    pvisor_overlay_core::stage::begin(&journal, pvisor_core::overlay::StageDurability::Strict)
+        .unwrap();
+    let core = pvisor_overlay_core::OverlayCore::open_existing(
+        vec![f.target.clone()],
+        f.stage.join("upper"),
+        Some(f.stage.join("work")),
+        vec![],
+        Some(journal.clone()),
+    )
+    .unwrap();
+    core.create_symlink(Path::new("pending-link"), Path::new("skip.txt"))
+        .unwrap();
+    core.create_symlink(Path::new("outside-link"), &sentinel)
+        .unwrap();
+    drop(core);
+    pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &journal).unwrap();
+    let before = tree_snapshot(&sentinel);
+    let value = object(
+        &f.run(&["--path", "pending-link", "--path", "outside-link", "--json"]),
+        0,
+    );
+    assert_eq!(value["status"], "applied", "{value}");
+    assert!(value["required"].as_array().unwrap().is_empty(), "{value}");
+    assert_eq!(value["remaining"]["in_scope"], 2);
+    assert_eq!(
+        fs::read_link(f.target.join("pending-link")).unwrap(),
+        Path::new("skip.txt")
+    );
+    assert_eq!(
+        fs::read_link(f.target.join("outside-link")).unwrap(),
+        sentinel
+    );
+    assert!(!f.target.join("skip.txt").exists());
+    assert_eq!(
+        fs::read(f.stage.join("upper/skip.txt")).unwrap(),
+        b"skipped\n"
+    );
+    let dropped = f.invoke("drop", &[]);
+    assert!(dropped.status.success(), "{dropped:?}");
+    assert!(!f.target.join("skip.txt").exists());
+    assert_eq!(
+        fs::read_link(f.target.join("pending-link")).unwrap(),
+        Path::new("skip.txt")
+    );
+    assert_eq!(
+        fs::read_link(f.target.join("outside-link")).unwrap(),
+        sentinel
+    );
+    assert_eq!(tree_snapshot(&sentinel), before);
+}
+
+#[test]
+fn target_type_conflicts_block_the_whole_batch_and_allow_selective_retry_then_drop() {
+    for kind in ["file", "nonempty-directory", "symlink"] {
+        let f = Fixture::new();
+        let conflict = f.target.join("skip.txt");
+        let sentinel = f.root.path().join("sentinel.txt");
+        fs::write(&sentinel, b"must not be overwritten\n").unwrap();
+        match kind {
+            "file" => fs::write(&conflict, b"concurrent creation\n").unwrap(),
+            "nonempty-directory" => {
+                fs::create_dir(&conflict).unwrap();
+                fs::write(conflict.join("child.txt"), b"concurrent child\n").unwrap();
+            }
+            "symlink" => std::os::unix::fs::symlink(&sentinel, &conflict).unwrap(),
+            _ => unreachable!(),
+        }
+
+        // keep.txt sorts before skip.txt. Even execution (not just preview) must
+        // reject the entire plan before accepting that otherwise valid creation.
+        let before = tree_snapshot(f.root.path());
+        for dry_run in [true, false, false] {
+            let mut options = vec!["--all", "--json"];
+            if dry_run {
+                options.push("--dry-run");
+            }
+            let value = object(&f.run(&options), 3);
+            assert_eq!(value["status"], "blocked", "{kind}: {value}");
+            assert!(!value["blockers"].as_array().unwrap().is_empty());
+            assert!(value["execution"].is_null(), "{kind}: {value}");
+            let mut after = tree_snapshot(f.root.path());
+            if !dry_run {
+                // Mutation admission opens session.lock with truncation. Unlike
+                // preview, execution may update that empty lock's timestamps.
+                // Preserve checks for its identity, mode and contents, and for
+                // every other byte and metadata field in the fixture.
+                let lock = Path::new("stage/session.lock");
+                let previous = before.get(lock).unwrap();
+                let current = after.get_mut(lock).unwrap();
+                current.modified = previous.modified;
+                current.changed = previous.changed;
+            }
+            assert_eq!(after, before, "{kind}, dry_run={dry_run}");
+            assert!(!f.target.join("keep.txt").exists(), "{kind}");
+            assert!(
+                pvisor_overlay_core::apply::load_apply_records(&f.stage)
+                    .unwrap()
+                    .is_empty(),
+                "{kind}"
+            );
+        }
+
+        // Remove only the injected obstacle, then retry a subset. A failed
+        // preflight must not poison the stage or consume either candidate.
+        if kind == "nonempty-directory" {
+            fs::remove_dir_all(&conflict).unwrap();
+        } else {
+            fs::remove_file(&conflict).unwrap();
+        }
+        let applied = object(&f.run(&["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(applied["status"], "applied", "{kind}: {applied}");
+        assert_eq!(applied["remaining"]["in_scope"], 1);
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!conflict.exists());
+        assert_eq!(
+            pvisor_overlay_core::apply::load_apply_records(&f.stage)
+                .unwrap()
+                .len(),
+            1
+        );
+        for _ in 0..2 {
+            let dropped = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+                .arg("drop")
+                .arg(&f.stage)
+                .current_dir(f.root.path())
+                .env("HOME", f.root.path())
+                .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
+                .output()
+                .unwrap();
+            assert!(dropped.status.success(), "{kind}: {dropped:?}");
+            assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+            assert!(!conflict.exists());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"must not be overwritten\n");
+            let record = pvisor::RunRecord::read(&f.stage).unwrap();
+            assert_eq!(
+                record.overlay.unwrap().state,
+                pvisor_core::overlay::OverlayState::Discarded
+            );
+        }
+    }
 }
 
 #[test]

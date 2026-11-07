@@ -91,6 +91,12 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+Linux Host safe Sessions also support a stage inside the workspace (for example
+`--stage ./experiment`). The stage and its merged backing remain hidden from
+the staged workspace; Landlock grants the rebound workspace rather than a hidden
+backing path. This does not expose Session management files or permit recursive
+backing layouts.
+
 New Executions use Run record schema 3, Bundle schema 6 and completion protocol 2.
 Older readers reject these schemas instead of bypassing the completion check.
 Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
@@ -145,6 +151,20 @@ Local sandbox evidence comes from individual control installation receipts on a
 parent-retained inode. The launcher unlinks its pathname and closes the descriptor
 before workload execution. A ready marker or admission mechanism list cannot
 substitute for these receipts.
+
+An embedded Linux safe process with a prepared overlay must also supply its
+workspace binding (`RunSpec.metadata["pvisor.workspace"]`) as an existing
+directory. The CLI supplies this binding. A runtime-owned overlay mounted
+directly at that workspace is projected as-is; a distinct merged mountpoint is
+bound over the workspace inside the sandbox. In both layouts runtime preparation,
+not caller-supplied implant metadata, supplies the actual mounted source.
+An `OverlayHint` alone does not authorize binding the merged view over an
+arbitrary host directory: a missing or invalid binding fails before launching
+the workload, rather than silently running write-through. Explicit safe process
+runs without an overlay may still write through to their declared workspace.
+The Bundle's `filesystem_changes_staged` describes the retained stage state,
+not a receipt proving that every process write was staged; confinement evidence
+and explicitly writable capability roots are separate.
 
 `RunSpec.runtime.profile` is the shared `RunProfile::{Default, Safe}` request.
 Safe requires sandbox admission before workload start; its selective host network

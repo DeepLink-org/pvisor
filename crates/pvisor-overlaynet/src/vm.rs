@@ -1194,7 +1194,8 @@ fn parse_dns_question(query: &[u8]) -> Result<DnsQuestion, ()> {
     }
     let mut position = 12;
     let mut labels = Vec::new();
-    let mut encoded_len = 0;
+    // RFC 1035's 255-octet wire-name limit includes the root terminator.
+    let mut encoded_len = 1;
     loop {
         let length = *query.get(position).ok_or(())? as usize;
         position += 1;

@@ -195,6 +195,297 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
 }
 
 #[test]
+fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
+    for (name, nested_stage, nested_home) in [
+        ("external", false, false),
+        ("nested", true, false),
+        ("nested-home", true, true),
+    ] {
+        // Keep every fixture under the checkout, independent of the runner's
+        // TMPDIR. A synthetic-root Session gives /tmp its own private tmpfs.
+        let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let workspace = temporary.path().join("workspace");
+        let home = if nested_home {
+            workspace.join("home")
+        } else {
+            temporary.path().join("home")
+        };
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("state"), b"lower").unwrap();
+        let stage = if nested_stage {
+            workspace.join("experiment")
+        } else {
+            temporary.path().join("experiment")
+        };
+        let command = || {
+            let mut command = Command::new("timeout");
+            command
+                .args(["--kill-after=2s", "10s", env!("CARGO_BIN_EXE_pvisor")])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &home)
+                .env("TMPDIR", temporary.path())
+                .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
+                .current_dir(&workspace)
+                .stdin(Stdio::null());
+            command
+        };
+        let output = command()
+            .args([
+                "spawn",
+                "--safe",
+                "--overlaynet-deny-all",
+                "--stdio",
+                "capture",
+                "--stage",
+            ])
+            .arg(if nested_stage {
+                Path::new("./experiment")
+            } else {
+                &stage
+            })
+            .args([
+                "--",
+                "/bin/sh",
+                "-exc",
+                r#"
+stage=$1
+test "$PVISOR_OVERLAY_STAGE" = "$stage"
+test ! -e "$stage/run.json"
+test ! -e "$stage/overlay.json"
+test ! -e "$PVISOR_OVERLAY_UPPER"
+if (cat "$stage/run.json") 2>/dev/null; then exit 1; fi
+for directory in "$stage" "$PVISOR_OVERLAY_UPPER"; do
+    if (printf forbidden > "$directory/management-probe") 2>/dev/null; then
+        echo "management directory writable: $directory" >&2
+        exit 1
+    fi
+done
+alias_written=no
+if test "$2" = nested; then
+    merged="$stage/.overlay-mounts/$PVISOR_OVERLAY_ID/merged"
+    test ! -e ./experiment
+    test ! -e "$stage"
+    test ! -e "$merged"
+    if (printf forbidden > "$merged/backing-probe") 2>/dev/null; then exit 1; fi
+else
+    merged="$stage/merged"
+    # If reachable, this is a COW workspace alias, not the physical upper.
+    # Its absolute path need not remain available behind a private /tmp.
+    if test -e "$merged"; then
+        test -d "$merged"
+        printf alias > "$merged/alias-result.txt"
+        alias_written=yes
+    elif (printf forbidden > "$merged/backing-probe") 2>/dev/null; then
+        echo "hidden merged path writable: $merged" >&2
+        exit 1
+    fi
+fi
+printf '%s\n%s\n' "$merged" "$alias_written"
+printf staged > result.txt
+printf private > "$HOME/state"
+"#,
+                "stage-visibility-probe",
+            ])
+            .arg(&stage)
+            .arg(if nested_stage { "nested" } else { "external" })
+            .output()
+            .unwrap();
+        let bundle = RunBundle::read(&stage);
+        assert!(
+            output.status.success(),
+            "{name}: stdout: {}\nstderr: {}\ncaptured workload: {:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            bundle.as_ref().map(|bundle| &bundle.run.output)
+        );
+        let bundle = bundle.unwrap();
+        assert!(bundle.run.failure.is_none(), "{name}: {:?}", bundle.run);
+        assert!(bundle.safety.filesystem_non_bypassable, "{name}");
+        assert!(bundle.safety.network_non_bypassable, "{name}");
+        assert_eq!(fs::read(home.join("state")).unwrap(), b"lower", "{name}");
+        assert!(!workspace.join("result.txt").exists(), "{name}");
+        assert!(!workspace.join("alias-result.txt").exists(), "{name}");
+        assert!(!stage.join("management-probe").exists(), "{name}");
+        let overlay: serde_json::Value =
+            serde_json::from_slice(&fs::read(stage.join("overlay.json")).unwrap()).unwrap();
+        let stdout = bundle.run.output.stdout.as_deref().unwrap();
+        let mut lines = stdout.lines();
+        assert_eq!(
+            lines.next(),
+            overlay["merged_dir"].as_str(),
+            "{name}: probe must address the actual recorded merged backing"
+        );
+        let alias_written = lines.next().unwrap();
+        assert!(matches!(alias_written, "yes" | "no"), "{name}: {stdout}");
+        assert!(lines.next().is_none(), "{name}: {stdout}");
+        let upper = &bundle.filesystem.as_ref().unwrap().upper;
+        assert!(!upper.join("management-probe").exists(), "{name}");
+        assert!(!upper.join("backing-probe").exists(), "{name}");
+        assert_eq!(fs::read(upper.join("result.txt")).unwrap(), b"staged");
+        if alias_written == "yes" {
+            assert!(!nested_stage, "{name}: hidden backing was writable");
+            assert_eq!(fs::read(upper.join("alias-result.txt")).unwrap(), b"alias");
+        } else {
+            assert!(!upper.join("alias-result.txt").exists(), "{name}");
+        }
+        let review = command()
+            .arg("review")
+            .arg(&stage)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(review.status.success(), "{name}: {review:?}");
+        assert!(String::from_utf8_lossy(&review.stdout).contains("result.txt"));
+        let dropped = command().arg("drop").arg(&stage).output().unwrap();
+        assert!(dropped.status.success(), "{name}: {dropped:?}");
+        assert!(!upper.join("result.txt").exists(), "{name}");
+        assert!(!upper.join("alias-result.txt").exists(), "{name}");
+        assert!(
+            !fs::read_to_string("/proc/self/mountinfo")
+                .unwrap()
+                .contains(temporary.path().to_str().unwrap())
+        );
+        eprintln!(
+            "{name}: alias_written={alias_written}, sandbox enforced, management protected, lower unchanged, review/drop succeeded"
+        );
+    }
+}
+
+#[test]
+fn safe_abnormal_exits_retain_reviewable_stages_and_release_owners_before_retry() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    let home = temporary.path().join("home");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&home).unwrap();
+
+    // Bound every real CLI request, including its owner, without signalling any
+    // process discovered by PID. Each spawn completes before the next begins.
+    let command = || {
+        let mut command = Command::new("timeout");
+        command
+            .args(["--kill-after=2s", "25s", env!("CARGO_BIN_EXE_pvisor")])
+            .current_dir(&workspace)
+            .env("HOME", &home)
+            .env("TMPDIR", temporary.path())
+            .env("PVISOR_RUN_HOME", &run_home)
+            .stdin(Stdio::null());
+        command
+    };
+    for (name, script, code, state) in [
+        (
+            "nonzero",
+            "printf retained > result.txt; exit 23",
+            23,
+            "failed",
+        ),
+        (
+            "signal",
+            "printf retained > result.txt; kill -TERM $$",
+            143,
+            "failed",
+        ),
+        ("healthy", "printf retained > result.txt", 0, "completed"),
+    ] {
+        let stage = temporary.path().join(name);
+        let started = std::time::Instant::now();
+        let output = command()
+            .args([
+                "spawn",
+                "--no-agent-defaults",
+                "--safe",
+                "--overlaynet-deny-all",
+                "--stdio",
+                "capture",
+                "--stage",
+            ])
+            .arg(&stage)
+            .args(["--", "/bin/sh", "-c", script])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{name}: stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bundle = RunBundle::read(&stage).unwrap();
+        assert_eq!(bundle.run.exit_code, Some(code));
+        assert!(bundle.safety.safe_profile_requested);
+        assert!(bundle.safety.filesystem_non_bypassable);
+        assert!(bundle.safety.filesystem_changes_staged);
+        if code != 0 {
+            assert_eq!(
+                bundle.run.failure.as_ref().unwrap().kind,
+                RunFailureKind::ProcessExit
+            );
+        } else {
+            assert!(bundle.run.failure.is_none());
+        }
+        assert!(!workspace.join("result.txt").exists());
+        let upper = &bundle.filesystem.as_ref().unwrap().upper;
+        assert_eq!(fs::read(upper.join("result.txt")).unwrap(), b"retained");
+
+        let status = command()
+            .arg("status")
+            .arg(&stage)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{status:?}");
+        let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(status["live"], false);
+        assert_eq!(status["state"], state);
+        assert_eq!(status["run"]["state"], state);
+        assert_eq!(status["run"]["overlay"]["state"], "staged");
+        let owner = status["run"]["pid"].as_u64().unwrap();
+        assert!(owner > 0);
+        assert!(!Path::new(&format!("/proc/{owner}")).exists());
+        let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap();
+        assert!(
+            !mounts.contains(temporary.path().to_str().unwrap()),
+            "{name}: fixture mount survived completion"
+        );
+        let review = command()
+            .arg("review")
+            .arg(&stage)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(review.status.success(), "{review:?}");
+        assert!(String::from_utf8_lossy(&review.stdout).contains("result.txt"));
+        let drop = command().arg("drop").arg(&stage).output().unwrap();
+        assert!(drop.status.success(), "{drop:?}");
+        assert!(!upper.join("result.txt").exists());
+        assert!(!workspace.join("result.txt").exists());
+        let dropped = command()
+            .arg("status")
+            .arg(&stage)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(dropped.status.success(), "{dropped:?}");
+        let dropped: serde_json::Value = serde_json::from_slice(&dropped.stdout).unwrap();
+        assert_eq!(dropped["run"]["overlay"]["state"], "discarded");
+        assert_eq!(dropped["filesystem"]["changed_files"], 0);
+        eprintln!(
+            "{name}: exit={code}, state={state}, owner={owner} gone, no fixture mounts, review/drop succeeded ({:?})",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
     if skip_if_rootless_runtime_is_explicitly_optional() {
         return;

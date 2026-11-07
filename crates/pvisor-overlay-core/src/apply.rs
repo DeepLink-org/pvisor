@@ -6567,6 +6567,296 @@ mod tests {
         }
     }
 
+    // Build a real first-touch journal and durable Prepared intent, but stop
+    // before target publication. All backing and recovery writes stay in root.
+    fn interrupted_partial_apply_fixture(root: &Path, compact: bool) -> (OverlayRecord, ApplyPlan) {
+        let target = root.join("target");
+        let upper = root.join("upper");
+        fs::create_dir(&target).unwrap();
+        for name in ["a", "b", "keep"] {
+            fs::write(target.join(name), format!("old-{name}")).unwrap();
+        }
+        let record = late_conflict_record(&target, &upper);
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper,
+            Some(record.upper.work_dir.clone()),
+            Vec::new(),
+            Some(record.stage_dir.join("preimages")),
+        )
+        .unwrap();
+        let core = if compact {
+            core.with_compact_preimages().unwrap()
+        } else {
+            core
+        };
+        for name in ["a", "b", "keep"] {
+            fs::write(
+                core.copy_up(Path::new(name)).unwrap(),
+                format!("staged-{name}"),
+            )
+            .unwrap();
+        }
+        drop(core);
+        let selection = ApplySelection {
+            paths: vec!["a".into(), "b".into()],
+            ..ApplySelection::default()
+        };
+        let plan = plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+        let preimages =
+            prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+        append_apply_record(
+            &record,
+            ApplyRecord {
+                schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                apply_id: "interrupted-partial".into(),
+                created_at_unix_ms: 0,
+                overlay_id: record.id.clone(),
+                overlay_generation: record.generation,
+                target,
+                selection,
+                changes: plan.selected.clone(),
+                planned_paths: plan.selected_paths.iter().cloned().collect(),
+                preimages,
+                state: ApplyRecordState::Prepared,
+                remaining_changes: 0,
+            },
+        )
+        .unwrap();
+        (record, plan)
+    }
+
+    #[test]
+    fn interrupted_prepared_retries_preserve_conflicts_and_unselected_candidates() {
+        for compact in [false, true] {
+            let tmp = tempdir().unwrap();
+            let (mut record, plan) = interrupted_partial_apply_fixture(tmp.path(), compact);
+            let target = record.target.clone();
+            let journal = record.stage_dir.join("preimages");
+            let ledger_path = record.stage_dir.join(APPLY_LEDGER_FILENAME);
+            let ledger_before = fs::read(&ledger_path).unwrap();
+            let preimages_before = serde_json::to_value(load_preimages(&journal).unwrap()).unwrap();
+
+            // Simulate interruption after only a was published, with Prepared
+            // still durable. A later host edit is neither baseline nor desired.
+            apply_selected_upper(
+                record.upper.path(),
+                &target,
+                &BTreeSet::from([PathBuf::from("a")]),
+            )
+            .unwrap();
+            fs::write(target.join("a"), b"later host edit").unwrap();
+            for _ in 0..2 {
+                // Exercise the lock-owned implementation, not the public entry
+                // that intentionally creates a lock in global /tmp.
+                let error =
+                    recover_pending_applies_locked(&mut record, std::slice::from_ref(&target))
+                        .unwrap_err();
+                assert!(error.to_string().contains("target changed after staging"));
+                assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
+                assert_eq!(fs::read(target.join("b")).unwrap(), b"old-b");
+                assert_eq!(fs::read(target.join("keep")).unwrap(), b"old-keep");
+                for name in ["a", "b", "keep"] {
+                    assert_eq!(
+                        fs::read(record.upper.path().join(name)).unwrap(),
+                        format!("staged-{name}").as_bytes()
+                    );
+                }
+                assert_eq!(fs::read(&ledger_path).unwrap(), ledger_before);
+                assert_eq!(
+                    serde_json::to_value(load_preimages(&journal).unwrap()).unwrap(),
+                    preimages_before
+                );
+            }
+
+            // Explicitly resolve the host conflict to the desired a. Recovery
+            // may now accept that published entry and finish b, but not keep.
+            copy_upper_entry(
+                &record.upper.path().join("a"),
+                &target.join("a"),
+                &mut HashMap::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                recover_pending_applies_locked(&mut record, std::slice::from_ref(&target)).unwrap(),
+                vec!["interrupted-partial"]
+            );
+            assert_eq!(
+                plan.selected_paths,
+                BTreeSet::from(["a".into(), "b".into()])
+            );
+            assert_eq!(fs::read(target.join("a")).unwrap(), b"staged-a");
+            assert_eq!(fs::read(target.join("b")).unwrap(), b"staged-b");
+            assert_eq!(fs::read(target.join("keep")).unwrap(), b"old-keep");
+            assert_eq!(record.state, OverlayState::Staged);
+            assert_eq!(
+                overlay_changes(&record, std::slice::from_ref(&target))
+                    .unwrap()
+                    .into_iter()
+                    .map(|change| change.relative_path())
+                    .collect::<Vec<_>>(),
+                vec![PathBuf::from("keep")]
+            );
+            assert_eq!(
+                load_preimages(&journal)
+                    .unwrap()
+                    .into_iter()
+                    .map(|preimage| preimage.relative_path())
+                    .collect::<Vec<_>>(),
+                vec![PathBuf::from("keep")]
+            );
+            let committed = fs::read(&ledger_path).unwrap();
+            assert!(
+                recover_pending_applies_locked(&mut record, &[target])
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(fs::read(&ledger_path).unwrap(), committed);
+            let ledger = load_apply_records(&record.stage_dir).unwrap();
+            assert_eq!(ledger.len(), 1);
+            assert_eq!(ledger[0].state, ApplyRecordState::Committed);
+            assert_eq!(ledger[0].remaining_changes, 1);
+        }
+    }
+
+    #[test]
+    fn interrupted_target_applied_retries_do_not_replay_or_consume_twice() {
+        for (compact, consumed_before_restart) in [false, true]
+            .into_iter()
+            .flat_map(|compact| [false, true].map(move |consumed| (compact, consumed)))
+        {
+            let tmp = tempdir().unwrap();
+            let (mut record, plan) = interrupted_partial_apply_fixture(tmp.path(), compact);
+            let target = record.target.clone();
+            let journal = record.stage_dir.join("preimages");
+            let apply = load_apply_records(&record.stage_dir).unwrap().remove(0);
+            apply_prepared_target(
+                &record,
+                &plan.selected_paths,
+                &apply.preimages,
+                &apply.changes,
+                &apply.selection,
+                false,
+                ApplyTarget {
+                    apply_id: &apply.apply_id,
+                    kind: ApplyTargetKind::Directory,
+                },
+            )
+            .unwrap();
+            mark_apply_target_applied(&record, &apply.apply_id).unwrap();
+            if consumed_before_restart {
+                complete_target_applied(
+                    &mut record,
+                    std::slice::from_ref(&target),
+                    &plan.selected_paths,
+                )
+                .unwrap();
+                consume_applied_preimages(&record, &plan.selected_paths, &apply.changes).unwrap();
+            } else {
+                // A local destination-type obstruction makes overlay metadata
+                // publication fail after pruning, before journal consumption.
+                fs::create_dir(overlay_meta_path(&record.stage_dir)).unwrap();
+            }
+            // TargetApplied must never replay even a now-conflicting host edit.
+            fs::write(target.join("a"), b"later host edit").unwrap();
+            let preimages_before = serde_json::to_value(load_preimages(&journal).unwrap()).unwrap();
+            if !consumed_before_restart {
+                let ledger_before = fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap();
+                for _ in 0..2 {
+                    let error =
+                        recover_pending_applies_locked(&mut record, std::slice::from_ref(&target))
+                            .unwrap_err();
+                    assert!(matches!(error, OverlayError::Persist(_)), "{error}");
+                    assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
+                    assert!(!record.upper.path().join("a").exists());
+                    assert!(!record.upper.path().join("b").exists());
+                    assert_eq!(
+                        fs::read(record.upper.path().join("keep")).unwrap(),
+                        b"staged-keep"
+                    );
+                    assert_eq!(
+                        serde_json::to_value(load_preimages(&journal).unwrap()).unwrap(),
+                        preimages_before
+                    );
+                    assert_eq!(
+                        fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap(),
+                        ledger_before
+                    );
+                }
+                fs::remove_dir(overlay_meta_path(&record.stage_dir)).unwrap();
+            }
+            // Simulate a fresh metadata owner, still at the pending generation.
+            let mut restarted = if consumed_before_restart {
+                load_overlay_record(&record.stage_dir).unwrap()
+            } else {
+                record.clone()
+            };
+            let log_before =
+                compact.then(|| fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap());
+            assert_eq!(
+                recover_pending_applies_locked(&mut restarted, std::slice::from_ref(&target))
+                    .unwrap(),
+                vec![apply.apply_id]
+            );
+            assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
+            assert_eq!(fs::read(target.join("b")).unwrap(), b"staged-b");
+            assert_eq!(fs::read(target.join("keep")).unwrap(), b"old-keep");
+            assert_eq!(
+                fs::read(record.upper.path().join("keep")).unwrap(),
+                b"staged-keep"
+            );
+            let remaining = load_preimages(&journal).unwrap();
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].relative_path(), Path::new("keep"));
+            if consumed_before_restart {
+                assert_eq!(serde_json::to_value(&remaining).unwrap(), preimages_before);
+                if let Some(before) = log_before {
+                    // No extra compact-log tombstone on replayed consumption.
+                    assert_eq!(
+                        fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap(),
+                        before
+                    );
+                }
+            }
+            let committed = fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap();
+            let journal_before_noop = serde_json::to_value(&remaining).unwrap();
+            let log_before_noop =
+                compact.then(|| fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap());
+            assert!(
+                recover_pending_applies_locked(&mut restarted, std::slice::from_ref(&target))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                serde_json::to_value(load_preimages(&journal).unwrap()).unwrap(),
+                journal_before_noop
+            );
+            assert_eq!(
+                fs::read(record.stage_dir.join(APPLY_LEDGER_FILENAME)).unwrap(),
+                committed
+            );
+            if let Some(before) = log_before_noop {
+                assert_eq!(
+                    fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap(),
+                    before
+                );
+            }
+            assert_eq!(
+                overlay_changes(&restarted, &[target])
+                    .unwrap()
+                    .into_iter()
+                    .map(|change| change.relative_path())
+                    .collect::<Vec<_>>(),
+                vec![PathBuf::from("keep")]
+            );
+            let ledger = load_apply_records(&record.stage_dir).unwrap();
+            assert_eq!(ledger.len(), 1);
+            assert_eq!(ledger[0].state, ApplyRecordState::Committed);
+            assert_eq!(ledger[0].remaining_changes, 1);
+            assert_eq!(restarted.state, OverlayState::Staged);
+        }
+    }
+
     #[test]
     fn apply_rejects_a_target_changed_after_first_touch() {
         let temporary = tempdir().unwrap();
