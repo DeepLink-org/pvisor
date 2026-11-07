@@ -73,6 +73,43 @@ impl Fixture {
     fn run(&self, options: &[&str]) -> Output {
         cli(self.root.path(), &self.stage, options)
     }
+    fn invoke(&self, command: &str, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .arg(command)
+            .arg(&self.stage)
+            .args(args)
+            .current_dir(self.root.path())
+            .env("HOME", self.root.path())
+            .env("PVISOR_RUN_HOME", self.root.path().join("runs"))
+            .env_remove("PVISOR_STARTUP_TIMING")
+            .env_remove("PVISOR_STARTUP_PROFILE")
+            .output()
+            .unwrap()
+    }
+    fn write_review_bundle(&self) {
+        let record = pvisor::RunRecord::read(&self.stage).unwrap();
+        let mut bundle: Value = serde_json::from_str(include_str!(
+            "../../pvisor/tests/fixtures/bundles/v1-minimal.json"
+        ))
+        .unwrap();
+        bundle["schema_version"] = json!(4);
+        bundle["run"]["run_id"] = json!(record.run_id);
+        bundle["run"]["session_id"] = json!(record.session_id);
+        bundle["run"]["execution_id"] = json!(record.execution_id);
+        bundle["agentctl"]["run_id"] = json!(record.run_id);
+        bundle["agentctl"]["execution_id"] = json!(record.execution_id);
+        bundle["executor_observations"] =
+            serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
+        bundle["safety"]["filesystem_changes_staged"] = json!(true);
+        bundle["filesystem"] = json!({
+            "state": "staged", "target": self.target, "upper": self.stage.join("upper"),
+            "changed_files": 2, "whiteouts": 0, "changes": [], "sample_paths": []
+        });
+        serde_json::from_value::<pvisor::RunBundle>(bundle)
+            .unwrap()
+            .write(&self.stage)
+            .unwrap();
+    }
     fn unchanged(&self) {
         assert_eq!(fs::read_dir(&self.target).unwrap().count(), 0);
         assert_eq!(
@@ -401,39 +438,8 @@ fn picker_inventory_is_unavailable_after_admission_failure() {
 fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     let f = Fixture::new();
     // A sealed, stopped stage exercises the CLI handoff without FUSE, KVM or a model.
-    let record = pvisor::RunRecord::read(&f.stage).unwrap();
-    let mut bundle: Value = serde_json::from_str(include_str!(
-        "../../pvisor/tests/fixtures/bundles/v1-minimal.json"
-    ))
-    .unwrap();
-    bundle["schema_version"] = json!(4);
-    bundle["run"]["run_id"] = json!(record.run_id);
-    bundle["run"]["session_id"] = json!(record.session_id);
-    bundle["run"]["execution_id"] = json!(record.execution_id);
-    bundle["agentctl"]["run_id"] = json!(record.run_id);
-    bundle["agentctl"]["execution_id"] = json!(record.execution_id);
-    bundle["executor_observations"] =
-        serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
-    bundle["safety"]["filesystem_changes_staged"] = json!(true);
-    bundle["filesystem"] = json!({
-        "state": "staged", "target": f.target, "upper": f.stage.join("upper"),
-        "changed_files": 2, "whiteouts": 0, "changes": [], "sample_paths": []
-    });
-    serde_json::from_value::<pvisor::RunBundle>(bundle)
-        .unwrap()
-        .write(&f.stage)
-        .unwrap();
-    let invoke = |command: &str, args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .arg(command)
-            .arg(&f.stage)
-            .args(args)
-            .current_dir(f.root.path())
-            .env("HOME", f.root.path())
-            .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
-            .output()
-            .unwrap()
-    };
+    f.write_review_bundle();
+    let invoke = |command: &str, args: &[&str]| f.invoke(command, args);
 
     let review = invoke("review", &["--diff"]);
     assert!(review.status.success(), "{review:?}");
@@ -475,6 +481,141 @@ fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     );
     assert_eq!(review["filesystem"]["state"], "discarded");
     assert_eq!(review["run"]["state"], "completed");
+}
+
+#[test]
+fn truncated_run_record_refuses_review_apply_and_drop_until_bytes_are_restored() {
+    for prefix in [0, 1, 32] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        let path = f.stage.join("run.json");
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, &original[..prefix]).unwrap();
+        assert!(format!("{:#}", pvisor::RunRecord::read(&f.stage).unwrap_err()).contains("EOF"));
+        let before = tree_snapshot(f.root.path());
+        for (command, args) in [
+            ("review", vec!["--json"]),
+            ("apply", vec!["--all", "--dry-run", "--json"]),
+            ("apply", vec!["--all", "--json"]),
+            ("drop", vec![]),
+        ] {
+            let output = f.invoke(command, &args);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{prefix}, {command}: {output:?}"
+            );
+            // This fixture also has a discovery index. A corrupt indexed record
+            // is omitted by legacy discovery, which reports no readable Runs
+            // rather than exposing the underlying serde error.
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains(&format!("no pVisor Runs found under {}", f.stage.display())),
+                "{prefix}, {command}: {output:?}"
+            );
+            assert_eq!(tree_snapshot(f.root.path()), before, "{prefix}, {command}");
+        }
+        f.unchanged();
+
+        // This is restoration of known-good metadata, not implicit crash recovery.
+        fs::write(&path, original).unwrap();
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["changes"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            object(&f.run(&["--path", "keep.txt", "--json"]), 0)["status"],
+            "applied"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+    }
+}
+
+#[test]
+fn truncated_committed_ledger_blocks_mutation_and_preserves_accepted_files() {
+    for prefix in [0, 1, 32] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        assert_eq!(
+            object(&f.run(&["--path", "keep.txt", "--json"]), 0)["status"],
+            "applied"
+        );
+        let path = f.stage.join("apply-ledger.json");
+        let original = fs::read(&path).unwrap();
+        let records = pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].state,
+            pvisor_core::overlay::ApplyRecordState::Committed
+        );
+        fs::write(&path, &original[..prefix]).unwrap();
+        let target_before = tree_snapshot(&f.target);
+        let upper_before = tree_snapshot(&f.stage.join("upper"));
+        let run_before = fs::read(f.stage.join("run.json")).unwrap();
+
+        // Review inspects the upper and historical bundle, not ledger validity.
+        // A readable inventory is not admission to write or discard anything.
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(review["filesystem"]["changes"][0]["path"], "skip.txt");
+        for dry_run in [true, false, false] {
+            let mut options = vec!["--all", "--json"];
+            if dry_run {
+                options.push("--dry-run");
+            }
+            let value = object(&f.run(&options), 3);
+            assert_eq!(value["status"], "blocked");
+            assert!(value["execution"].is_null());
+            assert!(value["picker"].is_null());
+            assert!(
+                value["blockers"].as_array().unwrap().iter().any(|blocker| {
+                    blocker.as_str().is_some_and(|text| {
+                        text.contains("apply-ledger.json") && text.contains("EOF")
+                    })
+                }),
+                "{prefix}: {value}"
+            );
+            assert_eq!(tree_snapshot(&f.target), target_before);
+            assert_eq!(tree_snapshot(&f.stage.join("upper")), upper_before);
+            assert_eq!(fs::read(&path).unwrap(), original[..prefix]);
+            assert_eq!(fs::read(f.stage.join("run.json")).unwrap(), run_before);
+        }
+        let dropped = f.invoke("drop", &[]);
+        assert_eq!(dropped.status.code(), Some(1), "{dropped:?}");
+        let error = String::from_utf8_lossy(&dropped.stderr);
+        assert!(
+            error.contains("apply-ledger.json") && error.contains("EOF"),
+            "{dropped:?}"
+        );
+        assert_eq!(tree_snapshot(&f.target), target_before);
+        assert_eq!(tree_snapshot(&f.stage.join("upper")), upper_before);
+        assert_eq!(fs::read(&path).unwrap(), original[..prefix]);
+        assert_eq!(fs::read(f.stage.join("run.json")).unwrap(), run_before);
+
+        fs::write(&path, original).unwrap();
+        assert_eq!(
+            object(&f.run(&["--all", "--dry-run", "--json"]), 0)["status"],
+            "ready"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(tree_snapshot(&f.target), target_before);
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        assert_eq!(
+            pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap(),
+            records
+        );
+        let review = object(&f.invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["state"], "discarded");
+        assert!(
+            review["filesystem"]["changes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]

@@ -74,3 +74,37 @@ not establish that an end-to-end VM/FUSE workflow works.
   368,761,122,816 / 368,207,310,848 bytes. Swap remained almost full.
 - Not covered: real VM/FUSE startup, interrupted processes, truncated metadata,
   other platforms, full-package tests, and Python suite.
+
+### 002 — Truncated stage metadata
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOAA84HJIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: simulate interrupted metadata writes inside small stage fixtures.
+  Check explicit failure, preservation of staged/accepted files, absence of
+  unintended target writes, and recovery after restoring valid metadata,
+  according to the existing contracts.
+- Worker execution: 00:50:41–00:54:46 UTC (about 4 minutes).
+- Added two tests in `crates/pvisor-cli/tests/apply_cli.rs`, injecting
+  0-, 1-, and 32-byte prefixes of `run.json` and the committed apply ledger.
+  Truncated run records block review/apply/drop without fixture changes.
+  Truncated ledgers allow read-only review but block apply/drop, preserving
+  accepted files, staged candidates, and metadata. Restoring known-good
+  bytes permits normal operation; no automatic corruption recovery is claimed.
+- Worker final validation: the same targeted mise command as round 001
+  passed 18/18, zero skipped, in 21 seconds. Its first run passed 17/18:
+  the new test incorrectly expected a direct EOF diagnostic rather than
+  the existing discovery error for an unreadable indexed record. Only the
+  new expectation was corrected; existing checks were not weakened.
+- Diagnostic limitation observed: CLI discovery reports no readable Runs
+  rather than the underlying corrupt run-record error.
+- Coordinator independently reran `mise run test -- pvisor-cli -- --test
+  apply_cli --no-fail-fast` with the same constrained environment and a
+  180-second timeout. All 18 tests passed, zero skipped; compilation took
+  16.65 seconds and execution 1.028 seconds. Nextest ID:
+  `1334b165-335f-4266-a8ea-d39d9a342b1e`. `git diff --check` passed.
+- Coordinator resource readings before/after: available memory
+  21,023,788 / 20,897,952 KiB; load1 2.16 / 1.92; free disk
+  367,449,432,064 / 367,423,479,808 bytes. Swap remained almost full.
+- Not covered: power loss/fsync faults, intermediate apply transaction
+  states, real VM/FUSE, other platforms, full-package/Python/semspec suites.
