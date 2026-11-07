@@ -2194,6 +2194,124 @@ async fn cancelling_an_accepted_public_create_does_not_cancel_disk_or_native_wor
     assert_eq!(runtime.state.lock().unwrap().creates, 1);
 }
 
+#[tokio::test]
+async fn cancelled_pending_create_retains_then_recovers_exact_capacity_across_owner_drops() {
+    for (cpu, memory, slots) in [
+        (1000, 128 * MIB, 2),
+        (2000, 64 * MIB, 2),
+        (2000, 128 * MIB, 1),
+    ] {
+        for (owner_first, uncertain) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(FakeRuntime::default());
+            if uncertain {
+                runtime.state.lock().unwrap().create_failure = Some(true);
+            }
+            let mut cfg = config(&directory);
+            cfg.cpu_millis = cpu;
+            cfg.memory_bytes = memory;
+            cfg.max_sandboxes = slots;
+            let owner = open_unreconciled(cfg, &runtime).await;
+            bounded(async {
+                while !owner.reconciled.load(std::sync::atomic::Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            let survivor = owner.clone();
+            let (entered, receiver) = oneshot::channel();
+            let (release, release_receiver) = oneshot::channel();
+            *runtime.create_gate.lock().unwrap() = Some(NativeCreateGate {
+                entered,
+                release: release_receiver,
+            });
+            let caller = {
+                let owner = owner.clone();
+                tokio::spawn(async move { owner.create(request()).await })
+            };
+            // Runtime entry proves admission committed, but no runtime object exists yet.
+            bounded(receiver).await.unwrap();
+            let pending = bounded(survivor.list()).await.unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].status.state, "Pending");
+            let id = &pending[0].id;
+            if owner_first {
+                drop(owner);
+                caller.abort();
+                assert!(bounded(caller).await.unwrap_err().is_cancelled());
+            } else {
+                caller.abort();
+                assert!(bounded(caller).await.unwrap_err().is_cancelled());
+                drop(owner);
+            }
+            let rejected = bounded(survivor.create(request())).await.unwrap_err();
+            assert_eq!(
+                (rejected.status, rejected.code.as_str()),
+                (429, "CAPACITY_EXCEEDED")
+            );
+            assert_eq!(runtime.state.lock().unwrap().creates, 0);
+            let operation = bounded(survivor.operation(id)).await.unwrap();
+            assert!(operation.try_write().is_err());
+            release.send(()).unwrap();
+            // The lifecycle gate, rather than a delay, acknowledges owned completion.
+            drop(bounded(operation.write()).await);
+            assert_eq!(
+                bounded(survivor.list()).await.unwrap()[0].status.state,
+                if uncertain { "Failed" } else { "Running" }
+            );
+            drop(operation);
+            if uncertain {
+                // Missing on reconciliation alone does not confirm failed-create cleanup.
+                assert_eq!(
+                    bounded(survivor.get(id)).await.unwrap().status.state,
+                    "Failed"
+                );
+                for _ in 0..2 {
+                    runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Error;
+                    let error = bounded(survivor.delete(id)).await.unwrap_err();
+                    assert_eq!(
+                        (error.status, error.code.as_str()),
+                        (503, "RUNTIME_UNAVAILABLE")
+                    );
+                    assert_eq!(
+                        bounded(survivor.get(id)).await.unwrap().status.state,
+                        "Stopping"
+                    );
+                    let rejected = bounded(survivor.create(request())).await.unwrap_err();
+                    assert_eq!(
+                        (rejected.status, rejected.code.as_str()),
+                        (429, "CAPACITY_EXCEEDED")
+                    );
+                    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+                }
+                let mut state = runtime.state.lock().unwrap();
+                state.create_failure = None;
+                state.delete_outcome = DeleteOutcome::Confirmed;
+            }
+            bounded(survivor.delete(id)).await.unwrap();
+            assert!(bounded(survivor.list()).await.unwrap().is_empty());
+            let replacement = bounded(create(&survivor)).await;
+            // A stale delete must neither release the replacement nor add quota.
+            assert_eq!(bounded(survivor.delete(id)).await.unwrap_err().status, 404);
+            let rejected = bounded(survivor.create(request())).await.unwrap_err();
+            assert_eq!(
+                (rejected.status, rejected.code.as_str()),
+                (429, "CAPACITY_EXCEEDED")
+            );
+            assert_eq!(bounded(survivor.list()).await.unwrap().len(), 1);
+            bounded(survivor.delete(&replacement.id)).await.unwrap();
+            assert!(bounded(survivor.list()).await.unwrap().is_empty());
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(
+                (state.creates, state.deletes),
+                (2, if uncertain { 4 } else { 2 })
+            );
+            assert!(state.sandboxes.is_empty());
+        }
+    }
+}
+
 async fn occupied_v1(directory: &TempDir) -> (String, BTreeMap<std::path::PathBuf, Vec<u8>>) {
     let runtime = Arc::new(FakeRuntime::default());
     let daemon = open(config(directory), &runtime).await;

@@ -751,3 +751,75 @@ Round 048 scope corrected before execution: Core has no lease/admission ledger.
 Worker reported this without running tests; parent authorized owning
 `pvisor-daemon` in-memory admission/cancellation tests instead. Do not interpret
 Core contracts as resource-accounting coverage.
+
+Result after scope correction: no product defect reproduced. New focused daemon
+test covers independent CPU/memory/slot saturation crossed with original-owner
+drop before/after caller abort (six scenarios). Native-entry oneshot establishes
+durable Pending admission before completion. Cancellation correctly retains
+capacity; confirmed deletion restores exactly one admission, stale delete cannot
+release replacement. No sleeps, service listener, VM, subprocess or mount.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 16:50:29–16:51:34: three selected daemon tests passed, 132 skipped.
+- 16:52:19–16:52:39: new test stress-count3 passed all repetitions.
+- 24 new scenario instances total; 48 successful admissions, capacity rejections
+  and confirmed deletions each, 24 stale-delete rejections.
+- Targeted library/tests Clippy warnings denied, rustfmt and diff passed.
+- MemAvailable 22,894,592–23,455,180 KiB; load1 0.50–2.14;
+  disk free 361,647,357,952–362,082,021,376 bytes. Fixtures removed.
+- No full daemon/workspace/Python, native runtime, cgroup, network, other-platform
+  or parent-integrated-tree validation in this worker.
+
+Parent inspected and merged focused test/README. Next worker will include its
+integrated validation before a separate uncertain-create scenario.
+
+### 049 — Daemon uncertain-create cancellation
+
+Assigned after round 048 workloads ended. Explore caller cancellation combined
+with runtime creation failure and uncertain cleanup, keeping quota fenced until
+confirmed release, without live runtime/network services.
+
+Result: no production defect reproduced. Extended the same inherited test with
+35 net lines, not a duplicate. Twelve cases now cover CPU/memory/slots × two
+owner/caller drop orders × successful/uncertain failed creation. Aborted caller
+does not release quota. Failed creation plus Missing reconciliation keeps
+reservation; two cleanup failures retain Stopping and 429 admission without a
+second runtime create. Confirmed cleanup admits one replacement; stale deletion
+cannot release it. Final counters 2 creates / 4 deletes in uncertain variants.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 16:54:51–16:55:55: inherited integrated048 test passed first.
+- 16:56:40–16:57:00: six selected daemon cancellation/uncertainty tests passed,
+  129 skipped.
+- Package lib/tests warnings-denied Clippy, package fmt/diff passed.
+- Minimum MemAvailable 22,869,300 KiB, maximum load1 2.53,
+  minimum free disk 352,203,872 KiB. Local FakeRuntime only.
+- No full package/native runtime; startup restart not combined with new matrix.
+
+Parent inspected incremental matrix extension and merged it cleanly. Fresh
+worker will run integrated full daemon suite before publication.
+
+### 050 — Daemon control acknowledgement loss
+
+Assigned after round 049 workloads ended. First full daemon integrated validation,
+then bounded pause/resume acknowledgement/caller-cancellation and quota/intention
+reconciliation ordering, reusing coverage where already sufficient.
+
+Initial integrated full daemon run 16:58:39–17:00:05 UTC failed: 83 passed,
+1 failed, 4 skipped, 99 not run under fail-fast. The inherited checkout path plus
+campaign TMPDIR made a native Unix socket pathname exceed SUN_LEN in
+downloads_honor_byte_ranges_across_guest_frames. Not attributed to a product
+reliability defect; worker will retry once with shortest unique worktree-local
+TMPDIR, retaining the failed run as evidence. Pre/post available memory
+23,440,164/23,665,324 KiB, load1 1.46/2.27, disk free
+360,292,823,040/359,707,897,856 bytes; gates passed.
+
+Integrated rerun 17:00:50–17:01:51 UTC: exact `mise run test -- pvisor-daemon`
+passed 183, skipped 4 across six binaries (36.168 s nextest). Only campaign setup
+changed: unique short worktree-local `.t050` TMPDIR, representative socket bind
+checked at 95-byte path first. No code changes for path limitation.
+Pre/post MemAvailable 23,749,040/23,741,484 KiB, load1 1.56/2.68,
+free disk 359,695,151,104/359,769,837,568 bytes; gates passed. This validates
+final integrated rounds 048/049; initial failed run remains disclosed.

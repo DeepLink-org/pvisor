@@ -1259,6 +1259,12 @@ records, background startup with a slow supervisor, control-body deadlines and
 shared capacity, and proxy-gate timeout/permit release. Fake runtime tests are not evidence of native isolation, resource density or full SDK
 compatibility.
 
+The fake-runtime cancellation regression gates creation after durable Pending
+admission and before runtime completion. It checks both caller/original-owner
+drop orders with CPU, memory and slot capacity independently saturated: cancellation
+retains the reservation, confirmed deletion permits exactly one replacement, and a
+stale delete cannot release that replacement. No service or VM is started.
+
 Run targeted checks with:
 
 ```sh
