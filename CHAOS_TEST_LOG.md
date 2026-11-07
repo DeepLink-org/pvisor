@@ -177,3 +177,34 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: slow responses/inactivity timeout, TLS, downstream cancellation,
   no-lifecycle mode, whole-crate/Python suites, other platforms, or exhaustive
   task-leak detection. These are real TCP EOFs, not process-crash tests.
+
+### 005 — Downstream cancellation isolation
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOAA_PYZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: choose a currently uncovered downstream cancellation boundary,
+  using real local sockets and deterministic handshakes; verify release and
+  terminal-event behavior plus a healthy subsequent request before shutdown.
+- Worker execution: 01:08:21–01:12:21 UTC (about four minutes).
+- Added a three-mode matrix (no, single, repeated lifecycle) in
+  `model_wait_http.rs`: client receives valid protocol terminal content,
+  but disconnects before supplier HTTP EOF. Deterministic handshakes verify
+  supplier body release within five seconds, one causal cancellation,
+  precise received-byte count, and same-story healthy recovery before
+  shutdown. Fixture capture notifications replace any need to poll.
+- Worker final test passed; its initial compile failed due to a new test's
+  `Option<String>` comparison, corrected without production changes.
+  Targeted rustfmt and diff checks passed.
+- Because the common fixture changed, coordinator ran the entire integration
+  binary: `mise run test -- pvisor-gateway -- --test model_wait_http
+  --no-fail-fast`. All 23 tests passed, zero skipped, including rounds 004
+  and 005. Build 1.20 seconds; tests 1.766 seconds. Nextest ID:
+  `0632835b-e7c9-4a09-8825-24ca15210f6c`. Offline Cargo, constrained
+  parallelism, nice and 180-second timeout used; diff check passed.
+- Coordinator available memory before/after: 20,869,868 / 20,601,292 KiB;
+  load1 0.95 / 0.96; free disk unchanged at 364,894,683,136 bytes.
+- Not covered: HTTP/2, TCP half-close, provider-side compute/billing
+  cancellation, VM/native reclaim, other integration binaries/platforms,
+  workspace or Python suites. Body-owner release is not proof that a real
+  remote supplier stops computing.

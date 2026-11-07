@@ -130,6 +130,7 @@ type SupplierReceiver =
 
 struct Fixture {
     captured: Arc<std::sync::Mutex<Vec<pvisor_core::event::Event>>>,
+    capture_changed: Arc<Notify>,
     proxy: Option<InProcessCapture>,
     upstream: tokio::task::JoinHandle<()>,
     upstream_body: SupplierReceiver,
@@ -268,6 +269,8 @@ impl Fixture {
         let admission = Arc::new(admission);
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed = captured.clone();
+        let capture_changed = Arc::new(Notify::new());
+        let changed = capture_changed.clone();
         let proxy = InProcessCapture::start_with_runtime(
             config,
             storage.path().to_owned(),
@@ -276,6 +279,7 @@ impl Fixture {
                     gate.observe(event)?;
                 }
                 observed.lock().unwrap().push(event.clone());
+                changed.notify_one();
                 Ok(())
             })),
             InProcessRuntime {
@@ -289,6 +293,7 @@ impl Fixture {
         .unwrap();
         Self {
             captured,
+            capture_changed,
             proxy: Some(proxy),
             upstream,
             upstream_body,
@@ -969,6 +974,201 @@ async fn receive_first(response: &mut reqwest::Response) {
     .await
     .unwrap();
     assert_eq!(prefix, FIRST.as_bytes());
+}
+
+#[tokio::test]
+async fn disconnect_after_protocol_terminal_before_http_eof_allows_same_story_recovery() {
+    use pvisor_gateway::record::CaptureRecord;
+
+    for (install, repeat) in [(false, false), (true, false), (true, true)] {
+        let mut fixture = Fixture::new(
+            true,
+            StatusCode::OK,
+            Admission {
+                repeat_batches: repeat,
+                stream_buffer: Some(ModelStreamBuffer {
+                    max_bytes: 1,
+                    // Only byte/EOF handshakes should end batches in this test.
+                    max_wait: Duration::from_secs(30),
+                }),
+                ..Default::default()
+            },
+            install,
+        )
+        .await;
+        fixture.admission.enter_gate.add_permits(2);
+        fixture.admission.resume_gate.add_permits(8);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(LIMIT)
+            .build()
+            .unwrap();
+        let address = fixture.proxy.as_ref().unwrap().listen.clone();
+        let request = || {
+            client
+                .post(format!("http://{address}/v1/chat/completions"))
+                .header("x-pvisor-session-id", "terminal-disconnect")
+                .json(&serde_json::json!({
+                    "model":"test-model", "stream":true,
+                    "messages":[{"role":"user","content":"hello"}]
+                }))
+        };
+        let pending = request();
+        let pending = tokio::spawn(async move { pending.send().await.unwrap() });
+        fixture.upstream_received().await;
+        if install {
+            notified(&fixture.admission.buffering).await;
+        }
+        tokio::time::timeout(LIMIT, fixture.chunk(FIRST))
+            .await
+            .unwrap();
+        let mut response = tokio::time::timeout(LIMIT, pending).await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        receive_first(&mut response).await;
+        if repeat {
+            notified(&fixture.admission.drained).await;
+            notified(&fixture.admission.buffering).await;
+        }
+        tokio::time::timeout(LIMIT, fixture.chunk(LAST))
+            .await
+            .unwrap();
+        let terminal = tokio::time::timeout(LIMIT, async {
+            let mut bytes = Vec::new();
+            while bytes.len() < LAST.len() {
+                bytes.extend(response.chunk().await.unwrap().unwrap());
+                assert!(bytes.len() <= LAST.len());
+            }
+            bytes
+        })
+        .await
+        .unwrap();
+        assert_eq!(terminal, LAST.as_bytes());
+        if repeat {
+            notified(&fixture.admission.drained).await;
+            // Confirm the next supplier read is active after the terminal batch,
+            // not merely that its output was enqueued.
+            notified(&fixture.admission.buffering).await;
+        }
+        assert!(!fixture.body.is_closed());
+        assert!(
+            !fixture
+                .captured
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.name() == "llm.response.stream")
+        );
+        // The supplier remains open after valid finish_reason + [DONE].
+        // Only the actual downstream connection drop may release this body.
+        drop(response);
+        tokio::time::timeout(LIMIT, fixture.body.closed())
+            .await
+            .unwrap();
+        if repeat {
+            notified(&fixture.admission.cancelled).await;
+        }
+        assert_eq!(
+            fixture.admission.cancellations.load(Ordering::SeqCst),
+            usize::from(repeat)
+        );
+        assert_eq!(
+            fixture.admission.resumes.load(Ordering::SeqCst),
+            usize::from(install && !repeat)
+        );
+
+        // Reuse the same Gateway and explicit story before any shutdown/flush.
+        tokio::time::timeout(LIMIT, fixture.next_reply())
+            .await
+            .unwrap();
+        let healthy = request();
+        let healthy = tokio::spawn(async move { healthy.send().await.unwrap() });
+        fixture.upstream_received().await;
+        tokio::time::timeout(LIMIT, fixture.chunk(FIRST))
+            .await
+            .unwrap();
+        tokio::time::timeout(LIMIT, fixture.chunk(LAST))
+            .await
+            .unwrap();
+        fixture.finish_body();
+        let healthy = tokio::time::timeout(LIMIT, healthy).await.unwrap().unwrap();
+        assert_eq!(healthy.status(), StatusCode::OK);
+        assert_eq!(
+            tokio::time::timeout(LIMIT, healthy.text())
+                .await
+                .unwrap()
+                .unwrap(),
+            format!("{FIRST}{LAST}")
+        );
+        tokio::time::timeout(LIMIT, async {
+            loop {
+                let changed = fixture.capture_changed.notified();
+                if fixture.captured.lock().unwrap().len() >= 4 {
+                    break;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap();
+        // Capture also reaches both unique terminals while Gateway is live.
+        {
+            let events = fixture.captured.lock().unwrap();
+            assert_eq!(
+                events.iter().map(|event| event.name()).collect::<Vec<_>>(),
+                [
+                    "llm.request",
+                    "llm.call.cancelled",
+                    "llm.request",
+                    "llm.response.stream"
+                ],
+                "install={install}, repeat={repeat}"
+            );
+            for (request, terminal) in [(0, 1), (2, 3)] {
+                assert_eq!(events[terminal].caused_by, vec![events[request].id.clone()]);
+            }
+            let cancelled = CaptureRecord::from_event(&events[1], 0).unwrap();
+            assert_eq!(cancelled.session_id.as_deref(), Some("terminal-disconnect"));
+            assert_eq!(cancelled.payload["reason"], "client_disconnected");
+            assert_eq!(
+                cancelled.payload["bytes_received"],
+                FIRST.len() + LAST.len()
+            );
+            let completed = CaptureRecord::from_event(&events[3], 0).unwrap();
+            assert_eq!(completed.session_id, cancelled.session_id);
+        }
+        assert_eq!(
+            fixture.admission.entries.load(Ordering::SeqCst),
+            2 * usize::from(install)
+        );
+        assert_eq!(
+            fixture.admission.resumes.load(Ordering::SeqCst),
+            usize::from(install) * if repeat { 1 } else { 2 }
+        );
+        assert_eq!(
+            fixture.admission.cancellations.load(Ordering::SeqCst),
+            usize::from(repeat)
+        );
+        let proxy = fixture.proxy.take().unwrap();
+        tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || proxy.shutdown()))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // Draining must not add a second terminal or re-cancel a retired guard.
+        assert_eq!(fixture.captured.lock().unwrap().len(), 4);
+        assert_eq!(
+            fixture.admission.cancellations.load(Ordering::SeqCst),
+            usize::from(repeat)
+        );
+        fixture.upstream.abort();
+        assert!(
+            tokio::time::timeout(LIMIT, &mut fixture.upstream)
+                .await
+                .unwrap()
+                .unwrap_err()
+                .is_cancelled()
+        );
+    }
 }
 
 #[tokio::test]
