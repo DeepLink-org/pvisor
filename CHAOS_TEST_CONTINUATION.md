@@ -1044,3 +1044,151 @@ Completed machine artifacts stay ignored/childlocal, not campaign deliverables.
 At17:42:07 UTC all33 CI checks for published revision`0cc99847` were successful.
 Rounds054–056 add no code changes; their workflow evidence remains separate
 from those CI checks and from pending readiness045 semantics.
+
+Round057 result: no defect, two real serial safe Host Sessions at17:43:51–17:43:52
+UTC. Staged rename plus intervening original-source edit, and staged deletion
+plus host replacement by nonempty directory. Each whole-selection preview and
+execution blocked/exit3 without publishing unrelated path or apply ledger.
+Selective nonconflicting keep-file accept succeeded; conflicting rename/deletion
+stayed staged until drop, preserving host edit/directory. Completed exit0 receipts
+validated before acceptance; preview kept exact bytes/types/modes/identities/mtimes.
+
+22CLI commands18exit0/fourexpected3. Both stages discarded/empty, owners/fixture
+processes/mounts/sockets gone. Two selected native apply CLI regressions passed
+17:44:13–17:44:36 UTC,19filtered; diff check passed. Minimum MemAvailable
+24,288,653,312 bytes, maximum load1 1.232, minimum diskfree354,013,859,840 bytes,
+all gates passed. Evidence moved only after live references closed into ignored
+target/chaos054-evidence; no source changes. Not concurrent writers, interruption,
+VM/OCI/other-platform/fullsuite or multi-file transaction proof.
+
+### 058 — Real hardlink selective acceptance
+
+Assigned same worker after057. Derive documented host-hardlink and staged alias/
+metadata behavior, then validate selective acceptance, unrelated candidate
+retention and host identity/content preservation without duplicate fixtures.
+
+Result: no defect, three real serial Host Sessions at17:50:17–17:50:18 UTC.
+Controlled --safe --clear-access fixture is necessary: default safe deny rules
+reject multiply-linked files. Enforcement/staging stay installed; not default-
+preset hardlink coverage. Staged new alias plus mode0600→0640 requires copied-up
+source; excluding dependency blocks3. Normal preview inert; apply publishes those
+two as same hardlink group while uncopied host alias retains original inode/mode.
+In second variant an intervening host-alias chmod0660 blocks group application3
+without ledger or candidate loss. Unrelated candidate accepts, group/scratch drop,
+host chmod preserved. Healthy successor verifies topology/contents then applies.
+
+24CLI commands22exit0/twoblocked3, all receipts completed0 before acceptance.
+Final accepted pair nlink2/mode0640 separate from original alias nlink1/mode0600;
+conflicting pair original inode/nlink2/mode0660, unaccepted alias absent.
+Owners/fixtureprocesses/mounts/sockets gone, stages discarded/discarded/applied.
+One selected native hardlink CLI regression passed by17:50:48 UTC; diff passed.
+Minimum memory24,195,362,816 bytes, maxload1 1.032, mindisk353,937,096,704 bytes,
+all gates passed. No tracked changes, ignored childlocal evidence only.
+No concurrentwriter/crossfilesystem/ACL-xattr/otherplatform/fullsuite coverage.
+
+### 059 — Directory metadata versus child acceptance
+
+Assigned same worker after058. Explore existing-directory chmod/child edit
+selection, independent metadata retention and drop preservation; compare required
+new-directory dependency only where documented.
+
+Result: no defect, two real default-safe Host Sessions at17:53:57–17:53:58 UTC.
+Existing directory staged chmod0700→0750 plus child edit selects child only, with
+no required parent; apply preserves original parent inode/mode0700 and retains
+independent0750 candidate. New/deep child requires exactly both new ancestors,
+and applies their0751/0753 modes. Dropping remaining metadata/scratch preserves
+accepted children/new directories and original existing-parent mode. Healthy
+successor confirms final states, then applies health file. Receipts completed0.
+
+16CLI commands all0, previews inert, stages discarded/applied/empty, owners/
+fixtureprocesses/mounts/sockets gone. Two native overlay-core directory selection
+tests passed by17:54:17 UTC,177filtered. Minimum memory24,096,055,296 bytes,
+maxload1 1.045, mindisk354,072,793,088 bytes; gates/diff passed.
+No source changes; ignored evidence only. No ownership/xattrs/explicittimestamp/
+betweenpreview-parentedit/interruption/otherplatform/fullsuite coverage.
+
+### 060 — Tiny real Host file-size limit failure
+
+Assigned same worker after059. Validate documented child-only file limit and
+failure classification, retained earlier candidates/partial file semantics,
+selective acceptance and healthy successor without machine pressure.
+
+Result: no defect/docs discrepancy. Three variants/four real starts. Both
+--max-file-size1KiB runs install soft/hard1024, write4096 returns1024, nextbyte
+either caughtEFBIG27 then deliberateexit7 or defaultSIGXFSZ25/CLI153. Receipts
+failed/process_exit/7 or153 correctly, earlier keep candidates selectively
+accepted, scratch/exact1024byte partial retained then dropped. Requested/effective
+1024 and posix-rlimit mechanism reported. Guest-only core disabled for signalcase.
+Healthy no-override writes2048/completed0, accepts keep and drops2KiB file.
+
+Initial healthy attempt failed an incorrect harness comparison: outerPython uses
+RLIM_INFINITY=-1, guest uses18446744073709551615 equal to its own infinity constant.
+No leaked cap. Emptyfailed1 stage confirmed/dropped; corrected retry succeeds.
+Finishing-harness escaping error corrected without extra workload. Allfour stages
+discarded/empty, hostunchanged preapply/previewsinert, outer limits unchanged.
+
+Limited runs17:57:45 UTC, healthyretry17:59:50;27CLI commands24zero,oneeach7/153/
+recordedharness1. CLI resource-mapping native test1passed/148filtered by18:01:01,
+distinct from actual enforcement evidence. Gates: minmemory24,024,485,888 bytes,
+maxload0.795,mindisk353,984,143,360 bytes. Owners/fixtureprocesses/mounts/sockets
+gone, ignored evidence only, diffpassed. No otherdimensions/platforms/filesystems/
+aggregate-stagebudget/fullsuite coverage.
+
+### 061 — Workload-only descriptor exhaustion recovery
+
+Assigned same worker after060. Tiny fixed per-child fd cap and bounded EMFILE,
+close owned descriptors, successful same-Session staging, selective acceptance
+and healthy successor; no host-wide limits or fd pressure.
+
+Result: no defect/harness correction. Two real default-safe Host Sessions at
+18:04:19–18:04:20 UTC. Documented --max-open-files64 reports requested/effective
+64/64/posix-rlimit. Guest baseline0,1,2; reservefd3,60moreopens,61stloopEMFILE24
+at64occupied. Release reserve, stagedwrite/fsync succeeds, close61ownedfds restores
+baseline, reopen/append/fsync succeeds. Handled error yields completed0, not
+fabricated resource failure. Earlier and recovered candidates selected/applied,
+scratch retained then dropped. Original host unchanged preapply, previews inert.
+Healthy successor limit524288 matches unchangedharness, not64; healthfileaccepts.
+
+14CLIcommands all0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+Native requestedopenfilelimit test1passed/765filtered by18:04:47 UTC; diffpassed.
+Minmemory24,360,284,160bytes,maxload1.284,mindisk353,961,414,656bytes,gatespassed.
+No source changes, ignored evidence only. Not unusual inheritedfds/concurrent
+allocation/otherplatform/fullsuite coverage.
+
+### 062 — Tiny aggregate stage-size budget
+
+Assigned same worker after061. Derive actual stage-cap accounting/reclamation,
+then bounded individually small writes, cap failure and supported recovery,
+distinct from per-file rlimit without disk filling.
+
+Confirmed advertised-limit mismatch, unresolved pending user direction. At
+18:09:56–18:09:58 UTC three real default-safe FUSE Host stages:
+
+- Cap4KiB allows two full3072byte writes/peakpayload6161. Ordinary unlink/truncate
+  and512byte retry succeed, finalpayload1553. CLI postcheck exits1 reporting101336
+  retained-storage bytes, while committed receipt/status remain completed0.
+- Cap4KiB plus workloadexit7 retains6160payload/101330storage bytes, returns7 and
+  failed/process_exit/7, without size diagnostic because only success is checked.
+- Fresh uncapped samewrites payload6161/storage100598, CLI/receipt completed0.
+
+Accounting sums current regular-file lengths across retained stage records/
+journals, not live payload quota, allocated blocks or high-water budget. No
+partial writes/quota errors, no quota-reclamation claim from ordinary unlink.
+Selective keep-file accept/drop preserves host, receipts checked before acceptance,
+all stages discarded/empty, owners/processes/mounts/sockets gone.
+
+24CLI commands22zero/onepostcheck1/oneworkload7. Existing mapping test1passed
+148filtered by18:11:08 UTC proves parsing only, not enforcement. Gates:
+minmemory24,407,048,192 bytes,maxload0.702,mindisk353,952,768,000 bytes.
+No code/help/docs/semspec changes; ignored evidence only.
+
+Parent asked user to choose accurate posthoc diagnostic versus designed live
+budget (early rejection is also a compatibility option). No silent contract
+weakening or immutable receipt rewrite. Readiness045 and limit062 decisions
+remain pending; other independent testing continues.
+
+### 063 — Real literal path handling
+
+Assigned same worker after062. Inspect documented selection semantics then tiny
+space/Unicode/leading-dash/newline filenames with exact argv/JSON, selective
+acceptance and similarly named candidate isolation; no shell interpolation.
