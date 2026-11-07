@@ -197,3 +197,42 @@ macOS, VM, concurrent execution, Python and workspace suites were not run.
 Assigned after round 035 workloads finished. Explore a safe bounded backing-I/O
 failure and resource/error recovery, without public test-only APIs or host-wide
 fault injection. Distinguish actual server faults from client-side rejection.
+
+Result: no defect found. Used an existing private per-filesystem copy-loop seam
+on real Linux FUSE. After a successful staged write, rename/unlink and retained
+reader/writer/dup ownership, injected ENOSPC before copying or after three actual
+backing bytes. Zero progress returns ENOSPC; partial progress returns three and
+advances both offsets consistently. Readers observe the changed prefix. Sync,
+checked close and recovery via dup succeed, preserving replacement and lower.
+Reopening each stage through public API without injection allows full copy/sync.
+
+This is a synthetic server-loop failure, not physical disk exhaustion, a backing
+syscall returning ENOSPC, delayed writeback, or failing fsync/close coverage.
+
+Final worker checks, UTC 2026-11-07, standard nice/timeout/resource limits:
+
+- 15:02:15–15:02:23: `mise run test -- pvisor-overlayfs`,
+  73 passed, 13 skipped.
+- 15:02:37–15:02:38:
+  `mise run test -- pvisor-overlayfs -- --lib --run-ignored ignored-only --no-capture -E 'test(backing_copy_fault_detached_close_recovery_036)'`,
+  1 passed, two fault cases.
+- 15:02:38–15:02:39: explicitly reran mounted 007/011 traces, both passed
+  (24/21 operations).
+- `mise run lint-rust -- -p pvisor-overlayfs`, package fmt and diff checks passed.
+- Initial test-only owner-type compile error and two formatting differences
+  were corrected before these final checks.
+- Minimum MemAvailable 24,357,773,312 bytes; maximum load1 1.34033203125;
+  minimum disk free 370,215,366,656 bytes. Four test mounts detached, no
+  fixture mountinfo entries or fixture-backed descriptors remained.
+- No macOS, physical-device failures, delayed writeback or failing sync/close
+  tests. Round 035 preserved but not explicitly rerun.
+
+Parent reviewed the private regression and README and merged them cleanly.
+At 15:04 UTC CI for published round 035 had no failed checks and multiple
+in-progress checks; no final CI success is claimed.
+
+### 037 — Journal persistence failure recovery
+
+Assigned after round 036 workloads ended. Investigate safe deterministic
+journal/preimage persistence failure, ownership/error propagation and recovery,
+without duplicating round 006 torn-write coverage or injecting host-wide faults.

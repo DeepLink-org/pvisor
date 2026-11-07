@@ -454,6 +454,28 @@ successful close/fsync after rejection does not claim coverage of close I/O erro
 Run with
 `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(detached_size_fault_close_recovery_matches_native_trace_035)'`.
 
+Round `036` exercises the existing private, per-filesystem copy-loop fault seam
+on a real default-policy Linux FUSE mount, rather than client RLIMIT rejection.
+After a successful 16-byte staged write, rename and last-link removal, a
+`copy_file_range` into the held detached target injects server-side `ENOSPC`
+before any copy bytes or after three real backing bytes. The former reaches the
+client as `ENOSPC`; the latter correctly returns a three-byte partial count and
+advances both offsets by three, without concealing modified bytes from Linux.
+Held readers see the exact changed prefix and unchanged suffix. Fsync/datasync,
+checked close of the original writer, recovery writes through its surviving dup,
+and final closes preserve the replacement pathname and lower/source contents.
+Both cases then unmount and reopen the same stage through the public API without
+injection; a full 16-byte copy and sync succeed. Mountinfo absence and no remaining
+fixture-backed `/proc/self/fd` descriptors are checked after each teardown.
+
+This bounded round found no implementation defect; only the private regression
+and these notes were added. The injected error substitutes for a backing write
+failure inside the server, not an actual device/filesystem `ENOSPC`, disk-full,
+delayed writeback, or close/fsync failure. Successful sync/close is not coverage
+of those error paths. Fault-specific state stays in the internal test; portable
+API contracts remain in the outside-crate integration suites. Run with
+`mise run test -- pvisor-overlayfs -- --lib --run-ignored ignored-only --no-capture -E 'test(backing_copy_fault_detached_close_recovery_036)'`.
+
 ## Develop
 
 ### Prerequisites
