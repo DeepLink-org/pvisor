@@ -447,7 +447,19 @@ platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
 The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
-`ps`, `start`, `stop`, `rm`, `logs` and `network`. Compatibility is limited to the options
+`ps`, `start`, `stop`, `rm`, `logs`, `network` and `builder`. Docker's grouped
+spellings are also accepted: `container run/exec/ls/start/stop/rm/logs` and
+`image build/pull/ls/rm`; `ls` accepts `list` (`container ls` also accepts `ps`)
+and `rm` accepts `remove`. These dispatch to the same implementations and retain
+the same options and exit codes. Unsupported grouped commands fail during parsing,
+without falling back to Session execution.
+
+`run --help` (or `help run`) displays help. `run -h` is not a help alias:
+Docker reserves it for hostname, which is currently unsupported. Root `inspect`
+still inspects a Session filesystem, not Docker container/image metadata;
+`container inspect` and `image inspect` are explicitly unsupported.
+
+Compatibility is limited to the options
 listed in `pvisor COMMAND --help`; unsupported commands/options fail
 rather than being silently ignored. This is not complete Docker CLI or
 Docker Engine API compatibility. There is no Compose, Docker socket,
@@ -464,7 +476,7 @@ escalation. Values below `-1` are rejected before contacting a container.
 | `pull` | `--platform`, one public OCI image reference |
 | `images` | Optional repository, `-q`, `--no-trunc` |
 | `rmi` | Multiple references/IDs, `-f` |
-| `exec` | `-i`, `-t`, `-e`, `-w`, `-u`, command and arguments |
+| `exec` | `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, command and arguments |
 | `ps` | `-a`, `-q`, `--no-trunc` |
 | `start` | Multiple container names/IDs |
 | `stop` | Multiple names/IDs, `-t/--timeout`, `-s/--signal` |

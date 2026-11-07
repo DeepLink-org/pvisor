@@ -122,7 +122,7 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            "b73cc4d8465e0148f14c6bc9c3453bab35604792260826480e3715d128c71f6e",
+            "9f1c0305bee76b16ffd646a075cc72f592df24a8baf6884e534ce8f4c7766956",
         ),
         (
             "spawn",

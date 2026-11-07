@@ -120,8 +120,21 @@ fn grouped_commands(command: &clap::Command) -> String {
         (
             "Commands",
             &[
-                "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
-                "logs", "network", "builder",
+                "run",
+                "build",
+                "pull",
+                "images",
+                "rmi",
+                "exec",
+                "ps",
+                "start",
+                "stop",
+                "rm",
+                "logs",
+                "network",
+                "builder",
+                "container",
+                "image",
             ],
         ),
         (
@@ -337,7 +350,11 @@ pub fn main() -> anyhow::Result<()> {
                 finish(2);
                 return Ok(());
             }
-            if error.use_stderr() && args.get(offset).is_some_and(|arg| arg == "run") {
+            if error.use_stderr()
+                && (args.get(offset).is_some_and(|arg| arg == "run")
+                    || (args.get(offset).is_some_and(|arg| arg == "container")
+                        && args.get(offset + 1).is_some_and(|arg| arg == "run")))
+            {
                 error.print()?;
                 finish(125);
                 return Ok(());

@@ -13,6 +13,79 @@ fn command(home: &Path) -> Command {
 }
 
 #[test]
+fn grouped_commands_and_hostname_help_boundary_are_inert() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for args in [
+        vec!["container", "--help"],
+        vec!["image", "--help"],
+        vec!["container", "run", "--help"],
+        vec!["container", "exec", "--help"],
+        vec!["container", "list", "--help"],
+        vec!["container", "ps", "--help"],
+        vec!["container", "remove", "--help"],
+        vec!["image", "build", "--help"],
+        vec!["image", "pull", "--help"],
+        vec!["image", "list", "--help"],
+        vec!["image", "remove", "--help"],
+    ] {
+        let output = command(&home).args(&args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+    }
+    for (args, code) in [
+        (vec!["run", "-h"], 125),
+        (vec!["run", "-h", "guest", "image"], 125),
+        (vec!["container", "run", "-h", "guest", "image"], 125),
+        (vec!["container", "inspect", "missing"], 2),
+        (vec!["image", "inspect", "missing"], 2),
+        (vec!["container", "unsupported"], 2),
+        (vec!["image", "unsupported"], 2),
+    ] {
+        let output = command(&home)
+            .env("PVISOR_RUN_HOME", directory.path().join("sessions"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
+    }
+    assert!(!home.exists());
+    assert!(!directory.path().join("sessions").exists());
+}
+
+#[test]
+fn grouped_queries_and_failures_match_direct_commands() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    for (direct, grouped) in [
+        (vec!["ps", "-aq"], vec!["container", "ls", "-aq"]),
+        (vec!["images", "-q"], vec!["image", "ls", "-q"]),
+        (
+            vec!["start", "missing"],
+            vec!["container", "start", "missing"],
+        ),
+        (
+            vec!["stop", "missing"],
+            vec!["container", "stop", "missing"],
+        ),
+        (vec!["rm", "missing"], vec!["container", "rm", "missing"]),
+        (
+            vec!["logs", "missing"],
+            vec!["container", "logs", "missing"],
+        ),
+        (vec!["rmi", "missing"], vec!["image", "rm", "missing"]),
+    ] {
+        let expected = command(&home).args(&direct).output().unwrap();
+        let actual = command(&home).args(&grouped).output().unwrap();
+        assert_eq!(actual.status.code(), expected.status.code(), "{grouped:?}");
+        assert_eq!(actual.stdout, expected.stdout, "{grouped:?}");
+        assert_eq!(actual.stderr, expected.stderr, "{grouped:?}");
+    }
+}
+
+#[test]
 fn docker_help_and_empty_queries_are_inert_and_reject_unsupported_commands() {
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("store");

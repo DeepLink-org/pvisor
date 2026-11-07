@@ -16,7 +16,13 @@ mod progress;
 
 impl DockerCommand {
     pub(super) fn failure_exit_code(&self) -> i32 {
-        if matches!(self, DockerCommand::Run(_)) {
+        if matches!(
+            self,
+            DockerCommand::Run(_)
+                | DockerCommand::Container {
+                    command: ContainerCommand::Run(_)
+                }
+        ) {
             125
         } else {
             1
@@ -31,7 +37,18 @@ pub(super) enum DockerCommand {
     /// Manage local build cache.
     Builder(builder::BuilderArgs),
     /// Create and run a new container in its own VM.
+    #[command(disable_help_flag = true)]
     Run(Box<Run>),
+    /// Manage containers using Docker's grouped command spelling.
+    Container {
+        #[command(subcommand)]
+        command: ContainerCommand,
+    },
+    /// Manage images using Docker's grouped command spelling.
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
     /// Manage container networks.
     Network(network::NetworkArgs),
     /// Download an image from an OCI registry.
@@ -59,8 +76,62 @@ pub(super) enum DockerCommand {
     Logs(Logs),
 }
 
+#[derive(Debug, Subcommand)]
+pub(super) enum ContainerCommand {
+    #[command(disable_help_flag = true)]
+    Run(Box<Run>),
+    Exec(Exec),
+    #[command(alias = "list", alias = "ps")]
+    Ls(List),
+    Start(Select),
+    Stop(Stop),
+    #[command(alias = "remove")]
+    Rm(Remove),
+    Logs(Logs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum ImageCommand {
+    Build(Box<build::Build>),
+    Pull {
+        #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
+        platform: Option<String>,
+        image: String,
+    },
+    #[command(alias = "list")]
+    Ls(ListImages),
+    #[command(alias = "remove")]
+    Rm(RemoveImages),
+}
+
+impl DockerCommand {
+    fn ungroup(self) -> Self {
+        match self {
+            Self::Container { command } => match command {
+                ContainerCommand::Run(args) => Self::Run(args),
+                ContainerCommand::Exec(args) => Self::Exec(args),
+                ContainerCommand::Ls(args) => Self::Ps(args),
+                ContainerCommand::Start(args) => Self::Start(args),
+                ContainerCommand::Stop(args) => Self::Stop(args),
+                ContainerCommand::Rm(args) => Self::Rm(args),
+                ContainerCommand::Logs(args) => Self::Logs(args),
+            },
+            Self::Image { command } => match command {
+                ImageCommand::Build(args) => Self::Build(*args),
+                ImageCommand::Pull { platform, image } => Self::Pull { platform, image },
+                ImageCommand::Ls(args) => Self::Images(args),
+                ImageCommand::Rm(args) => Self::Rmi(args),
+            },
+            command => command,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(super) struct Run {
+    /// Print help; -h is reserved for Docker's currently unsupported hostname option.
+    #[arg(long = "help", action = clap::ArgAction::Help)]
+    help: Option<bool>,
     /// Select the image platform. Execution currently requires the native platform.
     #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
     platform: Option<String>,
@@ -176,6 +247,8 @@ pub(super) struct Exec {
     tty: bool,
     #[arg(short = 'e', long = "env")]
     env: Vec<String>,
+    #[arg(long = "env-file")]
+    env_files: Vec<PathBuf>,
     #[arg(short = 'w', long = "workdir")]
     cwd: Option<PathBuf>,
     #[arg(short = 'u', long)]
@@ -315,6 +388,7 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
 }
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
+    let command = command.ungroup();
     if let DockerCommand::Build(args) = command {
         return build::run(args);
     }
@@ -326,7 +400,11 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     }
     let store = Store::discover()?;
     match command {
-        DockerCommand::Build(_) | DockerCommand::Builder(_) | DockerCommand::Network(_) => {
+        DockerCommand::Build(_)
+        | DockerCommand::Builder(_)
+        | DockerCommand::Network(_)
+        | DockerCommand::Container { .. }
+        | DockerCommand::Image { .. } => {
             unreachable!()
         }
         DockerCommand::Pull { image, platform } => {
@@ -545,7 +623,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             let _terminal = Terminal::new(args.tty, args.interactive)?;
             let instance = store.resolve(&args.invocation[0])?;
             let mut stream = store.connect(&instance)?;
-            let (mut env, unset_env) = environment(&args.env, &[])?;
+            let (mut env, unset_env) = environment(&args.env, &args.env_files)?;
             if args.tty
                 && !instance.env.contains_key("TERM")
                 && !unset_env.iter().any(|key| key == "TERM")
@@ -748,6 +826,53 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn grouped_workload_arguments_and_exec_env_files_use_existing_contracts() {
+        let parsed = Cli::try_parse_from([
+            "pvisor",
+            "container",
+            "run",
+            "alpine",
+            "echo",
+            "-h",
+            "--help",
+        ])
+        .unwrap();
+        let DockerCommand::Run(args) = parsed.command.ungroup() else {
+            panic!()
+        };
+        assert_eq!(args.invocation, ["alpine", "echo", "-h", "--help"]);
+
+        let temporary = tempfile::tempdir().unwrap();
+        let file = temporary.path().join("env");
+        std::fs::write(&file, "FIRST=file\nSECOND=kept\n").unwrap();
+        for prefix in [vec!["pvisor", "exec"], vec!["pvisor", "container", "exec"]] {
+            let mut argv = prefix;
+            argv.extend([
+                "--env-file",
+                file.to_str().unwrap(),
+                "-e",
+                "FIRST=explicit",
+                "instance",
+                "echo",
+                "--env-file",
+                "guest-only",
+            ]);
+            let parsed = Cli::try_parse_from(argv).unwrap();
+            let DockerCommand::Exec(args) = parsed.command.ungroup() else {
+                panic!()
+            };
+            let (env, unset) = environment(&args.env, &args.env_files).unwrap();
+            assert_eq!(env["FIRST"], "explicit");
+            assert_eq!(env["SECOND"], "kept");
+            assert!(unset.is_empty());
+            assert_eq!(
+                args.invocation,
+                ["instance", "echo", "--env-file", "guest-only"]
+            );
+        }
     }
 
     #[test]

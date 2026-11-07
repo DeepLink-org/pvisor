@@ -757,6 +757,12 @@ mod tests {
 
     #[async_trait]
     impl RunExecutor for CompletedVm {
+        fn continuation_settings(
+            &self,
+        ) -> Option<(crate::VmSettings, crate::features::FeatureSettings)> {
+            Some((Default::default(), Default::default()))
+        }
+
         fn descriptor(&self) -> ExecutorPlan {
             let mut plan = ProcessExecutor::default().descriptor();
             plan.kind = ExecutorKind::VirtualMachine;
