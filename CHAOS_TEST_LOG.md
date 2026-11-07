@@ -752,6 +752,55 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: real >1 MiB frame, connection saturation, full inactivity timeout,
   guest/private owner wire, cross-UID authorization or full suite.
 
+### 022 — Control frame size boundaries
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABLdX5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: partially completed; four existing codec tests passed, actual owner
+  rejection trace passed but final lifecycle acceptance was not established.
+- Budget: 30 minutes.
+- Assignment: precise public control JSON-line size boundary and continued
+  service after rejection, at most eight messages/two connections/8 MiB total.
+  Reuse existing sufficient tests rather than duplicate coverage.
+- Isolation requirement reinforced: explicit current-worktree CARGO_TARGET_DIR,
+  local fixtures/HOME/TMPDIR, verified runtime artifact path/hash; no source
+  checkout target reuse.
+- Exact limit: 1,048,576 JSON payload bytes excluding LF, so legal maximum
+  wire frame is 1,048,577 bytes. Missing LF is invalid even for complete JSON.
+  One request per connection; bad frames close, not same-connection recovery.
+- Worker ran four existing sync/async transport boundary tests: four passed
+  (115.11 seconds including build). Built current runtime library (44.33
+  seconds), all artifacts and writable environment explicitly in own worktree.
+- Actual owner rejected a 1,048,577-byte payload plus LF and a 178-byte
+  no-LF terminate frame without response/cancellation; public API Status
+  afterward stayed Running. RSS rose approximately 1.2 MiB then returned
+  near baseline; this is not an allocator-leak proof.
+- Actual trace final assertion failed: termination was requested during
+  startup and returned setup_failed, not demonstrated post-ready cancellation.
+  Second Session naturally completed exit zero, but harness looked for its
+  marker under stage/upper instead of the actual project path. These failed
+  harness/lifecycle checks are not counted as end-to-end passes or classified
+  as framing bugs. Two-Session cap reached, no silent extra retry.
+- Other unsuccessful tools: omitted noninteractive mise settings timed out;
+  standalone manifest lacked workspace vendor patches, replaced by linking
+  this round's built rlib. No product edits, no tracked changes.
+- Both Sessions waited/reaped; live_control cleared, sockets gone, no owned
+  workloads/mounts left. Known runtime fixed /tmp host socket namespace used,
+  not manually swept. Available memory 18,660,064→18,821,488 KiB,
+  load1 0.32→0.75, free disk approximately 328→327 GiB.
+- Follow-up round 023 must complete exact-limit real response, new-connection
+  recovery and correct post-ready termination. Codec passes do not establish
+  those endpoint guarantees.
+
+### 023 — Post-ready control boundary recovery
+
+- Worker: same subthread as 022, follow-up turn.
+- Status: dispatched; no result yet.
+- Budget: 20 minutes, at most two Sessions/eight messages/8 MiB payload.
+- Assignment: correct readiness handshake and distinguish safe enforcement
+  from staging; verify exact maximum legal real request, overlimit/truncated
+  rejection, healthy status on new connections and post-ready terminate cleanup.
+- Checks, findings, fixes, and PR updates: pending worker evidence.
+
 ## CI observation
 
 At 03:20 UTC, `gh pr checks 111` reported two pending benchmark-build checks
