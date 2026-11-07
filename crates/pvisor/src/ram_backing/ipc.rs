@@ -976,13 +976,22 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn disconnected_mapping_is_pinned_until_peer_process_exits() {
-        use std::io::BufRead;
+        struct ChildOwner(std::process::Child);
+        impl Drop for ChildOwner {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
         const PAGE: usize = super::super::shared::PAGE;
         const CHILD: &str = "PVISOR_SHARED_LIFETIME_CHILD";
         if let Some(socket) = std::env::var_os(CHILD) {
-            let mut client =
-                PoolClient::new(UnixStream::connect(socket).unwrap(), Duration::from_secs(5))
-                    .unwrap();
+            let socket = std::path::PathBuf::from(socket);
+            let mut client = PoolClient::new(
+                UnixStream::connect(&socket).unwrap(),
+                Duration::from_secs(5),
+            )
+            .unwrap();
             client.enable_shared_mapping().unwrap();
             let object = client.put(&[7; PAGE]).unwrap();
             let mapping = client.shared_mapping(&object).unwrap();
@@ -1001,10 +1010,19 @@ mod tests {
                 assert_eq!(*(ptr as *const u8), 7);
             }
             drop(client);
-            println!("ready");
-            std::io::stdout().flush().unwrap();
+            // Keep readiness separate from libtest's stdout progress prefixes.
+            // This receipt is sent only after mapping and disconnecting the pool.
+            let mut control = UnixStream::connect(socket.with_file_name("lifetime.sock")).unwrap();
+            control
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            control
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            control.write_all(b"ready").unwrap();
             let mut command = [0];
-            std::io::stdin().read_exact(&mut command).unwrap();
+            control.read_exact(&mut command).unwrap();
+            assert_eq!(command, [1]);
             unsafe {
                 assert_eq!(*(ptr as *const u8), 7);
                 libc::munmap(ptr, PAGE);
@@ -1014,6 +1032,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("pool.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let readiness =
+            std::os::unix::net::UnixListener::bind(directory.path().join("lifetime.sock")).unwrap();
         let pool = Arc::new(Mutex::new(
             super::super::shared::SharedPool::new(PAGE, 1).unwrap(),
         ));
@@ -1031,21 +1051,35 @@ mod tests {
         });
         let name = module_path!().split_once("::").unwrap().1.to_owned()
             + "::disconnected_mapping_is_pinned_until_peer_process_exits";
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &name, "--nocapture"])
-            .env(CHILD, &socket)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
+        let mut child = ChildOwner(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, &socket)
+                .stdin(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut fd = libc::pollfd {
+            fd: readiness.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut fd, 1, 5000) },
+            1,
+            "child did not establish its lifetime control channel within five seconds"
+        );
+        readiness.set_nonblocking(true).unwrap();
+        let (mut control, _) = readiness.accept().unwrap();
+        control
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
-        loop {
-            let mut line = String::new();
-            assert!(output.read_line(&mut line).unwrap() > 0);
-            if line.trim() == "ready" {
-                break;
-            }
-        }
+        control
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut receipt = [0; 5];
+        control.read_exact(&mut receipt).unwrap();
+        assert_eq!(&receipt, b"ready");
         let mut observer = PoolClient::new(
             UnixStream::connect(&socket).unwrap(),
             Duration::from_secs(5),
@@ -1054,8 +1088,16 @@ mod tests {
         observer.enable_shared_mapping().unwrap();
         assert_eq!(observer.stats().unwrap().objects, 1);
         assert!(observer.put(&[9; PAGE]).is_err());
-        child.stdin.take().unwrap().write_all(&[1]).unwrap();
-        assert!(child.wait().unwrap().success());
+        control.write_all(&[1]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline, "peer did not exit after release");
+            std::thread::yield_now();
+        }
         let deadline = Instant::now() + Duration::from_secs(2);
         while observer.stats().unwrap().objects != 0 {
             assert!(Instant::now() < deadline);

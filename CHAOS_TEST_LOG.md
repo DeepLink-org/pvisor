@@ -952,13 +952,35 @@ not establish that an end-to-end VM/FUSE workflow works.
 ### 027 — IPC lifetime test handshake
 
 - Worker: same subthread as 026, follow-up turn.
-- Status: dispatched; no result yet.
+- Status: completed; existing conventional test harness bug confirmed and
+  repaired, no production pool behavior change.
 - Budget: 15 minutes, bounded short reproduction instead of another
   900-second wait.
 - Assignment: diagnose the single-thread libtest child ready handshake,
   preserve peer-alive pin/peer-exit-release assertions, and repair the conventional
   test runner if confirmed. All owned children must reap even on failure.
-- Checks, findings, fixes, and PR updates: pending worker evidence.
+- Red reproduction with a five-second per-test bound captured libtest output
+  `test ...disconnected_mapping_is_pinned_until_peer_process_exits ... ready`.
+  Original parent waited for an exact standalone ready line, so single-thread
+  libtest formatting deadlocked its handshake. This explains round 026's hang.
+- Test now uses a separate Unix control channel and exact readiness receipt,
+  bounded accepts/reads/writes and owned-child cleanup on unwind. Original
+  peer-alive pin/full-pool rejection/peer-exit release/byte-recovery assertions
+  remain intact. No sleep substituted for readiness.
+- Worker precise test passed both RUST_TEST_THREADS=1 and unset, then all
+  16 selected pager/IPC/sealed-client tests passed including the former hang.
+  Red timeout is recorded as such; no product defect inferred.
+- Coordinator independently ran the lifetime test plus all five pager tests:
+  `mise run test -- pvisor -- --lib -E FILTER --no-fail-fast`.
+  Six passed, 759 skipped; compilation 20.43 seconds, tests 0.019 seconds.
+  Nextest ID: `21d71a48-45ab-4cd7-bddc-e638221f2f30`.
+  Explicit short worktree-local TMPDIR, isolated target, one job/thread,
+  nice 15 and 120-second outer bound; diff check passed.
+- Coordinator available memory before/after: 18,705,652 / 18,528,208 KiB;
+  load1 0.34 / 0.84; free disk 347,359,502,336 / 347,359,490,048 bytes.
+- No real VM or user pool involved; test fixtures cleaned. macOS and complete
+  package/workspace remain unvalidated. This is a test fix, not a fifth
+  production defect.
 
 ## CI observation
 
