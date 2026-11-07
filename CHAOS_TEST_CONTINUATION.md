@@ -611,3 +611,143 @@ Assigned after round 044 final review workloads ended. Investigate documented
 callback-before-CPU ordering versus private startup with bounded actual KVM
 evidence and caller analysis. Architectural/cross-platform tradeoffs require
 discussion before broad implementation; do not silently weaken the API contract.
+
+Source/caller analysis: fresh Unix build resumes CPUs before on_ready, restored
+starts paused; WHP starts paused and resumes after callback. Existing public API
+also permits explicit restored resume, and a runtime caller resumes restored
+before later fallible setup. Therefore transactional "Err means no guest side
+effects" is incompatible with explicit-resume behavior without a larger change.
+
+Bounded actual KVM probe at 16:30:19–16:31:17 UTC: two serial one-vCPU/32 MiB
+custom long-mode guests write marker 0x45 in owned guest RAM then HLT. First
+callback never calls resume: entry reports not paused, marker initially zero;
+after bounded 100 ms callback delay and pause, marker is 0x45. Returning Interrupted
+preserves the marker. Explicit-resume second variant behaves likewise.
+This proves execution before callback returns, not strict dynamic observation of
+execution before callback invocation; source lacks an ordering barrier.
+
+No architectural repair or contract weakening made. Parent asked user to decide:
+prepared/paused at callback entry, fresh auto-start only on success, explicit
+resume side effects not rolled back, explicit pause honored. Independent storage
+testing continues while this decision is pending. Diagnostic source/logs stay
+under ignored isolated output, not a defect-expecting normal regression.
+
+Final report: one diagnostic nextest passed (0.246 s, build 57.44 s), not a
+passing-contract claim. Own tiny payload, not full firmware/Linux boot. Resource
+pre/post: available memory 23.802/23.814 GB, load1 0.807/1.934, disk free
+363.060/362.935 GB. No surviving fixture/vCPU processes observed; exact fd/TID
+accounting not repeated. No Clippy/docs/consumer/platform checks because no repair.
+Diagnostic/evidence artifacts remain only in child target-chaos-045 and are not
+merged into the campaign PR.
+
+Compatibility refinement reported to user: existing WHP smoke explicitly resumes
+then pauses during callback and relies on successful return auto-resuming. Parent
+therefore recommends preserving that automatic-success behavior while guaranteeing
+prepared callback entry; honoring explicit pause persistently is a separate
+behavior change. No implementation while user decision remains pending.
+
+### 046 — Selective apply failure and retry
+
+Assigned after round 045 hardware workload ended. Explore bounded owned
+filesystem failure after partial selected application, retained candidates,
+unrelated-path isolation and retry/review consistency, avoiding prior apply cases.
+
+Result: no defect reproduced, no tracked code changes. Two tiny fixtures cover
+legacy/compact journal. Existing private publication seam removes owned target
+directory write permission before second replacement: real UID1000 gets EACCES
+after one selected file succeeds. Failure preserves failed host path and all
+candidate identities/bytes, preimages and Prepared ledger. Restoring permissions
+permits completion of original intent; only selected candidates/preimages consumed.
+Repeated recovery preserves a later host edit and unrelated remaining candidate.
+This is logical idempotent commit, not exactly-once physical Prepared writes.
+An empty owned temp directory may survive denied cleanup, per non-sweeping rules.
+
+Worker window 16:32:06–16:37:28 UTC, standard workload limits:
+
+- Existing apply recovery/stage tests: 17 passed, 160 skipped.
+- Temporary diagnostic: 1 passed, two journal-format cases.
+- Targeted lib/tests warnings-denied Clippy passed.
+- Final restored-source apply/stage plus seal integration: 18 passed,
+  160 skipped; formatting/diff checks passed.
+- Minimum MemAvailable 21.73 GiB; maximum load1 1.58;
+  minimum free disk 337.56 GiB. TMPDIR empty; no gate failures.
+- Probe bypasses global apply locks; ordinary stage tests use documented fixed
+  /tmp namespace. No shared locks removed or user mounts/processes touched.
+- Temporary probe removed to avoid duplicate test bloat; audit patch remains
+  child-local target-chaos-046/round046-probe.patch, not merged into PR.
+- No crash/device/power-loss/concurrent-writer/public CLI/FUSE/VM/other-platform/
+  full-package/workspace/Python coverage.
+
+### 047 — Post-commit apply cleanup recovery
+
+Assigned after round 046 workloads ended. Explore backup cleanup failure after
+ledger commit, repeated recovery preserving later host edits and refusal to
+consume unowned backup contents. No-change evidence acceptable if already covered.
+
+Confirmed cleanup-only retry liveness defect, not data loss: after durable
+Committed, a fixture-owned parent made nonwritable permits backup contents and
+ownership receipt removal but denies final directory removal. Cleanup propagates
+EACCES. Restoring permissions still leaves retry failing ENOENT because receipt
+was removed. Ledger stays committed/no pending; later host edits, unrelated
+candidate and journal remain intact. Replacing leftover with unowned sentinel
+directory is refused without modification.
+
+Initial diagnostic plus four existing tests passed (five tests, both formats).
+Worker retained diagnostic evidence locally. Parent selected a focused live-error
+repair rather than a new durable authority protocol: hold original verified
+directory fd/receipt and attempt exact, exclusive, no-follow receipt restoration
+through that fd if cleanup fails. Preserve original cleanup error and never
+overwrite receipt collisions or authorize rebound pathname. Failed restoration,
+process-death/power-loss gap remain explicit fail-closed limitations. Worker is
+implementing and testing this before independent review/publication.
+
+Worker repair integrated: verified directory fd retained; exclusive no-follow
+openat creates exact receipt, then file/directory sync. Original cleanup error
+remains returned; failed restoration adds explicit context with original kind.
+Regression covers legacy/compact permission retry preserving later host edits and
+unselected journal data; separate collision/moved-directory cases preserve file/
+symlink collisions and do not authorize rebound unowned pathname.
+
+At 16:45:06–16:45:10 UTC, targeted cleanup/recovery selectors passed 6 tests,
+173 skipped; lib/tests warnings-denied Clippy, package fmt/diff passed. All round
+workload gates: minimum MemAvailable 23,397,367,808 bytes, maximum load1 0.9297,
+minimum free disk 362,231,959,552 bytes. Independent reviewer now checks authority,
+error states and full overlay-core suite before publication.
+
+Independent review accepted live-error scope without blocking findings.
+At 16:46:21–16:46:35 UTC, exact `mise run test -- pvisor-overlay-core` passed
+242 tests, 5 skipped, 12 binaries; effective UID1000 exercised both DAC cases.
+MemAvailable 23,805,968,384→23,459,532,800 bytes, load1 0.575→1.026, disk free
+362,235,666,432→362,173,673,472 bytes; gates passed.
+
+Review caveats clarified before publication:
+
+- Existing receipt collisions remain untouched; restoration context can be noisy
+  if a valid receipt survived, but retry remains possible.
+- Successful restoration preserves original cleanup error; wrapped restoration
+  failure preserves error kind and text, not structured original raw errno.
+- Incomplete write can leave invalid receipt; failed sync can leave complete
+  readable bytes accepted by later recovery, not persistent poison. No new
+  crash-durability protocol.
+- Held directory secures restoration destination only; existing pathname-based
+  cleanup is not made safe against every concurrent namespace mutation.
+- Non-Linux, injected receipt write/sync failure and crash/power-loss not tested.
+
+At 16:46:13 UTC published VM revision `6e02bfe5` had all 33 checks green,
+including aggregate CI. This predates the cleanup repair.
+
+### 048 — Core resource admission cancellation
+
+Assigned after round 047 test workloads ended (documentation clarification only
+remains). Explore bounded in-memory admission/cancellation/owner ordering and
+quota recovery, avoiding earlier resource tests. No live network or host faults.
+
+Round 047 publication note: comment-only follow-up merge duplicated the helper
+with conflict markers. Parent resolved by retaining exactly one helper with the
+clarified comments; final production/test diff matches independently tested code,
+and `git diff --check` passed. No tests rerun after comment-only resolution.
+
+Round 048 scope corrected before execution: Core has no lease/admission ledger.
+Worker reported this without running tests; parent authorized owning
+`pvisor-daemon` in-memory admission/cancellation tests instead. Do not interpret
+Core contracts as resource-accounting coverage.

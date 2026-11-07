@@ -488,6 +488,27 @@ and idempotent consumption. These simulate interruption states, not process
 kills or power loss; they invoke lock-owned recovery directly so all fixture
 writes stay under their temporary root rather than the global lock namespace.
 
+Backup cleanup happens after ledger commit. Its failure remains an error, not
+a warning or a rollback: committed recovery retries cleanup without replaying
+target writes or consuming candidates again. If recursive removal fails after
+unlinking the verified ownership receipt, cleanup exclusively recreates and
+syncs that receipt through the still-held original directory descriptor. It
+never overwrites a collision or authorizes a rebound pathname during receipt
+restoration. The preceding pathname-based cleanup is not protected against all
+concurrent hostile namespace changes. The non-root permission regression covers
+both journal formats, later host edits and unselected candidates; a separate
+fixture checks restoration collisions and rebinding.
+
+This live-error repair does not close the process-death/power-loss window
+between receipt removal and directory removal, or guarantee successful receipt
+restoration. A failed write can leave an incomplete receipt that subsequent
+validation rejects; a sync failure can leave a complete readable receipt that
+later recovery accepts. There is no persistent sync-failed marker or new crash
+protocol. Successful restoration preserves the original cleanup error, including
+its raw errno. Failed restoration wraps that error, retaining its kind and both
+error messages, but not its raw errno structure. Logical commit idempotence is
+not a promise of exactly-once filesystem writes.
+
 ### Restricted filesystem-root apply
 
 A canonical apply target of `/` supports ordinary file additions, modifications

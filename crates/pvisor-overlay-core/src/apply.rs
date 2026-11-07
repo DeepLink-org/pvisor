@@ -2163,11 +2163,49 @@ fn cleanup_apply_backups(
         return Ok(());
     };
     if path_exists(&backup) {
-        let _directory = open_backup_dir(&backup)?;
-        fs::remove_dir_all(&backup)?;
+        let directory = open_backup_dir(&backup)?;
+        if let Err(error) = fs::remove_dir_all(&backup) {
+            // Recursive removal can unlink the verified receipt before failing
+            // to remove the directory itself. Preserve live-error retry
+            // authority only in that same held directory, never a rebound path.
+            if let Err(restore) = restore_backup_receipt(&directory, backup.file_name().unwrap()) {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; restoring apply backup ownership receipt failed: {restore}"),
+                )
+                .into());
+            }
+            return Err(error.into());
+        }
         File::open(backup.parent().unwrap())?.sync_all()?;
     }
     Ok(())
+}
+
+// Only a directory returned by open_backup_dir may be supplied. Never adopt
+// a receipt-less pathname here. Exclusive creation preserves existing entries,
+// including collisions. Incomplete receipts fail subsequent validation, but a
+// sync error can leave a complete readable receipt that later recovery accepts:
+// there is no persistent sync-failed marker. The held fd secures restoration's
+// destination, not the preceding pathname-based recursive cleanup.
+fn restore_backup_receipt(directory: &File, expected: &std::ffi::OsStr) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c".pvisor-owner".as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut receipt = unsafe { File::from_raw_fd(fd) };
+    io::Write::write_all(&mut receipt, expected.as_bytes())?;
+    receipt.sync_all()?;
+    directory.sync_all()
 }
 
 fn consume_applied_preimages(
@@ -6624,6 +6662,121 @@ mod tests {
         )
         .unwrap();
         (record, plan)
+    }
+
+    #[test]
+    fn committed_cleanup_permission_retry_preserves_host_edits_and_candidates() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // Root bypasses the owned fixture's DAC obstruction.
+        }
+        for compact in [false, true] {
+            let tmp = tempdir().unwrap();
+            let (mut record, plan) = interrupted_partial_apply_fixture(tmp.path(), compact);
+            let target = record.target.clone();
+            let apply = load_apply_records(&record.stage_dir).unwrap().remove(0);
+            assert_eq!(plan.selected_paths.len(), 2);
+            assert_eq!(
+                recover_pending_applies_locked(&mut record, std::slice::from_ref(&target)).unwrap(),
+                vec![apply.apply_id.clone()]
+            );
+            // Model an owned replacement backup left after logical commit.
+            let backup = apply_backup_dir(&record, &apply.apply_id).unwrap();
+            drop(open_backup_dir(&backup).unwrap());
+            fs::write(backup.join("original"), b"original backup").unwrap();
+            fs::write(target.join("a"), b"later host edit").unwrap();
+            let ledger_path = record.stage_dir.join(APPLY_LEDGER_FILENAME);
+            let committed = fs::read(&ledger_path).unwrap();
+            let journal = record.stage_dir.join("preimages");
+            let preimages = serde_json::to_value(load_preimages(&journal).unwrap()).unwrap();
+            let log =
+                compact.then(|| fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap());
+
+            // Contents can be removed, but the final rmdir is denied. Restore
+            // permissions before assertions so a failed test can clean its root.
+            let permissions = fs::metadata(tmp.path()).unwrap().permissions();
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o500)).unwrap();
+            let failed = recover_pending_applies_locked(&mut record, std::slice::from_ref(&target));
+            fs::set_permissions(tmp.path(), permissions).unwrap();
+            assert!(
+                matches!(failed, Err(OverlayError::Io(ref e)) if e.kind() == io::ErrorKind::PermissionDenied)
+            );
+            assert_eq!(
+                fs::read(backup.join(".pvisor-owner")).unwrap(),
+                backup.file_name().unwrap().as_bytes()
+            );
+            assert!(!backup.join("original").exists());
+            for _ in 0..2 {
+                let mut restarted = load_overlay_record(&record.stage_dir).unwrap();
+                assert!(
+                    recover_pending_applies_locked(&mut restarted, std::slice::from_ref(&target))
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(!has_pending_applies(&restarted).unwrap());
+                assert!(!backup.exists());
+                assert_eq!(fs::read(&ledger_path).unwrap(), committed);
+                assert_eq!(
+                    serde_json::to_value(load_preimages(&journal).unwrap()).unwrap(),
+                    preimages
+                );
+                if let Some(before) = &log {
+                    assert_eq!(
+                        &fs::read(journal.join(crate::core::PREIMAGE_LOG_NAME)).unwrap(),
+                        before
+                    );
+                }
+                assert_eq!(fs::read(target.join("a")).unwrap(), b"later host edit");
+                assert_eq!(fs::read(target.join("b")).unwrap(), b"staged-b");
+                assert_eq!(fs::read(target.join("keep")).unwrap(), b"old-keep");
+                assert_eq!(
+                    fs::read(record.upper.path().join("keep")).unwrap(),
+                    b"staged-keep"
+                );
+                assert!(!record.upper.path().join("a").exists());
+                assert!(!record.upper.path().join("b").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn backup_receipt_restoration_never_overwrites_or_reauthorizes_a_rebound_path() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let record = late_conflict_record(&target, &tmp.path().join("upper"));
+        let backup = apply_backup_dir(&record, "receipt-retry").unwrap();
+        let directory = open_backup_dir(&backup).unwrap();
+        let moved = tmp.path().join("moved-owned-backup");
+        fs::rename(&backup, &moved).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&backup).unwrap();
+        fs::write(backup.join("keep"), b"unowned").unwrap();
+        fs::write(moved.join(".pvisor-owner"), b"collision").unwrap();
+        assert_eq!(
+            restore_backup_receipt(&directory, backup.file_name().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(moved.join(".pvisor-owner")).unwrap(), b"collision");
+        fs::remove_file(moved.join(".pvisor-owner")).unwrap();
+        std::os::unix::fs::symlink("keep", moved.join(".pvisor-owner")).unwrap();
+        assert!(restore_backup_receipt(&directory, backup.file_name().unwrap()).is_err());
+        assert!(
+            fs::symlink_metadata(moved.join(".pvisor-owner"))
+                .unwrap()
+                .is_symlink()
+        );
+        fs::remove_file(moved.join(".pvisor-owner")).unwrap();
+        restore_backup_receipt(&directory, backup.file_name().unwrap()).unwrap();
+        assert_eq!(
+            fs::read(moved.join(".pvisor-owner")).unwrap(),
+            backup.file_name().unwrap().as_bytes()
+        );
+        assert!(!backup.join(".pvisor-owner").exists());
+        assert!(
+            cleanup_apply_backups(&record, "receipt-retry", ApplyTargetKind::Directory).is_err()
+        );
+        assert_eq!(fs::read(backup.join("keep")).unwrap(), b"unowned");
     }
 
     #[test]
