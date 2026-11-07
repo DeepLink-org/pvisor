@@ -177,9 +177,33 @@ Linux x86_64 将 guest target 替换为 `x86_64-unknown-linux-musl`，需要 KVM
 
 Linux/KVM 的 ready callback 返回错误时，已安装的 vCPU 线程在退出状态接收端
 随 owner 释放后直接结束，不因发送失败 panic，也不等待已不存在的 owner
-终止进程。正常退出仍先交付原始状态，再通知 VMM；控制 handle 不延长 VM 生命周期。
+终止进程。Linux vCPU owner 释放时先断开双向控制通道，再 kick 并 join vCPU；
+仅断开通道不能唤醒仍在 `KVM_RUN` 内的线程，否则它持有的设备总线、网络连接和
+RAM backing 会继续存活。已报告退出的 vCPU 等待 owner 通道断开，不再永久等待
+进程退出。正常退出仍先交付原始状态，再通知 VMM；控制 handle 不延长 VM 生命周期。
+运行循环在每次软件 idle 等待和 KVM 进入前读取控制通道；空且断开的通道同样表示
+取消，不能只用队列非空或一次性 kick 判断。这样无定时器的 event-only offer、
+已 claim 的 lease 和双 CPU standby 不会阻塞 owner 的顺序回收；idle PIO 完成
+清除 `immediate_exit` 后也会先重新检查取消。
+owner teardown 同步等待 vCPU 退出；无法为卡住的宿主内核、page fault 或设备 I/O
+提供完成时限，调用方仍须监管 runner，并在这种情况下终止它。
 无硬件回归覆盖接收端断开与正常状态/事件通知；真实 guest 启动和后续 boot
 须另行验证，不能由这些通知测试推导。
+
+真实 Linux/KVM 回调拒绝回归使用生产 library，通过公开 API 连续启动两个
+256 MiB、单 vCPU VM（不并行），核对原始错误、失效的弱 handle、网络 EOF 和
+进程自身 fd/thread 集合恢复，并保留调用方 RAM 文件所有权：
+
+```sh
+PVISOR_CASE_VM_FIRMWARE_PATH=/absolute/path/to/libkrunfw.so.5.6.2 \
+  mise run test -- pvisor-vm -- --test ready_abort_kvm --run-ignored all
+```
+
+该用例要求真实 KVM 权限和已有本地固件，不下载依赖；不代表完整 Linux guest
+成功运行。它是显式 ignored 的手动硬件检查，目前并未由 CI 自动启用。
+私有 KVM microtests 另外覆盖无定时器 idle、claimed 后 wake 和双 CPU standby
+的有界回收；这不是完整 SMP guest 验收，也不覆盖卡住的宿主内核/设备 I/O、
+冷 RAM pager 或其他平台。
 
 运行时负责配置所有权、架构启动布局、设备和 CPU 生命周期、事件循环与 VM 控制。虚拟文件持有自身字节，网络持有自身描述符。恢复机器先保持暂停；冻结或设备排空失败后保持停止推进，调用方必须终止失败的 runner。
 

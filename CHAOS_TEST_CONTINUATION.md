@@ -484,3 +484,130 @@ Parent inspected the incremental existing-test diff and integrated it with READM
 Assigned after round 043 workloads ended. Inspect new VM lifecycle ordering and
 bounded cleanup/restart resources, reusing existing KVM tests where sufficient;
 one conservative-memory VM at a time, no host configuration changes.
+
+In progress: actual Linux KVM API version 12 verified. Initial targeted suite
+passed 26 tests, including two real KVM microtests. A new bounded ready-callback
+abort probe with caller-retained RAM/network aliases indicated retained vCPU,
+device descriptors and network peer ownership after aliases were released.
+The worker is investigating private Linux owner cleanup and all vCPU phases;
+this is not yet a reviewed or published repair.
+
+Two initial harness assumptions were corrected, not treated as product defects:
+RAM backing includes firmware reserved space, and network NONBLOCK setup occurs
+after guest queue activation, not at ready. The chosen repair direction is
+coherent owner teardown, not a callback-only special case or knowingly detaching
+leaked resources. Any synchronous thread join cannot guarantee a hard bound under
+arbitrary kernel/device stalls; external command watchdogs remain in force.
+At 15:58 UTC published round 043 CI had no failures but several pending checks.
+
+At 16:06:56 UTC all 33 reported checks for published revision `d4e76456` were
+successful, including aggregate CI and benchmark report. This is remote CI
+evidence for rounds through 043, not evidence for the unmerged VM repair.
+
+Confirmed worker reproduction at 15:56:02–15:56:03 UTC: baseline 3 fds /
+1 thread / 0 KVM fds became 57 / 3 / 1 after callback rejection, and the owned
+network peer did not see EOF within one second after caller aliases dropped.
+Runner exited/reaped before later workloads.
+
+Repair: private Linux VcpuHandle Drop disconnects both channels, kicks KVM_RUN
+and joins; exited waits for owner disconnection instead of permanent barrier.
+Queued pause/resume replies tolerate a vanished owner. Common Drop replaces the
+test-only hook, with pre-resume/exited/queued-response private KVM tests and an
+external API ready-abort hardware regression.
+
+Final-source worker real acceptance at 16:07:02.129–16:07:02.394 UTC:
+four invalid-firmware rejections interleaved with four ready aborts, then a healthy
+guest prints VM_EXIT_SOURCE_OK and produces authenticated exit 0. Every clean
+fd/TID set matches 3 fds / 1 thread / 0 KVM fds; intentional caller aliases alone
+retain 6 / 1 / 0. One VM, one vCPU and 256 MiB configured RAM at a time.
+This is real KVM, not mock execution. Whole round used 33 serial KVM constructions
+and 15 pre-VMM loader rejections; no concurrent VM pressure.
+
+Worker validation, standard limits:
+
+- Targeted `mise run test -- pvisor-vm` with selected library KVM tests, external
+  ready_abort_kvm, api_contract, api_boundary and repository_boundary:
+  30 passed, 642 skipped. Five selected microtests and integration use actual KVM;
+  API/notification tests do not establish guest execution.
+- Package lib/tests Clippy and rustdoc with warnings denied passed.
+- `cargo check --locked -p pvisor-cli -p pvisor-daemon -p pvisor-shim` passed.
+- Targeted rustfmt/diff checks passed; final workload ended 16:07:29 UTC.
+- All 42 pre/post gates passed: minimum MemAvailable 23,146,237,952 bytes,
+  maximum load1 3.912109375, minimum free disk 364,507,107,328 bytes.
+- A handwritten healthy-probe guest config initially omitted env and exited125;
+  corrected using owning GuestConfig serialization, not a product fix.
+- Existing local firmware was read, not modified. Build-script hardcoded guest
+  output was redirected via a temporary worktree-local symlink into isolated
+  output; symlink removed, no source-checkout output written. Evidence remains
+  under ignored target/chaos044-evidence in the worker.
+- All probe runners gone, owned RAM/rootfs fixtures removed, no fixture mounts.
+- No SMP, concurrent VMs, cold-RAM pager, other platforms, full package/workspace
+  or Python tests. Kernel/device stall can still make synchronous teardown wait.
+
+Parent integrated and inspected the patch; independent review is checking channel
+ownership, signal ordering, deadlocks, lifecycle phases and hardware regression.
+Separate source-inspection finding: public readiness ordering says callback
+precedes CPU execution, but private build resumes CPUs first. Not changed here.
+
+Independent review requests changes: idle software parking checks channel
+nonemptiness, which does not reveal disconnected empty channels. A parked CPU
+can ignore the one-shot kick and leave synchronous Drop waiting indefinitely
+without any host kernel/device stall. Idle PIO completion also clears immediate
+exit before checking owner loss. This source-established path has not yet been
+reproduced dynamically. Worker is fixing cancellation visibility in every phase
+and adding bounded parked-owner coverage before publication.
+
+Reviewer independently passed one real-KVM integration (two abort cycles),
+27 idle tests and 15 vstate tests during 16:10:34–16:12:41 UTC. One initial filter
+missed the intervening linux module; corrected filter ran vstate tests separately.
+Minimum MemAvailable 23,170,170,880 bytes, maximum load1 2.52, minimum disk free
+364,163,973,120 bytes. Hardware integration is ignored by default and not enabled
+in CI; it is manual hardware evidence, not an automated CI gate.
+
+Review follow-up reproduced parked-owner hang at 16:17:00–16:17:22 UTC:
+event-only KVM case failed its one-second teardown receipt; disabling only the
+fixture's idle gate recovered/reaped it without external timeout. Final fix
+checks try_recv at the top of every host iteration and dispatches queued events
+or disconnection, making cancellation independent of queue nonemptiness and kick.
+No new cancellation flag or public API.
+
+At 16:18:10–16:18:34 UTC, targeted tests passed 60, skipped 615: 27 idle units,
+eight KVM microtest VMs and two serial production-library integration VMs.
+New bounded cases cover event-only, claimed-after-wake and one-VM/two-vCPU dual
+standby with sequential handle destruction; the latter is not broad SMP coverage.
+Each has one-second receipt and one-second fixture-gate recovery on failure.
+
+Final relinked real guest acceptance at 16:20:25.001–16:20:25.258 UTC repeated
+four loader failures/four ready aborts with exact clean resource baseline, followed
+by VM_EXIT_SOURCE_OK and authenticated exit 0. Final Clippy/rustdoc/consumer checks
+and formatting/diff checks passed. Whole round totals now 49 serial VM
+constructions, 30 workload invocations, all 60 resource gates passed; minimum
+MemAvailable 23,058,665,472 bytes, maximum load1 3.912109375, minimum free disk
+363,633,881,088 bytes. Final workload ended 16:21:08 UTC.
+Owned fixtures/symlink removed, probe/red-test processes absent.
+
+Parent merged final follow-up cleanly. Fresh independent reviewer is checking the
+integrated cancellation correction and rerunning hardware cases before publication.
+
+Final independent review: no blocking findings. Verified durable channel
+cancellation, FIFO/control dispatch, PIO return ordering, paused/exited ownership
+and no new busy loop on source review. During 16:23:21–16:25:57 UTC:
+
+- Lifecycle/parked selectors: 23 passed, 659 skipped.
+- Explicit production ready-abort hardware integration: 1 passed (two serial VMs).
+- Remaining idle/deadline/dual/RAM controls: 16 passed, 666 skipped.
+- Total 40 distinct tests, all 27 idle units and all three parked-drop regressions.
+- Minimum MemAvailable 22,580,512 KiB; maximum load1 2.62;
+  minimum disk free 363,095,670,784 bytes; all pre/post gates passed.
+- Exact signal/PIO race supported by control-flow review, not deterministic race
+  injection. Worker final guest/Clippy/rustdoc/consumer evidence not rerun by reviewer.
+
+Parent accepts the focused Linux cleanup correction for publication. Kernel/device
+stall, manual-only ignored integration, and broader platform limits remain explicit.
+
+### 045 — VM readiness publication ordering
+
+Assigned after round 044 final review workloads ended. Investigate documented
+callback-before-CPU ordering versus private startup with bounded actual KVM
+evidence and caller analysis. Architectural/cross-platform tradeoffs require
+discussion before broad implementation; do not silently weaken the API contract.
