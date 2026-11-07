@@ -603,6 +603,97 @@ fn unresolved_source_is_one_json_error_and_diff_is_bounded_text() {
 }
 
 #[test]
+fn target_type_conflicts_block_the_whole_batch_and_allow_selective_retry_then_drop() {
+    for kind in ["file", "nonempty-directory", "symlink"] {
+        let f = Fixture::new();
+        let conflict = f.target.join("skip.txt");
+        let sentinel = f.root.path().join("sentinel.txt");
+        fs::write(&sentinel, b"must not be overwritten\n").unwrap();
+        match kind {
+            "file" => fs::write(&conflict, b"concurrent creation\n").unwrap(),
+            "nonempty-directory" => {
+                fs::create_dir(&conflict).unwrap();
+                fs::write(conflict.join("child.txt"), b"concurrent child\n").unwrap();
+            }
+            "symlink" => std::os::unix::fs::symlink(&sentinel, &conflict).unwrap(),
+            _ => unreachable!(),
+        }
+
+        // keep.txt sorts before skip.txt. Even execution (not just preview) must
+        // reject the entire plan before accepting that otherwise valid creation.
+        let before = tree_snapshot(f.root.path());
+        for dry_run in [true, false, false] {
+            let mut options = vec!["--all", "--json"];
+            if dry_run {
+                options.push("--dry-run");
+            }
+            let value = object(&f.run(&options), 3);
+            assert_eq!(value["status"], "blocked", "{kind}: {value}");
+            assert!(!value["blockers"].as_array().unwrap().is_empty());
+            assert!(value["execution"].is_null(), "{kind}: {value}");
+            let mut after = tree_snapshot(f.root.path());
+            if !dry_run {
+                // Mutation admission opens session.lock with truncation. Unlike
+                // preview, execution may update that empty lock's timestamps.
+                // Preserve checks for its identity, mode and contents, and for
+                // every other byte and metadata field in the fixture.
+                let lock = Path::new("stage/session.lock");
+                let previous = before.get(lock).unwrap();
+                let current = after.get_mut(lock).unwrap();
+                current.modified = previous.modified;
+                current.changed = previous.changed;
+            }
+            assert_eq!(after, before, "{kind}, dry_run={dry_run}");
+            assert!(!f.target.join("keep.txt").exists(), "{kind}");
+            assert!(
+                pvisor_overlay_core::apply::load_apply_records(&f.stage)
+                    .unwrap()
+                    .is_empty(),
+                "{kind}"
+            );
+        }
+
+        // Remove only the injected obstacle, then retry a subset. A failed
+        // preflight must not poison the stage or consume either candidate.
+        if kind == "nonempty-directory" {
+            fs::remove_dir_all(&conflict).unwrap();
+        } else {
+            fs::remove_file(&conflict).unwrap();
+        }
+        let applied = object(&f.run(&["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(applied["status"], "applied", "{kind}: {applied}");
+        assert_eq!(applied["remaining"]["in_scope"], 1);
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!conflict.exists());
+        assert_eq!(
+            pvisor_overlay_core::apply::load_apply_records(&f.stage)
+                .unwrap()
+                .len(),
+            1
+        );
+        for _ in 0..2 {
+            let dropped = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+                .arg("drop")
+                .arg(&f.stage)
+                .current_dir(f.root.path())
+                .env("HOME", f.root.path())
+                .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
+                .output()
+                .unwrap();
+            assert!(dropped.status.success(), "{kind}: {dropped:?}");
+            assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+            assert!(!conflict.exists());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"must not be overwritten\n");
+            let record = pvisor::RunRecord::read(&f.stage).unwrap();
+            assert_eq!(
+                record.overlay.unwrap().state,
+                pvisor_core::overlay::OverlayState::Discarded
+            );
+        }
+    }
+}
+
+#[test]
 fn preview_conflict_never_publishes_an_apply_ledger() {
     let f = Fixture::new();
     // The staged creation's preimage is absent. Concurrent target creation conflicts.

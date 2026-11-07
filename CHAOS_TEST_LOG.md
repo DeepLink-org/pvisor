@@ -8,6 +8,7 @@
 - Initial revision: `47afd887` on `main`.
 - PR destination: a new dedicated PR, authorized by the user.
 - Branch: `test/bounded-chaos-20261107`.
+- Draft PR: https://github.com/DeepLink-org/pvisor/pull/111.
 - Coordinator: this Delta thread. Each scenario runs in a separate worker
   subthread; the coordinator reviews and integrates results before starting
   the next scenario.
@@ -41,10 +42,35 @@ not establish that an end-to-end VM/FUSE workflow works.
 ### 001 — Stage lifecycle failure paths
 
 - Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOAA71HZIBxBDuNWdurkVNCYkuySUr0iCB`.
-- Status: dispatched; no result yet.
+- Status: completed and integrated; no product defect reproduced.
 - Budget: 30 minutes.
 - Assignment: choose and execute a bounded stage/apply/drop failure scenario,
   using existing contracts to determine expected recovery and ownership
   behavior. Reproduce a defect before making a minimal fix and adding
   regression coverage.
-- Checks, findings, fixes, and PR updates: pending worker evidence.
+- Added a regression matrix in `crates/pvisor-cli/tests/apply_cli.rs` for
+  file, nonempty-directory, and symlink destination conflicts. Each case
+  checks inert preview, whole-batch rejection on repeated execution, no
+  apply ledger, successful selective retry after removing the obstacle,
+  and idempotent drop preserving accepted files and a sentinel.
+- Worker validation: `mise run test -- pvisor-cli -- --test apply_cli
+  --no-fail-fast` passed all 16 tests, zero skipped. The worker also passed
+  targeted rustfmt and `git diff --check`.
+- Coordinator independently reran the same mise test command with
+  `CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=1 RUST_TEST_THREADS=1`,
+  explicit per-process mise trust/noninteractive settings, `nice -n 10`,
+  and a 120-second timeout with 30-second kill grace. All 16 tests passed,
+  zero skipped (nextest ID `46118438-1d78-4c1d-a6f4-7e1953b263a1`).
+  Compilation took 61 seconds; test execution took 0.836 seconds.
+  `git diff --check` also passed.
+- Earlier unsuccessful attempts: worker initially hit a mise trust prompt
+  and timed out at 900 seconds without compiling. Its first actual test
+  run exposed an overly strict new assertion about the empty session lock's
+  timestamps, not a product defect. The new test now permits only those
+  execution-time timestamp updates while preserving other snapshot checks;
+  preview still requires full equality. Existing assertions were unchanged.
+- Coordinator resource readings before/after validation: available memory
+  19,227,016 / 20,613,700 KiB; load1 3.33 / 3.39; free disk
+  368,761,122,816 / 368,207,310,848 bytes. Swap remained almost full.
+- Not covered: real VM/FUSE startup, interrupted processes, truncated metadata,
+  other platforms, full-package tests, and Python suite.
