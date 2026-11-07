@@ -236,3 +236,37 @@ in-progress checks; no final CI success is claimed.
 Assigned after round 036 workloads ended. Investigate safe deterministic
 journal/preimage persistence failure, ownership/error propagation and recovery,
 without duplicating round 006 torn-write coverage or injecting host-wide faults.
+
+Result: no product defect reproduced. After one durable append, the private test
+substitutes a read-only descriptor while retaining the original locked writer.
+The next emit fails with a downcastable AppendError::Unknown, leaves committed
+bytes unchanged and emits no notification. Poison applies to all clones, even
+exact committed retries, and survives restoring the writable descriptor. The
+writer lock lasts until the final owner drops. Two reopens preserve the first
+receipt and support quiet idempotent retries and contiguous offsets.
+
+This exercises a real descriptor write error, not ENOSPC, fsync failure, actual
+staged mutation/preimage durability, process crash or power loss.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:07:37: `mise run test -- pvisor-journal`, 30 passed, zero skipped.
+- 15:07:47:
+  `mise exec -- cargo clippy --locked -p pvisor-journal --all-targets -- -D warnings`,
+  passed.
+- 15:07:51: `mise exec -- cargo fmt -p pvisor-journal -- --check`, passed.
+- 15:07:52:
+  `RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-journal --no-deps`,
+  passed. API boundary guards and diff checks passed unchanged.
+- Minimum MemAvailable 24,522,612,736 bytes; maximum load1 1.8755;
+  minimum free disk 370,143,096,832 bytes. No mounts/background processes;
+  fixtures cleaned up. No other platforms, affected consumer compilation,
+  Python or doctests were run.
+
+Parent reviewed and merged the regression and README cleanly.
+
+### 038 — Staged preimage publication recovery
+
+Assigned after round 037 workloads ended. Investigate an owned destination
+obstruction around preimage/metadata publication, preserving candidate ownership,
+accepted upper bytes and host source state across failure and retry/reopen.
