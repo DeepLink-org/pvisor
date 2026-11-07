@@ -397,3 +397,32 @@ not establish that an end-to-end VM/FUSE workflow works.
   load1 0.52 / 0.63; free disk unchanged at 361,781,010,432 bytes.
 - Not covered: directory fds, cross-process ownership, concurrency, mmap,
   other cache policies/macOS, full-package/workspace/Python suites or rustdoc.
+- Publication initially failed with transient TLS EOF; a single retry
+  successfully published commit `55385b50` and the round summary to PR #111.
+
+### 012 — Core policy/accounting failures
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABC-U5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: choose an uncovered budget/policy rejection, cancellation or
+  transition boundary on a real Core controller path, checking accounting
+  against its documented guarantees with at most 128 bounded operations.
+- Actual focus was Core authorization, not a budget ledger (Core does not
+  own that ledger). Added `tests/network_controller_recovery.rs`, exercising
+  48 combinations of address class, resolution mode and controller transition,
+  each followed by a healthy authorization: 96 public operations total.
+  Checks preflight precedes controller, explicit deny blocks alias fallback,
+  invalid controller state fails closed, no cached decision, and unchanged input.
+- Worker passed the full Core crate: 88 tests, zero skipped. Its first compile
+  failed due to moving a non-Copy Result in the new test; corrected with clone.
+  Fixture deny placement was corrected to use canonical capability before
+  assertions ran. Targeted rustfmt and diff checks passed.
+- Coordinator independently ran `mise run test -- pvisor-core`: 88 passed,
+  zero skipped; build 5.26 seconds, tests 0.310 seconds. Nextest ID:
+  `79b80c96-347d-40b7-ba74-b398d5dd3e06`. Offline Cargo, constrained
+  parallelism, nice and 180-second timeout; diff check passed.
+- Coordinator available memory before/after: 19,281,792 / 18,847,836 KiB;
+  load1 0.77 / 1.05; free disk 361,650,708,480 / 361,606,340,608 bytes.
+- Not covered: budget accounting, cancel/complete idempotency, real DNS/network,
+  cross-crate execution, concurrency, other platforms, workspace/Python/doctest.
