@@ -321,6 +321,17 @@ consumption starts after owner teardown, and a new owner observes the next
 generation. Concurrent requests still arbitrate first publication on one owner;
 a non-durable losing read does not invalidate a durable winner's membership.
 
+On Linux, the internal
+`failed_sync_retains_staged_candidates_and_reopen_promotes_complete_frames`
+regression injects `EBADF` through the private sync seam using an `O_PATH`
+descriptor for the owned log inode, after Core has accepted staged bytes and a
+later complete observation awaits sync. The original writer stays locked and
+writable. Repeated sync, observation/promotion and consumption calls reject the
+poisoned owner without altering frames or existing candidates. Drop/reopen drains
+and adopts the complete observations; Core retry and another reopen retain the
+original baselines and staged bytes. This tests explicit sync-error handling,
+not device failure, partial writes, power loss or Core-level fault propagation.
+
 The internal `preimage_publication_directory_race_preserves_candidates_and_reopens`
 regression inserts a small owned nonempty directory at a legacy preimage's final
 name after the missing-entry check, after another file's staged bytes have been

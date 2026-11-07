@@ -393,3 +393,33 @@ compilation, without claiming complete stack-admission parity.
 Assigned after the blocked round 040 follow-up. Return to non-network storage
 reliability: compact-log write failure, poison/ownership propagation and recovery
 after accepted staged data, avoiding the preceding journal/preimage/seal cases.
+
+Result: no product defect reproduced. A distinct private sync-error seam uses an
+O_PATH descriptor on the owned compact log to produce EBADF after Core accepted
+staged bytes and a later complete observation awaits sync. Original writer remains
+writable and locked. Poison blocks repeated sync, promotion, observation and
+consumption; frames, baselines and candidate bytes/inode remain unchanged.
+Drop/reopen drains complete frames; Core retry publishes the missing candidate,
+and another reopen preserves both candidates and original baselines.
+
+Worker checks, UTC 2026-11-07, standard resource limits:
+
+- 15:34:00–15:34:10: targeted mise overlay-core library regression,
+  1 passed, 176 skipped.
+- 15:34:37–15:34:41: selected compact-log/core/publication tests,
+  16 passed, 161 skipped.
+- All-targets package Clippy warnings denied, package fmt and diff passed.
+- Minimum MemAvailable 24,078,484 KiB; maximum load1 1.47;
+  minimum free disk 368,315,019,264 bytes. Fixtures cleaned.
+- No device/hardware fault, power loss, partial writes, fault while Core remains
+  live, full package, Python, doctests, macOS, FUSE or VM validation.
+
+Parent inspected the private fault/poison/reopen assertions and integrated test
+and README. At 15:35 UTC published round 040 CI had no failures, but many checks
+remained in progress.
+
+### 042 — Runtime receipt recovery admission
+
+Assigned after round 041 workloads ended. Investigate receipt-publication failure
+after successful storage sealing and subsequent restart/reuse admission, avoiding
+duplicate round 029 runtime and round 039 storage-only publication checks.
