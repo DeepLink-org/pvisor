@@ -1297,3 +1297,41 @@ separate066will reproduce/fix validUTF8budget handling rather than broaden silen
 Assigned same worker after065review workloads ended. Tiny2/3/4byteUTF8 cut cases,
 actual emittedbytes and valid-prefix/omissionnotice, shared-renderer rule and
 zero/exactfit/ASCII compatibility. No quota/receipt change.
+
+Confirmed and worker-repaired existing UTF8clipping defect: baseline9realcutcases
+at18:53:45–18:53:46 UTC fabricateU+FFFD. Apply262144budget outputs262146/262145/
+262144bytes when cutting2/3/4bytecharacters after1/2/3bytes. Fixedvalidprefix
+outputs262143/262142/262141bytes. Reviewbudgets62/63/64 output64before/61after.
+Boundedtextprefix now emits actualvalidprefix/chargesonlyemittedbytes; up to3tail
+bytes unused instead of fabricatedtext. Notices/placementoutsidebudgetunchanged.
+
+Two newCLItests redbeforefix. Worker41green=38integration+3unit,147filtered,
+by18:56:45 UTC. Tests allcutpositions/zero/fullchar/exactfit/ASCII and genuine
+inputU+FFFD preservation. Packagefmt/alltargetClippy-Dwarnings passed, supported
+debugproductrebuild6.803s. FixedSHA8187f3684399e26fdc54a86bd23c84fc73075ece033738c6f97f4f4f13e70cfe
+fresh realSession18:57:42–18:57:43 repeatsninecuts, noticesonce/nofabrication/no
+overshoot, strictpreview/byteexactaccept/drop. TwoSessions70CLIall0, each786349
+payloadbytes, receiptscompleted0, stagesdiscarded/empty, ownedresourcesgone.
+Minmemory20,402,884,608bytes,maxload1.127,mindisk351,500,820,480bytes,gatespassed.
+No otherplatform/workspace/Python validation.
+
+Parentmergedfourintendedfiles; CRDTtestconflictsduplicatedold/new065tests.
+Resolved by retaining one refactored065test plus066tests/helpers in eachfile;
+productionhelpermergeclean. Finaldiffcheckpassed and freshreviewer is validating
+integratedsource and preserved065coverage before publication. No artifactmerge.
+
+Independent066review approves integratedsource. At19:02:50–19:03:59 UTC exact
+requestedmiseCLIlibrary+apply/reviewselection passed41/147filtered. Diffcheckpassed.
+Reviewer confirms one065testperfile/allassertionspreserved, prefix/accounting/
+zero/exactfit/U+FFFD semantics and no underflow. Arbitrary malformed rendererbytes
+stop atfirstinvalidsequence and reportclipping, potentially leavingmorethan3unused
+bytes; threebytelimit refers only splitting otherwisevalidUTF8. No injectedexternal
+malformedrenderer validation. Before/aftermemory20,149,896/19,395,536KiB,
+load0.74/2.58,disk343,105,372/342,749,340KiB,gatespassed. Workerstatic/reproduction/
+Clippy evidence distinct, not repeated byreviewer. Parent accepts066forpublication.
+
+### 067 — Compatible live frontend handoff
+
+Assigned same worker after066review. Verify documented sameprotocol/different-
+digest caller commands execute through original Host owner, retained authority,
+confirmed cancellation/completion and selectiveacceptance, using ownbuiltbinaries.

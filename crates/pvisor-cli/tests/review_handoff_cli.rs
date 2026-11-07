@@ -97,6 +97,15 @@ impl Fixture {
     }
 }
 
+fn project_diff(text: &str) -> &str {
+    text.split_once("Project diff (environment changes: use review --json)\n")
+        .unwrap()
+        .1
+        .split_once("\nExperimental environment changes")
+        .unwrap()
+        .0
+}
+
 #[test]
 fn root_stage_partitions_by_components_and_preserves_every_bundle_field() {
     let mut fixture = Fixture::new(Some(Path::new("/home/agent/project")), Path::new("/"));
@@ -372,14 +381,7 @@ fn review_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
     fixture.enable_overlay();
 
     let full = fixture.review(&["--diff"]);
-    let body = full
-        .split_once("Project diff (environment changes: use review --json)\n")
-        .unwrap()
-        .1
-        .split_once("\nExperimental environment changes")
-        .unwrap()
-        .0;
-    let full_bytes = body.len();
+    let full_bytes = project_diff(&full).len();
     for (budget, truncated) in [(full_bytes, false), (full_bytes - 1, true)] {
         let text = fixture.review(&["--diff", "--max-diff-bytes", &budget.to_string()]);
         assert_eq!(
@@ -393,6 +395,48 @@ fn review_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
     let text = fixture.review(&["--diff", "--max-diff-bytes", &full_bytes.to_string()]);
     assert_eq!(text.matches("diff output truncated").count(), 1);
     assert!(!text.contains("--- a/tail"));
+}
+
+#[test]
+fn review_diff_clips_to_a_genuine_utf8_prefix_within_budget() {
+    let mut fixture = Fixture::new(None, Path::new("/unused"));
+    let workspace = fixture.root.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fixture.record.workspace = Some(workspace.clone());
+    fixture.bundle["filesystem"]["target"] = json!(workspace);
+    fixture.enable_overlay();
+
+    for character in ["é", "€", "😀"] {
+        fs::write(
+            fixture.record.stage_dir().join("upper/result"),
+            format!("prefix {character} suffix\n"),
+        )
+        .unwrap();
+        let full = fixture.review(&["--diff"]);
+        let body = project_diff(&full);
+        let boundary = body.find(character).unwrap();
+        for cut in 0..=character.len() {
+            let budget = boundary + cut;
+            let text = fixture.review(&["--diff", "--max-diff-bytes", &budget.to_string()]);
+            let notice = format!("  … diff output truncated at {budget} bytes\n");
+            let rendered = project_diff(&text).strip_suffix(&notice).unwrap();
+            let end = if cut < character.len() {
+                boundary
+            } else {
+                boundary + character.len()
+            };
+            assert_eq!(rendered, &body[..end], "{character}, cut {cut}");
+            assert!(rendered.len() <= budget);
+        }
+        let exact = fixture.review(&["--diff", "--max-diff-bytes", &body.len().to_string()]);
+        assert_eq!(project_diff(&exact), body);
+    }
+    let zero = fixture.review(&["--diff", "--max-diff-bytes", "0"]);
+    assert!(!project_diff(&zero).contains("--- a/result"));
+    assert_eq!(
+        project_diff(&zero).matches("diff output truncated").count(),
+        1
+    );
 }
 
 #[test]

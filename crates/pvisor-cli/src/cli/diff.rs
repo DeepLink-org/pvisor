@@ -66,13 +66,22 @@ pub(super) fn is_text(bytes: &[u8]) -> bool {
     !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
 }
 
-// Only diff-body bytes consume the shared budget; callers print their existing
-// notices separately. Return clipping immediately, including on the final file.
+fn bounded_text_prefix(bytes: &[u8], limit: usize) -> &str {
+    let prefix = &bytes[..limit.min(bytes.len())];
+    match std::str::from_utf8(prefix) {
+        Ok(text) => text,
+        Err(error) => std::str::from_utf8(&prefix[..error.valid_up_to()])
+            .expect("prefix before a UTF-8 error is valid"),
+    }
+}
+
+// Only emitted diff-body bytes consume the shared budget; callers print their
+// notices separately. Never replace a clipped character with fabricated text.
 pub(super) fn print_bounded_diff(bytes: &[u8], remaining: &mut usize) -> bool {
-    let keep = (*remaining).min(bytes.len());
-    print!("{}", String::from_utf8_lossy(&bytes[..keep]));
-    *remaining -= keep;
-    keep < bytes.len()
+    let text = bounded_text_prefix(bytes, *remaining);
+    print!("{text}");
+    *remaining -= text.len();
+    text.len() < bytes.len()
 }
 
 // The renderer only opens private copies of the bytes already checked above.
@@ -147,5 +156,25 @@ mod tests {
         let mut bytes = vec![b'x'; 8192];
         bytes.push(0);
         assert!(!is_text(&bytes));
+    }
+
+    #[test]
+    fn bounded_diff_preserves_utf8_prefixes_and_charges_only_emitted_bytes() {
+        for text in ["", "ASCII\n", "xéy", "x€y", "x😀y", "x\u{fffd}y"] {
+            for budget in 0..=text.len() + 1 {
+                let mut end = budget.min(text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let prefix = bounded_text_prefix(text.as_bytes(), budget);
+                assert_eq!(prefix, &text[..end]);
+                assert!(text.starts_with(prefix));
+                assert!(prefix.len() <= budget);
+                let mut remaining = budget;
+                let clipped = print_bounded_diff(text.as_bytes(), &mut remaining);
+                assert_eq!(remaining, budget - prefix.len());
+                assert_eq!(clipped, prefix.len() < text.len());
+            }
+        }
     }
 }

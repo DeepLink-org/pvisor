@@ -132,7 +132,9 @@ preview for conflict checks. JSON retains the existing changeset contract.
 Rendered diff bodies share one byte budget across files. Review and apply preview
 report clipping even inside the final file; an exact fit is unmarked unless
 another candidate is omitted. Notices and selection summaries are outside that
-body budget.
+body budget. Clipping retains a valid UTF-8 prefix without adding replacement
+characters; a partial character is omitted, so up to three budget bytes may
+remain unused.
 
 The seven live VM flags are command-local, under **Live VM** in command help:
 

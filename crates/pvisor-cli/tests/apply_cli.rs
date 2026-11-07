@@ -140,6 +140,16 @@ fn object(output: &Output, code: i32) -> Value {
     serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("{e}: {output:?}"))
 }
 
+fn keep_diff_body(output: &Output) -> &[u8] {
+    let marker = b"--- a/keep.txt\n";
+    let start = output
+        .stdout
+        .windows(marker.len())
+        .position(|bytes| bytes == marker)
+        .expect("selected file has a unified diff");
+    &output.stdout[start..]
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct FileSnapshot {
     mode: u32,
@@ -846,15 +856,6 @@ fn unresolved_source_is_one_json_error_and_diff_is_bounded_text() {
 #[test]
 fn apply_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
     const LIMIT: usize = 256 * 1024;
-    fn body(output: &Output) -> &[u8] {
-        let marker = b"--- a/keep.txt\n";
-        let start = output
-            .stdout
-            .windows(marker.len())
-            .position(|bytes| bytes == marker)
-            .expect("selected file has a unified diff");
-        &output.stdout[start..]
-    }
     let f = Fixture::new();
     let render = |args: &[&str]| {
         let before = tree_snapshot(f.root.path());
@@ -865,12 +866,12 @@ fn apply_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
     };
     let args = ["--path", "keep.txt", "--dry-run", "--diff"];
     let initial = render(&args);
-    let overhead = body(&initial).len() - b"kept\n".len();
+    let overhead = keep_diff_body(&initial).len() - b"kept\n".len();
     let mut exact = vec![b'x'; LIMIT - overhead];
     *exact.last_mut().unwrap() = b'\n';
     fs::write(f.stage.join("upper/keep.txt"), &exact).unwrap();
     let output = render(&args);
-    assert_eq!(body(&output).len(), LIMIT);
+    assert_eq!(keep_diff_body(&output).len(), LIMIT);
     assert!(!String::from_utf8_lossy(&output.stdout).contains("diff truncated"));
 
     let mut clipped = exact.clone();
@@ -896,6 +897,36 @@ fn apply_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert_eq!(text.matches("diff truncated at 262144 bytes").count(), 1);
     assert!(!text.contains("--- a/skip.txt"));
+}
+
+#[test]
+fn apply_diff_clips_to_a_genuine_utf8_prefix_within_budget() {
+    const LIMIT: usize = 256 * 1024;
+    let f = Fixture::new();
+    let args = ["--path", "keep.txt", "--dry-run", "--diff"];
+    let initial = f.run(&args);
+    assert!(initial.status.success());
+    let overhead = keep_diff_body(&initial).len() - b"kept\n".len();
+    for character in ["é", "€", "😀"] {
+        let cut = character.len() - 1;
+        let padding = LIMIT - cut - overhead;
+        fs::write(
+            f.stage.join("upper/keep.txt"),
+            format!("{}{character} suffix\n", "x".repeat(padding)),
+        )
+        .unwrap();
+        let before = tree_snapshot(f.root.path());
+        let output = f.run(&args);
+        assert!(output.status.success());
+        assert_eq!(tree_snapshot(f.root.path()), before);
+        let body = std::str::from_utf8(keep_diff_body(&output)).unwrap();
+        let rendered = body
+            .strip_suffix("diff truncated at 262144 bytes\n")
+            .unwrap();
+        assert_eq!(rendered.len(), LIMIT - cut, "{character}");
+        assert!(!rendered.contains('\u{fffd}'));
+        assert!(!rendered.contains(character));
+    }
 }
 
 #[test]
