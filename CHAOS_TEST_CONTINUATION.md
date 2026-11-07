@@ -119,3 +119,48 @@ Integrated-tree validation by the round 034 worker:
 Assigned after round 033 workloads completed. After integrated-tree validation,
 the worker will test early leader exit with descendants retaining pipe ends,
 incomplete stdin delivery, bounded failure and process-group cleanup.
+
+Result: no new production defect. The existing early-exit rule rejects incomplete
+stdin delivery before waiting for EPIPE and kills the remaining process group.
+Added a Linux-only native-fork fixture for descendants holding stdin alone or
+stdin plus output pipes. Readiness uses a pipe handshake; a ten-second alarm
+bounds the descendant. Subreaper adoption and waitpid verify SIGKILL and reaping.
+
+- 14:48:29–14:48:33 UTC: targeted regression passed both variants, 1 passed,
+  150 filtered (24 ms test time).
+- 14:49:14–14:49:38 UTC: `mise run test -- pvisor-replay -- --offline`,
+  151 passed, none skipped (20.318 s).
+- Initial formatting check found two line-wrap differences, corrected narrowly;
+  final `cargo fmt --all -- --check` and `git diff --check` passed.
+- Lowest reported MemAvailable 24,509,943,808 bytes; highest load1 1.73;
+  lowest disk free 370,907,598,848 bytes. No matching processes remained.
+- No macOS, live agents/models, doctests or separate Python-suite testing.
+
+Parent review requested removal of an `.err().expect()` Clippy diagnostic and
+stronger fixture cleanup ownership so a stale PID file cannot cause a reused
+unrelated PID to be signaled after reaping. Worker is addressing these before
+publication, with targeted regression and warnings-denied Clippy.
+
+Review follow-up completed:
+
+- Cleanup now checks `waitpid(..., WNOHANG)` child ownership before signaling;
+  a reaped child or stale PID does not receive a signal.
+- Replaced `.err().expect()` with `.map(|_| ()).expect_err()` without adding
+  a production Debug implementation solely for tests.
+- 14:51:29–14:51:45 UTC: `cargo clippy -p pvisor-replay --all-targets --offline -- -D warnings`
+  passed with the same nice/timeout/resource limits.
+- 14:54:29–14:54:33 UTC: targeted mise regression passed, both variants,
+  1 passed (23 ms); final formatting and diff checks passed.
+- Final available memory 24,749,355,008 bytes, load1 0.69, disk free
+  370,757,128,192 bytes; no matching fixture processes remained.
+- Parent merged and reviewed the follow-up. Full 151-test run predates these
+  test-only cleanup/lint corrections; targeted regression and Clippy follow them.
+
+At 14:51 UTC, published round 033 revision `1694909b` had two successful checks,
+25 pending and none failing. This is not final CI success.
+
+### 035 — OverlayFS writable-handle namespace churn
+
+Assigned to a fresh isolated worker after round 034 finished its workloads.
+Explore staged rename/unlink/replacement with open writable handles and host
+source preservation, avoiding scenarios already covered in rounds 007 and 011.

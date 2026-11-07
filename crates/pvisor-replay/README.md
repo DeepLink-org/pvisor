@@ -70,3 +70,12 @@ timeouts, log quotas and SIGINT step limits. Wall/idle cases allow three seconds
 for native startup; this tolerates cold starts but is not a readiness handshake,
 so startup starvation beyond that budget can still fail the test. Its independent
 alarm exceeds the wall deadline plus the longest termination grace.
+
+The Linux leader-exit fixture covers incomplete stdin delivery when a descendant
+keeps the read end open, both with and without inherited stdout/stderr. A native
+pipe handshake establishes the descendant before the leader exits. The executor
+must reject delivery promptly based on leader exit, not wait for a broken pipe
+or a timeout, and kill the remaining group. The test temporarily adopts orphaned
+children as a subreaper, verifies SIGKILL, reaps its descendant, and restores the
+prior subreaper setting. An independent ten-second descendant alarm bounds a
+broken cleanup path; the asserted completion budget is three seconds.

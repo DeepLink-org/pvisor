@@ -789,6 +789,139 @@ mod tests {
         assert!(error.message.contains("write supervised process stdin"));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leader_exit_rejects_pending_stdin_held_open_by_a_descendant() {
+        if std::env::var_os("PVISOR_REPLAY_STDIN_CHILD").is_some() {
+            let mut ready = [0; 2];
+            assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+            let hold_output = std::env::var_os("PVISOR_REPLAY_HOLD_OUTPUT").is_some();
+            let descendant = unsafe { libc::fork() };
+            assert!(descendant >= 0);
+            if descendant == 0 {
+                // Only async-signal-safe operations after fork. Keep stdin open
+                // without consuming it, independently bounded even if supervision
+                // breaks. A pipe handshake ensures this state precedes leader exit.
+                unsafe {
+                    libc::alarm(10);
+                    libc::close(ready[0]);
+                    if !hold_output {
+                        libc::close(1);
+                        libc::close(2);
+                    }
+                    libc::write(ready[1], b"r".as_ptr().cast(), 1);
+                    libc::close(ready[1]);
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            unsafe { libc::close(ready[1]) };
+            let mut byte = 0_u8;
+            assert_eq!(
+                unsafe { libc::read(ready[0], (&mut byte as *mut u8).cast(), 1) },
+                1
+            );
+            unsafe { libc::close(ready[0]) };
+            std::fs::write(
+                std::env::var_os("PVISOR_REPLAY_DESCENDANT_PID").unwrap(),
+                format!("{} {descendant}", std::process::id()),
+            )
+            .unwrap();
+            unsafe { libc::_exit(0) };
+        }
+
+        // Adopt and reap only this fixture's orphan, rather than relying on the
+        // host init to reap it. Restore the process-wide setting even on failure.
+        struct DescendantGuard {
+            previous_subreaper: libc::c_int,
+            pid_path: PathBuf,
+        }
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                if let Ok(pids) = std::fs::read_to_string(&self.pid_path)
+                    && let Some(pid) = pids.split_whitespace().nth(1)
+                    && let Ok(pid) = pid.parse::<i32>()
+                {
+                    unsafe {
+                        // A PID file may outlive a successful reap. Only signal
+                        // a child we still own; an unreaped child pins its PID
+                        // until our subsequent wait, preventing PID-reuse kills.
+                        if libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) == 0 {
+                            libc::kill(pid, libc::SIGKILL);
+                            libc::waitpid(pid, std::ptr::null_mut(), 0);
+                        }
+                    }
+                }
+                unsafe {
+                    libc::prctl(libc::PR_SET_CHILD_SUBREAPER, self.previous_subreaper);
+                }
+            }
+        }
+
+        for hold_output in [false, true] {
+            let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let pid_path = temporary.path().join("descendant.pid");
+            let mut previous_subreaper = 0;
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut previous_subreaper) },
+                0
+            );
+            let guard = DescendantGuard {
+                previous_subreaper,
+                pid_path: pid_path.clone(),
+            };
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
+            let mut spec = shell_spec("", &temporary.path().join("leader-exit.log"));
+            spec.command = stdin_fixture_command(
+                "process::tests::leader_exit_rejects_pending_stdin_held_open_by_a_descendant",
+            );
+            spec.command
+                .env("PVISOR_REPLAY_DESCENDANT_PID", &pid_path)
+                .env_remove("PVISOR_REPLAY_HOLD_OUTPUT");
+            if hold_output {
+                spec.command.env("PVISOR_REPLAY_HOLD_OUTPUT", "1");
+            }
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            let started = Instant::now();
+            let result = run_process(spec);
+            let pids = std::fs::read_to_string(&pid_path).unwrap();
+            let pids: Vec<i32> = pids
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            let mut status = 0;
+            // The independent descendant alarm bounds this wait if group cleanup
+            // regresses; SIGKILL below distinguishes cleanup from that fallback.
+            assert_eq!(unsafe { libc::waitpid(pids[1], &mut status, 0) }, pids[1]);
+            std::fs::remove_file(&pid_path).unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "hold_output={hold_output}"
+            );
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+            for pid in pids {
+                assert_ne!(
+                    unsafe { libc::kill(pid, 0) },
+                    0,
+                    "fixture PID {pid} retained"
+                );
+            }
+            let error = result
+                .map(|_| ())
+                .expect_err("incomplete stdin delivery was accepted");
+            assert_eq!(error.kind, ReplayErrorKind::Executor);
+            assert!(
+                error
+                    .message
+                    .contains("child exited before configured stdin was delivered"),
+                "{error:?}"
+            );
+            drop(guard);
+        }
+    }
+
     #[test]
     fn cancellation_closes_pending_stdin_before_graceful_termination() {
         static TERMINATED: std::sync::atomic::AtomicBool =
