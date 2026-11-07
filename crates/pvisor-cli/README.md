@@ -129,6 +129,11 @@ files; it does not reconstruct a historical baseline or certify that apply will
 succeed. Concurrent content writes can still change those lower files; use apply
 preview for conflict checks. JSON retains the existing changeset contract.
 
+Rendered diff bodies share one byte budget across files. Review and apply preview
+report clipping even inside the final file; an exact fit is unmarked unless
+another candidate is omitted. Notices and selection summaries are outside that
+body budget.
+
 The seven live VM flags are command-local, under **Live VM** in command help:
 
 | Command | Accepted live VM flags |

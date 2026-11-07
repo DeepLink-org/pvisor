@@ -5975,6 +5975,128 @@ mod tests {
     }
 
     #[test]
+    fn preimage_publication_directory_race_preserves_candidates_and_reopens() {
+        for durable in [false, true] {
+            let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let target = temporary.path().join("target");
+            let upper = temporary.path().join("upper");
+            let work = temporary.path().join("work");
+            let journal = temporary.path().join("preimages");
+            fs::create_dir(&target).unwrap();
+            fs::write(target.join("kept"), b"host kept").unwrap();
+            fs::write(target.join("next"), b"host next").unwrap();
+            let kept_baseline = fingerprint_at(&target, Path::new("kept")).unwrap();
+            let next_baseline = fingerprint_at(&target, Path::new("next")).unwrap();
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                upper.clone(),
+                Some(work.clone()),
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            fs::write(core.copy_up(Path::new("kept")).unwrap(), b"staged kept").unwrap();
+            let kept_inode = fs::symlink_metadata(upper.join("kept")).unwrap().ino();
+            let kept_observations = load_preimages(&journal).unwrap();
+            assert_eq!(kept_observations.len(), 1);
+            assert_eq!(kept_observations[0].state, kept_baseline);
+
+            let destination = journal
+                .join("entries")
+                .join(format!("{}.json", sha256_hex(b"next")));
+            // Force an actual no-replace publication collision, not an early
+            // lookup rejection. The normal path writes a complete temporary
+            // preimage before attempting the rename/link onto this directory.
+            let failure = core
+                .capture_preimage_after_check(Path::new("next"), durable, false, || {
+                    fs::create_dir(&destination)?;
+                    fs::write(destination.join("owned-sentinel"), b"obstruction")
+                })
+                .unwrap_err();
+            assert_eq!(failure.raw_os_error(), Some(libc::EINVAL));
+            assert!(
+                !core
+                    .preimage_lock
+                    .lock()
+                    .unwrap()
+                    .contains(Path::new("next"))
+            );
+            for _ in 0..2 {
+                // A mutation must also propagate the obstruction rather than
+                // publish an upper or adopt the directory as a valid preimage.
+                assert_eq!(
+                    core.copy_up(Path::new("next")).unwrap_err().raw_os_error(),
+                    Some(libc::EINVAL)
+                );
+                assert!(!upper.join("next").exists());
+                assert_eq!(fs::read(upper.join("kept")).unwrap(), b"staged kept");
+                assert_eq!(
+                    fs::symlink_metadata(upper.join("kept")).unwrap().ino(),
+                    kept_inode
+                );
+                assert_eq!(fs::read(target.join("kept")).unwrap(), b"host kept");
+                assert_eq!(fs::read(target.join("next")).unwrap(), b"host next");
+                assert_eq!(
+                    fs::read(destination.join("owned-sentinel")).unwrap(),
+                    b"obstruction"
+                );
+                let mut names = fs::read_dir(journal.join("entries"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<Vec<_>>();
+                names.sort();
+                let mut expected = vec![
+                    destination.file_name().unwrap().to_owned(),
+                    format!("{}.json", sha256_hex(b"kept")).into(),
+                ];
+                expected.sort();
+                assert_eq!(names, expected, "failed publication left temporary entries");
+            }
+
+            fs::remove_file(destination.join("owned-sentinel")).unwrap();
+            fs::remove_dir(&destination).unwrap();
+            assert_eq!(load_preimages(&journal).unwrap(), kept_observations);
+            fs::write(core.copy_up(Path::new("next")).unwrap(), b"staged next").unwrap();
+            core.sync_preimages().unwrap();
+            drop(core);
+
+            let core = OverlayCore::open_existing(
+                vec![target.clone()],
+                upper.clone(),
+                Some(work),
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let observations = load_preimages(&journal).unwrap();
+            assert_eq!(observations.len(), 2);
+            for (name, baseline, staged, host) in [
+                ("kept", kept_baseline, b"staged kept", b"host kept"),
+                ("next", next_baseline, b"staged next", b"host next"),
+            ] {
+                assert_eq!(
+                    observations
+                        .iter()
+                        .find(|entry| entry.relative_path() == Path::new(name))
+                        .unwrap()
+                        .state,
+                    baseline
+                );
+                assert_eq!(
+                    fs::read(core.copy_up(Path::new(name)).unwrap()).unwrap(),
+                    staged
+                );
+                assert_eq!(fs::read(target.join(name)).unwrap(), host);
+            }
+            assert_eq!(
+                fs::symlink_metadata(upper.join("kept")).unwrap().ino(),
+                kept_inode
+            );
+            assert_eq!(load_preimages(&journal).unwrap(), observations);
+        }
+    }
+
+    #[test]
     fn first_touch_preimage_is_durable_and_never_rebased() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");

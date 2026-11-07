@@ -68,6 +68,13 @@ including the terminating root octet. Malformed questions receive FORMERR
 without allocating a synthetic address. `tests/vm_dns.rs` sends a bounded
 malformed/valid query trace through the public framed guest link, checking
 truncation, length boundaries and continued service without host networking.
+TCP SYN admission validates IPv4 and TCP headers with the stack's semantic
+parsers before allocating a flow slot, including TCP options, nonzero ports
+and flag combinations. Unsupported fragments and invalid IP versions cannot
+reserve listeners. The same test fixture sends 15 deterministic malformed or
+truncated SYN frames through a one-slot backend, checks uninterrupted UDP DNS,
+and then requires an unrelated valid TCP DNS SYN to receive SYN-ACK. This
+guards against rejected packets pinning the table and resetting healthy flows.
 
 Does not own LLM protocol adaptation, upstream selection, session correlation,
 capture events, or Journal writes.

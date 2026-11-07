@@ -66,6 +66,15 @@ pub(super) fn is_text(bytes: &[u8]) -> bool {
     !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
 }
 
+// Only diff-body bytes consume the shared budget; callers print their existing
+// notices separately. Return clipping immediately, including on the final file.
+pub(super) fn print_bounded_diff(bytes: &[u8], remaining: &mut usize) -> bool {
+    let keep = (*remaining).min(bytes.len());
+    print!("{}", String::from_utf8_lossy(&bytes[..keep]));
+    *remaining -= keep;
+    keep < bytes.len()
+}
+
 // The renderer only opens private copies of the bytes already checked above.
 // Replacing a source path during rendering cannot change its input.
 pub(super) fn unified(old: &[u8], new: &[u8], label: &str) -> anyhow::Result<Vec<u8>> {

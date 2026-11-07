@@ -512,6 +512,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn round037_emit_write_failure_preserves_prefix_owners_and_retry() {
+        let dir = tempfile::Builder::new()
+            .prefix("pvisor-journal-round037-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let journal = Journal::open(&path).unwrap();
+        let trace = Trace::new(journal.clone(), "round037");
+        let event = |name: &str, caused_by| {
+            trace.event(
+                vec!["test".into()],
+                None,
+                None,
+                caused_by,
+                Fact::Observation {
+                    domain: "journal-chaos".into(),
+                    name: name.into(),
+                    version: 1,
+                    payload: serde_json::Value::Null,
+                },
+            )
+        };
+        let accepted = event("accepted", vec![]);
+        let pending = event("pending", vec![accepted.id.clone()]);
+        let successor = event("successor", vec![pending.id.clone()]);
+        let mut live = journal.subscribe();
+        let first = journal.append(accepted.clone()).unwrap();
+        assert_eq!(first.durability, Durability::LocalSync);
+        assert_eq!(live.try_recv().unwrap(), accepted);
+        let prefix = std::fs::read(&path).unwrap();
+
+        // Existing private descriptor-replacement technique: force write_all
+        // to fail on a read-only regular file, not ENOSPC or a sync failure.
+        // Retain the real locked writer, then restore it without clearing poison.
+        let writer = journal
+            .state
+            .lock()
+            .unwrap()
+            .file
+            .replace(File::open(&path).unwrap())
+            .unwrap();
+        let error = trace.emit(pending.clone()).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<AppendError>(),
+            Some(AppendError::Unknown(message)) if !message.is_empty()
+        ));
+        journal.state.lock().unwrap().file = Some(writer);
+        assert_eq!(std::fs::read(&path).unwrap(), prefix);
+        assert_eq!(
+            live.try_recv().unwrap_err(),
+            tokio::sync::broadcast::error::TryRecvError::Empty
+        );
+
+        let retained = journal.clone();
+        for owner in [&journal, trace.journal(), &retained] {
+            // Even a previously committed exact retry cannot bypass poison.
+            for retry in [&accepted, &pending, &successor] {
+                assert!(matches!(
+                    owner.append(retry.clone()),
+                    Err(AppendError::Unknown(_))
+                ));
+            }
+            assert!(owner.records().is_err());
+            let mut output = Vec::new();
+            assert!(owner.snapshot_to(&mut output, 1024 * 1024).is_err());
+            assert!(output.is_empty());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), prefix);
+        assert!(Journal::open(&path).is_err());
+        assert!(Journal::read(&path).is_err());
+        assert!(Journal::validate(&path).is_err());
+        drop(journal);
+        assert!(Journal::open(&path).is_err());
+        drop(trace);
+        assert!(Journal::open(&path).is_err());
+        drop(retained);
+        assert_eq!(
+            live.try_recv().unwrap_err(),
+            tokio::sync::broadcast::error::TryRecvError::Closed
+        );
+
+        Journal::validate(&path).unwrap();
+        let recovered = Journal::open(&path).unwrap();
+        assert_eq!(recovered.append(accepted.clone()).unwrap(), first);
+        assert_eq!(std::fs::read(&path).unwrap(), prefix);
+        let mut recovered_live = recovered.subscribe();
+        let retry = recovered.append(pending.clone()).unwrap();
+        assert_eq!(retry.position.journal, first.position.journal);
+        assert_eq!(retry.position.offset, 1);
+        assert_eq!(retry.durability, Durability::LocalSync);
+        assert_eq!(recovered_live.try_recv().unwrap(), pending);
+        let committed = std::fs::read(&path).unwrap();
+        assert_eq!(recovered.append(pending.clone()).unwrap(), retry);
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(
+            recovered_live.try_recv().unwrap_err(),
+            tokio::sync::broadcast::error::TryRecvError::Empty
+        );
+        assert_eq!(
+            recovered.append(successor.clone()).unwrap().position.offset,
+            2
+        );
+        drop(recovered);
+        Journal::validate(&path).unwrap();
+        let reopened = Journal::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .records()
+                .unwrap()
+                .into_iter()
+                .map(|record| record.event)
+                .collect::<Vec<_>>(),
+            vec![accepted, pending.clone(), successor]
+        );
+        assert_eq!(reopened.append(pending).unwrap(), retry);
+    }
+
+    #[tokio::test]
     async fn cancelling_waiter_does_not_cancel_accepted_append() {
         let trace = Trace::new(Journal::memory(), "test");
         let event = trace.event(

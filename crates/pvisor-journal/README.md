@@ -58,6 +58,15 @@ Snapshot holds the writer mutex, bounds the source size before output, and copie
 durable bytes only. Output failures may leave a partial destination; callers own
 its cleanup, syncing and publication. They do not poison the journal.
 
+Round037's private regression injects a read-only-descriptor write failure after
+one successful durable append. It checks `Trace::emit` error downcasting, shared
+poison state (including exact retries of committed events), quiet notifications,
+unchanged committed bytes, writer-lock retention through the final owner, and
+idempotent retry with contiguous offsets across two reopens. The original locked
+writer is retained during injection and restored before ownership checks; restoring
+a writable descriptor does not clear poison. This is a bounded journal I/O test,
+not an actual staged filesystem mutation, ENOSPC, fsync failure or power-loss test.
+
 `TraceProducer::with_id` supplies immutable trace identity at construction;
 `id`, `producer`, and `journal` are read-only accessors. Construction and event
 building do not validate inputs: append does. Emit accepts the provided event

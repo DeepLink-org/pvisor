@@ -19,8 +19,6 @@ use std::os::unix::io::RawFd;
 #[cfg(target_arch = "x86_64")]
 use std::env;
 use std::result;
-#[cfg(not(test))]
-use std::sync::Barrier;
 use std::sync::atomic::{Ordering, fence};
 use std::thread;
 #[cfg(target_arch = "x86_64")]
@@ -1792,15 +1790,20 @@ impl Vcpu {
     fn running(&mut self) -> StateMachine<Self> {
         // This loop is here just for optimizing the emulation path.
         // No point in ticking the state machine if there are no external events.
-        loop {
+        let event = loop {
+            // Owner disconnection is durable cancellation, even with no queued
+            // event. Check it before every software-idle wait and KVM entry.
+            // A kick only wakes KVM_RUN: idle PIO completion can clear its
+            // immediate_exit bit, and a parked CPU never enters KVM_RUN at all.
+            match self.event_receiver.try_recv() {
+                Err(TryRecvError::Empty) => (),
+                event => break event,
+            }
             if self
                 .idle
                 .as_ref()
                 .is_some_and(|idle| idle.parked_cpu(self.id))
             {
-                if !self.event_receiver.is_empty() {
-                    break;
-                }
                 if let Some(idle) = &self.idle {
                     #[cfg(target_arch = "x86_64")]
                     if idle.dual_cpu() {
@@ -1836,7 +1839,7 @@ impl Vcpu {
                 // Emulation ran successfully, continue.
                 Ok(VcpuEmulation::Handled) => (),
                 // Emulation was interrupted, check external events.
-                Ok(VcpuEmulation::Interrupted) => break,
+                Ok(VcpuEmulation::Interrupted) => break self.event_receiver.try_recv(),
                 // If the guest was rebooted or halted:
                 // - vCPU0 will always exit out of `KVM_RUN` with KVM_EXIT_SHUTDOWN or
                 //   KVM_EXIT_HLT.
@@ -1848,13 +1851,13 @@ impl Vcpu {
                 // Emulation errors lead to vCPU exit.
                 Err(_) => return self.exit(FC_EXIT_CODE_GENERIC_ERROR),
             }
-        }
+        };
 
         // By default don't change state.
         let mut state = StateMachine::next(Self::running);
 
         // Break this emulation loop on any transition request/external event.
-        match self.event_receiver.try_recv() {
+        match event {
             #[cfg(target_arch = "x86_64")]
             Ok(VcpuEvent::Capture(reply)) => {
                 let _ = reply.send(Err("CPU capture requires a paused vCPU".into()));
@@ -1862,9 +1865,9 @@ impl Vcpu {
             // Running ---- Pause ----> Paused
             Ok(VcpuEvent::Pause) => {
                 // Nothing special to do.
-                self.response_sender
-                    .send(VcpuResponse::Paused)
-                    .expect("failed to send pause status");
+                if self.response_sender.send(VcpuResponse::Paused).is_err() {
+                    return StateMachine::finish();
+                }
 
                 // KVM_KVMCLOCK_CTRL is not issued on pause; the guest soft-lockup
                 // watchdog may therefore report a lockup after resume.
@@ -1873,9 +1876,9 @@ impl Vcpu {
                 state = StateMachine::next(Self::paused);
             }
             Ok(VcpuEvent::Resume) => {
-                self.response_sender
-                    .send(VcpuResponse::Resumed)
-                    .expect("failed to send resume status");
+                if self.response_sender.send(VcpuResponse::Resumed).is_err() {
+                    return StateMachine::finish();
+                }
             }
             // Unhandled exit of the other end.
             Err(TryRecvError::Disconnected) => {
@@ -1911,9 +1914,9 @@ impl Vcpu {
             // Paused ---- Resume ----> Running
             Ok(VcpuEvent::Resume) => {
                 // Nothing special to do.
-                self.response_sender
-                    .send(VcpuResponse::Resumed)
-                    .expect("failed to send resume status");
+                if self.response_sender.send(VcpuResponse::Resumed).is_err() {
+                    return StateMachine::finish();
+                }
                 // Move to 'running' state.
                 StateMachine::next(Self::running)
             }
@@ -1941,13 +1944,12 @@ impl Vcpu {
         StateMachine::next(Self::exited)
     }
 
-    #[cfg(not(test))]
     // This is the main loop of the `Exited` state.
     fn exited(&mut self) -> StateMachine<Self> {
-        // Wait indefinitely.
-        // The VMM thread will kill the entire process.
-        let barrier = Barrier::new(2);
-        barrier.wait();
+        // A live owner normally terminates the runner after receiving Exited.
+        // Startup failure can instead drop that owner; do not retain the CPU
+        // and its device bus after the control channel has disconnected.
+        while self.event_receiver.recv().is_ok() {}
 
         StateMachine::finish()
     }
@@ -2070,6 +2072,25 @@ pub struct VcpuHandle {
     vcpu_thread: Option<thread::JoinHandle<()>>,
 }
 
+impl Drop for VcpuHandle {
+    fn drop(&mut self) {
+        // Disconnect both directions before waking the CPU. An ownerless exit
+        // must finish rather than successfully notify a receiver and wait for
+        // process-wide shutdown. KVM_RUN does not notice channel closure alone.
+        let (sender, _) = unbounded();
+        drop(std::mem::replace(&mut self.event_sender, sender));
+        let (_, receiver) = unbounded();
+        drop(std::mem::replace(&mut self.response_receiver, receiver));
+        if let Some(thread) = self.vcpu_thread.take() {
+            // A paused/exited CPU may already have finished on disconnection.
+            let _ = thread.kill(sigrtmin() + VCPU_RTSIG_OFFSET);
+            if thread.join().is_err() {
+                error!("vCPU panicked during owner teardown");
+            }
+        }
+    }
+}
+
 impl VcpuHandle {
     pub fn new(
         event_sender: Sender<VcpuEvent>,
@@ -2163,18 +2184,6 @@ mod tests {
         assert_eq!(event.read().unwrap(), 1);
     }
 
-    // In tests we need to close any pending Vcpu threads on test completion.
-    impl Drop for VcpuHandle {
-        fn drop(&mut self) {
-            // Make sure the Vcpu is out of KVM_RUN.
-            self.send_event(VcpuEvent::Pause).unwrap();
-            // Close the original channel so that the Vcpu thread errors and goes to exit state.
-            let (event_sender, _event_receiver) = unbounded();
-            self.event_sender = event_sender;
-            self.vcpu_thread.take().unwrap().join().unwrap();
-        }
-    }
-
     fn setup_vcpu(mem_size: usize) -> (Vm, Vcpu, GuestMemoryMmap) {
         let kvm = KvmContext::new().unwrap();
         let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), mem_size)]).unwrap();
@@ -2204,6 +2213,124 @@ mod tests {
         }
 
         (vm, vcpu, gm)
+    }
+
+    #[test]
+    fn owner_drop_joins_vcpu_before_first_resume() {
+        Vcpu::register_kick_signal_handler();
+        let (_vm, vcpu, _memory) = setup_vcpu(0x1000);
+        let handle = vcpu.start_threaded().unwrap();
+        // The initial paused recv must wake on owner disconnection, without a
+        // resume or a test-only Drop implementation.
+        drop(handle);
+    }
+
+    #[test]
+    fn exited_vcpu_finishes_after_owner_disconnect() {
+        let (_vm, mut vcpu, _memory) = setup_vcpu(0x1000);
+        drop(vcpu.event_sender.take());
+        // Exercise the production exited-state wait, rather than the separate
+        // unit-test exit() shortcut. A permanent barrier cannot satisfy this.
+        vcpu.exited();
+    }
+
+    #[test]
+    fn queued_resume_without_owner_finishes_without_panicking() {
+        let (_vm, mut vcpu, _memory) = setup_vcpu(0x1000);
+        vcpu.event_sender
+            .as_ref()
+            .unwrap()
+            .send(VcpuEvent::Resume)
+            .unwrap();
+        drop(vcpu.response_receiver.take());
+        StateMachine::run(&mut vcpu, Vcpu::paused);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn check_idle_owner_drop(claimed: bool, dual: bool) {
+        Vcpu::register_kick_signal_handler();
+        let (vm, vcpu, _memory) = setup_vcpu(0x1000);
+        let idle = Arc::new(crate::guest_idle::IdleGate::default());
+        idle.configure_cpus(if dual { 2 } else { 1 });
+        idle.enable(true);
+        let mut vcpus = vec![vcpu];
+        if dual {
+            vcpus.push(
+                Vcpu::new_x86_64(
+                    0,
+                    vm.fd(),
+                    vm.supported_cpuid().clone(),
+                    vm.supported_msrs().clone(),
+                    crate::devices::Bus::new(),
+                    EventFd::new(0).unwrap(),
+                )
+                .unwrap(),
+            );
+            // Both CPUs are in unarmed standby with no expiry timer.
+            for cpu in 0..2 {
+                assert_ne!(idle.probe_cpu(cpu), 0);
+                idle.offer_cpu(cpu, u32::MAX, true);
+            }
+        } else {
+            let epoch = idle.arm(Duration::from_secs(1)).unwrap();
+            assert_ne!(idle.probe(), 0);
+            idle.offer(u32::MAX, true);
+            if claimed {
+                assert!(idle.claim(epoch));
+                idle.wake("test_owned_wake");
+                assert!(idle.status().claimed);
+            }
+        }
+        let mut handles = Vec::new();
+        for mut vcpu in vcpus {
+            assert!(idle.parked_cpu(vcpu.id));
+            vcpu.idle = Some(idle.clone());
+            let handle = vcpu.start_threaded().unwrap();
+            handle.send_event(VcpuEvent::Resume).unwrap();
+            assert_eq!(
+                handle
+                    .response_receiver()
+                    .recv_timeout(Duration::from_secs(1)),
+                Ok(VcpuResponse::Resumed)
+            );
+            handles.push(handle);
+        }
+        let (done, finished) = std::sync::mpsc::channel();
+        let owner = thread::spawn(move || {
+            // Sequential destruction must release every CPU, not wait for a
+            // later handle to invalidate the shared idle gate.
+            drop(handles);
+            done.send(()).unwrap();
+        });
+        let completed = finished.recv_timeout(Duration::from_secs(1)).is_ok();
+        if !completed {
+            // Recover the old implementation without stranding our own CPUs.
+            // Its one-shot kick remains set while the idle loop ignores it.
+            idle.enable(false);
+            finished
+                .recv_timeout(Duration::from_secs(1))
+                .expect("idle teardown recovery failed");
+        }
+        owner.join().unwrap();
+        assert!(completed, "owner teardown ignored cancellation while idle");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn owner_drop_releases_event_only_idle_cpu() {
+        check_idle_owner_drop(false, false);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn owner_drop_releases_claimed_idle_cpu_after_wake() {
+        check_idle_owner_drop(true, false);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn owner_drop_releases_dual_idle_standby_sequentially() {
+        check_idle_owner_drop(false, true);
     }
 
     /// No irqchip in this test fixture, so HLT is surfaced to userspace. The
