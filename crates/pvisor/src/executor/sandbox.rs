@@ -229,6 +229,16 @@ fn run_internal() -> anyhow::Result<()> {
     let mut plan = plan;
     if plan.filesystem_isolated {
         enter_synthetic_root(&plan).context("construct private sandbox root")?;
+        if let (Some(source), Some(workspace)) =
+            (&plan.staged_workspace_source, &plan.staged_workspace)
+            && source != workspace
+            && source.starts_with(workspace)
+        {
+            // The workspace bind hides its excluded stage/backing paths. Grant
+            // the visible workspace, not the now-hidden merged source: opening
+            // that source after chroot would fail before Agent execution.
+            plan.read_write.retain(|path| path != source);
+        }
         // The private tmpfs created by `enter_synthetic_root` is writable by
         // the Agent, but must also be present in the Landlock allowlist. This
         // uses the host-side mount path because rules are installed before

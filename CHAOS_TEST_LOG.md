@@ -619,9 +619,40 @@ not establish that an end-to-end VM/FUSE workflow works.
 ### 019 — Host cwd/stage layout failure
 
 - Worker: same subthread as 018, follow-up turn.
-- Status: dispatched; no result yet.
+- Status: third product defect reproduced, fixed and independently reviewed.
 - Budget: 20 minutes, at most six serial Session starts.
 - Assignment: reproduce and classify round 018's setup failure with exact
   cwd/HOME/TMPDIR/stage topology, comparing documented supported layouts.
   Do not relax recursive-backing safety or misclassify a rejected configuration.
-- Checks, findings, fixes, and PR updates: pending worker evidence.
+- Worker reproduced an actual supported-layout failure: external stage
+  succeeded; `workspace/experiment` stage failed before workload with Landlock
+  ENOENT opening the hidden merged backing. HOME/TMPDIR need not be nested to
+  trigger it. Existing nested-stage exclusions establish this is supported,
+  not a dangerous recursive layout to reject.
+- Fix removes only the nested staged-workspace source's redundant read-write
+  grant after synthetic-root rebinding hides that source. Visible COW workspace
+  grant remains; no generic path errors are ignored. Added a three-layout real
+  CLI regression and runtime README notes.
+- Worker passed the new three-Session regression, three existing planning/
+  exclusion tests, and an extra real run with cwd/HOME/TMPDIR/RUN_HOME/stage
+  all inside the project. Original six-start budget met. Review/drop, lower
+  isolation and owned process/mount cleanup passed.
+- Coordinator independently ran three selected rootless_local tests through
+  `mise run test -- pvisor-cli -- --test rootless_local -E FILTER --no-capture`,
+  unsetting optional-userns skipping. New external/nested/nested-home cases,
+  existing ordinary-vs-safe behavior and abnormal-exit cleanup all executed:
+  three passed, 17 skipped. Build 19.31 seconds, tests 1.270 seconds.
+  Nextest ID: `90862d92-e7c2-4f41-bf94-74e8467f777c`.
+  One build job, nice 15, offline Cargo and 180-second timeout; diff check passed.
+- Coordinator available memory before/after: 18,894,108 / 18,522,748 KiB;
+  load1 0.60 / 0.84; free disk 351,367,610,368 / 351,384,051,712 bytes.
+- Independent static reviewer:
+  `ksQQ3UP44YPgTC-msj8WDYNdyJLOABJli5IBxBDuNWdurkVNCYkuySUr0iCB`.
+  Approved the production fix: canonical component-aware descendant check,
+  subtractive exact-path change, retained rebound workspace COW grant and
+  unchanged non-nested behavior. Suggested nonblocking regression improvement
+  for literal relative `--stage ./experiment` and explicit backing probes;
+  assigned to round 020 rather than claiming existing tests establish these.
+- Not covered: full rootless_local/workspace suites, macOS, VM, every recursive
+  layout or concurrent namespace attack. Machine-specific ignored probes are
+  not staged for Git.

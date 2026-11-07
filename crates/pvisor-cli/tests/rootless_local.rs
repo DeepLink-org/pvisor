@@ -195,6 +195,98 @@ fn ordinary_shell_writes_lower_and_safe_shell_stages_home_and_workspace() {
 }
 
 #[test]
+fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
+    for (name, nested_stage, nested_home) in [
+        ("external", false, false),
+        ("nested", true, false),
+        ("nested-home", true, true),
+    ] {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let home = if nested_home {
+            workspace.join("home")
+        } else {
+            temporary.path().join("home")
+        };
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("state"), b"lower").unwrap();
+        let stage = if nested_stage {
+            workspace.join("experiment")
+        } else {
+            temporary.path().join("experiment")
+        };
+        let command = || {
+            let mut command = Command::new("timeout");
+            command
+                .args(["--kill-after=2s", "10s", env!("CARGO_BIN_EXE_pvisor")])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &home)
+                .env("TMPDIR", temporary.path())
+                .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
+                .current_dir(&workspace)
+                .stdin(Stdio::null());
+            command
+        };
+        let output = command()
+            .args([
+                "spawn",
+                "--safe",
+                "--overlaynet-deny-all",
+                "--stdio",
+                "capture",
+                "--stage",
+            ])
+            .arg(&stage)
+            .args([
+                "--",
+                "/bin/sh",
+                "-ec",
+                "test ! -e experiment/run.json; printf staged > result.txt; printf private > \"$HOME/state\"",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}: stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bundle = RunBundle::read(&stage).unwrap();
+        assert!(bundle.run.failure.is_none(), "{name}: {:?}", bundle.run);
+        assert!(bundle.safety.filesystem_non_bypassable, "{name}");
+        assert!(bundle.safety.network_non_bypassable, "{name}");
+        assert_eq!(fs::read(home.join("state")).unwrap(), b"lower", "{name}");
+        assert!(!workspace.join("result.txt").exists(), "{name}");
+        let upper = &bundle.filesystem.as_ref().unwrap().upper;
+        assert_eq!(fs::read(upper.join("result.txt")).unwrap(), b"staged");
+        let review = command()
+            .arg("review")
+            .arg(&stage)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(review.status.success(), "{name}: {review:?}");
+        assert!(String::from_utf8_lossy(&review.stdout).contains("result.txt"));
+        let dropped = command().arg("drop").arg(&stage).output().unwrap();
+        assert!(dropped.status.success(), "{name}: {dropped:?}");
+        assert!(!upper.join("result.txt").exists(), "{name}");
+        assert!(
+            !fs::read_to_string("/proc/self/mountinfo")
+                .unwrap()
+                .contains(temporary.path().to_str().unwrap())
+        );
+        eprintln!(
+            "{name}: sandbox enforced, backing hidden, lower unchanged, review/drop succeeded"
+        );
+    }
+}
+
+#[test]
 fn safe_abnormal_exits_retain_reviewable_stages_and_release_owners_before_retry() {
     if skip_if_rootless_runtime_is_explicitly_optional() {
         return;

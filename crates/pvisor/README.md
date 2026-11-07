@@ -91,6 +91,12 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+Linux Host safe Sessions also support a stage inside the workspace (for example
+`--stage ./experiment`). The stage and its merged backing remain hidden from
+the staged workspace; Landlock grants the rebound workspace rather than a hidden
+backing path. This does not expose Session management files or permit recursive
+backing layouts.
+
 New Executions use Run record schema 3, Bundle schema 6 and completion protocol 2.
 Older readers reject these schemas instead of bypassing the completion check.
 Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
