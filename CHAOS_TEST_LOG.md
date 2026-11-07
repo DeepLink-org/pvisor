@@ -555,3 +555,31 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: concurrent namespace attacks, power loss, macOS, full-package,
   workspace or Python suites. Worker real-chain evidence is separate from
   coordinator fixture-based CLI regressions.
+
+### 017 — Concurrent apply/drop admission
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABHaZZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: deterministic same-stage mutation contention through public CLI
+  operations, at most eight small groups/two processes; check single ownership,
+  no duplicate consumption, accepted-file preservation and later usability.
+- Resource adjustment: one Cargo job and nice 15 by default following observed
+  higher host load; existing memory/load/disk admission gates remain mandatory.
+- Added one public CLI regression: hold the actual admission inode, then start
+  two contenders (apply/drop and apply/apply). All reject as busy without
+  fixture changes. After release, selective apply succeeds exactly once,
+  diagnostic owner clears, both leases reacquire, and drop preserves accepted
+  content. Deterministic admission exclusion, not random scheduling.
+- Worker passed the new test and two existing runtime lease/owner tests;
+  corrected only formatting. CLI children individually bounded to eight seconds.
+- Coordinator reran full apply_cli: `mise run test -- pvisor-cli -- --test
+  apply_cli --no-fail-fast`: 21 passed, zero skipped. Build 1.02 seconds,
+  tests 1.161 seconds; nextest ID:
+  `c3a23d77-67f8-4be3-ba18-aa53e8fdd2db`. One build job, single test thread,
+  nice 15, offline Cargo and 180-second timeout; diff check passed.
+- Coordinator available memory before/after: 18,982,644 / 18,556,644 KiB;
+  load1 0.99 / 0.91; free disk 353,707,933,696 / 353,504,993,280 bytes.
+- Not covered: contention after a writer enters writeback, all possible
+  interleavings, interrupted processes, macOS/VM/FUSE or workspace tests.
+  Known fixed /tmp apply locks were used, not removed.

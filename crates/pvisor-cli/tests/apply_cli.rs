@@ -483,6 +483,106 @@ fn review_partial_apply_conflict_and_drop_preserve_accepted_and_host_changes() {
     assert_eq!(review["run"]["state"], "completed");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn mutation_admission_rejects_competing_cli_requests_and_releases_for_retry() {
+    use fs2::FileExt;
+
+    for contender in ["drop", "apply"] {
+        let f = Fixture::new();
+        f.write_review_bundle();
+        // Hold the actual admission inode before either CLI starts. This proves
+        // contention without a scheduling delay or a production test hook.
+        let admission = fs::File::open(f.stage.join("session.lock")).unwrap();
+        admission.try_lock_exclusive().unwrap();
+        let before = tree_snapshot(f.root.path());
+        let invoke = |command: &str, args: &[&str]| {
+            Command::new("timeout")
+                .args(["--kill-after=1s", "8s", env!("CARGO_BIN_EXE_pvisor")])
+                .arg(command)
+                .arg(&f.stage)
+                .args(args)
+                .current_dir(f.root.path())
+                .env("HOME", f.root.path())
+                .env("PVISOR_RUN_HOME", f.root.path().join("runs"))
+                .env_remove("PVISOR_STARTUP_TIMING")
+                .env_remove("PVISOR_STARTUP_PROFILE")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let (apply, other) = std::thread::scope(|scope| {
+            let apply = scope.spawn(|| invoke("apply", &["--path", "keep.txt", "--json"]));
+            let other = scope.spawn(|| {
+                let args: &[&str] = if contender == "apply" {
+                    &["--path", "skip.txt", "--json"]
+                } else {
+                    &[]
+                };
+                invoke(contender, args)
+            });
+            (apply.join().unwrap(), other.join().unwrap())
+        });
+        let blocked = object(&apply, 3);
+        assert_eq!(blocked["status"], "blocked");
+        assert!(blocked["execution"].is_null());
+        assert!(
+            blocked["blockers"].as_array().unwrap().iter().any(|b| b
+                .as_str()
+                .unwrap()
+                .contains("Session operation already in progress")),
+            "{blocked}"
+        );
+        if contender == "apply" {
+            let blocked = object(&other, 3);
+            assert_eq!(blocked["status"], "blocked");
+            assert!(blocked["execution"].is_null());
+            assert!(
+                blocked["blockers"]
+                    .to_string()
+                    .contains("Session operation already in progress")
+            );
+        } else {
+            assert_eq!(other.status.code(), Some(1), "{other:?}");
+            assert!(
+                String::from_utf8_lossy(&other.stderr)
+                    .contains("Session operation already in progress"),
+                "{other:?}"
+            );
+        }
+        assert_eq!(tree_snapshot(f.root.path()), before);
+        f.unchanged();
+        drop(admission);
+
+        let applied = object(&invoke("apply", &["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(applied["status"], "applied");
+        assert_eq!(applied["remaining"]["in_scope"], 1);
+        // Failure and successful retry must not strand a diagnostic owner or
+        // either lease. Opening separate descriptors also checks the real flock.
+        assert!(fs::read(f.stage.join("session.lock")).unwrap().is_empty());
+        for name in ["session.lock", "lease.lock"] {
+            fs::File::open(f.stage.join(name))
+                .unwrap()
+                .try_lock_exclusive()
+                .unwrap();
+        }
+        let dropped = invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        let ledger = pvisor_overlay_core::apply::load_apply_records(&f.stage).unwrap();
+        assert_eq!(ledger.len(), 1, "only the retry may consume keep.txt");
+        let review = object(&invoke("review", &["--json"]), 0);
+        assert_eq!(review["filesystem"]["state"], "discarded");
+        assert!(
+            review["filesystem"]["changes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
 #[test]
 fn truncated_run_record_refuses_review_apply_and_drop_until_bytes_are_restored() {
     for prefix in [0, 1, 32] {
