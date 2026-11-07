@@ -667,6 +667,13 @@ projecting it. Legacy Run schema 1 and Bundle schema 4 remain readable with thei
 original guarantees. These local receipts do not make remote side effects or
 event delivery exactly once, and are not power-loss acceptance evidence.
 
+The private completion/status regression also obstructs Session JSON replacement
+after a valid completion receipt commits. It exercises the publication step
+directly, not a live VM completion callback. Restoring the saved stale Session
+allows repeated status reconciliation from the unchanged receipt and Bundle;
+reconciling the old Execution leaves both restoring and running successor Session
+bytes unchanged. This covers a local rename failure, not crash or fsync faults.
+
 The private `sealed_storage_without_completion_receipt_refuses_recovery_and_reuse`
 regression completes a compact-journal storage stage and writes its Bundle before
 obstructing `completion.json` with an owned directory. Receipt preflight rejects

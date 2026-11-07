@@ -454,3 +454,33 @@ the private lifecycle regression and README.
 Assigned after round 042 workloads ended. Inspect valid receipt versus failed
 Session completion publication and successor Execution ordering, avoiding existing
 lease/stale completion coverage. No-change evidence is acceptable if covered.
+
+Result: no confirmed defect. Extended an existing regression rather than adding
+a duplicate. Valid receipt commits, owned Session destination directory makes
+replacement fail with EISDIR, restoring saved stale Session permits repeated
+receipt-authoritative reconciliation. Root selectors fail closed while metadata
+is unreadable. Four old-Execution reconciliations preserve restoring/running
+successor Session bytes; receipt/Bundle stay unchanged and no temporary leaks.
+This directly exercises private publication, not live Session::finish callback.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- Initial test expectation incorrectly assumed readable Session metadata during
+  obstruction; corrected to require fail-closed reads. Not a product fix.
+- 15:47:19–15:47:41: 22 selected completion/Session/registry/lifecycle tests
+  passed, 744 filtered/skipped.
+- 15:47:53–15:48:23: `mise run lint-rust -- -p pvisor`, all targets,
+  warnings denied, passed. Final package fmt/diff checks passed.
+- Minimum MemAvailable 24,213,229,568 bytes; maximum load1 2.2144;
+  minimum free disk 366,887,735,296 bytes. Fixtures absent and local TMPDIR empty;
+  no runtime children/mounts created.
+- No live CLI/VM completion, process crash/power loss, failing sync acknowledgement,
+  other platforms, Python, doctests or workspace validation.
+
+Parent inspected the incremental existing-test diff and integrated it with README.
+
+### 044 — Repeated VM teardown recovery
+
+Assigned after round 043 workloads ended. Inspect new VM lifecycle ordering and
+bounded cleanup/restart resources, reusing existing KVM tests where sufficient;
+one conservative-memory VM at a time, no host configuration changes.
