@@ -237,3 +237,38 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: actual crashes, power loss, page-cache loss, fsync/device I/O
   faults, auxiliary-file inconsistency, other platforms, clippy/rustdoc/doctest,
   Python or workspace suites. This is closed-file state injection.
+
+### 007 — Overlay namespace failure sequences
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABAZcpIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: select an uncovered bounded rename/link/unlink failure sequence
+  and compare filesystem behavior against native operations or documented
+  contracts. Attempt a small mounted workflow if supported; distinguish
+  API-only evidence from real FUSE operations.
+- Added an ignored-by-default Linux FUSE integration test and crate README
+  instructions. Fixed trace 007 performs 24 operations against a native
+  filesystem oracle, comparing errno, visible tree/content, and hardlink
+  equivalence after each step. It checks lower content/namespace isolation
+  and explicit unmount after repeated rename/link failures and retries.
+- Worker ran the explicit mounted test twice successfully and ran
+  `mise run test -- pvisor-overlayfs pvisor-overlay-core`: 310 passed,
+  15 skipped. It also passed targeted rustfmt and diff checks.
+- Scope deviation: that existing regular overlay-core suite accesses its
+  fixed `/tmp/pvisor-apply-locks-1000` namespace despite TMPDIR. The worker
+  did not remove the shared directory. The new mounted trace itself keeps
+  fixtures inside the workspace. Do not claim this entire round had zero
+  writes outside the workspace; avoid repeating that broad suite.
+- Coordinator independently ran `mise run test -- pvisor-overlayfs --
+  --test namespace_sequence_mount --run-ignored ignored-only --no-capture`.
+  Real mount, all 24 operations, and unmount passed (one test, zero skipped).
+  Compilation 4.99 seconds, test 0.013 seconds; nextest ID:
+  `f19c2d3f-52da-4a41-b99d-cc3c28787e4c`. Constrained parallelism, offline
+  Cargo, nice and 180-second timeout used; diff check passed. Nextest warns
+  no-capture ignores thread count, but only one test was selected.
+- Coordinator available memory before/after: 19,772,892 / 19,727,648 KiB;
+  load1 4.36 / 4.33; free disk 363,586,682,880 / 363,535,523,840 bytes.
+- Not covered: concurrent races, crash recovery, permission/xattr contracts,
+  complete metadata isolation, long-TTL cache policy, macOS, VM, Python or
+  workspace suites. Skipped tests are not counted as passing.

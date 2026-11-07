@@ -421,6 +421,16 @@ host mount options nor source classification is changed. Missing permissions are
 failures in explicit mount runs, not silently skipped or weakened guarantees.
 Read-only fixtures also verify backing-atime stability.
 
+`tests/namespace_sequence_mount.rs` separately exercises the default writable
+cache policy without owned-cache/noatime assumptions. Its fixed 24-operation
+trace (`007`, no random seed) compares syscall errno, complete visible trees,
+file bytes and hardlink equivalence with a native temporary-directory oracle
+after every operation, including repeated nonempty-directory rename failures,
+retry after unlink, alias edits/removal and directory/file type changes. It also
+checks lower namespace/content isolation and explicit unmount. Run it with
+`mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture`.
+Missing FUSE capability fails this explicit run; portable runs leave it ignored.
+
 ## Develop
 
 ### Prerequisites
