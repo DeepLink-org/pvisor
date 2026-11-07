@@ -1966,3 +1966,240 @@ multithread/nonLinuxnotcovered; no more CPUloadneeded.
 Assigned after090. Atmost64KiBperstream, defaultcapture/inherit raw/text contracts
 derivedfirst, ownfile-sinks/draining toavoid terminalflood/deadlock, metadataJSON/
 framing/authority and retainedproposal, no unpromisedoutputquota claim.
+
+091result: no defect, twosafeHostSessions21:45:20–21:45:21 UTC. Eachstream65536
+guestbytes/NUL/invalidUTF8/multibytes, alternating1021chunks, twoharnessreaders
+drain4KiBdirectignoredfiles. Capturematches exactlossyUTF8contract(notrawartifact):
+82998UTF8bytes/8731replacementchars/4366NULs perstream, truncationfalse, notforwarded
+frontend. Inheritstdoutraw65536exact; framedgueststderr65536exactplus2112CLI
+diagnosticbytes outsideframe. StatusJSON2663bytesvalid/bounded/noguestmarkers.
+Hostunchangedpreapply/previewinert, selectkeep/dropscratch, successorchecksprevious,
+receiptscompleted0/resourcesgone. Defaultcaptureretains1MiBrawinputperstreamthen
+lossydecode, notDockerrawlogs orquota guarantee.
+
+SixteenCLI+nativeoutputdraintest1passed766filteredby21:47:57 UTC. Firsttestattempt
+failedbeforeexecutionmissingcommandlocalMISEtrustenv; prescribedenvrestoredrerun
+passes,bothrecorded.18attempts36gatesminmemory22,157,905,920bytes,maxload0.447754,
+mindisk348,343,881,728bytes,diffpassed. No source/artifactadds. No forcedslowconsumer/
+saturation/overretentionbudget evidence.
+
+### 092 — Paused stdout consumer and cancellation
+
+Assigned after091. Bounded256KiBASCIIflood toownedpipe/2sfinitepausedreader,
+stderrdrained/guaranteedresumeddrain, measurecapacity/occupancyifpossible, separate
+publiccancel responsiveness versus frontendbackpressure, no terminalflood.
+
+092result: no defect, actualstdoutfull65536/65536bytes atonephaseobservationwhile
+finiteconsumerpaused; resume2.000491s. Guestattempt262144ASCIIbytes/readinessstderr,
+separatepublickill0/cooperativeack0.012154s BEFORE drainresumes. Sourceeventually
+143/receiptcancelled/noexitcode-failure, received65536exactpayloadprefix/noinvented
+bytes. Completionobservedafterdrainresume, notsampledduringpause/no strongerclaim.
+Proposal/hostsafe, strictpreview/selectaccept/drop/health0 pass.
+
+21:51:06–21:51:09 UTC,10CLI/20gatesminmemory22,273,888,256bytes,maxload0.246582,
+mindisk348,268,584,960bytes,diffpassed. Guestalarm15/watchdog60, stderr2140bytes
+drained, timer/finallyalwaysreleasesconsumer, no owners/mounts/rootsremaining.
+Initialimporterrorbeforeworkloadfixed. No source/artifactadds/nativetestsrerun,
+no capture-saturation/quota/completion-before-drain guarantee.
+
+### 093 — Capture retention exact/over boundary
+
+Assigned after092. Defaultperstreamrawretention1MiB/continue-drain contract,
+bounded~2.2MiBtotalpayload, exactfit/overflags and documentedlossydecode/statusJSON,
+not liveoutputquota nor diff066valid-prefix behavior.
+
+093result: onerealHostcapture21:53:08–21:53:09 UTC/0.261116s, total2097219bytes.
+Stdoutexact1048576raw/storedUTF8/truncatedfalse; stderrover1048643raw, retains
+1048576rawprefix thenlossydecode1048578UTF8/truncatedtrue becausefourbytecharcrosses
+boundary. OneU+FFFDexpectedcapturecontract, NOTdiff066rule. Gueststages
+ALL_WRITES_RETURNEDafterbothstreams, provesovercapdrainnotexecutionquota; completed0
+Bundle/receiptmatchcalculatedlossyprefix. Status2507bytesvalid/excludespayload.
+Hostunchanged/strictpreview/keepaccept/diagnosticdrop/sentinelsafe.
+
+EightCLI/16gatesminmemory22,219,796,480bytes,maxload0.358398,mindisk348,306,292,736bytes,
+diffpassed. Owner/resourcesgone, no source/artifactadds/nativetestrepeat. No
+configurableCLIoutputlimit/rawartifact/outputquota guarantee.
+
+### 094 — Inherited stdout consumer disappearance
+
+Assigned after093. Derivefd/relaycontract, tinywrite afterclosingonlyownedreadend,
+EPIPE/defaultSIGPIPEorfrontendlossclassification, knownreceiptbeforeacceptance,
+finitealarms/draining/no externalFDchanges.
+
+094result: no defect, two realHostSessions21:55:29 UTC. Inheritedstdoutreaderclosed
+onlyafterstderrreadiness, guestinputthenone2048bytewrite=>EPIPE32/no writecount.
+Guestcatches/stageserrno/updatesproposal/stderrrecovery, frontend0/0.224464s,
+receiptcompleted0/nofailure, no implicitcancel/Unknown. Stderr2172bytesdrained,
+coreguestonly0/alarm15/watchdog60. Knownreceiptbeforeaccept, strictpreview,
+selectiveproposalaccept/dropscratch-diagnostic/health0ambientstatepass.
+
+NineCLI/18gatesminmemory22,266,740,736bytes,maxload0.589844,mindisk348,303,757,312bytes,
+diffpassed. Owners/resourcesgone, no source/artifactadds/nativefullrepeat.
+No defaultSIGPIPE/stderr-readerloss/frontenddisconnection guarantee.
+
+### 095 — Final targeted/package regression sweep
+
+Assigned after094. Currenteight-fixsource, warmcache/offline/originaltools,
+shortsiblingprivateHOME/TMP, onepackage/testthread/twojobs/nice. Fullreplay/net/
+overlay-core/CLI plus TARGETEDruntimeinspect and selectedKVMowner/boundarycases.
+No fullpvisorruntimeretry; watchdog<=180s/command and stopnewcommands22:17:01UTC
+toleavefinalauditwindow. Outputstreamed/prelaunchrecordsdurable, no unrunpasses.
+
+095finalsweepALLSIXCOMMANDSPASS/863tests, before22:02UTC:
+
+| Selection | UTC interval | Result |
+| --- | --- | --- |
+| Full pvisor-replay |21:58:05–21:58:42|151passed/0skipped|
+| Full pvisor-overlaynet |21:58:53–21:59:10|115passed/0skipped|
+| Full pvisor-overlay-core |21:59:20–21:59:26|242passed/5defaultskipped|
+| Full pvisor-cli |21:59:38–22:00:33|320passed/40defaultskipped|
+| TARGETED runtime inspect |22:00:45|2passed/765filtered|
+| TARGETED VM/API/boundaries |22:01:08–22:01:40|33passed/642filtered|
+
+Allnice10/180swatchdog/offline2jobs1thread. Sibling.h095/.t095/privateHOMEoriginal
+installedtoolpathspinned; realHOMEfullCLIgapunchanged. ActualKVMaccess/readonly
+firmwareverified(SHA634d73f20c042894afa196fe396e561e9cf6b6a61c2e61fcd961eddb2e5cdf88),
+owner-drop/parked/notification/memory/shutdown+readyaborttwoserial256MiBVMcycles ran.
+Onlyfilteredreadyabortignoredintegrationoptedin, notunfilteredignoredtests.
+No staticrebuild; nativesourceincludesfinal078fix, staticremainse187ca3ef38cbd87e9d6fb993b4191fd63d42cfe864c831db26d3346f1ab9199.
+ChildHEAD5e0fa3da+workingcratediffSHA62ad5f7a3bf2ff99975bc896e7ada912c36c9c01f527f155fe0bed96605deaaf
+identifiesisolatedsource, not parentGitHEAD claim.
+
+Twelveprepostgatesminmemory21,867,405,312bytes,maxload1.568848,mindisk348,044,017,664bytes.
+Noremainingworktreeprocess/mount, ownfixturesmovedignoredevidence, toolartifactadds
+canceled/diffpassed. No sourcechanges. Runtime/VM areTARGETEDnotfullpasses,
+fullruntime077stillINCOMPLETE; Linuxx86KVM only, no Python/workspace claim.
+
+### 096 — Final long-lived inspection ownership
+
+Assignedafter095. Lasttwo serialrealHost+readonlyinspectionphasesabout600seach,
+heldreadonlyFD/cwd acrossidlewithoutkeepalive/CPUwork. Releaseinspectfirst,
+then normalcompletion versuspubliccancel, knownreceipt/acceptance/cleanup.
+Eachphase timegated tofinish+cleanup by22:30:30UTC, alarms660/watchdogs720;
+no furthernativepackage/rebuild/faultcases afterward, leaveclosingauditwindow.
+
+LateCIobservation22:05UTC: latestpublishedlogrevision1d5ee877 now31success/
+2failures(aggregateCI+CLIcontracts/bats), NOTallgreenlatest. DirectBatsfailure
+run42417079029/job128539329201 testcase4 "run applies environment and working
+directory", tests/podman/system/030-run.bats:21 expectedvalue:/tmp. Other34Bats
+casespass, actualoutputnotprinted. Joblog/smallartifactretained; no rootcause
+or flaky/environment attribution established.
+
+CItestedmerge0aae95f of1d5ee877 into newmain9972c8a6c76c474fca91b12f7715e1bdc5028233
+(wheelacceptance#119), runtimeartifact0.3.2 vsbranchbase0.3.1. No branchmerge/
+rebase made. Parentdelegatedindependentagentremote-CI/codeanalysis ONLY, nolocal
+build/test alongside096; onefailed-jobrerunauthorizedafterretainingfailure.
+Passingretrywillnoterasefailure. Prior6fe01698/23b0greenremainhistoricalevidence,
+not latestmergeguarantee. Eightproductionfixesunchanged pendingattribution.
+
+RemoteagentONEretry result22:14UTC: run42417079029 attempt2COMPLETEDSUCCESS,
+Bats12854432501522:10:59–22:13:51 all35casesincluding4pass, aggregateCI128545032336
+22:13:54–22:13:56success. Sameexactmerge0aae95fb8d6066e9b4160047a432c4fe0c154ec0
+and SAMEruntimeartifact13592415974/SHA4adbeeda5ca5d6e6ffd7f1e8145aa35094303391f5d57d28267cfa0dfc49a78e
+bothattempts; no sourcefix/localtest/retryloop. Originalartifact13592022384 and
+retry13592492838 retained. InitialfailureNOTerased, onefailedrepro/notcauseproof.
+Sourceanalysis actualmain#117/#119 doesNOTchangeenv/cwd/Bats/adapter/workflow;
+dataforwardingpathnoevidencedbadmapping. Originalstatus0 beforeoutputassert, stdout/
+stderrmergedbyBats and helperomitsactualbyteswhenexitmatches, so wrongvalue/
+truncation/extradiagnosticsundistinguished. No productpatchjustified or causalattribution.
+
+096phaseApassed22:06:12–22:16:12 UTC: heldremoteinspectFD/cwd600.049881s,
+sameFDdev121inode2/sameowner651320-start/exe/sessionidentity. Releaseinspectfirst
+frontend0/zeroroot-mount, then sourceinputnormal0/committedcompleted, selective
+accept/drop pass. PhaseB starts onlyaftertimegate withabout14minremainingbefore
+22:30:30; another600s, then inspectrelease/sourcecancel asplanned. Not yet claimed
+complete and no sourcechanges.
+
+Closinginstructions: after096report/allrefsclose, no furthernative/build/fault/
+reruncommands. Two ownedresource/sourceidentity snapshots with onefinite
+posttestquiescencetimer ending22:31:30UTC iftimepermits; streamrecords, no loop/
+keepalive/newSession. Hardfinishby22:32:01, preserveownignored evidence/caches/
+checkpoints, no globalcleanup or unrelatedsignals. Parentownsfinalpublication.
+
+096 phase B passed at 22:16:25.451–22:26:25.902 UTC. Its inspection FD/cwd
+remained valid for 600.080110 seconds, with the same FD identity and unchanged
+owner, executable and Session identifiers. Inspection closed successfully first,
+leaving zero invocation roots and mounts. Public cancellation then acknowledged
+in 0.010221 seconds; source exited 143 and committed cancelled without a workload
+exit code or failure. Selective acceptance and drop preserved the host.
+Both phases have closed all source/inspect references and passed their immediate
+no-owned-process/no-mount checks. No further runtime or build workload is assigned.
+
+## Closing audit
+
+Requested campaign window: **2026-11-07 14:32:01–22:32:01 UTC**.
+This was iterative testing, investigation, repair, review and publication, not
+eight hours of uninterrupted pressure. The final runtime workload ended at
+**22:26:25.902 UTC**. The final two-snapshot quiescence audit completed at
+**22:31:30.100 UTC**. No further test, build or fault workload was launched.
+
+Eight production repairs were independently reviewed and published to draft
+PR https://github.com/DeepLink-org/pvisor/pull/118:
+
+| Round | Repair | Commit |
+| --- | --- | --- |
+| 033 | Close pending stdin before replay cancellation | `1694909b` |
+| 040 | Validate SYN semantics before allocating a flow | `4cbf714b` |
+| 044 | Stop and join Linux vCPUs on owner teardown, including idle parking | `6e02bfe5` |
+| 047 | Preserve backup cleanup retry ownership after a live removal error | `36e6e4de` |
+| 065 | Report diff clipping within the final file | `c2e0a99a` |
+| 066 | Keep diff output within a valid UTF-8 byte prefix | `af096e2f` |
+| 077 | Clean local inspect roots after launch/partial-construction failures | `de131ff9` |
+| 078 | Clean server-owned inspect roots on unmount and table teardown | `6fe01698` |
+
+The final six-command local sweep passed **863 tests**: replay 151, OverlayNet
+115, overlay-core 242, CLI 320, targeted runtime 2, and targeted VM/API checks 33.
+The full-package runs had 45 default skips; additional tests were filtered from
+the targeted runtime/VM commands. Private nonancestor HOME/TMP and installed
+offline tool paths were explicit. This does not establish the original real-HOME
+full CLI topology as passing.
+
+Full `pvisor` runtime coverage remains **INCOMPLETE**: the first run failed on a
+Unix socket path limit, and its sole short-path retry timed out after 900 seconds
+with final progress output lost. No full-runtime success or particular hang cause
+is claimed. Later guards streamed output while running.
+
+The late Bats failure is also retained: the original exact-output assertion failed
+without recording its actual bytes. One authorized retry passed all 35 cases and
+aggregate CI on the same merge commit and runtime artifact. This is non-reproduction,
+not root-cause attribution or proof that a timing-dependent regression is absent.
+
+Unresolved product decisions and coverage limits remain:
+
+- Readiness callback versus guest execution ordering (045).
+- Post-success stage-size diagnostics versus actual live quota enforcement (062).
+- Source-traced zero-MSS/Ethernet admission gaps whose follow-up was blocked (040).
+- The 64 MiB memory experiment never reached Agent execution because the available
+  debug launchers already exceeded that address-space budget (089).
+- Workspace manifests do not authenticate every private saved payload file (088).
+- Local validation is Linux-focused; other-platform CI is separate evidence.
+  No full workspace, Python suite, power-loss or arbitrary device-stall guarantee
+  is claimed.
+
+No main merge, force-push, global cache cleanup, host-network reconfiguration,
+disk-filling test, unrelated process termination, tool installation, semspec
+approval/revocation, real approval ledger or approved snapshot edit was performed.
+Owned evidence, retained checkpoints and build caches remain in ignored worker
+directories rather than being deleted globally.
+
+### Final quiescence result
+
+Snapshots at **22:27:31.519** and **22:31:30.100 UTC**, separated by one finite
+238.326-second timer, both found:
+
+- Zero owned workload processes; old owners 651320/654615 were birth-checked absent.
+- Zero worktree fixture mounts, retained fixture sockets or inspection roots.
+- Zero `pvisor`-named cgroup children in the inspected root/owned leaf.
+- Unchanged validated static binary and product-source diff identities.
+- No remaining build alias or transient tool-created script additions.
+
+Round 096 used 17 CLI commands and 36 resource checks, all admitted. Its minimum
+MemAvailable was 22,111,449,088 bytes, maximum recorded load1 1.0927734375 and
+minimum free disk 347,744,477,184 bytes. Final snapshot: MemAvailable
+**22,206,992,384 bytes**, load1 **0.391113**, free disk **347,761,025,024 bytes**.
+These are boundary observations, not continuous sampling or a universal leak proof.
+
+All assigned local workloads and the remote CI investigation have returned.
+The final log publication may trigger ordinary repository CI; it contains no
+additional production changes. Last tested code and the one authorized Bats retry
+are described above; no success is invented for a newly triggered log-only run.
