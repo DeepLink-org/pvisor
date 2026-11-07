@@ -982,8 +982,101 @@ not establish that an end-to-end VM/FUSE workflow works.
   package/workspace remain unvalidated. This is a test fix, not a fifth
   production defect.
 
+### 028 — Repeated KVM abort cleanup
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABOz95IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; real repeated lifecycle checks passed, no new defect.
+- Budget: 20 minutes; no new workloads after 08:16 UTC.
+- Assignment: at most 16 serial ready-callback aborts followed by one healthy
+  guest boot, 256 MiB/one vCPU/one VM at a time. Check per-cycle actual vCPU
+  exit, KVM-fd baseline, invalid stale handles and final guest success; record
+  resource sequence without interpreting RSS noise as a leak.
+- Existing firmware only read, fresh isolated compiler artifacts required.
+- Sixteen actual KVM ready-callback Interrupted aborts followed by one healthy
+  musl guest boot, 256 MiB/one vCPU/serial, runner exit zero in 0.909 seconds.
+  Per abort, actual vCPU TID disappeared and full thread/fd sets returned to
+  baseline within one second. Sixteen retained stale handles rejected control;
+  dropping them did not change resource ownership. Final guest marker observed
+  once, complete stderr empty, runner/group reaped.
+- Baseline and each post-abort: one thread, three fds, zero KVM fds.
+  Ready: three threads, 60 fds, two KVM fds. Post-abort RSS stabilized around
+  16 MiB after starting around 15 MiB; this is neither a leak finding nor
+  proof of leak absence.
+- Worker fresh-artifact offline build passed, and `mise run test --
+  pvisor-vm -- --lib -E 'test(exit_notification_)'` passed two tests,
+  644 filtered/skipped. Current HEAD `97c49497`, no tracked source diff.
+  Actual hardware evidence is worker-run, not independently duplicated.
+- All writable artifacts/environment isolated. Lowest available memory
+  17.62 GiB, highest load1 1.40, lowest free disk 322.89 GiB.
+  Ignored `target/chaos028/` contains local detailed evidence; not merged.
+- Not covered: SMP, concurrent VMs, more than 16 aborts, other hypervisors,
+  long-term memory attribution or workspace/Python suites.
+
+### 029 — Completion publication failure preservation
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABPGx5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; three existing contract tests passed, no new defect.
+- Budget: 20 minutes, no new long workloads after 08:16 UTC.
+- Assignment: investigate a documented Bundle/completion-publication fault
+  boundary with bounded owned fixtures; check uncertain status, retained stage
+  and mutation admission without inventing automatic receipt recovery.
+- Worker actual Host workload created a small run-bundle.json directory
+  obstruction. Completion failed as infrastructure error without receipt or
+  Completed/terminal notifications; Run Unknown, stopped admission rejected,
+  stage retained. Fixture service tests also reject apply/drop without receipt,
+  preserve upper/target, and avoid inventing completion from a stale Completed
+  record. Receipt-based status reconciliation preserves successor executions.
+- Targeted `mise run test -- pvisor -- --lib` with three exact filters passed
+  (112 seconds including build). Binary path extracted from nextest JSON,
+  then exact Bundle failure case rerun successfully; all artifacts local.
+  This uses existing conventional runner tests, not an added CLI probe.
+- Window 06:39:28–06:43:46 UTC. Real Host workload twice, no custom background
+  process, temporary roots cleaned; no tracked edits. Lowest available memory
+  about 17 GiB, highest load1 1.40, free disk about 322 GiB.
+- Not covered: actual CLI, completion.json-directory obstruction, torn-write/
+  power-loss/fsync-ack faults, automatic receipt recovery or whole workspace.
+
+### 030 — CI lint and control-channel portability
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABPcLJIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; focused Linux lint/tests passed, macOS fix awaits remote CI.
+- Budget: ten minutes for edits; parent then validates serially.
+- Assignment: fix actual CI Clippy errors in new tests and macOS nonblocking
+  accepted-control-stream behavior, preserving all readiness/lifetime and
+  causal-pair assertions. No lint suppressions, ignored failures or product
+  semantics changes.
+- Worker statically changed constant event pairs to as_chunks with explicit
+  empty remainder, replaced two new err/expect patterns with matches, and
+  set the accepted lifetime-control stream blocking before bounded reads.
+  BSD accepted streams may inherit listener nonblocking mode; no WouldBlock
+  suppression or sleep/retry added. All causal/lifetime/error assertions kept.
+- Worker intentionally ran no compiler/workloads while 029 was active.
+  Coordinator then ran serially:
+  - `mise run lint-rust -- -p pvisor -p pvisor-gateway`: passed, warnings
+    denied across selected packages/all targets, build/check 43.94 seconds.
+  - Full model_wait_http binary: 23 passed, zero skipped; build 6.58 seconds,
+    tests 1.807 seconds; nextest `97df4f87-e97e-47d1-b2b2-2590f03733f5`.
+  - Three affected runtime plan/lifetime tests: three passed, 762 skipped;
+    build 20.60 seconds, tests 0.023 seconds; nextest
+    `b953723e-2c9c-4601-8c7a-ec8e2bd9f078`.
+- Initial targeted rustfmt check reported one line-wrap difference in new
+  grouping code; fixed via patch, rerun rustfmt and diff checks passed.
+  The initial shell exit zero was its last command, not proof rustfmt passed.
+- Coordinator available memory initially/finally: 18,659,752 / 18,326,800 KiB;
+  load1 0.21 / 1.12; free disk 346,025,869,312 / 345,508,487,168 bytes.
+- No local macOS run; remote CI must confirm accepted-socket portability.
+  These are test/lint corrections, not additional production defects.
+
 ## CI observation
 
 At 03:20 UTC, `gh pr checks 111` reported two pending benchmark-build checks
 for the latest push and no completed pass/fail results. This is not CI success.
 Local targeted evidence above remains distinct from GitHub CI.
+
+At 06:39 UTC, commit `97c49497` had 26 successful checks and three failures
+(including the aggregate CI check), no pending checks. Logs identify actionable
+test issues: constant `chunks_exact(2)` and `.err().expect()` Clippy warnings
+in newly added tests, and macOS inherited nonblocking state on the lifetime
+test's accepted control socket (`read_exact` returned WouldBlock). These are
+not waived as environment failures; a follow-up will repair and revalidate.
+The macOS failure is remote CI evidence, not a local macOS reproduction.

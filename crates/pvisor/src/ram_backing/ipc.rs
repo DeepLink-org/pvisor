@@ -1071,6 +1071,9 @@ mod tests {
         );
         readiness.set_nonblocking(true).unwrap();
         let (mut control, _) = readiness.accept().unwrap();
+        // BSD accepted sockets may inherit O_NONBLOCK from the listener.
+        // Keep accept nonblocking, but wait for the receipt with bounded blocking I/O.
+        control.set_nonblocking(false).unwrap();
         control
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();

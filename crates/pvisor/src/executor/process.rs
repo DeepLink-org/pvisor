@@ -2415,7 +2415,7 @@ mod tests {
                     .insert("pvisor.workspace".into(), serde_json::json!(target));
             }
             let RunInvocation::Process(invocation) = &spec.invocation;
-            let error = rootless_plan(
+            let error = match rootless_plan(
                 &spec,
                 invocation,
                 Path::new("/bin/true"),
@@ -2426,9 +2426,10 @@ mod tests {
                     isolated: true,
                     landlock_only: false,
                 },
-            )
-            .err()
-            .expect("partial staging binding must not fall back to write-through");
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("partial staging binding must not fall back to write-through"),
+            };
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             assert!(error.to_string().contains("staged workspace requires"));
         }
@@ -2480,10 +2481,11 @@ mod tests {
                 },
             );
             if let Some(kind) = error_kind {
-                assert_eq!(
-                    plan.err().expect("invalid merged source accepted").kind(),
-                    kind
-                );
+                let error = match plan {
+                    Err(error) => error,
+                    Ok(_) => panic!("invalid merged source accepted"),
+                };
+                assert_eq!(error.kind(), kind);
             } else {
                 let plan = plan.unwrap();
                 assert!(plan.read_write.contains(&workspace));

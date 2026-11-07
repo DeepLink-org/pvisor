@@ -1933,7 +1933,9 @@ async fn raw_supplier_eof_boundaries_record_failure_and_allow_the_next_call() {
     assert_eq!(admission.cancellations.load(Ordering::SeqCst), 0);
     let events = captured.lock().unwrap();
     assert_eq!(events.len(), 12);
-    for (index, pair) in events.chunks_exact(2).enumerate() {
+    let (pairs, remainder) = events.as_chunks::<2>();
+    assert!(remainder.is_empty());
+    for (index, pair) in pairs.iter().enumerate() {
         assert_eq!(pair[0].name(), "llm.request");
         assert_eq!(
             pair[1].name(),
@@ -1956,8 +1958,7 @@ async fn raw_supplier_eof_boundaries_record_failure_and_allow_the_next_call() {
             );
         }
     }
-    let request_ids: std::collections::HashSet<_> =
-        events.chunks_exact(2).map(|pair| &pair[0].id).collect();
+    let request_ids: std::collections::HashSet<_> = pairs.iter().map(|pair| &pair[0].id).collect();
     assert_eq!(request_ids.len(), 6);
 }
 
