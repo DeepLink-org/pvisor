@@ -335,3 +335,61 @@ in progress; final CI success remains unconfirmed.
 Assigned after round 039 workloads ended. Explore a new bounded packet/state
 boundary and healthy-flow recovery after malformed input, avoiding round 008/015
 coverage. No host networking changes or live external traffic.
+
+Confirmed defect: SYN listener admission checked raw flags/checksums but not
+semantic TCP validity. Malformed options could allocate the only flow slot even
+though smoltcp rejected the packet, making a healthy SYN to a different destination
+receive RST. Production change now reuses smoltcp IPv4/TCP semantic parsers before
+allocation and retains explicit fragment rejection.
+
+Public framed-link regression uses 15 fixed hostile frames (seven malformed TCP
+options, invalid IP version, three fragment cases, four truncations), one flow
+slot, UDP DNS barriers and a final unrelated SYN requiring SYN-ACK. It sends
+33 input frames and receives 18 replies, without external traffic.
+
+Worker checks, UTC 2026-11-07, standard resource limits:
+
+- 15:23:56–15:24:17: initial probe failed on unexpected flow-denial counters.
+- 15:25:10–15:25:11: strengthened distinct-destination reproduction failed
+  because the healthy SYN received RST.
+- 15:25:38–15:25:40: related VM/library plus vm_dns tests passed after fix,
+  15 passed, 76 skipped.
+- All-targets package warnings-denied Clippy and formatting/diff checks passed.
+- Minimum MemAvailable 24,426,827,776 bytes; maximum load1 1.719727;
+  minimum disk free 369,281,327,104 bytes.
+- Worker did not run full package/peer/workspace/Python suites, consumer builds,
+  real VM boot, other platforms, sustained fuzzing or full TCP application flow.
+
+Parent integrated the fix/test/README. Independent reviewer is checking actual
+stack admission semantics, VM/peer callers, test synchronization, full OverlayNet
+tests and targeted affected-consumer compilation before repair publication.
+
+Independent review:
+
+- Full `mise run test -- pvisor-overlaynet`: 115 passed, zero skipped across
+  four binaries; targeted owning-consumer `cargo check --locked -p pvisor --lib`
+  passed. No real VM boot or optional-feature consumer validation.
+- Resource checks: minimum MemAvailable 24,680,710,144 bytes, maximum load1
+  2.25, minimum disk free 368,803,643,392 bytes.
+- Confirmed compatibility of checksums, version/fragment rejection, flag parsing,
+  peer routing and deterministic UDP barriers on source inspection.
+- Found two additional source-traced admission gaps, not yet reproduced:
+  parsed zero-MSS SYN rejected by the actual listener and Ethernet wrong-unicast
+  destination rejected by the interface after allocation. Both can leave LocalDns
+  in Listen outside current handshake reaping.
+- Original worker is reproducing/addressing those before publication, preserving
+  the stack's broadcast/multicast acceptance rather than imposing router-only MAC.
+  No listener-reaping change is assumed necessary without investigation.
+
+Follow-up blocked: the model service rejected the network-validation assignment
+with a cybersecurity-risk error before execution; no new source changes resulted.
+No rephrased retry or safeguard bypass was attempted. The two source-traced gaps
+remain unresolved and unverified by reproducer tests. Publish only the separately
+reproduced malformed-option repair, which passed independent full tests/consumer
+compilation, without claiming complete stack-admission parity.
+
+### 041 — Compact journal writer recovery
+
+Assigned after the blocked round 040 follow-up. Return to non-network storage
+reliability: compact-log write failure, poison/ownership propagation and recovery
+after accepted staged data, avoiding the preceding journal/preimage/seal cases.

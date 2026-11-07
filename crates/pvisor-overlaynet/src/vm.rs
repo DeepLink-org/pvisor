@@ -16,14 +16,14 @@ use std::time::Duration as StdDuration;
 use anyhow::Context as _;
 use pvisor_core::NetworkTransport;
 use smoltcp::iface::{Config as InterfaceConfig, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp::UdpMetadata;
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{
     DhcpMessageType, DhcpOption, DhcpPacket, DhcpRepr, EthernetAddress, EthernetFrame,
     EthernetProtocol, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, Ipv4Address,
-    Ipv4Packet, TcpPacket,
+    Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
@@ -1255,8 +1255,9 @@ fn initial_tcp_syn(frame: &[u8], guest_address: Ipv4Addr) -> Option<FlowKey> {
         return None;
     }
     let ipv4 = Ipv4Packet::new_checked(ethernet.payload()).ok()?;
-    if !ipv4.verify_checksum()
-        || ipv4.src_addr() != guest_address
+    let checksum_caps = ChecksumCapabilities::default();
+    Ipv4Repr::parse(&ipv4, &checksum_caps).ok()?;
+    if ipv4.src_addr() != guest_address
         || ipv4.next_header() != IpProtocol::Tcp
         || ipv4.more_frags()
         || ipv4.frag_offset() != 0
@@ -1264,11 +1265,17 @@ fn initial_tcp_syn(frame: &[u8], guest_address: Ipv4Addr) -> Option<FlowKey> {
         return None;
     }
     let tcp = TcpPacket::new_checked(ipv4.payload()).ok()?;
-    if !tcp.verify_checksum(&ipv4.src_addr().into(), &ipv4.dst_addr().into())
-        || !tcp.syn()
-        || tcp.ack()
-        || tcp.rst()
-    {
+    // Validate options, ports and flag combinations exactly as the stack does
+    // before allocating a listener. A raw SYN bit and valid checksum alone can
+    // otherwise pin a flow slot for a packet the stack will never accept.
+    let repr = TcpRepr::parse(
+        &tcp,
+        &ipv4.src_addr().into(),
+        &ipv4.dst_addr().into(),
+        &checksum_caps,
+    )
+    .ok()?;
+    if repr.control != TcpControl::Syn || repr.ack_number.is_some() {
         return None;
     }
     Some(FlowKey {
