@@ -17,6 +17,12 @@ lifecycle. Do not launch mise or embed Bash checks inside a Python test runner.
 Calling a product command or supervising an example process remains part of
 the integration tests.
 
+`mise run test-nightly-version` runs the production versioning task in an isolated,
+dependency-free project with real Cargo and uv. It checks that the Python package,
+`Cargo.lock` and `uv.lock` agree and that the wheel builder's locked dev-tool
+invocation still works after adding a nightly suffix. It is included in
+`mise run test-scripts`; it does not compile firmware or publish a release.
+
 `mise run test-windows-fw-deps` uses fake privileged/package commands to verify
 the Windows firmware CI setup's isolated signed mirrors, bounded downloads,
 compiler selection, failure propagation and temporary cleanup without installing

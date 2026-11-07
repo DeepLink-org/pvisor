@@ -103,9 +103,15 @@ if [[ $# -gt 0 ]]; then echo "too many arguments for test-scripts" >&2; exit 2; 
 mise run test-task-routing --
 mise run test-vocabulary --
 mise run test-nightly-installer --
+mise run test-nightly-version --
 mise run test-fw-make --
 mise run test-windows-fw-deps --
 '''
+
+[test-nightly-version]
+description = "Check nightly version and lockfile synchronization with real tools"
+hide = true
+run = "bash tests/tasks/test-nightly-version.sh"
 
 [test-windows-fw-deps]
 description = "Windows firmware CI prerequisite setup without apt or sudo"
