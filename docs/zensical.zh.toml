@@ -216,7 +216,7 @@ nav = [
 [project.theme]
 language = "zh"
 custom_dir = "overrides"
-logo = "assets/logos/pvisor-icon.png"
+logo = "assets/logos/pvisor-logo.png"
 favicon = "assets/logos/pvisor-icon.png"
 features = [
   "navigation.tabs",

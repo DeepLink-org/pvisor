@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/DeepLink-org/pvisor/main/docs/overrides/assets/logos/pvisor-icon.png" alt="pVisor" width="88" />
+<img src="docs/overrides/assets/logos/pvisor-logo.png" alt="PolicyVisor" width="420" />
 
 # PolicyVisor
 
