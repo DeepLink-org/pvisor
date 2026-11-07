@@ -208,3 +208,32 @@ not establish that an end-to-end VM/FUSE workflow works.
   cancellation, VM/native reclaim, other integration binaries/platforms,
   workspace or Python suites. Body-owner release is not proof that a real
   remote supplier stops computing.
+
+### 006 — Journal torn-write recovery
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABAGVZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: select an uncovered journal persistence boundary under the
+  documented public API, inject a small torn-write/corrupt-tail or inconsistent
+  auxiliary-file state, and check committed-prefix preservation and subsequent
+  append/query behavior according to the actual recovery contract.
+- Added one external API contract test in
+  `crates/pvisor-journal/tests/api_contract.rs`: a complete record closes an
+  unresolved forward reference into a causal cycle, followed by an incomplete
+  tail. Read/validate/open reject without truncating any bytes. After explicit
+  fixture repair removes only the complete corrupt record, open repairs only
+  the torn tail and preserves receipts, pending references and append offsets.
+- Worker full-crate validation passed 29/29, zero skipped, in 11 seconds;
+  targeted rustfmt and diff checks passed, with no test-logic failure.
+- Coordinator independently ran `mise run test -- pvisor-journal`, using
+  constrained parallelism, offline Cargo, nice and a 180-second timeout.
+  All 29 tests passed, zero skipped (including API boundary guards and the
+  existing seeded state-machine test); build 5.42 seconds, tests 0.452 seconds.
+  Nextest ID: `66d21879-d853-4d13-acc8-ecb2c0fd883d`.
+  `git diff --check` passed.
+- Coordinator available memory before/after: 20,311,064 / 19,961,852 KiB;
+  load1 0.50 / 0.59; free disk unchanged at 364,713,431,040 bytes.
+- Not covered: actual crashes, power loss, page-cache loss, fsync/device I/O
+  faults, auxiliary-file inconsistency, other platforms, clippy/rustdoc/doctest,
+  Python or workspace suites. This is closed-file state injection.

@@ -510,6 +510,83 @@ fn restart_preserves_float_content_and_the_original_retry_receipt() {
 }
 
 #[test]
+fn corrupt_complete_graph_before_torn_tail_is_rejected_without_truncation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    let journal = Journal::open(&path).unwrap();
+    let first = event(&journal);
+    let mut forward = event(&journal);
+    forward.caused_by = vec!["future".into()];
+    let receipts = [
+        journal.append(first.clone()).unwrap(),
+        journal.append(forward.clone()).unwrap(),
+    ];
+    let prefix = journal.records().unwrap();
+    let mut future = event(&journal);
+    future.id = "future".into();
+    future.caused_by = vec![forward.id.clone()];
+    drop(journal);
+    let good = std::fs::read(&path).unwrap();
+
+    // File-state injection, not a process crash: a complete record closes the
+    // previously unresolved edge into a cycle, followed by an incomplete write.
+    // open may discard only the incomplete tail, never a corrupt complete graph.
+    let mut cyclic = serde_json::to_value(&prefix[1]).unwrap();
+    cyclic["position"]["offset"] = 2.into();
+    cyclic["event"] = serde_json::to_value(&future).unwrap();
+    let mut damaged = good.clone();
+    damaged.extend(serde_json::to_vec(&cyclic).unwrap());
+    damaged.extend_from_slice(b"\n{\"position\":");
+    std::fs::write(&path, &damaged).unwrap();
+    assert!(Journal::read(&path).is_err());
+    assert!(Journal::validate(&path).is_err());
+    assert!(Journal::open(&path).is_err());
+    // Even a failed writer open must not truncate the incomplete tail before
+    // validating the complete prefix's causal graph.
+    assert_eq!(std::fs::read(&path).unwrap(), damaged);
+
+    // Explicit fixture repair removes only the injected complete bad record;
+    // this is not automatic recovery of corruption by the product.
+    let mut torn = good.clone();
+    torn.extend_from_slice(b"{\"position\":");
+    std::fs::write(&path, &torn).unwrap();
+    assert!(Journal::read(&path).is_err());
+    assert!(Journal::validate(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), torn);
+    let recovered = Journal::open(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), good);
+    assert_eq!(recovered.records().unwrap(), prefix);
+    let mut live = recovered.subscribe();
+    assert_eq!(recovered.append(first).unwrap(), receipts[0]);
+    assert_eq!(recovered.append(forward).unwrap(), receipts[1]);
+    assert!(live.try_recv().is_err());
+    // Recovery must rebuild unresolved forward references, not merely offsets.
+    assert!(matches!(
+        recovered.append(future.clone()),
+        Err(AppendError::Rejected(_))
+    ));
+    assert_eq!(recovered.records().unwrap(), prefix);
+    assert_eq!(std::fs::read(&path).unwrap(), good);
+    assert!(live.try_recv().is_err());
+    future.caused_by = vec![prefix[0].event.id.clone()];
+    let receipt = recovered.append(future.clone()).unwrap();
+    assert_eq!(receipt.position.offset, 2);
+    assert_eq!(receipt.position.journal, receipts[0].position.journal);
+    assert_eq!(receipt.durability, Durability::LocalSync);
+    assert_eq!(live.try_recv().unwrap(), future);
+    let records = recovered.records().unwrap();
+    assert_eq!(&records[..2], prefix.as_slice());
+    assert_eq!(records[2].event, future);
+    assert_eq!(records[2].position, receipt.position);
+    drop(recovered);
+    Journal::validate(&path).unwrap();
+    assert_eq!(Journal::read(&path).unwrap(), records);
+    let reopened = Journal::open(&path).unwrap();
+    assert_eq!(reopened.append(future).unwrap(), receipt);
+    assert_eq!(reopened.records().unwrap(), records);
+}
+
+#[test]
 fn complete_semantic_corruption_is_not_repaired() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("trace");
