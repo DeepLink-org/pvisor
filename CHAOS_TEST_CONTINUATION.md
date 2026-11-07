@@ -270,3 +270,36 @@ Parent reviewed and merged the regression and README cleanly.
 Assigned after round 037 workloads ended. Investigate an owned destination
 obstruction around preimage/metadata publication, preserving candidate ownership,
 accepted upper bytes and host source state across failure and retry/reopen.
+
+Result: no product defect reproduced. The private scheduling seam inserts a small
+owned nonempty directory at the legacy preimage final name after missing-entry
+check, after another staged file has succeeded. Both nondurable no-replace rename
+and durable hardlink publication reject the invalid winner with EINVAL.
+Repeated public copy-up attempts preserve accepted candidate bytes/inode, host
+sources and obstruction sentinel, without publishing a new upper or leaking
+pending journal temporaries. Removing the obstruction allows retry, sync and
+owner reopen with original baselines.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:10:53–15:11:03: targeted mise overlay-core library regression passed,
+  1 passed, 175 filtered; two publication variants.
+- 15:11:54–15:12:00: `mise run test -- pvisor-overlay-core`,
+  238 passed, 5 skipped.
+- 15:12:09–15:12:14: warnings-denied all-targets package Clippy passed.
+- Two new formatting differences from initial check corrected; final package
+  formatting and diff checks passed.
+- MemAvailable 24,030,216–24,267,324 KiB; load1 1.07–1.31;
+  free disk 369,826,463,744–369,928,208,384 bytes. No mounts/children;
+  worktree-local fixtures cleaned up.
+- No CLI/FUSE/VM, process crash/power loss, compact log, device/fsync failure,
+  macOS, Python, workspace-wide or doctest execution.
+
+Parent inspected the publication/copy-up/reopen assertions and integrated the
+private regression and README.
+
+### 039 — Managed stage seal publication failure
+
+Assigned after round 038 workloads ended. Explore managed sealed-v1 publication
+obstruction, completion refusal, retained candidates and admission/retry behavior,
+avoiding prior round 029 completion-publication coverage.

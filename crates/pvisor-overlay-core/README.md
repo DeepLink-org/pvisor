@@ -321,6 +321,17 @@ consumption starts after owner teardown, and a new owner observes the next
 generation. Concurrent requests still arbitrate first publication on one owner;
 a non-durable losing read does not invalidate a durable winner's membership.
 
+The internal `preimage_publication_directory_race_preserves_candidates_and_reopens`
+regression inserts a small owned nonempty directory at a legacy preimage's final
+name after the missing-entry check, after another file's staged bytes have been
+accepted. Both read-observation rename and durable mutation link publication
+reject the invalid winner. Repeated public copy-up calls propagate the error
+without publishing the new candidate, consuming existing staged bytes, modifying
+host sources or removing the obstruction. Failed publication cleans its temporary
+entry; removing only the fixture obstruction permits retry and owner reopen with
+both original baselines retained. This is deterministic private-seam scheduling,
+not process interruption, compact-log failure, or a device/fsync fault.
+
 `FilesystemService::prepare_copy_ups(paths, truncate)` prepares durable baseline
 observations and regular-file bytes without publishing upper entries or changing
 hardlink groups. Physical hardlink aliases share one prepared copy but retain
