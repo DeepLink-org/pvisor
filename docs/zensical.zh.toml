@@ -26,6 +26,7 @@ nav = [
       { "接入你的 Agent" = "guides/agents/index.md" },
       { "Claude Code" = "guides/agents/claude-code.md" },
       { "Codex CLI" = "guides/agents/codex.md" },
+      { "Pi、DSH 和 Codex 插件" = "guides/agents/plugins.md" },
       { "任意脚本与自动化命令" = "guides/agents/custom-scripts.md" },
     ] },
     { "执行器" = [

@@ -1,0 +1,46 @@
+Install the pVisor task plugin for the Agent host the user selects: Pi, DeepSeek
+Harness (DSH), or Codex. Use the registry release, not a source checkout.
+
+1. Detect OS, architecture, Node version and installed Agent hosts. Node.js
+   22.19+ is required. Native packages support Linux x64 and macOS arm64. Check
+   FUSE/FSKit and namespace prerequisites from the pVisor installation guide:
+   https://deeplink-org.github.io/pvisor/start/installation/
+   Do not infer working staging from successful package installation.
+2. Confirm that pvisor-agent-plugins and both matching native optional packages
+   are actually published on npm. The first release may still be pending:
+   report that blocker rather than inventing a successful installation.
+3. Reuse working installations. Ask which host to use when several are present.
+   Do not install unrelated Agent applications, change model logins, or remove
+   existing plugins without permission. Explain host-profile changes first.
+4. Use the selected host's native package manager:
+     Pi: pi install npm:pvisor-agent-plugins
+     DSH Web: dsh plugin --profile web add pvisor-agent-plugins
+     DSH Desktop: dsh plugin --profile desktop add pvisor-agent-plugins
+   npm installs the matching native runtime automatically. Keep optional
+   dependencies enabled; Python, Rust and manual binary paths are not needed.
+5. For Codex, install the remote workflow and register tools from the project:
+     codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+     codex plugin add pvisor@pvisor
+     codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+   A client without plugins may use MCP alone. Do not register duplicate servers
+   or infer the project from an installed plugin's cwd.
+6. Never print keys or put credentials in plugin config or task records. Do not
+   change host approval settings. OS-level FUSE/FSKit installation or privileged
+   policy changes require separate user permission; do not install them silently.
+7. Restart the host. Confirm pvisor_doctor reports the intended project, runtime
+   version and task-only scope. In a disposable project, run pvisor_spawn to
+   create two files, review both, accept one and drop the other. Verify the host
+   was unchanged before acceptance and the accepted file survives drop.
+   Test user rejection as well as approval in Pi or DSH. Codex acceptance stays
+   with the user through native pvisor review/apply/drop. If a terminal CLI is
+   wanted, offer npm install --global pvisor-agent-plugins; do not require it for
+   plugin operation.
+8. Report exact installed versions, host/profile, runtime selection, config
+   changes, verification results and remaining checks. These task tools do not
+   intercept native Agent tools. Every spawn is an independent Session.
+   Task HOME/XDG state is fresh and private, not the host's login/config/cache
+   directory. Workspace stages remain persistent in the configured state root.
+
+Missing native dependencies or failed confinement are errors. Never substitute
+host execution, remove --safe, automatically retry uncertain side effects,
+publish packages, star a repository, or delete pending stages to make setup pass.

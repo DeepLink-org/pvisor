@@ -19,6 +19,32 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  agent-plugins:
+    name: Agent plugin contracts / ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["22.19.0", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: plugins/test/hosts/package-lock.json
+      - name: Test documented adapter and package contracts
+        run: npm test --prefix plugins
+      - name: Install pinned host loader fixtures without lifecycle scripts
+        run: npm ci --prefix plugins/test/hosts --ignore-scripts --legacy-peer-deps --no-audit --no-fund
+      - name: Test actual Pi and DSH loaders
+        run: |
+          npm run test:hosts --prefix plugins -- \
+            "$PWD/plugins/test/hosts/node_modules/@earendil-works/pi-coding-agent" \
+            "$PWD/plugins/test/hosts/node_modules/@deepseek-ai/dsh-tools"
+
   windows:
     name: Windows
     uses: ./.github/workflows/windows-vm.yml
@@ -276,6 +302,20 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
 
       - run: mise run smoke
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run documented Pi, DSH and Codex tasks through the real CLI
+        env:
+          PVISOR_PLUGIN_BINARY: ${{ github.workspace }}/target/debug/pvisor
+          PVISOR_PLUGIN_TEST_OUTPUT_DIR: ${{ runner.temp }}/agent-plugin-cases
+        run: mise run test-agent-plugins-native
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: agent-plugin-native-cases
+          path: ${{ runner.temp }}/agent-plugin-cases
+          if-no-files-found: ignore
       # Freeze the static product before Cargo's native tests can replace the
       # staged binaries. Contract jobs reuse this exact build on separate VMs.
       - name: Archive static CLI for contract jobs

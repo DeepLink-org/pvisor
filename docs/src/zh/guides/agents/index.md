@@ -6,6 +6,8 @@ description: 在 Agent style stagebox 模式下接入现有 Agent，配置凭据
 
 完成[离线暂存演示](../../start/first-run.md#agent-style)后，接入本机或镜像中已安装的 Agent。[Claude Code 修复任务](claude-code.md#repair-task)包含从准备项目到接收成果的完整步骤。
 
+需要从现有会话发起独立暂存任务时，安装 [Pi、DSH 和 Codex 任务插件](plugins.md)。插件沿用原生 pVisor 成果交接，不覆盖 Agent 内置工具；下面的整进程启动路径保持独立。
+
 <div class="pv-guide-steps" markdown="1">
 
 1. ### 确认 Agent 和认证方式 {#prepare-agent}

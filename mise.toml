@@ -648,6 +648,18 @@ mise run vm-probe-guest --
 python3 scripts/check-linux-cold-restore.py --binary "$CARGO_TARGET_DIR/debug/examples/vm_linux_cold_restore" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "${PVISOR_CASE_VM_LIBRARY_DIR:-$CARGO_TARGET_DIR/release}" --report "$CARGO_TARGET_DIR/vm-validation/linux-machine.json" "$@"
 '''
 
+[tasks.test-agent-plugins]
+description = "Pi、DSH 和 Codex 任务适配器的 Node.js 契约与 stdio 传输测试"
+run = "node --test plugins/test/*.test.mjs"
+
+[tasks.test-agent-plugins-smoke]
+description = "使用真实 pvisor CLI 验证暂存、审查、选择性 apply 和 drop；需要 Host 暂存环境"
+run = "node plugins/smoke.mjs"
+
+[tasks.test-agent-plugins-native]
+description = "通过 Pi、DSH 和 Codex stdio 路由执行文档场景；需要真实 CLI 和 Host 暂存环境"
+run = "node --test plugins/test/*.native.mjs"
+
 [tasks.test-py]
 description = "无参数时覆盖 tests/、活动 benchmark 和命令计时测试"
 run = '''

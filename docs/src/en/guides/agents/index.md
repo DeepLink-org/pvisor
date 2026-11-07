@@ -6,6 +6,8 @@ description: Run Claude Code, Codex CLI, or any script as a pVisor Session with 
 
 After the [offline staging demo](../../start/first-run.md#agent-style), connect an agent installed on your machine or in your image. The [Claude Code repair task](claude-code.md#repair-task) covers project setup through accepting the results.
 
+To start independent staged tasks from an existing conversation, install the [Pi, DSH and Codex task plugins](plugins.md). They retain native pVisor result handoff without overriding built-in Agent tools; the whole-process launch below remains separate.
+
 <div class="pv-guide-steps" markdown="1">
 
 1. ### Check the agent and authentication {#prepare-agent}

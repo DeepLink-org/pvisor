@@ -158,6 +158,7 @@ machine capacity; execution records and staged changes help you review results.
 Capabilities depend on the interface, executor, and platform.
 
 - Native Sessions: use `pvisor spawn` with Host, OCI, or VM execution and explicit staging for review/apply.
+- Agent plugins: [Pi, DSH and Codex task adapters](plugins/README.md) use native `spawn → review → apply/drop`; built-in Agent tools remain separate.
 - Embedded runtime: integrate the [Rust runtime](crates/pvisor/README.md).
 - Platform APIs: use the [local daemon](crates/pvisor-daemon/README.md) for partial OpenSandbox/E2B SDK profiles on Linux/KVM, or the [containerd shim](crates/pvisor-shim/README.md).
 - Container workflows: the experimental [Docker-style CLI](crates/pvisor-cli/README.md#docker-command-profile-experimental) runs one VM per container.

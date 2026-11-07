@@ -1,0 +1,50 @@
+{
+  "name": "pvisor-agent-plugins",
+  "version": "0.1.0",
+  "description": "Task-level pVisor staging adapters for Pi, DSH and Codex",
+  "license": "Apache-2.0",
+  "homepage": "https://deeplink-org.github.io/pvisor/guides/agents/plugins/",
+  "repository": { "type": "git", "url": "git+https://github.com/DeepLink-org/pvisor.git", "directory": "plugins" },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
+  "keywords": ["pi-package", "dsh-plugin", "codex", "sandbox", "pvisor"],
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "exports": {
+    "./pi": "./pi.mjs",
+    "./dsh": "./dsh.mjs"
+  },
+  "bin": {
+    "pvisor": "./pvisor.mjs",
+    "pvisor-agent-mcp": "./mcp.mjs"
+  },
+  "pi": { "extensions": ["./pi.mjs"] },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": { "@deepseek-ai/dsh-tools": "^0.2.0-0 || ^0.2.1-0" },
+  "peerDependenciesMeta": { "@deepseek-ai/dsh-tools": { "optional": true } },
+  "optionalDependencies": {
+    "pvisor-agent-runtime-linux-x64": "0.1.0",
+    "pvisor-agent-runtime-darwin-arm64": "0.1.0"
+  },
+  "files": [
+    "backend.mjs",
+    "tools.mjs",
+    "pi.mjs",
+    "dsh.mjs",
+    "mcp.mjs",
+    "pvisor.mjs",
+    "runtime.mjs",
+    "runtime.json",
+    "cordis.patch.yml",
+    "plugin.json",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "install-prompt.txt"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:hosts": "node check-hosts.mjs",
+    "smoke": "node smoke.mjs",
+    "release:prepare": "node release.mjs"
+  }
+}

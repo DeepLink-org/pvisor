@@ -1,0 +1,231 @@
+# pVisor Agent plugins
+
+Run a bounded task from Pi, DeepSeek Harness (DSH), or Codex, inspect its staged
+files, and accept selected results. These are **task adapters**, not replacements
+for the host's built-in filesystem, terminal, or background-job tools. Each
+`pvisor_spawn` starts a new native Session; later calls do not continue that Session.
+Put dependent edits and tests in the same `argv` invocation.
+
+First-release status: these registry and remote-marketplace entrypoints are
+prepared but are not live until the npm packages and marketplace commit are
+published. Do not treat the commands below as evidence of publication.
+
+Node.js 22.19+ is required. npm automatically installs the matching pVisor native
+package on Linux x64 or macOS arm64. No Python, Rust, Docker, source checkout or
+manual binary path is needed. Host staging still needs the system's FUSE/FSKit
+and namespace support; the plugin cannot install privileged OS components.
+
+## Install
+
+Activate only the Agent hosts you use. Installation selects a native dependency
+for your platform, including the complete CLI companion set and firmware metadata.
+Do not omit optional dependencies.
+
+### Pi
+
+```sh
+pi install npm:pvisor-agent-plugins
+```
+
+Start a new Pi session in the target project. Ask it to call `pvisor_doctor`,
+then `pvisor_spawn`. The extension adds tools without overriding Pi's native tools.
+For whole-Agent staging, launch Pi itself through `pvisor spawn --safe` instead;
+do not nest task plugins inside that outer Session.
+
+### DSH Web and Desktop
+
+```sh
+dsh plugin --profile web add pvisor-agent-plugins
+dsh plugin --profile desktop add pvisor-agent-plugins
+```
+
+Install only the profile you use, then restart it. Desktop also accepts
+`pvisor-agent-plugins` in **Plugins → Add plugin**. The package
+uses Cordis's functional plugin interface and `dsh-tools.defineTool`; its peers
+target DSH 0.2.x. It does not disable existing providers or change permission
+presets. Check that `pvisor_doctor` appears in the actual tool catalog.
+
+### Codex CLI
+
+Register the remote marketplace and bind the tools from your project directory:
+
+```sh
+codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+codex plugin add pvisor@pvisor
+codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+```
+
+The marketplace installs the workflow skill. The native `codex mcp add` command
+separately binds its runtime tools to an explicit project. Start a new session
+after both steps. Clients without plugin support can use MCP alone, without the
+workflow skill. There is no duplicate bundled MCP registration.
+
+`npx` installs the pinned plugin and its matching runtime automatically, without
+a global npm install. To use the native CLI directly from any terminal, optionally
+install the same package globally:
+
+```sh
+npm install --global pvisor-agent-plugins
+pvisor --version
+```
+
+This split is intentional: Codex 0.164.0 starts bundled MCP servers in the plugin
+cache, and portable manifest cwd paths are plugin-relative.
+Do not infer the project from that cwd or rely on project-variable interpolation.
+The server rejects missing project configuration instead of falling back.
+Run `pvisor_doctor` and check its project before running any task. MCP does not
+intercept Codex's built-in `exec`, patch, filesystem, or other MCP tools.
+Whole-Agent staging remains the existing
+[Codex launch workflow](../docs/src/en/guides/agents/codex.md).
+
+## Configure
+
+Configuration comes from the host process environment, never tool arguments or a
+project-controlled config file:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PVISOR_PLUGIN_BINARY` | Bundled native runtime | Optional operator override, never needed for normal installation |
+| `PVISOR_PLUGIN_STATE_DIR` | `~/.local/state/pvisor/agent-plugins/v1` | Private task records and stages, outside the project |
+| `PVISOR_PLUGIN_PROJECT` | Unset | Explicit project for manually launched MCP; prefer native `codex mcp add ... --project DIR`; Pi/DSH use their call context |
+
+Run commands always use Host execution, `--safe`, `--no-agent-defaults`,
+deny-all networking, captured stdio and a runtime deadline (1–600 seconds,
+default 120). Personal Agent presets are not loaded. No credentials are
+explicitly passed into the task. Each task gets a fresh private HOME and XDG
+state paths; host login state, user configuration and HOME caches are not inherited.
+Durable workspace stages stay in the configured state directory. Scratch HOME
+may remain after a failed/interrupted execution; it is not an accepted project
+result. Networked tasks, VM selection, interactive
+input, PTYs, and live Session continuation are not exposed in this first version.
+Do not remove safety flags to make a failed task work.
+
+The private task record contains only its schema, project and task ID; it does
+not persist command arguments or credential values. Runtime-owned records and
+captured command output have their normal retention rules. Avoid printing secrets.
+This is not an isolation boundary against another process with your host UID.
+
+## Run and review
+
+Ask your Agent to use this tool input:
+
+```json
+{
+  "argv": [
+    "sh",
+    "-c",
+    "printf 'candidate\\n' > accepted.txt; printf 'temporary\\n' > discarded.txt"
+  ],
+  "timeout_seconds": 120
+}
+```
+
+`pvisor_spawn` returns the exact stage selector, CLI exit code and bounded
+stdout/stderr. A nonzero exit, cancellation, or lost completion can leave
+candidates. Do not automatically rerun an uncertain task. Use that exact selector;
+the adapters never use `last`.
+
+| Tool | Effect |
+| --- | --- |
+| `pvisor_doctor` | Show project, runtime version and adapter scope; it does not test FUSE or certify isolation |
+| `pvisor_spawn` | Call native `pvisor spawn` for one new staged task and retain its Session |
+| `pvisor_status` | Query the exact Session's JSON status |
+| `pvisor_review` | Show the bounded project diff |
+| `pvisor_apply_preview` | Call native `pvisor apply --dry-run` for explicit relative paths |
+
+File acceptance happens after the native task exits. Runtime ownership,
+completion receipts and conflict checks remain authoritative. A successful CLI
+exit is not proof of a successful user task or sufficient evidence to accept it.
+
+### Pi decisions
+
+Pi commands use its interactive confirmation dialog:
+
+```text
+/pvisor status STAGE_FROM_RESULT
+/pvisor review STAGE_FROM_RESULT
+/pvisor apply {"selector":"STAGE_FROM_RESULT","paths":["accepted.txt"]}
+/pvisor drop STAGE_FROM_RESULT
+```
+
+Apply first shows a preview and asks for confirmation. Drop asks separately.
+With no interactive UI, mutations are refused. Tool calls do not expose apply
+or drop, so model-generated JSON cannot stand in for user confirmation.
+
+### DSH decisions
+
+DSH additionally exposes `pvisor_apply` (`selector`, `paths`) and `pvisor_drop`
+(`selector`). Each requires an initiating Agent and an explicit `allowed-once`
+answer from the host approval service. Cancellation, no approval answerer,
+rejection, and approval errors do not mutate the stage or project. The approval
+names the project, stage and selection; apply includes the runtime preview.
+
+### Codex and terminal decisions
+
+Codex's MCP surface intentionally has no apply/drop tools. After reviewing the
+diff, run these commands yourself in the project:
+
+Save the returned selector in your terminal as `stage`, then use the native CLI
+(install the optional global package above, or prefix commands with
+`npx --yes --package pvisor-agent-plugins@0.1.0`):
+
+```sh
+pvisor status "$stage" --json
+pvisor review "$stage" --diff
+pvisor apply "$stage" --path accepted.txt --dry-run --diff
+pvisor apply "$stage" --path accepted.txt
+pvisor drop "$stage"
+```
+
+The native CLI is an operator interface, not an extra approval mechanism for
+Agent terminal tools. A skill cannot prevent an Agent that already has host
+shell access from invoking it. Keep native host approvals. No second operation
+CLI or commit/abort vocabulary is introduced.
+
+Check `accepted.txt` in the host project and rerun the relevant tests. Drop only
+remaining unwanted candidates; skip it if all candidates were accepted. Apply
+does not undo external APIs or previously applied files. No operation auto-applies
+or auto-drops on Agent idle, shutdown, or plugin unload.
+
+## Verify installation
+
+In a new disposable project, ask your Agent to call `pvisor_doctor`, then run the
+two-file example above through `pvisor_spawn`. Check that the host has neither
+file yet, review both, accept `accepted.txt`, and drop the other candidate.
+The accepted file must remain. Check rejection as well as approval in Pi or DSH.
+Keep `--safe` if startup fails; fix the reported platform prerequisites instead.
+
+Source validation used Pi 0.79.3's actual extension loader and DSH
+`dsh-tools` 0.2.1-alpha.2's actual `defineTool` compiler. Codex CLI 0.164.0
+accepted the local marketplace package in a disposable `CODEX_HOME`.
+Those checks cover package/schema loading, not interactive user decisions.
+
+No cloud-model or interactive acceptance result is claimed by those loader tests.
+Developer tests, source installs and publication instructions live in
+[CONTRIBUTING.md](https://github.com/DeepLink-org/pvisor/blob/main/plugins/CONTRIBUTING.md).
+
+## Upgrade and uninstall
+
+Review pending tasks before upgrading. Use the host's package manager to update
+the plugin and its pinned native dependencies together, then restart. Update a
+Codex pinned marketplace ref and its `npx` version together. Never replace a
+runtime underneath a running task.
+
+Use `pi remove npm:pvisor-agent-plugins`,
+`dsh plugin --profile web remove pvisor-agent-plugins` (or the selected Desktop
+profile), and `codex plugin remove pvisor@pvisor` as supported by each
+host's help. Remove its separate runtime registration with `codex mcp remove pvisor`.
+Remove the shared binaries with `npm uninstall --global pvisor-agent-plugins`.
+These actions do not delete retained stages. Review or drop them explicitly;
+do not recursively delete the state root as an uninstall step.
+
+## Maintenance
+
+`backend.mjs` owns CLI translation, task identity, process supervision and output
+bounds. `tools.mjs` owns the shared read/execute schema. Pi and DSH add only host
+lifecycle/approval adaptation. `mcp.mjs` owns stdio JSON-RPC transport; it never
+adds acceptance authority. Do not duplicate filesystem state, bypass native
+locks, use `last`, retry commands automatically, or silently enable host execution.
+
+Preserve this package's Apache-2.0 licensing. The integration was independently
+implemented against the hosts' public contracts; no DeltaBox runtime is bundled.
