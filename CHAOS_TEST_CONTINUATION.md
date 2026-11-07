@@ -1335,3 +1335,72 @@ Clippy evidence distinct, not repeated byreviewer. Parent accepts066forpublicati
 Assigned same worker after066review. Verify documented sameprotocol/different-
 digest caller commands execute through original Host owner, retained authority,
 confirmed cancellation/completion and selectiveacceptance, using ownbuiltbinaries.
+
+Result: no defect, three real safe Host Sessions19:11:51–19:11:53 UTC. Ownstatic
+A8187f3684399e26fdc54a86bd23c84fc73075ece033738c6f97f4f4f13e70cfe versus nativeGNU
+B7358fc5be2a5c0d198c71f14d940b3727bda483483c5e2fb1e55e9eb2b77745b, both0.3.1,
+instance-control-3/envelope2. Astarts/Bcontrols then reversed: live statusprogress,
+ownerPID/starttime/exe/SHA/session/execution/endpoint unchanged; live review/drop
+refuse1, applypreviewblocked3. Otherbinary cooperativekill leads143 in0.320/0.306s,
+cancelledreceipt/no fabricatedexitcode, stoppedreview/selectiveapply/drop pass.
+HealthyBstart/Aaccept confirms continuation; originalsunchangeduntilapply.
+Differentbuild/digest evidence only, not source-version/protocol skew.
+
+32CLIcommands24zero/fourexpected1/twoblocked3/twocancel143; allstagesdiscarded/empty,
+owners/fixtureprocesses/mounts/socketsgone before8snaturalfallback.
+Two native Core envelope/correlationtests passed63filtered by19:12:21 UTC.
+Minmemory20,906,831,872bytes,maxload1.302,mindisk350,721,286,144bytes,gates/diffpassed.
+No source changes/artifactsmerge; toolcreatedharness/buildaliascanceled.
+No executable-replacement/incompatibleprotocol/otherplatform/fullsuite evidence.
+
+### 068 — Private executable path replacement while live
+
+Assigned same worker after067. Copy own binaries into private fixtureinstallation,
+atomic compatible path replacement only there, originalowner identity/failclosed
+control/confirmedreceipt and healthy newSession. No userinstallation edits.
+
+Result: no defect, two real safe Host Sessions19:21:03–19:21:05 UTC. Private0700
+installation copies ownA/B; atomicreplace onlyfixturepathname. Originalowner
+PID530913/start2091587 mappedAinode285833537/dev54 unchanged, afterreplace
+links0/(deleted) retainsAhash; pathnameB inode285833541/differenthash. ReplacementB
+status/kill reaches originalowner/IDs/endpoint unchanged, cooperativecancel143
+in0.430s, cancelledreceipt/no workloadexitcode. Retainedkeep selectiveapply/drop.
+FreshSessionPID530995/start2091644 mapsB/newIDs/digest, completes0 in0.227s,
+selectiveaccept/drop passes. Hostunchangedbeforeapply, bothstagesdiscarded/empty,
+owners/descendant/mounts/controlstagesocketsgone withoutmanualsignals.
+
+16CLI15zero/onecancel143 plus two boundedowncopycommands. Native verifiedimage
+identitytest1passed149filtered by19:21:46 UTC. Minmemory21,446,295,552bytes,
+maxload0.807,mindisk350,663,962,624bytes,gates/diffpassed. No source/artifactadds;
+ignored evidence only. Linuxsameprotocolbuildfixtureevidence, not rollingupgrade
+recommendation; existingdraininstallationguidance unchanged. No sourceskew/
+incompatibility/inplacemutation/otherplatform/fullsuite coverage.
+
+### 069 — Real symbolic-link selective acceptance
+
+Assigned same worker after068. Tiny owned relative/brokenlink add/replace/delete,
+documented nofollowreview and linkidentity versus targetcandidate selection,
+without external targets or concurrent namespace mutation.
+
+Result: no defect, two real default-safe Host Sessions19:31:34–19:31:44 UTC.
+Sixcandidates=tworeferentedits/twoaddedlinks/replacedlink/deletedlink.
+ReviewJSON linktypesexact; diff skips linkcontent, linkonlyapplydiff metadata/
+symlinkwithouttraversal. Threepreviewsstrictinert. Selectnewlink requiresno referent,
+otherlinkoperations then leave exactlytworeferentedits. Finalnew/replace link
+target.txt, brokenlink missing-target.txt, deletedlinkabsent, acceptedlinksresolve
+originalhostbytes not stagedreferents. Drop preservesthem, referentcontent/mode/
+ownership/dev/inode/size/nlink unchanged. Healthychecks/keepaccept/scratchdrop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+19CLI+one native symlinkselectiontestall0 (1passed22filtered). Fortyresourcegates:
+minmemory20,792,868,864bytes,maxload1.08936,mindisk350,740,353,024bytes,diffpassed.
+No source/artifactadds, ignored evidenceonly. No outsidefixturelinks/chains/loops/
+namespaceconcurrency/nonLinux coverage.
+
+At19:25:26 UTC all33 checks for publishedrevisionaf096e2f succeeded, including
+sixfixes. Pending045/062decisions unchanged, campaignnotfinished.
+
+### 070 — Real symlink/regular-file type transitions
+
+Assigned same worker after069. Owned-entry replacements bothdirections with
+separatereferentcandidate, nofollowdiff/preimage/selection and hostreferentpreservation.
