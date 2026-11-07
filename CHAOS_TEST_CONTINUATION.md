@@ -940,3 +940,107 @@ Parent reviewed incremental same-fixture recovery assertions and merged test/REA
 Assigned after round 053 workloads ended. Diversify into actual low-load
 spawn/review/selective apply/drop, guest failure/cancellation and later successful
 run, with source preservation and owned process/mount cleanup checked.
+
+Result: three real serial safe Host Sessions, no FakeRuntime or defect reproduced.
+At 17:25:44.392–17:25:45.545 UTC, 24 CLI operations (23 success, expected guest
+exit23 once) test failed stage A with background child, newer successful B
+recreating/accepting A-deleted path, then healthy C. Selective apply/drop of older
+failed stage preserves newer accepted file; unrelated scratch candidates remain
+until dropped. Original host contents unchanged before apply and previews inert.
+Final edit=accepted-from-failure, obsolete=reintroduced-success,
+health=healthy3, sentinel=untouched; no scratch files. All stages discarded/empty.
+
+Actual spawn uses Host, --safe, --overlaynet-deny-all, captured stdio, explicit
+stage and tokenized Python fixture. Recorded owner PIDs gone, no token/cwd matching
+descendants, readable mount-namespace fixture mounts or stage sockets. Failed
+Session returned in0.256s before background child's natural3s deadline.
+
+Worker checks, standard gates/limits:
+
+- 17:22:34–17:24:13 UTC: `mise run build -- debug product` passed98.62s,
+  existing local firmware, no downloads.
+- Supported static product CLI executed scenario. Explicit GNU product target
+  and musl nextest attempts failed during setup (unsupported target/missing
+  musl compiler); not counted as lifecycle evidence.
+- Three selected native mise pvisor-cli apply tests passed.
+- Integrated final daemon store truncation/restoration regression passed afterward.
+- Diff check passed. All30 guarded invocations admitted: minimum available memory
+  23,986,913,280 bytes, maximum load1 2.70, minimum boundary diskfree
+  354,402,889,728 bytes; final17:28:39 audit diskfree354,205,315,072.
+- No source code changed. Diagnostic artifacts retained child-local .t054 and
+  target-chaos-054, not merged. Temporary worktree target redirect removed;
+  no source-checkout outputs written.
+- No cancellation injection/VM/OCI/other-platform/concurrent-writer/full package/
+  workspace/Python coverage in054.
+
+### 055 — Real Host deadline and retained stage
+
+Assigned to same isolated worker after054 for validated build reuse. Explore
+documented bounded deadline/cancellation with owned descendant cleanup, selected
+acceptance of retained stage and healthy successor, no unrelated process kills.
+
+Result: no defect reproduced, same validated static CLI reused without build.
+At 17:31:35.899–17:31:38.870 UTC three real safe Host Sessions:
+
+- --timeout2s returned1 in2.172s; Bundle failed/deadline_exceeded, no workload
+  exit code. Ready parent/descendant each had8s natural fallback.
+- After pipe readiness, `pvisor kill STAGE --json` reported cooperative=true,
+  returned0; spawn returned143 in0.232s, Bundle cancelled, no fabricated process
+  failure/workload exit code. Descendant ignored SIGTERM but was cleaned.
+- Healthy successor returned0 in0.184s and verified prior accepted state before
+  staging next health file. Deadline/cancel stages selectively accepted result,
+  dropped scratch; healthy stage fully applied/zero candidates.
+
+All host sources unchanged before apply, preview inert. No owners/token/cwd
+descendants, readable fixture mounts or stage sockets afterward, before8s natural
+fallback. Final stages discarded/discarded/applied. Of23 CLI commands:20 exit0,
+one expected deadline1, cancellation143, and fully-applied-drop refusal1.
+Harness initially expected drop after full apply; product correctly refused,
+accepted files unchanged. Token checker initially matched its own parent shell;
+fixed to exclude only known checker/parent, not workload descendants.
+
+One selected native apply CLI test passed at17:33:26 UTC; diff check passed.
+All24 resource gates: minimum MemAvailable24,398,442,496 bytes, maximum load1
+1.045, minimum disk free354,012,622,848 bytes. Final17:33:45 audit load0.65.
+No tracked code changes; childlocal .t055 evidence not merged.
+No frontend disconnect/setsid/concurrent writer/VM/OCI/other-platform/fullsuite/
+Python coverage. Observed SIGTERM cancellation143 is not generic130 assumption.
+
+### 056 — Real Host frontend disconnection
+
+Assigned to same isolated worker for build reuse after055. Explore bounded owned
+frontend disconnection and descendant/runner ownership, receipt authority and
+Unknown admission before apply/drop. No unrelated process signaling.
+
+Result: no defect reproduced, three real serial Host Sessions. Caller-owned stdio
+EOF completed0 in0.216s with valid completed/exit0 receipt. Verified frontend
+identity/parent/starttime then pidfd SIGKILL targeted only frontend, not timeout
+wrapper or runner; wrapper Popen reported-9 in0.212s and owner committed cancelled
+without workload exitcode. Healthy successor completed0 in0.179s. Both fault cases
+had ready descendants with8s natural fallback, cleaned well before it.
+Host unchanged before apply; product receipt/Bundle binding validated before
+selective apply/drop; final accepted result/health/sentinel correct, scratch absent.
+
+Neither actual fault produced Unknown. A separate existing synthetic missing-
+receipt test passed (1 passed,765 skipped) and verifies typed Unknown review plus
+blocked apply/drop/no invented completion. Do not claim real Unknown observation.
+An initial harness expected shell137 instead of Popen-9; corrected classification
+on original stage, without relaunching variant.
+
+Fault execution17:37:06–17:37:07 UTC, same-stage reconciliation/healthy17:40:03,
+synthetic test17:40:19–17:40:38; final audit17:41:00. Of23CLI commands22 exit0,
+one expectedSIGKILL. Minimum available memory24,301,289,472 bytes, maximum load1
+0.924, minimum diskfree354,046,697,472 bytes, all gates passed. No owners/
+fixture descendants/mounts/sockets remain. No tracked source changes; evidence
+childlocal. No real uncommitted window/setsid/VM/OCI/other-platform/concurrency/
+fullsuite coverage.
+
+### 057 — Real staged rename/deletion conflicts
+
+Assigned same worker after056. Explore intervening owned host edits/type changes,
+whole-selection refusal and selective recovery without overwriting host changes.
+Completed machine artifacts stay ignored/childlocal, not campaign deliverables.
+
+At17:42:07 UTC all33 CI checks for published revision`0cc99847` were successful.
+Rounds054–056 add no code changes; their workflow evidence remains separate
+from those CI checks and from pending readiness045 semantics.
