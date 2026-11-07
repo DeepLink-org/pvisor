@@ -147,6 +147,72 @@ fn filesystem_snapshot(
     snapshot
 }
 
+#[test]
+fn inspect_launch_errors_clean_owned_mount_roots_and_preserve_the_proposal() {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os = "macos")]
+    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        eprintln!("skipping inspect integration: macFUSE is not installed");
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let record = managed_fixture(root.path());
+    let stage = record.stage_dir();
+    let target = root.path().join("target");
+    let inspect = stage.join("inspect");
+    std::fs::create_dir(&inspect).unwrap();
+    let shared = inspect.join("retain-shared-entry");
+    std::fs::write(&shared, b"not an invocation root").unwrap();
+    let nonexecutable = root.path().join("nonexecutable");
+    std::fs::write(&nonexecutable, b"#!/bin/sh\nexit 99\n").unwrap();
+    std::fs::set_permissions(&nonexecutable, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let before_target = filesystem_snapshot(&target);
+    let before_upper = filesystem_snapshot(&stage.join("upper"));
+    let before_record = std::fs::read(stage.join("run.json")).unwrap();
+    let before_receipt = std::fs::read(stage.join("completion.json")).unwrap();
+
+    for (program, errno) in [(root.path().join("missing"), 2), (nonexecutable, 13)] {
+        let output = invoke(&["inspect", "--", program.to_str().unwrap()], Some(&stage));
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("execute inspect command"), "{error}");
+        assert!(error.contains(&format!("os error {errno}")), "{error}");
+        assert_eq!(filesystem_snapshot(&target), before_target);
+        assert_eq!(filesystem_snapshot(&stage.join("upper")), before_upper);
+        assert_eq!(
+            std::fs::read(stage.join("run.json")).unwrap(),
+            before_record
+        );
+        assert_eq!(
+            std::fs::read(stage.join("completion.json")).unwrap(),
+            before_receipt
+        );
+        assert_eq!(std::fs::read(&shared).unwrap(), b"not an invocation root");
+        assert_eq!(std::fs::read_dir(&inspect).unwrap().count(), 1);
+        #[cfg(target_os = "linux")]
+        assert!(
+            !std::fs::read_to_string("/proc/self/mountinfo")
+                .unwrap()
+                .contains(inspect.to_str().unwrap())
+        );
+    }
+    let output = invoke(
+        &[
+            "inspect",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test \"$(/bin/cat file)\" = staged",
+        ],
+        Some(&stage),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(std::fs::read_dir(&inspect).unwrap().count(), 1);
+    assert_eq!(filesystem_snapshot(&target), before_target);
+    assert_eq!(filesystem_snapshot(&stage.join("upper")), before_upper);
+}
+
 fn parsed(output: Output) -> serde_json::Value {
     assert!(
         output.status.success(),

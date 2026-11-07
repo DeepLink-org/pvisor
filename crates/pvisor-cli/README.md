@@ -83,6 +83,13 @@ combine with `--path` or `--include`. Exclusions alone require `--interactive`.
 See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
 argument, JSON and exit-code contracts.
 
+`inspect` owns its read-only view until command cleanup finishes, including when
+the command cannot be launched. Early errors attempt to release the view while
+preserving the original command error and the Session's proposal and completion
+records. Local cleanup removes only the empty invocation directory; failed
+unmount or removal can retain it. Remote cleanup requests unmount from the live
+owner but does not guarantee removal of the owner's enclosing directory.
+
 Apply rejects `--target`, `-o` and `--output-dir`. Use `--store DIR` for Session lookup;
 the writeback target cannot be redirected. The runtime entry point is
 `SessionService::apply_command` with `ApplyCommandRequest` and a schema-1

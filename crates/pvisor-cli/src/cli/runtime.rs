@@ -364,7 +364,8 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         .filter(|endpoint| endpoint.is_available())
         .cloned();
     let mut record = selected.clone();
-    let mut leases = None;
+    // Declared before the mount so early-return cleanup retains the leases.
+    let mut _leases = None;
     let mount = if let Some(endpoint) = endpoint {
         let execution = selected
             .execution_id
@@ -378,7 +379,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
             },
             Some(&super::host_service::check_cancelled),
         )?;
-        InspectMount::Remote {
+        let cleanup = InspectCleanup(Some(InspectCleanupKind::Remote {
             endpoint,
             session: selected.run_id.clone(),
             execution,
@@ -386,7 +387,10 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
                 .as_str()
                 .context("inspect response missing id")?
                 .to_owned(),
+        }));
+        InspectMount {
             mountpoint: serde_json::from_value(response["mountpoint"].clone())?,
+            cleanup,
         }
     } else {
         let session = super::host::lock_selected_session(&selected)?;
@@ -400,7 +404,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         } else {
             record.require_stopped()?;
         }
-        leases = Some((session, lease));
+        _leases = Some((session, lease));
         let overlay = record
             .overlay
             .as_ref()
@@ -415,14 +419,23 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
+        std::fs::create_dir_all(
+            inspect_root
+                .parent()
+                .context("inspect root has no parent")?,
+        )?;
+        std::fs::create_dir(&inspect_root)?;
+        let inspect_root = InspectRoot(inspect_root);
         let session =
-            mount_overlay_record_read_only(overlay, &lowers, &inspect_root.join("merged"))?;
-        InspectMount::Local {
-            inspect_root,
-            session,
+            mount_overlay_record_read_only(overlay, &lowers, &inspect_root.0.join("merged"))?;
+        InspectMount {
+            mountpoint: session.mountpoint().to_owned(),
+            cleanup: InspectCleanup(Some(InspectCleanupKind::Local {
+                inspect_root,
+                session,
+            })),
         }
     };
-    let _leases = leases;
     let overlay = record
         .overlay
         .as_ref()
@@ -484,52 +497,82 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)))
 }
 
-enum InspectMount {
+struct InspectMount {
+    mountpoint: PathBuf,
+    cleanup: InspectCleanup,
+}
+
+impl InspectMount {
+    fn mountpoint(&self) -> &Path {
+        &self.mountpoint
+    }
+
+    fn close(mut self) -> anyhow::Result<()> {
+        self.cleanup.close()
+    }
+}
+
+// Installed before subsequent fallible setup. Explicit close and unwinding use
+// the same one-shot cleanup; Drop must not replace the command's primary error.
+struct InspectCleanup(Option<InspectCleanupKind>);
+
+enum InspectCleanupKind {
     Remote {
         endpoint: pvisor::host_transport::LiveControlRecord,
         session: String,
         execution: String,
         id: String,
-        mountpoint: PathBuf,
     },
     Local {
-        inspect_root: PathBuf,
+        inspect_root: InspectRoot,
         session: ReadOnlyOverlayMount,
     },
 }
 
-impl InspectMount {
-    fn mountpoint(&self) -> &Path {
-        match self {
-            Self::Remote { mountpoint, .. } => mountpoint,
-            Self::Local { session, .. } => session.mountpoint(),
-        }
-    }
-
-    fn close(self) -> anyhow::Result<()> {
-        match self {
-            Self::Remote {
+impl InspectCleanup {
+    fn close(&mut self) -> anyhow::Result<()> {
+        match self.0.take() {
+            Some(InspectCleanupKind::Remote {
                 endpoint,
                 session,
                 execution,
                 id,
-                ..
-            } => endpoint
+            }) => endpoint
                 .exchange(
                     &session,
                     &execution,
                     pvisor::host_transport::InstanceCommand::UnmountInspect { id },
                 )
                 .map(|_| ()),
-            Self::Local {
+            Some(InspectCleanupKind::Local {
                 inspect_root,
                 session,
-            } => {
+            }) => {
                 session.unmount()?;
-                let _ = std::fs::remove_dir(inspect_root);
+                drop(inspect_root);
                 Ok(())
             }
+            None => Ok(()),
         }
+    }
+}
+
+impl Drop for InspectCleanup {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
+// Only the unique invocation directory is ours. Never recursively remove a
+// mount or shared inspect/stage contents, including after failed construction.
+struct InspectRoot(PathBuf);
+
+impl Drop for InspectRoot {
+    fn drop(&mut self) {
+        // Failed mount construction can leave its empty mountpoint behind.
+        // remove_dir cannot traverse contents or remove a still-mounted entry.
+        let _ = std::fs::remove_dir(self.0.join("merged"));
+        let _ = std::fs::remove_dir(&self.0);
     }
 }
 
@@ -599,6 +642,25 @@ fn shell_join(parts: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspect_root_cleanup_handles_partial_construction_without_removing_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let invocation = root.path().join("invocation");
+        std::fs::create_dir_all(invocation.join("merged")).unwrap();
+        drop(InspectRoot(invocation.clone()));
+        assert!(!invocation.exists());
+        assert!(root.path().is_dir());
+
+        std::fs::create_dir_all(invocation.join("merged")).unwrap();
+        let retained = invocation.join("merged/retain");
+        std::fs::write(&retained, b"do not recursively remove").unwrap();
+        drop(InspectRoot(invocation));
+        assert_eq!(
+            std::fs::read(retained).unwrap(),
+            b"do not recursively remove"
+        );
+    }
 
     #[derive(Debug, clap::Parser)]
     struct ApplyParser {

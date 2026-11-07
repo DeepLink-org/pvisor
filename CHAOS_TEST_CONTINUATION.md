@@ -1599,3 +1599,70 @@ nonancestorofstage/TMPDIR (siblingfixtures), preserveinstalledCargo/Rustup/miset
 dirs explicitly/offline/noinstalls, exactfullpackagecommands/no testweakening.
 Originalfailure remainsreal evidence; privateHOMEpass willnotclaim fullsuitepassed
 underactualHOMEancestor topology.
+
+ControlledprivateHOME fullCLI rerun20:02:57–20:03:51 UTC PASSED exact
+`mise run test -- pvisor-cli`:320passed/40ignored,nofilters/noignoredflags.
+Finalworkersource includes066+inspectRAII+partialconstructionunit. Sibling.h077
+HOME/.t077TMP and originaldiscoveredCargo/Rustup/misedirs explicitlypinned,
+noinstalls/externalmodels. Pre/postmemory21.708/21.685GB,load0.784/1.193,
+disk350.561/350.591GB,gatespassed. OriginalrealHOMEfullfailurestillseparate.
+Exactfullpvisornowstartedaftergatepassed; publicationstillrequiresindependentreview.
+
+PrivateHOME full`mise run test -- pvisor`20:04:15–20:04:42 UTC FAILED:
+117passed/1failed/10ignored/755unrunfailfast. environment_snapshot owned-tree
+projectiontest Unixsocketbind exceedsSUN_LEN, notinspectfix. Exactfixturepath
+TMP/.tmpXXXXXX/source/stage/control.sock: worktreeroot66bytes, .t077TMP72 gives
+109bytepath versus107usable. Parentauthorizednewuniqueworktree.7TMP69 for106byte
+path, representativebindpreflight and one exactfullruntime retry, no external
+paths/aliases/testweakening. SiblingprivateHOME remains. Originalfailureretained.
+Resourcegates safe(before/aftermemory21.739/21.469GB,load0.923/1.370,
+disk350.581/350.062GB). If deeperpathstillfails, reportgap instead of chase.
+
+Workerclarification: earlierconditionalauthorization permittedTMPDIR=worktreeroot
+afterpreflight103bytes, and that ONE fullruntime retry started20:06:29 UTC before
+later.7approval arrived. .7NOTused. Retry hit900s outertimeout20:21:29 UTC;
+no completedfullruntimepass or finalcounts. Captureguardbufferedoutputinmemory and
+was killedbeforeflush/afterrecord, so missingoutput is an evidencegap, not proof
+of a specific deadlock. Worker checkingretainednextestpartialreports without rerun.
+Immediateinspection foundno survivingownworktreeprocesses/mounts; memory21.78GB,
+load0.154,disk350.047GB safe. Parenthaltedallfullruntime retries, classified as
+incompletecoverage, requested frozen3-fileinspectfixhandoff/independentreview.
+Futureguardoutputmust stream toignoredfilesduringrun tosurvivewatchdog.
+FullCLIprivateHOME320pass remainsseparate; runtimefullnotcomplete.
+
+Frozen077handoff: threeCLI files(sharedguard+README+existingcheckpointtest).
+Finaltargeted inspect/workspaceselection14passed145filtered, earlierfullcheckpoint
+8/8, alltargetClippy-Dwarnings/fmt/supportedrebuildpassed. Finalstatic
+10f0313de5ae8610e9f51464d8a57449b6b60055e90b1ac2c161eb60c9ab557a checkpointlaunch
+ENOENT20:02:41 preservesprimaryerror/zeroleakedroot; original/fixedfullrealtraces
+19:54:28/19:58:40 eachtwoSessions/threeinspectattempts and acceptance/healthyverified.
+
+Completed52guardcommands/104samplesalladmitted: minmemory20,883,128,320bytes,
+maxload1.37012,mindisk350,062,485,504bytes. Timeoutretryexactpre/postsampleslost;
+recovered20:22:48auditmemory21,756,383,232bytes,load0.59277,disk350,048,555,008bytes,
+no remainingownprocesses/mounts. No retainednextestpartialreportfound, finalcounts
+unknown. OwnHOME/TMP/timeoutremnantsmovedintoignoredevidenceafterverification.
+Parentmergedthreefilescleanly/diffpassed, inspectingresourceordering; freshreviewer
+onlytargetedtests, no fullruntime repeat. Remoteearlyerror/macOS/unmountfailure
+integrationremain gaps, not covered byprivateHOMEfullCLIpass.
+
+Independent077review accepts localfix, no blockingfindings. At20:24:46–20:26:06
+UTC checkpointCLI8passed/zeroskipped, partialconstructionunit1passed150filtered,
+fmt/diffpassed. Outputstreamedtee-to-disk. PrivateHOME/TMP+offlineinstalledtoolpaths,
+memory20,622,600–21,182,096KiB,load0.92–1.83,disk341,435,024–341,880,004KiB,
+allgatespassed, no remainingfixtureprocesses/mounts.
+Reviewer confirmsone-shotcleanup/leaseordering/partialconstruction/nonrecursive
+deletion/primaryerrorpreservation. MalformedremoteIDcannotbecleanedbyunknownID
+protocol; no newguarantee. Remoteownersideexistinghandlerunmountsbutretains its
+enclosingUUIDdirectory, not coveredbylocal077fix.
+
+ParentclarifiedCLIREADME: earlycleanupbest-effort, localonlyemptyrootremoval;
+unmount/removal failurescanretainroot, remoteunmountdoesnotguaranteerootremoval.
+Documentation-onlyafterreview, implementation/testsunchanged. Acceptedfor
+publicationwithfullruntimeINCOMPLETE and realHOMEfullCLIgapexplicit.
+
+### 078 — Live-owner remote inspect root cleanup
+
+Assigned after077review. Source-traced remoteownerUUIDdirectoryretention willbe
+boundedrealreproduced, then focusedownerRAII onlyifconfirmed; protocol/Session
+authorityunchanged, no fullruntimepackage reruns.
