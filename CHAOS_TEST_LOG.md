@@ -108,3 +108,38 @@ not establish that an end-to-end VM/FUSE workflow works.
   367,449,432,064 / 367,423,479,808 bytes. Swap remained almost full.
 - Not covered: power loss/fsync faults, intermediate apply transaction
   states, real VM/FUSE, other platforms, full-package/Python/semspec suites.
+- Local commit: `f88493aa`. Two pushes to origin failed with a TLS
+  unexpected-EOF error; this round is not yet published to PR #111.
+  Retry publication after a later round rather than continuously retrying.
+
+### 003 — Interrupted apply transaction recovery
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOAA9z_pIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: inspect apply transaction recovery contracts and simulate a
+  bounded intermediate state. Check repeated recovery, candidate preservation,
+  and protection of subsequent host edits. Distinguish simulated state from
+  actual process interruption or power loss.
+- Worker execution: 00:57:09–01:01:40 UTC (about 4.5 minutes).
+- Added two private tests (six combinations, legacy and compact journals) in
+  `crates/pvisor-overlay-core/src/apply.rs`, plus README coverage notes.
+  Prepared partial publication rejects later host conflicts repeatedly without
+  consuming candidates. TargetApplied completion handles metadata publication
+  failure and restart after journal consumption without replaying target writes
+  or consuming twice. Accepted host edits and unselected candidates survive.
+- These are precise simulated interruption states, not real process kills or
+  power loss. Tests invoke lock-owned internals to avoid global lock files.
+- Worker validation: six selected tests passed, 169 skipped; targeted rustfmt
+  and diff checks passed. No product or test-logic bug reported.
+- Coordinator independently ran the same six-test filter through
+  `mise run test -- pvisor-overlay-core -- --lib -E FILTER`, with offline
+  Cargo, constrained parallelism, nice, and a 180-second timeout.
+  Six passed, 169 skipped; build 7.41 seconds, tests 0.021 seconds.
+  Nextest ID: `0a6544d0-9093-4347-a0eb-4df26b72f1f6`.
+  `git diff --check` passed.
+- Coordinator available memory before/after: 20,349,216 / 20,035,512 KiB;
+  load1 0.53 / 0.57; free disk 367,255,699,456 / 367,259,844,608 bytes.
+- Not covered: public-entry lock behavior, whole-package/CLI/runtime/Python
+  suites, true process crashes, power loss, concurrent host-write races,
+  VM/FUSE, and other platforms.

@@ -458,6 +458,14 @@ lease and target lock, then publishes the new runtime fence only after ledger
 commit. Recovery failures are errors, not `AlreadyApplied`. This does not make
 `run.json` and the core ledger an atomic publication.
 
+Private `apply.rs` fixtures cover repeated Prepared recovery conflicts after
+partial file publication, TargetApplied completion failures after pruning, and
+restart after journal consumption but before ledger commit, for both journal
+formats. They check preservation of later host edits and unselected candidates,
+and idempotent consumption. These simulate interruption states, not process
+kills or power loss; they invoke lock-owned recovery directly so all fixture
+writes stay under their temporary root rather than the global lock namespace.
+
 ### Restricted filesystem-root apply
 
 A canonical apply target of `/` supports ordinary file additions, modifications
