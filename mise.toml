@@ -568,6 +568,9 @@ run = '''
 set -euo pipefail
 python3 scripts/ci/set_nightly_local_version.py "$@"
 cargo metadata --format-version 1 >/dev/null
+# The root Python package version is also recorded in uv.lock.
+# Refresh it before wheel/setup tasks enforce --locked.
+uv lock
 '''
 
 [tasks.sign-vm-tests]
