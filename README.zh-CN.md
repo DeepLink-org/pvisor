@@ -142,6 +142,7 @@ pVisor 也为 Agent 推理、评测和 RL 后训练提供执行环境。资源�
 执行记录和暂存改动用于检查结果。具体能力取决于接口、执行器和平台。
 
 - 原生 Session：使用 `pvisor spawn` 选择 Host、OCI 或 VM 执行，显式启用暂存后进行 review/apply。
+- Agent 插件：[Pi、DSH 和 Codex 任务适配器](docs/src/zh/guides/agents/plugins.md)沿用原生 `spawn → review → apply/drop`；不接管 Agent 内置工具。
 - 嵌入式运行时：集成 [Rust runtime](crates/pvisor/README.md)。
 - 平台 API：使用[本地 daemon](crates/pvisor-daemon/README.md)接入 Linux/KVM 上部分 OpenSandbox/E2B SDK profile，或使用 [containerd shim](crates/pvisor-shim/README.md)。
 - 容器工作流：实验性的 [Docker 风格 CLI](crates/pvisor-cli/README.md#docker-command-profile-experimental)为每个容器运行一个 VM。

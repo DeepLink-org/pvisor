@@ -1,0 +1,14 @@
+{
+  "version": "0.3.1",
+  "repository": "DeepLink-org/pvisor",
+  "platforms": {
+    "linux-x64": {
+      "package": "pvisor-agent-runtime-linux-x64",
+      "archivePlatform": "linux-x86_64"
+    },
+    "darwin-arm64": {
+      "package": "pvisor-agent-runtime-darwin-arm64",
+      "archivePlatform": "macos-arm64"
+    }
+  }
+}

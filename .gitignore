@@ -8,6 +8,10 @@ __pycache__/
 .pytest_cache/
 .pvisor/
 .venv/
+/plugins/dist/
+/plugins/node_modules/
+/plugins/test/hosts/node_modules/
+*.tgz
 
 # Local review, benchmark, and runtime artifacts
 /data/

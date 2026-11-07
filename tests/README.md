@@ -40,6 +40,13 @@ model: private writes, observed-file conflicts, stopped file forks, selective
 acceptance and cleanup. It does not execute pVisor or validate runtime guarantees.
 Use the native bilingual docs previews for visual and interaction checks.
 
+`mise run test-agent-plugins` runs the Pi, DSH and Codex task-adapter fixtures
+and stdio MCP tests with Node.js 22.19+. `mise run test-agent-plugins-smoke`
+requires the real CLI and Host staging support; set `PVISOR_PLUGIN_BINARY` to a
+built binary when it is not on PATH. It tests a disposable project through
+native spawn/review/selective apply/drop, without a model or Agent installation.
+These checks do not replace interactive host compatibility testing.
+
 Semantic specifications live in user Markdown under `docs/src/zh/cases/` and
 `docs/src/zh/reference/`, following `tools/semspec/DESIGN.md`. Moving conventional regression checks does not approve
 specifications or change their claims, vocabulary, review ledger or snapshots.

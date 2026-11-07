@@ -26,6 +26,7 @@ nav = [
       { "Connect your agent" = "guides/agents/index.md" },
       { "Claude Code" = "guides/agents/claude-code.md" },
       { "Codex CLI" = "guides/agents/codex.md" },
+      { "Pi, DSH and Codex plugins" = "guides/agents/plugins.md" },
       { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
     ] },
     { "Executors" = [
