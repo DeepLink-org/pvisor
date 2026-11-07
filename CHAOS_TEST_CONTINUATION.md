@@ -9,6 +9,7 @@
 - Branch: `test/bounded-chaos-20261107-continuation`.
 - Previous campaign: `CHAOS_TEST_LOG.md`; its PR #111 has been merged.
 - Publication: a separate PR, updated after each verified repair; no main merge.
+- Draft PR: https://github.com/DeepLink-org/pvisor/pull/118.
 - Execution: subagents execute scenarios serially; the parent reviews and
   integrates findings and publishes verified fixes.
 
@@ -39,4 +40,82 @@ capabilities remain to be verified.
 
 Assigned to an isolated worker subagent. Investigate cancellation, early stdin
 closure, child exit and bounded process cleanup, taking account of the native
-fixture changes merged since the previous campaign. Results pending.
+fixture changes merged since the previous campaign.
+
+Confirmed defect: cancellation retained the pending stdin pipe during graceful
+termination. A cooperative SIGTERM handler draining stdin to EOF could not
+finish, was killed with SIGKILL, and lost its final output. Pending stdin now
+closes before cancellation signaling, including wall/quota, idle and step paths.
+README documents that remaining input is not delivered.
+
+Worker evidence on Linux, 2026-11-07 UTC:
+
+- 14:34:38–14:35:02: regression before repair failed as expected with SIGKILL;
+  0 passed, 1 failed, 149 skipped.
+- 14:35:28–14:35:45: process suite after repair passed; 16 passed, 134 skipped.
+- 14:35:56: targeted rustfmt check passed; `git diff --check` also passed.
+- Both test runs used `mise run test -- pvisor-replay -- --offline -E FILTER`,
+  respectively filtering the new cancellation regression and `process::tests::`.
+- Commands used `nice -n 10 timeout -k 30s 900s`, two build jobs, one test thread,
+  offline Cargo and an isolated `target-chaos-033` inside the worker worktree.
+- Across pre/post checks: minimum MemAvailable 24,445,900 KiB, maximum load1
+  1.21, minimum free disk 371,443,019,776 bytes. No admission limit was crossed.
+- Fixtures removed and no matching child processes found at completion.
+
+The new regression directly covers wall and idle cancellation, not quota or
+SIGINT step cancellation. Worker did not run the full package, Python, live
+agents/models or other operating systems. Initial mise discovery encountered an
+untrusted-config prompt; command-local trust resolved it without installing tools.
+
+Parent inspected the merged diff and cancellation paths. An independent reviewer
+subagent confirmed the production change on inspection and ran:
+
+- 14:37:35–14:38:13 UTC: `mise run test -- pvisor-replay -- --offline`,
+  150 passed, 0 skipped, three binaries.
+- 14:38:26–14:38:31 UTC: the new cancellation regression with
+  `--stress-count 10`, all ten iterations passed.
+- Resource checks remained safe: minimum MemAvailable 24,081,884 KiB,
+  maximum load1 1.51, minimum free disk 346 GiB.
+- No fixture directories or matching test processes remained.
+
+Review identified an unproven startup-timing assumption: cancellation at 250 ms
+can precede the child installing its signal handler on a slow host. This did not
+fail locally, but must be addressed rather than relying on the successful
+repeats. The original worker is refining the fixture and considering explicit
+quota/SIGINT coverage before the repair is published. Other-platform execution
+and induced slow startup remain untested.
+
+Follow-up, 14:40–14:41 UTC:
+
+- Extended the fixture to wall, idle, quota and SIGINT step cancellation.
+- Wall/idle now tolerate three-second native startup; this reduces but does
+  not eliminate startup starvation risk. Quota/step events follow handler setup.
+  No production readiness hook or timeout semantic change was introduced.
+- The fixture alarm is 40 seconds, beyond its wall bound plus step grace.
+- Revised baseline reproduced SIGKILL with all three production closes
+  temporarily removed: 0 passed, 1 failed, 149 skipped.
+- Restoring the repair passed 16 process tests, 134 skipped, and rustfmt.
+- Minimum MemAvailable 23,871,244 KiB; maximum load1 0.76; minimum free disk
+  371,151,233,024 bytes. No leftover fixture processes/directories found.
+- A follow-up merge conflicted at the regression, duplicating old/new fixture
+  text. Parent resolved it by retaining only the new four-trigger fixture;
+  production diff remains exactly the three stdin closes.
+- A fresh worker is validating the integrated full package before publication.
+
+Integrated-tree validation by the round 034 worker:
+
+- 14:43:31–14:44:14 UTC: `nice -n 10 timeout -k 30s 900s mise run test -- pvisor-replay -- --offline`
+  passed all 150 tests, zero skipped (20.289 seconds in nextest).
+- 14:44:22–14:44:24 UTC: `nice -n 10 timeout -k 30s 900s cargo fmt --all -- --check`
+  passed without edits. This formatting check is not a workspace test run.
+- Pre-test MemAvailable 24,730,554,368 bytes, load1 0.45, disk free
+  371,155,406,848 bytes; post-format MemAvailable 24,686,600,192 bytes,
+  load1 1.54, disk free 371,118,174,208 bytes. All safety gates passed.
+- This validates the final resolved fixture, unlike the earlier review run.
+  Linux-only evidence; macOS and induced startup starvation remain untested.
+
+### 034 — Exited leader with inherited stdin
+
+Assigned after round 033 workloads completed. After integrated-tree validation,
+the worker will test early leader exit with descendants retaining pipe ends,
+incomplete stdin delivery, bounded failure and process-group cleanup.

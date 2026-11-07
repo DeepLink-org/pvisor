@@ -180,6 +180,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         {
             timed_out = true;
             background_cleanup = true;
+            // Cancellation ends input delivery. Let a cooperative child drain
+            // buffered input to EOF during its termination grace period.
+            stdin.take();
             break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
         }
         if let Some(limit) = spec.step_finish_limit
@@ -187,6 +190,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         {
             step_limited = true;
             background_cleanup = true;
+            stdin.take();
             // SIGINT lets OpenCode exit gracefully and flush its buffered
             // stdout events; SIGTERM would discard them.
             break terminate_running_group_with(
@@ -217,6 +221,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             let last_ms = last_activity.load(std::sync::atomic::Ordering::Acquire);
             if now_ms.saturating_sub(last_ms) >= idle_timeout.as_millis() as u64 {
                 background_cleanup = true;
+                stdin.take();
                 break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
             }
         }
@@ -782,6 +787,76 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(error.kind, ReplayErrorKind::Executor);
         assert!(error.message.contains("write supervised process stdin"));
+    }
+
+    #[test]
+    fn cancellation_closes_pending_stdin_before_graceful_termination() {
+        static TERMINATED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        extern "C" fn terminated(_: libc::c_int) {
+            TERMINATED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if std::env::var_os("PVISOR_REPLAY_STDIN_CHILD").is_some() {
+            unsafe {
+                // Exceed the 8s wall deadline plus the step limiter's 20s
+                // minimum grace, while independently bounding a broken owner.
+                libc::alarm(40);
+                libc::signal(libc::SIGTERM, terminated as *const () as libc::sighandler_t);
+                libc::signal(libc::SIGINT, terminated as *const () as libc::sighandler_t);
+            }
+            println!("\nREADY {}", std::process::id());
+            io::stdout().flush().unwrap();
+            match std::env::var("PVISOR_REPLAY_CANCEL_MODE").unwrap().as_str() {
+                // Trigger event-driven cancellation only after both signal
+                // handlers are installed, not on the test harness's output.
+                "quota" => {
+                    io::stdout().write_all(&[b'q'; 8192]).unwrap();
+                    io::stdout().flush().unwrap();
+                }
+                "step" => eprintln!("message=loop step=1"),
+                _ => {}
+            }
+            // Deliberately leave the input pipe full until cancellation.
+            while !TERMINATED.load(std::sync::atomic::Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input).unwrap();
+            println!("EOF-AFTER-CANCEL");
+            return;
+        }
+        for mode in ["wall", "idle", "quota", "step"] {
+            let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let mut spec = shell_spec("", &temporary.path().join("cancel.log"));
+            spec.command = stdin_fixture_command(
+                "process::tests::cancellation_closes_pending_stdin_before_graceful_termination",
+            );
+            spec.command.env("PVISOR_REPLAY_CANCEL_MODE", mode);
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            // run_process owns spawn and starts deadlines immediately, so a
+            // true readiness handshake would require a production test hook.
+            // Allow 3s for native startup instead of 250ms. READY below detects,
+            // but cannot prevent, startup starvation beyond this finite budget.
+            spec.timeout = Duration::from_secs(if mode == "wall" { 3 } else { 8 });
+            spec.idle_timeout = (mode == "idle").then_some(Duration::from_secs(3));
+            spec.log_bytes_limit = (mode == "quota").then_some(4096);
+            spec.step_finish_limit = (mode == "step").then_some(1);
+            spec.termination_grace = Duration::from_millis(500);
+            let output = run_process(spec).unwrap();
+            let stdout = String::from_utf8(output.stdout_tail).unwrap();
+            let pid: i32 = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("READY "))
+                .expect("fixture did not become ready")
+                .parse()
+                .unwrap();
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child was not reaped");
+            assert_eq!(output.timed_out, matches!(mode, "wall" | "quota"));
+            assert_eq!(output.step_limited, mode == "step");
+            assert!(output.background_cleanup);
+            assert!(output.status.success(), "mode={mode}: {:?}", output.status);
+            assert!(stdout.contains("EOF-AFTER-CANCEL"));
+        }
     }
 
     #[test]

@@ -24,6 +24,10 @@ Supervised process timeouts and output draining remain active while configured
 stdin is being delivered. Pipe backpressure does not suspend wall or idle
 deadlines. Successful delivery closes stdin to signal EOF; write failures remain
 executor errors, and timeout termination does not claim that all input arrived.
+Cancellation closes any pending stdin before signaling the process group, so
+cooperative children can drain buffered input to EOF and flush output during
+their termination grace period. This applies to wall/idle deadlines, log quotas,
+and step limits; it does not resume delivery of the remaining input.
 
 ## Local continuation bridges
 
@@ -61,3 +65,8 @@ Stdin backpressure and early-close fixtures re-execute the native test binary,
 with an independent alarm to bound a broken supervisor. They do not launch a
 Python interpreter or PATH shim inside the short supervision deadlines. Readiness,
 timeout classification, output capture and child reaping remain asserted.
+The cooperative cancellation fixture covers pending-stdin EOF on wall/idle
+timeouts, log quotas and SIGINT step limits. Wall/idle cases allow three seconds
+for native startup; this tolerates cold starts but is not a readiness handshake,
+so startup starvation beyond that budget can still fail the test. Its independent
+alarm exceeds the wall deadline plus the longest termination grace.
