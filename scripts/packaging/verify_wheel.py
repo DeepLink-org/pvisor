@@ -25,6 +25,10 @@ EXPECTED_BINARIES = (
 )
 COMPANION_BINARIES = EXPECTED_BINARIES[1:-1]
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
+# Exact public contracts emitted by the runtime being released. Keep the
+# acceptance oracle strict when protocol migrations change these versions.
+RUN_BUNDLE_SCHEMA_VERSION = 6
+STATUS_SCHEMA_VERSION = 3
 
 
 def expected_binaries(wheel: Path) -> tuple[str, ...]:
@@ -317,7 +321,10 @@ fn main() {
     apply_stage = directory / "apply-stage"
     run([*vm, "--stage", apply_stage, "--", "/bin/probe", "--once"])
     review = json.loads(run(["status", apply_stage, "--review", "--json"]))
-    if review.get("schema_version") != 5 or (workspace / "applied").exists():
+    if (
+        review.get("schema_version") != RUN_BUNDLE_SCHEMA_VERSION
+        or (workspace / "applied").exists()
+    ):
         raise RuntimeError("fresh VM did not stage its writes with a valid review Bundle")
     run(["apply", apply_stage, "--path", "applied"])
     if (workspace / "applied").read_bytes() != b"reviewed wheel bytes":
@@ -346,8 +353,10 @@ fn main() {
                             time.sleep(0.1)
                             continue
                         status = json.loads(observed)
-                        if status.get("schema_version") != 2:
-                            raise RuntimeError("status omitted summary schema 2")
+                        if status.get("schema_version") != STATUS_SCHEMA_VERSION:
+                            raise RuntimeError(
+                                f"status omitted summary schema {STATUS_SCHEMA_VERSION}"
+                            )
                         upper = status.get("run", {}).get("overlay", {}).get("upper")
                         if upper:
                             try:
@@ -377,8 +386,8 @@ fn main() {
                 raise RuntimeError("suspend omitted its durable checkpoint")
             source.wait(timeout=60)
             stopped_status = json.loads(run(["status", stage, "--json"]))
-            if stopped_status.get("schema_version") != 2:
-                raise RuntimeError("status omitted summary schema 2")
+            if stopped_status.get("schema_version") != STATUS_SCHEMA_VERSION:
+                raise RuntimeError(f"status omitted summary schema {STATUS_SCHEMA_VERSION}")
             stopped = stopped_status["run"]
             frozen_upper = Path(stopped["overlay"]["upper"])
             frozen = int((frozen_upper / "counter").read_text())
@@ -401,13 +410,16 @@ fn main() {
             run(["kill", stage, "--json"])
             resumed.wait(timeout=60)
             review = json.loads(run(["status", stage, "--review", "--json"]))
-            if review.get("schema_version") != 5:
+            if review.get("schema_version") != RUN_BUNDLE_SCHEMA_VERSION:
                 raise RuntimeError("final review did not validate the protocol-aware Bundle")
             if (workspace / "counter").exists():
                 raise RuntimeError("VM bypassed workspace staging")
             # Restores compose immutable checkpoint layers; apply is deliberately unsupported.
-            refused = run(["apply", stage, "--path", "counter"], expected=1)
-            if "composes read-only layers" not in refused or (workspace / "counter").exists():
+            refused = run(["apply", stage, "--path", "counter"], expected=3)
+            if (
+                "composed read-only layers cannot be applied" not in refused
+                or (workspace / "counter").exists()
+            ):
                 raise RuntimeError("restored layered Session did not refuse unsupported apply")
             record("vm-restore-stage-review", 0, "PASS; layered apply refused")
         finally:

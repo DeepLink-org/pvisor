@@ -1198,7 +1198,20 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_acceptance_rejects_reused_execution_and_wrong_applied_bytes(self):
         # Exercise the acceptance oracle itself; these mocks are not VM evidence.
-        for fault in (None, "same-execution", "wrong-apply", "strict-executed", "vm-start"):
+        for fault in (
+            None,
+            "same-execution",
+            "wrong-apply",
+            "strict-executed",
+            "vm-start",
+            "old-initial-review",
+            "old-final-review",
+            "old-live-status",
+            "old-stopped-status",
+            "wrong-refusal-code",
+            "wrong-refusal-reason",
+            "restored-write",
+        ):
             with self.subTest(fault=fault), workspace() as (root, resources):
                 executable = root / "pvisor"
                 wheel = root / "pvisor.whl"
@@ -1255,11 +1268,18 @@ class ReleasePackagingTests(unittest.TestCase):
                                 command, 1, "", "Error: Session operation already in progress: busy"
                             )
                         if "--review" in args:
-                            output = json.dumps({"schema_version": 5})
+                            old_review = (
+                                fault == "old-initial-review" and state["execution"] == 0
+                            ) or (fault == "old-final-review" and state["execution"] == 2)
+                            output = json.dumps({"schema_version": 5 if old_review else 6})
                         else:
+                            stopped = state["execution"] == 1 and state.get("suspended", False)
+                            old_status = (fault == "old-live-status" and not stopped) or (
+                                fault == "old-stopped-status" and stopped
+                            )
                             output = json.dumps(
                                 {
-                                    "schema_version": 2,
+                                    "schema_version": 2 if old_status else 3,
                                     "run": {
                                         "run_id": "same-session",
                                         "execution_id": "same"
@@ -1270,6 +1290,7 @@ class ReleasePackagingTests(unittest.TestCase):
                                 }
                             )
                     elif args[1] == "suspend":
+                        state["suspended"] = True
                         output = json.dumps({"checkpoint_id": "checkpoint"})
                     elif args[1] == "apply":
                         if "apply-stage" in args[2]:
@@ -1278,9 +1299,13 @@ class ReleasePackagingTests(unittest.TestCase):
                             )
                         else:
                             code, output = (
-                                1,
-                                "Error: Session composes read-only layers above its base",
+                                1 if fault == "wrong-refusal-code" else 3,
+                                "apply: blocked\nblocker: composed read-only layers cannot be applied",
                             )
+                            if fault == "wrong-refusal-reason":
+                                output = "apply: blocked\nblocker: unrelated failure"
+                            if fault == "restored-write":
+                                (directory / "workspace/counter").write_text("unexpected")
                     return subprocess.CompletedProcess(command, code, output, "")
 
                 resources.enter_context(mock.patch.object(wheel_verify.subprocess, "run", run))
@@ -1289,7 +1314,20 @@ class ReleasePackagingTests(unittest.TestCase):
                 )
                 log = root / "evidence/result.json"
                 if fault:
-                    with self.assertRaises(RuntimeError):
+                    expected_error = {
+                        "same-execution": "cold restore did not preserve Session",
+                        "wrong-apply": "apply did not publish the reviewed bytes",
+                        "strict-executed": "strict admission failed",
+                        "vm-start": "acceptance spawn returned",
+                        "old-initial-review": "fresh VM did not stage its writes",
+                        "old-final-review": "final review did not validate",
+                        "old-live-status": "status omitted summary schema 3",
+                        "old-stopped-status": "status omitted summary schema 3",
+                        "wrong-refusal-code": "acceptance apply returned 1, expected 3",
+                        "wrong-refusal-reason": "restored layered Session did not refuse",
+                        "restored-write": "restored layered Session did not refuse",
+                    }[fault]
+                    with self.assertRaisesRegex(RuntimeError, expected_error):
                         wheel_verify.acceptance(executable, wheel, directory, {}, log)
                 else:
                     wheel_verify.acceptance(executable, wheel, directory, {}, log)
