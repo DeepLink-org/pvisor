@@ -1142,3 +1142,41 @@ checks now passed, validating the earlier CI corrections remotely. The remaining
 Linux log shows an existing selective-apply test refusing an inherited FUSE
 mount belonging to the concurrently running new nested-stage test under HOME.
 Round 032 investigates test isolation rather than relaxing production safety.
+
+## Closing audit
+
+The requested wall-clock window is 00:26:09–08:26:09 UTC. All 32 bounded
+rounds/follow-ups have returned; no child is assigned further work, and no new
+runtime/build workload is started after the final cutoff. This was an iterative
+campaign with analysis, builds, tests, repairs, review and publication—not eight
+hours of uninterrupted workload pressure.
+
+Four production defects were reproduced and repaired:
+
+1. DNS wire-name root-terminator accounting.
+2. Linux/KVM vCPU exit notification after ready-callback abort.
+3. Hidden nested-stage backing in Host Landlock write grants.
+4. Incomplete embedded safe-process staging bindings silently writing through.
+
+Conventional test fixes additionally address libtest ready-handshake formatting,
+BSD accepted-socket nonblocking inheritance, new Clippy diagnostics and
+cross-binary FUSE mount interference. No semspec human approvals or real approval
+snapshots were changed. Nothing was merged to main.
+
+At 08:25 UTC, published commit `1b90e6c3` had a clean local worktree and 23
+pending CI checks, with no completed checks for that revision. The preceding
+revision had 27 green checks, including macOS Gateway and Clippy, but still had
+the Linux inherited-mount failure corrected by 032. Therefore final CI success
+is not claimed; the PR remains draft pending that run.
+
+Final host reading at 08:25:18 UTC: available memory 18,515,908 KiB, load1 0.42,
+free disk 343,306,330,112 bytes, SwapFree 1,516,096 KiB. No threshold shutdown,
+host network changes, disk-filling fault, global process kill or swap intervention
+was used. Generated caches remain in isolated targets rather than being globally
+deleted. The round 021 source-target output deviation remains disclosed above;
+do not assume the source checkout's generated binary stayed unchanged.
+
+Coverage remains deliberately scoped. Local full-workspace/Python/macOS/Windows
+and power-loss testing were not performed; remote CI evidence is separately
+identified. A passing bounded scenario is not a proof of complete sandbox
+security, production capacity, absence of leaks or universal crash recovery.
