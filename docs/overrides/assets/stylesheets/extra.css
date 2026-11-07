@@ -704,10 +704,10 @@ body::before {
 }
 .pc-home-article a.pc-home-btn.primary { color: #0b1220; }
 .pc-home-article .pc-home-terminal-body { color: #e8eef8; }
-/* Keep the original dark brand marks readable on the blue canvas. */
-.md-logo img { background: #e7effb; border-radius: 7px; padding: 3px; }
-.md-typeset img[src*="/logos/"] { background: #e7effb; border-radius: 16px; padding: 16px; max-width: 180px; }
 .md-typeset img[src$=".svg"] { background: #f4f7fc; border-radius: 12px; }
+/* The full wordmark carries a light backing for contrast on dark surfaces. */
+.md-logo img { width: auto; border-radius: 4px; padding: 0; }
+.md-typeset img[src*="/logos/"] { background: transparent; border-radius: 4px; padding: 0; max-width: min(100%, 420px); }
 @media (max-width: 76.234375em) {
   .md-nav--primary { background: #102138; }
 }
