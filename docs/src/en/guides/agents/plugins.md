@@ -1,17 +1,19 @@
 ---
-description: Install Pi, DSH and Codex plugins through npm and a remote marketplace, automatically deploy the matching pVisor runtime, and use native result handoff.
+description: Install pVisor through Homebrew or pip, add Pi, DSH and Codex plugins, and use native result handoff.
 ---
 
 # Pi, DSH and Codex plugins
 
-Call pVisor staged tasks from your Agent, then hand off results through the native `spawn → status/review → apply/drop` workflow. npm installs the matching native runtime without a source checkout, Rust toolchain or manual binary path.
+Call pVisor staged tasks from your Agent, then hand off results through the native `spawn → status/review → apply/drop` workflow. Install the runtime through Homebrew or pip; npm distributes only the Agent adapters.
 
 !!! note "First publication pending"
     The npm packages and remote marketplace commit are not published yet. The commands below are the post-publication user entrypoints, not evidence that registry installation already works. Remove this notice only after publication authorization and release acceptance.
 
 ## Install {#install}
 
-Prepare Node.js 22.19+ and your Agent host. Linux x64 and macOS arm64 are supported; plugin installation automatically selects the native platform dependency and complete CLI component set. The system must still satisfy the [Host staging prerequisites](../../start/installation.md#local-prerequisites). The plugin does not elevate privileges to install FUSE, enable extensions or change namespace policy.
+Prepare Node.js 22.19+, your Agent host and a separate pVisor installation through [Homebrew or pip](../../start/installation.md). Host staging supports Linux x64 and macOS arm64 and requires the [Host staging prerequisites](../../start/installation.md#local-prerequisites). The plugin does not install a runtime, elevate privileges to install FUSE, enable extensions or change namespace policy.
+
+Launch the Agent host with `pvisor` on its PATH. Desktop apps may not inherit your terminal PATH; set `PVISOR_PLUGIN_BINARY` in the host environment to the absolute installed CLI path if needed. The plugin ignores empty and relative PATH entries and checks required CLI flags before work. Incompatible runtimes fail with upgrade instructions; older releases such as 0.3.1 without selective apply are insufficient. Plugin and runtime versions are independent.
 
 Choose the hosts you actually use:
 
@@ -31,9 +33,9 @@ codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-ag
 
 DSH Desktop also accepts `pvisor-agent-plugins` in **Plugins → Add plugin**. Install only the profile you use.
 
-The Codex marketplace installs the workflow skill; native `codex mcp add` binds tools to your current project. `npx` automatically installs the pinned plugin and runtime without a global install. Clients without plugin management can use MCP alone. Bundled MCP can start in the plugin cache, so that cwd cannot identify the user's project.
+The Codex marketplace installs the workflow skill; native `codex mcp add` binds tools to your current project. `npx` installs only the pinned plugin without a global install; the runtime must already be installed. Clients without plugin management can use MCP alone. Bundled MCP can start in the plugin cache, so that cwd cannot identify the user's project.
 
-Start a new session in the target project. Call `pvisor_doctor` and check the project and runtime version; it does not attest FUSE mounting or isolation. Pi uses the call context's cwd; DSH uses the initiating Agent's cwd. MCP refuses startup without an explicit project instead of falling back to the plugin directory.
+Start a new session in the target project. Call `pvisor_doctor` and check the binary path, project and runtime version; it checks required CLI capabilities but does not attest FUSE mounting or isolation. Pi uses the call context's cwd; DSH uses the initiating Agent's cwd. MCP refuses startup without an explicit project instead of falling back to the plugin directory.
 
 ## Execute a task {#spawn}
 
@@ -56,14 +58,13 @@ Keep the returned absolute stage selector. Plugin tools `pvisor_status`, `pvisor
 
 ## Review and accept {#handoff}
 
-For a native CLI in your terminal, optionally install the same npm package:
+Use the native CLI already installed through Homebrew or pip:
 
 ```sh
-npm install --global pvisor-agent-plugins
 pvisor --version
 ```
 
-This provides native `pvisor` commands without commit/abort aliases. Save the returned selector in the terminal variable `stage`, then:
+Save the returned selector in the terminal variable `stage`, then:
 
 ```sh
 pvisor status "$stage" --json
@@ -92,7 +93,7 @@ Before preview, the adapter calls native status to reconcile Session control sta
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `PVISOR_PLUGIN_BINARY` | Matching native platform package | Optional operator override, never needed for normal installation |
+| `PVISOR_PLUGIN_BINARY` | `pvisor` on the host's PATH | Absolute installed CLI path; an invalid override never falls back |
 | `PVISOR_PLUGIN_STATE_DIR` | `~/.local/state/pvisor/agent-plugins/v1` | Private task records and stages outside the project |
 | `PVISOR_PLUGIN_PROJECT` | Unset | Explicit project for manually launched MCP; prefer native `codex mcp add ... --project DIR`; Pi and DSH use their call context |
 
@@ -108,4 +109,4 @@ Call `pvisor_doctor` in a disposable project and run the two-file task above. Ch
 
 Host fixtures do not establish real Pi UI, DSH Web/Desktop, Electron or Codex plugin-loader acceptance. Record Node, pVisor and Agent versions, tool catalog, project and approval behavior during host verification. These checks do not establish cloud-model end-to-end or approval-free acceptance.
 
-Review pending tasks before upgrading. Update the plugin and native dependencies together through the host's package manager, then restart. Update Codex's pinned marketplace ref and npx version together. Remove `npm:pvisor-agent-plugins`, `pvisor-agent-plugins` or `pvisor@pvisor` through the respective host manager. Remove the separate MCP registration with `codex mcp remove pvisor` and the global CLI with `npm uninstall --global pvisor-agent-plugins`. Uninstall does not delete candidates; do not recursively clear the state directory.
+Review pending tasks before upgrading. Update the plugin through the host's package manager and the runtime separately through Homebrew or pip, then restart and run Doctor to check compatibility. Never replace a runtime during a running task. Update Codex's pinned marketplace ref and npx version together. Remove `npm:pvisor-agent-plugins`, `pvisor-agent-plugins` or `pvisor@pvisor` through the respective host manager. Remove the separate MCP registration with `codex mcp remove pvisor`. Plugin removal leaves the runtime and candidates intact; do not recursively clear the state directory.

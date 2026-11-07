@@ -1,17 +1,19 @@
 ---
-description: 通过 npm 和远程 marketplace 安装 Pi、DSH、Codex 插件，自动部署匹配的 pVisor runtime，沿用原生命令交接成果。
+description: 通过 Homebrew 或 pip 安装 pVisor，接入 Pi、DSH、Codex 插件，沿用原生命令交接成果。
 ---
 
 # Pi、DSH 和 Codex 插件
 
-在 Agent 中调用 pVisor 暂存任务，完成后使用原生 `spawn → status/review → apply/drop` 流程交接成果。npm 按平台安装配套 runtime，无需检出源码、安装 Rust 或手工填写二进制路径。
+在 Agent 中调用 pVisor 暂存任务，完成后使用原生 `spawn → status/review → apply/drop` 流程交接成果。通过 Homebrew 或 pip 安装 runtime，npm 仅分发 Agent 适配器。
 
 !!! note "首次发布待完成"
     npm 包及远程 marketplace 提交尚未上架。以下是发布后的用户安装入口，不代表当前已经可以从 registry 安装。维护者须完成发布授权和发行验收后，再移除此说明。
 
 ## 安装 {#install}
 
-准备 Node.js 22.19+ 和目标 Agent。支持 Linux x64、macOS arm64；安装插件时自动安装匹配的原生平台包及完整 CLI 组件。系统仍需满足 [Host 暂存前提](../../start/installation.md#local-prerequisites)，插件不会自行提权安装 FUSE、启用扩展或改变 namespace 策略。
+准备 Node.js 22.19+、目标 Agent，并通过 [Homebrew 或 pip](../../start/installation.md) 单独安装 pVisor。Host 暂存支持 Linux x64、macOS arm64，需要满足 [Host 暂存前提](../../start/installation.md#local-prerequisites)。插件不会安装 runtime、自行提权安装 FUSE、启用扩展或改变 namespace 策略。
+
+启动 Agent 宿主时，确保其 PATH 中可以找到 `pvisor`。桌面应用可能不继承终端 PATH，必要时在宿主环境中设置 `PVISOR_PLUGIN_BINARY` 为已安装 CLI 的绝对路径。插件忽略空或相对 PATH 项，并在工作前检查必需的 CLI 参数。不兼容时拒绝执行并提示升级；缺少选择性 apply 的旧版（例如 0.3.1）不满足要求。插件与 runtime 独立版本管理。
 
 选择你实际使用的宿主：
 
@@ -31,9 +33,9 @@ codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-ag
 
 DSH Desktop 也可以在 **Plugins → Add plugin** 中输入 `pvisor-agent-plugins`。只安装你实际使用的 profile。
 
-Codex marketplace 安装工作流 skill，原生 `codex mcp add` 用当前项目绑定工具；`npx` 自动安装固定版本的插件与 runtime，不需要全局安装。没有插件管理能力时可仅用 MCP。捆绑 MCP 的 cwd 可能是插件缓存目录，不能用它推断用户项目。
+Codex marketplace 安装工作流 skill，原生 `codex mcp add` 用当前项目绑定工具；`npx` 仅安装固定版本的插件，无需全局安装，runtime 必须预先安装。没有插件管理能力时可仅用 MCP。捆绑 MCP 的 cwd 可能是插件缓存目录，不能用它推断用户项目。
 
-安装后从目标项目启动新会话。调用 `pvisor_doctor`，检查项目路径和 runtime 版本；它不证明 FUSE 挂载或安全隔离可用。Pi 使用调用上下文的 cwd，DSH 使用发起 Agent 的 cwd。MCP 缺少显式项目时拒绝启动，不回退到插件目录。
+安装后从目标项目启动新会话。调用 `pvisor_doctor`，检查二进制路径、项目路径和 runtime 版本；它检查必需的 CLI 能力，但不证明 FUSE 挂载或安全隔离可用。Pi 使用调用上下文的 cwd，DSH 使用发起 Agent 的 cwd。MCP 缺少显式项目时拒绝启动，不回退到插件目录。
 
 ## 执行任务 {#spawn}
 
@@ -56,14 +58,13 @@ Codex marketplace 安装工作流 skill，原生 `codex mcp add` 用当前项目
 
 ## 审查并接收 {#handoff}
 
-需要在终端使用原生 CLI 时，可以额外安装同一个 npm 包：
+使用已经通过 Homebrew 或 pip 安装的原生 CLI：
 
 ```sh
-npm install --global pvisor-agent-plugins
 pvisor --version
 ```
 
-这会提供 `pvisor` 原生命令入口，不引入 `commit/abort` 别名。将返回的 selector 保存为终端变量 `stage` 后：
+将返回的 selector 保存为终端变量 `stage` 后：
 
 ```sh
 pvisor status "$stage" --json
@@ -92,7 +93,7 @@ DSH 的 `pvisor_apply` 和 `pvisor_drop` 复用 Harness 审批，仅 `Allow once
 
 | 环境变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `PVISOR_PLUGIN_BINARY` | 配套的原生平台包 | 可选的维护者覆盖项，正常安装无需设置 |
+| `PVISOR_PLUGIN_BINARY` | 宿主 PATH 中的 `pvisor` | 已安装 CLI 的绝对路径；覆盖项无效时不回退 |
 | `PVISOR_PLUGIN_STATE_DIR` | `~/.local/state/pvisor/agent-plugins/v1` | 项目外的私有任务记录和 stage |
 | `PVISOR_PLUGIN_PROJECT` | 未设置 | 手动启动 MCP 时的显式项目；建议用原生 `codex mcp add ... --project DIR`；Pi、DSH 使用调用上下文 |
 
@@ -108,4 +109,4 @@ DSH 的 `pvisor_apply` 和 `pvisor_drop` 复用 Harness 审批，仅 `Allow once
 
 宿主 fixture 不等于真实 Pi UI、DSH Web/Desktop、Electron 或 Codex 插件加载验收。实际接入时记录 Node、pVisor、Agent 版本、工具目录、项目路径和审批行为；不据此宣称云模型端到端或免审批验证通过。
 
-升级前审查待处理任务，通过宿主包管理器一起更新插件与原生依赖，再重启。Codex 固定的 marketplace ref 与 npx 版本需一起更新。通过宿主管理器卸载 `npm:pvisor-agent-plugins`、`pvisor-agent-plugins` 或 `pvisor@pvisor`；独立 MCP 配置用 `codex mcp remove pvisor` 删除。全局 CLI 用 `npm uninstall --global pvisor-agent-plugins` 卸载。卸载不删除候选文件，不递归清空状态目录。
+升级前审查待处理任务。通过宿主包管理器更新插件，通过 Homebrew 或 pip 单独更新 runtime，再重启并运行 Doctor 检查兼容性。不要在任务运行时替换 runtime。Codex 固定的 marketplace ref 与 npx 版本需一起更新。通过宿主管理器卸载 `npm:pvisor-agent-plugins`、`pvisor-agent-plugins` 或 `pvisor@pvisor`；独立 MCP 配置用 `codex mcp remove pvisor` 删除。卸载插件保留 runtime 和候选文件，不递归清空状态目录。

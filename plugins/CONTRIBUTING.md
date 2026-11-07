@@ -39,14 +39,14 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-04 | Nonzero task exit retains candidates without retry or publication | Native CLI, reopened adapter and failed status |
 | DOC-PLUGINS-05 | A fresh spawn cannot see another Session's pending changes | Two native Sessions |
 | DOC-PLUGINS-06 | Host conflicts refuse writeback without destroying host edits | Native preview, apply, review and drop |
-| DOC-PLUGINS-07 | npm automatically selects native dependencies; CLI needs no source path; uninstall preserves separate state | Exact documented npm/global CLI script against a loopback registry of packed fixtures; installed MCP doctor |
+| DOC-PLUGINS-07 | npm installs only the plugin; host PATH selects an external runtime; uninstall preserves runtime and state | Packed plugin installed through a loopback registry; documented CLI check and installed MCP doctor against an external fixture |
 | DOC-PLUGINS-08 | Unsafe state permissions, replaced directories, foreign project/selector and path traversal fail closed | Adapter boundary tests; no fallback execution |
 | DOC-PLUGINS-09 | Runtime deadlines fail without accepting output | Real native deadline |
 | DOC-PLUGINS-10 | MCP shutdown does not accept or discard pending results | Real stdio shutdown, reopened adapter and native review |
 | DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
 
-The npm fixture verifies real package-manager installation and dependency
-selection, not native file semantics or an already-published registry release.
+The npm fixture verifies real package-manager installation and external runtime
+selection, not Homebrew/pip installation, native file semantics or a published registry release.
 The native suite never substitutes a fake executable or skips unavailable
 staging. CI retains native case directories on failure.
 
@@ -70,57 +70,42 @@ these compiler/loader checks.
 
 `backend.mjs` translates to native commands and owns adapter identity and process
 supervision. `tools.mjs` is the shared model-facing schema. Host adapters own
-only host registration and approvals. `runtime.mjs` locates npm's native optional
-dependency; it never downloads or installs software during a tool invocation.
-The npm `pvisor` launcher replaces itself with the native executable to preserve
-terminal ownership, signals and exit codes. Keep ordinary CLI semantics intact.
+only host registration and approvals. `runtime.mjs` selects an operator-specified
+absolute CLI path or `pvisor` from the host PATH and probes required CLI
+capabilities before use. It ignores empty and relative PATH entries and never
+downloads or installs software. Homebrew/venv symlinks are supported. Invalid
+overrides and incompatible selected runtimes never fall back. The npm package
+must not provide a `pvisor` launcher or native runtime dependencies.
 
 ## Distribution
 
-Publish these three packages as one versioned cohort:
+Publish only `pvisor-agent-plugins` to npm. Users install the native runtime
+separately through Homebrew or pip (`pvisor-sandbox`), following the project
+installation guide. Runtime releases retain their existing native distribution,
+firmware/source and acceptance workflows; the plugin workflow does not rebuild
+or publish them.
 
-- `pvisor-agent-runtime-linux-x64`
-- `pvisor-agent-runtime-darwin-arm64`
-- `pvisor-agent-plugins`
+Plugin and runtime versions are independent. Compatibility is checked by the
+required CLI flags in `runtime.mjs`, including `apply --path --dry-run --json`.
+Stable 0.3.1 lacks selective apply and cannot be used. Before publishing, verify
+that Homebrew or pip offers a compatible runtime and record its version in real
+host acceptance results. Capability probes do not establish staging readiness.
 
-The core's optional dependencies pin both platform packages exactly to its own
-version. `runtime.json` declares the core runtime base version and supported
-platform mapping. It does **not** select the old stable GitHub release by version
-number: stable 0.3.1 lacks the required selective apply interface.
-
-`agent-plugins.yml` reuses `distribution.yml` to build and accept both native
-platform sets from the plugin's exact commit. An isolated distribution version
-records the build number and commit. The existing pipeline verifies wheels,
-native binaries, firmware provenance and corresponding sources.
-
-The prepare job downloads only that workflow's accepted artifact set, writes
-`runtime-provenance.json`, and runs:
-
-```sh
-npm run release:prepare --prefix plugins -- "$PWD/native"
-```
-
-The assembler requires matching commit provenance, validates SHA256SUMS and the
-exact regular-file archive layout, and retains all native companions, licenses
-and firmware metadata. It never downloads `latest` or weakens safety to support
-an old CLI. The package test requires `apply --path --dry-run --json` support.
-All npm installation checks use packed tarballs, not linked source directories.
-
-GitHub Release `plugins-vX.Y.Z` retains the native distributions, checksums and
-corresponding firmware source archives before npm publication. npm package
-metadata links back to that release. Do not publish binaries without their
-corresponding source availability. npm integrity and provenance cover the
-platform tarballs users actually install.
+`agent-plugins.yml` tests adapters and packed-plugin installation, then retains
+one npm tarball in `pvisor-agent-plugin-release`. Installation checks use packed
+tarballs, not linked source directories. `workflow_dispatch` with `publish=false`
+builds and tests without publication. There are no npm native packages, runtime
+downloaders, installation scripts or same-name CLI launchers.
 
 ## First publication
 
-1. Confirm ownership of the three npm names. Authenticate with `npm login` on
+1. Confirm ownership of `pvisor-agent-plugins`. Authenticate with `npm login` on
    the maintainer's machine; never paste a token in chat or commit it.
-2. Review both native acceptance results and the plugin package tests.
-3. Publish the verified platform tarballs **before** the adapter tarball. Use
-   `npm publish FILE.tgz --access public`. A missing optional package must not be
-   mistaken for a complete release.
-4. Configure npm Trusted Publisher for all three packages:
+2. Review plugin package tests and native/interactive host acceptance with a
+   separately installed compatible runtime.
+3. Download the verified workflow artifact and publish only its plugin tarball:
+   `npm publish pvisor-agent-plugins-X.Y.Z.tgz --access public`.
+4. Configure npm Trusted Publisher for the plugin:
    repository `DeepLink-org/pvisor`, workflow `agent-plugins.yml`, environment
    `npm`. Configure that GitHub environment's required reviewers.
 5. Future `plugins-vX.Y.Z` tag runs publish with OIDC and npm provenance.
@@ -128,8 +113,10 @@ platform tarballs users actually install.
    selecting its publish input. Tag creation/publication requires maintainer
    authorization; passing tests does not authorize landing on main.
 6. Verify installs from npm using Pi and DSH's managers and a disposable Codex
-   home. Check the remote marketplace at the published tag. Then remove the
-   first-release-pending notice from user docs.
+   home, with a Homebrew/pip runtime available in the host environment. Verify
+   missing/incompatible runtime errors and Desktop PATH handling. Check the
+   remote marketplace at the published tag. Then remove the first-release-pending
+   notice from user docs.
 
 Do not run `npm publish` when authentication is missing, claim a dry run is a
 publication, or document an unpublished name as already installable. Retry an

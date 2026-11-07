@@ -14,26 +14,19 @@
     "./dsh": "./dsh.mjs"
   },
   "bin": {
-    "pvisor": "./pvisor.mjs",
     "pvisor-agent-mcp": "./mcp.mjs"
   },
   "pi": { "extensions": ["./pi.mjs"] },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "peerDependencies": { "@deepseek-ai/dsh-tools": "^0.2.0-0 || ^0.2.1-0" },
   "peerDependenciesMeta": { "@deepseek-ai/dsh-tools": { "optional": true } },
-  "optionalDependencies": {
-    "pvisor-agent-runtime-linux-x64": "0.1.0",
-    "pvisor-agent-runtime-darwin-arm64": "0.1.0"
-  },
   "files": [
     "backend.mjs",
     "tools.mjs",
     "pi.mjs",
     "dsh.mjs",
     "mcp.mjs",
-    "pvisor.mjs",
     "runtime.mjs",
-    "runtime.json",
     "cordis.patch.yml",
     "plugin.json",
     "skills",
@@ -44,7 +37,6 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:hosts": "node check-hosts.mjs",
-    "smoke": "node smoke.mjs",
-    "release:prepare": "node release.mjs"
+    "smoke": "node smoke.mjs"
   }
 }

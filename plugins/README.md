@@ -10,16 +10,38 @@ First-release status: these registry and remote-marketplace entrypoints are
 prepared but are not live until the npm packages and marketplace commit are
 published. Do not treat the commands below as evidence of publication.
 
-Node.js 22.19+ is required. npm automatically installs the matching pVisor native
-package on Linux x64 or macOS arm64. No Python, Rust, Docker, source checkout or
-manual binary path is needed. Host staging still needs the system's FUSE/FSKit
-and namespace support; the plugin cannot install privileged OS components.
+Node.js 22.19+ and a separately installed pVisor runtime are required. Install
+pVisor through Homebrew or pip before installing the plugin. Host staging still
+needs the system's FUSE/FSKit and namespace support on Linux x64 or macOS arm64;
+the plugin cannot install privileged OS components.
 
 ## Install
 
-Activate only the Agent hosts you use. Installation selects a native dependency
-for your platform, including the complete CLI companion set and firmware metadata.
-Do not omit optional dependencies.
+Install the runtime using one of these methods:
+
+```sh
+brew tap DeepLink-org/formula https://github.com/DeepLink-org/Formula.git
+brew install DeepLink-org/formula/pvisor
+```
+
+Or use a Python 3.10+ virtual environment:
+
+```sh
+python3 -m venv ~/.venvs/pvisor
+source ~/.venvs/pvisor/bin/activate
+python -m pip install pvisor-sandbox
+pvisor --version
+```
+
+Follow the [installation guide](https://deeplink-org.github.io/pvisor/start/installation/)
+for platform prerequisites. Launch your Agent host with `pvisor` on its PATH.
+Desktop apps may not inherit your terminal PATH; set `PVISOR_PLUGIN_BINARY` in
+the host environment to the absolute installed CLI path if needed. The plugin
+never downloads a runtime or installs packages. It checks required CLI flags
+before work and refuses incompatible runtimes; older releases such as 0.3.1
+without selective apply are insufficient. Plugin and runtime versions are independent.
+
+Activate only the Agent hosts you use.
 
 ### Pi
 
@@ -60,14 +82,8 @@ separately binds its runtime tools to an explicit project. Start a new session
 after both steps. Clients without plugin support can use MCP alone, without the
 workflow skill. There is no duplicate bundled MCP registration.
 
-`npx` installs the pinned plugin and its matching runtime automatically, without
-a global npm install. To use the native CLI directly from any terminal, optionally
-install the same package globally:
-
-```sh
-npm install --global pvisor-agent-plugins
-pvisor --version
-```
+`npx` installs only the pinned plugin, without a global npm install. Native
+`pvisor` commands come from your Homebrew or pip installation.
 
 This split is intentional: Codex 0.164.0 starts bundled MCP servers in the plugin
 cache, and portable manifest cwd paths are plugin-relative.
@@ -85,7 +101,7 @@ project-controlled config file:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PVISOR_PLUGIN_BINARY` | Bundled native runtime | Optional operator override, never needed for normal installation |
+| `PVISOR_PLUGIN_BINARY` | `pvisor` on the host's PATH | Absolute installed CLI path; an invalid override never falls back |
 | `PVISOR_PLUGIN_STATE_DIR` | `~/.local/state/pvisor/agent-plugins/v1` | Private task records and stages, outside the project |
 | `PVISOR_PLUGIN_PROJECT` | Unset | Explicit project for manually launched MCP; prefer native `codex mcp add ... --project DIR`; Pi/DSH use their call context |
 
@@ -127,7 +143,7 @@ the adapters never use `last`.
 
 | Tool | Effect |
 | --- | --- |
-| `pvisor_doctor` | Show project, runtime version and adapter scope; it does not test FUSE or certify isolation |
+| `pvisor_doctor` | Check required CLI capabilities and show binary path, project, runtime version and adapter scope; it does not test FUSE or certify isolation |
 | `pvisor_spawn` | Call native `pvisor spawn` for one new staged task and retain its Session |
 | `pvisor_status` | Query the exact Session's JSON status |
 | `pvisor_review` | Show the bounded project diff |
@@ -166,8 +182,7 @@ Codex's MCP surface intentionally has no apply/drop tools. After reviewing the
 diff, run these commands yourself in the project:
 
 Save the returned selector in your terminal as `stage`, then use the native CLI
-(install the optional global package above, or prefix commands with
-`npx --yes --package pvisor-agent-plugins@0.1.0`):
+installed through Homebrew or pip:
 
 ```sh
 pvisor status "$stage" --json
@@ -206,16 +221,16 @@ Developer tests, source installs and publication instructions live in
 
 ## Upgrade and uninstall
 
-Review pending tasks before upgrading. Use the host's package manager to update
-the plugin and its pinned native dependencies together, then restart. Update a
-Codex pinned marketplace ref and its `npx` version together. Never replace a
-runtime underneath a running task.
+Review pending tasks before upgrading. Update the plugin through the host's
+package manager and the runtime separately through Homebrew or pip, then restart
+and run Doctor to check compatibility. Update a Codex pinned marketplace ref and
+its `npx` version together. Never replace a runtime underneath a running task.
 
 Use `pi remove npm:pvisor-agent-plugins`,
 `dsh plugin --profile web remove pvisor-agent-plugins` (or the selected Desktop
 profile), and `codex plugin remove pvisor@pvisor` as supported by each
-host's help. Remove its separate runtime registration with `codex mcp remove pvisor`.
-Remove the shared binaries with `npm uninstall --global pvisor-agent-plugins`.
+host's help. Remove its separate MCP registration with `codex mcp remove pvisor`.
+Plugin removal leaves the separately installed runtime intact.
 These actions do not delete retained stages. Review or drop them explicitly;
 do not recursively delete the state root as an uninstall step.
 

@@ -139,7 +139,7 @@ export function execute(binary, args, { cwd, env, signal, deadlineMs = 30_000 } 
 export class Backend {
   constructor(project = process.env.PVISOR_PLUGIN_PROJECT || process.cwd(), options = {}) {
     this.projectInput = project;
-    this.binary = options.binary || process.env.PVISOR_PLUGIN_BINARY;
+    this.binary = options.binary ?? process.env.PVISOR_PLUGIN_BINARY;
     this.stateInput = options.stateDir || process.env.PVISOR_PLUGIN_STATE_DIR ||
       path.join(homedir(), ".local", "state", "pvisor", "agent-plugins", "v1");
   }
@@ -190,9 +190,11 @@ export class Backend {
   async doctor(input = {}, signal) {
     fields(input, []);
     const project = await this.project();
-    const result = await execute(await resolveRuntime(this.binary), ["--version"], { cwd: project, signal });
+    const binary = await resolveRuntime(this.binary);
+    const result = await execute(binary, ["--version"], { cwd: project, signal });
     return {
       ...result,
+      binary,
       project,
       scope: "Task tools only; native host tools are not intercepted. Host --safe, deny-all network. No mount attestation from doctor.",
     };

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the verified plugin and both native packages to npm
+        description: Publish the verified plugin package to npm
         type: boolean
         default: false
 
@@ -18,48 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  meta:
-    if: github.repository == 'DeepLink-org/pvisor'
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      local_version: ${{ steps.version.outputs.local_version }}
-      plugin_version: ${{ steps.version.outputs.plugin_version }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - id: version
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { appendFile, readFile } from 'node:fs/promises';
-          const pkg = JSON.parse(await readFile('plugins/package.json', 'utf8'));
-          const runtime = JSON.parse(await readFile('plugins/runtime.json', 'utf8'));
-          const manifest = JSON.parse(await readFile('plugins/plugin.json', 'utf8'));
-          assert.equal(pkg.version, manifest.version);
-          assert.equal(pkg.private, undefined);
-          for (const value of Object.values(pkg.optionalDependencies)) assert.equal(value, pkg.version);
-          if (process.env.RELEASE_REF.startsWith('refs/tags/')) {
-            assert.equal(process.env.RELEASE_REF, `refs/tags/plugins-v${pkg.version}`);
-          }
-          const local = `g${process.env.GITHUB_RUN_NUMBER}.${process.env.GITHUB_SHA.slice(0, 7)}`;
-          await appendFile(process.env.GITHUB_OUTPUT, `version=${runtime.version}+${local}\nlocal_version=${local}\nplugin_version=${pkg.version}\n`);
-          JS
-
-  native:
-    needs: meta
-    uses: ./.github/workflows/distribution.yml
-    with:
-      version: ${{ needs.meta.outputs.version }}
-      local_version: ${{ needs.meta.outputs.local_version }}
-      artifact_prefix: agent-plugins
-
   prepare:
-    needs: [meta, native]
     if: github.repository == 'DeepLink-org/pvisor'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -68,7 +27,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Check package identities and release tag
+      - name: Check package identity and release tag
         env:
           RELEASE_REF: ${{ github.ref }}
         run: |
@@ -79,85 +38,26 @@ jobs:
           const manifest = JSON.parse(await readFile('plugins/plugin.json', 'utf8'));
           assert.equal(pkg.version, manifest.version);
           assert.equal(pkg.private, undefined);
-          for (const value of Object.values(pkg.optionalDependencies)) assert.equal(value, pkg.version);
+          assert.equal(pkg.optionalDependencies, undefined);
+          assert.equal(pkg.bin.pvisor, undefined);
           if (process.env.RELEASE_REF.startsWith('refs/tags/')) {
             assert.equal(process.env.RELEASE_REF, `refs/tags/plugins-v${pkg.version}`);
           }
           JS
-      - name: Test adapters and package assembly
+      - name: Test adapters and packed installation
         run: npm test --prefix plugins
-      - uses: actions/download-artifact@v4
-        with:
-          name: agent-plugins-native
-          path: native
-      - name: Bind accepted artifacts to this source commit
-        env:
-          NATIVE_VERSION: ${{ needs.meta.outputs.version }}
-        run: |
-          node --input-type=module <<'JS'
-          import { writeFile } from 'node:fs/promises';
-          await writeFile('native/runtime-provenance.json', JSON.stringify({
-            repository: process.env.GITHUB_REPOSITORY,
-            commit: process.env.GITHUB_SHA,
-            version: process.env.NATIVE_VERSION,
-          }));
-          JS
-      - name: Prepare checksum-verified native npm packages
-        run: npm run release:prepare --prefix plugins -- "$PWD/native"
-      - name: Pack the complete release set
+      - name: Pack the plugin without a native runtime
         run: |
           mkdir -p plugins/dist/npm
-          npm pack ./plugins/dist/pvisor-agent-runtime-linux-x64 --pack-destination plugins/dist/npm --ignore-scripts
-          npm pack ./plugins/dist/pvisor-agent-runtime-darwin-arm64 --pack-destination plugins/dist/npm --ignore-scripts
           npm pack ./plugins --pack-destination plugins/dist/npm --ignore-scripts
-      - name: Verify an offline install of the packed Linux release set
-        run: |
-          npm install --prefix "$RUNNER_TEMP/pvisor-plugins" --offline --ignore-scripts --legacy-peer-deps \
-            ./plugins/dist/npm/pvisor-agent-runtime-linux-x64-*.tgz \
-            ./plugins/dist/npm/pvisor-agent-plugins-*.tgz
-          "$RUNNER_TEMP/pvisor-plugins/node_modules/.bin/pvisor" --version
-          "$RUNNER_TEMP/pvisor-plugins/node_modules/.bin/pvisor" spawn --help
-          "$RUNNER_TEMP/pvisor-plugins/node_modules/.bin/pvisor" apply --help > apply-help.txt
-          grep -q -- --path apply-help.txt
-          grep -q -- --dry-run apply-help.txt
-          grep -q -- --json apply-help.txt
       - uses: actions/upload-artifact@v4
         with:
           name: pvisor-agent-plugin-release
           path: plugins/dist/npm/*.tgz
           if-no-files-found: error
 
-  sources:
-    needs: [meta, native, prepare]
-    if: github.repository == 'DeepLink-org/pvisor' && (github.event_name == 'push' || inputs.publish)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: npm
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: agent-plugins-native
-          path: release
-      - uses: actions/download-artifact@v4
-        with:
-          name: agent-plugins-wheels
-          path: release
-      - name: Publish native archives and corresponding firmware sources
-        uses: ncipollo/release-action@v1
-        with:
-          tag: plugins-v${{ needs.meta.outputs.plugin_version }}
-          commit: ${{ github.sha }}
-          name: Agent plugins ${{ needs.meta.outputs.plugin_version }}
-          prerelease: true
-          makeLatest: false
-          allowUpdates: false
-          artifactErrorsFailBuild: true
-          artifacts: release/pvisor-*.tar.gz,release/pvisor_sandbox-*.whl,release/SHA256SUMS
-
   publish:
-    needs: [prepare, sources]
+    needs: prepare
     if: github.repository == 'DeepLink-org/pvisor' && (github.event_name == 'push' || inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -174,8 +74,5 @@ jobs:
         with:
           name: pvisor-agent-plugin-release
           path: packages
-      - name: Publish platform packages before the adapter
-        run: |
-          npm publish packages/pvisor-agent-runtime-linux-x64-*.tgz --access public --provenance
-          npm publish packages/pvisor-agent-runtime-darwin-arm64-*.tgz --access public --provenance
-          npm publish packages/pvisor-agent-plugins-*.tgz --access public --provenance
+      - name: Publish the plugin
+        run: npm publish packages/pvisor-agent-plugins-*.tgz --access public --provenance

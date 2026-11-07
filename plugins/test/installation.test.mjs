@@ -8,41 +8,32 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { execute } from "../backend.mjs";
-import { runtime } from "../runtime.mjs";
 import { documentationCases } from "./documentation.mjs";
 import { mcpClient } from "./mcp-client.mjs";
 
-test("DOC-PLUGINS-07: documented npm install selects a native dependency without a source path or lifecycle scripts", { timeout: 60_000 }, async (t) => {
+test("DOC-PLUGINS-07: packed plugin uses a separately installed runtime and uninstall preserves it", { timeout: 60_000 }, async (t) => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "plugin-install-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = path.join(root, "project");
   const prefix = path.join(root, "prefix");
   await mkdir(project);
-  const target = runtime.platforms[`${process.platform}-${process.arch}`];
-  assert.ok(target, "Run installation contracts on supported npm targets");
   const source = fileURLToPath(new URL("../", import.meta.url));
   const plugin = JSON.parse(await readFile(path.join(source, "package.json"), "utf8"));
-  const nativeRoot = path.join(root, "native-fixture");
-  await mkdir(path.join(nativeRoot, "bin"), { recursive: true });
-  const native = {
-    name: target.package, version: plugin.version, os: [process.platform], cpu: [process.arch],
-    files: ["bin"], exports: { "./package.json": "./package.json" },
-    pvisorRuntimeVersion: runtime.version, pvisorRuntimeCommit: "a".repeat(40),
-    pvisorRuntimeDistribution: `${runtime.version}+g1.aaaaaaa`,
-  };
-  await writeFile(path.join(nativeRoot, "package.json"), JSON.stringify(native));
+  assert.equal(plugin.optionalDependencies, undefined);
+  assert.equal(plugin.dependencies, undefined);
+  assert.equal(plugin.bin.pvisor, undefined, "The plugin must not shadow the system CLI");
+  const nativeBin = path.join(root, "external-runtime", "bin");
+  await mkdir(nativeBin, { recursive: true });
   // This executable verifies packaging/routing only. Native file semantics are
   // exercised separately by documentation.native.mjs against the built product.
   const body = `#!${process.execPath}
 const args=process.argv.slice(2);
 if(args.includes("--help"))console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json ");
-else if(args.includes("--version"))console.log("pvisor npm-install-fixture");
+else if(args.includes("--version"))console.log("pvisor external-runtime-fixture");
 else console.log(JSON.stringify(args));
 `;
-  for (const name of ["pvisor", "pvisor-replay", "pvisor-daemon"]) {
-    await writeFile(path.join(nativeRoot, "bin", name), body, { mode: 0o755 });
-  }
-  await writeFile(path.join(nativeRoot, "bin/libkrunfw.SOURCE"), "fixture metadata");
+  const native = path.join(nativeBin, "pvisor");
+  await writeFile(native, body, { mode: 0o755 });
   const config = path.join(root, "npmrc");
   await writeFile(config, "");
   const npmEnv = {
@@ -59,7 +50,6 @@ else console.log(JSON.stringify(args));
   }
   const packages = new Map([
     [plugin.name, await packed(source, plugin)],
-    [native.name, await packed(nativeRoot, native)],
   ]);
   const requests = [];
   const server = createServer((request, response) => {
@@ -90,30 +80,38 @@ else console.log(JSON.stringify(args));
     await new Promise((resolve) => server.close(resolve));
   });
   npmEnv.npm_config_registry = `http://127.0.0.1:${server.address().port}`;
-  npmEnv.PATH = `${path.join(prefix, "bin")}${path.delimiter}${process.env.PATH}`;
-  const install = await execute("sh", ["-eu", "-c", (await documentationCases()).install], {
+  npmEnv.PATH = `${nativeBin}${path.delimiter}${path.join(prefix, "bin")}${path.delimiter}${process.env.PATH}`;
+  const install = await execute("npm", ["install", "--global", `${plugin.name}@${plugin.version}`], {
     cwd: project, env: npmEnv, deadlineMs: 30_000,
   });
   assert.equal(install.exit_code, 0, JSON.stringify(install));
-  assert.match(install.stdout, /pvisor npm-install-fixture/);
+  const version = await execute("sh", ["-eu", "-c", (await documentationCases()).runtime], {
+    cwd: project, env: npmEnv,
+  });
+  assert.equal(version.exit_code, 0, JSON.stringify(version));
+  assert.match(version.stdout, /pvisor external-runtime-fixture/);
   const installed = path.join(prefix, "lib/node_modules", plugin.name);
   assert.equal((await lstat(installed)).isSymbolicLink(), false, "Test extracted npm packages, not source links");
   const delivery = await import(pathToFileURL(path.join(installed, "runtime.mjs")));
-  const deliveredRuntime = path.dirname(path.dirname(await delivery.resolveRuntime()));
-  const deliveredMetadata = JSON.parse(await readFile(path.join(deliveredRuntime, "package.json"), "utf8"));
-  assert.equal(deliveredMetadata.name, native.name, "npm must install the matching native optional dependency");
-  assert.equal((await lstat(deliveredRuntime)).isSymbolicLink(), false);
+  assert.equal(await delivery.resolveRuntime(undefined, { searchPath: nativeBin }), native);
+  await assert.rejects(delivery.resolveRuntime(undefined, { searchPath: "" }), /Homebrew or pip/);
   assert.ok(requests.some((url) => url.startsWith(`/${plugin.name}`)), "Install through the registry contract, not a source path");
+  assert.ok(!requests.some((url) => url.includes("pvisor-agent-runtime")), "npm must never request native packages");
   await assert.rejects(stat(path.join(installed, "test")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(prefix, "bin/pvisor")), { code: "ENOENT" });
+  for (const name of ["runtime.json", "release.mjs", "pvisor.mjs"]) {
+    await assert.rejects(stat(path.join(installed, name)), { code: "ENOENT" });
+  }
   const argv = ["apply", "/stage with spaces", "--path", "src", "--dry-run"];
-  const forwarded = await execute(path.join(prefix, "bin/pvisor"), argv, { cwd: project, env: npmEnv });
+  const forwarded = await execute(native, argv, { cwd: project, env: npmEnv });
   assert.equal(forwarded.exit_code, 0, JSON.stringify(forwarded));
   assert.deepEqual(JSON.parse(forwarded.stdout), argv);
   const client = await mcpClient(project, npmEnv, path.join(installed, "mcp.mjs"));
   try {
     const doctor = await client.call("pvisor_doctor");
     assert.equal(doctor.project, project);
-    assert.match(doctor.stdout, /npm-install-fixture/);
+    assert.equal(doctor.binary, native);
+    assert.match(doctor.stdout, /external-runtime-fixture/);
   } finally {
     await client.close();
   }
@@ -122,5 +120,6 @@ else console.log(JSON.stringify(args));
   const uninstall = await execute("npm", ["uninstall", "--global", plugin.name], { cwd: project, env: npmEnv });
   assert.equal(uninstall.exit_code, 0, JSON.stringify(uninstall));
   await assert.rejects(stat(installed), { code: "ENOENT" });
+  assert.equal(await readFile(native, "utf8"), body);
   assert.equal(await readFile(retained, "utf8"), "pending candidate");
 });
