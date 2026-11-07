@@ -112,7 +112,7 @@ fi
 if [[ "$name" == python3 && "$1" == scripts/packaging/verify_wheel.py && "${PVISOR_TASK_TEST_BAD_WHEEL:-0}" == 1 && "$2" == */pvisor_sandbox-b.whl ]]; then exit 1; fi
 SH
 chmod +x "$work/bin/tool"
-for name in cargo rustc rustup uv uvx python3 codesign actionlint zig; do ln -s tool "$work/bin/$name"; done
+for name in cargo rustc rustup uv uvx python3 node codesign actionlint zig; do ln -s tool "$work/bin/$name"; done
 export PATH="$work/bin:$PATH"
 command_line() { printf '%q\t' "$@"; printf '\n'; }
 run() { : > "$PVISOR_TASK_TEST_LOG"; local task="$1"; shift; mise -C "$work" run "$task" -- "$@" > "$work/stdout" 2> "$work/stderr"; }
@@ -127,8 +127,15 @@ signature_lines() {
 
 # Inspect the native task inventory, including the visibility contract.
 mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
-printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
+printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-agent-plugins test-agent-plugins-native test-agent-plugins-smoke test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
 diff -u "$work/expected" "$work/public"
+
+run test-agent-plugins
+check_line node --test 'plugins/test/*.test.mjs'
+run test-agent-plugins-native
+check_line node --test 'plugins/test/*.native.mjs'
+run test-agent-plugins-smoke
+check_line node plugins/smoke.mjs
 
 run doctor dev
 check_line cargo nextest --version
