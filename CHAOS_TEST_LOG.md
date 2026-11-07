@@ -1067,6 +1067,61 @@ not establish that an end-to-end VM/FUSE workflow works.
 - No local macOS run; remote CI must confirm accepted-socket portability.
   These are test/lint corrections, not additional production defects.
 
+### 031 — Mixed stage lifecycle trace
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABPp7JIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; bounded mixed trace and 11 selected regressions passed.
+- Budget: 25 minutes; no new workload after 08:05 UTC.
+- Assignment: bounded same-workspace mixed Host-safe lifecycle trace across
+  external/nested stages, normal/abnormal exits, selective acceptance/drop and
+  host-conflict retry, checking cleanup and exact accepted lower state.
+  At most 12 serial Sessions/16 files, plus targeted conventional regression.
+- Fixed trace seed 20261107031 used four real same-workspace Sessions:
+  external success/selective apply, nested exit23/host conflict/lock refusal/
+  successful retry, external self-TERM/drop, nested healthy successor.
+  Final lower exactly a=accepted2, health=healthy, b absent. Upper choices,
+  owner absence, releasable locks and mount/socket cleanup checked throughout.
+- Twenty-five CLI commands: 20 exit zero, three expected exit3 refusals,
+  one exit23, one exit143; total command execution 0.9907 seconds. Existing
+  missing-preview-lock limitation was classified separately, not a bug.
+- Concentrated `mise run test -- pvisor-cli` selection passed 11 tests,
+  30 filtered/skipped, including three real nested-layout Sessions inside
+  one parameterized test. Total actual Sessions seven, no code edits.
+- Window 07:04:20–07:10:10 UTC. Artifact paths from Cargo/nextest JSON,
+  all writable environment local; no source-target reuse. Available memory
+  about 17.43–17.79 GiB, maximum load1 1.31, free disk at least 320.5 GiB.
+- Not a continuous load/throughput test. No macOS/Windows/VM/full-runtime/
+  Python-suite or concurrent stress coverage. Fixed /tmp apply locks used,
+  not swept; no ignored probes merged.
+
+### 032 — Inherited mount interference in CI
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABQB1ZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; nextest isolation fix validated by worker, parent reviewed.
+- Budget: 15 minutes, no new long workloads after 08:05 UTC.
+- Assignment: fix test isolation/scheduling when the new workspace-local FUSE
+  regression's mount under runner HOME is inherited by another concurrent
+  safe test that stages HOME. Preserve production submount rejection and
+  both tests' assertions; reuse existing nextest exclusivity conventions.
+- Reused existing nextest all-slot reservation (`threads-required =
+  "num-test-threads"`) for the specific new nested-stage regression, preventing
+  overlap across binaries. No product boundary, fixture or assertion changed.
+  README documents that direct libtest/independent runners need serial isolation.
+- Worker default-feature targeted pair passed, Gateway-feature three-test
+  selection passed, then real two-slot cross-binary scheduling selection
+  passed four tests. Observer saw two ordinary tests overlap, nested regression
+  run alone, and another binary's test only start afterward.
+- Worker window ended 07:35:51 UTC; no full checkout-under-HOME reproduction,
+  complete CI rerun or local macOS claim. Two help queries hit pagers; initial
+  observer missed thread child processes and was corrected, not counted as pass.
+- All workloads resource-gated: minimum available memory 17.24 GiB,
+  maximum load1 1.83, minimum free disk 319.75 GiB. No residual fixture mounts.
+- Parent received/integrated at 08:24 UTC, after the 08:05 new-workload cutoff.
+  Therefore parent performs static review/diff checks only, not an additional
+  test run. The existing matching reservation pattern and worker's actual
+  scheduling evidence support publication; final remote CI remains required.
+  No mise.lock diff remains.
+
 ## CI observation
 
 At 03:20 UTC, `gh pr checks 111` reported two pending benchmark-build checks
@@ -1080,3 +1135,10 @@ in newly added tests, and macOS inherited nonblocking state on the lifetime
 test's accepted control socket (`read_exact` returned WouldBlock). These are
 not waived as environment failures; a follow-up will repair and revalidate.
 The macOS failure is remote CI evidence, not a local macOS reproduction.
+
+At 07:24 UTC, commit `376ca88b` had 27 successful checks, one direct Linux
+Gateway-enabled failure and the failed aggregate. Clippy and macOS Gateway
+checks now passed, validating the earlier CI corrections remotely. The remaining
+Linux log shows an existing selective-apply test refusing an inherited FUSE
+mount belonging to the concurrently running new nested-stage test under HOME.
+Round 032 investigates test isolation rather than relaxing production safety.

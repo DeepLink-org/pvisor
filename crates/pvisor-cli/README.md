@@ -743,6 +743,17 @@ reservation isolates this real-time contract; both five-second deadlines and
 the required cancellation exit status remain unchanged. It is not a benchmark
 of concurrent frontend cold starts.
 
+The `rootless_local` nested-stage/backing-visibility regression also reserves all
+nextest slots, across test binaries. Its checkout-local fixture temporarily
+creates real FUSE mounts in the host mount namespace. When CI checks out beneath
+HOME, a concurrent safe Session staging that HOME would inherit those mounts and
+correctly reject unsupported nested mounts. The reservation prevents test
+interference without relaxing that production boundary or moving fixtures out of
+the checkout. Its three fixture variants run sequentially within the test.
+Use nextest (including `mise run test`) for this scheduling guarantee; direct
+libtest execution must be serialized with `--test-threads=1`, with no concurrent
+test binaries or independent test runners sharing the host mount namespace.
+
 Linux OCI fixtures distinguish an inner deadline (an untrusted child process
 exit) from the host transport watchdog. The latter must terminate and reap an
 unresponsive runtime; delegated result files use the writable `output/` mount.

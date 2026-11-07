@@ -10,3 +10,12 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'package(=pvisor-cli) & binary(=command_extensions) & test(=session_pool_startup_remains_cancellable_while_the_companion_waits)'
 threads-required = "num-test-threads"
+
+# This checkout-local fixture temporarily mounts FUSE in the host mount namespace.
+# CI places the checkout under HOME; another safe Session staging HOME would
+# inherit that mount and correctly reject an unsupported nested mount. Reserve
+# all runner slots (across binaries), not just a group shared by selected tests.
+# Keep the fixture's literal-path/backing checks and production fail-closed rule.
+[[profile.default.overrides]]
+filter = 'package(=pvisor-cli) & binary(=rootless_local) & test(=safe_shell_supports_nested_stages_without_exposing_their_backing)'
+threads-required = "num-test-threads"
