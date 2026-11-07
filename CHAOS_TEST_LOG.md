@@ -111,6 +111,8 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Local commit: `f88493aa`. Two pushes to origin failed with a TLS
   unexpected-EOF error; this round is not yet published to PR #111.
   Retry publication after a later round rather than continuously retrying.
+- Publication recovered after round 003: commits through `4d006e6a`,
+  including round 002, were successfully pushed to PR #111.
 
 ### 003 — Interrupted apply transaction recovery
 
@@ -143,3 +145,35 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: public-entry lock behavior, whole-package/CLI/runtime/Python
   suites, true process crashes, power loss, concurrent host-write races,
   VM/FUSE, and other platforms.
+
+### 004 — Gateway disconnect faults
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOAA-ib5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: use bounded local loopback upstream faults to test Gateway
+  termination/error handling and a subsequent healthy request. At most
+  20 requests, concurrency at most two, with explicit request timeouts.
+- Worker execution: approximately 01:03–01:06 UTC.
+- Added a raw loopback TCP test in
+  `crates/pvisor-gateway/tests/model_wait_http.rs` and test README notes.
+  Injected EOF before headers, during headers, and during a declared-length
+  body. Each fault is followed by a healthy request on the same Gateway/story:
+  six serial requests with five-second exchange/request/drain limits.
+- All faults returned 502; subsequent requests returned exact healthy bodies.
+  Each request had exactly one causal terminal event and lifecycle delivery.
+  Upstream tasks joined and Gateway drained within the test limits.
+- Worker validation: new test passed, then new plus adjacent failure test
+  passed (two selected tests); targeted rustfmt and diff checks passed.
+- Coordinator independently ran `mise run test -- pvisor-gateway -- --test
+  model_wait_http -E FILTER` selecting the new EOF test and
+  `supplier_connect_or_body_failure_reacquires_admission_before_gateway_error`.
+  Two passed, 20 skipped; compilation 19.25 seconds, tests 0.132 seconds.
+  Nextest ID: `bcf48470-7ed7-4a27-b2f9-18d1935d8940`.
+  Constrained parallelism, offline Cargo, nice and 180-second timeout were
+  used; `git diff --check` passed.
+- Coordinator available memory before/after: 20,318,468 / 20,076,984 KiB;
+  load1 1.16 / 1.52; free disk 367,029,436,416 / 367,002,959,872 bytes.
+- Not covered: slow responses/inactivity timeout, TLS, downstream cancellation,
+  no-lifecycle mode, whole-crate/Python suites, other platforms, or exhaustive
+  task-leak detection. These are real TCP EOFs, not process-crash tests.

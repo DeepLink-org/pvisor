@@ -1569,6 +1569,199 @@ async fn rejected_entry_or_resume_never_delivers_supplier_reply_and_cancels_once
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_supplier_eof_boundaries_record_failure_and_allow_the_next_call() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Unlike an Axum body error, these are actual incomplete HTTP messages.
+    // Each fault is followed by a healthy reply on the same frozen route.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move {
+        for fault in 0..3 {
+            for healthy in [false, true] {
+                tokio::time::timeout(LIMIT, async {
+                    let (mut socket, peer) = listener.accept().await.unwrap();
+                    assert!(peer.ip().is_loopback());
+                    // Read through the complete upload before injecting EOF.
+                    // Byte-at-a-time headers avoid consuming body bytes early.
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        assert!(headers.len() < 4096);
+                        headers.push(socket.read_u8().await.unwrap());
+                    }
+                    let headers = String::from_utf8(headers).unwrap();
+                    assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap();
+                    assert!(length <= 4096);
+                    let mut body = vec![0; length];
+                    socket.read_exact(&mut body).await.unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["model"], "test-model");
+                    assert_eq!(body["stream"], false);
+                    if healthy {
+                        socket
+                            .write_all(
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{REPLY}",
+                                    REPLY.len()
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                    } else {
+                        let wire: &[u8] = match fault {
+                            0 => b"",
+                            1 => b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Len",
+                            2 => b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{\"id\":\"partial",
+                            _ => unreachable!(),
+                        };
+                        socket.write_all(wire).await.unwrap();
+                    }
+                    socket.shutdown().await.unwrap();
+                })
+                .await
+                .expect("bounded raw supplier exchange");
+            }
+        }
+    });
+    // Abort on panic too; the happy path explicitly joins the six exchanges.
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let mut upstream = AbortOnDrop(upstream);
+    let storage = tempfile::tempdir().unwrap();
+    let admission = Arc::new(Admission::default());
+    admission.enter_gate.add_permits(6);
+    admission.resume_gate.add_permits(6);
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = captured.clone();
+    let config = ProxyConfig {
+        listen: "127.0.0.1:0".into(),
+        admin_listen: "127.0.0.1:0".into(),
+        agent_id: "raw-eof-test".into(),
+        session_header: "x-pvisor-session-id".into(),
+        capture_level: Default::default(),
+        debug: false,
+        network: Default::default(),
+        overlay: Default::default(),
+        models: vec![ModelRoute {
+            name: "test-model".into(),
+            upstream: Some(format!("http://{address}/v1")),
+            provider: Some("openai".into()),
+            api_key: Some("fictitious-key".into()),
+            upstream_anthropic: None,
+            api_key_env: None,
+            forward: None,
+        }],
+    };
+    let proxy = InProcessCapture::start_with_runtime(
+        config,
+        storage.path().to_owned(),
+        Arc::new(CallbackObserver::new(move |event| {
+            observed.lock().unwrap().push(event.clone());
+            Ok(())
+        })),
+        InProcessRuntime {
+            execution_id: Some("wait-execution".into()),
+            model_wait: Some(Arc::new(Lifecycle(admission.clone()))),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(LIMIT)
+        .build()
+        .unwrap();
+    for fault in 0..3 {
+        for healthy in [false, true] {
+            tokio::time::timeout(LIMIT, async {
+                let response = client
+                    .post(format!("http://{}/v1/chat/completions", proxy.listen))
+                    .header("x-pvisor-session-id", "raw-eof-same-story")
+                    .json(&serde_json::json!({
+                        "model": "test-model",
+                        "stream": false,
+                        "messages": [{"role":"user","content":"hello"}]
+                    }))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    if healthy {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::BAD_GATEWAY
+                    },
+                    "fault={fault}, healthy={healthy}"
+                );
+                let body = response.bytes().await.unwrap();
+                if healthy {
+                    assert_eq!(body.as_ref(), REPLY.as_bytes());
+                } else {
+                    assert!(!body.windows(b"partial".len()).any(|w| w == b"partial"));
+                }
+            })
+            .await
+            .expect("Gateway must terminate each call without shutdown");
+        }
+    }
+    tokio::time::timeout(LIMIT, &mut upstream.0)
+        .await
+        .unwrap()
+        .unwrap();
+    // This is a drain check, not the mechanism used to end any HTTP request.
+    tokio::time::timeout(LIMIT, tokio::task::spawn_blocking(move || proxy.shutdown()))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.entries.load(Ordering::SeqCst), 6);
+    assert_eq!(admission.resumes.load(Ordering::SeqCst), 6);
+    assert_eq!(admission.cancellations.load(Ordering::SeqCst), 0);
+    let events = captured.lock().unwrap();
+    assert_eq!(events.len(), 12);
+    for (index, pair) in events.chunks_exact(2).enumerate() {
+        assert_eq!(pair[0].name(), "llm.request");
+        assert_eq!(
+            pair[1].name(),
+            if index % 2 == 0 {
+                "llm.call.cancelled"
+            } else {
+                "llm.response"
+            }
+        );
+        assert_eq!(pair[1].caused_by, vec![pair[0].id.clone()]);
+        if index % 2 == 0 {
+            let event = serde_json::to_value(&pair[1]).unwrap();
+            assert_eq!(
+                event["data"]["payload"]["content"]["reason"],
+                if index == 4 {
+                    "upstream_read_failed"
+                } else {
+                    "upstream_connect_failed"
+                }
+            );
+        }
+    }
+    let request_ids: std::collections::HashSet<_> =
+        events.chunks_exact(2).map(|pair| &pair[0].id).collect();
+    assert_eq!(request_ids.len(), 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supplier_connect_or_body_failure_reacquires_admission_before_gateway_error() {
     for connect_failure in [true, false] {
         let mut fixture = Fixture::new(false, StatusCode::OK, Admission::default(), true).await;
