@@ -423,3 +423,34 @@ remained in progress.
 Assigned after round 041 workloads ended. Investigate receipt-publication failure
 after successful storage sealing and subsequent restart/reuse admission, avoiding
 duplicate round 029 runtime and round 039 storage-only publication checks.
+
+Result: no confirmed defect. The checkpoint-policy fixture seals storage and
+publishes Bundle, then an owned nonempty completion.json directory makes receipt
+preflight fail. This is a destination-type preflight error, not rename/fsync.
+After removing only obstruction, two reopen cycles retain read-only storage,
+Unknown runtime status, blocked apply/drop/checkpoint/new-Run admission, candidate
+bytes/identity, host contents, journal/seal and Bundle. No receipt is synthesized.
+Explicit completion-owner retry commits the original result and confirms stopped.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:39:10–15:40:16: exact new lifecycle test passed, 1 passed, 765 skipped.
+- 15:40:40–15:41:01: five focused completion lifecycle tests passed,
+  5 passed, 761 skipped. Five distinct tests, six executions total.
+- 15:41:05–15:41:35: package library/tests Clippy warnings denied passed.
+- Package formatting/diff checks passed.
+- Minimum MemAvailable 24,476,504,064 bytes; maximum load1 2.333;
+  minimum free disk 367,773,474,816 bytes. Fixtures removed, no mounts or
+  surviving workload children.
+- Reopen fixture only, not process crash/restart or managed execution. No CLI,
+  FUSE/VM, strict policy, receipt rename/fsync, power loss, macOS, full package,
+  Python or workspace validation.
+
+Parent inspected the receipt/admission/preservation assertions and integrated
+the private lifecycle regression and README.
+
+### 043 — Runtime completion handoff recovery
+
+Assigned after round 042 workloads ended. Inspect valid receipt versus failed
+Session completion publication and successor Execution ordering, avoiding existing
+lease/stale completion coverage. No-change evidence is acceptable if covered.
