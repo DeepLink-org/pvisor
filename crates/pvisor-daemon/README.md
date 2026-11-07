@@ -922,6 +922,11 @@ sandbox. Opening validates header/metadata/record ownership, IDs, resources and
 credentials; activated v2 records cannot fall back to a v1 snapshot on corruption.
 A missing header with an existing records tree is rejected.
 
+Bounded store regressions truncate a record or ownership metadata at three fixed
+boundaries, verify failed reopen preserves those bytes and neighboring records,
+then restore the exact original bytes and verify identity, contents and exclusive
+locking on the same fixture.
+
 Each mutation clones/serializes only its target record. Replacement writes and
 fsyncs a private `.record-*` temporary, atomically renames it over the target and
 fsyncs `records/`; deletion unlinks the target and fsyncs the directory. Ordinary
@@ -1264,6 +1269,19 @@ admission and before runtime completion. It checks both caller/original-owner
 drop orders with CPU, memory and slot capacity independently saturated: cancellation
 retains the reservation, confirmed deletion permits exactly one replacement, and a
 stale delete cannot release that replacement. No service or VM is started.
+
+The accepted-control cancellation regression gates pause/resume after the durable
+intention and fake native change, before a lost or inconsistent acknowledgement.
+It checks retained capacity and intention, retry through unavailable inspection,
+observation-only recovery, and a newer opposite control queued before the old
+acknowledgement completes. GET and reopened records must retain the newer state.
+It uses bounded in-memory gates, not native services or VM isolation.
+
+The renewal cancellation regression blocks disk commit after TTL validation,
+disconnects the caller, and checks that stale expiry cleanup preserves the committed
+extension. A directly modeled expired deadline then fences renewal; failed and
+unconfirmed cleanup retries retain Stopping and capacity until confirmed deletion.
+It uses the existing disk barrier and fake runtime, with no wall-clock waits.
 
 Run targeted checks with:
 

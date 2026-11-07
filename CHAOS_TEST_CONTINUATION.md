@@ -823,3 +823,120 @@ checked at 95-byte path first. No code changes for path limitation.
 Pre/post MemAvailable 23,749,040/23,741,484 KiB, load1 1.56/2.68,
 free disk 359,695,151,104/359,769,837,568 bytes; gates passed. This validates
 final integrated rounds 048/049; initial failed run remains disclosed.
+
+Round 050 result: no product defect reproduced. New eight-case matrix covers
+pause/resume × lost/inconsistent acknowledgement × retry/newer queued control,
+reusing a private bounded gate after simulated native change. Caller abort retains
+intention, quota and exclusive ownership. Failed inspection preserves intent;
+retry observes without repeating control. Newer opposite control wins through
+GET and reopened disk records. Queue proof explicitly polls lifecycle write lock,
+then invokes private locked control; not merely assuming task scheduling.
+
+Worker final checks, UTC 2026-11-07, standard resource limits:
+
+- 17:05:18–17:05:24: six selected regressions passed, 130 skipped.
+- 17:05:24–17:05:25: final new test stress-count3 passed. Final-version total
+  40 scenario instances; preliminary-version executions tracked separately (72
+  including those, not 72 final-version cases).
+- Targeted Clippy warnings denied and package fmt/diff passed.
+- 17:05:42–17:06:19: final exact `mise run test -- pvisor-daemon`,
+  184 passed, 4 skipped after FakeRuntime helper changes.
+- MemAvailable 23,124,296–23,857,500 KiB; load1 1.02–2.68;
+  disk free 359,161,151,488–360,292,823,040 bytes. Short fixture dir removed.
+- New tests use FakeRuntime only; full package additionally runs existing local
+  IPC/loopback fixtures. No VM/cgroup/cloud/Python/workspace/ignored/other-platform
+  coverage. New cases saturate slots; CPU/memory covered by inherited matrix.
+
+Parent reviewed the lifecycle lock, gate ownership and final-state assertions
+and integrated test/README.
+
+### 051 — Renewal versus expiry cancellation
+
+Assigned after round 050 workloads ended. Explore accepted renewal cancellation
+and stale TTL expiry fencing with deterministic in-memory fixtures, not real-time
+waiting or live service/VM workloads.
+
+Result: no product defect reproduced. A focused test blocks disk commit after
+renewal validation, aborts public caller, waits lifecycle handoff, then invokes
+stale selected expiry cleanup. Committed extension survives. Same-deadline retry
+returns INVALID_REQUEST without reverting it. Directly modeled expired deadline
+returns SANDBOX_EXPIRED; failed/unconfirmed delete each retain Stopping/quota
+across two retries, confirmed delete admits replacement.
+It does not enqueue actual maintenance during blocked commit or cross a real clock.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 17:09:27: seven selected daemon tests passed, 130 skipped.
+- One initial new-line formatting difference corrected.
+- 17:11:04: final package fmt and lib/tests warnings-denied Clippy passed.
+- 17:11:33–17:11:53: same seven tests passed on final source (0.391 s nextest).
+- MemAvailable >=22.48 GiB, load1 <=2.22, disk free >=333.96 GiB.
+  Short 72-byte worktree-local TMPDIR empty and removed.
+- FakeRuntime/disk-barrier only, no real wait/VM/service/cgroup, no full package.
+
+Parent reviewed the lock-handoff/deadline/capacity assertions and integrated
+regression/README.
+
+### 052 — Registry uncertain-commit recovery
+
+Assigned after round 051 workloads ended. Explore existing Store failure seams,
+fail-stop mutation fencing and restart disk-winner recovery with local records,
+avoiding duplicate coverage and physical-fault claims.
+
+Result: no-code evidence, existing seven-case disk-winner test plus seven adjacent
+tests satisfy scenario. Hooks fail before/after intention, native create/pause,
+and unlink. Stale memory stays unpublished when disk wins; disabling injection
+still leaves fail-stop fencing further operations/native calls/disk mutation.
+Reopen chooses persisted state, preserves identity/credentials/resource quantities,
+retains capacity and allows replacement only after confirmed cleanup.
+
+At 17:13:35–17:14:41 UTC, targeted exact mise daemon selection passed 8,
+129 filtered (0.947 s nextest, 66 s total fresh build). MemAvailable
+24,114,960→23,893,164 KiB, load1 0.94→2.29, disk available
+349,838,668→349,712,564 KiB; gates passed. Fixtures/short TMPDIR cleaned.
+No source/docs edits; no Clippy/fmt because no edits. Private hooks/FakeRuntime,
+not full suite/native VM/device/power-loss coverage.
+
+### 053 — Malformed registry reopen recovery
+
+Assigned after round 052 workloads ended. Explore tiny malformed/truncated owned
+registry fixtures, non-destructive refusal and recovery after restoring exact
+bytes, reusing existing coverage rather than duplicating it.
+
+Initial selected storage checks at 17:16:19–17:17:24 UTC passed 4, skipped133:
+malformed/missing metadata, owner/version/record-ID rejection, mismatch byte
+preservation and separate healthy restart. No code changes. MemAvailable
+24,087,820→23,802,424 KiB, load1 0.92→2.58, disk free
+349,353,656→349,209,884 KiB; gates passed, fixtures/short TMPDIR cleaned.
+
+Gap identified explicitly: existing tests neither truncate a valid record nor
+restore exact original bytes and reopen that same fixture; malformed cases lack
+direct byte-preservation assertion. Parent requested bounded follow-up to complete
+this named recovery sequence rather than equating separate healthy-open evidence.
+No Clippy/fmt run on no-change initial selection.
+
+At 17:15 UTC published revision `5e0fa3da` CI had no failed checks; a few CLI/
+report jobs remained in progress. Not final CI success.
+
+Follow-up closes named recovery gap with 48 lines added to existing regression:
+record/ownership metadata each truncated at zero/one/missing-final-delimiter bytes.
+All six variants fail closed without modifying damaged bytes, counterpart,
+neighbor record or header. Exact original-byte restoration allows the same fixture
+to reopen with identity/version/record contents and exclusive lock intact.
+No product defect reproduced or implementation change.
+
+At 17:18:42 UTC selected two store tests passed, 135 skipped. Bare-shell Clippy
+initially used rustc1.90 and failed dependency minimum1.91; rerun through
+`mise exec` selected project toolchain and passed warnings-denied Clippy plus
+formatting/diff by 17:19:45 UTC. Earlier bare format passed but is not project
+toolchain evidence. MemAvailable 23,531,668–24,070,168 KiB, load1 1.11–1.62,
+disk free 348,950,716–349,053,704 KiB; gates passed, fixtures/TMPDIR cleaned.
+No physical crash/power-loss/sync durability/native VM/broader-corruption claim.
+
+Parent reviewed incremental same-fixture recovery assertions and merged test/README.
+
+### 054 — Real Host stagebox lifecycle recovery
+
+Assigned after round 053 workloads ended. Diversify into actual low-load
+spawn/review/selective apply/drop, guest failure/cancellation and later successful
+run, with source preservation and owned process/mount cleanup checked.
