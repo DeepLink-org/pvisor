@@ -455,6 +455,116 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
     }));
 }
 
+#[test]
+fn corrupt_native_jsonl_rejects_without_consuming_a_run_then_repairs_cleanly() {
+    for agent in [AgentKind::Codex, AgentKind::Opencode] {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("existing"), "untouched").unwrap();
+        let (events, observation_index, boundary) = match agent {
+            AgentKind::Codex => (
+                vec![
+                    json!({"type":"session_meta","payload":{"id":"repair-session"}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"selected user task"}]}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"selected action"}]}}),
+                    json!({"type":"response_item","payload":{"type":"function_call","call_id":"selected","name":"write","arguments":json!({"path":"must-not-exist","content":"selected"}).to_string()}}),
+                    json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"selected","output":"selected observation"}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"later user task"}]}}),
+                    json!({"type":"response_item","payload":{"type":"function_call","call_id":"later","name":"write","arguments":json!({"path":"must-not-exist","content":"later"}).to_string()}}),
+                    json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"later","output":"later observation"}}),
+                ],
+                4,
+                5,
+            ),
+            AgentKind::Opencode => (
+                vec![
+                    json!({"type":"user","sessionID":"repair-session","parts":[{"type":"text","text":"selected user task"}]}),
+                    json!({"type":"step_start","sessionID":"repair-session"}),
+                    json!({"type":"tool_use","sessionID":"repair-session","part":{"type":"tool","callID":"selected","tool":"write","state":{"status":"completed","input":{"path":"must-not-exist","content":"selected"},"output":"selected observation"}}}),
+                    json!({"type":"step_finish","sessionID":"repair-session"}),
+                    json!({"type":"user","sessionID":"repair-session","parts":[{"type":"text","text":"later user task"}]}),
+                    json!({"type":"step_start","sessionID":"repair-session"}),
+                    json!({"type":"tool_use","sessionID":"repair-session","part":{"type":"tool","callID":"later","tool":"write","state":{"status":"completed","input":{"path":"must-not-exist","content":"later"},"output":"later observation"}}}),
+                    json!({"type":"step_finish","sessionID":"repair-session"}),
+                ],
+                2,
+                4,
+            ),
+            _ => unreachable!(),
+        };
+        let trajectory = temporary.path().join("trajectory.jsonl");
+        let lines = events.iter().map(Value::to_string).collect::<Vec<_>>();
+        let original = lines.join("\n") + "\n";
+        let request = PlaybackRequest {
+            agent,
+            trajectory: trajectory.clone(),
+            after_step: 1,
+            workspace: workspace.clone(),
+            state_dir: temporary.path().join("state"),
+            output_dir: temporary.path().join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: Some("repair-router-session".into()),
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: Some("repair-run".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        };
+        // These are corrupt records, not the permitted uncommitted final
+        // JSONL fragment. A later complete batch must never mask the damage.
+        for corrupt in ["{\"interrupted\":", "null"] {
+            let mut damaged = lines.clone();
+            damaged[observation_index] = corrupt.into();
+            let damaged = damaged.join("\n") + "\n";
+            fs::write(&trajectory, &damaged).unwrap();
+            let error = execute(request.clone()).unwrap_err();
+            assert_eq!(error.kind, pvisor_replay::ReplayErrorKind::Trajectory);
+            assert!(
+                error
+                    .message
+                    .contains(&format!("line {}", observation_index + 1)),
+                "{agent:?}: {error:?}"
+            );
+            assert_eq!(fs::read_to_string(&trajectory).unwrap(), damaged);
+            assert!(!request.state_dir.exists());
+            assert!(!request.output_dir.exists());
+            assert_eq!(fs::read_dir(&workspace).unwrap().count(), 1);
+            assert_eq!(
+                fs::read_to_string(workspace.join("existing")).unwrap(),
+                "untouched"
+            );
+        }
+        // Repair only the input and explicitly retry the identical request.
+        // Admission failures did not allocate a run or consume its output.
+        fs::write(&trajectory, &original).unwrap();
+        let report = execute(request).unwrap();
+        assert_eq!(report.exit_code, 0, "{agent:?}: {:?}", report.result);
+        assert_eq!(report.result.phase, ReplayPhase::Prepared);
+        assert_eq!(report.result.agent_status, AgentStatus::NotStarted);
+        assert_eq!(report.result.replayed_tool_calls, 0);
+        let prepared = fs::read_to_string(
+            report
+                .result
+                .output_dir
+                .join("native/prepared-prefix.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(prepared, lines[..boundary].join("\n") + "\n");
+        assert!(!prepared.contains("later"));
+        assert_eq!(fs::read_to_string(&trajectory).unwrap(), original);
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_to_string(workspace.join("existing")).unwrap(),
+            "untouched"
+        );
+    }
+}
+
 #[cfg(unix)]
 fn write_fake_pi_runtime(root: &Path) -> PathBuf {
     use std::os::unix::fs::symlink;

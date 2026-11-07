@@ -309,3 +309,30 @@ not establish that an end-to-end VM/FUSE workflow works.
   egress/security attacks, real VM boot, host isolation, other platforms,
   workspace or Python suites. This is public packet-link testing, not a
   claim of host-wide network isolation.
+
+### 009 — Replay mismatch recovery boundaries
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABBl05IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: choose an uncovered replay mismatch/cancellation/corrupt-trace
+  boundary through a public entry, checking isolation, cursor consumption
+  and behavior after rejection against documented semantics. Small synthetic
+  records only, no external LLM services.
+- Added one public-entry `replay_contract.rs` test: eight native records each
+  for Codex and OpenCode, corrupt middle observation twice, then explicitly
+  repair and retry the identical PrepareOnly request. Rejections name the
+  correct line and leave input/workspace/state/output untouched. Retry prepares
+  exactly the selected first-batch prefix, excludes later user work, and
+  executes zero tools. No real agent or model is invoked.
+- Worker selected-suite run passed 14 tests, 135 skipped; targeted rustfmt
+  and diff checks passed. Only an initial formatting difference was corrected.
+- Coordinator independently ran `mise run test -- pvisor-replay -- -E
+  'binary(replay_contract) | test(parser_tolerates_only_a_truncated_final_jsonl_line)'`.
+  Fourteen passed, 135 skipped; compilation 13.25 seconds, tests 0.651 seconds.
+  Nextest ID: `00751c1c-2235-458d-a7e2-42c5fdf34ab8`. Offline Cargo,
+  constrained parallelism, nice and 180-second timeout used; diff check passed.
+- Coordinator available memory before/after: 19,605,264 / 19,308,200 KiB;
+  load1 0.81 / 1.25; free disk 362,246,897,664 / 362,219,892,736 bytes.
+- Not covered: cross-session mixing, HTTP request ordering/idempotency, stream
+  cancellation, real CLI/agent/LLM end-to-end, other platforms or full suite.
