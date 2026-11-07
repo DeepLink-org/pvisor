@@ -43,6 +43,7 @@ use std::time::Instant;
 
 /// Live controls for one Execution: capture proxy + optional overlay mount.
 pub(crate) struct SessionDrivers {
+    workspace_overlay: Option<crate::GuestOverlay>,
     proxy: Option<super::proxy::Proxy>,
     root_session: String,
     #[cfg(feature = "gateway")]
@@ -182,6 +183,7 @@ impl SessionDrivers {
 
     pub(crate) fn attachments(&self) -> crate::executor::ExecutionAttachments {
         crate::executor::ExecutionAttachments {
+            workspace_overlay: self.workspace_overlay.clone(),
             filesystem: self
                 .overlay_record
                 .as_ref()
@@ -455,27 +457,52 @@ pub(crate) struct VmNetworkPrepareOpts {
     pub execution_id: String,
 }
 
-pub(crate) struct VmNetworkAttachment {
+/// Owned network backend and guest transport for one Execution. Fields stay
+/// private; install the borrowed stream in a guest adapter, retain this owner
+/// through guest exit, then call shutdown. Drop also stops and joins the backend.
+/// Any duplicated stream must be closed before shutdown; no live control or
+/// checkpoint support is implied by this attachment.
+pub struct VmNetworkAttachment {
+    guest_config: pvisor_guest::NetworkConfig,
     guest_stream: std::os::unix::net::UnixStream,
     backend: pvisor_overlaynet::vm::VmNetwork,
     enforcing: bool,
 }
 
 impl VmNetworkAttachment {
-    pub(crate) fn is_enforcing(&self) -> bool {
+    /// Static guest IPv4 configuration for the transport selected by this owner.
+    pub fn guest_config(&self) -> pvisor_guest::NetworkConfig {
+        self.guest_config.clone()
+    }
+    /// Ethernet address expected by the packet backend.
+    pub fn mac_address(&self) -> [u8; 6] {
+        pvisor_overlaynet::vm::VM_MAC
+    }
+
+    /// Whether this backend enforces egress at the guest transport boundary.
+    /// This is not evidence that the executor installed that transport.
+    pub fn is_enforcing(&self) -> bool {
         self.enforcing
     }
-    pub(crate) fn guest_stream(&self) -> &std::os::unix::net::UnixStream {
+    /// Borrow the full-duplex guest-facing Ethernet stream. Each frame is prefixed
+    /// by its four-byte big-endian byte length (excluding the prefix), 14..=65535.
+    /// Reads/writes may be partial; this is not a datagram socket. Malformed framing
+    /// terminates the backend. Use guest_config/mac_address for guest device setup.
+    /// The caller must not retain duplicates
+    /// after guest teardown or backend shutdown.
+    pub fn guest_stream(&self) -> &std::os::unix::net::UnixStream {
         &self.guest_stream
     }
 
     /// Close the peer first so a backend blocked on socket I/O can observe EOF
     /// before we join its thread.
-    pub(crate) fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::InterceptionSnapshot> {
+    /// Consume the owner and join the backend. On error the owner is still consumed.
+    pub fn shutdown(self) -> anyhow::Result<pvisor_overlaynet::InterceptionSnapshot> {
         let Self {
             backend,
             guest_stream,
             enforcing: _,
+            guest_config: _,
         } = self;
         drop(guest_stream);
         backend.shutdown()
@@ -695,6 +722,7 @@ pub(crate) fn prepare_execution(
     run_record.overlay_lowers = overlay_lowers;
     let listen = gateway.listen.clone();
     let session = SessionDrivers {
+        workspace_overlay: None,
         proxy: None,
         root_session: root_session.clone(),
         agent_id: config.agent_id.clone(),
@@ -763,7 +791,8 @@ pub(crate) fn prepare_execution(
             if opts.vm_network {
                 rewrite_vm_gateway_implant(spec, &listen);
             }
-            inject_krun_overlay_metadata(spec, preparation, &overlay_hint, overlay_record.as_ref());
+            session.workspace_overlay =
+                workspace_attachment(preparation, &overlay_hint, overlay_record.as_ref());
 
             Ok(())
         },
@@ -828,6 +857,7 @@ pub(crate) fn prepare_overlay_execution(
     run_record.overlay = Some(overlay_record.clone());
     run_record.overlay_lowers = overlay_lowers;
     let session = SessionDrivers {
+        workspace_overlay: None,
         proxy: None,
         root_session: root_session.clone(),
         #[cfg(feature = "gateway")]
@@ -890,7 +920,8 @@ pub(crate) fn prepare_overlay_execution(
         crate::util::startup_mark_run("storage.record_write_ready", spec.run_id.as_str());
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
-        inject_krun_overlay_metadata(spec, preparation, &plan.overlay, Some(&overlay_record));
+        session.workspace_overlay =
+            workspace_attachment(preparation, &plan.overlay, Some(&overlay_record));
 
         Ok(())
     })
@@ -923,6 +954,7 @@ pub(crate) fn prepare_storage_execution(
     run_record.network_interception = vm_network.as_ref().map(|_| vm_network_profile(spec));
     run_record.network_policy = network_policy;
     let session = SessionDrivers {
+        workspace_overlay: None,
         proxy: None,
         root_session: root_session.clone(),
         #[cfg(feature = "gateway")]
@@ -1050,6 +1082,10 @@ fn start_vm_network(
         // Even a public policy is enforced at the guest's only network device:
         // the guest cannot bypass smoltcp by opening a host socket.
         enforcing: true,
+        guest_config: pvisor_guest::NetworkConfig {
+            address: guest_address.octets(),
+            gateway: router.octets(),
+        },
     }))))
 }
 
@@ -1344,34 +1380,26 @@ fn prepare_overlay(
     }
 }
 
-fn inject_krun_overlay_metadata(
-    spec: &mut RunSpec,
+fn workspace_attachment(
     preparation: &super::run::PreparedRun,
     hint: &OverlayHint,
     record: Option<&OverlayRecord>,
-) {
+) -> Option<crate::GuestOverlay> {
     if !preparation.guest_workspace_overlay {
-        return;
+        return None;
     }
-    let Some(record) = record else {
-        return;
-    };
-    let upper = &record.upper.upper_dir;
-    let work = &record.upper.work_dir;
-    spec.metadata.insert(
-        "pvisor.vm.workspace_overlay".into(),
-        serde_json::json!({
-            "lowers": hint.lower_dirs,
-            "lower_mutability": hint.lower_mutability,
-            "apply_target": record.target,
-            "baseline_lower": record.baseline_lower,
-            "upper": upper,
-            "work": work,
-            "preimages": record.stage_dir.join("preimages"),
-            "excluded": record.excluded_paths,
-            "access_policy": record.access_policy,
-        }),
-    );
+    let record = record?;
+    Some(crate::GuestOverlay {
+        lowers: hint.lower_dirs.clone(),
+        lower_mutability: hint.lower_mutability.clone(),
+        apply_target: Some(record.target.clone()),
+        baseline_lower: record.baseline_lower.clone(),
+        upper: record.upper.upper_dir.clone(),
+        work: Some(record.upper.work_dir.clone()),
+        preimages: Some(record.stage_dir.join("preimages")),
+        excluded: record.excluded_paths.clone(),
+        access_policy: record.access_policy.clone(),
+    })
 }
 
 #[cfg(feature = "gateway")]

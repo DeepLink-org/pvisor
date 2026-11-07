@@ -77,3 +77,42 @@ pub fn require_execution(record: &RunRecord) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+impl SessionService {
+    /// Delete an unreferenced native checkpoint under the Session operation lease.
+    /// Returns false when no native checkpoint matches, permitting workspace lookup.
+    /// Rechecks the selected Execution and caller admission before store mutation.
+    /// Suspended heads and child references are refused. Store reader leases fence
+    /// active restores. A persistence error after deletion requires reconciliation;
+    /// admitted request IDs remain retained and cannot become fresh requests.
+    pub fn delete_selected_execution_checkpoint(
+        context: &ServiceContext<'_>,
+        selected: &RunRecord,
+        id: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(template) = crate::Session::read(selected)? else {
+            return Ok(false);
+        };
+        let _lease = template.lock()?;
+        let mut session = template.current()?;
+        session.validate_record_target(selected)?;
+        let current = RunRecord::read(session.active_stage())?;
+        super::check_selected_record(selected, &current)?;
+        context.check(&current)?;
+        let Some(capture) = session.checkpoints().get(id) else {
+            return Ok(false);
+        };
+        session.check_deletable_checkpoint(id)?;
+        let store = match session.config().vm.snapshot_filesystem_pool.as_deref() {
+            Some(pool) => crate::environment_snapshot::SnapshotStore::with_filesystem_pool(
+                &capture.checkpoint.store,
+                pool,
+            )?,
+            None => crate::environment_snapshot::SnapshotStore::new(&capture.checkpoint.store)?,
+        };
+        store.delete(id)?;
+        session.apply(crate::runtime::execution::SessionTransition::CheckpointDeleted { id })?;
+        session.write()?;
+        Ok(true)
+    }
+}

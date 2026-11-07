@@ -526,9 +526,78 @@ the durable execution Session server for VM Executions and publishes its complet
 after native teardown. The server binds to the runtime's prepared record, not a
 frontend selector or caller-supplied stage metadata. Non-VM Executions retain their
 Session-owned record/Bundle publication without creating an execution checkpoint
-ledger. Managed VM starts require durable Run storage. The supplied `RunConfig`
-is retained for execution restoration; it does not configure or replace the
-caller's already-built `PVisor`.
+ledger. Managed VM starts require durable Run storage.
+
+`SessionService::prepare_managed(&visor, spec, config)` returns an opaque,
+consumable `PreparedSession`. Preparation resolves the executor and policy once,
+reads and validates continuation inputs, and starts no drivers or workload. Its
+`spec()` and `config()` accessors expose the admitted inputs read-only; `start()`
+consumes that exact plan without selecting the executor or resolving policy again.
+`start_managed` performs these same two steps directly. Preparation does not
+reserve storage; startup retains its normal ownership checks and leases.
+
+For VM Sessions, the caller must select `executor = "vm"` in the restoration
+configuration. VM settings and features are captured from the actual selected
+executor through `RunExecutor::continuation_settings`; network/Gateway settings
+come from the built runtime, and invocation/policy inputs come from the admitted
+RunSpec. The caller's unrelated settings cannot replace these captured inputs.
+Executors returning no continuation settings are rejected by managed VM admission
+before startup; bare `PVisor::run` remains available. Managed Sessions support the
+Host, OCI and VM kinds represented by `RunConfig`; Wasm/Remote descriptors use bare
+Execution startup rather than persisting an unrelated executor selector.
+Executor wrappers must forward
+this method, as the CLI's terminal observer does. Frontend restoration selections
+are still validated against owned prepared-workspace resources.
+
+### Typed VM inputs and executor attachments
+
+Construct `VmExecutionInputs` and call `apply_to(&mut spec)` for guest cwd,
+workspace target, environment removals and attached process IO (`VmStageStdio`).
+The adapter validates before updating the request and preserves the existing
+RunSpec JSON/Session encoding. Existing metadata requests for these four keys
+remain readable; admission decodes and validates them once. Invalid names, paths,
+terminal dimensions or JSON types fail before driver/workload startup. Executors
+read `ExecutionContext::vm_inputs()`; prepared callers can inspect the same value
+through `PreparedSession::vm_inputs()`. General annotations, Agent-specific policy
+and existing orchestration/restore records retain their current contracts; this
+is a focused VM-input change, not a new RunSpec schema.
+
+External `RunExecutor` implementations can opt into two runtime-owned attachments:
+
+- `supports_guest_workspace_overlay`: read `ExecutionContext::workspace_overlay()`
+  and install its `GuestOverlay` layers, lower mutability, exclusions, effective
+  file policy and preimage journal in a guest filesystem adapter. This avoids a
+  host FUSE mount. The view is borrowed for the execution; stop guest/adapter IO
+  before returning. Runtime retains stage leases, sealing and review/apply/drop.
+  Caller-supplied `pvisor.vm.workspace_overlay` metadata is refused: only runtime
+  preparation can publish this attachment. Native runners reuse the same geometry
+  type instead of serializing the handoff through RunSpec metadata.
+- `supports_vm_network_attachment`: read `vm_network_config()` before claiming
+  the owner with `take_vm_network()`. Exactly one caller receives a
+  `VmNetworkAttachment`; later claims return None. Use `guest_config()`,
+  `mac_address()` and `guest_stream()` to configure the guest network device.
+  The stream carries Ethernet frames with a four-byte big-endian length prefix
+  (14..=65535 bytes, excluding the prefix); partial IO is allowed. Retain the owner
+  through guest exit, close all duplicated streams, then consume it with
+  `shutdown()`. Drop also stops/joins the backend. `is_enforcing()` describes the
+  backend, not proof that the executor installed it as the guest's network path.
+
+Unsupported attachments are absent. VM network admission still requires explicit
+opt-in. An independent executor does not automatically gain native checkpoint or
+live-control support; descriptor capabilities and actual installation observations
+must remain accurate. The prepared-baseline `with_workspace_base` profile retains
+its exact-native-executor restriction. `tests/executor_contract.rs` exercises an
+external backend using the public interfaces, a real shared filesystem service
+and a local ARP round trip, without booting a VM or connecting to an external host.
+
+`Session` keeps identity, active Execution/stage, continuation head, configuration
+and request/reference ledgers private. Public accessors return values or immutable
+references. Raw persistence and stage-link publication are internal; callers use
+SessionService for mutations. Runtime-owned transitions update related state
+together; serialized Session fields and schema remain unchanged. Native checkpoint deletion is owned by
+`SessionService::delete_selected_execution_checkpoint`, including Session leases,
+caller revalidation, suspended-head/child-reference checks, store-reader fences and
+request tombstones. The CLI only selects the checkpoint and renders the result.
 
 Restored execution uses `RestoredExecution::start_with()` to project the captured
 environment and restore metadata, then enters the same managed completion path.

@@ -18,6 +18,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Clone, Default)]
 pub(crate) struct ExecutionAttachments {
+    pub workspace_overlay: Option<crate::GuestOverlay>,
     pub filesystem: Option<pvisor_core::FileAccessPolicy>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
     pub workspace_base: Option<Arc<crate::runtime::owned_workspace::OwnedWorkspace>>,
@@ -32,17 +33,33 @@ pub(crate) use crate::execution_context::ExecutionContext;
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorPlan;
+    /// Capture this executor's actual VM settings and feature selection for durable
+    /// continuation. None means no native Session continuation contract. Managed VM
+    /// startup rejects None before starting drivers; bare Execution startup remains
+    /// available. Wrappers must delegate this method to preserve continuation.
+    fn continuation_settings(
+        &self,
+    ) -> Option<(crate::VmSettings, crate::features::FeatureSettings)> {
+        None
+    }
     fn supports(&self, invocation: &RunInvocation) -> bool;
     /// Whether this executor consumes pVisor's VM network attachment.
     ///
     /// A virtual-machine descriptor alone is not sufficient to claim that the
     /// Execution network is non-bypassable: pluggable executors must explicitly
-    /// opt into the transport handoff contract.
+    /// opt into the transport handoff contract. On true, consume the owner through
+    /// `ExecutionContext::take_vm_network`, install its transport as the guest's
+    /// network path and retain it through guest teardown. Backend policy alone is
+    /// not installation evidence; report actual controls in ExecutorOutput.
     fn supports_vm_network_attachment(&self) -> bool {
         false
     }
     /// Consumes the guest workspace overlay instead of a host-mounted merged view.
     /// Executor names and VM isolation alone do not imply this handoff contract.
+    /// On true, use `ExecutionContext::workspace_overlay` to install the prepared
+    /// layers, exclusions, preimage journal and file policy. None means no workspace
+    /// was requested. Stop all adapter/guest writes before execute returns; pVisor
+    /// retains stage ownership and performs sealing and review/apply lifecycle.
     fn supports_guest_workspace_overlay(&self) -> bool {
         false
     }
@@ -50,6 +67,11 @@ pub trait RunExecutor: Send + Sync {
     fn supports_cpu_qos(&self) -> bool {
         false
     }
+    /// Execute the admitted request and join/stop owned workload and adapter IO
+    /// before returning. Do not allocate a Session identity or publish completion.
+    /// Driver attachments do not add native checkpoint/live-control support to a
+    /// custom backend. Return observed controls, errors and cleanup warnings;
+    /// ExecutionContext retains terminal publication and driver teardown ownership.
     async fn execute(&self, session: &crate::ExecutionContext) -> ExecutorOutput;
 }
 

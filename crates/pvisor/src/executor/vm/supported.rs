@@ -240,24 +240,7 @@ impl RunnerSpec {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct OverlayDeviceSpec {
-    pub(super) lowers: Vec<PathBuf>,
-    #[serde(default)]
-    pub(super) lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
-    #[serde(default)]
-    pub(super) apply_target: Option<PathBuf>,
-    #[serde(default)]
-    pub(super) baseline_lower: Option<PathBuf>,
-    pub(super) upper: PathBuf,
-    pub(super) work: Option<PathBuf>,
-    #[serde(default)]
-    pub(super) preimages: Option<PathBuf>,
-    #[serde(default)]
-    pub(super) excluded: Vec<PathBuf>,
-    #[serde(default)]
-    pub(super) access_policy: pvisor_core::overlay::FileAccessPolicy,
-}
+pub(super) use crate::GuestOverlay as OverlayDeviceSpec;
 
 /// A host-root VM must not reach the same workspace through its original lower
 /// path, or reach writable backing state through the root device.
@@ -1036,6 +1019,10 @@ const SUSPEND_EXIT_CODE: i32 = 123;
 
 #[async_trait]
 impl RunExecutor for VmExecutor {
+    fn continuation_settings(&self) -> Option<(VmSettings, crate::features::FeatureSettings)> {
+        Some((self.settings.clone(), self.features.clone()))
+    }
+
     fn descriptor(&self) -> ExecutorPlan {
         ExecutorPlan {
             name: "libkrun-root-overlay-v1".into(),
@@ -1074,6 +1061,7 @@ impl RunExecutor for VmExecutor {
     async fn execute(&self, context: &ExecutionContext) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
+        let mut vm_inputs = context.vm_inputs().clone();
         if self.guest_idle && (!self.vsock_ports.is_empty() || self.settings.cold_pager_requested())
         {
             return failed_to_start("guest idle M1 has incompatible devices/pager".into());
@@ -1085,10 +1073,7 @@ impl RunExecutor for VmExecutor {
         if let Some(restore) = &self.restore
             && let Some(target) = &restore.workspace_target
         {
-            spec.metadata.insert(
-                "pvisor.vm.overlay_target".into(),
-                serde_json::to_value(target).expect("path serialization"),
-            );
+            vm_inputs.overlay_target = Some(target.clone());
         }
         context
             .execution()
@@ -1116,11 +1101,7 @@ impl RunExecutor for VmExecutor {
         }
 
         let RunInvocation::Process(invocation) = &mut spec.invocation;
-        let overlay_target = spec
-            .metadata
-            .get("pvisor.vm.overlay_target")
-            .and_then(serde_json::Value::as_str)
-            .map(PathBuf::from);
+        let overlay_target = vm_inputs.overlay_target.clone();
         let root = self
             .settings
             .rootfs
@@ -1132,26 +1113,11 @@ impl RunExecutor for VmExecutor {
                 root.display()
             ));
         }
-        let guest_cwd = spec
-            .metadata
-            .get("pvisor.vm.guest_cwd")
-            .and_then(serde_json::Value::as_str)
-            .map(PathBuf::from)
+        let guest_cwd = vm_inputs
+            .guest_cwd
+            .clone()
             .unwrap_or_else(|| PathBuf::from("/"));
-        let workspace = spec
-            .metadata
-            .get("pvisor.vm.workspace_overlay")
-            .cloned()
-            .map(serde_json::from_value::<OverlayDeviceSpec>)
-            .transpose();
-        let configured_overlay = match workspace {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                return failed_to_start(format!(
-                    "invalid libkrun workspace overlay metadata: {error}"
-                ));
-            }
-        };
+        let configured_overlay = context.workspace_overlay().cloned();
         let access_policy = configured_overlay
             .as_ref()
             .map(|overlay| overlay.access_policy.clone())
@@ -1193,27 +1159,8 @@ impl RunExecutor for VmExecutor {
             )
         };
         let workspace_target = workspace.as_ref().and(overlay_target.clone());
-        let env_unset = match spec.metadata.get("pvisor.vm.env_unset") {
-            Some(value) => match serde_json::from_value::<Vec<String>>(value.clone()) {
-                Ok(names)
-                    if names
-                        .iter()
-                        .all(|name| !name.is_empty() && !name.contains(['=', '\0'])) =>
-                {
-                    names
-                }
-                Ok(_) => return failed_to_start("invalid VM env_unset name".into()),
-                Err(error) => return failed_to_start(format!("invalid VM env_unset: {error}")),
-            },
-            None => Vec::new(),
-        };
-        let stage_stdio = match spec.metadata.get("pvisor.vm.stage_stdio") {
-            Some(value) => match serde_json::from_value::<StageStdio>(value.clone()) {
-                Ok(options) => Some(options),
-                Err(error) => return failed_to_start(format!("invalid VM stage_stdio: {error}")),
-            },
-            None => None,
-        };
+        let env_unset = vm_inputs.env_unset.clone();
+        let stage_stdio = vm_inputs.stage_stdio.clone();
         let mut env = if invocation.inherit_env {
             std::env::vars().collect::<BTreeMap<_, _>>()
         } else {
@@ -1309,21 +1256,18 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(format!("hide private image backend: {error:#}"));
             }
         }
-        let vm_network_enabled = context
-            .spec()
-            .metadata
-            .get("pvisor.network.driver")
-            .and_then(serde_json::Value::as_str)
-            == Some("vm-smoltcp");
-        let router = match spec.metadata.get("pvisor.network.gateway_ipv4") {
-            Some(value) => match serde_json::from_value::<std::net::Ipv4Addr>(value.clone()) {
-                Ok(router) => router,
-                Err(error) => {
-                    return failed_to_start(format!("invalid VM router address: {error}"));
-                }
-            },
-            None => pvisor_overlaynet::vm::ROUTER_IPV4,
+        let network_config = match context.vm_network_config() {
+            Ok(config) => config,
+            Err(error) => {
+                return failed_to_start(format!("read VM network configuration: {error:#}"));
+            }
         };
+        let vm_network_enabled = network_config.is_some();
+        let router = network_config
+            .as_ref()
+            .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |network| {
+                std::net::Ipv4Addr::from(network.gateway)
+            });
         if let Err(error) = prepare_network_resolver(
             &mut root_overlay,
             temporary.path(),
@@ -1399,16 +1343,9 @@ impl RunExecutor for VmExecutor {
             guest.process.get_or_insert_with(Default::default);
         }
         if let Some(network) = guest.network.as_mut()
-            && let Some(value) = spec.metadata.get("pvisor.network.guest_ipv4")
+            && let Some(config) = &network_config
         {
-            let address = value
-                .as_str()
-                .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok());
-            let Some(address) = address else {
-                return failed_to_start("invalid VM guest network address".into());
-            };
-            network.address = address.octets();
-            network.gateway = router.octets();
+            *network = config.clone();
         }
         let requested_memory_mib = spec
             .runtime
@@ -1922,7 +1859,7 @@ impl RunExecutor for VmExecutor {
         // guest input ownership; otherwise tcsetattr can stop it with SIGTTOU.
         // This copy is only a handoff request: command stdin stays unchanged.
         let mut terminal_invocation = invocation.clone();
-        if spec.metadata.contains_key("pvisor.vm.stage_stdio")
+        if context.vm_inputs().stage_stdio.is_some()
             && [
                 (invocation.stdout, libc::STDOUT_FILENO),
                 (invocation.stderr, libc::STDERR_FILENO),
@@ -3312,12 +3249,7 @@ fn add_vm_overlay(
     Ok(())
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StageStdio {
-    interactive: bool,
-    tty: Option<[u16; 2]>,
-}
+use crate::VmStageStdio as StageStdio;
 
 impl StageStdio {
     fn process_config(self) -> pvisor_guest::ProcessConfig {

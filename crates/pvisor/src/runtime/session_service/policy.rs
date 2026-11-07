@@ -51,7 +51,7 @@ impl PolicySource {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LaunchPolicy {
+pub(super) struct LaunchPolicy {
     version: u32,
     run_id: String,
     execution_id: Option<String>,
@@ -67,7 +67,7 @@ struct LaunchPolicy {
     required_sandbox: bool,
 }
 
-pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Result<()> {
+pub(super) fn prepare(resolved: &ResolvedRun) -> anyhow::Result<LaunchPolicy> {
     let spec = &resolved.spec;
     let RunInvocation::Process(process) = &spec.invocation;
     let filesystem = spec
@@ -83,8 +83,6 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
         Some("workspace launch policy cannot reconstruct this executor (VM/container/custom executor)".into())
     } else if !matches!(filesystem, Some("host" | "sandbox")) {
         Some("workspace launch policy lacks an explicit filesystem mode".into())
-    } else if record.gateway_listen.is_some() {
-        Some("workspace launch policy cannot safely reconstruct Gateway routes/credentials".into())
     } else if spec
         .metadata
         .get(crate::executor::sandbox::LANDLOCK_SANDBOX_KEY)
@@ -123,8 +121,8 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
     };
     let policy = LaunchPolicy {
         version: 1,
-        run_id: record.run_id.clone(),
-        execution_id: record.execution_id.clone(),
+        run_id: spec.run_id.as_str().to_owned(),
+        execution_id: None,
         unsupported,
         runtime: spec.runtime.clone(),
         filesystem: if filesystem == Some("sandbox") {
@@ -133,13 +131,7 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
             FilesystemMode::Host
         },
         grants: spec.capabilities.filesystem.clone(),
-        network: record
-            .network_policy
-            .as_ref()
-            .map(|value| serde_json::from_value(value.clone()))
-            .transpose()
-            .context("prepared network policy is not reconstructible")?
-            .unwrap_or_else(|| resolved.preparation.network.clone()),
+        network: resolved.preparation.network.clone(),
         policies: spec.policies.clone(),
         inherit_env: process.inherit_env,
         // Names only: never retain environment values, command, arbitrary metadata or config routes.
@@ -155,7 +147,33 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     };
-    crate::util::write_private_json(&record.stage_dir().join(FILENAME), &policy)
+    Ok(policy)
+}
+
+impl LaunchPolicy {
+    pub(super) fn persist(mut self, record: &RunRecord) -> anyhow::Result<()> {
+        self.execution_id = record.execution_id.clone();
+        anyhow::ensure!(
+            self.run_id == record.run_id,
+            "launch policy Run identity mismatch"
+        );
+        if self.unsupported.is_none() && record.gateway_listen.is_some() {
+            self.unsupported = Some(
+                "workspace launch policy cannot safely reconstruct Gateway routes/credentials"
+                    .into(),
+            );
+        }
+        if let Some(network) = &record.network_policy {
+            self.network = serde_json::from_value(network.clone())
+                .context("prepared network policy is not reconstructible")?;
+        }
+        crate::util::write_private_json(&record.stage_dir().join(FILENAME), &self)
+    }
+}
+
+#[cfg(test)]
+fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Result<()> {
+    prepare(resolved)?.persist(record)
 }
 
 pub fn workspace_config(record: &RunRecord) -> anyhow::Result<(RunConfig, bool)> {

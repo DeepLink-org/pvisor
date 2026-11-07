@@ -17,6 +17,9 @@ pub mod execution_context;
 mod startup_profile;
 pub mod trace;
 pub use execution_context::ExecutionContext;
+pub use runtime::VmNetworkAttachment;
+mod execution_inputs;
+pub use execution_inputs::{GuestOverlay, VmExecutionInputs, VmStageStdio};
 
 mod agent;
 mod config;

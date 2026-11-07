@@ -739,8 +739,8 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     let mut finished = session.clone();
     let mut stored = serde_json::to_value(&finished).unwrap();
     stored["state"] = serde_json::to_value(SessionState::Terminal).unwrap();
+    stored["active_execution"] = serde_json::json!(record.execution_id.clone().unwrap());
     finished = serde_json::from_value(stored).unwrap();
-    finished.active_execution = record.execution_id.clone().unwrap();
     finished.write().unwrap();
     super::lifecycle::confirm_restored_completion(root.path(), &record.run_id).unwrap();
     assert!(super::lifecycle::confirm_restored_completion(root.path(), "another-session").is_err());
@@ -787,33 +787,30 @@ async fn resume_replay_is_fenced_before_embedded_launcher() {
     let mut admitted = session.clone();
     let mut stored = serde_json::to_value(&admitted).unwrap();
     stored["state"] = serde_json::to_value(SessionState::Restoring).unwrap();
+    stored["active_stage"] = serde_json::json!(root.path().join("executions/restore"));
+    stored["resumes"]["restore"] = serde_json::to_value(Receipt {
+        stage: root.path().join("executions/restore"),
+        eager_ram: false,
+    })
+    .unwrap();
     admitted = serde_json::from_value(stored).unwrap();
-    admitted.active_stage = root.path().join("executions/restore");
-    admitted.resumes.insert(
-        "restore".into(),
-        Receipt {
-            stage: admitted.active_stage.clone(),
-            eager_ram: false,
-        },
-    );
     assert!(admitted.owns_restore_transition(&admitted, "restore"));
     for variant in 0..5 {
-        let mut current = admitted.clone();
+        let mut value = serde_json::to_value(&admitted).unwrap();
         match variant {
-            0 => current.active_stage = root.path().join("executions/other"),
-            1 => current.active_execution = "other-execution".into(),
-            2 => current.head = Some("other-head".into()),
-            3 => current.resumes.get_mut("restore").unwrap().eager_ram = true,
+            0 => value["active_stage"] = serde_json::json!(root.path().join("executions/other")),
+            1 => value["active_execution"] = serde_json::json!("other-execution"),
+            2 => value["head"] = serde_json::json!("other-head"),
+            3 => value["resumes"]["restore"]["eager_ram"] = serde_json::json!(true),
             _ => {
-                current.resumes.insert(
-                    "another".into(),
-                    Receipt {
-                        stage: current.active_stage.clone(),
-                        eager_ram: false,
-                    },
-                );
+                value["resumes"]["another"] = serde_json::to_value(Receipt {
+                    stage: admitted.active_stage().to_owned(),
+                    eager_ram: false,
+                })
+                .unwrap()
             }
         }
+        let current: Session = serde_json::from_value(value).unwrap();
         assert!(!current.owns_restore_transition(&admitted, "restore"));
     }
 }

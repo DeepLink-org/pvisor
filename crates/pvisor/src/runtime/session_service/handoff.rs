@@ -351,7 +351,7 @@ mod linux {
         );
         let _project = absolute_dir(&project)?;
         if let Some((session, _)) = &execution_session
-            && let Some(value) = session.spec.metadata.get("pvisor.workspace")
+            && let Some(value) = session.spec().metadata.get("pvisor.workspace")
         {
             let historical: PathBuf = serde_json::from_value(value.clone())?;
             ensure!(

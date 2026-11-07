@@ -380,6 +380,7 @@ pub struct PVisor {
 #[derive(Clone)]
 pub(crate) struct PreparedRun {
     pub live_control: Option<super::host_transport::LiveControlRecord>,
+    pub vm_inputs: crate::VmExecutionInputs,
     pub executor: ExecutorPlan,
     pub operation: pvisor_core::operation::Operation,
     pub lineage: Option<crate::runtime::RunLineage>,
@@ -419,6 +420,7 @@ impl PreparedRun {
             .map(|value| serde_json::from_value(value.clone()))
             .transpose()?;
         Ok(Self {
+            vm_inputs: crate::VmExecutionInputs::from_spec(spec)?,
             executor,
             operation,
             lineage,
@@ -483,6 +485,10 @@ impl PVisor {
 
     pub(crate) fn resolve_run(&self, mut spec: RunSpec) -> Result<ResolvedRun, PVisorError> {
         validate_spec(&spec)?;
+        if spec.metadata.contains_key("pvisor.vm.workspace_overlay") {
+            return Err(PVisorError::InvalidSpec("workspace overlays are runtime-owned attachments; configure the runtime overlay instead".into()));
+        }
+
         spec.metadata.remove("pvisor.executor");
         spec.metadata.remove("pvisor.operation");
         let requested_spec = spec.clone();
@@ -710,7 +716,26 @@ impl PVisor {
                 "custom control socket conflicts with disabled instance control".into(),
             ));
         }
-        let mut resolved = self.resolve_run(spec)?;
+        self.start_resolved(self.resolve_run(spec)?).await
+    }
+
+    pub(crate) fn continuation_drivers(&self, config: &mut crate::RunConfig) {
+        self.runtime.continuation_drivers(config);
+    }
+
+    pub(crate) fn storage_path(&self) -> Option<&std::path::Path> {
+        self.runtime.storage_path()
+    }
+
+    pub(crate) async fn start_resolved(
+        &self,
+        mut resolved: ResolvedRun,
+    ) -> Result<RunHandle, PVisorError> {
+        if !self.instance_control && self.control_socket.is_some() {
+            return Err(PVisorError::InvalidSpec(
+                "custom control socket conflicts with disabled instance control".into(),
+            ));
+        }
         #[cfg(unix)]
         resolved
             .spec
@@ -1007,15 +1032,20 @@ mod tests {
             record.overlay_lowers.as_slice(),
             std::slice::from_ref(&baseline)
         );
-        let metadata = &resolved.spec.metadata["pvisor.vm.workspace_overlay"];
+        let attachments = session.attachments();
+        let workspace = attachments.workspace_overlay.as_ref().unwrap();
         assert_eq!(
-            metadata["lower_mutability"],
-            serde_json::json!(["immutable"])
+            workspace.lower_mutability(),
+            &[pvisor_core::overlay::LayerMutability::Immutable]
         );
-        assert_eq!(
-            metadata["apply_target"],
-            serde_json::to_value(&target).unwrap()
+        assert_eq!(workspace.apply_target(), Some(target.as_path()));
+        assert!(
+            !resolved
+                .spec
+                .metadata
+                .contains_key("pvisor.vm.workspace_overlay")
         );
+        drop(attachments);
         assert!(stage.join("workspace-baseline.json").is_file());
         let owner = resolved.preparation.workspace_base.as_ref().unwrap();
         owner

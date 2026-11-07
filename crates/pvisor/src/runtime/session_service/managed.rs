@@ -1,6 +1,6 @@
 use super::SessionService;
 use crate::Session;
-use crate::runtime::RunRecord;
+use crate::runtime::{RunRecord, run::ResolvedRun};
 use crate::{PVisor, RunConfig, RunHandle};
 use anyhow::Context;
 use pvisor_core::{ExecutorKind, RunResult, RunSpec};
@@ -19,32 +19,149 @@ pub struct SessionRun {
     cancellation: CancellationToken,
 }
 
+/// An admitted Session launch, bound to one runtime and consumed by startup.
+/// Preparation performs validation and reads existing inputs, but starts no driver
+/// or workload and publishes no Session state. Executor selection and policy
+/// resolution are retained unchanged through startup. Dropping the plan has no
+/// execution effect; it does not reserve storage or replace startup-time leases.
+#[must_use = "start the admitted Session or drop it without execution"]
+pub struct PreparedSession<'a> {
+    visor: &'a PVisor,
+    resolved: ResolvedRun,
+    config: RunConfig,
+}
+
 impl SessionService {
-    /// Start an Execution and install runtime-owned completion before returning it
-    /// to the frontend. VM execution requires prepared durable Run storage.
+    /// Resolve once and derive continuation inputs from the selected executor.
+    /// The supplied configuration retains frontend restoration settings; its VM
+    /// and feature fields are replaced by the executor's actual owned settings.
+    /// VM/executor mismatch, missing durable storage and unsupported continuation
+    /// fail before control sockets, drivers or workload startup.
+    pub fn prepare_managed<'a>(
+        visor: &'a PVisor,
+        spec: RunSpec,
+        mut config: RunConfig,
+    ) -> anyhow::Result<PreparedSession<'a>> {
+        let resolved = visor.resolve_run(spec)?;
+        if let Some(selected) = config
+            .overlayfs
+            .as_ref()
+            .and_then(|o| o.prepared_workspace.as_ref())
+        {
+            let owner = resolved.preparation.workspace_base.as_ref().context(
+                "prepared workspace selector requires an explicit owned runtime baseline; configuration alone does not grant ownership",
+            )?;
+            owner.check_selector(selected, config.vm.prepared_rootfs.as_ref())?;
+        }
+        if resolved.descriptor.kind == ExecutorKind::VirtualMachine {
+            anyhow::ensure!(
+                config.run.executor == crate::RunExecutorKind::Vm,
+                "managed VM continuation configuration requires executor=vm"
+            );
+            let storage = visor
+                .storage_path()
+                .context("managed VM execution requires a durable prepared Run record")?;
+            let (settings, features) = resolved
+                .executor
+                .continuation_settings()
+                .context("selected VM executor does not provide Session continuation settings")?;
+            config.vm = settings;
+            config.features = features;
+            if let Some(path) = &mut config.vm.library_dir {
+                *path = path.canonicalize()?;
+            }
+            if let Some(path) = &mut config.vm.rootfs
+                && Session::read_stage(storage)?.is_none()
+            {
+                *path = path.canonicalize()?;
+            }
+            crate::runtime::session_execution::snapshot_store(storage, &resolved.spec.metadata)?;
+        }
+        config.run.executor = match resolved.descriptor.kind {
+            ExecutorKind::Process => crate::RunExecutorKind::Host,
+            ExecutorKind::Container => crate::RunExecutorKind::Container,
+            ExecutorKind::VirtualMachine => crate::RunExecutorKind::Vm,
+            ExecutorKind::Wasm | ExecutorKind::Remote => anyhow::bail!(
+                "managed Session configuration cannot represent executor {:?}; use bare Execution startup",
+                resolved.descriptor.kind
+            ),
+        };
+        config.run.workspace = resolved.preparation.workspace.clone();
+        config.run.filesystem = resolved.spec.capabilities.filesystem.clone();
+        config.run.pass_env = resolved.preparation.environment.projected_keys.clone();
+        visor.continuation_drivers(&mut config);
+        let spec = &resolved.spec;
+        config.policies = spec.policies.clone();
+        config.run.profile = spec.runtime.profile;
+        config.run.policy = match spec.runtime.policy_mode {
+            pvisor_core::PolicyMode::Audit => crate::RunPolicy::Observe,
+            pvisor_core::PolicyMode::Enforce => crate::RunPolicy::Enforce,
+        };
+        config.run.timeout_ms = spec.runtime.timeout_ms;
+        config.run.resource_limits = spec.runtime.resource_limits.clone();
+        config.run.agent = spec.agent.name.clone();
+        let pvisor_core::RunInvocation::Process(process) = &spec.invocation;
+        config.run.command = std::iter::once(process.program.clone())
+            .chain(process.args.clone())
+            .collect();
+        config.run.inherit_env = process.inherit_env;
+        config.run.stdio = if process.stdout == pvisor_core::StdioMode::Capture {
+            crate::RunStdio::Capture
+        } else {
+            crate::RunStdio::Inherit
+        };
+        Ok(PreparedSession {
+            visor,
+            resolved,
+            config,
+        })
+    }
+
+    /// Prepare and start a Session with runtime-owned completion. Use
+    /// `prepare_managed` and `PreparedSession::start` to inspect admission separately.
     pub async fn start_managed(
         visor: &PVisor,
         spec: RunSpec,
         config: RunConfig,
     ) -> anyhow::Result<SessionRun> {
-        // Resolve against the actual embedded runtime, never the supplied restoration config.
-        let resolved_policy = visor.resolve_run(spec.clone())?;
-        if let Some(selected) = config
-            .overlayfs
-            .as_ref()
-            .and_then(|overlay| overlay.prepared_workspace.as_ref())
-        {
-            let owner = resolved_policy.preparation.workspace_base.as_ref().context(
-                "prepared workspace selector requires an explicit owned runtime baseline; configuration alone does not grant ownership",
-            )?;
-            owner.check_selector(selected, config.vm.prepared_rootfs.as_ref())?;
-        }
-        let mut handle = visor.run(spec.clone()).await?;
+        Self::prepare_managed(visor, spec, config)?.start().await
+    }
+}
+
+impl PreparedSession<'_> {
+    /// The effective request admitted for execution and durable continuation.
+    pub fn spec(&self) -> &RunSpec {
+        &self.resolved.spec
+    }
+
+    /// Validated VM process inputs captured during admission. No metadata parsing
+    /// or driver IO occurs when reading this view.
+    pub fn vm_inputs(&self) -> &crate::VmExecutionInputs {
+        &self.resolved.preparation.vm_inputs
+    }
+
+    /// Captured continuation configuration. VM and network/Gateway driver inputs
+    /// come from the admitted runtime; frontend selectors cannot override them.
+    pub fn config(&self) -> &RunConfig {
+        &self.config
+    }
+
+    /// Start this exact admitted execution once. Startup rechecks resource ownership;
+    /// failures after acceptance cancel and drain it, retaining uncertain records.
+    pub async fn start(self) -> anyhow::Result<SessionRun> {
+        let Self {
+            visor,
+            resolved,
+            config,
+        } = self;
+        let spec = resolved.spec.clone();
+        let policy = super::policy::prepare(&resolved)?;
+        let mut handle = visor.start_resolved(resolved).await?;
         let cancellation = handle.execution().cancellation();
         // No await between acceptance and completion ownership installation.
         let server = (|| {
             if let Some(record) = &handle.record {
-                super::policy::persist(record, &resolved_policy)?;
+                policy.persist(record)?;
             }
             if handle.execution().status().execution.executor.kind != ExecutorKind::VirtualMachine {
                 return Ok(None);
@@ -227,6 +344,12 @@ mod tests {
 
     #[async_trait]
     impl RunExecutor for GatedProcess {
+        fn continuation_settings(
+            &self,
+        ) -> Option<(crate::VmSettings, crate::features::FeatureSettings)> {
+            (self.1 == ExecutorKind::VirtualMachine)
+                .then(|| (Default::default(), Default::default()))
+        }
         fn descriptor(&self) -> ExecutorPlan {
             let mut plan = ProcessExecutor::default().descriptor();
             plan.name = "managed-test-process".into();
@@ -285,6 +408,20 @@ mod tests {
             .instance_control(false)
             .executors(vec![Arc::new(GatedProcess(gates.clone(), kind))])
             .build()
+    }
+
+    #[test]
+    fn managed_admission_rejects_unrepresentable_executor_without_startup() {
+        for kind in [ExecutorKind::Wasm, ExecutorKind::Remote] {
+            let root = tempfile::tempdir().unwrap();
+            let stage = root.path().join("stage");
+            let runtime = visor(&stage, &Gates::new(), kind);
+            let error = SessionService::prepare_managed(&runtime, spec(), config(kind))
+                .err()
+                .expect("unsupported continuation kind");
+            assert!(error.to_string().contains("cannot represent executor"));
+            assert!(!stage.exists());
+        }
     }
 
     fn spec() -> RunSpec {
@@ -369,7 +506,7 @@ mod tests {
         let session = Session::read(&record).unwrap().unwrap();
         assert_eq!(session.state(), SessionState::Running);
         assert_eq!(
-            session.active_execution,
+            session.active_execution(),
             run.handle().execution_id().as_str()
         );
         assert!(!stage.join("execution.sock").exists());
@@ -423,7 +560,7 @@ mod tests {
             loop {
                 let session = Session::read(&record).unwrap().unwrap();
                 if session
-                    .requests
+                    .requests()
                     .get("local-capture")
                     .is_some_and(|request| request.error.is_some())
                 {

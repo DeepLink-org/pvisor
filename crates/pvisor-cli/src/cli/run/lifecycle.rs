@@ -99,7 +99,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let source_session = crate::cli::host::lock_selected_session(&source)?;
     anyhow::ensure!(
         source_session.as_ref().is_none_or(|(session, _)| session
-            .config
+            .config()
             .overlayfs
             .as_ref()
             .is_none_or(|overlay| overlay.prepared_workspace.is_none())),
@@ -322,8 +322,8 @@ fn reject_ask_restore_source(source: &RunRecord) -> anyhow::Result<()> {
         super::reject_ask_file_policy(&overlay.access_policy)?;
     }
     if let Some((session, _)) = &session {
-        super::reject_ask_config(&session.config)?;
-        super::reject_ask_policies(&session.spec.policies, &Default::default())?;
+        super::reject_ask_config(session.config())?;
+        super::reject_ask_policies(&session.spec().policies, &Default::default())?;
     }
     Ok(())
 }
@@ -456,6 +456,17 @@ mod tests {
     use pvisor::session_execution::{
         ForkOptions, ForkRequest, ResumeRequest, SESSION_SCHEMA_VERSION,
     };
+    fn write_session(session: &Session) {
+        pvisor::write_private_json(&session.root().join("execution-session.json"), session)
+            .unwrap();
+    }
+
+    fn patch_session(session: &mut Session, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut value = serde_json::to_value(&*session).unwrap();
+        edit(&mut value);
+        *session = serde_json::from_value(value).unwrap();
+    }
+
     fn fixture(root: &Path) -> (RunRecord, Session) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "schema_version":1,"run_id":"session-fence","execution_id":"execution-old","session_id":"session-fence",
@@ -488,15 +499,20 @@ mod tests {
     async fn workspace_selector_fork_rejects_before_checkpoint_or_child_stage() {
         let root = tempfile::tempdir().unwrap();
         let (source, mut session) = fixture(root.path());
-        session.active_execution = source.execution_id.clone().unwrap();
-        session.config.overlayfs = Some(OverlayFsSettings {
+        patch_session(&mut session, |value| {
+            value["active_execution"] = serde_json::json!(source.execution_id.clone().unwrap());
+        });
+        let overlay = OverlayFsSettings {
             prepared_workspace: Some(pvisor::PreparedBase {
                 store: root.path().join("private-workspace-store"),
                 base: pvisor::BaseReference { id: "a".repeat(64) },
             }),
             ..Default::default()
+        };
+        patch_session(&mut session, |value| {
+            value["config"]["overlayfs"] = serde_json::to_value(overlay).unwrap();
         });
-        session.write().unwrap();
+        write_session(&session);
         let checkpoints = root.path().join("checkpoints");
         std::fs::create_dir(&checkpoints).unwrap();
         std::fs::write(
@@ -547,11 +563,13 @@ mod tests {
     async fn execution_fork_policy_check_preserves_the_live_execution_lease() {
         let root = tempfile::tempdir().unwrap();
         let (source, mut session) = fixture(root.path());
-        session.active_execution = source.execution_id.clone().unwrap();
+        patch_session(&mut session, |value| {
+            value["active_execution"] = serde_json::json!(source.execution_id.clone().unwrap());
+        });
         let mut stored = serde_json::to_value(&session).unwrap();
         stored["state"] = serde_json::to_value(SessionState::Running).unwrap();
         session = serde_json::from_value(stored).unwrap();
-        session.write().unwrap();
+        write_session(&session);
         let (_, live_execution) = source.lock_current().unwrap();
         let before = std::fs::read(root.path().join("run.json")).unwrap();
 
@@ -567,12 +585,17 @@ mod tests {
         for location in ["recorded", "spec"] {
             let root = tempfile::tempdir().unwrap();
             let (mut source, mut session) = fixture(root.path());
-            session.active_execution = source.execution_id.clone().unwrap();
+            patch_session(&mut session, |value| {
+                value["active_execution"] = serde_json::json!(source.execution_id.clone().unwrap());
+            });
             let ask =
                 pvisor_core::FileAccessPolicy::new_with_ask(vec![], vec!["secret".into()], vec![])
                     .unwrap();
             if location == "spec" {
-                session.spec.policies.session.filesystem = Some(ask);
+                patch_session(&mut session, |value| {
+                    value["spec"]["policies"]["session"]["filesystem"] =
+                        serde_json::to_value(ask).unwrap();
+                });
             } else {
                 source.overlay = Some(
                     serde_json::from_value(serde_json::json!({
@@ -585,8 +608,8 @@ mod tests {
                 );
                 source.write().unwrap();
             }
-            session.write().unwrap();
-            assert!(session.config.overlayfs.is_none());
+            write_session(&session);
+            assert!(session.config().overlayfs.is_none());
             let before_session = serde_json::to_value(session.current().unwrap()).unwrap();
             let before_record = std::fs::read(root.path().join("run.json")).unwrap();
             for _ in 0..2 {
@@ -630,29 +653,27 @@ mod tests {
     async fn cached_resume_and_fork_replays_are_fenced_under_session_lock() {
         let root = tempfile::tempdir().unwrap();
         let (source, mut session) = fixture(root.path());
-        session.resumes.insert(
-            "replay".into(),
-            ResumeRequest {
-                stage: root.path().into(),
+        let resume = ResumeRequest {
+            stage: root.path().into(),
+            eager_ram: false,
+        };
+        let fork = ForkRequest {
+            options: ForkOptions {
+                checkpoint: None,
+                stage: None,
+                name: None,
+                ram_storage: None,
                 eager_ram: false,
             },
-        );
-        session.forks.insert(
-            "replay".into(),
-            ForkRequest {
-                options: ForkOptions {
-                    checkpoint: None,
-                    stage: None,
-                    name: None,
-                    ram_storage: None,
-                    eager_ram: false,
-                },
-                stage: root.path().join("unconfirmed-child"),
-                session_id: "child".into(),
-                checkpoint_id: "checkpoint".into(),
-            },
-        );
-        session.write().unwrap();
+            stage: root.path().join("unconfirmed-child"),
+            session_id: "child".into(),
+            checkpoint_id: "checkpoint".into(),
+        };
+        patch_session(&mut session, |value| {
+            value["resumes"]["replay"] = serde_json::to_value(resume).unwrap();
+            value["forks"]["replay"] = serde_json::to_value(fork).unwrap();
+        });
+        write_session(&session);
         let before = std::fs::read_dir(root.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -676,7 +697,7 @@ mod tests {
         };
         assert_conflict(fork_execution(args, source).await.unwrap_err());
         assert_eq!(
-            session.current().unwrap().active_execution,
+            session.current().unwrap().active_execution(),
             "execution-current"
         );
         // The operation lease may be created, but no branch or restore is staged.
