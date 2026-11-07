@@ -272,3 +272,40 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: concurrent races, crash recovery, permission/xattr contracts,
   complete metadata isolation, long-TTL cache policy, macOS, VM, Python or
   workspace suites. Skipped tests are not counted as passing.
+
+### 008 — OverlayNet malformed packet isolation
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABBBk5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; one product defect reproduced and fixed.
+- Budget: 30 minutes.
+- Assignment: select an uncovered malformed/truncated packet or DNS policy
+  boundary through a real input path, at most 128 small deterministic packets.
+  Check rejection/no panic and healthy subsequent input using memory or
+  loopback only, without host network configuration changes.
+- Defect: DNS wire-name length accounting omitted the final root octet,
+  accepting a 256-byte encoded name and allocating a synthetic address.
+  RFC 1035's 255-octet limit includes that terminator. Minimal implementation
+  fix initializes encoded length to one instead of zero in `vm.rs`.
+- Added `tests/vm_dns.rs` and README contract notes. A deterministic framed
+  Ethernet/IP/UDP/DNS trace traverses the public `VmNetwork` guest link and
+  actual smoltcp backend under NoNetwork policy. It covers truncated
+  questions, overlong labels, unsupported compression, 256/257-byte names,
+  valid 254/255-byte boundaries, and healthy queries after each rejection.
+  Sequential addresses confirm invalid questions do not allocate slots.
+- Worker reproduced the unfixed defect: targeted vm_dns exit 100 after
+  21 seconds, with RCODE 0 for a 256-byte name instead of FORMERR.
+  After the fix, 14 selected VM/DNS tests passed, 76 skipped.
+  No test-logic error reported; targeted rustfmt and diff checks passed.
+- Coordinator independently ran `mise run test -- pvisor-overlaynet --
+  --lib --test vm_dns -E 'test(vm::tests::) | binary(vm_dns)'`:
+  14 passed, 76 skipped; build 8.03 seconds, tests 0.087 seconds.
+  Nextest ID: `f830897e-8361-4928-8d6e-21844965e92c`.
+  Then `mise run check -- -p pvisor-cli` passed in 26.01 seconds, compiling
+  affected runtime/CLI consumers. Offline Cargo, two build jobs, single
+  test thread, nice and bounded command timeouts were used.
+- Coordinator available memory initially/finally: 19,926,756 / 19,021,464 KiB;
+  load1 0.75 / 1.54; free disk 362,940,379,136 / 362,915,807,232 bytes.
+- Not covered: new IP/TCP/UDP fragmentation cases, peer full suite, external
+  egress/security attacks, real VM boot, host isolation, other platforms,
+  workspace or Python suites. This is public packet-link testing, not a
+  claim of host-wide network isolation.

@@ -63,6 +63,11 @@ cannot pin the table until the idle timeout. A full table refuses new SYNs
 (the guest sees `Connection refused`) and emits a rate-limited warning.
 Synthetic DNS answers `localhost` from the guest's loopback address instead
 of allocating a synthetic egress address.
+DNS question names enforce the 63-octet label and 255-octet wire-name limits,
+including the terminating root octet. Malformed questions receive FORMERR
+without allocating a synthetic address. `tests/vm_dns.rs` sends a bounded
+malformed/valid query trace through the public framed guest link, checking
+truncation, length boundaries and continued service without host networking.
 
 Does not own LLM protocol adaptation, upstream selection, session correlation,
 capture events, or Journal writes.
