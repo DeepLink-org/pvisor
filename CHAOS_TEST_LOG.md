@@ -656,3 +656,55 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: full rootless_local/workspace suites, macOS, VM, every recursive
   layout or concurrent namespace attack. Machine-specific ignored probes are
   not staged for Git.
+
+### 020 — Relative nested-stage backing boundaries
+
+- Worker: same subthread as 018/019, follow-up turn.
+- Status: completed; reviewer-requested regression strengthened and final
+  coordinator rerun passed after fixture portability correction.
+- Budget: 20 minutes, at most six serial Sessions.
+- Assignment: strengthen the round 019 regression with literal relative stage
+  arguments and precise stage/backing invisibility/protection probes, including
+  the real external path rather than an unrelated relative path. Distinguish
+  harmless new COW names from access to actual management backing.
+- Worker strengthened literal relative arguments and actual absolute management/
+  backing probes. External merged alias is a permitted COW workspace view,
+  not direct management backing; nested stage/backing remain hidden.
+- Coordinator targeted rootless rerun failed (nextest
+  `f96dd693-6b3f-42dc-a1ee-244f3b9998a7`): external workload exited one before
+  printing its probe path when tempfile used the terminal's default private
+  /tmp rather than an explicitly workspace-local TMPDIR. This is not a passing
+  regression and has not been classified as a new product bug. Worker asked
+  to locate the exact failing assertion and make the new fixture explicitly
+  workspace-local, without weakening real backing protection.
+- This also exposes a validation-scope limitation: coordinator commands that
+  did not explicitly set TMPDIR allowed existing tempfile-based tests to use
+  the terminal's per-turn /tmp. Do not claim those fixtures were all physically
+  inside the worktree; they were disposable test roots, not real user data.
+- Failed rerun resources: available memory 18,832,920 / 18,676,476 KiB,
+  load1 0.54 / 0.54; free disk 351,344,267,264 / 351,350,886,400 bytes.
+- Follow-up makes the fixture explicitly local with
+  `tempdir_in(CARGO_MANIFEST_DIR)` and captures shell trace/Bundle workload
+  output on failure. Exact original failing subcommand was not retained;
+  private-/tmp alias masking and path canonicalization were hypotheses,
+  not independently proven root causes. No product behavior was changed.
+- Literal `--stage ./experiment`, actual recorded merged paths, run/overlay/
+  upper invisibility, forbidden management-marker creation, lower isolation,
+  and drop cleanup are now asserted. If external merged is visible it must
+  accept an ordinary COW write into upper only; if hidden it must reject a
+  write. Nested merged is always required hidden. No errors are blindly ignored.
+- Worker intermediate version passed both workspace-TMPDIR and default-TMPDIR
+  environments (six more Sessions). Final stricter visibility branch was
+  not run by the worker due to its cap; coordinator supplied that final check.
+- Coordinator `env -u TMPDIR -u PVISOR_TEST_ALLOW_NO_USERNS mise run test --
+  pvisor-cli -- --test rootless_local -E
+  'test(safe_shell_supports_nested_stages_without_exposing_their_backing)'
+  --no-capture` passed: one test, 19 skipped, three real Sessions.
+  External alias wrote only to upper; nested/nested-home aliases stayed hidden.
+  Build 0.57 seconds, tests 0.626 seconds; nextest ID:
+  `c7e5cbdf-4a9f-4871-ab42-2d9fff76cab2`. Diff check passed.
+- Final coordinator resources before/after: available memory
+  18,690,432 / 18,426,500 KiB; load1 0.45 / 0.46; free disk
+  351,286,890,496 / 351,294,894,080 bytes.
+- No independent product defect in this round. Not covered: concurrent
+  namespace/symlink attacks, macOS/OCI/VM or whole-package suites.

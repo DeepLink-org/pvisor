@@ -204,7 +204,9 @@ fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
         ("nested", true, false),
         ("nested-home", true, true),
     ] {
-        let temporary = tempfile::tempdir().unwrap();
+        // Keep every fixture under the checkout, independent of the runner's
+        // TMPDIR. A synthetic-root Session gives /tmp its own private tmpfs.
+        let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
         let workspace = temporary.path().join("workspace");
         let home = if nested_home {
             workspace.join("home")
@@ -241,29 +243,96 @@ fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
                 "capture",
                 "--stage",
             ])
-            .arg(&stage)
+            .arg(if nested_stage {
+                Path::new("./experiment")
+            } else {
+                &stage
+            })
             .args([
                 "--",
                 "/bin/sh",
-                "-ec",
-                "test ! -e experiment/run.json; printf staged > result.txt; printf private > \"$HOME/state\"",
+                "-exc",
+                r#"
+stage=$1
+test "$PVISOR_OVERLAY_STAGE" = "$stage"
+test ! -e "$stage/run.json"
+test ! -e "$stage/overlay.json"
+test ! -e "$PVISOR_OVERLAY_UPPER"
+if (cat "$stage/run.json") 2>/dev/null; then exit 1; fi
+for directory in "$stage" "$PVISOR_OVERLAY_UPPER"; do
+    if (printf forbidden > "$directory/management-probe") 2>/dev/null; then
+        echo "management directory writable: $directory" >&2
+        exit 1
+    fi
+done
+alias_written=no
+if test "$2" = nested; then
+    merged="$stage/.overlay-mounts/$PVISOR_OVERLAY_ID/merged"
+    test ! -e ./experiment
+    test ! -e "$stage"
+    test ! -e "$merged"
+    if (printf forbidden > "$merged/backing-probe") 2>/dev/null; then exit 1; fi
+else
+    merged="$stage/merged"
+    # If reachable, this is a COW workspace alias, not the physical upper.
+    # Its absolute path need not remain available behind a private /tmp.
+    if test -e "$merged"; then
+        test -d "$merged"
+        printf alias > "$merged/alias-result.txt"
+        alias_written=yes
+    elif (printf forbidden > "$merged/backing-probe") 2>/dev/null; then
+        echo "hidden merged path writable: $merged" >&2
+        exit 1
+    fi
+fi
+printf '%s\n%s\n' "$merged" "$alias_written"
+printf staged > result.txt
+printf private > "$HOME/state"
+"#,
+                "stage-visibility-probe",
             ])
+            .arg(&stage)
+            .arg(if nested_stage { "nested" } else { "external" })
             .output()
             .unwrap();
+        let bundle = RunBundle::read(&stage);
         assert!(
             output.status.success(),
-            "{name}: stdout: {}\nstderr: {}",
+            "{name}: stdout: {}\nstderr: {}\ncaptured workload: {:?}",
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr),
+            bundle.as_ref().map(|bundle| &bundle.run.output)
         );
-        let bundle = RunBundle::read(&stage).unwrap();
+        let bundle = bundle.unwrap();
         assert!(bundle.run.failure.is_none(), "{name}: {:?}", bundle.run);
         assert!(bundle.safety.filesystem_non_bypassable, "{name}");
         assert!(bundle.safety.network_non_bypassable, "{name}");
         assert_eq!(fs::read(home.join("state")).unwrap(), b"lower", "{name}");
         assert!(!workspace.join("result.txt").exists(), "{name}");
+        assert!(!workspace.join("alias-result.txt").exists(), "{name}");
+        assert!(!stage.join("management-probe").exists(), "{name}");
+        let overlay: serde_json::Value =
+            serde_json::from_slice(&fs::read(stage.join("overlay.json")).unwrap()).unwrap();
+        let stdout = bundle.run.output.stdout.as_deref().unwrap();
+        let mut lines = stdout.lines();
+        assert_eq!(
+            lines.next(),
+            overlay["merged_dir"].as_str(),
+            "{name}: probe must address the actual recorded merged backing"
+        );
+        let alias_written = lines.next().unwrap();
+        assert!(matches!(alias_written, "yes" | "no"), "{name}: {stdout}");
+        assert!(lines.next().is_none(), "{name}: {stdout}");
         let upper = &bundle.filesystem.as_ref().unwrap().upper;
+        assert!(!upper.join("management-probe").exists(), "{name}");
+        assert!(!upper.join("backing-probe").exists(), "{name}");
         assert_eq!(fs::read(upper.join("result.txt")).unwrap(), b"staged");
+        if alias_written == "yes" {
+            assert!(!nested_stage, "{name}: hidden backing was writable");
+            assert_eq!(fs::read(upper.join("alias-result.txt")).unwrap(), b"alias");
+        } else {
+            assert!(!upper.join("alias-result.txt").exists(), "{name}");
+        }
         let review = command()
             .arg("review")
             .arg(&stage)
@@ -275,13 +344,14 @@ fn safe_shell_supports_nested_stages_without_exposing_their_backing() {
         let dropped = command().arg("drop").arg(&stage).output().unwrap();
         assert!(dropped.status.success(), "{name}: {dropped:?}");
         assert!(!upper.join("result.txt").exists(), "{name}");
+        assert!(!upper.join("alias-result.txt").exists(), "{name}");
         assert!(
             !fs::read_to_string("/proc/self/mountinfo")
                 .unwrap()
                 .contains(temporary.path().to_str().unwrap())
         );
         eprintln!(
-            "{name}: sandbox enforced, backing hidden, lower unchanged, review/drop succeeded"
+            "{name}: alias_written={alias_written}, sandbox enforced, management protected, lower unchanged, review/drop succeeded"
         );
     }
 }
