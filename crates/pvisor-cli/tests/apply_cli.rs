@@ -744,6 +744,187 @@ fn unresolved_source_is_one_json_error_and_diff_is_bounded_text() {
 }
 
 #[test]
+fn hardlink_dependency_selection_rechecks_host_alias_after_preview_and_preserves_pending() {
+    for host_edit in [false, true] {
+        let f = Fixture::new();
+        fs::write(f.target.join("source"), b"original").unwrap();
+        fs::hard_link(f.target.join("source"), f.target.join("host-alias")).unwrap();
+        let journal = f.stage.join("preimages");
+        pvisor_overlay_core::stage::begin(&journal, pvisor_core::overlay::StageDurability::Strict)
+            .unwrap();
+        let core = pvisor_overlay_core::OverlayCore::open_existing(
+            vec![f.target.clone()],
+            f.stage.join("upper"),
+            Some(f.stage.join("work")),
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        core.hard_link(Path::new("source"), Path::new("staged-alias"))
+            .unwrap();
+        fs::write(core.copy_up(Path::new("source")).unwrap(), b"staged").unwrap();
+        drop(core);
+        pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &journal).unwrap();
+
+        // The upper hardlink group is an atomic dependency, not permission to
+        // revive an explicitly excluded sibling.
+        let blocked = object(
+            &f.run(&[
+                "--path",
+                "staged-alias",
+                "--exclude",
+                "source",
+                "--dry-run",
+                "--json",
+            ]),
+            3,
+        );
+        assert_eq!(blocked["status"], "blocked", "{blocked}");
+        assert!(
+            blocked["blockers"]
+                .to_string()
+                .contains("hard-link sibling"),
+            "{blocked}"
+        );
+        let preview = object(
+            &f.run(&["--path", "staged-alias", "--dry-run", "--json"]),
+            0,
+        );
+        assert_eq!(preview["status"], "ready", "{preview}");
+        assert_eq!(preview["selected"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["required"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["selected"][0]["path"], "staged-alias");
+        assert_eq!(preview["required"][0]["path"], "source");
+        assert_eq!(preview["remaining"]["in_scope"], 2);
+        assert_eq!(fs::read(f.target.join("source")).unwrap(), b"original");
+        assert_eq!(fs::read(f.target.join("host-alias")).unwrap(), b"original");
+
+        if host_edit {
+            // Preview is not a reservation. Mutating the unselected host name
+            // changes the selected source inode and must block the whole group.
+            fs::write(f.target.join("host-alias"), b"later host edit").unwrap();
+        }
+        let value = object(
+            &f.run(&["--path", "staged-alias", "--json"]),
+            if host_edit { 3 } else { 0 },
+        );
+        if host_edit {
+            assert_eq!(value["status"], "blocked", "{value}");
+            assert!(value["execution"].is_null(), "{value}");
+            assert!(!f.target.join("staged-alias").exists());
+            assert_eq!(
+                fs::read(f.target.join("source")).unwrap(),
+                b"later host edit"
+            );
+            assert_eq!(fs::read(f.stage.join("upper/source")).unwrap(), b"staged");
+            assert_eq!(
+                fs::read(f.stage.join("upper/staged-alias")).unwrap(),
+                b"staged"
+            );
+        } else {
+            assert_eq!(value["status"], "applied", "{value}");
+            assert_eq!(value["remaining"]["in_scope"], 2);
+            assert_eq!(fs::read(f.target.join("source")).unwrap(), b"staged");
+            assert_eq!(
+                fs::metadata(f.target.join("source")).unwrap().ino(),
+                fs::metadata(f.target.join("staged-alias")).unwrap().ino()
+            );
+            // Only copied-up aliases participate in upper dependency closure;
+            // publication replaces a name, never writes through its host inode.
+            assert_eq!(fs::read(f.target.join("host-alias")).unwrap(), b"original");
+        }
+        let accepted = object(&f.run(&["--path", "keep.txt", "--json"]), 0);
+        assert_eq!(accepted["status"], "applied", "{accepted}");
+        assert_eq!(
+            accepted["remaining"]["in_scope"],
+            if host_edit { 3 } else { 1 }
+        );
+        assert_eq!(
+            fs::read(f.stage.join("upper/skip.txt")).unwrap(),
+            b"skipped\n"
+        );
+        let dropped = f.invoke("drop", &[]);
+        assert!(dropped.status.success(), "{dropped:?}");
+        assert_eq!(fs::read(f.target.join("keep.txt")).unwrap(), b"kept\n");
+        assert!(!f.target.join("skip.txt").exists());
+        assert_eq!(
+            fs::read(f.target.join("host-alias")).unwrap(),
+            if host_edit {
+                b"later host edit".as_slice()
+            } else {
+                b"original"
+            }
+        );
+        assert_eq!(
+            fs::read(f.target.join("source")).unwrap(),
+            if host_edit {
+                b"later host edit".as_slice()
+            } else {
+                b"staged"
+            }
+        );
+        assert_eq!(f.target.join("staged-alias").exists(), !host_edit);
+    }
+}
+
+#[test]
+fn selected_symlinks_do_not_accept_referents_or_write_through_host_aliases() {
+    let f = Fixture::new();
+    let sentinel = f.root.path().join("sentinel");
+    fs::write(&sentinel, b"outside project").unwrap();
+    let journal = f.stage.join("preimages");
+    pvisor_overlay_core::stage::begin(&journal, pvisor_core::overlay::StageDurability::Strict)
+        .unwrap();
+    let core = pvisor_overlay_core::OverlayCore::open_existing(
+        vec![f.target.clone()],
+        f.stage.join("upper"),
+        Some(f.stage.join("work")),
+        vec![],
+        Some(journal.clone()),
+    )
+    .unwrap();
+    core.create_symlink(Path::new("pending-link"), Path::new("skip.txt"))
+        .unwrap();
+    core.create_symlink(Path::new("outside-link"), &sentinel)
+        .unwrap();
+    drop(core);
+    pvisor_overlay_core::stage::seal(&f.stage.join("upper"), &journal).unwrap();
+    let before = tree_snapshot(&sentinel);
+    let value = object(
+        &f.run(&["--path", "pending-link", "--path", "outside-link", "--json"]),
+        0,
+    );
+    assert_eq!(value["status"], "applied", "{value}");
+    assert!(value["required"].as_array().unwrap().is_empty(), "{value}");
+    assert_eq!(value["remaining"]["in_scope"], 2);
+    assert_eq!(
+        fs::read_link(f.target.join("pending-link")).unwrap(),
+        Path::new("skip.txt")
+    );
+    assert_eq!(
+        fs::read_link(f.target.join("outside-link")).unwrap(),
+        sentinel
+    );
+    assert!(!f.target.join("skip.txt").exists());
+    assert_eq!(
+        fs::read(f.stage.join("upper/skip.txt")).unwrap(),
+        b"skipped\n"
+    );
+    let dropped = f.invoke("drop", &[]);
+    assert!(dropped.status.success(), "{dropped:?}");
+    assert!(!f.target.join("skip.txt").exists());
+    assert_eq!(
+        fs::read_link(f.target.join("pending-link")).unwrap(),
+        Path::new("skip.txt")
+    );
+    assert_eq!(
+        fs::read_link(f.target.join("outside-link")).unwrap(),
+        sentinel
+    );
+    assert_eq!(tree_snapshot(&sentinel), before);
+}
+
+#[test]
 fn target_type_conflicts_block_the_whole_batch_and_allow_selective_retry_then_drop() {
     for kind in ["file", "nonempty-directory", "symlink"] {
         let f = Fixture::new();

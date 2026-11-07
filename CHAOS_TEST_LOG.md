@@ -522,3 +522,36 @@ not establish that an end-to-end VM/FUSE workflow works.
 - Not covered: VM data-plane bandwidth policy replacement (the new swap test
   uses proxy snapshots), real network speed, actual VM, Core budget ledger,
   full OverlayNet/workspace suites or other platforms.
+
+### 016 — Selective apply alias isolation
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABGJRJIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: investigate an uncovered hardlink/symlink alias boundary in
+  selective apply/drop, preserving unselected candidates and later host edits
+  under the documented selection rules. Small fixture, no real user paths.
+- Added two CLI regressions covering upper hardlink dependency selection,
+  excluded required siblings, host-alias edits after preview, preservation of
+  unselected candidates, and accepting symlinks without accepting or writing
+  through referents. Accepted hardlinks share an inode; uncopied host aliases
+  keep their old content. Later host edits block the entire dependency group.
+- Worker passed the two regressions and separately exercised real Host/FUSE
+  spawn→preview→host edit→blocked apply→symlink apply→drop. Early probe
+  assumptions were corrected: default safe deny rejects multi-linked access
+  unless explicitly cleared, and preview needs an existing mutation lock
+  (initialized through a public zero-match apply). Neither was a new bug.
+- Coordinator ran the full apply_cli binary: `mise run test -- pvisor-cli --
+  --test apply_cli --no-fail-fast`: 20 passed, zero skipped. Build 23.28
+  seconds, tests 1.180 seconds; nextest ID:
+  `51b300db-6d1f-4676-848b-aed2e0b3a406`. Diff check passed.
+- Host load briefly reached 7.81 before validation, so coordinator reduced
+  build jobs to one and used nice 15. An explicit pre-exec gate measured
+  load1 6.14, available memory 18,949,432 KiB and free disk 356,485,435,392
+  bytes, all safe. After validation: load1 4.54, available memory
+  18,483,832 KiB, free disk 356,347,248,640 bytes.
+- Public apply uses fixed /tmp lock files; this known behavior is not
+  described as zero workspace-external writes and no shared locks were removed.
+- Not covered: concurrent namespace attacks, power loss, macOS, full-package,
+  workspace or Python suites. Worker real-chain evidence is separate from
+  coordinator fixture-based CLI regressions.
