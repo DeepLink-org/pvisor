@@ -708,3 +708,52 @@ not establish that an end-to-end VM/FUSE workflow works.
   351,286,890,496 / 351,294,894,080 bytes.
 - No independent product defect in this round. Not covered: concurrent
   namespace/symlink attacks, macOS/OCI/VM or whole-package suites.
+
+### 021 — Malformed runtime control messages
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABKxvZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed; behavior passed and current-source artifact provenance
+  confirmed, with a build-output isolation deviation.
+- Budget: 30 minutes.
+- Assignment: choose an uncovered actual local control-protocol rejection/
+  continued-service boundary, at most 16 small messages/two connections,
+  preserving valid owner operations and cleanup. Do not infer malicious
+  same-UID protection from an internal trusted interface.
+- Worker actual local endpoint trace: seven malformed/version/correlation/
+  stale-execution cases each followed by healthy live status, then one stalled
+  partial line alongside legitimate termination (16 small messages total).
+  Malformed terminate requests did not cancel; valid terminate yielded
+  cancelled/143, owner/frontend reaped, socket/control state cleared.
+- The public endpoint is newline JSON, not a length-prefixed protocol; fake
+  length fields do not establish oversized-frame coverage. Maximum actual
+  payload 472 bytes, one bounded Host Session and two connections.
+- Worker conventional tests: one selected host_cli_service owner test and five
+  Core host-protocol tests passed. Earlier wrong Rust 1.90 toolchain rejection
+  and 50-second build timeout were environment/limit failures, not passes.
+- Evidence caveat: actual probe command names
+  `/home/reiase/workspace/pvisor/target/debug/pvisor`, apparently outside the
+  isolated worktree. Coordinator requested build/artifact path and hash
+  confirmation without additional Session runs.
+- Provenance follow-up confirmed current isolated-worktree source compilation
+  in historical logs. The new test dep-info explicitly binds CARGO_BIN_EXE to
+  the probe path; that binary and its deps artifact share inode 284154552 and
+  current SHA-256
+  `a34dd0d90381df5f775af98d456ff794ec17185e307f6a53367083bd5298aad8`,
+  with timestamps matching the successful 03:23:50 build. There was no hash
+  captured at execution time, so this is retrospective artifact evidence.
+- Scope deviation: worker explicitly set CARGO_TARGET_DIR to the source
+  checkout's target outside the attached worktree, replacing generated build
+  outputs there. No source edit is reported, but this was not isolated build
+  output. Do not delete or roll back that shared target; future rounds must
+  explicitly use their own worktree target. No more Session runs were used
+  for provenance verification.
+- Worker resource envelope: available memory 17.51–17.84 GiB, load1
+  0.39–1.07, free disk 351.245–351.329 GB. No tracked code changes.
+- Not covered: real >1 MiB frame, connection saturation, full inactivity timeout,
+  guest/private owner wire, cross-UID authorization or full suite.
+
+## CI observation
+
+At 03:20 UTC, `gh pr checks 111` reported two pending benchmark-build checks
+for the latest push and no completed pass/fail results. This is not CI success.
+Local targeted evidence above remains distinct from GitHub CI.
