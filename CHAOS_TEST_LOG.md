@@ -366,3 +366,34 @@ not establish that an end-to-end VM/FUSE workflow works.
   Constrained jobs, offline Cargo, nice and 180-second timeout; diff check passed.
 - Not covered: startup-path failure, cancellation, escaped descendants,
   VM boot/retry, other platforms or full-package/workspace suites.
+
+### 011 — Mounted open-file namespace churn
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABCXyZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: real FUSE/native-oracle comparison while file descriptors remain
+  open across rename-overwrite/unlink boundaries. Check inode ownership,
+  continued descriptor access, lower isolation, and explicit unmount, using
+  a bounded single-thread trace rather than repeating trace 007.
+- Extended the existing mounted-oracle fixture with fixed 21-step trace 011:
+  held independent/duplicated descriptors survive rename replacement,
+  hardlink/last-link removal, detached writes and same-name recreation.
+  After each step, compare all live fd bytes, EOF and inode-equivalence
+  groups, visible tree and lower isolation against native filesystem behavior.
+  Real mountinfo presence and absence after explicit unmount are checked.
+- Worker selected trace plus eight API contracts passed (nine tests).
+  First run failed before the trace because the new mountinfo check accepted
+  only `fuse.*`, not valid `fuse`; that test-only assumption was corrected.
+  Targeted rustfmt and diff checks passed.
+- Coordinator ran both mounted traces and API contracts:
+  `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount
+  --test api_contract --run-ignored all --no-fail-fast`.
+  Ten passed, zero skipped; build 0.35 seconds, tests 0.109 seconds.
+  Nextest ID: `ae433342-ebc1-45fc-8499-dc66b708c329`.
+  Offline Cargo, constrained parallelism, nice and 180-second timeout;
+  diff check passed.
+- Coordinator available memory before/after: 19,324,660 / 19,227,468 KiB;
+  load1 0.52 / 0.63; free disk unchanged at 361,781,010,432 bytes.
+- Not covered: directory fds, cross-process ownership, concurrency, mmap,
+  other cache policies/macOS, full-package/workspace/Python suites or rustdoc.

@@ -431,6 +431,15 @@ checks lower namespace/content isolation and explicit unmount. Run it with
 `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture`.
 Missing FUSE capability fails this explicit run; portable runs leave it ignored.
 
+The same fixture's fixed 21-operation `011` trace covers held descriptors rather
+than ordinary path-only mutations: independent lower opens, a hardlink alias and
+dup owners survive rename replacement, last-link removal, writes through a
+detached fd, and recreation of the old name. After each step it compares all held
+fd bytes and inode equivalence groups, the visible tree and lower namespace/
+content isolation against a native oracle. It records the real Linux mountinfo
+entry and verifies its absence after explicit unmount. Select it with
+`mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(held_fd_replacement_unlink_recreate_matches_native_trace_011)'`.
+
 ## Develop
 
 ### Prerequisites
