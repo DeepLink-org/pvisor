@@ -826,13 +826,92 @@ not establish that an end-to-end VM/FUSE workflow works.
 ### 024 — Staging safety-record consistency
 
 - Worker: same subthread as 022/023, follow-up turn.
-- Status: dispatched; no result yet.
+- Status: fourth product defect reproduced; initial candidate's in-place
+  compatibility regression was caught before publication and resolved in 025.
 - Budget: 30 minutes, at most four serial Sessions.
 - Assignment: reproduce and trace the lower-write/staged-safety-field mismatch
   from public API through admission and recorded installation evidence;
   compare valid staged/write-through configurations and minimally repair a
   genuine contract violation without expanding API scope.
-- Checks, findings, fixes, and PR updates: pending worker evidence.
+- Red evidence: public Safe ProcessExecutor plus OverlayHint without
+  `pvisor.workspace` completed and changed lower, upper absent, Bundle staged
+  flag true. Correct workspace binding staged the same write; explicit
+  no-overlay write-through changed lower with flag false. Three real controls.
+- Fix fails before launcher/workload when prepared merged source exists but
+  workspace binding is missing, invalid or identical to source, and stops
+  swallowing source canonicalization errors. No bind target is inferred and
+  no unsafe execution is merely relabeled. Added private plan coverage,
+  external API regression and runtime README semantics.
+- Worker passed three selected tests, CLI consumer compilation, warnings-denied
+  clippy/rustdoc and formatting/diff checks. Four-Session budget included
+  the three controls and pre-launch-rejection API regression.
+- Coordinator independently ran `mise run test -- pvisor -- --lib
+  --test staged_process_binding -E FILTER`: three passed, 761 skipped;
+  build 39.79 seconds, tests 0.056 seconds. Nextest ID:
+  `057abd36-8c0c-41a0-a330-e4d2acaac829`.
+- Coordinator also ran three real rootless CLI regressions (ordinary/safe,
+  abnormal exits, external/nested/nested-home stages): three passed, 17 skipped;
+  build 19.05 seconds, tests 1.589 seconds. Nextest ID:
+  `4fa6c437-b609-423c-994d-861f0757714a`. No optional-userns skip.
+- Both validations explicitly used worktree target/TMPDIR, Rust 1.98, one
+  build job, one test thread, nice 15 and bounded timeouts. Diff check passed.
+  Available memory initially/finally: 18,889,360 / 18,315,700 KiB;
+  load1 0.66 / 1.04; free disk 349,263,310,848 / 349,281,587,200 bytes.
+- Static reviewer:
+  `ksQQ3UP44YPgTC-msj8WDYNdyJLOABNaD5IBxBDuNWdurkVNCYkuySUr0iCB`.
+  Confirmed pre-launch placement, safe-only scope and failure propagation,
+  but identified existing supported in-place overlays (merged == workspace)
+  that the candidate rejects. Existing runtime lower snapshot/mountpoint
+  handling and tests establish this support; README cannot silently remove it.
+  Missing binding must stay rejected while correctly prepared in-place
+  staging is preserved.
+- Not covered: macOS/VM/custom executors, every staging metadata shape,
+  full-package/workspace suites or claiming every side effect is staged.
+
+### 025 — Preserve in-place staging compatibility
+
+- Worker: same subthread as 022–024, follow-up turn.
+- Status: completed; corrected fix passed real compatibility checks and
+  independent static re-review, ready for publication.
+- Budget: 30 minutes, initially four serial Sessions; explicitly extended
+  by two to correct a probe artifact-selection error.
+- Assignment: resolve review finding by distinguishing no-second-bind-needed
+  in-place staging from absent/invalid workspace binding. Preserve documented
+  runtime-owned support without guessing bind authority; verify lower isolation
+  and continued rejection of the original unsafe downgrade.
+- Final rule separately validates prepared source and workspace directories,
+  then selects a second bind only when distinct. Equal paths preserve the
+  runtime-owned in-place mounted view; missing binding still fails closed.
+  No authorization is inferred from cwd or first lower.
+- Worker five selected tests passed, plus CLI compile, clippy/rustdoc with
+  warnings denied and formatting/diff checks. Three initial probe Sessions
+  accidentally linked an older rlib within the same isolated target; these
+  count only as baseline, not repaired-code evidence.
+- Two additionally authorized Sessions used a fresh Cargo JSON compiler-artifact
+  path, not manually selected rlib hashes. Repaired in-place and distinct
+  layouts both completed; lower remained original and upper contained modified.
+  In-place retained an independent unchanged baseline snapshot. Probe exit zero,
+  0.10 seconds total. All six Sessions waited/reaped; no owned mounts left.
+- Coordinator merged revised files and resolved a Delta test-block conflict
+  by retaining the revised missing/file-binding test and in-place/source-error
+  test once each, deleting duplicated intermediate candidate text.
+- Coordinator independently passed four focused runtime/API tests (761 skipped):
+  `mise run test -- pvisor -- --lib --test staged_process_binding -E FILTER`.
+  Build 34.59 seconds, tests 0.058 seconds; nextest ID:
+  `c29127e3-03b8-47ce-9579-c9344fa52e0c`. The broad `test(in_place)` filter
+  did not match the existing snapshot test; it is not claimed as coordinator-run.
+- Coordinator then rebuilt CLI and reran the same three actual rootless
+  lifecycle/layout tests: three passed, 17 skipped; build 18.45 seconds,
+  tests 1.548 seconds. Nextest ID:
+  `321853b9-f1c2-4f11-806c-06eb9bbe4948`. Explicit worktree target/TMPDIR,
+  Rust 1.98, jobs/threads one, nice 15 and bounded timeouts; diff check passed.
+- Reviewer inspected the actual parent files read-only (not its stale isolated
+  copy) and approved: original compatibility finding resolved, no remaining
+  blocking issues in the focused review.
+- Coordinator available memory initially/finally: 18,704,760 / 18,542,252 KiB;
+  load1 0.48 / 1.03; free disk 348,637,036,544 / 348,713,578,496 bytes.
+- No new independent product defect; this round corrects the unpublished
+  candidate for 024. No macOS/VM/custom-executor/full-workspace coverage.
 
 ## CI observation
 

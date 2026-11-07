@@ -1161,18 +1161,37 @@ fn rootless_plan(
         .flatten()
         .and_then(|implant| implant.get("overlay_merged"))
         .and_then(serde_json::Value::as_str)
-        .and_then(|path| Path::new(path).canonicalize().ok());
-    let staged_workspace = safe
+        .map(|path| Path::new(path).canonicalize())
+        .transpose()?;
+    if staged_workspace_source
+        .as_ref()
+        .is_some_and(|source| !source.is_dir())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "staged workspace merged source must be a directory",
+        ));
+    }
+    let workspace_binding = safe
         .then(|| spec.metadata.get("pvisor.workspace"))
         .flatten()
         .and_then(serde_json::Value::as_str)
         .and_then(|path| Path::new(path).canonicalize().ok())
-        .filter(|path| {
-            staged_workspace_source
-                .as_ref()
-                .is_some_and(|source| source != path)
-                && path.is_dir()
-        });
+        .filter(|path| path.is_dir());
+    if staged_workspace_source.is_some() && workspace_binding.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "staged workspace requires an existing workspace directory binding",
+        ));
+    }
+    // Runtime preparation publishes overlay_merged only after mounting the
+    // overlay. For an in-place mount, projecting that workspace already exposes
+    // the merged view; only a distinct mountpoint needs a second bind.
+    let staged_workspace = workspace_binding.filter(|path| {
+        staged_workspace_source
+            .as_ref()
+            .is_some_and(|source| source != path)
+    });
     if let (Some(source), Some(path)) = (&staged_workspace_source, &staged_workspace) {
         read_write.push(source.clone());
         read_write.push(path.clone());
@@ -2364,6 +2383,114 @@ mod tests {
         assert_eq!(safe.staged_workspace, Some(workspace));
         assert_eq!(safe.staged_workspace_source, Some(merged));
         assert!(safe.filesystem_isolated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_staging_rejects_partial_workspace_bindings_before_launch() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let merged = temporary.path().join("merged");
+        for path in [&workspace, &merged] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let file = temporary.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
+        spec.metadata.insert(
+            "pvisor.runtime.implant".into(),
+            serde_json::json!({"overlay_merged": merged}),
+        );
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.cwd = Some(workspace.display().to_string());
+        invocation.inherit_env = false;
+        for target in [None, Some(temporary.path().join("missing")), Some(file)] {
+            spec.metadata.remove("pvisor.workspace");
+            if let Some(target) = target {
+                spec.metadata
+                    .insert("pvisor.workspace".into(), serde_json::json!(target));
+            }
+            let RunInvocation::Process(invocation) = &spec.invocation;
+            let error = rootless_plan(
+                &spec,
+                invocation,
+                Path::new("/bin/true"),
+                temporary.path().join("root"),
+                temporary.path().join("attestation"),
+                NetworkIsolation::Ambient,
+                FilesystemPlan {
+                    isolated: true,
+                    landlock_only: false,
+                },
+            )
+            .err()
+            .expect("partial staging binding must not fall back to write-through");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("staged workspace requires"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_in_place_staging_projects_the_prepared_mount_without_rebinding() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        spec.metadata.insert(
+            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
+            true.into(),
+        );
+        spec.metadata
+            .insert("pvisor.workspace".into(), serde_json::json!(workspace));
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        invocation.cwd = Some(workspace.display().to_string());
+        invocation.inherit_env = false;
+        let file = temporary.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        for (source, error_kind) in [
+            (workspace.clone(), None),
+            (
+                temporary.path().join("missing"),
+                Some(std::io::ErrorKind::NotFound),
+            ),
+            (file, Some(std::io::ErrorKind::InvalidInput)),
+        ] {
+            // This private plan consumes the runtime-prepared implant. Public
+            // startup replaces caller implant metadata with its actual mount.
+            spec.metadata.insert(
+                "pvisor.runtime.implant".into(),
+                serde_json::json!({"overlay_merged": source}),
+            );
+            let RunInvocation::Process(invocation) = &spec.invocation;
+            let plan = rootless_plan(
+                &spec,
+                invocation,
+                Path::new("/bin/true"),
+                temporary.path().join("root"),
+                temporary.path().join("attestation"),
+                NetworkIsolation::Ambient,
+                FilesystemPlan {
+                    isolated: true,
+                    landlock_only: false,
+                },
+            );
+            if let Some(kind) = error_kind {
+                assert_eq!(
+                    plan.err().expect("invalid merged source accepted").kind(),
+                    kind
+                );
+            } else {
+                let plan = plan.unwrap();
+                assert!(plan.read_write.contains(&workspace));
+                assert_eq!(plan.staged_workspace, None);
+                assert_eq!(plan.staged_workspace_source, Some(workspace.clone()));
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
