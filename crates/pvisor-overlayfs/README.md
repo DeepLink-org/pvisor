@@ -440,6 +440,20 @@ content isolation against a native oracle. It records the real Linux mountinfo
 entry and verifies its absence after explicit unmount. Select it with
 `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(held_fd_replacement_unlink_recreate_matches_native_trace_011)'`.
 
+Trace `035` adds deterministic file-size-limit failures to the default-policy
+real mount. A re-executed client alone receives a 16-byte `RLIMIT_FSIZE`; the
+server and parent test retain their limits. Held reader/writer/dup owners cross
+a failed nonempty-directory replacement, ancestor rename, unlink and old-parent
+recreation. Two detached writable inodes each reject positional write and
+truncate with `EFBIG`. Seven native-oracle checkpoints compare namespace, bytes,
+EOF and inode equivalence through fsync, checked close, drop and successful
+recovery through the surviving dup. Host lower bytes/namespace remain unchanged,
+and explicit unmount removes the verified mountinfo entry. The size-limit faults
+are client-kernel rejection checks, not injected server/backing-device failures;
+successful close/fsync after rejection does not claim coverage of close I/O errors.
+Run with
+`mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(detached_size_fault_close_recovery_matches_native_trace_035)'`.
+
 ## Develop
 
 ### Prerequisites

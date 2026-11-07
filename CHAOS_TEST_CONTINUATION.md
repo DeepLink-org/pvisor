@@ -164,3 +164,36 @@ At 14:51 UTC, published round 033 revision `1694909b` had two successful checks,
 Assigned to a fresh isolated worker after round 034 finished its workloads.
 Explore staged rename/unlink/replacement with open writable handles and host
 source preservation, avoiding scenarios already covered in rounds 007 and 011.
+
+Result: no production defect reproduced. A re-executed client, not the FUSE
+server, receives a 16-byte RLIMIT_FSIZE. Two detached writable inodes reject
+positional write/truncate with EFBIG. Seven native-versus-FUSE checkpoints
+compare namespace, contents, EOF and inode equivalence across failed replacement,
+ancestor rename, unlink, parent recreation, fsync, checked close/drop and
+recovery via a surviving duplicate descriptor. Host lower state stays unchanged.
+Actual mountinfo presence and removal establish a real mount and explicit unmount.
+
+Worker commands, 2026-11-07 UTC, with standard resource/nice/timeout limits:
+
+- 14:57:44–14:57:57:
+  `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(detached_size_fault_close_recovery_matches_native_trace_035)'`,
+  1 passed, 2 filtered/skipped.
+- 14:58:07–14:58:14: `mise run test -- pvisor-overlayfs`,
+  73 passed, 12 skipped. Other ignored FUSE tests were not run.
+- 14:58:14–14:58:20:
+  `mise exec -- cargo clippy --offline --locked -p pvisor-overlayfs --test namespace_sequence_mount -- -D warnings`,
+  passed.
+- Targeted rustfmt and diff checks passed.
+- Minimum available memory 23,955,568 KiB; maximum load1 1.96;
+  minimum disk free 362,014,464 KiB. No fixtures/mounts remain.
+
+Parent reviewed and integrated the regression and README. These faults are
+client-kernel size-limit rejection, not backing-device errors; successful
+fsync/close after rejection does not prove delayed close-error handling.
+macOS, VM, concurrent execution, Python and workspace suites were not run.
+
+### 036 — OverlayFS backing I/O recovery
+
+Assigned after round 035 workloads finished. Explore a safe bounded backing-I/O
+failure and resource/error recovery, without public test-only APIs or host-wide
+fault injection. Distinguish actual server faults from client-side rejection.
