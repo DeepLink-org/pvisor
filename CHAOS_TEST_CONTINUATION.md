@@ -1836,3 +1836,133 @@ ignoredTERM/opencontrol/suspend/resume/nonLinuxnotcovered.
 Assigned after084. Boundedownedview/FD/inputgates, publiccooperativecancel and
 allrefsclosedcleanup/status/authority, derivingbusy/unmount guarantees first,
 not inventing post-owner viewavailability or SIGKILL cleanup.
+
+085result: no permanentroot/mount/processleak or authoritycorruption; revocation
+isnottransparentinspectionsuccess. Completeoverlap21:15:36–21:15:37 UTC:
+publickill0/cooperative/stopping, inspectrelease0.25safteracceptance whileowner
+stillalive/noreceiptyet andviewalreadydetached. HeldreadonlyFDcloseEIO5; child
+catches/reports/exit0, inspectfrontend1unknowninspectsession becauseownertableclear.
+Source143/receiptcancelled/noexitcode/failure, bothfrontendsclose0.310084371safter
+kill. Allrefsclosed => zeromounts/roots. Proposal/host preserved, selectiveaccept/
+scratchdrop/healthy0 pass. No availability-after-revocation guarantee.
+
+Firsttraceharnessoverlystrictreleaseassertion stoppedbeforetwofrontendexitrecords/
+immediatepostsamples; authoritativecancelledreceipt/laternoleakaudit retained,
+thoseexitsnotclaimed. Secondtracecapturedfully. Overall21:14:11–21:17:08 UTC,
+threeHostSessions/twoinspects,19guardattempts17exitrecords;36recordedsamples
+minmemory22,141,530,112bytes,maxload0.43652,mindisk348,267,741,184bytes. Allowners/
+inspectchildren/resourcesgone, initialunacceptedstage subsequentlydropped.
+One nativecleanupregression1passed766filtered,diffpassed, no source/artifactadds.
+
+### 086 — Inspect release-before-cancel control
+
+Assigned after085. Releaseview/waitfrontend0/rootandmountgone BEFORE publicsource
+cancellation, to distinguish ordinarysuccess from documentedrevocation/errorrace,
+without strongerbusyview guarantees.
+
+086controlpasses21:19:41–21:20:00 UTC. Releaseinspectfirst: FDclosesclean,
+frontend0/emptystderr/0.039620075s, pidgone/zeroroots-mounts/sourceunchanged/no
+receipt; sourcestatusrunning. THEN publickillcooperative, source143/cancelled
+receipt/noexitcode/failure, cancel-to-closed0.060965834s. Selectiveaccept/drop/
+health0 pass, owners/resourcesgone/stagesdiscarded-appliedempty. No overlapEIO/
+unknowninspectsession, differentiates085withoutstrongerpostowner guarantee.
+13CLI+one nativeinspectlaunchtest1passed7filtered,28gatesminmemory22,046,490,624bytes,
+maxload0.63818,mindisk348,258,684,928bytes,diffpassed. No source/artifactadds.
+
+### 087 — Owned committed checkpoint manifest restoration
+
+Assigned after086. Tiny ownedmanifesttruncation, exactbytesbackup, corruption
+surfacedwithoutfallback/resnapshot/receiptmutation, samefixtureexactrestore and
+healthyreplay. No semspecledger/snapshot changes or authority-contract invention.
+
+087result: no defect, onerealHostSession21:22:45–21:23:08 UTC. Two checkpoints,
+backedexact1916byteAmanifestthen truncate0. Eightshow/review/retry/list/delete/
+uniqueprefix/Bshow/newrequestoperationsreject1EOFparseerror. Wholecommittedindex
+validationdoesnothideAcorruptionwhenBselected. Damagedstate/currentproposal/
+preimage/host/completion/receipts/Bunchanged, no recapture/reservation. Workspace
+GC0legitimatelydoesnotverifypublishedsemanticsandpreservescorruptmanifest.
+Restoreexactbytes/sameinode285946987/mode/nlink1/originalmtime, hash
+8890602843b1c15d5b034c9978dad3d4f2a1c484fe86758a8da2260c6ac669d1, samefixture
+showsboth/refs0/retriesreusedtrue/reviewworks/currentselectiveaccept-drop.
+
+23CLI+one nativecorruptiontest1passed766filtered,48gatesminmemory22,197,940,224bytes,
+maxload0.23340,mindisk348,222,730,240bytes,diffpassed. Owner/resourcesgone,
+receiptcompleted0/stagediscardedempty, restoredcheckpointsignoredownedevidence.
+No source/artifactadds. No interruptedrestore/ownershipforgery/concurrentwriter/
+frozenlower claim.
+
+### 088 — Saved payload validation with valid manifest
+
+Assigned after087. Derive actualprivatepayloadintegrity guarantees, tinyownedupper
+filemissing/exactrestore, explicitvalidationresponsibilities without assuming
+unpromisedperfilehashes or immutablelower; preservecurrentstate/receipts.
+
+088result: scopedprivatepayloadtrustboundary, no inventedintegritydefect. One
+HostSession21:26:52–21:27:14 UTC, Aupperproposal26bytes renamedtoownbackupwhile
+validmanifest/preimage/receipts intact. Show/retry/list0 retainIDs/reusedtrue;
+reviewomitsmissingproposal/scratchonly. Currentinspectreads savedcurrentupper;
+checkpointAinspectreadsoriginalLIVELOWER, notcurrentupper/othercheckpoint.
+Privateworkspace schema/sealnotperfiledigest; nofile-recreation/authenticationclaim.
+Host/currentproposal/authority/Ametadata/Bunchanged. Renameoriginalinode285947158
+back(exact26bytes/hash76a337c1a00c12856c014a813372c34ceaed1ce89df17be33725d3e239279d48),
+review/inspect/replayhealthy, selectivecurrentaccept/drop passes.
+
+18CLI+one nativeordinarysnapshotcopytest1passed766filtered (NOT missingdetection),
+38gatesminmemory22,194,126,848bytes,maxload0.45996,mindisk348,180,590,592bytes,
+diffpassed. Owner/resourcesgone, receiptcompleted0/stagediscardedempty, restored
+checkpointsignoredownedevidence. No source/artifactadds. Whole-rootmissing/
+bytecorruption/alteredpayloadfork/concurrency/authenticationnotcovered.
+
+### 089 — Tiny workload memory-limit denial and recovery
+
+Assigned after088. Derive actual Hostmemorylimit mechanism, atmost80MiBone
+attemptwithsmallcap/lowresidentuse, accurateENOMEM/process-exit semantics and
+retainedproposal, not hostOOM/RSS/cgroup guarantee.
+
+089preflight finds supportedHost--memory64MiB/rlimitAS and optionalown delegated
+childcgroup; parentcontrolsnotspecifiedforchange. Firststaticproduct64MiBSession
+failedBEFOREAgent: infrastructure/unattestedsandbox/emptystdio-upper, ZERO allocation
+attempts. OwncgroupattemptEACCES13/fallbackinheritedrlimits; parent/globalcontrols
+unchanged. InvestigatingELF/mappedloaderfootprint, notclaimingguestENOMEM/pass.
+ParentallowsONE same64MiBflag/80MiBattemptownnativeGNUtraceonlyifpreflightfits;
+no capincrease/guest-onlysubstitute/permissionbypass. Else recordbudget-capability
+gap and stop, atmost3Sessionsincludinghealthy. ActualRSSmustremainsmall.
+
+089finalGAP, notAgentmemorydenialpass. Staticlimitedcommand0.169s/exit1
+failed-infrastructure/zeroattestation/output/candidates/allocationattempts.
+Page-roundedPT_LOADstatic80,097,280bytes(76.387MiB), GNU70,692,864(67.418MiB)
+bothabove64MiBbeforestack/interpreter; ASlimitappliedbeforelauncherselfexec.
+No nativelimitedtrace/capincrease/substitution. CgroupEACCES13/fallbackrlimits,
+no ownedchildresidue/parentcontrolchange. Uncappedhealth0/0.181s/normalizedinfiniteAS,
+RSS13,053,952bytes, priorproposal/sentinelsafe, healthaccept/diagnosticdrop.
+
+21:31:34–21:35:08 UTC,nineCLI+one nativemappingtest1passed150filtered(parsingonly),
+20gatesminmemory22,162,030,592bytes,maxload0.48438,mindisk348,163,411,968bytes,
+diffpassed. Bothowners/resourcesgone, no source/artifactadds. Guest64MiB/ENOMEM/
+inSessionrecovery remainsUNVALIDATED; smallerlauncher or explicitlimiterplacement
+decisionneeded, no architecturechange.
+
+### 090 — Tiny per-workload CPU-time limit
+
+Assigned after089. Verify documentedHostCPUflag/rounding, atmostonecore3s fallback
+with~1CPU-secondcap, owncoredisabled, exactsignal/receipt and retainedproposal,
+uncappedquickhealthy; no fork or sustainedhostpressure.
+
+090result: supported--max-cpu-time500ms roundsupsoft=hardRLIMIT_CPU1s. Guestcore0
+onlyguest, parentCPU/core unchanged. Onesinglethread boundedloop lastdurableCPU
+0.800735300s/processCPU0.811695871s/wall0.812119524s, limitedcommand1.200252504s;
+2.8s/3salarmfallbacknotreached. CLI137/failed-process_exit137/resource.posix_rlimit1,
+termination_signalnull. Consistentwithhardcap but137aloneNOT kernel-causeproof,
+no RSS/OOM/cgroupclaim. Earlierfsyncedkeep retained/hostunchanged, inertpreview/
+selectiveaccept/drop/uncappedhealth0ambientlimitscorrect, ownerresourcesgone.
+
+21:39:06–21:39:44 UTC,12CLI+one nativeexitsemantictest1passed766filtered,
+26gatesminmemory22,240,149,504bytes,maxload0.39844,mindisk348,346,384,384bytes,
+diffpassed. No source/artifactadds. FinalCPUusage/softSIGXCPU/exactkernelcause/
+multithread/nonLinuxnotcovered; no more CPUloadneeded.
+
+### 091 — Bounded binary stdio capture and inheritance
+
+Assigned after090. Atmost64KiBperstream, defaultcapture/inherit raw/text contracts
+derivedfirst, ownfile-sinks/draining toavoid terminalflood/deadlock, metadataJSON/
+framing/authority and retainedproposal, no unpromisedoutputquota claim.
