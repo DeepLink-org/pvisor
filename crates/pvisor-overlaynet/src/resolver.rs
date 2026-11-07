@@ -229,6 +229,71 @@ mod tests {
     }
 
     #[test]
+    fn alternative_ip_spellings_keep_resolved_address_policy() {
+        for (host, expected_ip, deny_host) in [
+            ("127.1", "127.0.0.1", "127.0.0.0/8"),
+            ("0177.0.0.1", "127.0.0.1", "127.0.0.0/8"),
+            ("0x7f000001", "127.0.0.1", "127.0.0.0/8"),
+            ("2130706433", "127.0.0.1", "127.0.0.0/8"),
+            ("127.0.0.1.", "127.0.0.1", "127.0.0.0/8"),
+            ("[::1]", "::1", "::1/128"),
+            ("[0:0:0:0:0:0:0:1]", "::1", "::1/128"),
+            ("[::ffff:127.0.0.1]", "::ffff:127.0.0.1", "127.0.0.0/8"),
+        ] {
+            let ip: IpAddr = expected_ip.parse().unwrap();
+            let url = reqwest::Url::parse(&format!("http://{host}:443/")).unwrap();
+            let url_ip: IpAddr = url
+                .host_str()
+                .unwrap()
+                .trim_matches(['[', ']'])
+                .parse()
+                .unwrap();
+            assert_eq!(url_ip, ip, "{host}");
+            for (allow_private_ips, explicit_deny) in [(true, false), (false, false), (true, true)]
+            {
+                let rule = NetworkAccessRule {
+                    host: host.trim_matches(['[', ']']).into(),
+                    ports: vec![443],
+                    transports: vec![NetworkTransport::TcpTunnel],
+                    allow_private_ips,
+                };
+                let policy = NetworkPolicy::compile(&NetworkConfig {
+                    mode: NetworkMode::Allowlist,
+                    rules: vec![rule.clone()],
+                    deny_rules: if explicit_deny {
+                        vec![NetworkAccessRule {
+                            host: deny_host.into(),
+                            ..rule
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    ..NetworkConfig::default()
+                })
+                .unwrap();
+                // Fake resolver output: never ask DNS about alternative spellings.
+                let result = authorize_resolved_target(
+                    &PolicyControlController,
+                    &policy,
+                    request(host),
+                    [SocketAddr::new(ip, 443)],
+                );
+                // An exact IP rule is itself a private-address opt-in; only
+                // hostname rules require the separate allow_private_ips flag.
+                let exact_ip_rule = host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok();
+                if (allow_private_ips || exact_ip_rule) && !explicit_deny {
+                    assert_eq!(result.unwrap().addresses, [SocketAddr::new(ip, 443)]);
+                } else {
+                    assert!(
+                        matches!(result, Err(TargetAuthorizationError::Denied(_))),
+                        "{host}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn filters_private_addresses_and_deduplicates_public_results() {
         let policy = host_allowlist("api.example.com");
         let public: SocketAddr = "93.184.216.34:443".parse().unwrap();

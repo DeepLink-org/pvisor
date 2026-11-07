@@ -212,7 +212,16 @@ impl NetworkPolicy {
 
     /// An approval decision grants only this logical host, transport, and port.
     /// Explicit denies, resolved-address safety, and bandwidth limits remain.
+    /// Request hosts must be exact hostnames or IP literals, not wildcard or
+    /// CIDR policy expressions; invalid hosts fail without changing this policy.
     pub fn one_time_grant(&self, request: &NetworkAccessRequest) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            matches!(
+                parse_allowed_entry(&request.host)?.host,
+                crate::NetworkHostRule::Exact(_) | crate::NetworkHostRule::Ip(_)
+            ),
+            "network approval requires an exact hostname or IP literal"
+        );
         anyhow::ensure!(
             self.preflight(request) != Err(DenyReason::ExplicitDeny),
             "explicit deny cannot be overridden by approval"

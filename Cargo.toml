@@ -22,7 +22,7 @@ members = [
     "crates/pvisor-overlay-core",
     "crates/pvisor-overlaynet",
 ]
-exclude = ["vendor/fuser"]
+exclude = ["vendor/fuser", "vendor/hyper"]
 
 default-members = [
     "crates/pvisor-cli",
@@ -48,9 +48,11 @@ flate2 = "1"
 fuser = { version = "0.15", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 globset = "0.4"
+h2 = "0.4"
 hostname = "0.4"
 http-body-util = "0.1"
-hyper = "1"
+# The local upgraded-stream reset extension is tied to this reviewed release.
+hyper = "=1.9.0"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 libc = "0.2"
@@ -159,3 +161,4 @@ strip = "none"
 
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }
+hyper = { path = "vendor/hyper" }

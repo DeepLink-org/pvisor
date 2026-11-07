@@ -34,6 +34,10 @@ Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not sha
 
 The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 2 generic request/response envelopes with request correlation, optional Session/Execution/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Session, Execution and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
 
+Supervisor command variants reject unknown fields, including parameterless
+inspect/pause/resume/terminate operations. This strict wire-shape check does not
+replace endpoint authentication or target binding.
+
 ## Local resource contracts
 
 `execution::RunProfile` is a typed execution request shared by frontends and
@@ -73,6 +77,9 @@ port and transport restrictions still apply.
 An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.
+Approval request hosts must be exact hostnames or IP literals. Wildcards and
+CIDRs are policy expressions, not single destinations, and cannot be approved
+as request hosts.
 
 Network evaluation normalizes the logical host and parses its IP once per
 controller evaluation, sharing the result across allow/deny rules and scopes.

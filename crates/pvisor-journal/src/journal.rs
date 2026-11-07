@@ -53,7 +53,7 @@ impl JournalStore for Journal {
 
     /// Inspect a closed journal without repairing or changing it.
     fn read(path: &Path) -> Result<Vec<Record>> {
-        let mut file = File::open(path)?;
+        let mut file = open_journal_file(path, false)?;
         FileExt::try_lock_shared(&file)
             .context("close the trace writer before inspecting its journal")?;
         Ok(scan(&mut file, false, true)?.1)
@@ -61,7 +61,7 @@ impl JournalStore for Journal {
 
     /// Validate a closed durable journal without retaining event payloads.
     fn validate(path: &Path) -> Result<()> {
-        let mut file = File::open(path)?;
+        let mut file = open_journal_file(path, false)?;
         FileExt::try_lock_shared(&file).context("close the trace writer before validation")?;
         scan(&mut file, false, false)?;
         Ok(())
@@ -88,14 +88,7 @@ impl JournalStore for Journal {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         Persistence::create_dir_all_durable(parent)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
+        let mut file = open_journal_file(path, true)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.try_lock_exclusive()
             .context("trace journal already has a writer")?;
@@ -206,6 +199,10 @@ impl JournalStore for Journal {
         };
         let mut bytes =
             serde_json::to_vec(&record).map_err(|e| AppendError::Rejected(e.to_string()))?;
+        // Serialization accepts deeper JSON than recovery can deserialize.
+        // Apply the reader's rules before committing to either storage backend.
+        serde_json::from_slice::<Record>(&bytes)
+            .map_err(|e| AppendError::Rejected(format!("unreadable trace record: {e}")))?;
         bytes.push(b'\n');
         if let Some(file) = state.file.as_mut() {
             let result = (|| -> std::io::Result<()> {
@@ -279,6 +276,26 @@ impl JournalStore for Journal {
         ensure!(copied == size, "trace changed while snapshotting");
         Ok(copied)
     }
+}
+
+fn open_journal_file(path: &Path, writable: bool) -> Result<File> {
+    // Opening a FIFO for reading can block before metadata or locking is reached.
+    // O_NONBLOCK is inert on regular files; inspect the opened descriptor rather
+    // than racing a path metadata check against replacement.
+    let flags = libc::O_NONBLOCK | if writable { libc::O_NOFOLLOW } else { 0 };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .create(writable)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(flags)
+        .open(path)?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "trace journal must be a regular file"
+    );
+    Ok(file)
 }
 
 fn digest(event: &Event) -> Result<[u8; 32]> {

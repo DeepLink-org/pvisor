@@ -7,7 +7,6 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use http_body_util::BodyExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
@@ -25,13 +24,6 @@ pub(crate) struct ConnectTarget {
     pub authority: String,
 }
 
-struct UploadTask(tokio::task::JoinHandle<()>);
-impl Drop for UploadTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 pub(crate) async fn handle_connect_authorized(
     mut req: Request,
     target: ConnectTarget,
@@ -42,73 +34,9 @@ pub(crate) async fn handle_connect_authorized(
     let guard = req
         .extensions_mut()
         .remove::<std::sync::Arc<crate::server::ActiveRequestGuard>>();
-    // HTTP/1 CONNECT uses hyper's connection upgrade. HTTP/2 has no
-    // connection-wide upgrade; extended CONNECT carries the tunnel in the
-    // request and response bodies, so it must be bridged as a duplex stream.
-    if req.version() == axum::http::Version::HTTP_2 {
-        let (_parts, body) = req.into_parts();
-        let destination =
-            match connect_via_ambient_http_proxy(&target.host, &authorized.addresses).await {
-                Some(Ok(stream)) => stream,
-                Some(Err(error)) => {
-                    return Err(anyhow::anyhow!(
-                        "CONNECT to {} through the host proxy failed: {error}",
-                        target.authority
-                    ));
-                }
-                None => connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
-                    .await
-                    .map_err(|error| {
-                        anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority)
-                    })?,
-            };
-        let (destination_read, mut destination_write) = destination.into_split();
-        let mut upload = body.into_data_stream();
-        let upload_bandwidth = bandwidth.clone();
-        let upload_task = UploadTask(tokio::spawn(async move {
-            while let Some(chunk) = upload.next().await {
-                let Ok(chunk) = chunk else { break };
-                upload_bandwidth.throttle(chunk.len()).await;
-                if destination_write.write_all(&chunk).await.is_err() {
-                    break;
-                }
-            }
-            let _ = destination_write.shutdown().await;
-        }));
-        let stream = futures_util::stream::unfold(
-            (destination_read, bandwidth, wait, false),
-            |(mut reader, bandwidth, mut wait, stopped)| async move {
-                if stopped {
-                    return None;
-                }
-                let mut buffer = vec![0_u8; 16 * 1024];
-                match managed_read(&mut reader, &mut buffer, &mut wait).await {
-                    Ok(0) => None,
-                    Ok(read) => {
-                        bandwidth.throttle(read).await;
-                        Some((
-                            Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
-                            (reader, bandwidth, wait, false),
-                        ))
-                    }
-                    // A read error terminates the tunnel. Returning the same
-                    // reader here would make `Stream` yield the error forever.
-                    Err(error) => Some((Err(error), (reader, bandwidth, wait, true))),
-                }
-            },
-        );
-        return Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::new(Body::from_stream(stream).map_frame(
-                move |frame| {
-                    let _ = &guard;
-                    let _ = &upload_task;
-                    frame
-                },
-            )))
-            .map_err(|error| anyhow::anyhow!("build HTTP/2 CONNECT response: {error}"))
-            .map(IntoResponse::into_response);
-    }
+    // Hyper exposes both HTTP/1 connection upgrades and HTTP/2 CONNECT
+    // stream upgrades through OnUpgrade. For HTTP/2 it supplies an empty
+    // request body and ignores a successful CONNECT response body.
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
@@ -131,12 +59,24 @@ pub(crate) async fn handle_connect_authorized(
         let Ok(upgraded) = on_upgrade.await else {
             return;
         };
+        let disconnected = upgraded.on_h2_disconnect();
         let client = TokioIo::new(upgraded);
         let (client_read, client_write) = tokio::io::split(client);
         let (destination_read, destination_write) = destination.split();
         let upload = copy_limited(client_read, destination_write, bandwidth.clone(), None);
         let download = copy_limited(destination_read, client_write, bandwidth, wait);
-        let _ = tokio::join!(upload, download);
+        // A successful EOF only half-closes the tunnel: keep draining the
+        // opposite direction. An error is terminal and must release both
+        // copies (including a companion blocked on I/O or bandwidth).
+        tokio::select! {
+            _ = async {
+                match disconnected {
+                    Some(disconnected) => disconnected.await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
+            _ = async { let _ = tokio::try_join!(upload, download); } => {}
+        }
     });
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -161,9 +101,15 @@ pub(crate) fn parse_connect_target(authority: &str) -> anyhow::Result<ConnectTar
         anyhow::bail!("CONNECT authority must include a host");
     }
     let explicit_port = if authority.starts_with('[') {
-        authority
-            .find(']')
-            .and_then(|end| authority[end + 1..].strip_prefix(':'))
+        let end = authority.find(']').expect("Authority validates brackets");
+        let suffix = &authority[end + 1..];
+        if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':').ok_or_else(|| {
+                anyhow::anyhow!("CONNECT bracketed host must be followed by a colon and port")
+            })?)
+        }
     } else {
         authority.rsplit_once(':').map(|(_, port)| port)
     };
@@ -371,6 +317,36 @@ mod tests {
     }
 
     #[test]
+    fn connect_bracket_suffix_must_not_be_discarded() {
+        for authority in ["[::1]suffix:8443", "[2001:db8::1]443"] {
+            assert!(
+                parse_connect_target(authority).is_err(),
+                "discarded suffix of malformed authority {authority:?}"
+            );
+        }
+        // Bounded deterministic mutations accepted by http::uri::Authority.
+        // Any non-colon suffix must fail rather than silently default to 443.
+        let mut seed = 0x5041_5554_u32;
+        for _ in 0..32 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let authority = format!("[2001:db8::1]x{seed}:8443");
+            assert!(authority.parse::<Authority>().is_ok());
+            assert!(parse_connect_target(&authority).is_err(), "{authority}");
+        }
+        for (authority, host, port) in [
+            ("[::1]", "::1", 443),
+            ("[::1]:8443", "::1", 8443),
+            ("[2001:db8::1]", "2001:db8::1", 443),
+            ("[2001:db8::1]:65535", "2001:db8::1", 65535),
+        ] {
+            let target = parse_connect_target(authority).unwrap();
+            assert_eq!(target.host, host);
+            assert_eq!(target.port, port);
+            assert_eq!(target.authority, format!("[{host}]:{port}"));
+        }
+    }
+
+    #[test]
     fn rejects_malformed_connect_authorities() {
         for authority in [
             "",
@@ -428,6 +404,7 @@ mod tests {
 mod download_wait_tests {
     use super::*;
     use crate::server::{DownloadGuard, DownloadWait};
+    use http_body_util::BodyExt;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},

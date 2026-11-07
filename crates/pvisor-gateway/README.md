@@ -15,6 +15,12 @@ Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 
+Capture observers run after Journal commit. An observer failure is logged and
+attempts a trajectory dead letter containing the already-retained, redacted
+event; it does not undo or retry that append or fail an otherwise successful
+HTTP call. Diagnostic-write failures are also warning-only. These post-commit
+failures alone do not turn flush/shutdown into capture-admission gap errors.
+
 Gateway does not bundle a mock upstream service; HTTP tests own their controlled
 upstream fixtures.
 
@@ -36,6 +42,11 @@ remaining proxy and admin transport I/O before draining accepted
 capture work. Partial request uploads, ordinary proxy upstream waits and clients
 that stop reading cannot retain a connection indefinitely during Execution teardown.
 Normal response framing, trailers and backpressure are unchanged.
+
+Request uploads are bounded before capture admission. Exceeding the request-body
+byte limit returns 413; a transport/body read failure returns 400 instead of
+claiming an oversized payload. Neither rejection dispatches upstream nor creates
+a capture or model-wait obligation. Failed readers release the incoming body.
 
 This crate implements `pvisor-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider

@@ -773,6 +773,206 @@ fn native_jsonl_replay_records_effects_and_preserves_uncertain_failures() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn reused_native_call_id_does_not_resolve_a_later_failed_operation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("blocked"), "not a directory").unwrap();
+    let entrypoint = temporary.path().join("version-only-agent");
+    fs::write(
+        &entrypoint,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.149.0; else exit 97; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut events = vec![
+        json!({"type":"session_meta","payload":{"id":"reused-call"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"replay"}]}}),
+    ];
+    // These are distinct accepted operations in consecutive native turns.
+    for path in ["effect", "blocked/child"] {
+        events.extend([
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"write"}]}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"reused","name":"write","arguments":json!({"path":path,"content":"effect"}).to_string()}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"reused","output":"old"}}),
+        ]);
+    }
+    let trajectory = temporary.path().join("trajectory.jsonl");
+    fs::write(
+        &trajectory,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let mut request = PlaybackRequest {
+        agent: AgentKind::Codex,
+        trajectory,
+        after_step: 2,
+        workspace: workspace.clone(),
+        state_dir: temporary.path().join("state"),
+        output_dir: temporary.path().join("output"),
+        agent_entrypoint: Some(entrypoint),
+        agent_runtime: None,
+        disallowed_tools: Vec::new(),
+        trajectory_assets: None,
+        session_id: None,
+        max_steps: None,
+        mode: ReplayMode::ReplayOnly,
+        allow_stale_observations: false,
+        run_id: Some("reused-call".into()),
+        disable_thinking: false,
+        boundary_user_prompt: None,
+    };
+    let report = execute(request.clone()).unwrap();
+    assert_eq!(
+        fs::read_to_string(workspace.join("effect")).unwrap(),
+        "effect"
+    );
+    let journal_path = report.result.state_dir.join("replay-events.jsonl");
+    let journal = fs::read_to_string(&journal_path).unwrap();
+    assert_eq!(journal.matches("\"name\":\"tool_started\"").count(), 2);
+    assert_eq!(journal.matches("\"name\":\"tool_finished\"").count(), 1);
+    assert_eq!(report.exit_code, 31);
+    assert_eq!(
+        report.result.failure.unwrap().category,
+        "ambiguous_execution"
+    );
+    assert!(!report.result.retryable);
+
+    // A distinct output root must not bypass admission after recovery of a
+    // torn next record. The failed admission must also release its run lock.
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .unwrap()
+        .write_all(b"{\"interrupted\":")
+        .unwrap();
+    request.output_dir = temporary.path().join("retry-output");
+    for _ in 0..2 {
+        let error = execute(request.clone()).unwrap_err();
+        assert_eq!(
+            error.kind,
+            pvisor_replay::ReplayErrorKind::AmbiguousExecution
+        );
+        assert!(error.message.contains("reused"));
+        assert!(!request.output_dir.join("reused-call").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn publication_failure_preserves_completed_operation_counts_and_admission() {
+    for blocked in [None, Some("replay-summary.json"), Some("result.json")] {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let entrypoint = temporary.path().join("version-only-agent");
+        fs::write(
+            &entrypoint,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.149.0; else exit 97; fi\n",
+        )
+        .unwrap();
+        fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o700)).unwrap();
+        let output_root = temporary.path().join("output");
+        let output = output_root.join("publication");
+        let mut command = "printf x >> effect".to_owned();
+        if let Some(name) = blocked {
+            command += &format!("; mkdir -p '{}'", output.join(name).display());
+        }
+        let mut events = vec![
+            json!({"type":"session_meta","payload":{"id":"publication"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"replay"}]}}),
+        ];
+        // Two completed operations with a reused native ID must be counted
+        // the same way on success and on subsequent artifact failure.
+        for _ in 0..2 {
+            events.extend([
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"append"}]}}),
+                json!({"type":"response_item","payload":{"type":"function_call","call_id":"reused","name":"bash","arguments":json!({"command":command}).to_string()}}),
+                json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"reused","output":"old"}}),
+            ]);
+        }
+        let trajectory = temporary.path().join("trajectory.jsonl");
+        fs::write(
+            &trajectory,
+            events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let mut request = PlaybackRequest {
+            agent: AgentKind::Codex,
+            trajectory,
+            after_step: 2,
+            workspace: workspace.clone(),
+            state_dir: temporary.path().join("state"),
+            output_dir: output_root,
+            agent_entrypoint: Some(entrypoint),
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::ReplayOnly,
+            allow_stale_observations: false,
+            run_id: Some("publication".into()),
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        };
+        let result = execute(request.clone());
+        assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xx");
+        let journal =
+            fs::read_to_string(request.state_dir.join("publication/replay-events.jsonl")).unwrap();
+        assert_eq!(journal.matches("\"name\":\"tool_finished\"").count(), 2);
+        assert!(journal.contains("\"name\":\"run_finished\""));
+        if blocked == Some("result.json") {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, pvisor_replay::ReplayErrorKind::Executor);
+            assert!(!error.kind.retryable());
+            assert!(error.message.contains("result.json"));
+            assert_eq!(error.locations().unwrap().2, output);
+            assert!(!output.join("result.json").is_file());
+        } else {
+            let report = result.unwrap();
+            assert_eq!(report.result.replayed_tool_calls, 2);
+            assert_eq!(report.result.phase, ReplayPhase::Replayed);
+            assert!(!report.result.retryable);
+            assert_eq!(report.exit_code, if blocked.is_some() { 30 } else { 0 });
+            let published: Value =
+                serde_json::from_slice(&fs::read(output.join("result.json")).unwrap()).unwrap();
+            assert_eq!(published["replayed_tool_calls"], 2);
+            assert_eq!(published["failure"].is_null(), blocked.is_none());
+            for artifact in report.result.artifacts {
+                assert!(artifact.path.exists());
+            }
+        }
+        assert_eq!(
+            journal.contains("\"name\":\"run_failed\""),
+            blocked.is_some()
+        );
+        // Reusing an allocated output never re-executes tools.
+        assert!(execute(request.clone()).is_err());
+        assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xx");
+        // All tool receipts and the terminal run are durable: an explicit
+        // rerun into a fresh output root is allowed, not an exactly-once API.
+        request.output_dir = temporary.path().join("fresh-output");
+        let rerun = execute(request).unwrap();
+        assert_eq!(rerun.exit_code, 0);
+        assert_eq!(rerun.result.replayed_tool_calls, 2);
+        assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"xxxx");
+    }
+}
+
 #[test]
 fn native_json_prepare_only_preserves_complete_batch_observations() {
     for agent in [AgentKind::MiniSweAgent, AgentKind::Openhands] {

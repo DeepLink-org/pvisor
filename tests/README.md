@@ -17,6 +17,11 @@ lifecycle. Do not launch mise or embed Bash checks inside a Python test runner.
 Calling a product command or supervising an example process remains part of
 the integration tests.
 
+`mise run test-windows-fw-deps` uses fake privileged/package commands to verify
+the Windows firmware CI setup's isolated signed mirrors, bounded downloads,
+compiler selection, failure propagation and temporary cleanup without installing
+anything on the local machine. Real provisioning is checked by Windows VM CI.
+
 The opt-in [native daemon chaos driver](DAEMON_CHAOS.md) runs bounded seeded
 SDK file/command traffic, cancellation and API/lifecycle faults against real VMs.
 Its ordinary safety tests run without an SDK, KVM or a daemon. Application/CLI

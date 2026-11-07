@@ -135,12 +135,27 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         spec.step_finish_limit
             .map(|_| Arc::clone(&step_finish_seen)),
     );
-    if let Some(input) = spec.stdin.take() {
-        let write_result = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("stdin pipe missing"))
-            .and_then(|mut stdin| stdin.write_all(&input));
+    let input = spec.stdin.take().unwrap_or_default();
+    let mut stdin = child.stdin.take();
+    let mut stdin_written = 0;
+    let started = Instant::now();
+    let mut timed_out = false;
+    let mut step_limited = false;
+    let mut background_cleanup = false;
+    let status = loop {
+        let status = child
+            .try_wait()
+            .replay_context(ReplayErrorKind::Executor, "poll supervised replay process")?;
+        let write_result = pump_stdin(&mut stdin, &input, &mut stdin_written).and_then(|()| {
+            if status.is_some() && stdin_written < input.len() {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "child exited before configured stdin was delivered",
+                ))
+            } else {
+                Ok(())
+            }
+        });
         if let Err(error) = write_result {
             #[cfg(unix)]
             let _ = signal_group(process_group, libc::SIGKILL);
@@ -157,17 +172,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
                 format!("write supervised process stdin: {error}"),
             ));
         }
-    }
-
-    let started = Instant::now();
-    let mut timed_out = false;
-    let mut step_limited = false;
-    let mut background_cleanup = false;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .replay_context(ReplayErrorKind::Executor, "poll supervised replay process")?
-        {
+        if let Some(status) = status {
             break status;
         }
         if started.elapsed() >= spec.timeout
@@ -294,6 +299,45 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         step_limited,
         background_cleanup,
     })
+}
+
+/// Make at most one nonblocking write per supervision tick. Closing the pipe
+/// after the last byte preserves EOF-driven children without a writer thread
+/// that could outlive the supervised owner.
+fn pump_stdin(
+    stdin: &mut Option<std::process::ChildStdin>,
+    input: &[u8],
+    written: &mut usize,
+) -> io::Result<()> {
+    if *written == input.len() {
+        stdin.take();
+        return Ok(());
+    }
+    let pipe = stdin
+        .as_mut()
+        .ok_or_else(|| io::Error::other("stdin pipe missing"))?;
+    if *written == 0 {
+        let fd = pipe.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    match pipe.write(&input[*written..]) {
+        Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+        Ok(count) => *written += count,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) => {}
+        Err(error) => return Err(error),
+    }
+    if *written == input.len() {
+        stdin.take();
+    }
+    Ok(())
 }
 
 fn owner_only_log(path: &std::path::Path) -> Result<File, ReplayError> {
@@ -635,6 +679,79 @@ mod tests {
 
         assert!(output.status.success());
         assert_eq!(output.stdout_tail, b"resume nonce");
+    }
+
+    #[test]
+    fn stdin_backpressure_does_not_suspend_wall_or_idle_supervision() {
+        for idle in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let log_path = temporary.path().join("blocked-stdin.log");
+            let mut spec = shell_spec("", &log_path);
+            // One child, no descendants. Its independent alarm bounds even the
+            // broken supervisor; READY establishes that it reached the stall.
+            spec.command = Command::new("python3");
+            spec.command.args([
+                "-c",
+                "import os, signal\nsignal.alarm(3)\nprint('READY', os.getpid(), flush=True)\nprint('stderr-ready', file=__import__('sys').stderr, flush=True)\nsignal.pause()",
+            ]);
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            spec.timeout = Duration::from_millis(if idle { 2000 } else { 150 });
+            spec.idle_timeout = idle.then_some(Duration::from_millis(150));
+            let started = Instant::now();
+            let result = run_process(spec);
+            let elapsed = started.elapsed();
+            let log = std::fs::read_to_string(&log_path).unwrap();
+            let pid: i32 = log
+                .lines()
+                .find_map(|line| line.strip_prefix("READY "))
+                .expect("child never reached its bounded stdin stall")
+                .parse()
+                .unwrap();
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child was not reaped");
+            assert!(elapsed < Duration::from_secs(2), "idle={idle}: {elapsed:?}");
+            let output = result.unwrap();
+            assert_eq!(output.timed_out, !idle);
+            assert!(output.background_cleanup);
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout_tail).contains("READY"));
+            assert_eq!(output.stderr_tail, b"stderr-ready\n");
+        }
+    }
+
+    #[test]
+    fn delivers_stdin_larger_than_a_pipe_without_losing_bytes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log_path = temporary.path().join("large-stdin.log");
+        let mut spec = shell_spec("exec cat", &log_path);
+        let input = vec![b'x'; 128 * 1024];
+        spec.stdin = Some(input.clone());
+        spec.retained_bytes = input.len();
+        let output = run_process(spec).unwrap();
+        assert!(output.status.success());
+        assert!(!output.timed_out);
+        assert_eq!(output.stdout_tail, input);
+        assert_eq!(std::fs::read(log_path).unwrap(), input);
+    }
+
+    #[test]
+    fn early_stdin_closure_is_an_error_and_reaps_the_child() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pid_path = temporary.path().join("pid");
+        let mut spec = shell_spec("", &temporary.path().join("closed-stdin.log"));
+        spec.command = Command::new("python3");
+        spec.command.args([
+            "-c",
+            "import os, pathlib, signal, sys\nsignal.alarm(3)\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\nos.close(0)\nsignal.pause()",
+        ]);
+        spec.command.arg(&pid_path);
+        spec.stdin = Some(vec![b'x'; 512 * 1024]);
+        let started = Instant::now();
+        let error = run_process(spec).err().expect("stdin closure was ignored");
+        let pid: i32 = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child was not reaped");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(error.kind, ReplayErrorKind::Executor);
+        assert!(error.message.contains("write supervised process stdin"));
     }
 
     #[test]

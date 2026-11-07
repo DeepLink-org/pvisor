@@ -68,9 +68,8 @@ jobs:
           tools: rust
           setup: none
       - name: Install kernel and DLL cross-compilers
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc curl python3-pyelftools gcc-mingw-w64-x86-64
+        timeout-minutes: 10
+        run: bash scripts/ci/install-windows-fw-deps.sh noble
       - name: Build pinned, checksum-verified Windows firmware
         run: |
           mkdir -p target/whp-firmware

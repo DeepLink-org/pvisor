@@ -96,6 +96,9 @@ pub(crate) fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<Strin
         match event["event"].as_str() {
             Some("tool_started") => {
                 if let Some(call_id) = event["call_id"].as_str() {
+                    // Native trajectories may reuse IDs across turns. A prior
+                    // operation's finish cannot resolve this new execution.
+                    finished.remove(call_id);
                     started.insert(call_id.to_owned());
                 }
             }

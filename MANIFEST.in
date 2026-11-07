@@ -13,6 +13,7 @@ recursive-include fw/utils *
 global-exclude *.pyc *.pyo
 prune target
 prune vendor/*/target
+exclude vendor/hyper/Cargo.lock
 prune fw/linux-*
 prune fw/tarballs
 include tests/tasks.toml

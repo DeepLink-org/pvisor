@@ -43,6 +43,13 @@ impl DurableFiles for Persistence {
             let parent = path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+            // A bare filename has an empty Path parent, which denotes cwd but
+            // cannot itself be opened for a directory durability barrier.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             let start = Instant::now();
             let mut directory_sync = std::time::Duration::ZERO;
             let prepared = create_dir_all_durable_using(parent, |directory| {
@@ -58,11 +65,8 @@ impl DurableFiles for Persistence {
             ));
             timings.push(("directory_prepare_sync", directory_sync, prepared.is_ok()));
             prepared?;
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("pvisor");
-            let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+            // Do not amplify a valid destination basename past NAME_MAX.
+            let temporary = parent.join(format!(".pvisor.{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> anyhow::Result<()> {
                 let file = step!(
                     "file_write",

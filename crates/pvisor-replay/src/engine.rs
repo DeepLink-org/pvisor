@@ -298,22 +298,22 @@ fn agent_status_for_outcome(mode: ReplayMode, outcome: &ReplayOutcome) -> AgentS
 }
 
 fn completed_tool_calls(path: &Path) -> usize {
-    let mut completed = BTreeSet::new();
+    let mut completed = 0;
     let Ok(events) = crate::journal::read_observations(path) else {
         return 0;
     };
     for event in events {
         match event["event"].as_str() {
-            Some("run_started") => completed.clear(),
-            Some("tool_finished") => {
-                if let Some(call_id) = event["call_id"].as_str() {
-                    completed.insert(call_id.to_owned());
-                }
+            Some("run_started") => completed = 0,
+            Some("tool_finished") if event["call_id"].is_string() => {
+                // Native IDs may recur in distinct turns; each finish receipt
+                // records a completed operation, just as the success outcome does.
+                completed += 1;
             }
             _ => {}
         }
     }
-    completed.len()
+    completed
 }
 
 fn failure_result(

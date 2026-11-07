@@ -218,7 +218,9 @@ pub struct HostVmResult {
     pub value: Option<crate::operation::Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Private supervisor operations. Unknown fields are rejected for every variant,
+/// including operations without parameters; endpoint authorization is separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostSupervisorCommand {
     Inspect,
@@ -227,6 +229,30 @@ pub enum HostSupervisorCommand {
     Terminate,
     Endpoint { port: u16 },
 }
+
+impl<'de> Deserialize<'de> for HostSupervisorCommand {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Empty struct variants enforce unknown-field rejection, as for the
+        // public HostExecutionCommand and HostVmCommand wire adapters above.
+        #[derive(Deserialize)]
+        #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+        enum WireCommand {
+            Inspect {},
+            Pause {},
+            Resume {},
+            Terminate {},
+            Endpoint { port: u16 },
+        }
+        Ok(match WireCommand::deserialize(deserializer)? {
+            WireCommand::Inspect {} => Self::Inspect,
+            WireCommand::Pause {} => Self::Pause,
+            WireCommand::Resume {} => Self::Resume,
+            WireCommand::Terminate {} => Self::Terminate,
+            WireCommand::Endpoint { port } => Self::Endpoint { port },
+        })
+    }
+}
+
 /// Private supervisor namespace credentials, never a guest or public host API token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

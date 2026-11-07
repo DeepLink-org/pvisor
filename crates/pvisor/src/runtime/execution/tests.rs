@@ -69,6 +69,108 @@ fn native_controls() -> [OperationKind; 5] {
 }
 
 #[tokio::test]
+async fn requested_event_failure_or_cancellation_never_dispatches_an_admitted_control() {
+    use super::super::event::{EventSink, NoopEventSink};
+
+    struct RequestGate {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        reject: bool,
+        sink: NoopEventSink,
+    }
+
+    #[async_trait::async_trait]
+    impl EventSink for RequestGate {
+        async fn append(&self, event: &Event) -> anyhow::Result<pvisor_core::event::Receipt> {
+            if matches!(&event.data, Fact::Observation { name, .. } if name == "vm.control_requested")
+            {
+                self.entered.notify_one();
+                self.release.notified().await;
+                if self.reject {
+                    anyhow::bail!("injected requested-event rejection");
+                }
+            }
+            self.sink.append(event).await
+        }
+    }
+
+    for reject in [true, false] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut execution = execution_with(RunState::Running, ExecutorKind::VirtualMachine);
+            let gate = Arc::new(RequestGate {
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                reject,
+                sink: NoopEventSink::default(),
+            });
+            execution.events = RunEventPublisher::new(
+                execution.status().run_id,
+                execution.status().execution.execution_id,
+                "request-gate",
+                gate.clone(),
+                tokio::sync::broadcast::channel(16).0,
+            );
+            let caller = execution.clone();
+            let pending = tokio::spawn(async move { caller.pause().await });
+            gate.entered.notified().await;
+            assert_eq!(execution.snapshot().progress.queued, 1);
+            assert_eq!(execution.snapshot().progress.in_flight, 0);
+            if !reject {
+                execution.cancel();
+            }
+            gate.release.notify_one();
+            let error = pending.await.unwrap().unwrap_err();
+            assert!(error.to_string().contains(if reject {
+                "injected requested-event rejection"
+            } else {
+                "execution is cancelling"
+            }));
+            let snapshot = execution.snapshot();
+            assert_eq!(snapshot.status.state, RunState::Running);
+            assert_eq!(snapshot.progress.queued, 0);
+            assert_eq!(snapshot.progress.in_flight, 0);
+            assert!(!snapshot.progress.outcome_unknown);
+            assert!(!snapshot.progress.history_gap);
+            assert_eq!(execution.cancellation.is_cancelled(), !reject);
+            let history = records(&execution).await;
+            let inputs: Vec<Input> = history
+                .iter()
+                .map(|record| match &record.event.data {
+                    Fact::Observation { payload, .. } => {
+                        serde_json::from_value(payload.clone()).unwrap()
+                    }
+                    _ => panic!("unexpected execution fact"),
+                })
+                .collect();
+            assert!(matches!(
+                inputs.as_slice(),
+                [
+                    Input::Initialized { .. },
+                    Input::Queued { .. },
+                    Input::Failed {
+                        effect_unknown: true,
+                        ..
+                    }
+                ]
+            ));
+            assert!(!replay(&history).unwrap().outcome_unknown);
+            if reject {
+                // Failure before native dispatch does not poison later admission.
+                let id = execution
+                    .enqueue(OperationKind::RunPause, ControlOrigin::Manual)
+                    .await
+                    .unwrap();
+                execution
+                    .failed(&id, &anyhow::anyhow!("not dispatched"))
+                    .await;
+            }
+        })
+        .await
+        .expect("requested-event boundary exceeded five seconds");
+    }
+}
+
+#[tokio::test]
 async fn execution_dispatch_status_and_terminate_work_without_vm_authority() {
     use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostExecutionCommand};
     let controls = execution_with(RunState::Created, ExecutorKind::Process);
@@ -463,6 +565,125 @@ async fn execution_termination_remains_available_during_a_native_wait() {
         replay(&records(&execution).await).unwrap().status.state,
         RunState::Cancelled
     );
+}
+
+#[tokio::test]
+async fn confirmed_control_result_survives_rejected_execution_history_append() {
+    for reject in [false, true] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let execution = execution_with(RunState::Running, ExecutorKind::VirtualMachine);
+            let id = execution
+                .enqueue(OperationKind::RunPause, ControlOrigin::Manual)
+                .await
+                .unwrap();
+            execution.mark_dispatched(&id).await.unwrap();
+            let dispatched = execution.snapshot();
+            assert_eq!(dispatched.progress.in_flight, 1);
+
+            // Keep the real journal and its committed prefix. Invalid producer
+            // identity deterministically rejects the next append, without I/O
+            // failure or exposing a production fault-injection interface.
+            let original = {
+                let mut owner = execution.owner.lock().await;
+                let original = owner.trace.clone();
+                if reject {
+                    owner.trace = Trace::with_id(original.journal().clone(), original.id(), "");
+                }
+                original
+            };
+            // This is the confirmed-result handoff used after native ACK;
+            // the mock result deliberately carries no RAM or VM resources.
+            let result = execution
+                .succeeded(
+                    &id,
+                    Value::Vm {
+                        state: VmState::Paused,
+                        memory: None,
+                    },
+                )
+                .await;
+            if reject {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error.downcast_ref::<pvisor_journal::api::AppendError>(),
+                    Some(pvisor_journal::api::AppendError::Rejected(_))
+                ));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("VM control completed but execution history failed")
+                );
+                // exchange() passes this error through control_error(). The
+                // already-observed effect must not become an unknown failure.
+                execution
+                    .control_error(&id, &error, ControlOrigin::Manual)
+                    .await;
+            } else {
+                result.unwrap();
+            }
+            let observed = execution.snapshot();
+            assert_eq!(observed.status.state, RunState::Suspended);
+            assert_eq!(observed.progress.queued, 0);
+            assert_eq!(observed.progress.in_flight, 0);
+            assert_eq!(observed.progress.history_gap, reject);
+            assert!(!observed.progress.outcome_unknown);
+            assert!(!execution.cancellation.is_cancelled());
+            assert!(observed.status.execution.finished_at_unix_ms.is_none());
+
+            let history = original.journal().records().unwrap();
+            assert_eq!(history.len(), if reject { 3 } else { 4 });
+            let replayed = replay(&history).unwrap();
+            assert_eq!(
+                replayed.status.state,
+                if reject {
+                    RunState::Running
+                } else {
+                    RunState::Suspended
+                }
+            );
+            assert_eq!(replayed.snapshot().progress.in_flight, usize::from(reject));
+            if reject {
+                assert_eq!(observed.progress.applied, dispatched.progress.applied);
+            } else {
+                assert_ne!(observed.progress.applied, dispatched.progress.applied);
+            }
+
+            // Remove the test fault. A real history gap remains a fence even
+            // when the journal can accept writes again; it cannot be healed by
+            // silently re-executing the effect or by admitting another control.
+            execution.owner.lock().await.trace = original;
+            let next = execution
+                .enqueue(OperationKind::RunResume, ControlOrigin::Manual)
+                .await;
+            if reject {
+                assert!(
+                    next.unwrap_err()
+                        .to_string()
+                        .contains("execution outcome requires reconciliation")
+                );
+                assert_eq!(records(&execution).await.len(), 3);
+            } else {
+                execution
+                    .failed(&next.unwrap(), &anyhow::anyhow!("not dispatched"))
+                    .await;
+            }
+            // Missing control history cannot prevent cancellation or terminal
+            // publication after the separate completion owner finishes teardown.
+            execution.cancel();
+            execution.finish(RunState::Cancelled, None, 50).await;
+            let terminal = execution.snapshot();
+            assert_eq!(terminal.status.state, RunState::Cancelled);
+            assert_eq!(terminal.status.execution.finished_at_unix_ms, Some(50));
+            assert_eq!(terminal.progress.history_gap, reject);
+            assert!(!terminal.progress.outcome_unknown);
+            assert_eq!(
+                replay(&records(&execution).await).unwrap().status.state,
+                RunState::Cancelled
+            );
+        })
+        .await
+        .expect("confirmed-result history boundary exceeded five seconds");
+    }
 }
 
 #[tokio::test]

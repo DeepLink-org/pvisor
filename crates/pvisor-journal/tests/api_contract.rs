@@ -54,6 +54,102 @@ fn floating_payload_retries_keep_their_receipt_after_reopen() {
 }
 
 #[test]
+fn deeply_nested_payload_is_rejected_before_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    for journal in [Journal::memory(), Journal::open(&path).unwrap()] {
+        let mut live = journal.subscribe();
+        let mut before = Vec::new();
+        let durable = journal.snapshot_to(&mut before, u64::MAX).is_ok();
+        let mut nested = event(&journal);
+        let mut payload = serde_json::Value::Null;
+        for _ in 0..160 {
+            payload = serde_json::json!([payload]);
+        }
+        nested.data = Fact::Observation {
+            domain: "test".into(),
+            name: "nested".into(),
+            version: 1,
+            payload,
+        };
+        assert!(matches!(
+            journal.append(nested.clone()),
+            Err(AppendError::Rejected(_))
+        ));
+        assert!(live.try_recv().is_err());
+        assert!(journal.records().unwrap().is_empty());
+        if durable {
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        if let Fact::Observation { payload, .. } = &mut nested.data {
+            *payload = serde_json::Value::Null;
+            for _ in 0..32 {
+                *payload = serde_json::json!([payload.take()]);
+            }
+        }
+        assert_eq!(journal.append(nested).unwrap().position.offset, 0);
+    }
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.records().unwrap().len(), 1);
+}
+
+#[test]
+fn interrupted_record_writes_recover_only_complete_prefixes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("trace");
+    let journal = Journal::open(&path).unwrap();
+    let mut events = Vec::new();
+    let mut receipts = Vec::new();
+    for _ in 0..3 {
+        let e = event(&journal);
+        receipts.push(journal.append(e.clone()).unwrap());
+        events.push(e);
+    }
+    drop(journal);
+    let good = std::fs::read(&path).unwrap();
+    let boundaries: Vec<_> = good
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| (*b == b'\n').then_some(i + 1))
+        .collect();
+    let header_end = boundaries[0];
+    let mut cuts = boundaries.clone();
+    for boundary in &boundaries {
+        cuts.push(boundary - 1);
+    }
+    // Deterministic fault locations across headers and all three records.
+    for i in 1..=64 {
+        cuts.push(1 + i * (good.len() - 1) / 64);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    for cut in cuts {
+        std::fs::write(&path, &good[..cut]).unwrap();
+        if cut < header_end {
+            assert!(Journal::open(&path).is_err(), "header cut at {cut}");
+            assert_eq!(std::fs::read(&path).unwrap(), good[..cut]);
+            continue;
+        }
+        let complete_end = *boundaries.iter().rfind(|b| **b <= cut).unwrap();
+        let committed = boundaries.iter().filter(|b| **b <= cut).count() - 1;
+        if cut != complete_end {
+            assert!(Journal::read(&path).is_err(), "tail cut at {cut}");
+            assert!(Journal::validate(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), good[..cut]);
+        }
+        let recovered = Journal::open(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), good[..complete_end]);
+        assert_eq!(recovered.records().unwrap().len(), committed);
+        for (e, receipt) in events.iter().zip(&receipts) {
+            assert_eq!(recovered.append(e.clone()).unwrap(), *receipt);
+        }
+        drop(recovered);
+        assert_eq!(Journal::read(&path).unwrap().len(), 3);
+        Journal::validate(&path).unwrap();
+    }
+}
+
+#[test]
 fn api_is_unconditional_declarations_and_only_public_root() {
     struct Guard;
     impl<'ast> Visit<'ast> for Guard {
@@ -711,6 +807,120 @@ fn durable_open_permissions_symlink_rejection_and_partial_parent_errors() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(Journal::open(&path.join("child")).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn journal_rejects_fifos_without_blocking_or_changing_permissions() {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+    const CHILD: &str = "PVISOR_TEST_FIFO_OPERATION";
+    if let Ok(operation) = std::env::var(CHILD) {
+        let path = Path::new("fifo");
+        let before = std::fs::metadata(path).unwrap().permissions().mode();
+        match operation.as_str() {
+            "read" => assert!(Journal::read(path).is_err()),
+            "validate" => assert!(Journal::validate(path).is_err()),
+            "open" => assert!(Journal::open(path).is_err()),
+            _ => panic!("unknown operation"),
+        }
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode(),
+            before
+        );
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("fifo");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: c_path is NUL-terminated and remains alive for the syscall.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o640) }, 0);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    for operation in ["read", "validate", "open"] {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal_rejects_fifos_without_blocking_or_changing_permissions",
+                "--nocapture",
+            ])
+            .env(CHILD, operation)
+            .current_dir(root.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut timed_out = false;
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                timed_out = true;
+                child.kill().unwrap();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            !timed_out && output.status.success(),
+            "{operation}: timed_out={timed_out}\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn atomic_write_accepts_a_bare_relative_filename() {
+    // Isolate cwd in a subprocess so parallel tests never observe a cwd change.
+    const CHILD: &str = "PVISOR_TEST_RELATIVE_ATOMIC_WRITE";
+    if std::env::var_os(CHILD).is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "atomic_write_accepts_a_bare_relative_filename",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let path = Path::new("record");
+    Persistence::atomic_write(path, b"old", 0o600).unwrap();
+    let mut phases = Vec::new();
+    Persistence::atomic_write_observed(path, b"new", 0o640, |phase, _, ok| {
+        phases.push((phase, ok));
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), b"new");
+    assert_eq!(phases.last(), Some(&("directory_sync", true)));
+    assert!(phases.iter().all(|(_, ok)| *ok));
+    assert_eq!(std::fs::read_dir(".").unwrap().count(), 1);
+}
+
+#[test]
+fn atomic_write_handles_long_valid_destination_names() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["x".repeat(240), "é".repeat(120)] {
+        let path = root.path().join(name);
+        // Establish that the filesystem accepts this destination basename.
+        std::fs::write(&path, b"old").unwrap();
+        let mut phases = Vec::new();
+        Persistence::atomic_write_observed(&path, b"new", 0o600, |phase, _, ok| {
+            phases.push((phase, ok));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(phases.last(), Some(&("directory_sync", true)));
+        assert!(phases.iter().all(|(_, ok)| *ok));
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
 }
 
 #[test]

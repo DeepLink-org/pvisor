@@ -357,6 +357,10 @@ They do not adopt or sweep those leftovers.
 The host adapter reserves cache pending before preparation and owns request
 ordering; VM callers retain their ordinary copy-up path. `copy_up_prepare`
 profiles prepared byte work, while `copy_up_bytes` counts both serving paths.
+Ordinary copy-up also cleans a temporary entry only after successfully creating
+it. A name collision fails without deleting the pre-existing file, symlink or
+directory; retry may use a fresh name. Failure cleanup removes only an owned
+empty directory, never recursively sweeps a reserved-looking tree.
 `tests/prepared_copy_up.rs` checks publication, cancellation, source changes,
 owner isolation, hardlink reuse/deduplication, remote projection aliases,
 truncation, baseline ordering and 300-file publication with a 48-FD limit.

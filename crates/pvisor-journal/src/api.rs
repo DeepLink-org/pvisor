@@ -50,10 +50,12 @@ pub trait JournalStore {
     where
         Self: Sized;
 
-    /// Open/create a mode-0600 file without following a final-path symlink and
+    /// Open/create a mode-0600 regular file without following a final-path symlink and
     /// acquire a nonblocking exclusive writer lock. Creates/syncs parent entries;
-    /// even failure may leave directories/files or changed permissions. An empty
-    /// file receives a synced header. Existing complete records are validated
+    /// even failure may leave directories/files or changed permissions. A
+    /// FIFO or other nonregular target is rejected before chmod or journal I/O;
+    /// opening a FIFO does not wait for a peer. An empty regular file receives a
+    /// synced header. Existing complete records are validated
     /// (Core bounds, contiguous positions, unique IDs, acyclic causal graph) and
     /// synced before use. Only a non-newline-terminated final record is truncated
     /// and synced; oversized tails, incomplete headers and corrupt complete
@@ -65,6 +67,7 @@ pub trait JournalStore {
     /// Read a closed file under a nonblocking shared lock. Validate header and
     /// records as open does, but never repair or modify bytes/permissions. A live
     /// writer, incomplete tail, unsupported format or corruption returns error.
+    /// Reject nonregular targets without waiting for a FIFO peer.
     /// Retains all records and identity/causality indexes in memory.
     fn read(path: &Path) -> anyhow::Result<Vec<Record>>
     where
@@ -92,6 +95,8 @@ pub trait JournalStore {
     /// causal IDs, each at most 256 bytes and not self; optional context/operation
     /// IDs nonempty and at most 256 bytes; valid fact-specific contracts; serialized
     /// event at most MAX_EVENT_BYTES (currently 1 MiB). Positions must fit u64.
+    /// Before committing, the complete serialized record must also pass the
+    /// reader's JSON deserializer, including its nesting limit, on both backends.
     /// Serialize writes, assign zero-based contiguous positions, allow unresolved
     /// forward causes, and reject cycles. Same ID and serialized content returns
     /// its prior position without rewriting or notification; different content
@@ -198,6 +203,9 @@ pub trait DurableFiles {
     /// Before rename failure the destination is unchanged (parent entries may
     /// exist); temporary removal on error is best effort. Does not preserve the
     /// old file's mode or follow a final destination symlink as a write target.
+    /// A bare relative filename uses the current directory as its parent.
+    /// Temporary basenames have fixed length independent of the destination name,
+    /// so appending a random suffix cannot overflow an otherwise valid basename.
     fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> anyhow::Result<()>;
 
     /// Same replacement semantics as atomic_write, reporting attempted phases

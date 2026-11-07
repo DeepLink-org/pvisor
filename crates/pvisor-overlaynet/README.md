@@ -7,12 +7,44 @@ absolute-URI forwarding, access enforcement through
 [`pvisor-core`](../pvisor-core/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
+CONNECT authorities accept a hostname or bracketed IPv6 host with an optional
+nonzero `u16` port (443 when omitted). Only an empty suffix or `:port` may follow
+the closing IPv6 bracket; trailing garbage is rejected with 400 before
+authorization or upstream dispatch, rather than discarded into a default-port
+target. Authorization and the connector use the same unbracketed host and
+effective port.
+
+Absolute-URI requests must also parse with the forwarding client's URL grammar
+before authorization or sink selection. Invalid URLs, including overflowing
+ports and garbage after a bracketed host, return 400 instead of being authorized
+under a fallback port or delivered to an accepting sink. Legal URL spellings
+(including an empty port or leading port zeroes) retain their existing defaults
+and policy semantics; the `Host` header does not select the destination.
+As with CONNECT, absolute IPv6 authorities lose only their enclosing brackets
+before authorization and resolution. The bare literal resolves without DNS;
+expanded/compressed spellings keep the same IP, port and HTTP/HTTPS transport
+when the forwarding client canonicalizes the URL. Exact IP grants and explicit
+address denies retain their existing policy meaning.
+
 Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
 429 without waiting in an unbounded queue. A permit remains owned by the HTTP body
 or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not a
 node-wide memory budget. HTTP upstreams have a ten-minute read-inactivity timeout;
 active responses can exceed ten minutes. CONNECT retains its existing transport
 lifecycle and does not yet have a shared bidirectional inactivity deadline.
+HTTP/1 and HTTP/2 CONNECT use Hyper's upgraded streams, not HTTP bodies, and
+preserve successful half-close: the opposite direction drains
+before tunnel ownership is released. A copy or download-resume error instead
+cancels the companion direction and releases the tunnel's admission permit.
+
+HTTP/2 CONNECT also observes an independently awaitable, latched reset/transport
+failure signal from the pinned [local Hyper patch](../../vendor/hyper/PATCHES.md).
+This releases both copies and the admission permit even while upload bandwidth,
+upstream reads or native resume is pending, including resets after an earlier
+half-close. Normal END_STREAM remains a half-close, not cancellation; delayed
+responses and uploads after response EOF still drain. The reset monitor closes
+after both halves finish or the upgraded owner drops. This is event-driven
+transport cleanup, not an inactivity timeout or periodic write probe.
 
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
 in-process smoltcp stack serves synthetic DNS, then terminates and

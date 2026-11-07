@@ -16,6 +16,9 @@ remain owned by Core, not duplicated or re-exported here.
 - `src/persistence.rs`: Unix filesystem durability and private barrier tests.
 - `tests/api_contract.rs`: external lifecycle, validation and persistence tests
   plus recursive AST guards for the API boundary.
+- `tests/chaos_state_machine.rs`: 16 fixed-seed sequences compare memory and
+  durable appends with an independent graph model through retries, identity
+  conflicts, cycle rejection and 128 close/validate/read/reopen checks.
 
 ## Contracts
 
@@ -25,9 +28,15 @@ lasts until the last owner (including a Trace or accepted blocking task) drops.
 Closed-file read/validate use shared locks and never repair. Open repairs only
 an incomplete final record, not a corrupt complete record or incomplete header.
 Complete recovered records are synced before a retry can receive LocalSync.
+Open/read/validate require regular files. They open with nonblocking semantics
+and check the descriptor type before journal I/O (or chmod for writers), so a
+FIFO is rejected without waiting for a peer or changing its permissions.
 
 Append validates Core bounds and causality, accepts unresolved forward references,
-and rejects cycles. Identical event-ID/content retries return the original
+and rejects cycles. Before committing on either backend it also deserializes the
+complete serialized record with the reader's rules, rejecting excessive JSON
+nesting rather than acknowledging a record that cannot be recovered.
+Identical event-ID/content retries return the original
 position without new notifications; changed content is rejected. JSON parsing
 explicitly preserves finite floating point values across close/reopen so the
 same event retains its content digest. Rejected means this request did not commit.
@@ -54,7 +63,11 @@ its cleanup, syncing and publication. They do not poison the journal.
 building do not validate inputs: append does. Emit accepts the provided event
 without requiring its trace/producer identity to match the producer.
 
-`DurableFiles` provides Unix directory barriers and atomic replacement. Failures
+`DurableFiles` provides Unix directory barriers and atomic replacement. Bare
+relative destination filenames use the current directory for temporary files and
+the parent durability barrier, just as explicitly `./`-prefixed paths do. Temporary
+basenames have fixed length rather than extending the destination name, so long
+valid destination names do not exceed the basename limit during replacement. Failures
 are not rollback transactions: created directories may remain, temporary cleanup
 is best effort, and rename success followed by directory-sync failure leaves the
 new destination visible with uncertain crash durability. Observers run after
