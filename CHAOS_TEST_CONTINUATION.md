@@ -1710,3 +1710,129 @@ fullruntime rerun. Parent accepts078forpublication, runtimefullstillINCOMPLETE.
 Assigned after078review. Tiny real stoppedproposal/checkpoint/requestid replay
 afteraccept/drop/deletion, preserving exactsavedbytes and documented retryauthority,
 without immediate-retry duplication or RAMcheckpoint claims.
+
+Result: no defect, onerealstoppedHostSession20:41:43–20:42:09 UTC.
+Rcapturesa/b/scratch, accepta, delayedRretrysameID/reusedtrue/oldsavedaincluded.
+NewQcapturesonlyb/scratch. Dropcurrentproposal, R/Qretriesstillreuseoldsnapshots
+withoutrestaging; newSrefusedDiscardedrequiresStaged/no newreceipt. Rrefs0delete
+passes; Rretryrefusedalreadycommittedcheckpointunavailable/newidneeded, immutable
+requestreceiptunchanged/no authorityresurrection. Qstillreviewable/reusable,
+listonlyQ. SnapshotQupperb27bytes/scratch8bytespreserved, hostaaccepted/bOriginal.
+
+21CLI+twonativereplay/deletiontests(1passed7filteredCLI,1passed766filteredruntime),
+46gatesminmemory21,953,712,128bytes,maxload0.65967,mindisk348,162,506,752bytes,
+diffpassed. Owner/resourcesgone, receiptcompleted0/stagediscardedempty; Q/receipts
+intentionallyignoredownedevidence. No source/artifactadds. No crashpublication/
+crossSessionkeycollision/frozenlower claim.
+
+### 080 — Checkpoint key validation and cross-Session scope
+
+Assigned after079. DerivevalidIDrules first, boundedordinaryinvalidIDs only,
+inertrejection/validretry plus two distinctSessions sharingkey with source-scoped
+snapshots/receipts. PublicIDhash may legitimatelyrepeat acrosssources.
+
+Result: no defect, two real Host Sessions20:44:59–20:46:00 UTC.
+Invalidempty/space/257xIDs reject1(invalidhostidentity/nonblankdurablerequest),
+no checkpoint/receiptreservation and both host/upper/preimage/Run/receipts unchanged.
+Emptyrejectionexecutedtwice becauseharness wronglyexpectedwordrequestindiagnostic,
+correctedonsamefixtures/no extraSessions. Samevalidkeyround080-same-key derives
+samepublichashID inA/B but ownsource/stage/receipt identity andsaved-A/Bbytes.
+Retries preserveoriginalownsnapshot. DeleteAunreferencedthenAreplayrefuses;
+Bunaffected/reusable even afterBapply/drop. Selectivepublishownproposals/scratchdrop,
+sentinelpreserved, receiptscompleted0/stagesdiscardedempty/ownersresourcesgone.
+
+26CLI+one nativetwobound/deletiontestselection(2passed765filtered),54gates
+minmemory22,218,158,080bytes,maxload0.65527,mindisk348,257,361,920bytes,diffpassed.
+No source/artifactadds, Bcheckpoint/receiptsignoredowned evidence. No requestrace/
+crashpublication/frozenlower coverage.
+
+### 081 — Checkpoint selector ambiguity or exact-ID refusal
+
+Assigned after080. Derive actualresolution contractfirst, two same-sourcecheckpoints,
+inert ambiguous/missingprefix show/review/delete and exact-IDcontinuation, no global
+userhistory or invented prefix-support claim.
+
+Result: no defect, onerealHostSession20:51:46–20:51:56 UTC. Resolver supports
+exactIDsanduniqueprefixes. Twosame-sourcecheckpoints make request- ambiguous;
+show/review/deleteeachreject1. request-missing same3operationsreject1. Allsix
+refusals preservebothsnapshots/receipts/currentupper/preimages/host/Run/completion
+(atimeexcluded), otherowned080Bunchanged. ExactIDs+uniqueprefixwork, refs0;
+deletefirstexact then request- uniqueonlyremaining/deleteit, listempty. Current
+proposal/scratchstillusable, selectiveaccept/drop preserveshost/sentinel.
+
+24CLI+one nativeambiguous/corruptiontest1passed766filtered,50gatesminmemory
+22,178,922,496bytes,maxload0.45850,mindisk348,235,505,664bytes,diffpassed.
+Owner/resourcesgone, receiptcompleted0/stagediscardedempty. No source/artifactadds.
+No concurrentcheckpoint race/mixedexecutioncollision/realmanifestcorruption.
+
+### 082 — Owned checkpoint GC scope or manifest recovery
+
+Assigned after081. InspectpublicGC capabilitywithoutglobalstoremutation; if
+unsupportedforHost, tiny ownedworkspace manifestcorruption/restoreexactbytes and
+non-destructiverefusal, preservingreceipts/othercheckpoints/semspecuntouched.
+
+Result: workspaceGC supportsstoppedHost, no defect/newSessions/mounts. Existing080B
+explicitSOURCE checkpointgc--kindworkspace scope=session_workspace_transactions,
+notglobalstore. Tinyowned.pending/.deleted directoriesremovedexactly2, secondGC0;
+executionremoved0/publisheddeleted0. Publishedsnapshot/manifest/metadata/.requests
+receipts retained, .retain-directory and similarlyprefixedregularfile untouched.
+Checkpointshow/review/refs0/replayoldkeyreused, terminalstage/host/Run/completion/
+otherSession unchanged, no upperrecreated. No publicdryrunoption, noneclaimed.
+
+NineCLI+one nativetworeceipt/leasevalidationselection2passed765filtered,
+20:54:24–20:54:34 UTC,20gatesminmemory22,170,628,096bytes,maxload0.57373,
+mindisk348,183,019,520bytes,diffpassed. No source/artifactadds; retainedcontrols
+movedtoignoredevidence afterward, originalcheckpointintact. No executionRAMGC/
+concurrentpublication/crash/legacycommittedpending case or manifestcorruption.
+
+### 083 — Longer-idle real Host owner and retained descriptor
+
+Assigned after082. One workload deliberately blocked on ownedinput about130s,
+finitefixturetimer/alarm/watchdog, no busyloops or agentstatuspolling. Validate
+owner/authority acrossidle, postidle livequery/readonlyinspect and heldfd append,
+normalcompletion/selectiveacceptance and healthycontinuation with no machine load.
+
+Result: no defect, realblockedidle130.015756860s20:57:37–20:59:47 UTC; guestmeasured
+130.107841826s, sourcecommand130.310659s. Alarm200/watchdog300, nokeepalive/poll.
+Owner618998/start2670908/exedev54inode285927221/session/execution/path/digeststable
+before/afteridle/inspect. Heldwritablefd3 virtualdev95inode2 unchanged, append/fsync
+afterownedinput succeeds. Host/upper/preimageunchanged/no receiptwhilelive;
+postidlestatusrunning/readonlyinspectreadsinitialproposal/cleansroot. Normal0receipt,
+strictpreview/selectiveacceptbefore-idle+after-idle/dropscratch; quickhealth0.
+
+Timeoutsourcefacts: startupreadtimeoutclearedafteradmission, frameIO5s, operation310s/
+caller315s. This verifiesworkload/frontendidle/heldFDlifetime130s, NOT stalledsingle
+request or310soperationexpiry. 14CLI+one nativeownershiptest1passed150filtered,
+overall20:57:37–21:00:07 UTC,30gatesminmemory22,115,549,184bytes,maxload0.58936,
+mindisk348,190,879,744bytes,diffpassed. Stagesdiscarded/appliedempty/resourcesgone.
+No source/artifactadds; ignored evidenceonly.
+
+### 084 — Five-minute idle then cooperative cancellation
+
+Assigned after083. Deliberate330sfinite blockedfixture, atmostoneowneddescendant,
+fallback420/watchdog480, no CPU/busyloop/keepalive. Validate longlifetime+knowncancel/
+reaping/retainedstage, NOT a stalled310sRPC timeout claim.
+
+At21:02:03 UTC all33 checks for published eight-fix revision6fe01698 succeeded.
+RemoteCI evidence remains separate from localfullruntimeINCOMPLETE and privateHOME
+fullCLI coverage; no upgrade of those local claims.
+
+084result: no defect, real blockedidle330.099640046s21:04:20–21:09:50 UTC,
+source330.372530266s. Guest+onechildalarm410/watchdog480, nokeepalive/poll/CPUwork.
+Owner620213/start2711229/exe/session/execution and guestbirthidentitiesstable,
+heldstagedfd3/virtualdev95inode2 synced32bytes, descendantcloseditsdup. No receipt/
+hostwrite/upper-preimagechangewhileidle. Publickill cooperative/terminationrequested
+stopping, no harnessrawsignal/stdinEOF. Cancel-to-completion0.054422925s, source143,
+receiptcancelled/noexitcode/failure, bothguestPIDsreaped. Strictpreview/acceptknown
+proposal/drop/healthy0 pass; stagesdiscarded/appliedempty/resourcesgone.
+
+14CLI+one nativetwocancel/reapingtests2passed149filtered, overall21:04:20–21:10:10
+UTC,30gatesminmemory22,128,332,800bytes,maxload0.69971,mindisk348,268,662,784bytes,
+diffpassed. No source/artifactadds. Sessionidle/cancel testNOT stalled310sRPC;
+ignoredTERM/opencontrol/suspend/resume/nonLinuxnotcovered.
+
+### 085 — Cancellation overlapping a live inspect view
+
+Assigned after084. Boundedownedview/FD/inputgates, publiccooperativecancel and
+allrefsclosedcleanup/status/authority, derivingbusy/unmount guarantees first,
+not inventing post-owner viewavailability or SIGKILL cleanup.
