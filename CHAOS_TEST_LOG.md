@@ -913,6 +913,53 @@ not establish that an end-to-end VM/FUSE workflow works.
 - No new independent product defect; this round corrects the unpublished
   candidate for 024. No macOS/VM/custom-executor/full-workspace coverage.
 
+### 026 — RAM pool admission failures
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABOMuZIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed for pool admission; no new product defect. An existing IPC
+  lifetime test hung and is explicitly assigned to round 027.
+- Budget: 30 minutes.
+- Assignment: bounded own Unix endpoint fault during pool authentication/
+  negotiation, checking pre-VMM failure, endpoint ownership preservation and
+  healthy retry under documented semantics. At most 64 MiB actual pool
+  allocation; no interaction with any user-owned pool.
+- Explicit isolated target and fresh compiler-artifact provenance required.
+- Added one pager regression (three faults): partial session identity EOF,
+  EOF during mapping negotiation, invalid mapping status. No fallback on
+  poisoned connection, no implicit reconnect, unchanged socket inode/ownership,
+  and explicit healthy retry through the same listener, publishing no RAM.
+- Worker public pool probe additionally bounded stalled magic/identity reads
+  to about 201 ms, observed peer close, then negotiated healthy same-endpoint
+  session. Own 1 MiB pools only; no VM boot or user pool touched.
+- Worker final selected tests: 15 passed plus two selected CLI pool-selection/
+  companion-cancellation tests passed. However an extended IPC selection hit
+  a 900-second outer timeout at disconnected_mapping_is_pinned_until_peer_process_exits
+  after ten passes, with remaining five unrun. This is not a full green suite;
+  libtest stdout ready-handshake interference is a lead, not yet proven.
+- Coordinator initial pager run failed before behavior: the long explicitly
+  local TMPDIR made Unix socket path exceed SUN_LEN. No product failure.
+  Changed only validation TMPDIR to short worktree-local `.chaos-tmp`.
+- Coordinator `mise run test -- pvisor -- --lib -E
+  'test(executor::vm::pager::tests::)' --no-fail-fast`: five passed,
+  760 skipped, in 0.014 seconds (cached build 0.08 seconds). Nextest ID:
+  `eaef1dec-d6c0-4679-b1fc-6474e4e3f5cd`. One job/thread, nice 15,
+  offline and isolated target; diff check passed. Empty local TMPDIR removed.
+- Coordinator available memory initially/finally: 18,730,248 / 18,581,948 KiB;
+  load1 0.16 / 0.22; free disk 347,403,685,888 / 347,429,588,992 bytes.
+- Not covered: actual runner handshake cancellation, boot-time pool loss,
+  cross-UID peers, macOS/HVF, all IPC tests or whole workspace.
+
+### 027 — IPC lifetime test handshake
+
+- Worker: same subthread as 026, follow-up turn.
+- Status: dispatched; no result yet.
+- Budget: 15 minutes, bounded short reproduction instead of another
+  900-second wait.
+- Assignment: diagnose the single-thread libtest child ready handshake,
+  preserve peer-alive pin/peer-exit-release assertions, and repair the conventional
+  test runner if confirmed. All owned children must reap even on failure.
+- Checks, findings, fixes, and PR updates: pending worker evidence.
+
 ## CI observation
 
 At 03:20 UTC, `gh pr checks 111` reported two pending benchmark-build checks

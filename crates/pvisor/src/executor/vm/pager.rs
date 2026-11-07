@@ -313,6 +313,84 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_pool_negotiation_preserves_endpoint_for_healthy_retry() {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+
+        for fault in ["identity_eof", "mapping_eof", "mapping_status"] {
+            let directory = private_directory();
+            let socket = directory.path().join("pool.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let before = std::fs::symlink_metadata(&socket).unwrap();
+            let accepting = listener.try_clone().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = accepting.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                stream.write_all(b"PVMEMP2\0").unwrap();
+                if fault == "identity_eof" {
+                    stream.write_all(&[1; 7]).unwrap();
+                } else {
+                    stream.write_all(&[1; 16]).unwrap();
+                    let mut operation = [0];
+                    stream.read_exact(&mut operation).unwrap();
+                    assert_eq!(operation, [6], "expected mapping negotiation");
+                    if fault == "mapping_status" {
+                        stream.write_all(&[2]).unwrap(); // Not a mode rejection.
+                    }
+                }
+                stream.shutdown(Shutdown::Write).unwrap();
+                let mut operation = [0];
+                assert_eq!(
+                    stream.read(&mut operation).unwrap(),
+                    0,
+                    "broken negotiation must close, not try another mode"
+                );
+            });
+            let error = prepare_pool(&socket, false).err().unwrap();
+            if fault != "identity_eof" {
+                // Fallback cannot negotiate or query an already-poisoned client.
+                assert_eq!(error.to_string(), "pool session has failed");
+            } else {
+                assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            }
+            server.join().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock,
+                "failed preparation must not reconnect"
+            );
+            listener.set_nonblocking(false).unwrap();
+
+            // The original owner can serve a new session at the unchanged endpoint.
+            let pool = Arc::new(Mutex::new(
+                crate::ram_backing::shared::SharedPool::new(1 << 20, 256).unwrap(),
+            ));
+            let shared = pool.clone();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                crate::ram_backing::ipc::serve_shared(stream, shared, 256).unwrap();
+            });
+            let prepared = prepare_pool(&socket, false).unwrap();
+            assert!(matches!(&prepared.store, PagerStore::Physical(_)));
+            assert_eq!(pool.lock().unwrap().object_count(), 0);
+            drop(prepared);
+            server.join().unwrap();
+            let after = std::fs::symlink_metadata(&socket).unwrap();
+            assert_eq!(
+                (before.dev(), before.ino(), before.uid(), before.mode()),
+                (after.dev(), after.ino(), after.uid(), after.mode())
+            );
+            assert_eq!(pool.lock().unwrap().object_count(), 0);
+        }
+    }
+
+    #[test]
     fn prepared_physical_pool_owns_one_session_without_publishing_ram() {
         let directory = private_directory();
         let socket = directory.path().join("pool.sock");
