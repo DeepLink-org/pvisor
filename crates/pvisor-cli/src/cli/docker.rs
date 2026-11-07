@@ -92,7 +92,7 @@ pub(super) enum ContainerCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ImageCommand {
-    Build(build::Build),
+    Build(Box<build::Build>),
     Pull {
         #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
         platform: Option<String>,
@@ -117,7 +117,7 @@ impl DockerCommand {
                 ContainerCommand::Logs(args) => Self::Logs(args),
             },
             Self::Image { command } => match command {
-                ImageCommand::Build(args) => Self::Build(args),
+                ImageCommand::Build(args) => Self::Build(*args),
                 ImageCommand::Pull { platform, image } => Self::Pull { platform, image },
                 ImageCommand::Ls(args) => Self::Images(args),
                 ImageCommand::Rm(args) => Self::Rmi(args),
