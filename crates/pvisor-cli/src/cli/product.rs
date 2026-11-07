@@ -661,9 +661,10 @@ fn print_diffs(
             continue;
         }
         let output = super::diff::unified(&old, &new, &change.path)?;
-        let keep = remaining.min(output.len());
-        print!("{}", String::from_utf8_lossy(&output[..keep]));
-        remaining -= keep;
+        if super::diff::print_bounded_diff(&output, &mut remaining) {
+            println!("  … diff output truncated at {max_total_bytes} bytes");
+            break;
+        }
     }
     Ok(())
 }

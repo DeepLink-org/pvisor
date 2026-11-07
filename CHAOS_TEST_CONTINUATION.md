@@ -1192,3 +1192,108 @@ remain pending; other independent testing continues.
 Assigned same worker after062. Inspect documented selection semantics then tiny
 space/Unicode/leading-dash/newline filenames with exact argv/JSON, selective
 acceptance and similarly named candidate isolation; no shell interpolation.
+
+Result: no defect/harness correction, two real safe Host Sessions at18:14:35–
+18:14:37 UTC. Six literal selections cover space, Unicode, leadingdash, newline,
+nestedUnicode/newline and glob-looking name. ReviewJSON preserves all12selected/
+comparison names. Each preview selects exactly one/no dependencies, is inert;
+apply consumes only exactliteral, others pending until drop. `literal[1]*.txt`
+does not expand glob; leadingdash uses --path=-draft.txt. Allargv arrays, no shell.
+Healthy successor verifies exact names/bytes and absent dropped comparisons.
+Receiptscompleted0, originalhostunchangedbeforeapply, bothstagesdiscarded/empty.
+
+29CLIcommandsall0; two native applyCLI path/byteidentity tests passed19filtered
+by18:14:46 UTC. Minmemory24,408,563,712bytes,maxload0.868,mindisk353,938,944,000bytes,
+gates/diffpassed. Owners/processes/mounts/socketsgone, ignored artifacts only.
+No real invalidUTF8filenames/normalization/casefoldingfilesystems/otherplatform/
+fullsuite coverage.
+
+### 064 — Real binary payload selective acceptance
+
+Assigned same worker after063. Tiny NUL/invalidUTF8/high-byte content and mixed
+text candidates, documented binary diff omission and byte-exact selective apply,
+not size pressure or filename encoding.
+
+Result: no binary review/apply defect, two real safe Host Sessions. Binaryedit
+1040→1560bytes, invalidUTF8add286bytes, delete215bytes, unrelatedtext. ReviewJSON
+keeps paths/kinds/sizes; diff explicitly binary(textdiffunavailable), emits no
+NUL/invalidUTF8/payloadmarkers while displaying text. Selectededit/add byteexact,
+then selecteddelete; unrelatedtext pending/drop leaveshosttextoriginal. Healthy
+successor checks hashes/deletion, accepts72bytebinaryhealth. Receiptscompleted0,
+hostunchangedpreapply and all applypreviews strictinert.
+
+Accepted hashes: edit1560bytes a444342734615ed29b2dee764728949b9f5c8270d0febe730119fc1d87234356;
+raw286bytes 22b107942cd3e32337a86340b2ce47f5da07794fb267ad670894d3cd340ab069.
+21CLIcommandsall0, staged/review18:18:08–18:18:09 UTC, same-stageaccept/healthy
+18:20:57. Initial harness learned stoppedreview advances empty session.lockmtime
+through operation bookkeeping; isolated only thattimestamp, bytes/identity/other
+metadata unchanged, strictapplypreview assertions unchanged, no replacementrun.
+
+Two native binarydiff tests passed32filtered by18:21:10 UTC,diffcheckpassed.
+Minmemory24,290,197,504bytes,maxload0.768,mindisk353,895,215,104bytes,gatespassed.
+Bothstagesdiscarded/empty, owners/processes/mounts/socketsgone. Ignored evidence
+only, no source changes. No real diffboundary/overbudget/concurrentreplacement/
+otherplatform/fullsuite coverage.
+
+### 065 — Real review diff budget boundaries
+
+Assigned same worker after064. Derive documented thresholds, bound total fixtures
+to a few MiB, verify explicit omission/truncation/binary classification and
+candidate/byte-exact acceptance independent of diff display.
+
+Confirmed narrow display diagnostic defect in both review/apply diff: truncation
+marker is emitted only at the following candidate iteration. If the final rendered
+file itself is clipped, output silently ends without marker. Two actual Sessions
+with1,347,617byte bounded payload reproduced it: applybody exactly262144bytes,
+endmarker absent, no diff-truncated notice; final reviewfile clipped atmax128
+similarly lacks notice. All perfile boundary skips, final-byte NUL detection,
+candidate retention, byte-exact apply and cleanup otherwise passed.
+
+Parent authorized minimal immediate notice when clipped output is detected,
+preserving current budget/format contracts, with final-file red/green and exactfit/
+nextcandidate coverage. Worker will rebuild static product and rerun actual
+clipped case on repaired binary, not reuse old binary as repair evidence.
+Independent review required before publication; quota062/receipts untouched.
+
+Original real trace18:27:05–18:27:06 UTC also validates perfile1023/1024/1025
+under configured1024budget, lastbyteNUL binaryskip, 1MiB+1 largefileomit, and
+262144bodybudget across two144KiBfiles. Three real Sessions total/35CLIall0,
+receiptscompleted0, strictapplypreviewsinert, stagesdiscarded/empty, ownedresources
+gone. A small initial formatter difference corrected before finalchecks.
+
+Worker focused final-file tests failed beforefix. Six intendedCLI files add shared
+bounded-body helper, call it in review/apply, two existingfixture regression cases
+and README. Tests cover finalclippednoticeonce/exactfitnomarker/exactfitfollowedby
+omittedcandidateonce. At18:32:47–18:32:53 UTC exact relevant mise test command
+for apply_cli+review_handoff_cli passed36/zeroskipped. Packagealltarget Clippy-Dwarnings
+and fmt/diff passed. Supporteddebugproduct rebuild18:33:52–18:34:35 passed42.540s.
+
+Fixedbinary SHA256a8a82b0b4832e224dde0df3aa4e2ba69ee6c35362cc90d5a4318bee6002bb088
+fresh realSession18:35:48 verifies apply262144bodybytes+noticeonce, review128
+final/singleclippingnoticeonce, smallfullpreviewnomarker, byteexactapply/drop.
+Exactatbudget only regression evidence, not realfixedCLI case. Minmemory
+22,343,155,712bytes,maxload1.963,mindisk352,087,252,992bytes; gatespassed.
+No multibyteUTF8clipping/otherplatform/workspace/Python coverage.
+
+Parent captured/merged frozen source, reviewed diff and confirmed only sixCLI
+files plus campaignlog, no machineartifacts. Fresh independent reviewer is running
+tests and checking budget semantics; no production publication yet.
+
+Independent review passes scoped diagnosticfix. At18:44:50–18:45:56 UTC exact
+apply_cli+review_handoff_cli suites passed36/zeroskipped;18:46:13–18:46:31 two
+diffunittests passed147filtered; diffcheckpassed. Minmemory21,563,514,880bytes,
+maxload2.077,mindisk351,706,181,632bytes; allgatespassed.
+Reviewer confirms zero/exactfit/nextcandidate behavior, immediatebreak prevents
+duplicatenotice, binary/metadata/inputerror/receipt/writebackunchanged.
+
+Known pre-existing caveat: lossydecoding after byteslice can replace partialUTF8
+with replacementcharacter and emit up totwobytes beyond accountedbudget. Midline
+notice also has no separatornewline. Not introduced by065, not established strict
+emittedbyteceiling. Parent accepts065forpublication with this explicit limitation;
+separate066will reproduce/fix validUTF8budget handling rather than broaden silently.
+
+### 066 — Multibyte diff clipping boundaries
+
+Assigned same worker after065review workloads ended. Tiny2/3/4byteUTF8 cut cases,
+actual emittedbytes and valid-prefix/omissionnotice, shared-renderer rule and
+zero/exactfit/ASCII compatibility. No quota/receipt change.

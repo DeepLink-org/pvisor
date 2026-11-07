@@ -361,6 +361,41 @@ fn review_diff_checks_the_entire_bounded_file_for_binary_contents() {
 }
 
 #[test]
+fn review_diff_reports_final_file_truncation_without_false_exact_fit_warning() {
+    let mut fixture = Fixture::new(None, Path::new("/unused"));
+    let workspace = fixture.root.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fixture.record.workspace = Some(workspace.clone());
+    fixture.bundle["filesystem"]["target"] = json!(workspace);
+    let upper = fixture.record.stage_dir().join("upper");
+    fs::write(upper.join("result"), format!("{}\n", "x".repeat(512))).unwrap();
+    fixture.enable_overlay();
+
+    let full = fixture.review(&["--diff"]);
+    let body = full
+        .split_once("Project diff (environment changes: use review --json)\n")
+        .unwrap()
+        .1
+        .split_once("\nExperimental environment changes")
+        .unwrap()
+        .0;
+    let full_bytes = body.len();
+    for (budget, truncated) in [(full_bytes, false), (full_bytes - 1, true)] {
+        let text = fixture.review(&["--diff", "--max-diff-bytes", &budget.to_string()]);
+        assert_eq!(
+            text.matches("diff output truncated").count(),
+            usize::from(truncated),
+            "budget {budget}, full diff {full_bytes}"
+        );
+    }
+
+    fs::write(upper.join("tail"), b"unrendered tail\n").unwrap();
+    let text = fixture.review(&["--diff", "--max-diff-bytes", &full_bytes.to_string()]);
+    assert_eq!(text.matches("diff output truncated").count(), 1);
+    assert!(!text.contains("--- a/tail"));
+}
+
+#[test]
 fn known_empty_is_distinct_from_unavailable_and_control_paths_are_not_results() {
     let mut fixture = Fixture::new(Some(Path::new("/project")), Path::new("/"));
     let reviewed = fixture.json();
