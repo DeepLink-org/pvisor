@@ -794,11 +794,44 @@ not establish that an end-to-end VM/FUSE workflow works.
 ### 023 — Post-ready control boundary recovery
 
 - Worker: same subthread as 022, follow-up turn.
-- Status: dispatched; no result yet.
+- Status: completed; real owner framing/recovery workflow passed, with a
+  separate safety-record inconsistency assigned to round 024.
 - Budget: 20 minutes, at most two Sessions/eight messages/8 MiB payload.
 - Assignment: correct readiness handshake and distinguish safe enforcement
   from staging; verify exact maximum legal real request, overlimit/truncated
   rejection, healthy status on new connections and post-ready terminate cleanup.
+- One Host Session, six serial socket messages and 2,097,895 actual bytes:
+  exact 1 MiB session_status payload plus LF succeeded; overlimit terminate
+  and no-LF terminate were rejected without cancellation; fresh status after
+  each stayed running; final valid terminate returned success and wait Cancelled.
+  Ready marker was observed through preinstalled inotify before injections,
+  not inferred from a published-but-starting owner.
+- Actual workflow exit zero in 0.09 seconds (88 ms lifecycle), no setup_failed.
+  Owner reaped, live_control/socket/mounts gone. Workload natural deadline four
+  seconds was not reached. Codec tests were not rerun; this is actual endpoint
+  evidence. No tracked changes; ignored probes not merged.
+- Artifact provenance: current-worktree runtime rlib from 022, relinked probe
+  in that same target; probe SHA-256
+  `7a1882fce1dc90722e9c594713aedbcbcff0426a824d30bad05eacec174d4884`.
+  No source-target reuse. Available memory 18,881,088→18,908,404 KiB,
+  load1 0.75→0.58; free disk 350,003,212,288 bytes.
+- Separate observation: this embedded API fixture writes ready directly into
+  project, not upper, despite Bundle filesystem_changes_staged=true.
+  OverlayHint alone did not install a staged binding. Round 024 must check
+  whether this is a false safety claim or documented intent-only field;
+  it is not dismissed as a harness issue or silently counted as staged proof.
+- Not covered: connection saturation, long-running leak detection, other
+  platforms or global security claims.
+
+### 024 — Staging safety-record consistency
+
+- Worker: same subthread as 022/023, follow-up turn.
+- Status: dispatched; no result yet.
+- Budget: 30 minutes, at most four serial Sessions.
+- Assignment: reproduce and trace the lower-write/staged-safety-field mismatch
+  from public API through admission and recorded installation evidence;
+  compare valid staged/write-through configurations and minimally repair a
+  genuine contract violation without expanding API scope.
 - Checks, findings, fixes, and PR updates: pending worker evidence.
 
 ## CI observation
