@@ -493,3 +493,32 @@ not establish that an end-to-end VM/FUSE workflow works.
   load1 0.75 / 1.46; free disk 358,174,982,144 / 358,174,674,944 bytes.
 - Not covered: SMP, snapshots, running-VM forced abort, other platforms or
   whole-workspace tests. No additional permanent probe was added.
+
+### 015 — Bandwidth cancellation/policy changes
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABFhl5IBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: investigate an uncovered OverlayNet bandwidth waiting/cancellation
+  or policy-transition boundary through real runtime paths; at most 64 operations
+  and two concurrent tasks with bounded waits, no external network traffic.
+- Added two `bandwidth_lifecycle.rs` public-router tests with in-memory sink
+  and paused Tokio time, plus tower dev-dependency (no dependency upgrade).
+  Upload/download cancellation releases ownership; after the reserved deadline,
+  stacked budgets admit later requests on the expected schedule. Policy
+  replacement retains shared global debt, gives new target rules independent
+  buckets and keeps existing requests' policy snapshots. No refund promise
+  is assumed. Eight requests total, at most two active.
+- Worker passed two new tests, then 13 related bandwidth/egress tests
+  (78 skipped); warnings-denied targeted clippy, rustfmt and diff checks passed.
+- Coordinator independently ran `mise run test -- pvisor-overlaynet --
+  --lib --test bandwidth_lifecycle -E 'test(bandwidth::tests::) |
+  test(egress::tests::) | binary(bandwidth_lifecycle)'`: 13 passed, 78 skipped.
+  Build 2.01 seconds, tests 0.049 seconds. Nextest ID:
+  `7037f6f5-1487-4bd6-83c3-826125d9bf7c`. Offline Cargo, constrained
+  parallelism, nice and 180-second timeout; diff check passed.
+- Coordinator available memory before/after: 19,079,392 / 19,129,052 KiB;
+  load1 2.85 / 2.49; free disk unchanged at 357,608,329,216 bytes.
+- Not covered: VM data-plane bandwidth policy replacement (the new swap test
+  uses proxy snapshots), real network speed, actual VM, Core budget ledger,
+  full OverlayNet/workspace suites or other platforms.
