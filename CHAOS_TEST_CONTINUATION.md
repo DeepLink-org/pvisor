@@ -1666,3 +1666,47 @@ publicationwithfullruntimeINCOMPLETE and realHOMEfullCLIgapexplicit.
 Assigned after077review. Source-traced remoteownerUUIDdirectoryretention willbe
 boundedrealreproduced, then focusedownerRAII onlyifconfirmed; protocol/Session
 authorityunchanged, no fullruntimepackage reruns.
+
+Confirmedreal078remoteownerrootleak20:29:45–20:29:46 UTC: successfulliveinspect
+leavesoneemptyserverUUIDroot, subsequentENOENTleavestwo. Mountsgone, sourceowner
+595202/start2503808same/running/no prematurecompletion, host/currentupper/preimage
+unchanged. FD34→34success/36immediateerror notsteadyFDleakclaim. Source later
+normalstdincompletion0/selectiveaccept/drop passes. Workerimplementingfocused
+private serverguard uniqueinvocationroot+mount, explicitunmount/mapclearDrop same
+path, tests+streamedlogs. No CLIREADME/fullruntime rerun/protocol change.
+
+Worker078fixedrealtrace20:34:56–20:34:57 UTC success+ENOENT leaveszeroinvocation
+roots/mounts. Owner598710/start2534895same/running, no earlyreceipt, host/upper/
+preimageunchanged(atimeexcluded). FDs35before/34afterboth snapshotonly, not exact
+steadystateclaim. Ownedstdinbytecompletes0, selectiveproposalapply/scratchdrop,
+stagediscarded/empty/allownedresourcesgone. Map1→0 explicitunmount/tableclear
+verifiedbyprivateactualmounttest, not statusAPI.
+
+Private InspectionMount owns optionalreadonlymount+uniqueRoot: sharedclose/Drop/
+failedconstruction, unmountbeforebest-effortemptyremoval/nonrecursive/sharedsafe.
+Two selectedruntime tests passed765filtered, fmt/runtime+CLIClippy-Dwarnings/
+supportedrebuild/diffpassed. Initialtestonlytypealiasinproductioncorrectedbefore
+finalchecks. FixedSHAe187ca3ef38cbd87e9d6fb993b4191fd63d42cfe864c831db26d3346f1ab9199.
+Thirtycompletedcommands/60gatesminmemory21,616,320,512bytes,maxload1.08936,
+mindisk349,143,384,064bytes. Streamedlogs/prelaunchrecordsdurable. Baselineempty
+leakdirsremovedonlyafterownercomplete, artifactcreatescanceled, ignored evidence.
+No macOS/unmountfailure/disconnectedcallercrash/SIGKILL guarantee or fullpackage
+retry.077fullCLI not evidenceoffullsuiteon078source; runtimefullstillINCOMPLETE.
+
+Parentmergedtwofilescleanly/diffpassed; freshindependentreviewcheckingowner/map/
+dropordering/client077interaction and targetedactualFUSE tests before publication.
+
+Independent078review accepts/no blockingfindings. ActualLinuxFUSE runtime2tests
+20:37:31–20:38:37 UTC and client077launch-error1test20:38:51–20:39:10 passed,
+765/7filtered; not capabilityskips. Source ordering/exclusivecreation/tableclear
+admissionmutex/driverteardown/one-shoterror semantics confirmed. Same32limit/protocol/
+publicAPI unchanged; failedunmountentrynotrestored remains existingnoguarantee.
+Streamedlogs/prepostgatesmemory20.54–20.78GiB,load0.57–1.94,disk>=324.47GiB safe,
+no fixturemounts; diffpassed. macOSskipifnomacFUSE, no FSKitclaim/unmountfaultinject/
+fullruntime rerun. Parent accepts078forpublication, runtimefullstillINCOMPLETE.
+
+### 079 — Workspace checkpoint replay after state change
+
+Assigned after078review. Tiny real stoppedproposal/checkpoint/requestid replay
+afteraccept/drop/deletion, preserving exactsavedbytes and documented retryauthority,
+without immediate-retry duplication or RAMcheckpoint claims.

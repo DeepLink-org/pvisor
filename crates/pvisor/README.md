@@ -418,6 +418,11 @@ closed before writable workspace teardown. Capture retains request receipts,
 Session locks and detached operation ownership after frontend timeout. Guest
 AgentCtl retains its separate guest-facing trust boundary.
 
+Each owner-held inspect entry owns its unique mount directory. Explicit unmount,
+table teardown and failed construction release the read-only mount before
+best-effort removal of only its empty invocation directory; shared stage contents
+and nonempty or still-mounted directories are never recursively removed.
+
 Stopped status, review, apply, drop and inspect execute in the calling process.
 Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
