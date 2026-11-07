@@ -56,3 +56,8 @@ mise run test -- pvisor-replay
 Local fixtures cover protocol rewriting, credentials, stalled upstreams,
 startup failures, cancellation and bounded teardown. These are not live-model
 or external agent-version acceptance tests.
+
+Stdin backpressure and early-close fixtures re-execute the native test binary,
+with an independent alarm to bound a broken supervisor. They do not launch a
+Python interpreter or PATH shim inside the short supervision deadlines. Readiness,
+timeout classification, output capture and child reaping remain asserted.

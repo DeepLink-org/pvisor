@@ -681,19 +681,50 @@ mod tests {
         assert_eq!(output.stdout_tail, b"resume nonce");
     }
 
+    fn stdin_fixture_child() {
+        if std::env::var_os("PVISOR_REPLAY_STDIN_CHILD").is_some() {
+            // Re-exec the native test binary rather than launching Python through
+            // a possibly slow PATH shim inside the 150ms supervision budget.
+            // The alarm bounds a broken supervisor without creating descendants.
+            unsafe { libc::alarm(3) };
+            if let Some(path) = std::env::var_os("PVISOR_REPLAY_STDIN_PID") {
+                std::fs::write(path, std::process::id().to_string()).unwrap();
+                unsafe { libc::close(0) };
+            } else {
+                // Start a new line after the test harness's own output.
+                println!("\nREADY {}", std::process::id());
+                io::stdout().flush().unwrap();
+                eprintln!("stderr-ready");
+            }
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+    }
+
+    fn stdin_fixture_command(test_name: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test_name, "--nocapture"])
+            // The fixture must not need an interpreter or any PATH-resolved tool.
+            .env("PATH", "")
+            .env("PVISOR_REPLAY_STDIN_CHILD", "1")
+            .env_remove("PVISOR_REPLAY_STDIN_PID");
+        command
+    }
+
     #[test]
     fn stdin_backpressure_does_not_suspend_wall_or_idle_supervision() {
+        stdin_fixture_child();
         for idle in [false, true] {
             let temporary = tempfile::tempdir().unwrap();
             let log_path = temporary.path().join("blocked-stdin.log");
             let mut spec = shell_spec("", &log_path);
             // One child, no descendants. Its independent alarm bounds even the
             // broken supervisor; READY establishes that it reached the stall.
-            spec.command = Command::new("python3");
-            spec.command.args([
-                "-c",
-                "import os, signal\nsignal.alarm(3)\nprint('READY', os.getpid(), flush=True)\nprint('stderr-ready', file=__import__('sys').stderr, flush=True)\nsignal.pause()",
-            ]);
+            spec.command = stdin_fixture_command(
+                "process::tests::stdin_backpressure_does_not_suspend_wall_or_idle_supervision",
+            );
             spec.stdin = Some(vec![b'x'; 512 * 1024]);
             spec.timeout = Duration::from_millis(if idle { 2000 } else { 150 });
             spec.idle_timeout = idle.then_some(Duration::from_millis(150));
@@ -735,15 +766,14 @@ mod tests {
 
     #[test]
     fn early_stdin_closure_is_an_error_and_reaps_the_child() {
+        stdin_fixture_child();
         let temporary = tempfile::tempdir().unwrap();
         let pid_path = temporary.path().join("pid");
         let mut spec = shell_spec("", &temporary.path().join("closed-stdin.log"));
-        spec.command = Command::new("python3");
-        spec.command.args([
-            "-c",
-            "import os, pathlib, signal, sys\nsignal.alarm(3)\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\nos.close(0)\nsignal.pause()",
-        ]);
-        spec.command.arg(&pid_path);
+        spec.command = stdin_fixture_command(
+            "process::tests::early_stdin_closure_is_an_error_and_reaps_the_child",
+        );
+        spec.command.env("PVISOR_REPLAY_STDIN_PID", &pid_path);
         spec.stdin = Some(vec![b'x'; 512 * 1024]);
         let started = Instant::now();
         let error = run_process(spec).err().expect("stdin closure was ignored");
