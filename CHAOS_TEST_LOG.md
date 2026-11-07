@@ -336,3 +336,33 @@ not establish that an end-to-end VM/FUSE workflow works.
   load1 0.81 / 1.25; free disk 362,246,897,664 / 362,219,892,736 bytes.
 - Not covered: cross-session mixing, HTTP request ordering/idempotency, stream
   cancellation, real CLI/agent/LLM end-to-end, other platforms or full suite.
+
+### 010 — Executor startup/termination failures
+
+- Worker: `ksQQ3UP44YPgTC-msj8WDYNdyJLOABCDipIBxBDuNWdurkVNCYkuySUr0iCB`.
+- Status: completed and integrated; no product defect reproduced.
+- Budget: 30 minutes.
+- Assignment: exercise a public executor/Session failure boundary, preferably
+  real Host staged execution with abnormal child termination, and check
+  cleanup, review/drop preservation, and a subsequent healthy Session.
+  At most eight serial Sessions with bounded child execution; no downloads
+  or global process/mount operations.
+- Added a public CLI `rootless_local.rs` regression with three serial real
+  Host safe Sessions: stage a file then exit 23, stage then self-TERM
+  (exit 143), and a subsequent healthy Session. It checks terminal/live
+  status, ProcessExit failure kind, unchanged lower, reviewable upper,
+  owner absence under /proc, no fixture mounts, drop and discarded state.
+- Worker ran the test twice (six Sessions total); both passed. Targeted
+  rustfmt and diff checks passed; no test-logic error.
+- Coordinator independently ran `mise run test -- pvisor-cli -- --test
+  rootless_local -E 'test(safe_abnormal_exits_retain_reviewable_stages_and_release_owners_before_retry)'
+  --no-capture`, explicitly unsetting `PVISOR_TEST_ALLOW_NO_USERNS`.
+  One passed, 18 skipped; real per-scenario diagnostics prove no capability
+  skip. Build 16.99 seconds; test 0.539 seconds. Owners 1839057, 1839124,
+  1839190 were gone; all three review/drop flows succeeded.
+  Nextest ID: `6ff15e24-3884-48ac-9aaf-6228514f88ac`.
+- Coordinator available memory before/after: 19,560,780 / 18,845,188 KiB;
+  load1 0.88 / 0.88; free disk 361,967,767,552 / 361,890,631,680 bytes.
+  Constrained jobs, offline Cargo, nice and 180-second timeout; diff check passed.
+- Not covered: startup-path failure, cancellation, escaped descendants,
+  VM boot/retry, other platforms or full-package/workspace suites.
