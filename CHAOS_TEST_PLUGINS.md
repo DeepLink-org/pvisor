@@ -3110,3 +3110,131 @@ Durable command/resource logs are `.data/round16/{workspace-red,shared-fmt,share
 final audit is `shared-cleanup.json`.
 Parent received code-ready evidence before slot release. Any full retry remains
 a separate decision requiring explicit permission; optional Python was not run.
+
+### Round 17 — extended low-load recovery and stale approval
+
+- Static preparation only until the coordinator's sole-slot grant after
+  round16's05:00:14 release. No code check, build or native process ran before
+  that grant. Read root/plugin guidance, rounds2/7/10/15 and existing coding,
+  approval, disconnect, descendant-observation and endurance fixtures.
+- Sole workload intervals: short preflight from05:01:33, first two native cases
+  ending05:23:46; released at05:24 for coordinator work. Regranted after
+  round18's05:29:10 release; final two cases ended05:49:31. Final ownership and
+  targeted-style audit ended and the slot was released at**05:50:01 UTC**,
+  2026-11-08. The between-case coordinator pause is not active execution.
+- Added only opt-in `plugins/test/extended-recovery.native.mjs` and the explicit
+  campaign launcher `plugins/test/launch-extended-recovery.py`, plus this log.
+  Existing helpers, production code, mise tasks and public inventory unchanged.
+  No commits, pushes, Git merges, publication, builds, installs or semspec edits.
+
+#### Commands, preflight and fixed source frontiers
+
+Every long command used the existing exact `mise run test-agent-plugins-native`
+through a private executable Node PATH shim injecting `--test-concurrency=1`,
+`--test-timeout=800000`, TAP and one anchored exact-case name. The launcher runs
+`nice -n10 timeout -k30s 850s mise run test-agent-plugins-native`, without
+arguments appended to mise, with jobs2 and Rust/nextest/math threads1.
+Native runtimes were570s except the short completed approval task's30s; each
+Node test has800s for active work, approval and cleanup. No two Sessions overlapped.
+
+The actual per-case command was:
+
+```sh
+PVISOR_PLUGIN_EXTENDED_LAUNCH=1 \
+PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor \
+PVISOR_PLUGIN_EXTENDED_BINARY_SHA256=6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20 \
+PVISOR_PLUGIN_EXTENDED_DEADLINE=2026-11-08T09:04:00Z \
+python3 plugins/test/launch-extended-recovery.py CASE
+```
+
+`CASE` was separately `cancel`, `failure`, `server-death`, `stale-approval`.
+The launcher requires explicit binary/hash/UTC deadline, creates exclusive
+durable evidence, checks gates and hashes before/after, and requires exactly
+one requested non-skipped TAP title rather than accepting green file wrappers.
+Neither native artifact nor source changed during any case.
+
+Initial installed Ruff checks found import/format issues, repaired only through
+apply_patch. A later preflight assertion expected TAP while direct Node chose
+its PTY reporter; four actual default skips had occurred, not native execution.
+Reran with explicit TAP. Final preflight passed installed
+`mise exec -- ruff check` and `ruff format --check` for the new launcher,
+`node --check`, Python compile, four default skips/zero passes, six explicit
+config-negative cases, launch-without-opt-in refusal, and four checks compiled
+from the actual launcher's TAP selection AST: one title accepted; wrapper-only,
+skipped title and duplicate title rejected. These were short harness checks,
+not additional native Sessions. Evidence remains in`.asv8/round17/preflight`.
+
+Parent-reviewed source frontiers:
+
+- First two native cases: test SHA256
+  `2d72ea30242ac57aa462c8a433f8bd00d9be228d0729ba6c377c48c270703261`.
+- During the coordinator pause, static inspection found that public
+  `status.run` is a display projection without numeric exit status. Parent
+  approved removing the suspect MCP-completed branch assertion and explicitly
+  reporting the unreceived numeric exit as unknown. No failed long run prompted
+  this correction, and no private completion file was parsed.
+- Final two cases: test SHA256
+  `9b2ab4f1e90323694f2004b38ef0a99462efd0db8d38091db56d51578ff0ec6c`;
+  a short Node syntax check passed before case3.
+- Launcher throughout all four cases:
+  `97d441e307ef8817807df8c113948c6c4e2f36bfd3530fb6f8b4b62e445248e1`.
+  Each launcher also records and compares all plugin/helper JS, itself and the
+  executed`mise.toml`, and the read-only native artifact's approved hash.
+
+#### Actual distinct outcomes
+
+| UTC command interval | Actual active / idle measurement | Result |
+| --- | --- | --- |
+| 05:04:28–05:14:30 | Backend run480,142ms; approval idle120,001ms | User cancellation after eight minutes: received exit143/interrupted=true, native cancelled/nonlive. Returned minute heartbeats and a truthful unfinished marker, no completed unittest claim. Reopened exact stage; selected source/partial result accepted, scratch reviewed/dropped. |
+| 05:15:15–05:23:46 | Backend run510,211ms; no approval idle | Genuine offline source unittest failed after the bounded timer phase, received exit1/interrupted=false and`FAILED (failures=1)`; native failed/nonlive. Source/results remained reviewable; explicit drop, no apply or rerun. |
+| 05:30:42–05:36:49 | MCP kill at launch+360,030ms; native receipt start-to-finish360,092ms; loss reconciliation5,087ms | **Early failed branch**, terminal observed around launch+365s, before the intended510s natural end. Retained source and partial assertion marker; unittest completion not established. Frontend numeric exit unknown, no recovered stdout, no inferred BrokenPipe cause and no510s continuation pass. |
+| 05:40:29–05:49:31 | Backend run1,041ms; stale approval idle540,019ms; fresh approval idle1ms | Completed unittest exit0 received before approval. Fixture host edit at05:45:01; nine-minute-old approval reached exactly the original native apply and blocked with exit3 and the exact selected`calc.py` conflict. Host edit and candidates preserved; explicit fixture-only baseline restoration, fresh review/approval, selective acceptance and drop. |
+
+Four native attempts total, **four actual cases passed**. Each exact filtered
+invocation also reported12 unmatched native file wrappers:48 wrapper passes
+are not48 additional scenarios. The four workflows used a single tiny Python
+process each, bounded kernel timers, minute heartbeats and small real source
+assertions/unittest; no CPU stress or workload forks.
+
+#### Ownership, resources, retained evidence and limits
+
+Operations/attempts are registered before dispatch with immediate rejection
+handlers. Existing fixture ownership combines test/caller/owned/deadline
+signals; approval entry races settlement/cancellation and finally releases and
+joins. The scoped MCP peer installs teardown before spawn. Its only forced
+signal targeted its own unreaped host child PID1024553, birth5749493, UID1000,
+with bracketed birth/UID checks; workload namespace PIDs were never signalled.
+Live preview/apply/drop refused before transport death. Exact native status
+reconciliation—not MCP pipe closure—preceded review/drop. Unknown authority
+would preserve/report the root and stop; no unknown owner occurred.
+
+Across45 phase/boundary samples (~60s during long phases), minimum available
+RAM18,485,063,680 bytes, minimum disk340,763,807,744 bytes and maximum load1=0.83;
+all gates6GiB/20GiB/load8 passed. Final removal observations for all four roots
+had zero owned processes, permission denials, unstable births or PID reuse.
+Fixture mount checks and final self-mount scan were empty. This is observable
+same-UID/self-namespace evidence, not universal containment proof.
+
+Durable evidence base:
+`/home/reiase/workspace/pvisor/.delta/worktrees/1rf21v88pxxm/pvisor/.asv8/round17`.
+Four command directories are`cancel-20261108T050428990311Z`,
+`failure-20261108T051515370289Z`,`server-death-20261108T053042534196Z`,
+and`stale-approval-20261108T054029396087Z`. Each retains launcher JSONL/TAP,
+source/artifact hashes, resources, exact operation results, task/stage/run/
+execution identities and birth observations. `summary.json` indexes them.
+All four disposable project/state roots were removed only after terminal/drop
+and ownership checks; durable evidence was about502kB (490KiB). Retained task UUIDs:
+`e09e8273-983e-4935-a2f8-d20fb0cad355`,
+`72ea46ca-933f-47b7-ac4b-9ee9ba31bb1b`,
+`fdb1fee4-e0ab-4953-a9fe-76377f7a6ae1`,
+`b94a6286-79dc-489f-b023-0101452958b4`.
+
+Final targeted installed Ruff check/format and`git diff --check` passed.
+No broad portable/packed npm fixture, install, external service/model call,
+cloud credential, host settings, global cleanup, unrelated signal or semspec
+operation occurred. These are real native Sessions and mocked Pi approval
+callbacks, not live Pi UI or client-streaming evidence. Backend output returns
+after completion; inherited output lost with MCP was not native capture.
+The MCP completed-continuation branch was **not exercised**; the allowed early
+failed branch was. No deadline variant was added, no new ancestor policy was
+tested, and no production bug/change is claimed.
