@@ -3,6 +3,8 @@
 pub(crate) mod artifact;
 pub(crate) mod container;
 pub(crate) mod delegated;
+#[cfg(target_os = "linux")]
+pub(crate) mod host_exec;
 pub(crate) mod process;
 pub use crate::execution_context::lifecycle::ExecutorOutput;
 pub(crate) use crate::execution_context::lifecycle::{SessionEnd, exit_outcome};

@@ -18,10 +18,12 @@ mod host_process;
 mod host_service;
 mod live_vm;
 mod values;
+mod vm_check;
 use crate::companions;
 mod product;
 mod run;
 pub mod runtime;
+mod session_exec;
 mod stage;
 mod stage_source;
 #[cfg(unix)]
@@ -55,6 +57,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Probe current-process virtualization access without booting a guest.
+    VmCheck {
+        /// Emit bounded structured preflight evidence.
+        #[arg(long)]
+        json: bool,
+    },
     /// Execute a Linux command in a VM with a caller-owned rootfs (writes through).
     #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     VmRun(crate::vm_run::Args),
@@ -363,6 +371,13 @@ pub fn main() -> anyhow::Result<()> {
         }
     };
     let mut parsed = Cli::from_arg_matches(&matches)?;
+    if let Command::VmCheck { json } = parsed.command {
+        anyhow::ensure!(
+            parsed.features.is_empty(),
+            "vm-check does not accept runtime experiments"
+        );
+        return vm_check::print(json);
+    }
     #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
     if let Command::VmRun(args) = parsed.command {
         anyhow::ensure!(
@@ -419,6 +434,7 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match parsed.command {
+        Command::VmCheck { .. } => unreachable!("VM preflight precedes Session startup"),
         #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
         Command::VmRun(_) => unreachable!("direct VM dispatch precedes Session startup"),
         Command::Container(_) => {

@@ -1110,6 +1110,25 @@ On Linux, a fresh VM with dedup enabled and no explicit `vm.ram_backing` uses pr
 
 The runner calls `handle.advise_ram_dedup()` explicitly and writes a best-effort installation report to stderr; advice failure does not stop execution. Linux advice covers ordinary private anonymous RAM and restored private COW mappings. Live `MAP_SHARED` RAM is skipped without mapping conversion; macOS reports unsupported for otherwise eligible mappings. `accepted_bytes` means advice was accepted for those ranges, not merged bytes, savings or an enabled KSM scanner. No global KSM settings change and no new service is required. See [current integration and evidence](../design/memory-optimization/deduplication.md#direction) for eligibility, snapshot ownership and validation limits.
 
+### VM availability preflight {#vm-check}
+
+```bash
+pvisor vm-check --json
+```
+
+This source-build command returns schema version 1 with `operation: "vm-check"`,
+`platform`, `architecture`, `backend`, `can_create_vm`, `reason`, `firmware`,
+`boot_verified` and `scope`. Linux opens `/dev/kvm`, requires KVM API 12 and
+creates/closes an empty VM. Apple Silicon attempts HVF VM creation/destruction.
+It never changes device permissions or boots a guest.
+
+Firmware is `embedded`, `bundled_unloaded`, `missing` or `unsupported`.
+Discovery does not load bundled firmware; `boot_verified` is always false.
+Rootfs, guest tools, staging and lifecycle capabilities require separate checks.
+Reporting unavailable virtualization is a successful query (exit 0); inspect
+the JSON fields rather than the exit code alone. Plugin default/fallback
+authorization is defined in the [plugin policy](../guides/agents/plugins.md#execution-policy).
+
 ### VM rootfs and executor boundaries {#vm-rootfs}
 
 `--rootfs image=IMAGE` selects this executor and pulls an

@@ -35,6 +35,14 @@ export async function checkRuntimeContract(binary) {
   return binary;
 }
 
+/** Optional read-only capability; a failed probe is not permission to guess. */
+export async function supportsLifecycleStatus(binary) {
+  const { stdout } = await promisify(execFile)(binary, ["status", "--help"], {
+    timeout: 10_000, maxBuffer: 256 * 1024,
+  });
+  return /--lifecycle(?:\s|$)/.test(stdout);
+}
+
 /** Use an operator override or the host PATH; never install or download a runtime. */
 export async function resolveRuntime(override, { searchPath = process.env.PATH || "" } = {}) {
   let binary;

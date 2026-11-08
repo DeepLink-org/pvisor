@@ -61,6 +61,12 @@ Local fixtures cover protocol rewriting, credentials, stalled upstreams,
 startup failures, cancellation and bounded teardown. These are not live-model
 or external agent-version acceptance tests.
 
+The Bash output fixture uses a finite 6 MiB writer and a 30-second execution
+budget, asserts successful exit and truncation, and checks the full log length.
+It does not measure CI output throughput. Timeout classification retains its
+separate 50-millisecond fixture, and background-descendant cleanup remains a
+separate assertion with its original two-second command deadline.
+
 Stdin backpressure and early-close fixtures re-execute the native test binary,
 with an independent alarm to bound a broken supervisor. They do not launch a
 Python interpreter or PATH shim inside the short supervision deadlines. Readiness,

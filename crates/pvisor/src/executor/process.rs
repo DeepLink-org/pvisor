@@ -233,6 +233,11 @@ pub struct ProcessExecutor {
 struct PreparedCommand {
     command: Command,
     resources: SandboxResources,
+    #[cfg(target_os = "linux")]
+    exec: Option<(
+        std::sync::Arc<super::host_exec::Broker>,
+        std::os::unix::net::UnixDatagram,
+    )>,
 }
 
 enum SandboxResources {
@@ -622,6 +627,8 @@ impl ProcessExecutor {
             command.args(&invocation.args);
             (command, None, SandboxResources::none())
         };
+        #[cfg(target_os = "linux")]
+        let mut resources = resources;
         command
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
@@ -671,7 +678,40 @@ impl ProcessExecutor {
                 command.env("HOME", scratch);
             }
         }
-        Ok(PreparedCommand { command, resources })
+        #[cfg(target_os = "linux")]
+        let exec = {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::process::CommandExt;
+            if let SandboxResources::Linux { plan, .. } = &resources {
+                let mut plan: SandboxPlan = serde_json::from_slice(&std::fs::read(plan.path())?)?;
+                if plan.filesystem_isolated && !plan.filesystem_landlock_only && !plan.probe_only {
+                    let (broker, child) =
+                        super::host_exec::Broker::pair().map_err(std::io::Error::other)?;
+                    let fd = child.as_raw_fd();
+                    plan.exec_fd = Some(fd);
+                    resources.write_plan(&serde_json::to_vec(&plan)?)?;
+                    unsafe {
+                        command.as_std_mut().pre_exec(move || {
+                            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                            Ok(())
+                        });
+                    }
+                    Some((broker, child))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        Ok(PreparedCommand {
+            command,
+            resources,
+            #[cfg(target_os = "linux")]
+            exec,
+        })
     }
 }
 
@@ -732,6 +772,7 @@ fn probe_launcher(launcher: &Path, filesystem_isolated: bool) -> bool {
         filesystem_landlock_only: false,
         probe_only: true,
         process_limit: None,
+        exec_fd: None,
     };
     let Ok(encoded) = serde_json::to_vec(&plan) else {
         return false;
@@ -1320,6 +1361,7 @@ fn rootless_plan(
         filesystem_landlock_only: filesystem.landlock_only,
         probe_only: false,
         process_limit: spec.runtime.resource_limits.processes,
+        exec_fd: None,
     })
 }
 
@@ -1514,6 +1556,8 @@ impl RunExecutor for ProcessExecutor {
         let PreparedCommand {
             mut command,
             mut resources,
+            #[cfg(target_os = "linux")]
+            exec,
         } = match self.spawn_command(&spec, invocation) {
             Ok(command) => command,
             Err(error) => {
@@ -1587,6 +1631,11 @@ impl RunExecutor for ProcessExecutor {
                 };
             }
         };
+        #[cfg(target_os = "linux")]
+        let _exec_registration = exec.and_then(|(broker, child)| {
+            drop(child);
+            crate::runtime::instance_control::install_exec(context.execution(), broker)
+        });
         let process_group = child.id();
         #[cfg(unix)]
         let _foreground = match ForegroundProcessGroup::give_to(&child, invocation) {

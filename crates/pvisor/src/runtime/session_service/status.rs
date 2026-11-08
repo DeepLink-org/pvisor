@@ -10,6 +10,24 @@ const MAX_STATUS_BYTES: usize = 256 * 1024;
 const MAX_SAMPLES: usize = 5;
 const MAX_SAMPLE_BYTES: usize = 512;
 
+/// Lightweight lifecycle observation. Omitted filesystem/ledger counts are
+/// unknown, never zero. It does not walk stage files or checkpoint stores.
+#[derive(Serialize, Deserialize)]
+pub struct LifecycleStatus {
+    /// Lifecycle-only wire contract version (1).
+    pub schema_version: u16,
+    /// Distinguishes this projection from full status/review.
+    pub detail: String,
+    /// Effective execution phase, independent of file inventory.
+    pub state: crate::StatusState,
+    /// A current owner confirms this Execution.
+    pub live: bool,
+    /// This live owner can start additional processes in its existing sandbox.
+    pub exec_supported: bool,
+    /// Bounded recorded command and workspace identity.
+    pub run: StatusRun,
+}
+
 /// Select one Session using the same admission fences as mutation requests.
 pub struct StatusRequest {
     /// Session identity or path and its lookup storage.
@@ -294,6 +312,78 @@ pub(crate) fn network_activity(
 }
 
 impl SessionService {
+    /// Observe lifecycle without enumerating stage, apply or checkpoint files.
+    /// Live reads route to the identity-checked owner. Offline reads reconcile
+    /// completion under existing leases; unknown completion stays unknown.
+    pub fn lifecycle_status(
+        context: &ServiceContext<'_>,
+        request: StatusRequest,
+    ) -> anyhow::Result<LifecycleStatus> {
+        let mut record = Self::resolve(context, &request.session)?;
+        let owner = super::super::instance_control::local_owner(&record);
+        if let Some(endpoint) = record.live_control.as_ref().filter(|e| e.is_available())
+            && owner.is_none()
+            && endpoint.pid != std::process::id()
+        {
+            let value = endpoint.exchange_checked(
+                &record.run_id,
+                record
+                    .execution_id
+                    .as_deref()
+                    .context("live Session has no Execution identity")?,
+                crate::host_transport::InstanceCommand::LifecycleStatus {},
+                context.check_cancelled,
+            )?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        if owner.is_none() && record.completion_protocol.is_some() {
+            let _session = super::lock_selected_session(context, &record)?;
+            match record.lock_current() {
+                Ok((mut current, _lease)) => {
+                    context.check(&current)?;
+                    super::super::completion::reconcile(&mut current)?;
+                    record = current;
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::WouldBlock) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        context.check(&record)?;
+        let state = if let Some(owner) = &owner {
+            let snapshot = owner.execution.snapshot();
+            ensure!(
+                snapshot.status.run_id.as_str() == record.run_id
+                    && Some(snapshot.status.execution.execution_id.as_str())
+                        == record.execution_id.as_deref(),
+                "foreign lifecycle observation"
+            );
+            if snapshot.status.state.is_terminal() {
+                crate::StatusState::recorded(record.state)
+            } else {
+                crate::StatusState::live(snapshot.status.state)
+            }
+        } else {
+            crate::StatusState::recorded(record.state)
+        };
+        let exec_supported = owner.as_ref().is_some_and(|owner| owner.exec_supported());
+        let response = LifecycleStatus {
+            schema_version: 1,
+            detail: "lifecycle".into(),
+            state,
+            live: owner.is_some(),
+            exec_supported,
+            run: status_record(record),
+        };
+        ensure!(
+            serde_json::to_vec(&response)?.len() <= MAX_STATUS_BYTES,
+            "lifecycle status exceeds size limit"
+        );
+        Ok(response)
+    }
+
     /// Resolve and validate one Session, route live queries to its owner, or reconcile
     /// offline completion under existing leases. Return a schema-2 bounded view;
     /// missing optional observations remain absent, while corrupt authority is an error.
@@ -424,17 +514,6 @@ impl SessionService {
                 })
             })
             .transpose()?;
-        let mut command_truncated = record.command.len() > 32;
-        let command = record
-            .command
-            .iter()
-            .take(32)
-            .map(|arg| {
-                let (arg, truncated) = excerpt(arg, 512);
-                command_truncated |= truncated;
-                arg
-            })
-            .collect();
         let execution_blocker = execution_blocker(&record).map(|value| excerpt(&value, 1024).0);
         let mut response = StatusResponse {
             state: crate::StatusState::recorded(record.state),
@@ -449,33 +528,7 @@ impl SessionService {
             filesystem_observation,
             network_observation,
             execution,
-            record: StatusRun {
-                stage: record.stage_dir(),
-                run_id: record.run_id,
-                execution_id: record.execution_id,
-                session_id: record.session_id,
-                state: record.state,
-                pid: record.pid,
-                agent: excerpt(&record.agent, 256).0,
-                command,
-                command_truncated,
-                started_at_unix_ms: record.started_at_unix_ms,
-                finished_at_unix_ms: record.finished_at_unix_ms,
-                gateway_listen: record.gateway_listen.map(|value| excerpt(&value, 512).0),
-                overlaynet_listen: record.overlaynet_listen.map(|value| excerpt(&value, 512).0),
-                network: record
-                    .network
-                    .get("mode")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|mode| excerpt(mode, 64).0)
-                    .unwrap_or_else(|| "unspecified".into()),
-                overlay: record.overlay.map(|overlay| StatusOverlay {
-                    state: overlay.state,
-                    generation: overlay.generation,
-                    target: overlay.target,
-                    upper: overlay.upper.path().to_path_buf(),
-                }),
-            },
+            record: status_record(record),
         };
         if let Some(owner) = owner {
             response.project_live(owner.execution.snapshot())?;
@@ -485,5 +538,46 @@ impl SessionService {
             "Session status summary exceeds size limit"
         );
         Ok(response)
+    }
+}
+
+fn status_record(record: super::RunRecord) -> StatusRun {
+    let mut command_truncated = record.command.len() > 32;
+    let command = record
+        .command
+        .iter()
+        .take(32)
+        .map(|arg| {
+            let (arg, truncated) = excerpt(arg, 512);
+            command_truncated |= truncated;
+            arg
+        })
+        .collect();
+    StatusRun {
+        stage: record.stage_dir(),
+        run_id: record.run_id,
+        execution_id: record.execution_id,
+        session_id: record.session_id,
+        state: record.state,
+        pid: record.pid,
+        agent: excerpt(&record.agent, 256).0,
+        command,
+        command_truncated,
+        started_at_unix_ms: record.started_at_unix_ms,
+        finished_at_unix_ms: record.finished_at_unix_ms,
+        gateway_listen: record.gateway_listen.map(|v| excerpt(&v, 512).0),
+        overlaynet_listen: record.overlaynet_listen.map(|v| excerpt(&v, 512).0),
+        network: record
+            .network
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .map(|v| excerpt(v, 64).0)
+            .unwrap_or_else(|| "unspecified".into()),
+        overlay: record.overlay.map(|overlay| StatusOverlay {
+            state: overlay.state,
+            generation: overlay.generation,
+            target: overlay.target,
+            upper: overlay.upper.path().to_path_buf(),
+        }),
     }
 }

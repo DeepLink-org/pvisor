@@ -4,6 +4,38 @@
 `pvisor-replay`, with their argument parsing, terminal adapters, rendering and
 companion lookup.
 
+## Inspect VM availability
+
+`pvisor vm-check --json` is a separate current-process VM preflight. It opens
+KVM, validates API version 12 and creates an empty VM on Linux; Apple Silicon
+tries an empty HVF VM and destroys it. It reports device/entitlement failures
+without changing permissions. Firmware discovery is separate; bundled firmware
+has not been loaded by this probe. `boot_verified` is always false. Rootfs,
+guest tools, staging, output, apply and terminal capability require their own
+workflow validation. The JSON command succeeds when it can report unavailable
+capability; callers must inspect `can_create_vm` and `firmware`.
+
+## Open a shell in a running Host Session
+
+```sh
+pvisor exec --session -it /absolute/path/to/stage /bin/sh
+pvisor exec --session /absolute/path/to/stage sh -c 'pwd'
+pvisor status /absolute/path/to/stage --lifecycle --json
+```
+
+`--session` distinguishes Session selectors from the existing container exec
+interface. This requires a newly started Linux filesystem-isolated Host
+Session with a live owner. Paused/stopped Sessions are rejected, not resumed.
+The process inherits the existing sandbox and cannot override cwd, environment
+or user. Interactive use needs `-it` and a terminal; terminal sizes and exit
+codes propagate. Closing the frontend cleans only that exec's descendants.
+Ending the main workload closes all attached shells. VM, non-Linux and
+Landlock-only Session exec are unsupported.
+
+Lifecycle JSON omits expensive filesystem/ledger inventories. Missing counts
+are unknown; offline completion still validates the Bundle. These flags require
+the updated native binary, not just an updated JavaScript plugin.
+
 ## Boundary
 
 Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Execution execution and
