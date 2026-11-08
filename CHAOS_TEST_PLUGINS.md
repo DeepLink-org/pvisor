@@ -3308,3 +3308,286 @@ watchdog outcomes remain separate historical failures; this final pass does not
 erase them or establish the unknown cause of the previous campaign's lost-output
 timeout. No further workload, commit, push, merge, publication, installation,
 product-library edit or semspec approval/claim change was performed.
+
+### Round 19 — exact CLI attempt blocked before Cargo by mise ancestry trust
+
+Parent granted the sole TEST/BUILD slot after round16's05:57:12 UTC release.
+The parent separately reported its final runtime result as879passed/10default
+skips, unfiltered; this checkout's inherited older test helper was not rerun
+or validated by round19. That reported runtime result and remote CI evidence
+remain separate from the local CLI attempt below.
+
+At **05:59:39.587–05:59:39.595 UTC**, invoked exactly once:
+
+```bash
+unset TMPDIR TEMP TMP
+nice -n 10 timeout --signal=TERM --kill-after=30s 900s \
+  /usr/bin/mise run test -- pvisor-cli
+```
+
+**The command exited1 before Cargo, compilation, nextest discovery or tests.**
+Mise2026.8.5 rejected the ancestor configuration
+`/home/reiase/workspace/pvisor/mise.toml` as untrusted. The process-local trust
+list contained only this exact Delta checkout; the private mise state did not
+inherit the real user's trust ledger. No tests passed, failed or skipped:
+there was no discovered test inventory and no nextest run ID. This is an
+environment/configuration-startup failure, not a CLI test assertion failure,
+timeout, or full-package PASS. No retry or global trust/settings change followed.
+
+#### Environment, source and prerequisites
+
+- Owned checkout:
+  `/home/reiase/workspace/pvisor/.delta/worktrees/fchp2arhbj8j/pvisor`.
+  HOME was `.data/round19/private-home`, nonancestor of the checkout and OS
+  scratch; private XDG and mise config/cache/state paths were also beneath
+  the exclusive round19 evidence root. The environment was explicitly
+  constructed without cloud credentials, optional userns relaxation, ignored
+  opt-ins or external fixture endpoints.
+- Pinned existing Cargo/Rustup/mise stores at `/home/reiase/.cargo`,
+  `/home/reiase/.rustup`, `/home/reiase/.local/share/mise`, with installed
+  Rust1.98.0 selected. Cargo offline, mise auto-install false, Cargo jobs2,
+  nextest threads1, libtest threads1, OMP/OpenBLAS threads1. The exclusive
+  `CARGO_TARGET_DIR` was `.data/round19/target`; no build reached it and no
+  shared worker5 artifact was executed or overwritten.
+- TMPDIR/TEMP/TMP were absent before mise; intended task default is canonical
+  `/tmp`. The actual owned disposable socket probe
+  `/tmp/r19-72vl8em8/.tmpXXXXXX/source/stage/control.sock` bound successfully:
+  54bytes against107usable. Default test-shaped path is41bytes. Probe socket
+  and root were removed by their owners before the command.
+- `/dev/fuse` and `/dev/kvm` opened read/write; KVM API returned12.
+  `unshare --user --map-root-user --mount --net /bin/true` returned0.
+  No installs, host sysctl/network/permission changes, or VM boot were performed.
+- HEAD `1fb4a4578f1c0b1d3d30217639c32bc507461e32`. CLI crate and runtime library
+  diffs against HEAD were empty before and after; these include the published
+  status fix. Source manifest SHA256
+  `57a91d39a19163ac3a22d791fa724ff53ac124ad0e5c6e7fddb88a1e72ff2855`.
+  Inherited runtime test/README and JS fixture differences were retained,
+  not validated. No API boundary or production source was changed.
+- Static postfailure identity check found ancestor mise.toml SHA256
+  `d12a6b8adb056482ac1a97e7add3ba1e72596a933390dc9c3e3e0e2acfee8333`,
+  different from checkout
+  `10a7fb042016b297d46dab2d73251331877b7faad36cce581f648e3791fee562`.
+  A future narrow hypothesis is explicit process-local ancestor trust after
+  reviewing that configuration; differing files must not be blindly trusted.
+  Such a follow-up requires a separate parent grant.
+
+#### Durable output, resources and cleanup
+
+The Bash wrapper used `set -euo pipefail` and separate tee streams from launch;
+the owning supervisor streamed both to terminal and a durable combined log.
+No output was buffered until command completion. Combined log SHA256:
+`ce94f94f5ab8c335c41b80dd1c110f40cbc82bde252d7706c28cfd9e73bd97fb`.
+Local `.data/round19/` preserves `events.jsonl`, selected `environment.json`,
+`source-hashes.json`, `source.diff`, exact `command.bash`, separate stdout/stderr,
+combined output, before/after self mountinfo and `audit.json`. No replayable
+nextest metadata/archive exists because nextest never started.
+
+All three launch/exit resource samples passed: minimum available
+RAM18,562,297,856bytes, minimum build/evidence disk340,788,264,960bytes,
+maximum load1=0.3701171875. `/tmp` free16,358,731,776bytes was separately
+recorded; the20GiB gate applies to build/evidence storage. The command finished
+before its first60-second periodic sample or any watchdog signal.
+
+At06:00:10 UTC audit found no owned workload survivor or self-namespace checkout
+mount, and no `r19-*` temp root. The sole matched process was the audit's active
+terminal wrapper. Same-UID `/proc`3718/3720/696685 denied inspection; these were
+preserved and unattributed, with zero observed birth/disappearance races.
+This is not an all-namespace ownership certification. No arbitrary PID signal,
+unknown-root deletion or broad cleanup was used. Private evidence/environment
+directories remain. `git diff --check` passed.
+
+**Sole workload slot released immediately after that audit**, for round20 then
+round21. No workspace/Python/docs/benchmark/semspec, macOS or ignored native VM
+coverage is claimed. The historical real-HOME topology failure and private-HOME
+320pass result remain unchanged, not results for this attempt. No commits,
+pushes, merges, publication, cloud/network calls, installs, approvals or claim
+weakening occurred.
+
+#### Round19 authorized environment-only follow-up — full CLI package passes
+
+Parent explicitly authorized review of the discovered repository ancestor and
+one actual CLI package run if its configuration was safe. The earlier8ms mise
+trust rejection remains a separate pre-Cargo startup failure, not a failed
+320-test run or a hidden test retry.
+
+Read the entire exact ancestor `mise.toml`, its included `tests/tasks.toml`
+and Rust runner, and the corresponding child definitions. The ancestor contains
+expected pinned tools and task definitions, with no shell hooks or unexpected
+load-time command. Its differing hash reflects an older task inventory, not
+permission to execute those unrelated tasks. Exact-file process-local trust
+worked on installed mise2026.8.5:
+
+```text
+MISE_TRUSTED_CONFIG_PATHS=/home/reiase/workspace/pvisor/.delta/worktrees/fchp2arhbj8j/pvisor/mise.toml:/home/reiase/workspace/pvisor/mise.toml
+```
+
+No `mise trust`, global trust-store mutation, blanket HOME/root trust, host
+settings edit or product-code change was used. Both reviewed config hashes
+were asserted again before proceeding. Under the final private environment,
+read-only `mise config ls -J` listed exactly those two files. `mise tasks info`
+for `test` and `test-rust` selected the child config and child workdir, with no
+dependencies or task-local environment hooks; runner file was
+`scripts/tasks/test-rust.sh`. `cargo locate-project --workspace` resolved this
+checkout's `Cargo.toml`. Included task files, runner and Cargo manifest/lock
+hashes are retained in `reviewed-config-hashes.json`.
+
+Effective-tool metadata confirmed Cargo/rustc1.98.0, nextest0.9.137, installed
+mise Python3.12.12, TMPDIR=`/tmp`, and the exclusively owned
+`.data/round19/followup/target`. The new follow-up private HOME, XDG and mise
+config/cache/state directories are siblings of that target, not ancestors of
+the checkout or OS scratch. Other limits remained offline/no-install,
+jobs2/nextest1/libtest1/nice10, with no optional userns relaxation, filters,
+feature opt-ins, ignored-test opt-ins or inherited credentials.
+
+The one actual full package invocation was:
+
+```bash
+unset TMPDIR TEMP TMP
+nice -n 10 timeout --signal=TERM --kill-after=30s 900s \
+  /usr/bin/mise run test -- pvisor-cli
+```
+
+**06:02:39.178–06:04:30.566 UTC: exit0,111.387s wall time.** Cargo finished the
+debug test profile in1m05s; nextest ran45.822s, default profile, run ID
+`c8fb5d72-215d-4b99-9709-f05a684ec5f6`:
+
+```text
+Starting 320 tests across 31 binaries (40 tests skipped)
+Summary [45.822s] 320 tests run: 320 passed, 40 skipped
+```
+
+These are actual current output counts, not imported from the earlier campaign.
+The40skips are the default ignored selection; no expression exclusion or ignored
+opt-in was supplied. Platform-cfg-excluded tests are not counted as passes or
+invented skip totals. Ignored real-VM/FUSE/performance/helper entrypoints were
+not independently selected; macOS/Windows, Gateway-feature coverage, real VM
+boot and external container/cloud services are not established by this Linux
+default-package pass. Local fixture namespace and device access were rechecked;
+the disposable54byte socket probe succeeded again and was removed.
+
+The CLI and runtime-library diffs against published `1fb4a457` remained empty
+before and after, including the published status fix; source manifest hash
+remained `57a91d39a19163ac3a22d791fa724ff53ac124ad0e5c6e7fddb88a1e72ff2855`.
+Cargo compiled the CLI's actual current owning runtime/library consumers without
+API-boundary changes. Runtime-only tests and the inherited older shared lease
+helper were not rerun by this package selection. JS fixture differences,
+Python/docs/benchmark/workspace suites, semspec and the parent's separate runtime
+result are outside this validation.
+
+All four resource samples passed: minimum available RAM17,665,458,176bytes,
+minimum build/evidence disk340,083,486,720bytes, maximum load1=1.52880859375.
+Sampling interval was60s; no resource abort or watchdog signal occurred.
+Output streamed from launch through separate tee stdout/stderr and the durable
+combined log with Bash pipefail. Follow-up combined log SHA256:
+`351f5371f24e11eb68e4060e904bf01c350141711345a88c844baa56b46ae973`.
+Its own `.data/round19/followup/` retains selected environment, reviewed config/
+task/tool metadata, source hashes/diff, events, exact command, mount snapshots,
+full stdout/stderr/combined output and audit. Non-target retained evidence was
+632,015bytes at the postrun inventory; owned build artifacts remain preserved.
+Nextest run identity/counts are textual metadata, not a replayable archive.
+
+At06:04:53 UTC the audit found no owned workload survivors, self-namespace
+checkout mounts, checkout `.prepared-host-*`/`.tmp*` fixtures or `r19-*` OS temp
+roots. The only process match was its active audit terminal wrapper. Same
+three same-UID `/proc` entries3718/3720/696685 denied inspection; preserved,
+unattributed, zero observed birth races. No arbitrary process kill, unknown-root
+deletion, host-network/settings change or broad cleanup occurred.
+`git diff --check` passed. **Sole slot released at06:04:53UTC for20 then21**;
+only reporting followed. The original real-HOME ancestor/FUSE topology failure
+remains a coverage limitation: this pass uses controlled private HOME and does
+not establish full-suite success under the real-HOME topology.
+
+### Round 20 — controlled command-resource failure and fresh recovery
+
+Static preparation read root/plugin README and instructions, the campaign,
+native lifecycle/exit documentation and `codingFixture`. No syntax/check/native/
+test/build ran before grant. Parent static review reported no findings, then
+granted the sole slot after round19 release at06:04:53 UTC. No production,
+public task/inventory, semspec, user Pulsing stage or ancestor-policy change.
+
+Added only `plugins/test/resource-failure.native.mjs` as the test deliverable,
+SHA256 `4ab08df4cbb26e5dea8894efd0199fb994ecc102df6bf2a5d4f6509f581b073f`.
+Four awaited serial children each use one fresh `codingFixture` and one spawn:
+
+| Actual scenario | Task-local fault/control | Observed result |
+| --- | --- | --- |
+| Address space | After imports, soft/hard RLIMIT_AS128MiB, asserted installed before one256MiB bytearray allocation | Handled MemoryError marker, exit71, failed/nonlive |
+| File descriptors | After imports, soft/hard RLIMIT_NOFILE24, at most32 opens of the owned staged partial file, finally close all owned FDs | EMFILE marker after21 owned opens, exit72, failed/nonlive |
+| File size | After imports, soft/hard RLIMIT_FSIZE8192bytes; ignore SIGXFSZ in task Python only; two8192-byte write attempts | EFBIG marker, fstat8192bytes, exit73, failed/nonlive |
+| Healthy recovery | New Session in a deliberately DIFFERENT disposable project, small write and print | Exit0, completed/nonlive, retained review then explicit drop |
+
+These are voluntary Python-process limits, not plugin-wide RAM/FD quotas or
+machine-pressure tests. The address-space allocation failed before it could
+touch256MiB; no CPU spin/CPU limit, host rlimit, cgroup, sysctl, disk filling or
+extra fault process. Every task arms a12-second alarm and a15-second native
+timeout. Each fault stages a tiny source edit and partial-work file before its
+limit. The file-size case attempts at most16KiB and retains only8KiB. Workload
+plus CLI stdout/stderr is asserted below4KiB per task, untruncated.
+
+All three fault markers were reached under actual offline system
+`/usr/bin/python3`3.15.2; private HOME/access/profile did not prevent reaching
+the faults. Each exact handled exit71/72/73 propagated truthfully with null
+signal and interrupted=false. Native status, review and read-only apply preview
+worked after failure; repeated review retained partial candidates. Source stayed
+unchanged on the host and generated files remained absent there. One task record
+per fixture and no apply/drop before the explicit terminal operator drop checked
+no automatic retry/accept/drop. No actual acceptance was requested. Healthy
+recovery does not claim two fresh Sessions in the same project.
+
+#### Exact invocation, resources and counts
+
+One invocation only,06:07:03.126567–06:07:05.037119 UTC (~1.911s):
+
+```sh
+nice -n 10 timeout --signal=TERM -k 30s 120s mise run test-agent-plugins-native
+```
+
+Owned PATH shim added `--test-concurrency=1 --test-reporter=tap` and the anchored
+pattern below, preserving the task's expanded `plugins/test/*.native.mjs`
+filenames. Child alternatives explicitly avoid child-name filtering ambiguity:
+
+```text
+^(resource failure Linux: retained candidates and fresh-session recovery|handled (address space|file descriptors|file size) failure|healthy command in a fresh different-project Session)$
+```
+
+Cargo jobs2, Rust/nextest/math threads1, offline Cargo/mise, no auto-install,
+process-local exact-worktree mise trust, durable owned TMPDIR/evidence.
+Interpreter preflight imported only resource/signal/sys and checked capabilities;
+it installed no limits and caused no fault outside the task. Read-only native
+artifact before/after:
+`/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`,
+SHA256 `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`.
+No build or overwrite.
+
+**Four actual scenarios passed**, zero failures/cancellations. TAP reports19
+passes: four actual children, their one parent, and14 unmatched file wrappers.
+Neither the parent nor wrappers are extra scenarios. Selected parent1.402s;
+whole Node invocation1.831s. No timeout or termination escalation.
+
+Pre06:07:03.116874 gate: available RAM18,427,162,624bytes,
+disk340,071,731,200bytes, load1=0.21630859375.
+Post06:07:05.113130 gate: RAM18,290,839,552bytes,
+disk340,043,395,072bytes, load1=0.279296875. Both exceed6GiB/20GiB
+and remain below load1=8. RAM deltas do not measure or prove machine pressure.
+
+#### Cleanup, evidence and handoff
+
+At06:07:05.117138 the owned-root audit found zero fixture roots, temporary
+entries, owned processes or mounts, with zero denied/raced process observations.
+Each fixture's pre-setup hook aborted/joined operations, reconciled native
+terminal/nonlive state and dropped before deletion; uncertain authority would
+preserve the root. Node supervisor `/proc/self/limits` was unchanged after every
+child; the host runner's before/after limits were also identical. No unrelated
+PID signal or unknown-root cleanup. `git diff --check` passed after execution.
+
+Durable diagnostics in this worker's `.asv8/round20/`: `native.log`,
+`events.jsonl`, `command.json`, `node-args.txt`, before/after limits and mountinfo;
+launcher `.asv8/round20-run.py`. Diagnostic artifacts are not new public tasks.
+No full native/portable suite, packed install, pytest install, Rust/Python
+aggregate, VM/OCI/macOS, signal-termination fault, actual GUI host, network/cloud/
+paid call or universal resource-quota coverage. No product bug reproduced.
+No commits, push, Git merge or publication.
+
+Sole TEST/BUILD slot explicitly released to parent at06:07UTC immediately after
+the successful cleanup audit, for round21 persistent segments. No further
+workloads launched; remaining work was static evidence transcription only.
