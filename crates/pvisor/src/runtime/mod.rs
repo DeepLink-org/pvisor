@@ -56,8 +56,8 @@ pub use registry::RunLease;
 pub use registry::control_observations;
 pub use registry::{
     EnvironmentProjection, RunLineage, RunLookupError, RunRecord, SessionDirectoryLock,
-    control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
-    default_run_home, is_live, lookup_run_id, resolve_run,
+    control_mount_inspect, control_ping, control_unmount_inspect, default_run_home, is_live,
+    lookup_run_id, resolve_run,
 };
 pub use supervisor::RuntimeCapabilities;
 

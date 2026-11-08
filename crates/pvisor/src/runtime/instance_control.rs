@@ -183,6 +183,19 @@ fn find(session: &str, execution: &str) -> Option<Arc<Owner>> {
         .and_then(std::sync::Weak::upgrade)
 }
 
+#[cfg(test)]
+thread_local! {
+    static STATUS_SAMPLE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+}
+
+#[cfg(test)]
+pub(super) fn before_status_filesystem_sample() {
+    let hook = STATUS_SAMPLE_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 pub(crate) fn local_owner(record: &super::RunRecord) -> Option<Arc<Owner>> {
     let owner = find(&record.run_id, record.execution_id.as_deref()?)?;
     let saved = owner.record.as_ref()?;
@@ -899,6 +912,89 @@ mod tests {
             handle.wait().await.unwrap();
             assert!(local_owner(&record).is_none());
             assert!(!owner.inspections_open.load(Ordering::Acquire));
+        }
+    }
+
+    #[tokio::test]
+    async fn status_retains_selected_owner_across_teardown_discovery_removal() {
+        for corruption in [None, Some("identity"), Some("overlay")] {
+            let directory = tempfile::tempdir().unwrap();
+            let stage = directory.path().join("stage");
+            let mut spec = RunSpec::process("status-teardown", "test", "/bin/sleep");
+            let RunInvocation::Process(process) = &mut spec.invocation;
+            process.args = vec!["60".into()];
+            let handle = PVisor::builder()
+                .storage(&stage)
+                .instance_control(false)
+                .network(crate::NetworkDriverConfig {
+                    mode: crate::OverlayNetMode::Off,
+                    ..Default::default()
+                })
+                .build()
+                .run(spec)
+                .await
+                .unwrap();
+            let mut status = handle.execution().subscribe();
+            while status.borrow_and_update().status.state != pvisor_core::RunState::Running {
+                status.changed().await.unwrap();
+            }
+            let mut record = crate::RunRecord::read(&stage).unwrap();
+            for name in ["target", "upper", "work", "merged"] {
+                std::fs::create_dir_all(directory.path().join(name)).unwrap();
+            }
+            record.overlay = Some(serde_json::from_value(serde_json::json!({
+                "id":record.run_id,"generation":0,"target":directory.path().join("target"),
+                "upper":{"upper_dir":directory.path().join("upper"),"work_dir":directory.path().join("work")},
+                "merged_dir":directory.path().join("merged"),"stage_dir":stage,
+                "auto_apply":false,"state":"staged"
+            })).unwrap());
+            std::fs::write(directory.path().join("upper/candidate"), b"retained").unwrap();
+            record.write().unwrap();
+            let owner = local_owner(&record).unwrap();
+            let mut changed = record.clone();
+            STATUS_SAMPLE_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    // Deterministically model registration teardown and terminal
+                    // discovery clearing after status has selected this owner.
+                    drop(Registration { owner });
+                    changed.live_control = None;
+                    if corruption == Some("identity") {
+                        changed.execution_id = Some("foreign-execution".into());
+                    }
+                    changed.write().unwrap();
+                    if corruption == Some("overlay") {
+                        let mut invalid = serde_json::to_value(&changed).unwrap();
+                        invalid["overlay"]["upper"] = serde_json::Value::Null;
+                        std::fs::write(
+                            changed.stage_dir().join("run.json"),
+                            serde_json::to_vec(&invalid).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }));
+            });
+            let result = super::super::session_service::SessionService::status(
+                &Default::default(),
+                super::super::session_service::StatusRequest {
+                    session: super::super::session_service::SessionSelection {
+                        selector: Some(stage),
+                        storage: record.storage.clone(),
+                    },
+                },
+            );
+            // Always cancel/reap the owned native process before asserting.
+            record.write().unwrap();
+            handle.execution().cancel();
+            handle.wait().await.unwrap();
+            STATUS_SAMPLE_HOOK.with(|slot| assert!(slot.borrow().is_none()));
+            match corruption {
+                None => {
+                    let response = result.unwrap();
+                    assert!(response.live);
+                    assert_eq!(response.filesystem.unwrap().changed_files, 1);
+                }
+                Some(_) => assert!(result.is_err(), "changed authority must remain an error"),
+            }
         }
     }
 
