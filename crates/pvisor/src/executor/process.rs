@@ -619,14 +619,14 @@ impl ProcessExecutor {
                 "required sandbox cannot use an unsandboxed process executor",
             ));
         }
-        let (mut command, sandbox_plan, resources) =
-            if let Some(launcher) = &self.sandbox_launcher {
-                platform_launcher_command(launcher, spec, invocation, &program, self.landlock_only)?
-            } else {
-                let mut command = Command::new(program);
-                command.args(&invocation.args);
-                (command, None, SandboxResources::none())
-            };
+        let (mut command, sandbox_plan, resources) = if let Some(launcher) = &self.sandbox_launcher
+        {
+            platform_launcher_command(launcher, spec, invocation, &program, self.landlock_only)?
+        } else {
+            let mut command = Command::new(program);
+            command.args(&invocation.args);
+            (command, None, SandboxResources::none())
+        };
         #[cfg(target_os = "linux")]
         let mut resources = resources;
         command
