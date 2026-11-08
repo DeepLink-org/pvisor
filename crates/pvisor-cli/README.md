@@ -352,6 +352,18 @@ applies to the real host root.
 
 ## Docker command profile (experimental)
 
+On Linux x86-64, `pvisor run --managed-memory IMAGE ...` opts the ordinary
+container VM into host-only native offload/resume controls with private raw RAM
+backing. This does not start a pressure scheduler, import templates, change OCI
+cache lookup, or trigger offload merely because a VM is idle. A cooperative
+replay owner reserves/binds it through `pvisor-daemon pressure-serve`, reports
+safe waits and obtains a request permit before using the existing guest exec
+channel. Do not mix direct interactive/exec/background access with those waits.
+The flag conflicts with `--memory-pool`, `-M` and `--shared-kernel-base`; omission
+preserves ordinary main startup. This backing is uncompressed, not the historical
+compressed replay runtime. See the runtime's independent-container contract.
+
+
 `pvisor run` creates a container, optionally with Linux staged binds as described
 below; `spawn` retains its existing Session stage/review/apply semantics.
 Unknown command names and leading Session options default to `spawn`;

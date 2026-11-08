@@ -168,6 +168,9 @@ pub(super) struct Run {
     /// Experimental shared pool: auto finds/starts the same-user daemon; a socket requires an existing pool.
     #[arg(long, value_name = "auto|SOCKET")]
     memory_pool: Option<PathBuf>,
+    /// Enable cooperative daemon memory controls (Linux); does not enable automatic offload.
+    #[arg(long, conflicts_with_all = ["memory_pool", "shared_memory_pool", "shared_kernel_base"])]
+    managed_memory: bool,
     /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
     #[arg(short = 'M', conflicts_with = "memory_pool")]
     shared_memory_pool: bool,
@@ -535,6 +538,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .or_else(|| args.shared_memory_pool.then(|| PathBuf::from("auto")))
                     .map(super::daemon::resolve_pool)
                     .transpose()?,
+                managed_memory: args.managed_memory,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -826,6 +830,24 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn managed_memory_is_explicit_and_conflicts_with_pager() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--managed-memory",
+            "alpine",
+            "sleep",
+            "1",
+        ]);
+        assert!(parsed.is_ok());
+        assert!(
+            crate::cli::Cli::try_parse_from(["pvisor", "run", "--managed-memory", "-M", "alpine"])
+                .is_err()
+        );
     }
 
     #[test]

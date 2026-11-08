@@ -1058,6 +1058,29 @@ and production density remain unvalidated.
 
 ## Independent container VM lifecycle
 
+`docker::Create.managed_memory` is an explicit Linux x86-64 opt-in for a
+cooperative pressure scheduler. It preserves ordinary OCI image resolution,
+V2 caches, overlays, guest exec and the existing per-container owner. It adds a
+private raw (uncompressed) RAM file and a same-UID host-only control socket for
+that exact container ID/launch generation. `docker::managed` exposes Status,
+Offload-with-existing-backing and Resume using the existing `VmControl`; it
+neither invents a Session nor converts the image to a template. Omission leaves
+the ordinary anonymous-RAM launch unchanged. Pools/shared kernel RAM conflict.
+The private backing is an unlinked SSD file retained by live VM descriptors;
+process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
+report is a live diagnostic locator, never a reusable checkpoint. The owner
+retires the generation control socket only after reaping its VMM.
+
+This is cooperative: an external owner must reserve memory before launch, bind
+the exact generation and cgroup, declare only process-clean safe waits, and keep
+all tool/attachment/background traffic behind scheduler permits. No timer or
+automatic enrollment is enabled by the flag alone. Native Resume acknowledgement
+is not guest-service readiness: check the existing guest control channel before
+dispatch. Control loss or native failure is uncertain, with no automatic retry;
+retain capacity until independent VM/cgroup/mount teardown. Ordinary direct
+`exec` must not bypass the cooperative owner during a managed wait.
+
+
 On Apple Silicon, a daemon started with `--memory-pool-mode physical-pages`
 provides native 16 KiB physical slots through the same pool socket. The runner
 negotiates this protocol and starts the VM-owned physical pager instead of cold
