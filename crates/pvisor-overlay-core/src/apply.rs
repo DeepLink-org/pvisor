@@ -5080,6 +5080,183 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn preview_existing_parent_conflicts_preserve_host_and_stage() {
+        // Document the current conservative ancestor fence, not a promise that
+        // unrelated sibling namespace changes must always be conflicts.
+        for compact in [false, true] {
+            for selected in [
+                "experiments/pvisor-case/scratch.txt",
+                "experiments/pvisor-case",
+            ] {
+                for mutation in [
+                    "sibling-create",
+                    "sibling-delete",
+                    "subdir-create",
+                    "file-content",
+                    "parent-mode",
+                    "parent-xattr",
+                    "parent-replace",
+                    "parent-symlink",
+                    "sibling-content",
+                ] {
+                    let tmp = tempdir().unwrap();
+                    let target = tmp.path().join("target");
+                    let upper = tmp.path().join("upper");
+                    let directory = target.join("experiments/pvisor-case");
+                    let file = Path::new("experiments/pvisor-case/scratch.txt");
+                    fs::create_dir_all(&directory).unwrap();
+                    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+                    fs::write(target.join(file), b"original file\n").unwrap();
+                    fs::write(directory.join("sibling"), b"original sibling\n").unwrap();
+                    // Make namespace mutations deterministically differ from
+                    // the recorded timestamp, without sleeps or clock changes.
+                    for path in [&directory, &target.join("experiments")] {
+                        File::open(path)
+                            .unwrap()
+                            .set_times(fs::FileTimes::new().set_modified(
+                                std::time::UNIX_EPOCH
+                                    + std::time::Duration::from_secs(1_600_000_000),
+                            ))
+                            .unwrap();
+                    }
+                    let mut record = late_conflict_record(&target, &upper);
+                    let journal = record.stage_dir.join("preimages");
+                    let core = OverlayCore::new_with_exclusions_and_preimages(
+                        vec![target.clone()],
+                        upper.clone(),
+                        Some(record.upper.work_dir.clone()),
+                        vec![],
+                        Some(journal.clone()),
+                    )
+                    .unwrap();
+                    let core = if compact {
+                        core.with_compact_preimages().unwrap()
+                    } else {
+                        core
+                    };
+                    fs::write(core.copy_up(file).unwrap(), b"modified file\n").unwrap();
+                    drop(core);
+                    crate::stage::seal(&upper, &journal).unwrap();
+                    let lower = vec![target.clone()];
+                    let selection = ApplySelection {
+                        paths: vec![selected.into()],
+                        ..Default::default()
+                    };
+                    let before = tree_observation(tmp.path());
+                    let preview = preview_overlay_apply(&record, &lower, &selection).unwrap();
+                    assert_eq!(preview.selected.len(), 1);
+                    assert_eq!(preview.selected[0].relative_path(), file);
+                    assert!(preview.required.is_empty());
+                    assert_eq!(tree_observation(tmp.path()), before);
+                    let preimages = load_preimages(&journal).unwrap();
+                    let parent = preimages
+                        .iter()
+                        .find(|entry| entry.relative_path() == Path::new("experiments/pvisor-case"))
+                        .unwrap();
+                    let parent_identity = fs::metadata(&directory).unwrap();
+                    match mutation {
+                        "sibling-create" => {
+                            fs::write(directory.join("editor.lock"), b"lock").unwrap()
+                        }
+                        "sibling-delete" => fs::remove_file(directory.join("sibling")).unwrap(),
+                        "subdir-create" => fs::create_dir(directory.join("cache")).unwrap(),
+                        "file-content" => fs::write(target.join(file), b"external file\n").unwrap(),
+                        "parent-mode" => {
+                            fs::set_permissions(&directory, fs::Permissions::from_mode(0o750))
+                                .unwrap()
+                        }
+                        "parent-xattr" => crate::sys::set_xattr(
+                            &directory,
+                            OsStr::new("user.round8"),
+                            b"external",
+                            0,
+                        )
+                        .unwrap(),
+                        "parent-replace" => {
+                            fs::rename(&directory, target.join("saved-directory")).unwrap();
+                            fs::create_dir(&directory).unwrap();
+                            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                                .unwrap();
+                            fs::write(target.join(file), b"original file\n").unwrap();
+                            fs::write(directory.join("sibling"), b"original sibling\n").unwrap();
+                        }
+                        "parent-symlink" => {
+                            fs::rename(&directory, target.join("saved-directory")).unwrap();
+                            std::os::unix::fs::symlink("../saved-directory", &directory).unwrap();
+                        }
+                        "sibling-content" => {
+                            fs::write(directory.join("sibling"), b"external sibling\n").unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    if matches!(
+                        mutation,
+                        "sibling-create" | "sibling-delete" | "subdir-create"
+                    ) {
+                        let current =
+                            fingerprint_at(&target, Path::new("experiments/pvisor-case")).unwrap();
+                        assert!(!parent.state.matches(&current));
+                        assert!(recovery_fingerprint_matches(&current, &parent.state));
+                        let identity = fs::metadata(&directory).unwrap();
+                        assert_eq!(
+                            (identity.dev(), identity.ino()),
+                            (parent_identity.dev(), parent_identity.ino())
+                        );
+                    }
+                    let context = format!("{compact}/{selected}/{mutation}");
+                    let before = tree_observation(tmp.path());
+                    let parent_after_mutation =
+                        fingerprint_at(&target, Path::new("experiments/pvisor-case")).unwrap();
+                    let result = preview_overlay_apply(&record, &lower, &selection);
+                    if mutation == "sibling-content" {
+                        assert!(result.is_ok(), "{context}: {result:?}");
+                    } else {
+                        let conflict = match mutation {
+                            "file-content" => target.join(file),
+                            // Rebinding also changes the containing namespace;
+                            // validation encounters that recorded ancestor first.
+                            "parent-replace" | "parent-symlink" => target.join("experiments"),
+                            _ => directory.clone(),
+                        };
+                        let message = format!(
+                            "target changed after staging at {}; refusing to overwrite concurrent changes",
+                            conflict.display()
+                        );
+                        assert!(
+                            result.unwrap_err().to_string().contains(&message),
+                            "{context}"
+                        );
+                        assert_eq!(tree_observation(tmp.path()), before, "{context}");
+                        assert!(
+                            apply_overlay_selected(&mut record, &lower, &selection)
+                                .unwrap_err()
+                                .to_string()
+                                .contains(&message),
+                            "{context}"
+                        );
+                    }
+                    assert_eq!(tree_observation(tmp.path()), before, "{context}");
+                    assert_eq!(
+                        fingerprint_at(&target, Path::new("experiments/pvisor-case")).unwrap(),
+                        parent_after_mutation,
+                        "{context}"
+                    );
+                    assert_eq!(load_preimages(&journal).unwrap(), preimages, "{context}");
+                    assert!(!has_pending_applies(&record).unwrap(), "{context}");
+                    assert_eq!(fs::read(upper.join(file)).unwrap(), b"modified file\n");
+                    if mutation == "parent-symlink" {
+                        assert_eq!(
+                            fs::read_link(&directory).unwrap(),
+                            Path::new("../saved-directory")
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn existing_parent_recovery_tolerates_child_mtime_but_not_permission_changes() {
         for compact in [false, true] {
             for conflict in [false, true] {

@@ -1,6 +1,6 @@
 //! Bounded read model for both recorded-owner and offline Session queries.
 use super::{ServiceContext, SessionSelection, SessionService, execution_blocker};
-use crate::runtime::{control_overlay_status, control_ping, load_apply_records, overlay_status};
+use crate::runtime::{load_apply_records, overlay_status};
 use anyhow::{Context, ensure};
 use pvisor_core::operation::FilesystemObservation;
 use serde::{Deserialize, Serialize};
@@ -444,14 +444,21 @@ impl SessionService {
             .overlay
             .as_ref()
             .map(|overlay| {
-                let (changed_files, whiteouts, samples) =
-                    if live && control_ping(&record.stage_dir()) {
-                        let status = control_overlay_status(&record.stage_dir())?;
-                        (status.changed_files, status.whiteouts, status.sample_paths)
-                    } else {
-                        let status = overlay_status(overlay)?;
-                        (status.changed_files, status.whiteouts, status.sample_paths)
-                    };
+                let (changed_files, whiteouts, samples) = if let Some(owner) = &owner {
+                    #[cfg(test)]
+                    super::super::instance_control::before_status_filesystem_sample();
+                    // Discovery may end during this request. The selected
+                    // owner remains valid for this read and still checks
+                    // the current Session/Execution binding itself.
+                    let status: pvisor_core::overlay::OverlayStatus = serde_json::from_value(
+                        owner
+                            .workspace(crate::host_transport::InstanceCommand::OverlayStatus {})?,
+                    )?;
+                    (status.changed_files, status.whiteouts, status.sample_paths)
+                } else {
+                    let status = overlay_status(overlay)?;
+                    (status.changed_files, status.whiteouts, status.sample_paths)
+                };
                 let mut samples_truncated = samples.len() > MAX_SAMPLES;
                 let sample_paths = samples
                     .iter()
@@ -470,11 +477,12 @@ impl SessionService {
                 })
             })
             .transpose()?;
-        let observations = if live {
-            super::super::registry::control_status_observations(&record.stage_dir()).ok()
-        } else {
-            None
-        };
+        let observations: Option<Activity> = owner.as_ref().and_then(|owner| {
+            owner
+                .workspace(crate::host_transport::InstanceCommand::StatusObservations {})
+                .ok()
+                .and_then(|value| serde_json::from_value(value).ok())
+        });
         let observations = observations.unwrap_or_default();
         let filesystem_observation = observations.filesystem.or_else(|| {
             record

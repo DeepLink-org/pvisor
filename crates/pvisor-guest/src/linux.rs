@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 mod control;
 mod files;
 mod process;
+mod reclaim;
 mod shares;
 mod startup_profile;
 

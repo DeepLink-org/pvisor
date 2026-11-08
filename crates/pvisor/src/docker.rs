@@ -1993,6 +1993,7 @@ fn run_vm<Backing>(
             tty: instance.config.tty,
             create_workdir: true,
             attached: false,
+            allocator_reclaim: None,
         }),
         control: true,
         ..Default::default()

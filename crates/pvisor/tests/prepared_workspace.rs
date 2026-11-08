@@ -4,11 +4,14 @@
 use pvisor::environment_snapshot::{BaseReference, SnapshotBase, SnapshotStore};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
+
+#[path = "support/lease_child.rs"]
+mod lease_child;
 
 fn source(root: &Path) -> PathBuf {
     let source = root.join("source");
@@ -127,31 +130,16 @@ fn prepared_workspace_independent_process_lease_survives_lost_catalog_pin() {
                 "--nocapture",
             ])
             .env(ROLE, temp.path())
-            .env_remove(ABRUPT)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
+            .env_remove(ABRUPT);
         if abrupt {
             command.env(ABRUPT, "1");
         }
-        let mut child = command.spawn().unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        loop {
-            let mut line = String::new();
-            assert_ne!(
-                output.read_line(&mut line).unwrap(),
-                0,
-                "reader exited before acquiring its own lease"
-            );
-            if line.trim() == "WORKSPACE_LEASE_READY" {
-                break;
-            }
-        }
+        let child = lease_child::LeaseChild::spawn(command, "WORKSPACE_LEASE_READY");
         // Fault injection only, not a supported catalog removal operation.
         fs::remove_file(pin).unwrap();
         store.collect_abandoned().unwrap();
         assert!(store.open_base(&reference).is_ok());
-        child.stdin.take().unwrap().write_all(b"x").unwrap();
-        assert!(child.wait().unwrap().success());
+        child.release();
         store.collect_abandoned().unwrap();
         assert!(store.open_base(&reference).is_err());
     }

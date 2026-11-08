@@ -15,9 +15,17 @@ use std::{
 
 #[derive(Default)]
 struct State {
-    children: BTreeMap<u32, (mpsc::Sender<i32>, bool, Option<File>, u64)>,
+    children: BTreeMap<u32, Child>,
     next_generation: u64,
     stopping: bool,
+}
+
+struct Child {
+    exit: mpsc::Sender<i32>,
+    group: bool,
+    terminal: Option<File>,
+    generation: u64,
+    reclaim: Option<super::reclaim::Channel>,
 }
 
 #[derive(Clone, Default)]
@@ -76,14 +84,22 @@ impl Processes {
         state: &mut State,
         group: bool,
         terminal: Option<File>,
+        reclaim: Option<super::reclaim::Channel>,
     ) -> Process {
         let pid = child.id();
         let (sender, exit) = mpsc::channel();
         state.next_generation += 1;
         let generation = state.next_generation;
-        state
-            .children
-            .insert(pid, (sender, group, terminal, generation));
+        state.children.insert(
+            pid,
+            Child {
+                exit: sender,
+                group,
+                terminal,
+                generation,
+                reclaim,
+            },
+        );
         // Only supervise() consumes wait statuses; dropping Child never waits.
         Process {
             pid,
@@ -105,17 +121,26 @@ impl Processes {
             ));
         }
         let state = self.0.lock().unwrap();
-        let (_, group, _, actual_generation) = state
+        let child = state
             .children
             .get(&pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "guest process exited"))?;
-        if generation.is_some_and(|value| value != *actual_generation) {
+        if generation.is_some_and(|value| value != child.generation) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "guest process generation expired",
             ));
         }
-        check(unsafe { libc::kill(if *group { -(pid as i32) } else { pid as i32 }, signal) })
+        check(unsafe {
+            libc::kill(
+                if child.group {
+                    -(pid as i32)
+                } else {
+                    pid as i32
+                },
+                signal,
+            )
+        })
     }
     pub(super) fn resize(
         &self,
@@ -131,17 +156,18 @@ impl Processes {
             ));
         }
         let state = self.0.lock().unwrap();
-        let (_, _, terminal, actual_generation) = state
+        let child = state
             .children
             .get(&pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "guest process exited"))?;
-        if generation != *actual_generation {
+        if generation != child.generation {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "guest process generation expired",
             ));
         }
-        let terminal = terminal
+        let terminal = child
+            .terminal
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process has no PTY"))?;
         let size = libc::winsize {
@@ -152,6 +178,30 @@ impl Processes {
         };
         check(unsafe { libc::ioctl(terminal.as_raw_fd(), libc::TIOCSWINSZ, &size) })
     }
+    pub(super) fn reclaim_allocator(
+        &self,
+        pid: u32,
+        generation: u64,
+        trim: bool,
+    ) -> io::Result<serde_json::Value> {
+        // Fence reaping/PID reuse while exchanging one bounded request.
+        let mut state = self.0.lock().unwrap();
+        if state.stopping || pid <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "guest process generation expired",
+            ));
+        }
+        let entry = state
+            .children
+            .get_mut(&pid)
+            .filter(|entry| entry.generation == generation)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "guest process generation expired")
+            })?;
+        super::reclaim::run(&mut entry.reclaim, pid, trim)
+    }
+
     pub(super) fn supervise(&self, main: Process) -> io::Result<i32> {
         let mut main_exit = None;
         loop {
@@ -169,7 +219,7 @@ impl Processes {
             if state
                 .children
                 .get(&(pid as u32))
-                .is_some_and(|(_, group, _, _)| *group)
+                .is_some_and(|child| child.group)
             {
                 // The leader is still a zombie, so its group ID cannot be reused.
                 unsafe {
@@ -183,8 +233,8 @@ impl Processes {
             } else {
                 128 + libc::WTERMSIG(status)
             };
-            if let Some((sender, _, _, _)) = state.children.remove(&(pid as u32)) {
-                let _ = sender.send(code);
+            if let Some(child) = state.children.remove(&(pid as u32)) {
+                let _ = child.exit.send(code);
             }
             if pid as u32 == main.pid {
                 main_exit = Some(code);
@@ -196,10 +246,14 @@ impl Processes {
                         libc::kill(-1, libc::SIGKILL);
                     }
                 } else {
-                    for (pid, (_, group, _, _)) in &state.children {
+                    for (pid, child) in &state.children {
                         unsafe {
                             libc::kill(
-                                if *group { -(*pid as i32) } else { *pid as i32 },
+                                if child.group {
+                                    -(*pid as i32)
+                                } else {
+                                    *pid as i32
+                                },
                                 libc::SIGKILL,
                             );
                         }
@@ -371,6 +425,7 @@ fn nonblocking(fd: &impl AsRawFd) -> io::Result<()> {
 impl Processes {
     pub(super) fn spawn(&self, config: &GuestConfig, capture: bool) -> io::Result<Spawned> {
         let mut command = command(config)?;
+        let reclaim = super::reclaim::configure(config, &mut command)?;
         let options = config.process.clone().unwrap_or_default();
         if options.create_workdir {
             fs::create_dir_all(&config.cwd)?;
@@ -427,7 +482,13 @@ impl Processes {
             };
             let child = command.spawn()?;
             Ok(Spawned {
-                process: self.register(child, &mut state, options.new_session, Some(terminal)),
+                process: self.register(
+                    child,
+                    &mut state,
+                    options.new_session,
+                    Some(terminal),
+                    reclaim,
+                ),
                 input,
                 outputs: vec![(Box::new(master), 1)],
             })
@@ -473,7 +534,7 @@ impl Processes {
                 Vec::new()
             };
             Ok(Spawned {
-                process: self.register(child, &mut state, options.new_session, None),
+                process: self.register(child, &mut state, options.new_session, None, reclaim),
                 input,
                 outputs: output,
             })
