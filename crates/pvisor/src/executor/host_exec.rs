@@ -83,13 +83,12 @@ pub(crate) fn send(socket: RawFd, bytes: &[u8], fds: &[RawFd]) -> anyhow::Result
     msg.msg_iovlen = 1;
     if !fds.is_empty() {
         msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen =
-            unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as usize;
+        msg.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as _;
         unsafe {
             let cmsg = libc::CMSG_FIRSTHDR(&msg);
             (*cmsg).cmsg_level = libc::SOL_SOCKET;
             (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as usize;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
             std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(cmsg).cast(), fds.len());
         }
     }
@@ -115,7 +114,7 @@ pub(crate) fn receive(socket: RawFd, limit: usize) -> anyhow::Result<(Vec<u8>, V
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
-    msg.msg_controllen = std::mem::size_of_val(&control);
+    msg.msg_controllen = std::mem::size_of_val(&control) as _;
     let count = unsafe { libc::recvmsg(socket, &mut msg, libc::MSG_CMSG_CLOEXEC) };
     if count < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -125,7 +124,7 @@ pub(crate) fn receive(socket: RawFd, limit: usize) -> anyhow::Result<(Vec<u8>, V
         let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
         while !cmsg.is_null() {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
-                let size = (*cmsg).cmsg_len.saturating_sub(libc::CMSG_LEN(0) as usize);
+                let size = ((*cmsg).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
                 for index in 0..size / std::mem::size_of::<RawFd>() {
                     fds.push(OwnedFd::from_raw_fd(
                         *libc::CMSG_DATA(cmsg).cast::<RawFd>().add(index),
