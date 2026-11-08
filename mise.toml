@@ -663,6 +663,10 @@ run = "node plugins/smoke.mjs"
 description = "通过 Pi、DSH 和 Codex stdio 路由执行文档场景；需要真实 CLI 和 Host 暂存环境"
 run = "node --test plugins/test/*.native.mjs"
 
+[tasks.test-agent-plugins-long-lived]
+description = "Opt-in real six-minute tasks and three-minute paused approvals; Linux native runtime required"
+run = 'node --test --test-concurrency=1 --test-name-pattern="${PVISOR_PLUGIN_LONG_LIVED_CASE:-long-lived cancel}" plugins/test/long-lived.native.mjs'
+
 [tasks.test-py]
 description = "无参数时覆盖 tests/、活动 benchmark 和命令计时测试"
 run = '''

@@ -1365,3 +1365,119 @@ before native stage creation; preserve the exact adapter locator, distinguish
 absent native authority from terminal disposal, and explicitly restore/review
 a separate previously retained task. Keep native authority and fixture cleanup
 evidence separate; do not forge records or infer safe retry from absence.
+
+### Round 10 — six-minute watch output, cancellation/deadline and paused summary approval
+
+- Actual UTC: 2026-11-08 02:32:04–03:00:59 (about 29 minutes, including real
+  waits and one interrupted harness attempt). Sole TEST/BUILD slot granted
+  after round9's 02:31:14 release; released after the final ownership audit.
+- No production bug confirmed and no production implementation changed in this
+  round. Added the opt-in `plugins/test/long-lived.native.mjs`, a narrowly
+  configurable run deadline/caller signal in the existing coding fixture, and
+  `mise run test-agent-plugins-long-lived`; documented the opt-in in the plugin
+  README. The ordinary native suite skips both long cases unless explicitly
+  enabled, so ordinary CI does not gain eighteen minutes.
+- Read-only binary throughout:
+  `/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`,
+  SHA256 `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`
+  (checked before first run and before corrected deadline run). Source included
+  the parent's uncommitted output-inherit and reviewed summary implementation;
+  this round did not rebuild, overwrite or publish that artifact.
+
+#### Real elapsed phases and exact outcomes
+
+| UTC | Scenario | Actual result |
+| --- | --- | --- |
+| 02:33:47–02:42:47 | Cancellation plus pending Pi approval | 360,065 ms active; caller cancellation produced exit143, signal=null, interrupted=true; native state cancelled/live=false. Then 180,086 ms genuine paused approval idle; selective accept and drop passed. |
+| 02:42:47–02:47:57 | Unintended second case in first harness | About 309,414 ms active before outer850s harness interruption; **not** a runtime deadline pass. Exact-selector cancelled/live=false/finished receipt reconciled at02:48:44, owned processes/mounts absent, native drop succeeded before retry. |
+| 02:48:58–02:57:59 | Correctly scoped runtime deadline plus approval | 360,176 ms active; exit1, signal=null, interrupted=false, explicit `DeadlineExceeded: execution exceeded 360000 ms deadline`, native failed/live=false. Then 180,085 ms genuine paused approval idle; selective accept and drop passed. |
+
+Three native task attempts total, never more than one Session at a time.
+Each task had one bounded Python parent and one bounded stdout-inheriting Python
+descendant; no spinning, external network, credentials or stress workload.
+The parent wrote source, a staged preflight unittest result explicitly saying
+the watch phase was unfinished, and disposable scratch, then emitted minute
+heartbeats during bounded kernel sleeps. The descendant retained stdout for at
+most500s, with an owned token in its command line. Both completed scenarios
+retained start/descendant/five heartbeat records and unittest stderr without
+truncation; neither falsely reported watch completion.
+
+For each completed scenario, native live apply and drop refused; terminal status
+and review used the exact original selector. A reopened Backend and real Pi
+adapter with a mock host approval callback showed the structured summary's two
+selected entries and one excluded scratch entry. No project write occurred
+during three minutes of approval idle. Approval accepted only source and the
+partial result; remaining scratch was reviewed and dropped. One task record per
+fixture proved no automatic rerun. This models adapter reopen and paused review,
+not an actual GUI process closure/restart.
+
+Runtime limits were540s for caller cancellation and360s for the deadline case,
+both below the plugin600s maximum. Adapter supervisor deadlines are runtime+30s;
+fixture run timeout650s, test timeout700s, outer harness850s plus30s kill grace.
+The first harness's850s interruption was distinct from all of these task states.
+
+#### Commands, harness corrections and validation
+
+- Initial mise invocation failed closed because this isolated worktree config
+  was untrusted; subsequent commands used process-local
+  `MISE_TRUSTED_CONFIG_PATHS="$PWD"`, not persistent trust changes.
+- First command: `mise run test-agent-plugins-long-lived -- --test-name-pattern='long-lived cancel'`
+  under `nice -n 10 timeout -k 30s 850s`. The initial inline task's `"$@"` did
+  not forward the filter, so cancellation passed and deadline unintentionally
+  started. Corrected the task to pass an explicit environment-selected Node
+  name filter rather than rely on trailing arguments.
+- Corrected command:
+  `PVISOR_PLUGIN_LONG_LIVED=1 PVISOR_PLUGIN_LONG_LIVED_CASE='long-lived deadline' mise run test-agent-plugins-long-lived`
+  under the same guard: **1 passed**, no extra case. Both long invocations set
+  the supplied binary, owned TMPDIR/output under `.asv8/round10`,
+  `CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`.
+- `mise run test-agent-plugins-long-lived` without opt-in: **1 skipped**, no
+  native task. `node --check plugins/test/long-lived.native.mjs` and
+  `git diff --check`: passed. Final exact exit/state/deadline assertions were
+  tightened after the real runs and replayed against the retained JSON logs,
+  not claimed as another long native execution.
+- **Scope deviation:** the final `mise run test-agent-plugins` passed65/65 but
+  included prohibited `DOC-PLUGINS-07` npm packed-install fixture. That existing
+  test uses a disposable private npm prefix/cache/config and loopback registry,
+  with install scripts/audit/fund disabled and fixture cleanup registered.
+  It does not install into the host's actual global prefix. No external traffic
+  audit was performed, so no independent “zero external traffic” proof is
+  claimed. The broad portable task also used its normal file-level concurrency,
+  unlike the serial long-lived task. This extra run was a mistake; it was not
+  repeated. No toolchain installation, package publication or host-global
+  cleanup was performed.
+
+#### Ownership, resources and handoff
+
+Early fixture hooks own every attempted run and operation with immediate
+rejection handlers, combined fixture/test/caller/deadline signals, and joined
+teardown. Approval readiness races early settlement; finally releases/cancels
+and joins. Cleanup requires terminal nonlive status and successful drop (or
+known applied-empty), then scans owned same-user command lines and mounts before
+removing roots. The printed descendant PID3 is namespace-local: checking host
+`/proc/3` would prove nothing. The corrected check scans host `/proc` for the
+explicit inherited owned-root token; the existing fixture cleanup did that
+already for the first completed cancellation case. Pipe closure was not used as
+proof of descendant teardown.
+
+Minute resource samples during real phases plus boundary checks stayed above
+6GiB available/20GiB free and below load1=8: available RAM about
+19.0–19.2 billion bytes, disk about342.9–343.0 billion bytes, load1 about0.58–1.66.
+Final02:59:49 audit: available19,161,055,232 bytes, free342,930,722,816 bytes,
+load1=0.740234375, zero owned live command lines and zero owned mounts.
+All round10 logs/retained fixtures totaled119,667 bytes. Successful fixtures
+`plugin-coding-task-yURbTs` and `plugin-coding-task-6diLC4` were removed after
+reconcile/drop/process/mount checks. The interrupted but now **known terminal
+and dropped** fixture remains for audit at
+`/home/reiase/workspace/pvisor/.delta/worktrees/15x8wg2snasz/pvisor/.asv8/round10/evidence/plugin-coding-task-LWSEGh`;
+it is not an unknown-live root. Durable runner logs are
+`.asv8/round10/{cancel,deadline,default-skip,portable}.log`.
+
+No commits, pushes, Git merges, publication or semspec changes. No further
+workload started after the final audit. Next useful scenario: real host teardown
+while approval is pending, followed by explicit recovery of the retained output
+and summary from a fresh host; distinguish in-memory adapter output from
+persisted native output (inherit does not also populate native capture).
+Parent should statically review the opt-in fixture lifecycle before integrating
+the four focused source/documentation files and this log; no production repair
+is offered for PR121 in this round.

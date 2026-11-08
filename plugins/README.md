@@ -254,6 +254,39 @@ No cloud-model or interactive acceptance result is claimed by those loader tests
 Developer tests, source installs and publication instructions live in
 [CONTRIBUTING.md](https://github.com/DeepLink-org/pvisor/blob/main/plugins/CONTRIBUTING.md).
 
+### Opt-in long-lived native checks
+
+The ordinary native suite skips `test/long-lived.native.mjs` unless
+`PVISOR_PLUGIN_LONG_LIVED=1`. On Linux with a compatible native binary, run
+one case per bounded invocation:
+
+```sh
+PVISOR_PLUGIN_LONG_LIVED=1 PVISOR_PLUGIN_LONG_LIVED_CASE='long-lived cancel' \
+  mise run test-agent-plugins-long-lived
+PVISOR_PLUGIN_LONG_LIVED=1 PVISOR_PLUGIN_LONG_LIVED_CASE='long-lived deadline' \
+  mise run test-agent-plugins-long-lived
+```
+
+Set `PVISOR_PLUGIN_BINARY` to the installed CLI and
+`PVISOR_PLUGIN_TEST_OUTPUT_DIR` to an owned durable evidence directory outside
+the disposable project. Each case takes about nine minutes: six minutes of
+kernel-timer waits with minute heartbeats, then three minutes of paused Pi mock
+approval over the real adapter and native stage. Cancellation uses a 540-second
+native limit; the deadline case uses 360 seconds. These are below the plugin's
+600-second input maximum. The adapter supervisor adds 30 seconds to the runtime
+limit; the fixture run bound is 650 seconds, the test bound 700 seconds. An
+external harness should allow 850 seconds plus at most 30 seconds kill grace.
+Harness interruption is not evidence that the runtime deadline fired.
+
+The checks sample Linux available memory, free disk and load every minute and
+abort owned work if the campaign limits (6 GiB, 20 GiB, load1 8) are crossed.
+They exercise live mutation refusal, an inherited stdout holder, exact-selector
+recovery, bounded output and approval summaries together. They do not launch an
+actual GUI host or certify arbitrary descendant teardown. Successful fixtures
+are reconciled, dropped and removed; uncertain fixtures retain their diagnosed
+root paths. Save runner stdout/stderr outside those fixtures if retaining the
+execution evidence is required. Never automatically rerun an interrupted task.
+
 ## Upgrade and uninstall
 
 Review pending tasks before upgrading. Update the plugin through the host's

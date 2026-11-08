@@ -14,7 +14,7 @@ export function ok(result) {
 }
 
 /** One fresh coding task, with durable ownership even when setup/spawn fails. */
-export async function codingFixture(t) {
+export async function codingFixture(t, { runMilliseconds = 15_000 } = {}) {
   const controller = new AbortController();
   const owned = [];
   let root;
@@ -102,10 +102,10 @@ export async function codingFixture(t) {
     t.diagnostic(`Coding task evidence: ${root}`);
     return {
       root, project, calls, client,
-      run(input) {
+      run(input, caller) {
         assert.equal(attempted, false, "dependent edits/tests belong in one fresh task");
         attempted = true;
-        return track((combined) => backend.run(input, combined));
+        return track((combined) => backend.run(input, combined), caller, runMilliseconds);
       },
       operate: client.operate,
       command: (binary, argv) => track((combined) => execute(binary, argv, { cwd: project, signal: combined })),
