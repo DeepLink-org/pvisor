@@ -362,9 +362,8 @@ rustc --edition=2024 -C opt-level=2 -C panic=abort -C lto=thin \
   -o benchmark/memory/.data/allocator-build/vmm
 codesign --force --sign - --entitlements crates/pvisor/macos-hypervisor.entitlements \
   benchmark/memory/.data/allocator-build/vmm
-mise exec -- zig cc -target aarch64-linux-gnu.2.17 -O2 -Wall -Wextra -Werror -pthread \
-  benchmark/memory/allocator_payload.c -o benchmark/memory/.data/allocator-build/payload
-mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
+PVISOR_RECLAIM_LIB_DIR=/path/to/guest/lib mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
+cp /tmp/reclaim/payload benchmark/memory/.data/allocator-build/payload
 ```
 
 The input root must be prepared before either command below. Supply the selected
@@ -372,7 +371,7 @@ firmware explicitly. Choose a short fresh output path because UNIX socket paths
 have a platform limit:
 
 ```sh
-python3 benchmark/memory/allocator_reclaim.py \
+PVISOR_GUEST_RECLAIM=1 python3 benchmark/memory/allocator_reclaim.py \
   --vmm benchmark/memory/.data/allocator-build/vmm \
   --firmware target/release/libkrunfw.5.dylib \
   --payload benchmark/memory/.data/allocator-build/payload \

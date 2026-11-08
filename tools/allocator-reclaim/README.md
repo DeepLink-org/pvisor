@@ -6,18 +6,28 @@ select a fixed allocator operation; there is no runtime code injection.
 
 ## Build and activate
 
-Build the SO and native test fixtures using the repository's pinned Zig compiler:
+Build the preload, test fixtures and engineering payload with Rust and bundled
+`rust-lld`; no C compiler or C startup objects are needed:
 
 ```sh
-mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
-# Use x86_64 instead for an x86_64 guest.
+mise exec -- rustup target add aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
+PVISOR_RECLAIM_LIB_DIR=/path/to/guest/lib mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
+# Use x86_64 and its GNU/musl targets for an x86_64 guest.
 ```
 
-Outputs are libpvisor-reclaim.so, subject, interposer.so (test only) and
-static-subject (test only). The SO targets the glibc 2.17 ABI and links pthread/dl
-normally, supporting both split-libpthread and merged-libc layouts. This build
-baseline is not proof that every glibc 2.17 distribution was executed.
-No new Cargo dependency or compiler dependency is added to ordinary guest builds.
+`PVISOR_RECLAIM_LIB_DIR` selects matching guest `libc.so.6`, `libpthread.so.0`
+and `libdl.so.2` files, including resolved symlink targets. Use libraries from
+the oldest supported glibc distribution: newer libraries can require newer
+symbol versions. C headers and a C sysroot are not needed.
+
+The standalone Cargo package owns all sources and produces `libpvisor-reclaim.so`,
+`subject`, `interposer.so` (test only), `static-subject` (test only) and `payload`
+(engineering experiment). Ordinary guest builds do not build these tools.
+The preload uses `no_std` and no Rust allocator, resolving allocator symbols in
+the target without replacing malloc/free. Dynamic fixtures explicitly call
+glibc malloc/free/mallopt. They share minimal Rust/glibc startup; the vfork child's
+exec/_exit path stays in naked assembly to avoid entering a Rust stack frame.
+The static fixture uses the Rust musl target and ignores LD_PRELOAD.
 
 Stage the matching SO in the guest image, or an existing read-only payload/share.
 Use the shared launch contract, for example:
@@ -117,7 +127,11 @@ does not flush every thread's tcache, collect a language heap or release live
 allocations. Allocation patterns and fragmentation determine what can be freed.
 
 malloc_trim(0) → guest free pages → virtio-balloon free-page reporting → VMM host
-discard. On ordinary private anonymous Apple Silicon RAM, the host pauses vCPUs,
+discard. The Apple Silicon host mapping experiment is off by default; set
+`PVISOR_GUEST_RECLAIM=1` in the VMM environment before creating the VM
+to enable it. This does not enable the preload, which still needs explicit guest
+configuration. Without the host switch, ordinary RAM keeps its MADV_FREE advice.
+When enabled on ordinary private anonymous Apple Silicon RAM, the host pauses vCPUs,
 drains devices, unmaps HVF, replaces reported whole host pages with anonymous zero
 mappings and remaps HVF before completing the report. File/COW and cold-pager
 policies retain their own ownership. Reporting must be negotiated and is
@@ -162,6 +176,20 @@ executed. The separate [whole-VMM memory experiment](../../benchmark/memory/allo
 boots the rebuilt PID 1 and uses real vsock on glibc 2.31: all 20 VMs passed
 refill/live-data integrity checks, with measured host footprint reductions.
 glibc 2.17 runtime coverage remains unverified.
+
+Rust migration validation (2026-11-08): eight existing allocator-reclaim tests
+passed with Rust fixtures in a minimal aarch64/glibc 2.31 VM. For that root, select
+`--include-ignored --test-threads=1 --nocapture allocator_reclaim`; the full guest
+suite additionally needs a shell and temporary directories. Host contracts passed
+12/12 and observer contracts 4/4; strict Clippy, rustdoc and formatting passed.
+x86_64 subject/payload compiled to objects, including startup/vfork assembly,
+but were not linked or executed. Other glibc versions remain unverified.
+
+Four Rust-payload preflight conditions (64/256 MiB, inspect/trim) passed retained
+heap, refill and live-data checks; evidence is in
+`benchmark/memory/.data/ar-rust-payload-p1/`. These used an existing VMM artifact
+and do not establish current-branch host-memory gains. Historical C results must
+not be pooled with Rust runs; each new batch freezes its actual source inputs.
 
 References: [malloc_trim](https://man7.org/linux/man-pages/man3/malloc_trim.3.html),
 [LD_PRELOAD](https://man7.org/linux/man-pages/man8/ld.so.8.html),

@@ -1901,14 +1901,20 @@ failures remain fatal.
 
 ## Apple Silicon 的空闲页实际释放
 
-普通匿名私有 RAM 的 virtio-balloon free-page reporting 通过事件循环中的
+这条实验路径默认关闭。仅在创建 VM 前为宿主 VMM 进程设置
+`PVISOR_GUEST_RECLAIM=1` 才启用；未设置、`0` 或其他值均沿用原来的
+`MADV_FREE` 建议，不创建这条路径的延迟报告队列，不执行 HVF 重映射。
+开关在 VM 的 RAM gate 注册时读取，运行中修改环境变量不改变既有 VM。
+它不启用 guest allocator preload；后者仍须显式配置 `process.allocator_reclaim`。
+
+启用后，普通匿名私有 RAM 的 virtio-balloon free-page reporting 通过事件循环中的
 映射事务处理。设备先保留描述符链，不提交 used ring；回调返回、释放设备租约后，
 运行时复用同一个控制锁暂停全部 vCPU，并通过 RAM gate 排空设备访问。只对报告
 范围内完整的宿主页解除 HVF GPA 映射，用 MAP_FIXED 匿名零映射替换原 HVA，再建立
 HVF 映射。HVA 所有权和地址保持不变，空闲页不复制、不写回。事务完成并恢复运行后
 才确认报告，guest 在此之前不能复用这些页。
 
-这条默认路径不使用 MADV_FREE_REUSABLE 的 reusable 账本标记，也不只依赖
+这条实验路径不使用 MADV_FREE_REUSABLE 的 reusable 账本标记，也不只依赖
 MADV_FREE 建议：新零映射会实际丢弃原驻留/压缩页面，guest 后续访问按需分配并正常
 计费。相邻/重叠报告先合并，不跨 RAM region；范围溢出、越界或跨 region 的报告
 保守拒绝。未被完整报告的 16 KiB 宿主页边缘不会被改动。

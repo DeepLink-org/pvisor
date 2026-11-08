@@ -12,6 +12,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import platform
 import queue
 import random
@@ -344,8 +345,12 @@ def main():
     sources = [
         Path(__file__),
         Path(__file__).with_name("allocator_reclaim_vm.rs"),
-        Path(__file__).with_name("allocator_payload.c"),
-        REPO / "tools/allocator-reclaim/reclaim.c",
+        REPO / "tools/allocator-reclaim/payload.rs",
+        REPO / "tools/allocator-reclaim/reclaim.rs",
+        REPO / "tools/allocator-reclaim/fixture_runtime.rs",
+        REPO / "tools/allocator-reclaim/Cargo.toml",
+        REPO / "tools/allocator-reclaim/Cargo.lock",
+        REPO / "tools/allocator-reclaim/build.sh",
         REPO / "Cargo.toml",
         REPO / "Cargo.lock",
     ]
@@ -386,6 +391,7 @@ def main():
             ).strip(),
             dirty=subprocess.check_output(["git", "status", "--short"], cwd=REPO, text=True),
             preflight=args.preflight,
+            guest_reclaim_env=os.environ.get("PVISOR_GUEST_RECLAIM"),
             design=dict(
                 guest_mib=512,
                 vcpus=2,

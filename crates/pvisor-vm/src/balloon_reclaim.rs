@@ -169,9 +169,11 @@ mod tests {
                 bytes: 0xc000
             }]
         );
-        assert!(ranges(&memory, &[(0x100001, 16382)], 16384)
-            .unwrap()
-            .is_empty());
+        assert!(
+            ranges(&memory, &[(0x100001, 16382)], 16384)
+                .unwrap()
+                .is_empty()
+        );
         assert!(ranges(&memory, &[(u64::MAX - 2, 8)], 16384).is_err());
         assert!(ranges(&memory, &[(0x10f000, 0x2000)], 16384).is_err());
         assert!(ranges(&memory, &[(0x100000, 4096)], 0).is_err());
@@ -182,7 +184,7 @@ mod tests {
         use crate::devices::virtio::memory_gate;
         let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 65536)]).unwrap();
         let gate = memory_gate::register(&memory);
-        let reports = gate.free_reports().unwrap();
+        let reports = SharedFreeReports::default();
         let event = std::sync::Arc::new(
             crate::utils::eventfd::EventFd::new(crate::utils::eventfd::EFD_NONBLOCK).unwrap(),
         );
@@ -218,8 +220,10 @@ mod tests {
             Some(vm_memory::FileOffset::new(file, 0)),
         )])
         .unwrap();
-        assert!(ranges(&memory, &[(0x100000, 65536)], 16384)
-            .unwrap()
-            .is_empty());
+        assert!(
+            ranges(&memory, &[(0x100000, 65536)], 16384)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

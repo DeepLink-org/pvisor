@@ -382,12 +382,18 @@ fn registry() -> &'static Registry {
 fn key(mem: &GuestMemoryMmap) -> usize {
     mem.iter().next().expect("device memory is empty").as_ptr() as usize
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn ordinary_free_reports(setting: Option<&std::ffi::OsStr>) -> Option<Arc<SharedFreeReports>> {
+    (setting == Some(std::ffi::OsStr::new("1"))).then(Default::default)
+}
+
 /// Register before device activation. Weak entries do not retain terminated VMs.
 pub fn register(mem: &GuestMemoryMmap) -> Arc<MemoryGate> {
     let gate = Arc::new(MemoryGate::default());
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        gate.state.lock().unwrap().free_reports = Some(Arc::new(SharedFreeReports::default()));
+        gate.state.lock().unwrap().free_reports =
+            ordinary_free_reports(std::env::var_os("PVISOR_GUEST_RECLAIM").as_deref());
     }
     let mut registry = registry().lock().unwrap();
     registry.retain(|_, gate| gate.strong_count() != 0);
@@ -460,6 +466,16 @@ impl Drop for HostRead {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn ordinary_free_reports_require_explicit_opt_in() {
+        use std::ffi::OsStr;
+        for setting in [None, Some(""), Some("0"), Some("true"), Some("1 ")] {
+            assert!(ordinary_free_reports(setting.map(OsStr::new)).is_none());
+        }
+        assert!(ordinary_free_reports(Some(OsStr::new("1"))).is_some());
+    }
+
     #[test]
     fn read_hints_align_bound_and_split_without_payload_access() {
         let hints = ReadHints::default();
