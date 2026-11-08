@@ -1229,3 +1229,139 @@ reproduction or a running-task concurrency trace. No Clippy, doctests, rustdoc,
 Python, adapter, VM/OCI, non-Linux or workspace-wide checks were run. No installs,
 network/cloud/credential calls, unrelated kills/global cleanup, semspec changes,
 commits, pushes, Git merges or publication.
+
+### Round 9 — runtime upgrades with a retained coding task
+
+- Static inspection/editing preceded the parent's explicit sole TEST/BUILD slot
+grant after integration release at 2026-11-08 02:29:31 UTC. Workloads ran
+**02:30:14–02:30:46 UTC**; ownership checks completed and the slot was explicitly
+released at **02:31:14 UTC**. Documentation/handoff followed. No artificial
+waiting or eight-hour completion claim.
+- Read root README/AGENTS/CONTRIBUTING, this campaign log, plugin
+README/CONTRIBUTING and existing runtime, approval, coding and project-identity
+fixtures. Discovery found no additional nested plugin README/AGENT(S).
+Notified parent about possible runtime/backend overlap before edits; only
+`plugins/test/runtime-upgrade.native.mjs` and this log are delivered.
+Summary/backend/runtime/distribution code and round8 semantics were not changed.
+
+#### User story and negative finding
+
+**No product defect reproduced; no production repair or red/green claim.**
+One real, tiny, safe Host task writes a retained candidate using the immutable
+compatible native artifact. Fresh and already-open Backends then reopen its exact
+selector through an owned package-manager-style runtime symlink with spaces.
+Only that owned symlink is switched, never the shared CLI, any host executable,
+native task records or staged private data.
+
+- Switch to an incompatible executable, partially emitted `--help` followed by
+exit 2, or missing symlink target. Doctor and all five task actions
+(status/review/preview/apply/drop) refuse. The invocation log establishes one
+failed spawn-help probe per action (zero for a missing target), no actual
+operation, fallback or retry. Existing task-record bytes and task count remain
+unchanged, and the candidate is not published.
+- Restore the compatible target after each refusal and review the same candidate
+through the exact selector. Neither upgrade nor reopen creates another task.
+- A separate owned wrapper passes native help/version probes but exits 73 on
+the actual operation. Doctor succeeds while review truthfully returns 73 and
+the wrapper's failure diagnostic, retaining the original selector. Doctor
+checks capabilities; it does not guarantee future operational readiness.
+- For both Pi and DSH callback contracts, pause after a real native preview,
+switch the runtime symlink to incompatible, then approve. Revalidation refuses
+before native apply: exactly one failed help probe, no host publication.
+Finally release/join each gate and restore the compatible target.
+- Reject invalid/empty/relative/missing explicit overrides. Existing portable
+cases additionally cover missing desktop-style PATH, ignored relative PATH
+entries, compatible Homebrew/venv links, no fallback after incompatibility,
+pre-abort, EOF, active cancellation, partial stalled help and the actual
+ten-second probe timeout with SIGTERM escalation.
+- Final compatible status is completed/nonlive; review still contains the
+original candidate, and explicit drop succeeds. Shared fixture teardown
+independently reconciles status/drop before removing the durable root.
+
+#### Exact commands, identity and results
+
+Both workloads ran the exact repository mise task through
+`nice -n 10 timeout -k 30 120`, with process-local
+`MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0`,
+`CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1`.
+An owned PATH shim converted the task's `node --test` invocation to
+`/usr/bin/node --test --test-concurrency=1 --test-timeout=120000
+--test-name-pattern="$ROUND9_FILTER"` and retained all original file arguments.
+TMPDIR and fixture output directory were `$PWD/.round9-owned/tmp`.
+
+| UTC | Exact task and filter | Actual outcome |
+| --- | --- | --- |
+| 02:30:14–02:30:15 | `mise run test-agent-plugins-native`, `runtime upgrade:` | **1 actual native case passed**, one Session; 7 unmatched file wrappers, 8 Node passes, 0 failed/cancelled/skipped |
+| 02:30:24–02:30:46 | `mise run test-agent-plugins`, `PATH\|runtime\|capability\|CLI probes\|operator override` | **17 actual cases passed**: 11 distribution/runtime, 4 adapter runtime/cancellation, 1 task identity, 1 unintended packed-install case; 5 unmatched wrappers, 22 Node passes, 0 failed/cancelled/skipped; 21.785s |
+| 02:31:04–02:31:14 | `git diff --check`, source/artifact hashes, owned process/mount/authority scans | Passed; hashes unchanged; no remaining native/installation fixture, task/run record, owned process or mount |
+
+Source baseline was HEAD `769a6e9c41cf072ecf05d925b1b77f9b8b3686e7`
+plus the parent's inherited, uncommitted integrated summary/review changes.
+Relevant source SHA-256 before and after:
+
+```text
+runtime.mjs  3f8592f498925789126b4ca0058d113e0079361b54dc5b0b9bd60d480468a841
+backend.mjs  33728e618812d89b43a3c61fd5ac252a49ec444f2ac881366aa79251d7fec772
+process.mjs  9be8a7ab94a32d5aab4ca488ba729f91668559c1029a1369c964d8355a1a19f9
+summary.mjs  ddc57ac80dd3e1d6daa894e7d79ceedee626d4407432c764a372d2d045fa9516
+runtime-upgrade.native.mjs  98a8989e7c27e22d665b7428322f01f71f7bcc6f5c161977fc64395239e17063
+```
+
+Read-only native artifact, unchanged before/after, not rebuilt or overwritten:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+SHA256 6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+This inherits the parent's round5-fix artifact provenance; it does not establish
+that the artifact was built from the current uncommitted plugin source.
+
+#### Scope deviation, resources, cleanup and gaps
+
+The broad portable name filter unintentionally selected
+`DOC-PLUGINS-07: packed plugin uses a separately installed runtime and uninstall
+preserves it`. **This violated the requested no-installs/no-network scope**:
+the existing fixture packs source and runs npm install/uninstall with `--global`,
+but explicitly sets `npm_config_prefix` to its owned `plugin-install-*/prefix`,
+cache to the same root's `cache`, blank userconfig, ignored scripts and disabled
+audit/funding. Its registry is an ephemeral `127.0.0.1` server serving the owned
+tarball. Thus `--global` targets only the disposable prefix, not host-global
+installation. Source inspection found no external registry configured or
+external fallback; this is not packet-level proof of no external traffic.
+Reported immediately to parent; no rerun, further install/network operation,
+host uninstall or global/cache cleanup followed. Successful fixture after-hooks
+closed MCP, closed all registry connections/server, and removed its owned root.
+Future filters should name exact cases or explicitly exclude this install case.
+
+- All four workload resource gates passed: MemAvailable
+18,823,528,448–19,025,223,680 bytes; free disk
+342,878,924,800–342,918,610,944 bytes; load1 1.122–1.551.
+- Reused `codingFixture` registers teardown before setup, tracks operations
+before invocation with immediate rejection observation and combines owned,
+test/caller and deadline signals. Gate waits race early settlement/readiness
+and release/join in `finally`. Teardown aborts/joins before native terminal,
+nonlive status plus successful drop (or explicit applied-empty disposal).
+Uncertain reconciliation preserves the absolute durable root.
+- Per-case and final current-UID `/proc`/current mount-namespace scans found no
+owned processes or mounts. No task/run records or fixture roots remained;
+only the owned Node compile cache remained and was removed after the scans.
+Temporary shim/guard files were removed; no unrelated cleanup or kills.
+- Linux native Host only. Pi/DSH approvals are mocked host callback contracts,
+not live UI. Actual Homebrew/pip upgrades and desktop applications were not
+launched. No running user's binary was replaced, no atomic binding across an
+independently upgraded runtime is claimed, and no same-UID security claim.
+- No new native case for a runtime exiting before creating its native record;
+portable missing-runtime/cancelled-probe cases retain adapter locators without
+a spawn. An absent native stage still requires reconciliation, not automatic
+retry or deletion. Existing timeout coverage is portable, not a stalled native
+task. Runtime disappearance between a completed probe and exec is not
+deterministically injected here; explicit refusal is an acceptable contract.
+- No full native/portable aggregate, Rust/Python suite, build, lint, rustdoc,
+VM/OCI/macOS or semspec approval was run. No commits, pushes, Git merges,
+publication, credential/cloud calls, shared binary edits or host-system changes.
+- Next scene: an owned compatible wrapper completes its help probe then exits
+before native stage creation; preserve the exact adapter locator, distinguish
+absent native authority from terminal disposal, and explicitly restore/review
+a separate previously retained task. Keep native authority and fixture cleanup
+evidence separate; do not forge records or infer safe retry from absence.
