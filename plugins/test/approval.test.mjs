@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { approvalHost, approvalOperation } from "./approval-fixture.mjs";
+import { nativePreview } from "./summary-fixture.mjs";
 
 const success = { exit_code: 0, interrupted: false, stdout: "preview of src.txt", stderr: "" };
 
@@ -11,7 +12,7 @@ for (const kind of ["pi", "dsh"]) {
       project: async () => project,
       operate: async (action, input) => {
         calls.push({ project, action, input: structuredClone(input) });
-        return success;
+        return action === "preview" ? nativePreview(input, project) : success;
       },
     }));
     const raw = { selector: "/first-stage", paths: ["src.txt"] };
@@ -21,7 +22,7 @@ for (const kind of ["pi", "dsh"]) {
       assert.match(request.reason, /\/first/);
       assert.match(request.reason, /\/first-stage/);
       assert.match(request.reason, /src\.txt/);
-      assert.match(request.reason, /preview of src\.txt/);
+      assert.match(request.reason, /Selected changes: 1\n  Change "src\.txt"/);
       raw.selector = "/second-stage";
       raw.paths.splice(0, 1, "unreviewed.txt");
       host.moveProject("/second");
@@ -41,7 +42,10 @@ for (const kind of ["pi", "dsh"]) {
         const calls = [];
         const host = approvalHost(kind, "/project", () => ({
           project: async () => "/project",
-          operate: async (operation) => { calls.push(operation); return success; },
+          operate: async (operation, input) => {
+            calls.push(operation);
+            return operation === "preview" ? nativePreview(input) : success;
+          },
         }));
         const operation = approvalOperation(host, action, { selector: "/stage", ...(action === "apply" ? { paths: ["src.txt"] } : {}) }, t.signal);
         try {

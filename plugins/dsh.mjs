@@ -1,4 +1,5 @@
 import { createBackend, callTool, failed, textContent, tools } from "./tools.mjs";
+import { formatPreview, summarizePreview } from "./summary.mjs";
 
 export const name = "pvisor-agent-tools";
 export const inject = ["tools", "approval"];
@@ -50,14 +51,15 @@ export function registerDsh(ctx, defineTool, makeBackend = createBackend) {
           let preview = "";
           if (action === "apply") {
             const result = await client.operate("preview", args, exec.signal);
-            if (failed(result)) throw new Error(JSON.stringify(result));
-            preview = result.stdout;
+            const summary = summarizePreview(result, args, await client.project());
+            preview = formatPreview(summary);
+            if (!summary.can_confirm) throw new Error(preview);
           }
           const answer = await ctx.approval.request({
             agent: exec.agent,
             toolName: tool.name,
             callId: exec.callId,
-            reason: `pVisor ${action}\nProject: ${await client.project()}\n${JSON.stringify(args)}\n${preview}\nDrop never reverts previously applied files.`,
+            reason: action === "apply" ? preview : `pVisor drop\nProject: ${JSON.stringify(await client.project())}\nStage: ${JSON.stringify(args.selector)}\nDiscard remaining candidates? Drop never reverts previously applied files.`,
             signal: exec.signal,
           });
           if (answer !== "allowed-once") throw new Error(`pVisor ${action} not approved: ${answer}`);

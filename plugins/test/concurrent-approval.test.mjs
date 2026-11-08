@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { approvalOperation, pendingApproval } from "./concurrent-approval-fixture.mjs";
+import { nativePreview } from "./summary-fixture.mjs";
 
 for (const kind of ["pi", "dsh"]) {
   test(`concurrent approval ${kind}: native mutation failure is surfaced once without retry`, { timeout: 5000 }, async () => {
@@ -11,7 +12,7 @@ for (const kind of ["pi", "dsh"]) {
       project: async () => "/project",
       async operate(action, args) {
         calls.push({ action, args });
-        if (action === "preview") return { exit_code: 0, stdout: "approved a.txt and b.txt", stderr: "" };
+        if (action === "preview") return nativePreview(args);
         assert.equal(changed, true);
         return { exit_code: 3, stdout: "", stderr: "target changed after staging at b.txt; refusing to overwrite concurrent changes" };
       },
@@ -19,7 +20,7 @@ for (const kind of ["pi", "dsh"]) {
     const operation = approvalOperation(host, input);
     try {
       const request = await operation.ready;
-      assert.match(request.reason || request.message, /approved a.txt and b.txt/);
+      assert.match(request.reason || request.message, /Selected changes: 2\n  Change "a\.txt".*\n  Change "b\.txt"/);
       assert.deepEqual(calls.map((call) => call.action), ["preview"]);
       changed = true; // Another explicit operation completed while approval was pending.
       host.release();

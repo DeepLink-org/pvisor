@@ -12,6 +12,7 @@ import { Backend, execute, selection } from "../backend.mjs";
 import registerPi from "../pi.mjs";
 import { registerDsh } from "../dsh.mjs";
 import { callTool, tools } from "../tools.mjs";
+import { nativePreview } from "./summary-fixture.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "pvisor-plugin-test-"));
@@ -245,7 +246,10 @@ const success = { exit_code: 0, interrupted: false, stdout: "preview", stderr: "
 function hostBackend(log) {
   return {
     project: async () => "/project",
-    operate: async (action, input) => { log.push({ action, input }); return success; },
+    operate: async (action, input) => {
+      log.push({ action, input });
+      return action === "preview" ? nativePreview(input) : success;
+    },
     run: async (input) => { log.push({ action: "run", input }); return success; },
     doctor: async () => success,
   };

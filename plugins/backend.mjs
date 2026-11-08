@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveRuntime } from "./runtime.mjs";
 import { execute } from "./process.mjs";
+import { summarizePreview } from "./summary.mjs";
 
 export { execute } from "./process.mjs";
 
@@ -210,6 +211,8 @@ export class Backend {
       const observed = await execute(binary, ["status", task.stage, "--json"], { cwd: task.project, signal });
       if (observed.exit_code !== 0 || observed.interrupted) return { ...task, ...observed };
     }
-    return { ...task, ...await execute(binary, args, { cwd: task.project, signal }) };
+    const result = { ...task, ...await execute(binary, args, { cwd: task.project, signal }) };
+    if (action === "preview") result.summary = summarizePreview(result, { ...input, paths }, task.project);
+    return result;
   }
 }

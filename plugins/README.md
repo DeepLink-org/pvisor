@@ -187,7 +187,19 @@ Pi commands use its interactive confirmation dialog:
 /pvisor drop STAGE_FROM_RESULT
 ```
 
-Apply first shows a preview and asks for confirmation. Drop asks separately.
+Apply first shows a bounded change summary and asks for confirmation. The summary
+separates requested paths, native selected changes, additional required changes
+(also applied), and other staged candidates (not applied). It reports action,
+entry type, reported size/mode when available, remaining counts and blockers.
+Long lists and labels explicitly disclose omitted details. Native preview does
+not identify binary files, previous modes, semantic intent or test outcomes;
+the Agent should explain purpose, observed tests and risks separately.
+Detailed native `review --diff` and exact-selection `apply --dry-run --diff`
+commands remain available; raw preview stdout is preserved on tool responses,
+with an additional structured `summary`. A blocked, malformed, interrupted or
+truncated preview cannot open an apply confirmation. Native execution still
+rechecks conflicts; the summary grants no authority or completion evidence.
+Drop asks separately.
 With no interactive UI, mutations are refused. Tool calls do not expose apply
 or drop, so model-generated JSON cannot stand in for user confirmation.
 

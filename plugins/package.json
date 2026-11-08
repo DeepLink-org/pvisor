@@ -22,6 +22,7 @@
   "peerDependenciesMeta": { "@deepseek-ai/dsh-tools": { "optional": true } },
   "files": [
     "backend.mjs",
+    "summary.mjs",
     "tools.mjs",
     "pi.mjs",
     "dsh.mjs",
