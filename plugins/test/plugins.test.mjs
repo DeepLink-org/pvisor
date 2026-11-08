@@ -331,6 +331,8 @@ test("MCP initializes, reports tools, contains malformed input, and refuses muta
   });
   const initialized = await request("initialize", { protocolVersion: "2025-03-26" });
   assert.equal(initialized.result.protocolVersion, "2025-03-26");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.deepEqual(initialized.result.serverInfo, { name: pkg.name, version: pkg.version });
   const listed = await request("tools/list");
   assert.deepEqual(listed.result.tools.map((tool) => tool.name), tools.map((tool) => tool.name));
   const invalid = await request("tools/list", null);

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { Backend } from "./backend.mjs";
 import { callTool, failed, textContent, tools } from "./tools.mjs";
 
+const { name, version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 2 || args[0] !== "--project")) {
   console.error("Usage: pvisor-agent-mcp [--project DIR]");
@@ -47,7 +49,7 @@ async function dispatch(message) {
       send(id, {
         protocolVersion: versions.includes(params.protocolVersion) ? params.protocolVersion : "2025-11-25",
         capabilities: { tools: {} },
-        serverInfo: { name: "pvisor-agent-plugins", version: "0.1.0" },
+        serverInfo: { name, version },
         instructions: "Task-only staging. Native Agent tools are not intercepted. No automatic retries or acceptance. Use the same exact stage selector as native pvisor status/review/apply/drop and let the user accept selected results.",
       });
     } else if (method === "ping") {

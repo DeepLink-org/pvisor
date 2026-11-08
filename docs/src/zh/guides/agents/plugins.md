@@ -6,8 +6,8 @@ description: 通过 Homebrew 或 pip 安装 pVisor，接入 Pi、DSH、Codex 插
 
 在 Agent 中调用 pVisor 暂存任务，完成后使用原生 `spawn → status/review → apply/drop` 流程交接成果。通过 Homebrew 或 pip 安装 runtime，npm 仅分发 Agent 适配器。
 
-!!! note "首次发布待完成"
-    npm 包及远程 marketplace 提交尚未上架。以下是发布后的用户安装入口，不代表当前已经可以从 registry 安装。维护者须完成发布授权和发行验收后，再移除此说明。
+!!! note "从 0.1.0 升级"
+    使用 0.1.1 或更新版本的插件接入 Homebrew/pip runtime。已发布的 0.1.0 仍依赖旧 npm runtime 包，重装不能解决该依赖。远程 marketplace tag 需要单独发布；仅发布 npm 包不会让这些 ref 自动可用。
 
 ## 安装 {#install}
 
@@ -19,16 +19,16 @@ description: 通过 Homebrew 或 pip 安装 pVisor，接入 Pi、DSH、Codex 插
 
 ```sh
 # Pi
-pi install npm:pvisor-agent-plugins
+pi install npm:pvisor-agent-plugins@0.1.1
 
 # DSH: install only the profile you use
-dsh plugin --profile web add pvisor-agent-plugins
-dsh plugin --profile desktop add pvisor-agent-plugins
+dsh plugin --profile web add pvisor-agent-plugins@0.1.1
+dsh plugin --profile desktop add pvisor-agent-plugins@0.1.1
 
 # Codex CLI: run from your project
-codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.1
 codex plugin add pvisor@pvisor
-codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.1 pvisor-agent-mcp --project "$PWD"
 ```
 
 DSH Desktop 也可以在 **Plugins → Add plugin** 中输入 `pvisor-agent-plugins`。只安装你实际使用的 profile。
