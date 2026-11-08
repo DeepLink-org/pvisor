@@ -2654,3 +2654,303 @@ writes/copies best-effort, and return the original status. This is diagnostic
 error preservation, not a fix for the routing failure; no task assertion or
 host/product behavior changed. No additional test of that static hardening was
 claimed by the doctor-only micro.
+
+### Round 16 — full runtime attempt with durable timeout evidence
+
+- Sole workload slot granted after routing micro-validation at04:14:22 UTC.
+  Static preparation ran no tests, builds, sockets or native CLI commands.
+  The one full attempt ran **04:16:35.625–04:31:35.635 UTC**,900.010s,
+  and exited124 at its external watchdog. **Full runtime coverage remains
+  incomplete.** No equivalent retry or optional Python task was launched.
+- Exact command: `mise run test -- pvisor`, no filter, ignored-test opt-in,
+  extra package or Python suite. The runner invokes
+  `cargo nextest run --locked -p pvisor`. Wrapper:
+  `nice -n 10 timeout --signal=TERM -k 30s 900s`; Cargo jobs2,
+  `RUST_TEST_THREADS=1`, `NEXTEST_TEST_THREADS=1`, offline Cargo,
+  `MISE_AUTO_INSTALL=0`, and process-local trust of this exact worktree.
+  The guard streams separate stdout/stderr and combined tee output from launch,
+  with Bash pipefail, and samples resources every60s. The900s TERM completed
+  without KILL escalation. No global cache cleanup or tool installation.
+
+#### Environment, preflight and source provenance
+
+- Owned checkout:
+  `/home/reiase/workspace/pvisor/.delta/worktrees/mx61xrmn325p/pvisor`.
+  All build artifacts went to its own `target`, not worker5's artifact/cache.
+  HOME is its `.data/round16/private-home`, with private XDG and mise
+  cache/config/state directories. HOME is not ancestor of the test scratch
+  topology and inherited no FUSE submount. Original existing Cargo/Rustup/mise
+  tool locations were explicitly pinned; Rust1.98.0, nextest0.9.137 and
+  Python3.12.12 were already installed. No host settings were edited.
+- Cleared terminal-inherited TMPDIR/TEMP/TMP before mise, whose task environment
+  selects canonical default `/tmp`. This avoids both the previous long
+  worktree Unix socket and a HOME/project-ancestor scratch topology.
+  The actual disposable preflight socket
+  `/tmp/r16-m9apsqn6/.tmpXXXXXX/source/stage/control.sock` bound successfully:
+  54bytes versus107usable; the default test-shaped path is41bytes.
+  The preflight root was closed and removed. `/dev/fuse` opened successfully,
+  KVM API returned12, and
+  `unshare --user --map-root-user --mount --net /bin/true` returned0.
+  Device access is not a claim that every FUSE/KVM execution path passed.
+- HEAD `97f72ac5354ee505c954dfdc206c0d3f691200b0`; runtime crate diff empty
+  before and after (SHA256 of empty diff
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+  Recorded tracked crate/config/runner file-hash manifest SHA256
+  `9e8c77d7fc4ac0a5d248561e4878dc1df5ab1ea6dbac35affd83c370882049a6`.
+  Full inherited working diff SHA256
+  `2ad164b3991f39d1b59ba259d8a197247d0dedcd9384786befd3d8caf0aa2e15`
+  includes paced JS task/documentation changes, not a runtime-source repair.
+  Parent's later JS stdio work is separate from this isolated source.
+  The external fresh plugin CLI SHA256
+  `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`
+  was neither executed nor overwritten in this round.
+
+#### Exact progress and narrow follow-up hypothesis
+
+- Compilation finished in75s. Nextest default run
+  `d2fa2a04-a2cf-4af7-a030-bafac5fbf23f` selected875 runnable tests across24
+  binaries, with10 default skips and no expression-filter exclusions.
+  Final summary at824.550s test time: **825passed,1SIGTERM-failed,10skipped,
+  49unrun due to signal**. This is not a full-package pass or a regression
+  assertion failure. The round5 selected-owner status regression itself passed.
+- Last completed test:
+  `pvisor::fuse_descriptor::shutdown_wins_over_readable_requests_and_unsignalled_channel_receives_normally`,
+  PASS825/875. The remaining active test was
+  `pvisor::prepared_rootfs::prepared_rootfs_lease_is_independent_in_another_process`,
+  terminated after741.446s. Durable progress includes its60s SLOW updates
+  through720s, SIGTERM diagnostic and final summary. Unlike old continuation077,
+  output was not lost to in-memory buffering.
+- Static follow-up hypothesis, **not yet confirmed**: that test re-executes
+  libtest with `--exact ... --nocapture` and waits for a line exactly
+  `LEASE_READY`; default libtest's `test <name> ... ` prefix may consume the
+  readiness marker on the same line while the child waits for stdin.
+  The crate README already describes terse child output for another exact
+  readiness protocol. This is a changed, narrow harness hypothesis, not evidence
+  of a library lock deadlock or proof of the previous campaign timeout's cause.
+  Parent was asked before any short red/green regression or repair.
+- Owned durable records remain under `.data/round16/`: `events.jsonl`,
+  `environment.json`, `source-hashes.json`, `source.diff`, `command.bash`,
+  before/after mountinfo, and separate stdout/stderr/combined logs.
+  Combined log SHA256
+  `3a01fc2f7fb084624694e35d85b71c980bcadc5bb1148b050f58d3307b704c1f`.
+  Stdout log is empty; actual runner diagnostics/progress are in stderr.
+  No standalone nextest store/JUnit file was emitted in the owned target or
+  fixture; retained run identity, counts and progress are textual metadata,
+  not a claimed replayable nextest archive.
+
+#### Resources, cleanup and limits
+
+- All18 resource samples passed: minimum available RAM16,783,450,112bytes,
+  minimum workspace disk341,265,383,424bytes, maximum load1=1.6806640625.
+  Final04:31:35 sample: RAM18,581,024,768bytes,
+  disk341,343,535,104bytes, load1=0.09228515625.
+  `/tmp` is a separate16GiB tmpfs; the20GiB disk gate applies to the build/
+  evidence filesystem, not a claim of20GiB capacity in scratch tmpfs.
+- Read-only post-timeout process and mount audit at04:31:54 found no remaining
+  owned runtime/build/test process or checkout mount. The transient
+  `.pvisor-delta-test-lUmDc3` directory was already absent. No unrelated process
+  was signalled; no uncertain OS-temp tree was recursively deleted. Owned HOME,
+  evidence and target are preserved. `git diff --check` passed.
+- No full workspace/Python, optional coding-agent tempfile workflow, macOS,
+  OCI/VM boot, packaging, cloud/model/network or paid-service coverage is claimed.
+  No safety guard, test assertion, semspec claim/approval or product source
+  changed. No commit, push, merge or publication.
+- Recommendation: authorize a bounded, focused readiness-protocol diagnostic
+  and minimal harness fix only if confirmed; do not repeat the long full package
+  command without a changed hypothesis and explicit approval.
+
+Slot released at04:33:38 UTC after a second read-only audit: no owned
+executable/private-HOME processes or checkout mounts. Three same-UID `/proc`
+entries were inaccessible (3718,3720,696685); they were not attributed to this
+attempt or signalled. This is not a universal namespace/lease audit claim.
+Installed nextest's read-only help explicitly lists `NEXTEST_TEST_THREADS` as
+the environment source for `--test-threads`; the launch environment records1
+and the runner does not override it. No CLI `--test-threads` was supplied.
+Parent approved static-only preparation of a bounded readiness/exit guard and
+child kill/reap/reader-join ownership, pending a separate short red/green grant.
+No production library change or new test has been run under that authorization.
+
+#### Round 16 focused readiness-protocol red/green
+
+Parent granted the next sole slot after04:35:16 UTC, for only two short focused
+commands, not another full package. Both used the same pinned offline tools,
+private HOME, default short TMP, jobs2/thread1/nice10 and tee+pipefail, with an
+external20s timeout and5s kill grace:
+
+```bash
+mise run test -- pvisor -- --test prepared_rootfs -E 'test(=prepared_rootfs_lease_is_independent_in_another_process)'
+```
+
+- **Red04:37:01.408–04:37:19.664:** compile12.91s;1failed/4filtered skips;
+  test5.003s, exit100, not external timeout. Kept the original pretty libtest
+  arguments and exact marker assertion, adding bounded readiness with raw stdout
+  diagnostics and scoped child kill/reap/reader join. The timeout captured:
+  `"test prepared_rootfs_lease_is_independent_in_another_process ... LEASE_READY\n"`.
+  This confirms that the readiness marker was prefixed and never matched; the
+  child had acquired its independent lease before waiting for release.
+- **Green04:40:45.654–04:40:46.445:** added child `--format terse`;
+  compile0.43s, test0.013s,1passed/4filtered skips, exit0. Run ID
+  `68f5328b-8832-487c-a28a-4bf7afc852fc`; red ID
+  `3913b276-387e-4ae3-b579-818deeb9938f`. Original catalog-pin removal,
+  active independent lease, garbage-collection survival and post-release
+  collection assertions remain unchanged. This is not a passing full package.
+- The test now bounds readiness and post-release exit to5s each. Its scoped
+  owner kills/reaps the child and joins the stdout reader on assertion failures,
+  including the confirmed red readiness failure. No production library source
+  changed; crate README documents the protocol and focused command.
+- Red preflight RAM18,621,607,936bytes/disk341,300,039,680bytes/load0.23486328125.
+  Green preflight RAM18,711,134,208bytes/disk341,297,598,464bytes/load0.1923828125;
+  postgreen RAM18,602,713,088bytes, same disk/load. These gates passed; no
+  separate immediate postred resource sample was recorded.
+- At04:41:01 UTC process audit found no prepared-rootfs test/owned runner
+  survivors or checkout mounts, and `git diff --check` passed.
+  **Sole workload slot released**, with no full-package retry started.
+  Code-ready test/README diff SHA256
+  `34cdd38b9ba34ace6a03dbfc488440292dba25fa1ddab9da65fa07d32b0739be`;
+  logs retained as `.data/round16/focused-{red,green}.log`.
+  Parent review and explicit authorization remain prerequisites for any new
+  full-package attempt. The original825pass/timeout evidence is unchanged.
+
+#### Round14 ancestry isolation — doctor fixed, next routing assertion red
+
+Parent identified a different boundary: an owned TMPDIR under the repository
+still gives the copied tools-stripped mise config an ancestor root config with
+`[tools]`. The task source can correctly identify the copied file while tools
+are inherited from that ancestor. Prepared an isolated micro using
+`env -u TMPDIR -u TEMP -u TMP mktemp -d`, canonicalized with `pwd -P`, with
+the original fake-bin PATH prefix and no Mise baseline-variable edits.
+The probe additionally records selected active config paths and requires the
+root repository config to be absent before executing doctor.
+
+Parent granted the sole slot at04:33:38 after runtime16 release. One micro,
+under nice10/15s+30s grace and the same resource/job/thread/offline limits,
+started at04:34:27.610 and passed. Captured active config list contained only
+`/tmp/tmp.ACFaD7tyVX/mise.toml`; no repository root config was active in this
+invocation. Doctor resolved Cargo and the other fake tools under that root.
+The fake ledger recorded `cargo nextest --version` and the expected additional
+`cargo zigbuild --help`. No global config appeared in this local observation;
+that is not a general claim that arbitrary user globals are isolated.
+Its copied stripped config retained SHA256
+`267450e5803ebcd28dd7d91afa90664ffa4ae340dfcfbdc591078f7a3866587f`.
+
+With that prerequisite green, changed only routing-fixture root creation to:
+
+```sh
+work=$(env -u TMPDIR mktemp -d)
+work=$(cd "$work" && pwd -P)
+```
+
+Retained the original PATH prefix, all doctor/task assertions, inventory
+additions and diagnostic hook. The environment-unset affects this one mktemp,
+not host settings; macOS's default temporary path is still canonicalized by
+the existing second line.
+
+Ran the exact full `mise run test-task-routing` once under the previously
+documented nice10/850s+30s/offline/no-auto-install/jobs2/thread1 environment,
+using `PVISOR_TASK_TEST_FAILURE_DIR="$PWD/.asv8/round14/routing-ancestry-failure"`.
+**The doctor routing assertion now passed, but the whole task is still red.**
+It failed at the next firmware-routing assertion (source line160 during that
+attempt). The preserved actual fake uv ledger is121 bytes and passes
+`--target-dir /tmp/tmp.EtTmsIxDVi/target`; the135-byte expected line requires
+`--target-dir /tmp/tmp.EtTmsIxDVi/target\ with\ spaces`. Inner stdout is empty;
+stderr is83 bytes of the firmware task announcement. The changed failure
+narrows the remaining issue to target-directory environment routing, but no
+further cause is established and no next fix or retry was attempted.
+Ancestry isolation is supported for the doctor-path defect; it is not evidence
+of a green whole-routing task.
+
+Evidence: `.asv8/round14/routing-ancestry-micro.log`,
+`routing-ancestry-micro-evidence/` (selected configs/identity/task metadata and
+exact ledger), `task-routing-ancestry.log` and `routing-ancestry-failure/`
+(exact inner expected/actual/output/failure files). Both owned OS fixture
+roots were removed by their scoped EXIT hooks; no fixture/global cleanup
+beyond those roots occurred.
+
+Micro pre guard: RAM18,780,930,048 bytes, disk341,350,744,064, load1=0.1851.
+After micro/before full task at04:34:53.809: RAM18,755,522,560,
+disk341,308,551,168, load1=0.2520. Final04:35:16.305 audit:
+RAM18,759,368,704, same disk, load1=0.4790; zero owned processes/mounts,
+zero denied/raced process observations, no surviving OS root, and worktree
+TMPDIR empty. Released the slot immediately to the parent for queued work.
+No further workloads ran; no full-routing PASS or Python/product regression
+claim is made.
+
+#### Round14 final routing follow-up — scoped environment boundary passes
+
+Parent supplied upstream source evidence for the second issue: old mise2026.8.5
+can reverse an outer scalar environment diff before rendering a nested
+configuration's `get_env` value. Prepared a second small OS-temp micro,
+`.asv8/round14-targetdir-micro.sh`, comparing normal nested mise with
+`env -u __MISE_DIFF mise` after explicitly setting an owned target path
+containing literal spaces. It records only selected target-dir values,
+presence (not payload) of `__MISE_DIFF`, and fake firmware command arguments.
+No host settings or production task changed.
+
+Parent granted the sole slot at04:41:01 after runtime16 focused release.
+The micro entered through `mise exec` to reproduce the real project's outer
+environment context, under the same offline/no-auto-install/jobs2/thread1
+settings and nice10/15s+30s grace:
+
+```sh
+mise exec -- bash .asv8/round14-targetdir-micro.sh
+```
+
+At04:42:46.207 it passed the precise red/green comparison:
+
+| Nested invocation | Selected env target | Fake firmware argv |
+| --- | --- | --- |
+| Normal | `/tmp/tmp.gc0S8BEYH8/target` | Did not preserve the explicit target with spaces |
+| `env -u __MISE_DIFF mise` | `/tmp/tmp.gc0S8BEYH8/target with spaces` | Exactly matched the unchanged expected target with spaces |
+
+This distinguishes ancestry/tool selection from scalar environment reversal.
+The micro owned OS root was removed before the full-task invocation.
+
+Applied a small helper only at copied-fixture invocation boundaries:
+
+```sh
+fixture_mise() { env -u __MISE_DIFF mise "$@"; }
+```
+
+The fixture `run()` function, fixture public-inventory query and its nested
+cwd-resolution check use this helper. Real-project preflight commands remain
+unchanged. The helper preserves cwd and arguments and changes only the child's
+inherited diff metadata; it does not alter host settings, production mise
+tasks, doctor behavior, PATH baselines or any expected assertion. Retained
+the proved OS-temp root creation and canonicalization.
+
+One exact full `mise run test-task-routing` then ran under the documented
+nice10/850s+30s/offline/no-auto-install/jobs2/thread1 environment, with
+`PVISOR_TASK_TEST_FAILURE_DIR="$PWD/.asv8/round14/routing-diff-failure"`.
+**The whole task passed**, emitting:
+
+```text
+PASS: mise routing, task visibility, argument ownership, wheel publication and cleanup
+```
+
+This is the first full green routing result in this round, not a
+reinterpretation of the earlier inventory-only passes or failed candidates.
+No additional retry or broad suite followed. This conventional routing task
+uses its fake-tool fixtures; its PASS is not evidence of real package
+publication, Python/benchmark suite execution or native runtime rebuilding.
+
+Durable evidence is `.asv8/round14/routing-targetdir-micro.log`,
+`routing-targetdir-micro-evidence/` (selected normal/cleared env, exact
+normal/cleared/expected argv and result), and `task-routing-diff.log`.
+The diagnostic ERR hook retains its best-effort, nonrecursive original-status
+behavior; its prior full-task failure captured exact evidence without weakening
+assertions. No new failure directory was needed on the final green run.
+
+Pre micro guard: RAM18,683,125,760 bytes, disk341,314,744,320, load1=0.2046.
+After micro/before full at04:43:20.772: RAM18,697,691,136,
+disk341,382,037,504, load1=0.6450. Final04:43:37.041 audit:
+RAM18,682,769,408, same disk, load1=0.7363; owned process/mount observations0,
+denials/races0, no surviving OS fixture root, worktree TMPDIR empty.
+Retained round14 evidence totaled550,132 bytes, below the16MiB cap.
+Explicitly released the sole slot immediately to the parent; only static
+reporting followed.
+
+Final routing integration changes are the two public inventory names, scoped
+OS-temp root, scoped nested-fixture diff boundary and optional diagnostic ERR
+hook. Wrong PATH-variable candidates remain reverted. Micro scripts and local
+evidence remain diagnostic artifacts, not publication deliverables. Earlier
+32-cycle endurance evidence and its coverage qualifications are unchanged.

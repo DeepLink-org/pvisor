@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ $# -gt 0 ]]; then echo "too many arguments for test-task-routing" >&2; exit 2; fi
-work=$(mktemp -d)
+# A repository-local TMPDIR would inherit ancestor mise [tools] into this
+# deliberately tools-stripped fixture and bypass its fake command ledger.
+work=$(env -u TMPDIR mktemp -d)
 work=$(cd "$work" && pwd -P)
 failure_evidence() {
   local status="$1" command="$2" line="$3" name
@@ -129,8 +131,11 @@ SH
 chmod +x "$work/bin/tool"
 for name in cargo rustc rustup uv uvx python3 node codesign actionlint zig; do ln -s tool "$work/bin/$name"; done
 export PATH="$work/bin:$PATH"
+# The fixture deliberately replaces outer env values. Old mise would otherwise
+# reverse that outer diff before rendering this independent configuration.
+fixture_mise() { env -u __MISE_DIFF mise "$@"; }
 command_line() { printf '%q\t' "$@"; printf '\n'; }
-run() { : > "$PVISOR_TASK_TEST_LOG"; local task="$1"; shift; mise -C "$work" run "$task" -- "$@" > "$work/stdout" 2> "$work/stderr"; }
+run() { : > "$PVISOR_TASK_TEST_LOG"; local task="$1"; shift; fixture_mise -C "$work" run "$task" -- "$@" > "$work/stdout" 2> "$work/stderr"; }
 expect_failure() { if run "$@"; then echo "expected failure: $*" >&2; exit 1; fi; }
 check_line() { command_line "$@" > "$work/expected-line"; grep -Fxq -- "$(cat "$work/expected-line")" "$PVISOR_TASK_TEST_LOG" || { cat "$PVISOR_TASK_TEST_LOG" >&2; return 1; }; }
 signature_lines() {
@@ -141,7 +146,7 @@ signature_lines() {
 }
 
 # Inspect the native task inventory, including the visibility contract.
-mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
+fixture_mise -C "$work" tasks ls --json | jq -r '.[] | select(.hide == false) | .name' | LC_ALL=C sort > "$work/public"
 printf '%s\n' default ci clean build check wheel accept-wheel fw fmt fmt-rust fmt-py lint lint-api-docs lint-rust lint-py lint-workflows test test-rust test-py test-agent-plugins test-agent-plugins-native test-agent-plugins-smoke test-agent-plugins-long-lived test-agent-plugins-paced test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor setup | LC_ALL=C sort > "$work/expected"
 diff -u "$work/expected" "$work/public"
 
@@ -174,7 +179,7 @@ test "$(wc -l < "$PVISOR_TASK_TEST_LOG")" -eq 1
 CARGO_TARGET_DIR='relative with spaces' run build debug shim
 check_line python3 scripts/packaging/stage_wheel_binaries.py --profile dev --target-dir "$work/relative with spaces" --shim
 : > "$PVISOR_TASK_TEST_LOG"
-(cd "$work/tests" && mise run check -- -p pvisor-core) > "$work/stdout" 2> "$work/stderr"
+(cd "$work/tests" && fixture_mise run check -- -p pvisor-core) > "$work/stdout" 2> "$work/stderr"
 check_line cargo check --locked -p pvisor-core
 
 run test core capture pvisor-overlay-core
