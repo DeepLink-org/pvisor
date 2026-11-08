@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { resolveRuntime } from "../runtime.mjs";
 
 const flags = "--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json ";
@@ -76,103 +75,4 @@ test("failed CLI probes fail closed with upgrade guidance", async (t) => {
   const f = await fixture(t);
   await writeFile(f.binary, `#!${process.execPath}\nprocess.exit(2);\n`);
   await assert.rejects(resolveRuntime(f.binary), /Incompatible pVisor.*Homebrew or pip/s);
-});
-
-async function bounded(promise, milliseconds) {
-  let timer;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Probe did not settle within its bound")), milliseconds);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function stalledProbe(t, signal, { exitBeforeReady = false } = {}) {
-  const f = await fixture(t);
-  const ready = path.join(f.root, "ready");
-  await writeFile(f.binary, exitBeforeReady ? `#!${process.execPath}
-process.exit(2);
-` : `#!${process.execPath}
-import { writeFileSync } from "node:fs";
-process.on("SIGTERM", () => {});
-process.stdout.write("partial capability output\\n");
-writeFileSync(${JSON.stringify(ready)}, String(process.pid));
-setInterval(() => {}, 1000);
-`);
-  const controller = new AbortController();
-  const probeSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-  const running = resolveRuntime(f.binary, { signal: probeSignal });
-  // Attach rejection handling immediately, including on fixture setup failure.
-  running.catch(() => {});
-  let settled = false;
-  running.finally(() => { settled = true; }).catch(() => {});
-  let pid;
-  let stopping;
-  const stop = () => stopping ??= (async () => {
-    // Always cancel and await the owned probe, even if it never published a PID.
-    controller.abort();
-    await bounded(running.catch(() => {}), 12_000);
-    if (pid) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-  })();
-  t.after(stop);
-  try {
-    const deadline = Date.now() + 2000;
-    while (!pid) {
-      probeSignal.throwIfAborted();
-      if (settled) throw new Error("Capability probe exited before readiness");
-      if (Date.now() >= deadline) throw new Error("Capability probe readiness timed out");
-      try { pid = Number(await readFile(ready, "utf8")); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      if (!pid) await delay(10, undefined, { signal: probeSignal });
-    }
-  } catch (error) {
-    await stop();
-    throw error;
-  }
-  return { running };
-}
-
-test("a capability fixture exiting without readiness stops polling and awaits teardown", { timeout: 5000 }, async (t) => {
-  await assert.rejects(stalledProbe(t, undefined, { exitBeforeReady: true }),
-    /Capability probe exited before readiness/);
-});
-
-test("a pre-aborted runtime check never starts a capability probe", async (t) => {
-  const f = await fixture(t);
-  const invoked = path.join(f.root, "invoked");
-  await writeFile(f.binary, `#!${process.execPath}
-import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(invoked)}, "unexpected");
-console.log(${JSON.stringify(flags)});
-`);
-  const controller = new AbortController();
-  controller.abort();
-  await assert.rejects(resolveRuntime(f.binary, { signal: controller.signal }), /abort/i);
-  await assert.rejects(readFile(invoked), { code: "ENOENT" });
-});
-
-test("cancelling a capability probe settles even when the runtime ignores SIGTERM", { timeout: 12_000 }, async (t) => {
-  const controller = new AbortController();
-  const { running } = await stalledProbe(t, controller.signal);
-  controller.abort();
-  await bounded(assert.rejects(running, /abort|interrupted/i), 7000);
-});
-
-test("capability probe timeout escalates when the runtime ignores SIGTERM", { timeout: 22_000 }, async (t) => {
-  const { running } = await stalledProbe(t);
-  await bounded(assert.rejects(running, /Incompatible pVisor.*interrupted/s), 17_000);
-});
-
-test("capability probes get EOF on stdin rather than waiting for client input", async (t) => {
-  const f = await fixture(t);
-  await writeFile(f.binary, `#!${process.execPath}
-process.stdin.resume();
-process.stdin.on("end", () => console.log(${JSON.stringify(flags)}));
-`);
-  assert.equal(await bounded(resolveRuntime(f.binary), 2000), f.binary);
 });

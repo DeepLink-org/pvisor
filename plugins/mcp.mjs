@@ -15,60 +15,10 @@ if (!project) {
 const backend = new Backend(project);
 const active = new Map();
 let initialized = false;
-let disconnected = false;
-let flushExpired = false;
-function finishOverload() {
-  // Node's process.stdout can retain pending native writes after destroy().
-  // Exit explicitly only after all supervised operations have joined.
-  if (flushExpired && active.size === 0) process.exit(1);
-}
-// Internal transport budget, measured after JSON escaping in UTF-8 bytes.
-// Keep reading input while output is blocked so cancellation stays responsive.
-// If completed replies accumulate, close rather than queue without a bound.
-const OUTPUT_BACKLOG_LIMIT = 8 * 1024 * 1024;
-function disconnect() {
-  if (disconnected) return;
-  disconnected = true;
-  process.stdin.destroy();
-  for (const controller of active.values()) controller.abort();
-}
-const send = (id, value, error = false) => {
-  if (!disconnected) {
-    const frame = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
-    if (process.stdout.writableLength + frame.length > OUTPUT_BACKLOG_LIMIT) {
-      process.exitCode = 1;
-      disconnect();
-      console.error("MCP output backlog exceeds 8 MiB; closing transport. Undelivered results are uncertain; do not retry automatically.");
-      // Flush already queued complete frames if the reader resumes promptly.
-      // A stopped reader must not keep the server alive indefinitely. Forced
-      // closure may truncate the last frame; it is not completion evidence.
-      const deadline = setTimeout(() => {
-        flushExpired = true;
-        process.stdout.destroy();
-        finishOverload();
-      }, 1000);
-      process.stdout.once("close", () => clearTimeout(deadline));
-      process.stdout.end();
-      return;
-    }
-    process.stdout.write(frame);
-  }
-};
-// A client can lose its response pipe before closing its request pipe.
-// Cancel supervised work instead of crashing on an unhandled EPIPE, and do
-// not accept further requests or try to deliver results to the lost peer.
-for (const [stream, name] of [[process.stdin, "input"], [process.stdout, "output"]]) {
-  stream.on("error", (error) => {
-    disconnect();
-    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
-      process.exitCode = 1;
-      console.error(`MCP ${name} failed: ${error.message}`);
-    }
-  });
-}
+const send = (id, value, error = false) =>
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
 
 async function dispatch(message) {
-  if (disconnected) return;
   const { id, method, params = {} } = message;
   if (message.jsonrpc !== "2.0" || typeof method !== "string" ||
       (id !== undefined && typeof id !== "string" && typeof id !== "number") ||
@@ -123,7 +73,6 @@ async function dispatch(message) {
     send(id, { code: -32602, message: String(error) }, true);
   } finally {
     active.delete(id);
-    finishOverload();
   }
 }
 
@@ -148,9 +97,10 @@ process.stdin.on("data", (bytes) => {
     }
   }
   if (pending.length > 1024 * 1024) {
-    process.exitCode = 1;
-    disconnect();
     console.error("Unterminated MCP frame exceeds 1 MiB");
+    process.stdin.destroy();
+    for (const controller of active.values()) controller.abort();
+    process.exitCode = 1;
   }
 });
 process.stdin.on("end", () => {

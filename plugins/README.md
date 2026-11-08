@@ -110,22 +110,11 @@ deny-all networking, captured stdio and a runtime deadline (1–600 seconds,
 default 120). Personal Agent presets are not loaded. No credentials are
 explicitly passed into the task. Each task gets a fresh private HOME and XDG
 state paths; host login state, user configuration and HOME caches are not inherited.
-Tools installed only inside the original HOME may therefore be unavailable;
-use system-installed tools or project-local dependencies that work offline.
 Durable workspace stages stay in the configured state directory. Scratch HOME
 may remain after a failed/interrupted execution; it is not an accepted project
 result. Networked tasks, VM selection, interactive
 input, PTYs, and live Session continuation are not exposed in this first version.
 Do not remove safety flags to make a failed task work.
-
-Deny-all networking blocks external network access; it does not prohibit every
-form of local communication. On Linux, offline tests can use task-local TCP
-loopback in the private network namespace and owned AF_UNIX socketpairs. Targeted
-Linux tests also verified that the task could not connect to a fixture-owned
-host loopback listener. macOS local communication controls differ; these Linux
-results are not a cross-platform or arbitrary-IPC containment claim. See the
-[network boundary contract](../docs/src/en/guides/policies/network.md#网络边界)
-and [Linux validation report](../OFFLINE_IPC_VALIDATION.md).
 
 The private task record contains only its schema, project and task ID; it does
 not persist command arguments or credential values. Runtime-owned records and
@@ -148,45 +137,9 @@ Ask your Agent to use this tool input:
 ```
 
 `pvisor_spawn` returns the exact stage selector, CLI exit code and bounded
-stdout/stderr. The adapter captures noninteractive workload pipes (stdin is EOF)
-using native `--stdio inherit`; native `--stdio capture` instead retains output
-only in the Session record and does not forward it. Adapter output includes CLI
-diagnostics and is limited to 256 KiB per stream; inspect `truncated` before
-treating it as complete. Workload output is not also recorded by native stdio
-capture. A nonzero exit, cancellation, or lost completion can leave
+stdout/stderr. A nonzero exit, cancellation, or lost completion can leave
 candidates. Do not automatically rerun an uncertain task. Use that exact selector;
 the adapters never use `last`.
-
-If the MCP connection disappears before the spawn response arrives, this release
-has no task-list/recovery tool. An operator can inspect the private state directory
-configured above: each UUID task directory has a `task.json` with its canonical
-`project` and matching `task` UUID. Identify the intended task explicitly, then
-use that directory's absolute `stage` path with native `pvisor status ... --json`
-and review, or with the reopened plugin's exact-selector tools. Several records
-may belong to the same project; do not guess from directory order or use `last`.
-A record can precede native startup, so an absent stage is not proof that it is
-safe to rerun. Do not edit records or invent completion receipts.
-
-Closing MCP input cancels active supervised commands. Losing the response pipe
-also cancels them once an output write detects the disconnect. Input/output
-stream errors stop admission and cancel supervised commands; unexpected errors
-leave a nonzero server exit after those operations settle. Stderr is diagnostic
-only: losing it alone does not cancel a healthy JSON-RPC connection or establish
-task success. Killing the MCP
-server abruptly cannot run that cleanup: native work may continue until its
-own completion or runtime deadline. Reconcile status before acceptance; live or
-uncertain work is not approval to apply or discard candidates.
-
-MCP keeps reading cancellation messages when a client stops reading responses.
-Completed replies share an internal 8 MiB serialized UTF-8 output backlog budget,
-including JSON escaping and protocol errors; the 32 active-request limit alone
-does not bound completed replies. Exceeding this budget closes input, cancels
-active supervised commands and reports the overload on stderr. Already queued
-output gets at most one second to drain before the output pipe is destroyed.
-A forced close can leave a partial final frame or undelivered results. Treat
-those outcomes as uncertain, reconcile exact task selectors, and never rerun or
-accept automatically. This bounds the server's queued transport bytes, not total
-process memory, native execution output, or the client's buffers.
 
 | Tool | Effect |
 | --- | --- |
@@ -211,31 +164,9 @@ Pi commands use its interactive confirmation dialog:
 /pvisor drop STAGE_FROM_RESULT
 ```
 
-Apply first shows a bounded change summary and asks for confirmation. The summary
-separates requested paths, native selected changes, additional required changes
-(also applied), and other staged candidates (not applied). It reports action,
-entry type, reported size/mode when available, remaining counts and blockers.
-Long lists and labels explicitly disclose omitted details. Native preview does
-not identify binary files, previous modes, semantic intent or test outcomes;
-the Agent should explain purpose, observed tests and risks separately.
-Detailed native `review --diff` and exact-selection `apply --dry-run --diff`
-commands remain available; raw preview stdout is preserved on tool responses,
-with an additional structured `summary`. A blocked, malformed, interrupted or
-truncated preview cannot open an apply confirmation. Native execution still
-rechecks conflicts; the summary grants no authority or completion evidence.
-Drop asks separately.
+Apply first shows a preview and asks for confirmation. Drop asks separately.
 With no interactive UI, mutations are refused. Tool calls do not expose apply
 or drop, so model-generated JSON cannot stand in for user confirmation.
-
-Selections preserve exact relative string paths, including spaces, Unicode,
-apostrophes and leading dashes. The adapter binds each value as one
-`--path=<literal>` argument without a shell; displayed native commands use the
-same binding plus shell quoting (`--path='--json'` selects a file named
-`--json`, not an option). Selecting a directory explicitly includes descendants.
-Labels escape newline and directional controls; runnable commands are omitted
-when the selector or requested paths contain controls, rather than presenting a
-misleading command. Empty or traversing selections remain invalid. String
-selections do not represent arbitrary non-UTF-8 filename bytes.
 
 ### DSH decisions
 
@@ -288,39 +219,6 @@ No cloud-model or interactive acceptance result is claimed by those loader tests
 Developer tests, source installs and publication instructions live in
 [CONTRIBUTING.md](https://github.com/DeepLink-org/pvisor/blob/main/plugins/CONTRIBUTING.md).
 
-### Opt-in long-lived native checks
-
-The ordinary native suite skips `test/long-lived.native.mjs` unless
-`PVISOR_PLUGIN_LONG_LIVED=1`. On Linux with a compatible native binary, run
-one case per bounded invocation:
-
-```sh
-PVISOR_PLUGIN_LONG_LIVED=1 PVISOR_PLUGIN_LONG_LIVED_CASE='long-lived cancel' \
-  mise run test-agent-plugins-long-lived
-PVISOR_PLUGIN_LONG_LIVED=1 PVISOR_PLUGIN_LONG_LIVED_CASE='long-lived deadline' \
-  mise run test-agent-plugins-long-lived
-```
-
-Set `PVISOR_PLUGIN_BINARY` to the installed CLI and
-`PVISOR_PLUGIN_TEST_OUTPUT_DIR` to an owned durable evidence directory outside
-the disposable project. Each case takes about nine minutes: six minutes of
-kernel-timer waits with minute heartbeats, then three minutes of paused Pi mock
-approval over the real adapter and native stage. Cancellation uses a 540-second
-native limit; the deadline case uses 360 seconds. These are below the plugin's
-600-second input maximum. The adapter supervisor adds 30 seconds to the runtime
-limit; the fixture run bound is 650 seconds, the test bound 700 seconds. An
-external harness should allow 850 seconds plus at most 30 seconds kill grace.
-Harness interruption is not evidence that the runtime deadline fired.
-
-The checks sample Linux available memory, free disk and load every minute and
-abort owned work if the campaign limits (6 GiB, 20 GiB, load1 8) are crossed.
-They exercise live mutation refusal, an inherited stdout holder, exact-selector
-recovery, bounded output and approval summaries together. They do not launch an
-actual GUI host or certify arbitrary descendant teardown. Successful fixtures
-are reconciled, dropped and removed; uncertain fixtures retain their diagnosed
-root paths. Save runner stdout/stderr outside those fixtures if retaining the
-execution evidence is required. Never automatically rerun an interrupted task.
-
 ## Upgrade and uninstall
 
 Review pending tasks before upgrading. Update the plugin through the host's
@@ -338,12 +236,8 @@ do not recursively delete the state root as an uninstall step.
 
 ## Maintenance
 
-`backend.mjs` owns CLI translation and task identity. `process.mjs` owns bounded
-output and process supervision for both runtime probes and task commands.
-Cancellation also interrupts capability checks; a stalled probe has a ten-second
-deadline, followed by at most five seconds each for termination escalation and
-output draining. Forced termination does not certify descendant teardown.
-`tools.mjs` owns the shared read/execute schema. Pi and DSH add only host
+`backend.mjs` owns CLI translation, task identity, process supervision and output
+bounds. `tools.mjs` owns the shared read/execute schema. Pi and DSH add only host
 lifecycle/approval adaptation. `mcp.mjs` owns stdio JSON-RPC transport; it never
 adds acceptance authority. Do not duplicate filesystem state, bypass native
 locks, use `last`, retry commands automatically, or silently enable host execution.

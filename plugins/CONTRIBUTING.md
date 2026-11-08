@@ -25,47 +25,6 @@ Run all real-CLI documentation cases with:
 PVISOR_PLUGIN_BINARY="$PWD/target/debug/pvisor" mise run test-agent-plugins-native
 ```
 
-### Opt-in paced endurance
-
-`paced-endurance.native.mjs` is skipped by ordinary native CI unless
-`PVISOR_PLUGIN_PACED_ENDURANCE=1`. It models distinct tiny coding/review cycles,
-not throughput: successful partial acceptance, exit7 and retained review,
-fixture-only host conflict restoration, cancellation after observed readiness,
-fresh adapter views of one exact task, and empty/no-op apply. Round6 separately
-covers two retained task identities; this fixture uses only one Session at a time.
-The six stories are followed by two seeded observation-dependent choices.
-
-After obtaining the sole campaign TEST/BUILD slot, create an owned durable
-evidence directory and TMPDIR, then run each segment once, sequentially:
-
-```sh
-PVISOR_PLUGIN_PACED_ENDURANCE=1 PVISOR_PLUGIN_PACED_SEGMENT=1 \
-  PVISOR_PLUGIN_PACED_SEED=1401 PVISOR_PLUGIN_BINARY=/absolute/installed/pvisor \
-  PVISOR_PLUGIN_TEST_OUTPUT_DIR=/absolute/owned/evidence \
-  TMPDIR=/absolute/owned/tmp mise run test-agent-plugins-paced
-```
-
-Repeat with segments2,3,4 only after inspecting the preceding segment. Each
-segment has eight serial Node subtests; each fixture's after hook reconciles
-terminal/nonlive authority and drop (or applied-empty) before the next cycle.
-Every inter-cycle gap is75 real seconds, with before/midpoint/after resource
-and owned-process/mount/stage observations. The last campaign cycle has no
-trailing gap. Across32 cycles, intended idle is2325 seconds (38m45s), plus
-actual active setup/edit/test/review/cleanup time, reported separately.
-Each segment has a820s Node bound and the task enforces850s plus30s kill grace,
-nice10, two Cargo jobs and one test/math thread. The task passes its exact
-pattern and concurrency to Node, never as trailing file arguments.
-
-Guards stop on available RAM<6GiB, disk<20GiB, load1>8, owned evidence>16MiB,
-or a non-quiescent cycle boundary. JSONL evidence is exclusive-create and
-bounded to4MiB per segment; do not automatically rerun uncertain segments.
-Host `/proc` observations record birth ticks and report permission denials and
-races. They cover self/observable owned process mount views, not every namespace;
-host RAM deltas alone are not leak evidence. No observer sends host signals.
-Uncertain fixture authority preserves its root. No global cleanup is performed.
-The current opt-in runner refuses launches after the2026-11-08 09:04UTC campaign
-deadline; a future campaign must deliberately update that policy.
-
 ### Documentation coverage
 
 The tests read the canonical English/Chinese guide's executable JSON, native
@@ -85,23 +44,11 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-09 | Runtime deadlines fail without accepting output | Real native deadline |
 | DOC-PLUGINS-10 | MCP shutdown does not accept or discard pending results | Real stdio shutdown, reopened adapter and native review |
 | DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
-| DOC-PLUGINS-12 | Cancelling an active task retains its exact selector and staged candidates without publication | Real native cancellation after a staged write; reopened status, review, read-only preview and drop |
-| DOC-PLUGINS-13 | Active MCP EOF, truncated-frame EOF, abrupt server death and client pipe loss retain candidates and refuse live mutations | Real native stdio faults before the spawn response, explicit private-record selector discovery, reopened reconciliation/review/preview/drop; separate fake-runtime test verifies output loss cancels even with input still open |
-| DOC-PLUGINS-14 | Host edits after preview still conflict at apply; changing caller input or active project does not redirect approval | Deterministically paused Pi/DSH approval callbacks, two real native projects/stages, external host edit, refusal and explicit recovery with a new approval |
-| DOC-PLUGINS-15 | Rejected, cancelled, unavailable or failed approvals preserve candidates | Pi false/throwing confirmation and DSH closed outcomes/service error/aborted signal, real native file absence and reopened review/preview after each refusal |
 
 The npm fixture verifies real package-manager installation and external runtime
 selection, not Homebrew/pip installation, native file semantics or a published registry release.
 The native suite never substitutes a fake executable or skips unavailable
 staging. CI retains native case directories on failure.
-
-Approval-race fixtures mock host registration and approval callbacks, not a real
-interactive Pi or DSH UI. Pi receives a command string and parses its own input.
-The DSH fixture models detached, frozen JSON arguments as described by the
-[upstream tool-author contract](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md).
-That upstream `master` documentation is not a revalidation of the pinned host
-release. Mutating a direct `registerDsh` callback's borrowed object outside that
-dispatch contract is not evidence of a normal-host approval bypass.
 
 Ordinary PR CI runs portable contracts on Linux/macOS with Node 22.19.0 and 24,
 actual pinned Pi/DSH loader checks, and the strict native suite in the Linux CLI
@@ -121,32 +68,8 @@ Tested contracts: Pi 0.79.3 extension loading and argument validation; DSH
 Web/Desktop approval checks separately. No model credentials are needed for
 these compiler/loader checks.
 
-`backend.mjs` translates to native commands and owns adapter identity.
-`process.mjs` supervises all runtime subprocesses, including capability and
-version probes, with bounded output, cancellation, escalation and stream draining.
-Task launch uses native `--stdio inherit` with the supervisor's pipes, not a
-terminal; stdin receives EOF. Native `--stdio capture` is record-only and would
-hide workload output from tool results. The adapter retains at most 256 KiB
-per output stream and reports truncation; native stdio does not persist a
-second copy. `coding-task.native.mjs` checks real offline Python unittest
-stdout/stderr, nonzero results, private HOME/XDG, generated bytecode/log disposal,
-and nested-Git index isolation through atomic save, rename, chmod and selective
-acceptance. Its default interpreter is `/usr/bin/python3`; operators can set
-`PVISOR_PLUGIN_TEST_PYTHON` to an offline interpreter accessible under `--safe`.
-An interpreter installed only under the original HOME may be inaccessible.
-`descendants.native.mjs` checks Linux native inherited stdout/stderr and stdin
-EOF with a background child or detached `setsid` grandchild, both after exit7
-and user cancellation. Its at-most-three-process workloads each arm independent
-45-second alarms. Host `/proc` birth identities and exact owned argv tokens
-observe teardown with bracketed birth/UID rechecks and readiness-birth matching;
-denied or unstable observations fail closed and preserve the fixture root.
-Terminal observation must precede the40s voluntary exit, and any survivor
-fails even if it exits during the subsequent safety-only wait. Namespace PIDs
-are never used for host signals. These cases
-check exact-selector terminal status, retained review, rejected Pi mock approval
-and no retry/publication. They do not certify arbitrary descendant containment
-on other executors or platforms, or exercise MCP transport/backpressure.
-`tools.mjs` is the shared model-facing schema. Host adapters own
+`backend.mjs` translates to native commands and owns adapter identity and process
+supervision. `tools.mjs` is the shared model-facing schema. Host adapters own
 only host registration and approvals. `runtime.mjs` selects an operator-specified
 absolute CLI path or `pvisor` from the host PATH and probes required CLI
 capabilities before use. It ignores empty and relative PATH entries and never

@@ -22,13 +22,11 @@
   "peerDependenciesMeta": { "@deepseek-ai/dsh-tools": { "optional": true } },
   "files": [
     "backend.mjs",
-    "summary.mjs",
     "tools.mjs",
     "pi.mjs",
     "dsh.mjs",
     "mcp.mjs",
     "runtime.mjs",
-    "process.mjs",
     "cordis.patch.yml",
     "plugin.json",
     "skills",

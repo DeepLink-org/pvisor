@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Backend, execute } from "../backend.mjs";
 import registerPi from "../pi.mjs";
@@ -225,58 +224,6 @@ test("DOC-PLUGINS-09: runtime deadline reports failure and does not publish cand
   const status = ok(await f.backend.operate("status", { selector: run.selector }));
   assert.equal(JSON.parse(status.stdout).state, "failed");
   ok(await f.backend.operate("drop", { selector: run.selector }));
-});
-
-test("DOC-PLUGINS-12: active cancellation retains the exact selector for status, review and safe disposal", { timeout: 30_000 }, async (t) => {
-  const f = await fixture(t);
-  await f.backend.storage(f.project);
-  const controller = new AbortController();
-  const running = f.backend.run({
-    argv: ["sh", "-c", "printf 'pending\\n' > cancelled.txt; sleep 30"],
-    timeout_seconds: 15,
-  }, controller.signal);
-  running.catch(() => {});
-  f.cleanups.push(async () => {
-    controller.abort();
-    await running.catch(() => {});
-  });
-  let selector;
-  let ready = false;
-  const deadline = Date.now() + 5000;
-  while (!ready && Date.now() < deadline) {
-    const tasks = await readdir(f.options.stateDir);
-    if (tasks.length === 1) {
-      selector = path.join(f.options.stateDir, tasks[0], "stage");
-      try {
-        // The plugin record can precede native startup. Wait for the runtime
-        // record before querying; do not mistake startup for a stopped task.
-        await stat(path.join(selector, "run.json"));
-        const observed = await f.backend.operate("status", { selector });
-        if (observed.exit_code === 0) {
-          const status = JSON.parse(observed.stdout);
-          ready = status.state === "running" && status.filesystem?.sample_paths.includes("cancelled.txt");
-        }
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    }
-    if (!ready) await delay(10);
-  }
-  assert.ok(ready, "the staged candidate must exist before cancellation");
-  controller.abort();
-  const run = await running;
-  assert.equal(run.interrupted, true, JSON.stringify(run));
-  assert.equal(run.selector, selector);
-  await absent(f.project, "cancelled.txt");
-  const reopened = new Backend(f.project, f.options);
-  const status = JSON.parse(ok(await reopened.operate("status", { selector })).stdout);
-  assert.equal(status.state, "cancelled");
-  assert.equal(status.live, false);
-  assert.match(ok(await reopened.operate("review", { selector })).stdout, /cancelled\.txt/);
-  ok(await reopened.operate("preview", { selector, paths: ["cancelled.txt"] }));
-  await absent(f.project, "cancelled.txt");
-  ok(await reopened.operate("drop", { selector }));
-  await absent(f.project, "cancelled.txt");
 });
 
 test("DOC-PLUGINS-10: MCP shutdown leaves pending candidates available for native review", { timeout: 60_000 }, async (t) => {

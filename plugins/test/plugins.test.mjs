@@ -7,12 +7,10 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { Backend, execute, selection } from "../backend.mjs";
 import registerPi from "../pi.mjs";
 import { registerDsh } from "../dsh.mjs";
 import { callTool, tools } from "../tools.mjs";
-import { nativePreview } from "./summary-fixture.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "pvisor-plugin-test-"));
@@ -62,33 +60,11 @@ test("run always selects safe Host staging, exact argv, deny-all and deadline", 
   await assert.rejects(readFile(call.home), { code: "ENOENT" });
   assert.deepEqual(call.args, [
     "spawn", "--no-agent-defaults", "--safe", "--executor", "host",
-    "--overlaynet-deny-all", "--stdio", "inherit", "--stage", result.stage,
+    "--overlaynet-deny-all", "--stdio", "capture", "--stage", result.stage,
     "--timeout", "17s", "--", ...argv,
   ]);
   const record = JSON.parse(await readFile(path.join(path.dirname(result.stage), "task.json"), "utf8"));
   assert.deepEqual(Object.keys(record).sort(), ["project", "schema_version", "task"]);
-});
-
-test("run captures workload pipes rather than selecting native record-only capture", async (t) => {
-  const f = await fixture(t);
-  await writeFile(f.binary, `#!${process.execPath}
-const args = process.argv.slice(2);
-if (args.includes("--help")) {
-  console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json");
-} else {
-  if (args[args.indexOf("--stdio") + 1] === "inherit") {
-    console.log("task stdout: failed assertion");
-    console.error("task stderr: expected 5, got 6");
-  }
-  process.exitCode = 1;
-}
-`);
-  const result = await f.backend.run({ argv: ["test-tool"] });
-  assert.equal(result.exit_code, 1);
-  assert.equal(result.interrupted, false);
-  assert.equal(result.truncated, false);
-  assert.equal(result.stdout, "task stdout: failed assertion\n");
-  assert.equal(result.stderr, "task stderr: expected 5, got 6\n");
 });
 
 test("failure retains exact task identity and never retries or accepts", async (t) => {
@@ -103,23 +79,7 @@ test("failure retains exact task identity and never retries or accepts", async (
   assert.deepEqual(calls[1].args, ["status", result.stage, "--json"]);
   assert.deepEqual(calls[2].args, ["review", result.stage, "--diff"]);
   assert.deepEqual(calls[3].args, ["status", result.stage, "--json"]);
-  assert.deepEqual(calls[4].args, ["apply", result.stage, "--json", "--dry-run", "--path=file with spaces", "--path=src"]);
-});
-
-test("filename argv: every exact selection is one literal option value without shell interpretation", async (t) => {
-  const f = await fixture(t);
-  const run = await f.backend.run({ argv: ["true"] });
-  const paths = ["--json", "-notes.txt", "space name.txt", "café.txt", "it's.txt", "line\nbreak", "direction\u202e", "$(touch sentinel)"];
-  assert.deepEqual(selection([...paths, paths[0]]), paths);
-  for (const action of ["preview", "apply"]) {
-    await f.backend.operate(action, { selector: run.selector, paths });
-    const calls = await f.calls();
-    assert.deepEqual(calls.at(-1).args, [
-      "apply", run.selector, "--json", ...(action === "preview" ? ["--dry-run"] : []),
-      ...paths.map((name) => `--path=${name}`),
-    ]);
-  }
-  await assert.rejects(readFile(path.join(f.project, "sentinel")), { code: "ENOENT" });
+  assert.deepEqual(calls[4].args, ["apply", result.stage, "--json", "--dry-run", "--path", "file with spaces", "--path", "src"]);
 });
 
 test("reject config overrides, invalid argv, deadlines and selectors before execution", async (t) => {
@@ -132,7 +92,7 @@ test("reject config overrides, invalid argv, deadlines and selectors before exec
   for (const selector of ["last", "../stage", "/tmp/stage", "--all"]) {
     await assert.rejects(f.backend.operate("drop", { selector }));
   }
-  for (const paths of [[], [""], ["a\0b"], ["/etc"], ["../x"], ["src/../x"], ["."], ["C:/x"], ["a\\b"], ["a//b"]]) {
+  for (const paths of [[], ["/etc"], ["../x"], ["src/../x"], ["."], ["C:/x"], ["a\\b"], ["a//b"]]) {
     assert.throws(() => selection(paths));
   }
   await assert.rejects(readFile(path.join(f.root, "calls.jsonl")), { code: "ENOENT" });
@@ -195,77 +155,12 @@ test("cancellation settles the child and marks the outcome interrupted", async (
   assert.throws(() => execute(process.execPath, ["--version"], { signal: controller.signal }));
 });
 
-for (const kind of ["pi", "dsh"]) {
-  test(`${kind} cancellation during capability probing preserves exact-selector recovery without a spawn`, { timeout: 5000 }, async (t) => {
-    const f = await fixture(t);
-    const original = await readFile(f.binary, "utf8");
-    const ready = path.join(f.root, "probe-ready");
-    await writeFile(f.binary, `#!${process.execPath}
-import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(ready)}, String(process.pid));
-setInterval(() => {}, 1000);
-`);
-    const controller = new AbortController();
-    let running;
-    if (kind === "pi") {
-      const registered = [];
-      registerPi({ registerTool: (tool) => registered.push(tool), registerCommand() {}, on() {} }, {
-        createBackend: () => f.backend,
-      });
-      running = registered.find((tool) => tool.name === "pvisor_spawn")
-        .execute("cancel-probe", { argv: ["never-run"] }, controller.signal, undefined, { cwd: f.project });
-    } else {
-      const definitions = new Map();
-      registerDsh({ tools: { register: (tool) => definitions.set(tool.name, tool) } },
-        (tool) => tool, () => f.backend);
-      running = definitions.get("pvisor_spawn").execute({ argv: ["never-run"] }, {
-        agent: { session: { header: { cwd: f.project } } }, signal: controller.signal,
-      });
-    }
-    running.catch(() => {});
-    t.after(async () => {
-      controller.abort();
-      await running.catch(() => {});
-    });
-    let pid;
-    const deadline = Date.now() + 2000;
-    while (!pid && Date.now() < deadline) {
-      try { pid = Number(await readFile(ready, "utf8")); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      if (!pid) await delay(10);
-    }
-    assert.ok(pid, "capability probe must start before cancellation");
-    controller.abort();
-    let selector;
-    await assert.rejects(running, (error) => {
-      selector = /^Stage (.+); execution failed, do not retry automatically:/.exec(error.message)?.[1];
-      assert.ok(selector, error.message);
-      assert.match(error.message, /abort/i);
-      return true;
-    });
-    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-    await assert.rejects(readFile(path.join(f.root, "calls.jsonl")), { code: "ENOENT" });
-    // Reopen after the operator fixes the runtime; never rerun the task.
-    await writeFile(f.binary, original);
-    const reopened = new Backend(f.project, f.options);
-    assert.equal((await reopened.task(selector)).selector, selector);
-    await reopened.operate("status", { selector });
-    await reopened.operate("review", { selector });
-    assert.deepEqual((await f.calls()).map((call) => call.args), [
-      ["status", selector, "--json"], ["review", selector, "--diff"],
-    ]);
-  });
-}
-
 const success = { exit_code: 0, interrupted: false, stdout: "preview", stderr: "", signal: null, truncated: false };
 
 function hostBackend(log) {
   return {
     project: async () => "/project",
-    operate: async (action, input) => {
-      log.push({ action, input });
-      return action === "preview" ? nativePreview(input) : success;
-    },
+    operate: async (action, input) => { log.push({ action, input }); return success; },
     run: async (input) => { log.push({ action: "run", input }); return success; },
     doctor: async () => success,
   };

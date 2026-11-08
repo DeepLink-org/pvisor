@@ -1,5 +1,4 @@
 import { createBackend, callTool, failed, textContent, tools } from "./tools.mjs";
-import { formatPreview, summarizePreview } from "./summary.mjs";
 
 /** Pi official extension entrypoint; native Pi tools remain unchanged. */
 export default function registerPi(pi, dependencies = {}) {
@@ -31,14 +30,13 @@ export default function registerPi(pi, dependencies = {}) {
           let preview = "";
           if (action === "apply") {
             const result = await client.operate("preview", input);
-            const summary = summarizePreview(result, input, await client.project());
-            preview = formatPreview(summary);
-            if (!summary.can_confirm) throw new Error(preview);
+            if (failed(result)) throw new Error(JSON.stringify(result));
+            preview = result.stdout;
           }
           const project = await client.project();
           const accepted = await ctx.ui.confirm(
             `pVisor ${action}`,
-            action === "apply" ? preview : `Project: ${JSON.stringify(project)}\nStage: ${JSON.stringify(input.selector)}\nDiscard remaining candidates? Previously applied files are not reverted.`,
+            `Project: ${project}\nStage: ${input.selector}\nSelection: ${JSON.stringify(input.paths || [])}\n${preview}\n${action === "drop" ? "Discard remaining candidates? Previously applied files are not reverted." : "Publish these selected results?"}`,
           );
           if (!accepted) return;
         }
