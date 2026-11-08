@@ -6,9 +6,10 @@ for the host's built-in filesystem, terminal, or background-job tools. Each
 `pvisor_spawn` starts a new native Session; later calls do not continue that Session.
 Put dependent edits and tests in the same `argv` invocation.
 
-First-release status: these registry and remote-marketplace entrypoints are
-prepared but are not live until the npm packages and marketplace commit are
-published. Do not treat the commands below as evidence of publication.
+Use plugin version 0.1.1 or newer for a separately installed runtime. The
+published 0.1.0 package requires obsolete npm runtime packages; reinstalling it
+will not switch to Homebrew/pip. Remote marketplace refs require separate
+publication; npm publication does not publish a marketplace tag.
 
 Node.js 22.19+ and a separately installed pVisor runtime are required. Install
 pVisor through Homebrew or pip before installing the plugin. Host staging still
@@ -46,7 +47,7 @@ Activate only the Agent hosts you use.
 ### Pi
 
 ```sh
-pi install npm:pvisor-agent-plugins
+pi install npm:pvisor-agent-plugins@0.1.1
 ```
 
 Start a new Pi session in the target project. Ask it to call `pvisor_doctor`,
@@ -57,12 +58,12 @@ do not nest task plugins inside that outer Session.
 ### DSH Web and Desktop
 
 ```sh
-dsh plugin --profile web add pvisor-agent-plugins
-dsh plugin --profile desktop add pvisor-agent-plugins
+dsh plugin --profile web add pvisor-agent-plugins@0.1.1
+dsh plugin --profile desktop add pvisor-agent-plugins@0.1.1
 ```
 
 Install only the profile you use, then restart it. Desktop also accepts
-`pvisor-agent-plugins` in **Plugins → Add plugin**. The package
+`pvisor-agent-plugins@0.1.1` in **Plugins → Add plugin**. The package
 uses Cordis's functional plugin interface and `dsh-tools.defineTool`; its peers
 target DSH 0.2.x. It does not disable existing providers or change permission
 presets. Check that `pvisor_doctor` appears in the actual tool catalog.
@@ -72,9 +73,9 @@ presets. Check that `pvisor_doctor` appears in the actual tool catalog.
 Register the remote marketplace and bind the tools from your project directory:
 
 ```sh
-codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.1
 codex plugin add pvisor@pvisor
-codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.1 pvisor-agent-mcp --project "$PWD"
 ```
 
 The marketplace installs the workflow skill. The native `codex mcp add` command

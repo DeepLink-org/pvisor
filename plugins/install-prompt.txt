@@ -15,17 +15,17 @@ Harness (DSH), or Codex. Use the registry release, not a source checkout.
    Do not install unrelated Agent applications, change model logins, or remove
    existing plugins without permission. Explain host-profile changes first.
 4. Use the selected host's native package manager:
-     Pi: pi install npm:pvisor-agent-plugins
-     DSH Web: dsh plugin --profile web add pvisor-agent-plugins
-     DSH Desktop: dsh plugin --profile desktop add pvisor-agent-plugins
+     Pi: pi install npm:pvisor-agent-plugins@0.1.1
+     DSH Web: dsh plugin --profile web add pvisor-agent-plugins@0.1.1
+     DSH Desktop: dsh plugin --profile desktop add pvisor-agent-plugins@0.1.1
    npm installs only the plugin. The Agent host must have pvisor on its PATH;
    desktop apps may not inherit terminal PATH. If needed, configure the absolute
    CLI path with PVISOR_PLUGIN_BINARY in the host environment. Invalid overrides
    or missing CLI capabilities are errors; never silently select another runtime.
 5. For Codex, install the remote workflow and register tools from the project:
-     codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+     codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.1
      codex plugin add pvisor@pvisor
-     codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+     codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.1 pvisor-agent-mcp --project "$PWD"
    A client without plugins may use MCP alone. Do not register duplicate servers
    or infer the project from an installed plugin's cwd.
 6. Never print keys or put credentials in plugin config or task records. Do not

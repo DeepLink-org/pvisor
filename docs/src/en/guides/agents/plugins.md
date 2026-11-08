@@ -6,8 +6,8 @@ description: Install pVisor through Homebrew or pip, add Pi, DSH and Codex plugi
 
 Call pVisor staged tasks from your Agent, then hand off results through the native `spawn → status/review → apply/drop` workflow. Install the runtime through Homebrew or pip; npm distributes only the Agent adapters.
 
-!!! note "First publication pending"
-    The npm packages and remote marketplace commit are not published yet. The commands below are the post-publication user entrypoints, not evidence that registry installation already works. Remove this notice only after publication authorization and release acceptance.
+!!! note "Upgrade from 0.1.0"
+    Use plugin 0.1.1 or newer for Homebrew/pip runtimes. The published 0.1.0 package still requires obsolete npm runtime packages; reinstalling it does not fix that dependency. Remote marketplace tags require separate publication; npm publication alone does not make those refs available.
 
 ## Install {#install}
 
@@ -19,16 +19,16 @@ Choose the hosts you actually use:
 
 ```sh
 # Pi
-pi install npm:pvisor-agent-plugins
+pi install npm:pvisor-agent-plugins@0.1.1
 
 # DSH: install only the profile you use
-dsh plugin --profile web add pvisor-agent-plugins
-dsh plugin --profile desktop add pvisor-agent-plugins
+dsh plugin --profile web add pvisor-agent-plugins@0.1.1
+dsh plugin --profile desktop add pvisor-agent-plugins@0.1.1
 
 # Codex CLI: run from your project
-codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.0
+codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.1
 codex plugin add pvisor@pvisor
-codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.0 pvisor-agent-mcp --project "$PWD"
+codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.1 pvisor-agent-mcp --project "$PWD"
 ```
 
 DSH Desktop also accepts `pvisor-agent-plugins` in **Plugins → Add plugin**. Install only the profile you use.
