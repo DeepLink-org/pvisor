@@ -45,6 +45,7 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-10 | MCP shutdown does not accept or discard pending results | Real stdio shutdown, reopened adapter and native review |
 | DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
 | DOC-PLUGINS-12 | Cancelling an active task retains its exact selector and staged candidates without publication | Real native cancellation after a staged write; reopened status, review, read-only preview and drop |
+| DOC-PLUGINS-13 | Active MCP EOF, truncated-frame EOF, abrupt server death and client pipe loss retain candidates and refuse live mutations | Real native stdio faults before the spawn response, explicit private-record selector discovery, reopened reconciliation/review/preview/drop; separate fake-runtime test verifies output loss cancels even with input still open |
 
 The npm fixture verifies real package-manager installation and external runtime
 selection, not Homebrew/pip installation, native file semantics or a published registry release.

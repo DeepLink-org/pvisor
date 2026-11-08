@@ -15,10 +15,27 @@ if (!project) {
 const backend = new Backend(project);
 const active = new Map();
 let initialized = false;
-const send = (id, value, error = false) =>
-  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
+let disconnected = false;
+const send = (id, value, error = false) => {
+  if (!disconnected) {
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
+  }
+};
+// A client can lose its response pipe before closing its request pipe.
+// Cancel supervised work instead of crashing on an unhandled EPIPE, and do
+// not accept further requests or try to deliver results to the lost peer.
+process.stdout.on("error", (error) => {
+  disconnected = true;
+  process.stdin.destroy();
+  for (const controller of active.values()) controller.abort();
+  if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
+    console.error(`MCP output failed: ${error.message}`);
+    process.exitCode = 1;
+  }
+});
 
 async function dispatch(message) {
+  if (disconnected) return;
   const { id, method, params = {} } = message;
   if (message.jsonrpc !== "2.0" || typeof method !== "string" ||
       (id !== undefined && typeof id !== "string" && typeof id !== "number") ||

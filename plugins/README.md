@@ -141,6 +141,22 @@ stdout/stderr. A nonzero exit, cancellation, or lost completion can leave
 candidates. Do not automatically rerun an uncertain task. Use that exact selector;
 the adapters never use `last`.
 
+If the MCP connection disappears before the spawn response arrives, this release
+has no task-list/recovery tool. An operator can inspect the private state directory
+configured above: each UUID task directory has a `task.json` with its canonical
+`project` and matching `task` UUID. Identify the intended task explicitly, then
+use that directory's absolute `stage` path with native `pvisor status ... --json`
+and review, or with the reopened plugin's exact-selector tools. Several records
+may belong to the same project; do not guess from directory order or use `last`.
+A record can precede native startup, so an absent stage is not proof that it is
+safe to rerun. Do not edit records or invent completion receipts.
+
+Closing MCP input cancels active supervised commands. Losing the response pipe
+also cancels them once an output write detects the disconnect. Killing the MCP
+server abruptly cannot run that cleanup: native work may continue until its
+own completion or runtime deadline. Reconcile status before acceptance; live or
+uncertain work is not approval to apply or discard candidates.
+
 | Tool | Effect |
 | --- | --- |
 | `pvisor_doctor` | Check required CLI capabilities and show binary path, project, runtime version and adapter scope; it does not test FUSE or certify isolation |

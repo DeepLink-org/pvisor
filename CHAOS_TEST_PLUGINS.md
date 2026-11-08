@@ -196,3 +196,150 @@ mounts remained.
 No native suite was rerun for this test-only follow-up; its earlier result
 remains 12 passed. The existing native binary's source revision remains an
 explicit unverified coverage gap.
+
+### Round 2 — active MCP disconnect and lost-response reconciliation
+
+- UTC start: 2026-11-08 01:19:44; last workload ended 01:41:46; entry/handoff
+  completed about 01:43 UTC (~23 minutes wall time, including 15 minutes blocked
+  by an untrusted-mise prompt, not eight hours of execution).
+- Read root instructions/README/CONTRIBUTING, plugin README/CONTRIBUTING,
+  this log and prior campaign frontend-disconnection and inherited-mount topology
+  hazards. Reused round1's compatible debug CLI without rebuilding or installing.
+  No Rust changes, Git commits, pushes, merges, publication or semspec changes.
+- Story: Codex-facing stdio MCP starts one native safe Host task, writes staged
+  source-result/test-result files and runs a shell assertion, then remains active.
+  Before any spawn response, close input, truncate a JSON frame and close input,
+  SIGKILL only the owned MCP server, or destroy both client pipes. Discover the
+  selector by validating the private task record's project/UUID, not `last`.
+  Native status must observe running/live candidates before each injected fault.
+  Native preview/apply/drop all refuse while live. Reopen exact-selector status,
+  wait for a terminal receipt, review both candidates, preview without publication
+  and explicitly drop. Original project stays unchanged; exactly one task exists.
+
+#### Confirmed bug and repair
+
+Client response-pipe loss caused an unhandled stdout EPIPE and MCP exit 1.
+`mcp.mjs` now handles output errors: stop accepting requests, destroy input,
+abort all active controllers, and suppress further sends. EPIPE and destroyed
+streams are ordinary disconnects; other output errors retain a stderr diagnostic
+and failure exit. No acceptance authority, retries, process-group kills or
+native state manipulation were added. The separate portable fake-runtime test
+closes only output, leaves request input open, triggers a ping response, and
+requires the active task's SIGTERM acknowledgement plus normal server exit.
+This is transport supervision evidence, not native filesystem evidence.
+
+#### Commands, failures and red/green evidence
+
+Workloads were sequential with `nice -n 10`, `CARGO_BUILD_JOBS=2`,
+`RUST_TEST_THREADS=1`, `NEXTEST_TEST_THREADS=1`, no automatic installs and the
+round1 explicit Node PATH shim adding `--test-concurrency=1`. Guarded execution
+used `timeout -k 30`, initially 900s and finally 110s; outer finite tool limits
+were 900s/180s/120s. Final mise calls used process-local
+`MISE_TRUSTED_CONFIG_PATHS="$PWD"` and `MISE_YES=1`.
+
+| UTC | Command/check | Actual outcome |
+| --- | --- | --- |
+| 01:21:09–01:36:09 | `mise run test-agent-plugins-native` | Blocked at mise trust prompt, killed at 900s; no tests or build executed. Process scan confirmed no surviving owned workload |
+| 01:36:25–01:36:44 | `PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/target/debug/pvisor mise run test-agent-plugins-native` | Red: 16 tests, 15 pass, client pipe loss fails because server exits 1; other three new native scenarios pass |
+| 01:39–01:40 | First final-check invocation | Guard script from earlier tool scratch unavailable; Python exits 2 twice, no tests executed; recreated owned guard/shim |
+| 01:40:23–01:40:45 | `mise run test-agent-plugins` | Green: 32 passed, 0 failed/skipped/cancelled, 22.145s |
+| 01:40:45–01:41:04 | Native task above after EPIPE repair | 15 pass/1 new harness failure: shutdown status briefly unknown, but subsequent preview independently reconciles cancelled and succeeds. Removed stale-status assumption; no product checks weakened |
+| 01:41:27–01:41:46 | Final native task above | Green: 16 passed, 0 failed/skipped/cancelled, 18.915s |
+| 01:41:46 | `git diff --check`, process scan and mountinfo scan | Passed; no remaining owned fixture/native/server processes or current-namespace fixture mounts (scan matched only the checking shell) |
+
+Final native outcomes: active EOF, truncated-frame EOF and client pipe loss
+reconciled **cancelled**; owned MCP SIGKILL left native work active until the
+12-second command naturally finished, then reconciled **completed**. All retained
+candidates stayed reviewable, and none were automatically applied or discarded.
+The SIGKILL case therefore proves bounded continued execution and live mutation
+refusal, not immediate native task teardown. A transient unknown status was
+observed during one owner shutdown; no stable unknown/missing-receipt fault was
+injected or claimed covered.
+
+#### Resources, cleanup, limitations and next scenario
+
+- Recorded workload boundaries: MemAvailable 19,483,406,336–19,957,047,296 bytes
+  (~18.15–18.59 GiB), disk free 345,351,458,816–345,480,900,608 bytes
+  (~321.63–321.75 GiB), load1 0.258–0.978. All gates passed.
+  The first timed-out guard had no POST; the next preflight supplied that check.
+- Fixture roots were owned disposable terminal directories. New native fixtures
+  set TMPDIR to their own non-project directory, keeping private failed-task HOME
+  confined there without inherited staging mounts. Candidates were explicitly
+  dropped after terminal reconciliation, then fixture roots removed. SIGKILL
+  targeted only the owned child PID. No global cleanup/unrelated signals.
+- Native binary is the same external debug artifact/version/hash recorded in
+  round1; its source revision remains unestablished. Real native safe/deny-all
+  Sessions and stdio JSON-RPC were exercised, not an interactive Codex agent,
+  model call, paid service or credentials. The native "test" is a bounded shell
+  assertion, not a compiler/build suite.
+- Genuine recovery limitation: no plugin list/recovery API exists. Lost-response
+  recovery here required explicit operator inspection of private task records.
+  Multiple ambiguous tasks must not be guessed from order. README documents the
+  limitation, pre-native task records, and abrupt-death continuation.
+- Only `mcp.mjs` production code changed; new tests/helper are separate files.
+  Round1 production/test files were untouched; README/CONTRIBUTING/log additions
+  are additive. Parent was notified immediately of scope and workload release.
+- No Rust/Python workspace suites, Clippy, rustdoc, broad lint, installs or
+  platform matrix run. Persistent unknown and crash-before-receipt remain gaps.
+- Recommended next scenario: child process retains stdio while MCP client
+  disconnects, with bounded output and owned-descendant teardown; separately
+  design explicit lost-response discovery rather than quietly adding a `last`
+  fallback or automatic retry.
+
+#### Round 2 static-review follow-up — code ready, validation pending
+
+Parent's reviewer identified three P2 test gaps after the initial handoff;
+the production disconnect handler was clean. Follow-up changes are test-only:
+
+- Selector discovery now treats a missing record or partially written JSON as
+  not ready within the existing polling bound. Parsed records must exactly match
+  schema/project/task, with canonical project/task directories and one UUID task.
+  Extra task directories and invalid completed records fail closed.
+- Graceful active EOF, truncated-frame EOF and client pipe loss now require a
+  **cancelled** terminal state. Only abrupt server SIGKILL may naturally complete.
+  This prevents the 12-second fallback from hiding removed cancellation.
+- Fixture removal now requires a native reconciliation callback after MCP closes.
+  On assertion/startup failure it boundedly waits for a known terminal receipt
+  and explicitly drops candidates before removal. Failure, persistent unknown,
+  live ownership or an unresolvable record preserves the root and reports its
+  exact path instead of recursively removing potentially live native state.
+  Normal success records the already verified terminal/drop disposition.
+- Added portable regression cases for missing/partial/invalid/extra task records
+  and for preservation when reconciliation returns false or throws, followed by
+  permitted removal only after affirmative terminal reconciliation.
+
+No tests or builds were run for this follow-up because round3 owns the sole
+workload slot. Earlier 32/32 and 16/16 results apply to the initial repair, not
+these follow-up changes. Parent will schedule serial adapter/native validation
+after the slot is released. No additional production or round1 files changed.
+Native cleanup gives each capability/operation call an AbortSignal capped at
+two seconds and the remaining overall 20-second cleanup budget. Supervisor
+kill/drain grace can extend final settlement, but the ordinary 30-second command
+deadline cannot silently reset that budget. Expected adapter count is 34 in
+this child's inherited distribution tests, or 35 after the parent's additional
+round1 exits-before-readiness regression; native count remains 16.
+
+Final follow-up validation was authorized after round3 released the workload
+slot at 01:48:17 UTC. On 2026-11-08:
+
+| UTC | Exact task | Outcome |
+| --- | --- | --- |
+| 01:48:46–01:49:08 | `mise run test-agent-plugins` | **34 passed**, zero failed/skipped/cancelled; 22.196s; includes record-publication/invalid-record tests and cleanup-preservation regression |
+| 01:49:08–01:49:27 | `PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/target/debug/pvisor mise run test-agent-plugins-native` | **16 passed**, zero failed/skipped/cancelled; 18.993s; strict cancellation assertions and latest 2s-per-call cleanup included |
+| 01:49:27 | `git diff --check`, owned fixture/runtime/MCP process scan, current-namespace mountinfo scan | Passed; no matching processes or fixture mounts |
+
+The final runs retained the explicit serial Node shim, `nice -n 10`,
+`timeout -k 30 110`, two Cargo jobs/one test thread, no installs and
+process-local mise trust/noninteractive configuration. Pre/post resource gates
+passed: MemAvailable 19,739,938,816–19,925,495,808 bytes, free disk
+345,248,886,784–345,295,941,632 bytes, load1 0.544–0.884.
+The slot was released to parent at 01:49:27 UTC.
+
+Native outcomes again were cancelled for active EOF/truncated EOF/client pipe
+loss and completed after the bounded 12-second command for server SIGKILL.
+The portable regression proves fixture preservation when reconciliation returns
+false or throws. A truly stuck native status/drop inside the after-hook was
+**not injected**; its AbortSignal budget is code-reviewed but not fault-tested.
+The 20-second reconciliation budget is not a hard wall-clock cleanup guarantee:
+bounded supervisor termination/output-drain grace may extend settlement.
+No builds, Rust/Python suites, publication or unrelated cleanup were performed.
