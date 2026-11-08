@@ -118,6 +118,15 @@ result. Networked tasks, VM selection, interactive
 input, PTYs, and live Session continuation are not exposed in this first version.
 Do not remove safety flags to make a failed task work.
 
+Deny-all networking blocks external network access; it does not prohibit every
+form of local communication. On Linux, offline tests can use task-local TCP
+loopback in the private network namespace and owned AF_UNIX socketpairs. Targeted
+Linux tests also verified that the task could not connect to a fixture-owned
+host loopback listener. macOS local communication controls differ; these Linux
+results are not a cross-platform or arbitrary-IPC containment claim. See the
+[network boundary contract](../docs/src/en/guides/policies/network.md#网络边界)
+and [Linux validation report](../OFFLINE_IPC_VALIDATION.md).
+
 The private task record contains only its schema, project and task ID; it does
 not persist command arguments or credential values. Runtime-owned records and
 captured command output have their normal retention rules. Avoid printing secrets.
