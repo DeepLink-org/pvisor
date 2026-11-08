@@ -30,9 +30,28 @@ test("summary separates exact selection, required dependencies and other staged 
     'Change "src/code.txt"', 'Change type "src/type"', 'Opaque directory change "src/dir"',
     "Additional required changes (also applied): 1",
     "Other staged candidates (NOT applied by this selection): 1",
-    "in project 1; outside scope 3", "--path 'src' --dry-run --diff",
+    "in project 1; outside scope 3", "--path='src' --dry-run --diff",
   ]) assert.ok(text.includes(expected), expected);
   assert.ok(!text.includes("--all"));
+});
+
+test("filename summary: literal option values retain exact spelling and safe shell quoting", () => {
+  const paths = ["--json", "-notes.txt", "space name.txt", "café.txt", "it's.txt", "$(touch sentinel)"];
+  const selected = { selector: input.selector, paths };
+  const value = summarizePreview(nativePreview(selected), selected, "/project");
+  const text = formatPreview(value);
+  for (const expected of ["--path='--json'", "--path='-notes.txt'", "--path='space name.txt'",
+    "--path='café.txt'", "--path='it'\\''s.txt'", "--path='$(touch sentinel)'"]) {
+    assert.ok(text.includes(expected), expected);
+  }
+  assert.equal(value.selected.length, paths.length);
+  assert.equal(value.pending.length, 0);
+  for (const name of ["line\nbreak", "direction\u202e"]) {
+    const controlled = { selector: input.selector, paths: [name] };
+    const display = formatPreview(summarizePreview(nativePreview(controlled), controlled, "/project"));
+    assert.match(display, /Review commands omitted/);
+    assert.doesNotMatch(display, /^pvisor (review|apply) /m);
+  }
 });
 
 test("binary and mode-only candidates stay factual without invented content or test claims", () => {

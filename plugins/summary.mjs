@@ -112,7 +112,7 @@ export function formatPreview(summary) {
   );
   const commands = [
     `pvisor review ${shell(summary.selector)} --diff`,
-    `pvisor apply ${shell(summary.selector)} ${summary.paths.map((item) => `--path ${shell(item)}`).join(" ")} --dry-run --diff`,
+    `pvisor apply ${shell(summary.selector)} ${summary.paths.map((item) => `--path=${shell(item)}`).join(" ")} --dry-run --diff`,
   ];
   // Never show a partial runnable command or embed raw control characters.
   if (commands.join("\n").length <= 3000 && !commands.some((command) => CONTROLS.test(command))) {

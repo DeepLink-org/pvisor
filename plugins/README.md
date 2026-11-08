@@ -214,6 +214,16 @@ Drop asks separately.
 With no interactive UI, mutations are refused. Tool calls do not expose apply
 or drop, so model-generated JSON cannot stand in for user confirmation.
 
+Selections preserve exact relative string paths, including spaces, Unicode,
+apostrophes and leading dashes. The adapter binds each value as one
+`--path=<literal>` argument without a shell; displayed native commands use the
+same binding plus shell quoting (`--path='--json'` selects a file named
+`--json`, not an option). Selecting a directory explicitly includes descendants.
+Labels escape newline and directional controls; runnable commands are omitted
+when the selector or requested paths contain controls, rather than presenting a
+misleading command. Empty or traversing selections remain invalid. String
+selections do not represent arbitrary non-UTF-8 filename bytes.
+
 ### DSH decisions
 
 DSH additionally exposes `pvisor_apply` (`selector`, `paths`) and `pvisor_drop`

@@ -1659,3 +1659,292 @@ load1 1.152–1.166. Final fixture tmp was empty; current-UID process and mount
 scans found no owned round11 process/mount. Temporary runner/shim/log files
 removed after transcription; `git diff --check` passed. Slot released again
 after final cleanup for the coordinator's next round.
+
+### Round 12 — inherited descriptor holders after nonzero exit and cancellation
+
+- Measured UTC: 2026-11-08 03:07:19–03:11:15 (about four minutes, including
+  static preparation; not an eight-hour elapsed result). Preparation remained
+  static while round11finalchecks owned the slot. Parent granted the sole
+  TEST/BUILD slot after its 03:08:13 release; this round released it at03:11:15.
+- No production bug confirmed or production code changed. Added four focused
+  cases in `plugins/test/descendants.native.mjs` and documented their scope in
+  `plugins/CONTRIBUTING.md`. Read root README/AGENTS, campaign, plugin
+  README/CONTRIBUTING and existing coding/approval/ownership helpers. No nested
+  plugin README/AGENT instructions were present.
+- Used the supplied native binary read-only at
+  `/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`;
+  before/after SHA256 remained
+  `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`.
+  No build, replacement, commit, push, Git merge or publication.
+
+#### Story, source contract and actual outcomes
+
+A coding Agent's test writes unfinished candidates, starts an inherited-stdio
+background child or forks a grandchild that calls `setsid`, then exits7 or is
+cancelled by the user. Every Python process explicitly arms its own45s alarm
+(alarms are not inherited by fork); waits use kernel timers, not CPU spinning.
+At most three workload Python processes coexist, with one fixture/Session at a
+time. The native runtime has its own supervisor/helper processes; that workload
+count is not a claim that the entire native process tree contains three PIDs.
+Fixtures open no sockets or network clients and install no host service.
+
+Source inspection distinguished the contracts: the plugin supervisor requests
+native cancellation and bounds its own pipe wait, but does not promise generic
+descendant containment. Linux safe native setup uses a private PID1 namespace;
+the kernel tears down its remaining namespace members when PID1 exits.
+Existing native coverage exercised a successful setsid double-fork under
+record-only capture, not this adapter `--stdio inherit` nonzero/cancel matrix.
+This round does not promote process-group signalling to a security guarantee.
+
+| Final scoped scenario | Native/adapter result | Native terminal state |
+| --- | --- | --- |
+| Background child, parent exits7 | exit7, not interrupted, signal=null | failed, live=false |
+| Background child, user cancels after readiness | exit143, interrupted, signal=null | cancelled, live=false |
+| Detached setsid grandchild, parent exits7 | exit7, not interrupted, signal=null | failed, live=false |
+| Detached setsid grandchild, user cancels after readiness | exit143, interrupted, signal=null | cancelled, live=false |
+
+All four final cases passed; adapter completion was about0.18–0.30s, far below
+the8s native deadline plus30s adapter allowance and5s escalation/5s output drain.
+Parent and descendant stdout/stderr markers survived without truncation; both
+observed stdin EOF. No task falsely reached its unfinished-parent completion
+marker. Native finish timestamps were present and live_execution=null at
+terminal observation. Each exact selector retained both candidates for status,
+review and preview. A rejected real Pi-adapter/mock-host approval preserved
+them, host project files remained absent, and exactly one task record proved
+no automatic retry. Native live apply/drop refused in both cancellation cases.
+
+Host `/proc` scans used the exact unique fixture-root argv token, same-user
+ownership, host PID, process birth start ticks and wait channel. Namespace-local
+PIDs were never interpreted as host PIDs. Both cancelling workload processes
+were observed sleeping after their descriptor handshake and candidate writes;
+readiness raced early run settlement under a6s deadline. All four terminal
+owned-process scans were empty immediately: no process required manual
+termination or waiting out its independent alarm. The observer sends no signals.
+
+#### Attempts, commands and fixture correction
+
+There were three bounded invocations,12 actual native task attempts total:
+10 scenario passes and2 fixture-readiness failures, not12 passing cases.
+
+1. Initial invocation: both nonzero cases passed. Both cancel cases hit the
+   fixture's6s readiness timeout because native live review does not expose the
+   stopped-only diff. Joined cleanup cancelled pending work, reconciled native
+   terminal/nonlive status and dropped all four stages before removal. These
+   two failures are harness defects, not evidence of a product lifecycle bug.
+2. Corrected readiness uses host owned-token/birth observations and the two
+   Python timed sleepers, then native live status. All four scenarios passed.
+3. Final-source invocation after adding native finish-time/live_execution
+   assertions and operation auditing: all four passed again. Final audited
+   operations were26 adapter status/review/preview/refused-live-mutation calls,
+   plus8 cleanup status/drop calls. Capability subprocesses are not included in
+   that operation count; the initial polling attempt did not audit its exact
+   number of live review calls.
+
+All used the exact repository task `mise run test-agent-plugins-native` with a
+private `.asv8/round12/bin/node` shim executing:
+
+```sh
+exec /usr/bin/node --test-concurrency=1 --test-name-pattern='^descendant pipes:' "$@"
+```
+
+Environment set `MISE_TRUSTED_CONFIG_PATHS="$PWD"`, the supplied
+`PVISOR_PLUGIN_BINARY`, owned durable TMPDIR/output under `.asv8/round12`,
+`CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=1`, `OMP_NUM_THREADS=1` and
+`OPENBLAS_NUM_THREADS=1`. Each task ran under
+`nice -n 10 timeout -k 30s 120s`. Final runner elapsed2.376s. Node reported13
+passes, but nine were no-matching-case file placeholders; the actual final
+scenario count is four. The native task contains no portable packed-install
+case. No portable aggregate or DOC-PLUGINS-07 fixture ran.
+
+`/usr/bin/node --check plugins/test/descendants.native.mjs` and
+`git diff --check` passed. Durable runner evidence is
+`.asv8/round12/{native,native-corrected,native-final}.log`; private shim and
+all logs totaled111,542 bytes at final audit.
+After releasing the slot, removed the private shim from the source worktree;
+the three durable local evidence logs remain. Only the test, contributor
+documentation and this campaign entry are round12 integration deliverables.
+
+#### Resources, cleanup, limits and next scene
+
+Pre/post guards for every workload remained within campaign limits. Across
+recorded boundaries available RAM was at least19,131,453,440 bytes, free disk
+at least342,738,034,688 bytes, load1 at most1.2421875. Final03:11:15 audit:
+available19,140,186,112 bytes, free342,870,376,448 bytes, load1=1.2421875;
+zero owned task command lines, zero owned mounts, and an empty evidence fixture
+directory. All12 attempted fixtures were reconciled/dropped and removed; no
+unknown root remains. Durable logs live outside those removed fixtures.
+
+The coding fixture installed its hook before setup, tracked every attempted run
+and operation with immediate rejection handling and combined owned/test/caller/
+deadline signals, cancelled/joined work before native terminal checks, and
+required successful native drop (or known applied-empty) before process/mount
+checks and removal. Unknown authority would preserve the fixture path.
+
+This is Linux safe Host evidence, not macOS, Landlock-only, VM/OCI, arbitrary
+daemon containment or actual Pi UI acceptance. Workload output is retained in
+the adapter result/log, not a promised second native stdio capture. No MCP
+transport/backpressure path ran, so this does not revalidate the parent's
+concurrent round11 MCP8MiB overload repair. Existing parent changes to
+`plugins/README.md`, `plugins/mcp.mjs` and transport tests were untouched.
+No Rust/Python suites, full portable/native aggregate, build, lint/rustdoc,
+cloud credentials, installs, host network/system changes, unrelated kills,
+global cleanup or semspec approvals were performed.
+
+Next scene: combine an owned inherited descriptor holder with real MCP
+connection loss, recover its exact task record from a fresh adapter, and
+separately reconcile returned versus undelivered output. Keep that transport
+test distinct from these Backend/native lifecycle results and do not rerun an
+uncertain task automatically.
+
+#### Post-round static review correction (validation pending)
+
+Parent review found two test-harness weaknesses, not production defects. The
+03:11:15 results above exercised the **pre-review** observer: it collected
+birth ticks without bracketing the other `/proc` reads, silently skipped
+EACCES, and could let a terminal survivor exit voluntarily during its safety
+wait before asserting absence. The actual logged terminal sets were empty,
+but those runs do not validate the strengthened regression rule.
+
+Prepared static-only changes while round13 owns the slot:
+
+- Extracted a small read-only observer into
+  `plugins/test/descendants-fixture.mjs`. It brackets UID/argv/wait-channel reads
+  with process start-tick checks, rechecks UID, matches readiness hostPID/birth
+  pairs even if argv changes, and records numeric-PID reuse separately. EACCES
+  or EPERM is explicit incomplete visibility, not a zero-process result;
+  unstable observations fail closed as well.
+- Terminal ownership is sampled immediately on adapter settlement, before
+  status/review delays. The fixture requires observation before15s, well before
+  voluntary40s exit. Any observed survivor fails; the46s safety wait only
+  precedes rethrowing the original failure, never turns eventual exit into PASS.
+- Added an optional default-no-op ownership verification callback to the coding
+  fixture's existing reconciliation guard. Incomplete ownership evidence
+  preserves its root even if native status/drop otherwise succeed.
+- Added four fake-I/O helper tests for stable identity/argv changes, numeric PID
+  reuse, birth races/denied visibility and survivor self-exit during cleanup.
+
+No validation workload has run against these post-review changes yet; waiting
+for explicit parent slot grant. No new native/product bug is claimed.
+
+### Round 13 — exact filename selection, including option-shaped names
+
+- Actual UTC: static preparation 2026-11-08 03:09–03:12; sole TEST/BUILD
+  grant received after round11's 03:12:18 release. Workloads 03:12:58–03:15:53;
+  final audit 03:14–03:16. This is a bounded incremental round, not eight hours.
+- Read root README/AGENTS, plugin README/CONTRIBUTING, campaign and existing
+  coding/summary fixtures. No nested plugin instructions found. Parent was
+  notified of backend/summary overlap before production edits and confirmed
+  these translation points were free. No authority or ancestor-policy change.
+
+#### Confirmed defect and coherent repair
+
+The native immutable binary deterministically refused separate argv
+`["--path", "--json"]` with exit2 and “a value is required”, while the same
+read-only preview using `["--path=--json"]` selected exactly the staged file
+named `--json`. The old Backend then failed that same preview with exit2.
+Shell quoting alone does not stop the native option parser treating a leading
+dash as an option. This is native red evidence, not inference from mocked argv.
+
+Compared broad native `allow_hyphen_values` with fixing the owning JS translation:
+chose one attached `--path=<literal>` argument for **every** valid selection,
+in both preview/apply and the summary's shell-quoted review command. No parser
+change, dash-specific branch or expanded filename API. Exact selection validation,
+native planning, confirmation and writeback remain unchanged. Updated two
+legacy exact expectations and documented the string-path/control-display scope.
+
+#### Real Session and presentation evidence
+
+`filename-selection.native.mjs` reuses `codingFixture`, including pre-setup
+hooks, pre-invocation operation tracking, abort/join and terminal/drop cleanup.
+One Session per attempt, **three total** (red, green, then parent-requested final
+source revalidation); no external/user stage. The extra tiny final Session was
+explicitly requested after the test-only diagnostic conditional changed.
+The offline Python argv fixture creates eight tiny files plus one directory:
+`--json`, `-notes.txt`, spaces, non-ASCII, apostrophe, newline and directional
+control names, and scratch. No shell constructs these names.
+
+The green Session verifies:
+
+- Before acceptance, every host file is absent. Exact `--json` preview selects
+  one entry, no required entry, inventory9, pending8; raw native entry identity
+  agrees with summary, which shows selected1 and attached review command.
+- Explicit apply publishes only `--json`. A missing-path preview is a no-op,
+  not all-pending. Newline child selection retains its exact native identity
+  and suppresses runnable commands. Newline/bidi labels are visibly escaped.
+- Explicit `reviewer's 文件` directory selection includes that directory and
+  its two newline/bidi children (selected3, required0, pending5). The review
+  command preserves apostrophe quoting. Applying that explicit container,
+  then dropping the rest, leaves only the accepted file and two accepted
+  children; five unrelated files remain absent.
+- Non-UTF-8 bytes were not added; adapter strings do not claim arbitrary byte
+  selection. No live Pi/DSH UI or cloud model was involved.
+
+#### Commands and actual case counts
+
+Common harness: `nice -n 10 timeout -k 30 120 mise run TASK`,
+process-local `MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0`,
+`CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1`,
+`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`. Owned PATH Node shim preserves task
+file arguments and adds `--test-concurrency=1 --test-timeout=120000
+--test-name-pattern="$ROUND13_FILTER"`. TMPDIR/evidence root:
+`$PWD/.asv8/round13/tmp`. Durable runner logs are `.asv8/round13/*.log`.
+
+| UTC | Task and precise filter | Result |
+| --- | --- | --- |
+| 03:12:58–59 | `test-agent-plugins-native`; `^filename selection:` | Native **red**, 1 actual failure at Backend preview after separated/attached native comparison; 9 unmatched wrappers |
+| 03:13:04–05 | `test-agent-plugins`; `^filename (argv\|summary):` | Portable **red**, 2 actual failures for old argv/display command; 8 unmatched wrappers |
+| 03:13:31–32 | `test-agent-plugins-native`; `^filename selection:` | **1 actual case passed**, 9 unmatched wrappers; selected-only host state and disposal passed |
+| 03:14:06–07 | `test-agent-plugins`; exact anchored filter below | **29 actual cases passed**, 8 unmatched wrappers, 37 reported passes; no install fixture selected |
+| 03:15:52–53 | `test-agent-plugins-native`; `^filename selection:` | **Final source: 1 actual case passed**, 9 unmatched wrappers, separated diagnostic exit2; complete native acceptance/disposal repeated |
+
+Final portable filter, with literal regex alternation:
+
+```text
+^(filename (argv|summary):|summary separates |binary and mode-only |empty and no-op |blocked/conflicting |malformed, truncated, |non-string action |untrusted/control/|every directional |long lists and labels |realistic ancestor |(pi|dsh): (malformed|malformed-kind|truncated|blocked) preview never |failure retains exact |reject config overrides, |run always selects |tasks cannot cross |DOC-PLUGINS-08:|Pi registers additive |DSH permits only |Pi and DSH never |shared model tool routing )
+```
+
+This includes exact argv for spaces/Unicode/apostrophe/dashes/newline/bidi and
+shell-looking data; no sentinel is created. Empty/NUL/traversing input, cross-task
+ownership, unsafe state, blocked approval, malformed/truncated preview, no-op,
+byte-identity summary handling and all directional-control presentation
+regressions remain covered. All workload invocations have zero cancelled cases.
+`git diff --check` and `node --check` for new native test/backend/summary passed.
+
+After native green, the separated-form comparison was made diagnostic rather
+than requiring future native runtimes to reject it: a future successful result
+must still select exactly `--json`; current exit2 branch retains the assertions
+already run. Parent requested one final narrow native rerun on actual final
+source; it passed at03:15:53, including the diagnostic exit2 branch. Production
+code and all native success assertions are unchanged since initial native green.
+
+Read-only native binary, SHA-256 unchanged before every workload and final audit:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+No build/overwrite; inherited artifact provenance is not a claim of building
+from current uncommitted JS. Backend SHA-256 after repair:
+`92f062ad8da944c7ec5246d2eb14ab5ef9fddb1975304415b13df2440f0072bd`;
+summary: `3bc3e0b7545084e8557473d6e2217e57c6778ab3c1e9e3b5a76cb15ff68c6405`.
+
+#### Resources, cleanup, gaps and next scene
+
+- All ten pre/post workload gates passed: available RAM
+  19,048,624,128–19,226,386,432 bytes; free disk
+  342,721,675,264–342,774,968,320 bytes; load1 0.989–1.416.
+- All three native roots reconciled terminal/nonlive, dropped and were removed by
+  the shared fixture. Final scan found zero owned processes/mounts or native
+  roots. Initial audit correctly reported one empty owned scratch HOME retained
+  by the existing fake-runtime failed-run regression, not native uncertainty;
+  inspected it and removed only that empty directory with `rmdir`. No unknown
+  root was removed. Runner logs/scripts total under20KiB; fixture generation is
+  tiny. No unrelated cleanup, process killing, installs or network.
+- No full aggregate, Rust/Python suite, build, lint,
+  rustdoc, VM/OCI/macOS, live UI, arbitrary-byte selector or semspec change.
+  No commits, pushes, Git merges or publication. User stage and pending parent
+  conflict-policy decision remain untouched.
+- Next scene: exact selection of a rename/type change with a leading-dash
+  destination, retaining native required dependencies and host conflict refusal;
+  use another explicitly granted bounded slot rather than broad filename APIs.

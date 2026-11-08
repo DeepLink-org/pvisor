@@ -103,7 +103,23 @@ test("failure retains exact task identity and never retries or accepts", async (
   assert.deepEqual(calls[1].args, ["status", result.stage, "--json"]);
   assert.deepEqual(calls[2].args, ["review", result.stage, "--diff"]);
   assert.deepEqual(calls[3].args, ["status", result.stage, "--json"]);
-  assert.deepEqual(calls[4].args, ["apply", result.stage, "--json", "--dry-run", "--path", "file with spaces", "--path", "src"]);
+  assert.deepEqual(calls[4].args, ["apply", result.stage, "--json", "--dry-run", "--path=file with spaces", "--path=src"]);
+});
+
+test("filename argv: every exact selection is one literal option value without shell interpretation", async (t) => {
+  const f = await fixture(t);
+  const run = await f.backend.run({ argv: ["true"] });
+  const paths = ["--json", "-notes.txt", "space name.txt", "café.txt", "it's.txt", "line\nbreak", "direction\u202e", "$(touch sentinel)"];
+  assert.deepEqual(selection([...paths, paths[0]]), paths);
+  for (const action of ["preview", "apply"]) {
+    await f.backend.operate(action, { selector: run.selector, paths });
+    const calls = await f.calls();
+    assert.deepEqual(calls.at(-1).args, [
+      "apply", run.selector, "--json", ...(action === "preview" ? ["--dry-run"] : []),
+      ...paths.map((name) => `--path=${name}`),
+    ]);
+  }
+  await assert.rejects(readFile(path.join(f.project, "sentinel")), { code: "ENOENT" });
 });
 
 test("reject config overrides, invalid argv, deadlines and selectors before execution", async (t) => {
@@ -116,7 +132,7 @@ test("reject config overrides, invalid argv, deadlines and selectors before exec
   for (const selector of ["last", "../stage", "/tmp/stage", "--all"]) {
     await assert.rejects(f.backend.operate("drop", { selector }));
   }
-  for (const paths of [[], ["/etc"], ["../x"], ["src/../x"], ["."], ["C:/x"], ["a\\b"], ["a//b"]]) {
+  for (const paths of [[], [""], ["a\0b"], ["/etc"], ["../x"], ["src/../x"], ["."], ["C:/x"], ["a\\b"], ["a//b"]]) {
     assert.throws(() => selection(paths));
   }
   await assert.rejects(readFile(path.join(f.root, "calls.jsonl")), { code: "ENOENT" });

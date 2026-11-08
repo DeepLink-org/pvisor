@@ -197,7 +197,8 @@ export class Backend {
     if (selecting) {
       args = ["apply", task.stage, "--json"];
       if (action === "preview") args.push("--dry-run");
-      for (const item of paths) args.push("--path", item);
+      // Bind even leading-dash filenames to the option, not the CLI parser.
+      for (const item of paths) args.push(`--path=${item}`);
     } else {
       args = [action, task.stage];
       if (action === "status") args.push("--json");
