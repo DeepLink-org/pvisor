@@ -883,3 +883,120 @@ mount remaining; `.round4-owned` removed. No uncertain root was deleted.
 
 No installs, builds, Rust/Python suites, interactive clients, source mutation
 outside the four round4 files, commits, pushes, merges or publication occurred.
+
+### Round 6 — project windows, reopened adapters and exact task identity
+
+- UTC: 2026-11-08 02:07:29–02:11:27 for recorded investigation and workloads; log and
+  static handoff followed. Parent explicitly granted the sole TEST/BUILD slot
+  after round4 release at 02:06:52. Released it at **02:11:27 UTC**; no waits
+  were introduced to consume the remaining ~35-minute budget.
+- Read root instructions/README/CONTRIBUTING, plugin README/CONTRIBUTING,
+  this campaign and existing approval, disconnect and concurrent-approval
+  fixtures. No nested plugin README/instructions existed. Did not edit
+  concurrent-approval files or production code.
+
+#### Real-user lifecycle and result
+
+**No product defect reproduced; no production repair.** Added
+`plugins/test/project-identity.native.mjs`: one bounded harness workload with two
+tiny completed safe Host Sessions, separate projects, identical `shared.txt`
+and `scratch.txt` names and one shared private state root. Reused the existing
+`approvalHost`, `approvalOperation` and `removeAfterReconcile` helpers rather than
+adding another host/gate implementation.
+
+- Initial project is opened through a legitimate symlink; spawn records its
+  canonical project. Fresh Backends reopened from the canonical cwd can recover
+  status/review using each exact selector.
+- Both projects reject the other's selector for all five operations, including
+  drop. Absolute foreign paths and `..` paths are rejected before native apply.
+  `last`, a project path and a non-normalized stage path are refused; no fallback.
+- Pi and DSH approval callbacks pause after real native preview. Switching the
+  active project and changing the caller-owned selector cannot redirect the old
+  approval. Only the initiating project's `shared.txt` is published; the other
+  project and unselected `scratch.txt` remain untouched. Native apply JSON
+  identifies exactly the originating stage, one selected file and one apply.
+- Repointing the user-facing project symlink to the second project while either
+  host's approval is pending refuses the old task/project mismatch. It does not
+  use the second project's matching relative filename. Restoring the symlink
+  restores exact-selector access.
+- Renaming the first project away while either approval is pending surfaces
+  `ENOENT`, without publishing to the renamed project or active second project.
+  Restoring the directory restores review through the original symlink.
+- Renaming an owned, completed task directory or state root aside and replacing
+  its old pathname with a symlink fails closed. Each original is restored in
+  `finally`, and native status works again. No native staged content or record
+  bytes were edited.
+
+Added `plugins/test/project-identity.test.mjs` with **synthetic adapter records
+only, no native stage**. It verifies wrong/string schema, mismatched UUID,
+foreign/missing project, missing task, malformed JSON and missing record refusal;
+all five operations reject identity mismatches before consulting an intentionally
+missing runtime. Restoring the valid record permits a reopened Backend's task
+lookup. This is adapter validation, not native or hostile-same-UID isolation.
+
+#### Exact execution and evidence
+
+All workloads used process-local `MISE_TRUSTED_CONFIG_PATHS="$PWD"`, `MISE_YES=1`,
+`MISE_AUTO_INSTALL=0`, `CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=1` and
+`NEXTEST_TEST_THREADS=1`, through `nice -n 10 timeout -k 30 120`.
+An owned PATH shim preserved the exact mise tasks and invoked
+`/usr/bin/node --test --test-concurrency=1 --test-timeout=120000` with a name
+filter. Setup/native spawn deadlines were 15 seconds, individual operations
+5 seconds, and the test 120 seconds. Every native run used the read-only binary:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+SHA256 6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+Its hash matched before and after; no build or artifact overwrite. This is the
+parent's fresh round5-fix Host artifact, not a platform/source identity claim for
+the older CLI.
+
+| UTC | Exact task / filter | Actual exercised cases and outcome |
+| --- | --- | --- |
+| 02:09:32 | `mise run test-agent-plugins-native`, `project identity` | Initial native harness passed, two Sessions; Node reports five including four unmatched file wrappers |
+| 02:10:44 | `mise run test-agent-plugins`, `project identity` | New synthetic-record case passed; Node reports eight including seven unmatched wrappers |
+| 02:10:44–02:10:45 | `mise run test-agent-plugins-native`, `project identity` | Two-Session harness passed after adding exact native apply JSON and record-permission assertions |
+| 02:11:26 | `mise run test-agent-plugins`, `project identity|an early preview failure|cleanup preserves fixtures` | **Four actual cases passed**: new record contract, two reused gate early-failure cases, reused uncertain-ownership cleanup case. Node reports nine including five unmatched wrappers |
+| 02:11:26–02:11:27 | `mise run test-agent-plugins-native`, `project identity` | **One actual native case passed, two Sessions**, now including repointed project symlink refusals for both hosts. Node reports five including four unmatched wrappers |
+
+No failed/red result was hidden or assertion weakened. Three native invocations
+created six Sessions in total, always two within a single serial harness; each
+invocation completed native disposal before the next workload.
+
+#### Ownership, resources, cleanup and gaps
+
+- After-hook registered before fallible setup. Entire setup and every run,
+  approval operation and native call are tracked before invocation, with
+  immediate rejection observation. Owned controller, test and deadline signals
+  are combined. Existing gate helper races readiness against early settlement,
+  releases in `finally`, and joins pending approval.
+- Teardown aborts/joins all tracked work before reading records and requires
+  every attempted run to have a matching recoverable UUID record, terminal
+  completed/failed/cancelled status and `live: false`. Native drop must succeed;
+  an already-applied refusal is allowed only with applied state and zero changed
+  files. Current-UID `/proc` command lines and current-namespace mountinfo must
+  not reference the fixture before recursive removal. Uncertainty preserves the
+  fixture and reports its absolute path. Reused uncertain-cleanup/early-gate
+  failure tests passed in the final portable check.
+- Durable TMPDIR was the worktree-owned `.round6-owned/tmp`; private task HOME
+  stayed outside either project. All three roots were removed by their guarded
+  teardown; final `find` found no remaining fixtures. Native output is bounded
+  by the shared supervisor; task output/fixtures were tiny.
+- All workload resource gates passed. Available RAM
+  19,299,966,976–19,690,741,760 bytes, disk free
+  343,348,600,832–343,374,262,272 bytes, load1 0.660–1.030.
+  Final post-workload: RAM 19,311,017,984 bytes, disk 343,362,146,304 bytes,
+  load1 0.716. `git diff --check` passed.
+- Linux safe Host only; Pi/DSH registration and approval are host callback
+  contracts, not live interactive clients. No full adapter/native aggregate,
+  Rust/Python suite, lint, rustdoc, VM/OCI/macOS or distribution check was run.
+  These filtered results do not supersede earlier aggregate evidence.
+- No commits, pushes, Git merges, publication, installs, host/network/system
+  changes, cloud/model/credential calls, private staged-data edits or semspec
+  changes. No new shared helper API was introduced.
+- Next recommendation: incompatible/replaced runtime during a retained-task
+  reopen, using process-local owned binary fixtures and explicit compatibility
+  refusal rather than rebuilding/replacing this shared artifact. Keep real UI
+  window/approval acceptance as a separate gap.
