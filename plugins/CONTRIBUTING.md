@@ -25,6 +25,47 @@ Run all real-CLI documentation cases with:
 PVISOR_PLUGIN_BINARY="$PWD/target/debug/pvisor" mise run test-agent-plugins-native
 ```
 
+### Opt-in paced endurance
+
+`paced-endurance.native.mjs` is skipped by ordinary native CI unless
+`PVISOR_PLUGIN_PACED_ENDURANCE=1`. It models distinct tiny coding/review cycles,
+not throughput: successful partial acceptance, exit7 and retained review,
+fixture-only host conflict restoration, cancellation after observed readiness,
+fresh adapter views of one exact task, and empty/no-op apply. Round6 separately
+covers two retained task identities; this fixture uses only one Session at a time.
+The six stories are followed by two seeded observation-dependent choices.
+
+After obtaining the sole campaign TEST/BUILD slot, create an owned durable
+evidence directory and TMPDIR, then run each segment once, sequentially:
+
+```sh
+PVISOR_PLUGIN_PACED_ENDURANCE=1 PVISOR_PLUGIN_PACED_SEGMENT=1 \
+  PVISOR_PLUGIN_PACED_SEED=1401 PVISOR_PLUGIN_BINARY=/absolute/installed/pvisor \
+  PVISOR_PLUGIN_TEST_OUTPUT_DIR=/absolute/owned/evidence \
+  TMPDIR=/absolute/owned/tmp mise run test-agent-plugins-paced
+```
+
+Repeat with segments2,3,4 only after inspecting the preceding segment. Each
+segment has eight serial Node subtests; each fixture's after hook reconciles
+terminal/nonlive authority and drop (or applied-empty) before the next cycle.
+Every inter-cycle gap is75 real seconds, with before/midpoint/after resource
+and owned-process/mount/stage observations. The last campaign cycle has no
+trailing gap. Across32 cycles, intended idle is2325 seconds (38m45s), plus
+actual active setup/edit/test/review/cleanup time, reported separately.
+Each segment has a820s Node bound and the task enforces850s plus30s kill grace,
+nice10, two Cargo jobs and one test/math thread. The task passes its exact
+pattern and concurrency to Node, never as trailing file arguments.
+
+Guards stop on available RAM<6GiB, disk<20GiB, load1>8, owned evidence>16MiB,
+or a non-quiescent cycle boundary. JSONL evidence is exclusive-create and
+bounded to4MiB per segment; do not automatically rerun uncertain segments.
+Host `/proc` observations record birth ticks and report permission denials and
+races. They cover self/observable owned process mount views, not every namespace;
+host RAM deltas alone are not leak evidence. No observer sends host signals.
+Uncertain fixture authority preserves its root. No global cleanup is performed.
+The current opt-in runner refuses launches after the2026-11-08 09:04UTC campaign
+deadline; a future campaign must deliberately update that policy.
+
 ### Documentation coverage
 
 The tests read the canonical English/Chinese guide's executable JSON, native

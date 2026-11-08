@@ -667,6 +667,17 @@ run = "node --test plugins/test/*.native.mjs"
 description = "Opt-in real six-minute tasks and three-minute paused approvals; Linux native runtime required"
 run = 'node --test --test-concurrency=1 --test-name-pattern="${PVISOR_PLUGIN_LONG_LIVED_CASE:-long-lived cancel}" plugins/test/long-lived.native.mjs'
 
+[tasks.test-agent-plugins-paced]
+description = "Opt-in seeded eight-cycle endurance segment with real 75-second review/think gaps"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -ne 0 ]]; then echo "select segment with PVISOR_PLUGIN_PACED_SEGMENT, not trailing Node arguments" >&2; exit 2; fi
+if [[ "${PVISOR_PLUGIN_PACED_ENDURANCE:-}" != 1 ]]; then echo "requires PVISOR_PLUGIN_PACED_ENDURANCE=1" >&2; exit 2; fi
+export CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+exec nice -n 10 timeout -k 30s 850s node --test --test-concurrency=1 --test-name-pattern='^paced endurance:' plugins/test/paced-endurance.native.mjs
+'''
+
 [tasks.test-py]
 description = "无参数时覆盖 tests/、活动 benchmark 和命令计时测试"
 run = '''
