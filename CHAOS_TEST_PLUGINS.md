@@ -3238,3 +3238,73 @@ after completion; inherited output lost with MCP was not native capture.
 The MCP completed-continuation branch was **not exercised**; the allowed early
 failed branch was. No deadline variant was added, no new ancestor policy was
 tested, and no production bug/change is claimed.
+
+#### Round 16 final authorized full package — passed
+
+After both independently reviewed marker defects had deterministic bounded
+red/green evidence, parent explicitly authorized **one final exact unfiltered
+package attempt**, with no further retries after failure and no optional Python.
+The attempt ran **05:55:32.656–05:56:56.422 UTC**:
+
+```bash
+mise run test -- pvisor
+```
+
+**Passed:879tests,10default skips,0expression-filter exclusions,0unrun,0failures**,
+across24binaries, exit0. Nextest default run
+`8123a06a-833b-4686-813c-1d0076fa0978`; compile0.09s, tests83.276s,
+outer command83.765s. The879 total is the prior875 plus four helper-test
+instantiations (two finite helper cases compiled into each of two binaries).
+The selected-owner status regression passed0.030s; repaired rootfs and workspace
+independent-process lease tests passed0.012s and0.024s. Last progress was
+`vm_process_preparation::linux::preparation_is_repeatable_and_keeps_existing_descriptors_unchanged`,
+PASS879/879, followed by the successful summary.
+
+The10default skips remain explicit: two inventory/cloned-destination paired
+benchmarks; three owned-stage diagnostic/paired benchmarks; native lazy-mount
+read/unmount; internal bridge child fixture; real Kubo peers; image-format
+measurement; and native socket pause/resume/offload. No ignored test was opted
+in. A passing test can contain capability-dependent branches: this is exact
+full default **pvisor-package** evidence in the controlled Linux environment,
+not full-workspace, all-platform, all-ignored-test, external Kubo/OCI, or VM-boot
+coverage. No Python suite or optional coding-agent workload was run.
+
+Environment and guard matched the reviewed plan: owned fresh private HOME/XDG
+and mise cache/config/state under `.data/round16-final`, original existing
+Cargo/Rustup/mise tool locations explicitly pinned, offline Cargo/no auto-install,
+jobs2/Rust+nextest threads1/nice10, default short `/tmp` after clearing inherited
+TMPDIR/TEMP/TMP, exact worktree mise trust,900s watchdog+30s kill grace, and
+separate stdout/stderr plus combined live tee output with pipefail. Preflight
+again verified short socket bind, FUSE device access, KVM API12 and user/mount/
+network namespace creation. No shared artifact was executed or overwritten.
+
+HEAD remains `97f72ac5354ee505c954dfdc206c0d3f691200b0` with the reviewed test/
+README changes, not a new production-library repair.
+Full source hash manifest, now explicitly including untracked helper/support
+files, SHA256
+`709eca820d273818bf9b0b5350208fd423490c190d5542021deab5e17fd6307a`;
+working diff SHA256
+`ea181fd00ea269543f786615c8523f50b3dda6566ce1efc988cbeae6e668a7a0`.
+Validated helper SHA256 remains
+`c9cf830fd8d97db4af982b90f9c69fa695dddbfd85c835e539c87a56737298bc`.
+The external plugin-native artifact and its provenance remain separate evidence.
+
+All4resource samples passed: minimum RAM18,473,902,080bytes,
+minimum disk340,664,197,120bytes, maximum load1=0.9609375.
+Final05:56:56 sample RAM18,521,735,168bytes,
+disk340,679,733,248bytes, load1=0.9609375.
+At05:57:12.787 the owned executable/private-HOME process scan and current-namespace
+checkout mount scan were empty. Same three inaccessible same-UID `/proc` entries
+remained unattributed and untouched; this is not proof about all namespaces or
+arbitrary host processes. No unknown root deletion or unrelated process signal.
+`git diff --check` passed. **Sole slot released05:57:12 UTC** for rounds19/20.
+
+Durable final records are under `.data/round16-final/`: logs, resource/command
+events, environment/source manifests, before/after mountinfo and cleanup audit.
+Combined log SHA256
+`241672efb29be536bef0a58b87e7f8d1b8896706478952c3f37ea244b3b6c8b7`.
+No standalone replayable nextest archive is claimed. The earlier825/831-pass
+watchdog outcomes remain separate historical failures; this final pass does not
+erase them or establish the unknown cause of the previous campaign's lost-output
+timeout. No further workload, commit, push, merge, publication, installation,
+product-library edit or semspec approval/claim change was performed.
