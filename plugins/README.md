@@ -110,6 +110,8 @@ deny-all networking, captured stdio and a runtime deadline (1–600 seconds,
 default 120). Personal Agent presets are not loaded. No credentials are
 explicitly passed into the task. Each task gets a fresh private HOME and XDG
 state paths; host login state, user configuration and HOME caches are not inherited.
+Tools installed only inside the original HOME may therefore be unavailable;
+use system-installed tools or project-local dependencies that work offline.
 Durable workspace stages stay in the configured state directory. Scratch HOME
 may remain after a failed/interrupted execution; it is not an accepted project
 result. Networked tasks, VM selection, interactive
@@ -137,7 +139,12 @@ Ask your Agent to use this tool input:
 ```
 
 `pvisor_spawn` returns the exact stage selector, CLI exit code and bounded
-stdout/stderr. A nonzero exit, cancellation, or lost completion can leave
+stdout/stderr. The adapter captures noninteractive workload pipes (stdin is EOF)
+using native `--stdio inherit`; native `--stdio capture` instead retains output
+only in the Session record and does not forward it. Adapter output includes CLI
+diagnostics and is limited to 256 KiB per stream; inspect `truncated` before
+treating it as complete. Workload output is not also recorded by native stdio
+capture. A nonzero exit, cancellation, or lost completion can leave
 candidates. Do not automatically rerun an uncertain task. Use that exact selector;
 the adapters never use `last`.
 

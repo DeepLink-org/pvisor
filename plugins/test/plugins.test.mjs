@@ -61,11 +61,33 @@ test("run always selects safe Host staging, exact argv, deny-all and deadline", 
   await assert.rejects(readFile(call.home), { code: "ENOENT" });
   assert.deepEqual(call.args, [
     "spawn", "--no-agent-defaults", "--safe", "--executor", "host",
-    "--overlaynet-deny-all", "--stdio", "capture", "--stage", result.stage,
+    "--overlaynet-deny-all", "--stdio", "inherit", "--stage", result.stage,
     "--timeout", "17s", "--", ...argv,
   ]);
   const record = JSON.parse(await readFile(path.join(path.dirname(result.stage), "task.json"), "utf8"));
   assert.deepEqual(Object.keys(record).sort(), ["project", "schema_version", "task"]);
+});
+
+test("run captures workload pipes rather than selecting native record-only capture", async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.binary, `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes("--help")) {
+  console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json");
+} else {
+  if (args[args.indexOf("--stdio") + 1] === "inherit") {
+    console.log("task stdout: failed assertion");
+    console.error("task stderr: expected 5, got 6");
+  }
+  process.exitCode = 1;
+}
+`);
+  const result = await f.backend.run({ argv: ["test-tool"] });
+  assert.equal(result.exit_code, 1);
+  assert.equal(result.interrupted, false);
+  assert.equal(result.truncated, false);
+  assert.equal(result.stdout, "task stdout: failed assertion\n");
+  assert.equal(result.stderr, "task stderr: expected 5, got 6\n");
 });
 
 test("failure retains exact task identity and never retries or accepts", async (t) => {

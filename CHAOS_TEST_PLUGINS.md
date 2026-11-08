@@ -1000,3 +1000,144 @@ invocation completed native disposal before the next workload.
   reopen, using process-local owned binary fixtures and explicit compatibility
   refusal rather than rebuilding/replacing this shared artifact. Keep real UI
   window/approval acceptance as a separate gap.
+
+### Round 7 — offline coding tools, Git isolation and missing workload output
+
+- Actual UTC: 2026-11-08 02:12:17–02:19:09, with documentation/handoff
+  immediately afterward. Sole TEST/BUILD slot granted by parent following
+  round6's 02:11:27 release; explicitly released at **02:19:09 UTC**.
+  This is a seven-minute incremental round, not eight hours elapsed.
+- Read root AGENTS/README/CONTRIBUTING, this campaign log, plugin
+  README/CONTRIBUTING and applicable fixture/adapter contracts. No nested
+  plugin README/AGENT(S) existed. Existing approval, concurrent-approval and
+  disconnect files were not edited; reused their approval and reconciliation
+  helpers. No Rust changes, builds, installs or native artifact overwrite.
+
+#### Confirmed bug, comparison and repair
+
+Three real native coding tasks exposed empty workload output in plugin results:
+Python unittest succeeded or failed with its correct native exit code, and Git
+produced a valid diff/status, but the adapter returned no workload stdout/stderr.
+For failed tests the only returned failure text was the generic native exit
+diagnostic. Native status still correctly reported completed/failed and retained
+the candidates. The bug was not test failure, HOME isolation or lost staging.
+
+The adapter selected `--stdio capture`. Native CLI help and implementation define
+that as capture into the Session record, not forwarding to CLI pipes. The
+adapter supervisor was therefore capturing only CLI diagnostics. Compared
+reading private run bundles, adding a new native output API and using native
+inherit with the existing supervised pipes. Chose the last: `--stdio inherit`
+lets the existing adapter supervisor capture bounded workload output without
+duplicating native state or adding another runtime/public API.
+
+The pipes remain noninteractive: stdin is ignored/EOF, stdout/stderr each retain
+at most 256 KiB while draining, cancellation/deadline escalation is unchanged,
+and no PTY or interactive input is exposed. Real Python tasks assert stdin EOF.
+Documentation explicitly distinguishes adapter capture from native persisted
+stdio: workload output is returned by the adapter, includes CLI diagnostics,
+and is **not also persisted by native stdio capture**. Truncation must be checked.
+The exact argv contract changed only `capture` to `inherit`; one portable
+record-only-runtime regression verifies stdout, stderr and failure propagation.
+
+#### Real user story and native coverage
+
+Each case owns a tiny durable disposable project and starts exactly one fresh
+Backend task; dependent edits/tests/Git commands stay in the same argv. No
+continuation, `last`, automatic retry, install, network or model is used.
+
+1. Repair Python `add`, run system Python's actual unittest, emit `__pycache__`
+   and `test-results.log`, verify completed/nonlive native state and actual test
+   output. Host source and generated-file absence remain unchanged before apply.
+   Mock Pi approval accepts only `calc.py`; review still contains generated
+   files; explicit drop removes the remaining candidates without undoing source.
+2. Make an incorrect Python repair and run the same actual unittest. Require
+   exit 1, `FAILED (failures=1)`, exact selector/project, failed/nonlive state,
+   reviewable source/bytecode/log candidates and one task record. Explicit drop
+   leaves original source unchanged; no approval or automatic rerun occurs.
+3. Create a nested fixture-owned Git repository without a commit. Stage baseline
+   source locally, then perform editor atomic save/replace, chmod 0755, rename,
+   delete and bounded log generation inside one task. Real `git diff`, `status`
+   and `git add -- calc.py` see candidate content. Post-add unstaged source diff
+   is empty and cached diff contains repaired source. Host `.git/index` and
+   `.git/config` remain byte-identical before apply and after drop. Mock DSH
+   approval accepts source/mode and both rename paths; unaccepted deletion/log
+   and candidate `.git/index` remain reviewable, then are dropped. Original
+   unaccepted file survives. No host checkout Git metadata is touched.
+4. A bounded failed Python tool emits 270,000 bytes on each stream plus UTF-8
+   and NUL output, retains a diagnostic candidate and exits 2. Require the exact
+   exit, no interruption, truncation true, 256 KiB per stream, UTF-8/NUL prefix
+   and stderr marker. Review/drop preserves the unchanged original project.
+
+Private HOME and all five HOME-relative XDG/CODEX variables are asserted in the
+actual task. The initially selected pyenv Python under original HOME failed 127
+under required safe filesystem controls; no safety flag was removed. System
+`/usr/bin/python3` 3.15.2 works offline. Installed pytest exists only under the
+original HOME's pyenv tree; pytest and `.pytest_cache` were **not exercised**.
+Actual validation is unittest, bytecode and test logs, not pytest/test-cache
+coverage. This environment limitation is documented rather than bypassed by
+mounting the original HOME or copying/installing dependencies.
+
+#### Exact workloads and actual results
+
+Every invocation used the exact repository mise task, a process-local PATH shim
+dispatching `/usr/bin/node --test --test-concurrency=1`, exact-worktree
+`MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0`,
+`CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1`, and
+`nice -n 10 timeout -k 30 120`. Setup/check commands had 15-second tool bounds.
+Native task filters were `--test-name-pattern='coding task:'`.
+TMPDIR and output root were the owned durable `$PWD/.round7-owned`, not
+terminal scratch. Native Python was explicitly `/usr/bin/python3` after the
+original-HOME interpreter limitation was observed.
+
+| UTC | Exact command/check | Actual outcome |
+| --- | --- | --- |
+| 02:14:32–02:14:33 | Scoped `mise run test-agent-plugins-native`, original-HOME Python path | Three cases failed at exit 127 before Python started; no pytest/Git workload executed. All three native Sessions reconciled and dropped |
+| 02:15:27–02:15:28 | Scoped native task, system Python/unittest | Three failures: real task exits were correct but workload output was absent; fixture teardown passed |
+| 02:16:35–02:16:37 | Same scoped native task with native status diagnostic | Three output failures again; status proved native completed/failed and retained source/cache/log candidates. This was diagnostic reproduction, not an automatic task retry |
+| 02:17:29–02:17:31 | Same scoped native task after stdio repair | Three actual cases passed; four unmatched file wrappers also counted, seven Node passes overall |
+| 02:18:24–02:18:46 | Unfiltered `mise run test-agent-plugins` | **46 actual portable cases passed**, zero failed/skipped/cancelled, 22.425s; includes the new output regression and existing dual-stream drain/cancellation tests |
+| 02:18:58–02:19:00 | Scoped `mise run test-agent-plugins-native`, final source including EOF/binary-output assertions | **Four actual native cases passed**, zero failed; four unmatched wrappers, eight Node passes overall, 1.845s |
+| 02:19:00–02:19:09 | `git diff --check`, artifact hash, owned authority/process/mount scan and removal | Passed; hash unchanged; no case roots/task/run records/processes/mounts remained; owned validation root removed |
+
+The diagnostic invocation redirected bounded output to an owned log then used
+`cat`; its shell's final status was zero from `cat`, while the contained mise
+task explicitly failed. It is recorded as **three failures**, not a passing
+command. Initial test assertions expected forwarded workload output; those
+assertions were retained and pass after the production fix, not weakened.
+
+#### Guards, ownership and gaps
+
+- All 12 pre/post workload resource gates passed: available RAM
+  18,697,342,976–19,380,776,960 bytes; workspace free disk
+  343,175,479,296–343,310,438,400 bytes; load1 0.708–1.813.
+  Gates required >=6 GiB RAM, >=20 GiB disk and load1 <=8. No simultaneous
+  workload invocations or more than one active native Session were used.
+- The new focused coding fixture registers its after-hook before setup and
+  tracks setup, every attempted spawn and normal native operation before
+  invocation with immediate rejection observation. Signals combine owned,
+  test, caller and deadlines. Approval waits reuse the bounded
+  readiness-versus-settlement helper and always close/reject/join in `finally`.
+  Teardown aborts and joins owned work before fresh bounded native status/drop.
+  Missing/unknown/live authority preserves the durable root with an error.
+  Already-applied disposal requires explicit applied state and zero changes.
+- All **16 attempted native Sessions** across these invocations were terminal,
+  nonlive and explicitly dropped before root removal, including failed
+  interpreter/task/assertion paths. Per-case current-UID process/current-mount
+  scans passed. Final validation-root scan found no native authority; residual
+  Node compile cache and two portable fake-runtime private HOMEs were removed
+  only inside that root. No unrelated kill/global cleanup was performed.
+- Real native files/Git/Python/output were tested through Backend; Pi/DSH
+  registration and approvals are mocked callback contracts, not interactive
+  clients. No MCP-specific rerun, full native baseline, Rust/workspace/Python
+  project suite, compiler, rustdoc, macOS/VM/OCI or network test ran.
+- Reused read-only repaired CLI:
+  `/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`,
+  SHA-256 `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`,
+  verified before and after. No artifact provenance beyond parent's round5
+  record is newly claimed.
+- No commits, pushes, Git merges, publication, credentials, cloud/paid calls,
+  host/network/system changes or semspec approval/claim edits.
+- Next scene: real stdio MCP delivery of a failed compiler/test diagnostic
+  under adapter output truncation and disconnect, without interpreting a
+  truncated result as complete. Separately test pytest when a compatible
+  system/project-local installation is available offline; do not relax HOME.

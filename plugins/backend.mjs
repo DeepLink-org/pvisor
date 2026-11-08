@@ -157,7 +157,10 @@ export class Backend {
     const stage = path.join(directory, "stage");
     const args = [
       "spawn", "--no-agent-defaults", "--safe", "--executor", "host",
-      "--overlaynet-deny-all", "--stdio", "capture", "--stage", stage,
+      // Native "capture" retains output only in the Session record. Inherit
+      // our noninteractive pipes so the adapter's bounded supervisor can
+      // return the actual workload output, not just CLI diagnostics.
+      "--overlaynet-deny-all", "--stdio", "inherit", "--stage", stage,
       "--timeout", `${seconds}s`, "--", ...argv,
     ];
     try {
