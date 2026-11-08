@@ -55,9 +55,69 @@ pub(crate) struct Owner {
     endpoint: Option<super::host_transport::LiveControlRecord>,
     filesystem: Option<pvisor_overlayfs::api::FsMetrics>,
     network: Option<pvisor_overlaynet::InterceptionMetrics>,
-    mounts: Mutex<HashMap<String, super::ReadOnlyOverlayMount>>,
+    mounts: Mutex<HashMap<String, InspectionMount>>,
     inspections_open: AtomicBool,
     capture_admission: Arc<tokio::sync::Semaphore>,
+}
+
+// The owner, not the caller, owns this unique invocation directory. Both
+// explicit unmount and owner-table teardown use the same one-shot cleanup.
+struct InspectionMount {
+    mount: Option<super::ReadOnlyOverlayMount>,
+    _root: InspectionRoot,
+}
+
+impl InspectionMount {
+    fn create(
+        overlay: &pvisor_core::overlay::OverlayRecord,
+        lowers: &[PathBuf],
+        root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(
+            root.parent()
+                .ok_or_else(|| anyhow::anyhow!("missing inspect parent"))?,
+        )?;
+        std::fs::create_dir(&root)?;
+        let root = InspectionRoot(root);
+        let mount = super::mount_overlay_record_read_only(overlay, lowers, &root.0.join("merged"))?;
+        Ok(Self {
+            mount: Some(mount),
+            _root: root,
+        })
+    }
+
+    fn mountpoint(&self) -> &Path {
+        self.mount.as_ref().expect("open inspection").mountpoint()
+    }
+
+    fn close(&mut self) -> anyhow::Result<()> {
+        if let Some(mount) = self.mount.take() {
+            mount.unmount()?;
+        }
+        Ok(())
+    }
+
+    fn unmount(mut self) -> anyhow::Result<()> {
+        self.close()
+    }
+}
+
+impl Drop for InspectionMount {
+    fn drop(&mut self) {
+        let _ = self.close();
+        // The root field drops after unmount, including on a close error.
+    }
+}
+
+struct InspectionRoot(PathBuf);
+
+impl Drop for InspectionRoot {
+    fn drop(&mut self) {
+        // Nonrecursive removal is safe even if construction/unmount failed:
+        // a mounted or nonempty directory is retained, never traversed.
+        let _ = std::fs::remove_dir(self.0.join("merged"));
+        let _ = std::fs::remove_dir(&self.0);
+    }
 }
 
 pub(crate) struct Registration {
@@ -587,12 +647,12 @@ impl Owner {
                     ));
                 }
                 let id = uuid::Uuid::new_v4().to_string();
-                let mount = super::mount_overlay_record_read_only(
+                let mount = InspectionMount::create(
                     overlay,
                     &lowers,
-                    &overlay.stage_dir.join("inspect").join(&id).join("merged"),
+                    overlay.stage_dir.join("inspect").join(&id),
                 )
-                .map_err(|failure| error(failure.into()))?;
+                .map_err(error)?;
                 let mountpoint = mount.mountpoint().to_owned();
                 mounts.insert(id.clone(), mount);
                 Ok(serde_json::json!({ "id": id, "mountpoint": mountpoint }))
@@ -692,6 +752,67 @@ mod tests {
     use crate::{ExecutionContext, PVisor, RunExecutor};
     use pvisor_core::{ExecutorKind, ExecutorPlan, IsolationKind, RunInvocation, RunSpec};
     use std::sync::Arc;
+
+    #[test]
+    fn inspection_mounts_clean_owned_roots_on_unmount_table_clear_and_failed_creation() {
+        #[cfg(target_os = "macos")]
+        if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+            eprintln!("skipping inspection mount integration: macFUSE is not installed");
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let target = temp.path().join("target");
+        std::fs::create_dir_all(stage.join("upper")).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file"), b"original").unwrap();
+        std::fs::write(stage.join("upper/file"), b"staged").unwrap();
+        let overlay: pvisor_core::overlay::OverlayRecord =
+            serde_json::from_value(serde_json::json!({
+                "id":"inspect-cleanup", "generation":0, "target":target,
+                "upper":{"upper_dir":stage.join("upper"),"work_dir":stage.join("work")},
+                "merged_dir":stage.join("merged"), "stage_dir":stage,
+                "auto_apply":false, "state":"staged"
+            }))
+            .unwrap();
+        let parent = stage.join("inspect");
+        std::fs::create_dir(&parent).unwrap();
+        let shared = parent.join("retain");
+        std::fs::write(&shared, b"shared entry").unwrap();
+        let lowers = [target.clone()];
+        let mut mounts = HashMap::new();
+        for explicit in [true, false] {
+            let id = uuid::Uuid::new_v4().to_string();
+            let root = parent.join(&id);
+            let mount = InspectionMount::create(&overlay, &lowers, root.clone()).unwrap();
+            assert_eq!(
+                std::fs::read(mount.mountpoint().join("file")).unwrap(),
+                b"staged"
+            );
+            mounts.insert(id.clone(), mount);
+            assert_eq!(mounts.len(), 1);
+            if explicit {
+                mounts.remove(&id).unwrap().unmount().unwrap();
+            } else {
+                mounts.clear();
+            }
+            assert!(mounts.is_empty());
+            assert!(!root.exists());
+            #[cfg(target_os = "linux")]
+            assert!(
+                !std::fs::read_to_string("/proc/self/mountinfo")
+                    .unwrap()
+                    .contains(root.to_str().unwrap())
+            );
+            assert_eq!(std::fs::read(&shared).unwrap(), b"shared entry");
+            assert_eq!(std::fs::read(target.join("file")).unwrap(), b"original");
+            assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), b"staged");
+        }
+        let failed = parent.join("failed-construction");
+        assert!(InspectionMount::create(&overlay, &[], failed.clone()).is_err());
+        assert!(!failed.exists());
+        assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
+    }
 
     async fn connect(path: &Path) -> anyhow::Result<UnixStream> {
         let metadata = std::fs::symlink_metadata(path)?;

@@ -180,6 +180,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         {
             timed_out = true;
             background_cleanup = true;
+            // Cancellation ends input delivery. Let a cooperative child drain
+            // buffered input to EOF during its termination grace period.
+            stdin.take();
             break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
         }
         if let Some(limit) = spec.step_finish_limit
@@ -187,6 +190,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         {
             step_limited = true;
             background_cleanup = true;
+            stdin.take();
             // SIGINT lets OpenCode exit gracefully and flush its buffered
             // stdout events; SIGTERM would discard them.
             break terminate_running_group_with(
@@ -217,6 +221,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             let last_ms = last_activity.load(std::sync::atomic::Ordering::Acquire);
             if now_ms.saturating_sub(last_ms) >= idle_timeout.as_millis() as u64 {
                 background_cleanup = true;
+                stdin.take();
                 break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
             }
         }
@@ -782,6 +787,209 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(error.kind, ReplayErrorKind::Executor);
         assert!(error.message.contains("write supervised process stdin"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leader_exit_rejects_pending_stdin_held_open_by_a_descendant() {
+        if std::env::var_os("PVISOR_REPLAY_STDIN_CHILD").is_some() {
+            let mut ready = [0; 2];
+            assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+            let hold_output = std::env::var_os("PVISOR_REPLAY_HOLD_OUTPUT").is_some();
+            let descendant = unsafe { libc::fork() };
+            assert!(descendant >= 0);
+            if descendant == 0 {
+                // Only async-signal-safe operations after fork. Keep stdin open
+                // without consuming it, independently bounded even if supervision
+                // breaks. A pipe handshake ensures this state precedes leader exit.
+                unsafe {
+                    libc::alarm(10);
+                    libc::close(ready[0]);
+                    if !hold_output {
+                        libc::close(1);
+                        libc::close(2);
+                    }
+                    libc::write(ready[1], b"r".as_ptr().cast(), 1);
+                    libc::close(ready[1]);
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            unsafe { libc::close(ready[1]) };
+            let mut byte = 0_u8;
+            assert_eq!(
+                unsafe { libc::read(ready[0], (&mut byte as *mut u8).cast(), 1) },
+                1
+            );
+            unsafe { libc::close(ready[0]) };
+            std::fs::write(
+                std::env::var_os("PVISOR_REPLAY_DESCENDANT_PID").unwrap(),
+                format!("{} {descendant}", std::process::id()),
+            )
+            .unwrap();
+            unsafe { libc::_exit(0) };
+        }
+
+        // Adopt and reap only this fixture's orphan, rather than relying on the
+        // host init to reap it. Restore the process-wide setting even on failure.
+        struct DescendantGuard {
+            previous_subreaper: libc::c_int,
+            pid_path: PathBuf,
+        }
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                if let Ok(pids) = std::fs::read_to_string(&self.pid_path)
+                    && let Some(pid) = pids.split_whitespace().nth(1)
+                    && let Ok(pid) = pid.parse::<i32>()
+                {
+                    unsafe {
+                        // A PID file may outlive a successful reap. Only signal
+                        // a child we still own; an unreaped child pins its PID
+                        // until our subsequent wait, preventing PID-reuse kills.
+                        if libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) == 0 {
+                            libc::kill(pid, libc::SIGKILL);
+                            libc::waitpid(pid, std::ptr::null_mut(), 0);
+                        }
+                    }
+                }
+                unsafe {
+                    libc::prctl(libc::PR_SET_CHILD_SUBREAPER, self.previous_subreaper);
+                }
+            }
+        }
+
+        for hold_output in [false, true] {
+            let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let pid_path = temporary.path().join("descendant.pid");
+            let mut previous_subreaper = 0;
+            assert_eq!(
+                unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut previous_subreaper) },
+                0
+            );
+            let guard = DescendantGuard {
+                previous_subreaper,
+                pid_path: pid_path.clone(),
+            };
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
+            let mut spec = shell_spec("", &temporary.path().join("leader-exit.log"));
+            spec.command = stdin_fixture_command(
+                "process::tests::leader_exit_rejects_pending_stdin_held_open_by_a_descendant",
+            );
+            spec.command
+                .env("PVISOR_REPLAY_DESCENDANT_PID", &pid_path)
+                .env_remove("PVISOR_REPLAY_HOLD_OUTPUT");
+            if hold_output {
+                spec.command.env("PVISOR_REPLAY_HOLD_OUTPUT", "1");
+            }
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            let started = Instant::now();
+            let result = run_process(spec);
+            let pids = std::fs::read_to_string(&pid_path).unwrap();
+            let pids: Vec<i32> = pids
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            let mut status = 0;
+            // The independent descendant alarm bounds this wait if group cleanup
+            // regresses; SIGKILL below distinguishes cleanup from that fallback.
+            assert_eq!(unsafe { libc::waitpid(pids[1], &mut status, 0) }, pids[1]);
+            std::fs::remove_file(&pid_path).unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "hold_output={hold_output}"
+            );
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+            for pid in pids {
+                assert_ne!(
+                    unsafe { libc::kill(pid, 0) },
+                    0,
+                    "fixture PID {pid} retained"
+                );
+            }
+            let error = result
+                .map(|_| ())
+                .expect_err("incomplete stdin delivery was accepted");
+            assert_eq!(error.kind, ReplayErrorKind::Executor);
+            assert!(
+                error
+                    .message
+                    .contains("child exited before configured stdin was delivered"),
+                "{error:?}"
+            );
+            drop(guard);
+        }
+    }
+
+    #[test]
+    fn cancellation_closes_pending_stdin_before_graceful_termination() {
+        static TERMINATED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        extern "C" fn terminated(_: libc::c_int) {
+            TERMINATED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if std::env::var_os("PVISOR_REPLAY_STDIN_CHILD").is_some() {
+            unsafe {
+                // Exceed the 8s wall deadline plus the step limiter's 20s
+                // minimum grace, while independently bounding a broken owner.
+                libc::alarm(40);
+                libc::signal(libc::SIGTERM, terminated as *const () as libc::sighandler_t);
+                libc::signal(libc::SIGINT, terminated as *const () as libc::sighandler_t);
+            }
+            println!("\nREADY {}", std::process::id());
+            io::stdout().flush().unwrap();
+            match std::env::var("PVISOR_REPLAY_CANCEL_MODE").unwrap().as_str() {
+                // Trigger event-driven cancellation only after both signal
+                // handlers are installed, not on the test harness's output.
+                "quota" => {
+                    io::stdout().write_all(&[b'q'; 8192]).unwrap();
+                    io::stdout().flush().unwrap();
+                }
+                "step" => eprintln!("message=loop step=1"),
+                _ => {}
+            }
+            // Deliberately leave the input pipe full until cancellation.
+            while !TERMINATED.load(std::sync::atomic::Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input).unwrap();
+            println!("EOF-AFTER-CANCEL");
+            return;
+        }
+        for mode in ["wall", "idle", "quota", "step"] {
+            let temporary = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let mut spec = shell_spec("", &temporary.path().join("cancel.log"));
+            spec.command = stdin_fixture_command(
+                "process::tests::cancellation_closes_pending_stdin_before_graceful_termination",
+            );
+            spec.command.env("PVISOR_REPLAY_CANCEL_MODE", mode);
+            spec.stdin = Some(vec![b'x'; 512 * 1024]);
+            // run_process owns spawn and starts deadlines immediately, so a
+            // true readiness handshake would require a production test hook.
+            // Allow 3s for native startup instead of 250ms. READY below detects,
+            // but cannot prevent, startup starvation beyond this finite budget.
+            spec.timeout = Duration::from_secs(if mode == "wall" { 3 } else { 8 });
+            spec.idle_timeout = (mode == "idle").then_some(Duration::from_secs(3));
+            spec.log_bytes_limit = (mode == "quota").then_some(4096);
+            spec.step_finish_limit = (mode == "step").then_some(1);
+            spec.termination_grace = Duration::from_millis(500);
+            let output = run_process(spec).unwrap();
+            let stdout = String::from_utf8(output.stdout_tail).unwrap();
+            let pid: i32 = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("READY "))
+                .expect("fixture did not become ready")
+                .parse()
+                .unwrap();
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child was not reaped");
+            assert_eq!(output.timed_out, matches!(mode, "wall" | "quota"));
+            assert_eq!(output.step_limited, mode == "step");
+            assert!(output.background_cleanup);
+            assert!(output.status.success(), "mode={mode}: {:?}", output.status);
+            assert!(stdout.contains("EOF-AFTER-CANCEL"));
+        }
     }
 
     #[test]

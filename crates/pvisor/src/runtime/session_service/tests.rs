@@ -409,6 +409,167 @@ fn uncommitted_review_returns_typed_unknown_and_status_cannot_invent_completion(
 }
 
 #[test]
+fn sealed_storage_without_completion_receipt_refuses_recovery_and_reuse() {
+    use pvisor_overlay_core::{OverlayCore, OverlayLayout, load_preimages, stage};
+    use std::{fs, os::unix::fs::MetadataExt};
+
+    let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let mut record = fixture(root.path());
+    record.schema_version = 3;
+    record.completion_protocol = Some(super::super::completion::VERSION);
+    record.write().unwrap();
+    let overlay = record.overlay.as_ref().unwrap();
+    let journal = root.path().join("preimages");
+    stage::begin(&journal, stage::StageDurability::Checkpoint).unwrap();
+    fs::write(overlay.target.join("change"), b"host original").unwrap();
+    let core = OverlayCore::new_for_layout_with_compact_preimages(
+        OverlayLayout::new(vec![overlay.target.clone()], overlay.target.clone()).unwrap(),
+        overlay.upper.upper_dir.clone(),
+        Some(overlay.upper.work_dir.clone()),
+        vec![],
+        Some(journal.clone()),
+    )
+    .unwrap();
+    fs::write(core.copy_up(Path::new("change")).unwrap(), b"retained").unwrap();
+    core.sync_preimages().unwrap();
+    drop(core);
+    stage::complete(&overlay.upper.upper_dir, &journal).unwrap();
+    stage::require_sealed(&journal).unwrap();
+    let observations = load_preimages(&journal).unwrap();
+    assert_eq!(observations.len(), 1);
+    let log = fs::read(journal.join("log-v2")).unwrap();
+    let seal = fs::read(journal.join("sealed-v1")).unwrap();
+    let identity = |path: &Path| {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.uid(),
+            metadata.gid(),
+        )
+    };
+    let candidate = overlay.upper.upper_dir.join("change");
+    let original_identity = identity(&candidate);
+    let result: pvisor_core::RunResult = serde_json::from_value(serde_json::json!({
+        "run_id":record.run_id,"execution_id":record.execution_id,"state":"completed",
+        "started_at_unix_ms":1,"finished_at_unix_ms":2,"exit_code":0
+    }))
+    .unwrap();
+    let agentctl = serde_json::from_value(serde_json::json!({
+        "run_id":record.run_id,"execution_id":record.execution_id,
+        "directive":crate::AgentDirective::Continue,"clients":[]
+    }))
+    .unwrap();
+    crate::RunBundle::capture(&record, &result, agentctl, false)
+        .unwrap()
+        .write(root.path())
+        .unwrap();
+    let bundle = fs::read(crate::RunBundle::path(root.path())).unwrap();
+    let receipt = root.path().join("completion.json");
+    fs::create_dir(&receipt).unwrap();
+    fs::write(receipt.join("owned-sentinel"), b"obstruction").unwrap();
+    // A real destination-type fault, rejected by receipt preflight before
+    // atomic replacement. Storage sealing and Bundle publication succeeded.
+    let error = super::super::completion::Completion::commit(&record, &result).unwrap_err();
+    assert!(error.to_string().contains("regular file"), "{error:#}");
+    assert_eq!(
+        fs::read(receipt.join("owned-sentinel")).unwrap(),
+        b"obstruction"
+    );
+    assert!(RunRecord::read(root.path()).is_err());
+
+    // Removing only our obstruction is not authority to synthesize a receipt.
+    fs::remove_file(receipt.join("owned-sentinel")).unwrap();
+    fs::remove_dir(&receipt).unwrap();
+    for _ in 0..2 {
+        let reopened = OverlayCore::open_existing(
+            vec![overlay.target.clone()],
+            overlay.upper.upper_dir.clone(),
+            Some(overlay.upper.work_dir.clone()),
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .copy_up(Path::new("change"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EROFS)
+        );
+        drop(reopened);
+        let context = ServiceContext::default();
+        let status = SessionService::status(
+            &context,
+            StatusRequest {
+                session: selection(&record),
+            },
+        )
+        .unwrap();
+        assert_eq!(status.record.state, super::super::RunRecordState::Unknown);
+        let current = RunRecord::read(root.path()).unwrap();
+        assert!(current.require_stopped().is_err());
+        let response = SessionService::apply_command(&context, apply_request(&current)).unwrap();
+        assert_eq!(response.status, "blocked");
+        assert!(response.blockers.join(" ").contains("EXECUTION_UNKNOWN"));
+        assert!(response.execution.is_none());
+        assert!(
+            SessionService::drop(
+                &context,
+                DropRequest {
+                    session: selection(&current)
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("EXECUTION_UNKNOWN")
+        );
+        assert!(
+            SessionService::create_workspace_checkpoint(
+                &context,
+                WorkspaceCreateRequest {
+                    session: selection(&current),
+                    request_id: None
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("EXECUTION_UNKNOWN")
+        );
+        assert!(super::super::registry::RunLease::acquire_new(root.path()).is_err());
+        assert!(!root.path().join("checkpoints").exists());
+        assert!(!receipt.exists());
+        assert_eq!(fs::read(&candidate).unwrap(), b"retained");
+        assert_eq!(identity(&candidate), original_identity);
+        assert_eq!(
+            fs::read(overlay.target.join("change")).unwrap(),
+            b"host original"
+        );
+        assert_eq!(fs::read(journal.join("log-v2")).unwrap(), log);
+        assert_eq!(fs::read(journal.join("sealed-v1")).unwrap(), seal);
+        assert_eq!(load_preimages(&journal).unwrap(), observations);
+        assert_eq!(
+            fs::read(crate::RunBundle::path(root.path())).unwrap(),
+            bundle
+        );
+    }
+    // Only an explicit retry by the completion owner binds the original result.
+    // This is not automatic receipt recovery or an Execution rerun.
+    let (_current, _lease) = record.lock_current().unwrap();
+    super::super::completion::Completion::commit(&record, &result).unwrap();
+    let current = RunRecord::read(root.path()).unwrap();
+    assert_eq!(current.state, super::super::RunRecordState::Completed);
+    current.require_stopped().unwrap();
+    assert_eq!(
+        crate::RunBundle::read(root.path()).unwrap().run.state,
+        result.state
+    );
+    assert_eq!(fs::read(&candidate).unwrap(), b"retained");
+    assert_eq!(identity(&candidate), original_identity);
+    assert_eq!(fs::read(journal.join("sealed-v1")).unwrap(), seal);
+}
+
+#[test]
 fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());

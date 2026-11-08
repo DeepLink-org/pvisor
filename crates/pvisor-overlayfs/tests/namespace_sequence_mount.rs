@@ -298,4 +298,180 @@ mod linux {
         assert!(!OverlayFs::is_mountpoint(&mount));
         eprintln!("trace=011 unmounted; mountinfo entry absent");
     }
+
+    // Only the re-executed client gets RLIMIT_FSIZE. The FUSE server must remain
+    // unrestricted, and no other test in the parent may inherit signal changes.
+    fn size_fault_client(root: &Path, report: &Path) {
+        use std::os::fd::IntoRawFd;
+
+        fn close_checked(file: File) {
+            // Linux close consumes ownership even on error; never retry it.
+            let fd = file.into_raw_fd();
+            assert_eq!(unsafe { libc::close(fd) }, 0, "close after write fault");
+        }
+
+        let mut fds = BTreeMap::new();
+        let mut observations = String::new();
+        let mut observe = |label: &str, fds: &BTreeMap<&'static str, File>| {
+            observations.push_str(&format!(
+                "{label}: {:?} {:?}\n",
+                snapshot(root),
+                fd_snapshot(fds)
+            ));
+        };
+        FdOp::Open("reader", "src/item", false)
+            .run(root, &mut fds)
+            .unwrap();
+        FdOp::Open("writer", "src/item", true)
+            .run(root, &mut fds)
+            .unwrap();
+        FdOp::Dup("writer", "dup").run(root, &mut fds).unwrap();
+        FdOp::Open("victim", "dst/block", true)
+            .run(root, &mut fds)
+            .unwrap();
+        observe("copy-up with retained lower reader", &fds);
+        assert_eq!(
+            fs::rename(root.join("src"), root.join("dst"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTEMPTY)
+        );
+        observe("failed directory replacement", &fds);
+        fs::remove_file(root.join("dst/block")).unwrap();
+        fs::remove_dir(root.join("dst")).unwrap();
+        fs::rename(root.join("src"), root.join("dst")).unwrap();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/item"), b"replacement").unwrap();
+        fs::remove_file(root.join("dst/item")).unwrap();
+        observe("both writable inodes detached; old parent recreated", &fds);
+
+        let mut saved = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, saved.as_mut_ptr()) },
+            0
+        );
+        let saved = unsafe { saved.assume_init() };
+        let limited = libc::rlimit {
+            rlim_cur: 16,
+            rlim_max: saved.rlim_max,
+        };
+        assert_ne!(
+            unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) },
+            libc::SIG_ERR
+        );
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limited) }, 0);
+        for name in ["writer", "victim"] {
+            assert_eq!(
+                fds[name].write_at(b"x", 16).unwrap_err().raw_os_error(),
+                Some(libc::EFBIG),
+                "{name} bounded pwrite"
+            );
+            assert_eq!(
+                fds[name].set_len(17).unwrap_err().raw_os_error(),
+                Some(libc::EFBIG),
+                "{name} bounded truncate"
+            );
+            fds[name].sync_all().expect("fsync after rejected writes");
+        }
+        observe(
+            "four EFBIG failures leave bytes and identities intact",
+            &fds,
+        );
+        close_checked(fds.remove("writer").unwrap());
+        drop(fds.remove("victim").unwrap());
+        observe("explicit close and drop after faults", &fds);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &saved) }, 0);
+        assert_eq!(fds["dup"].write_at(b"RECOVERED", 0).unwrap(), 9);
+        fds["dup"].sync_all().unwrap();
+        observe("surviving dup recovers after original writer closes", &fds);
+        assert_eq!(fd_snapshot(&fds)["reader"].0, b"RECOVERED");
+        assert_eq!(fs::read(root.join("src/item")).unwrap(), b"replacement");
+        close_checked(fds.remove("dup").unwrap());
+        drop(fds.remove("reader").unwrap());
+        observe("all handles closed; replacement unaffected", &fds);
+        fs::write(report, observations).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a working Linux /dev/fuse and fusermount3"]
+    fn detached_size_fault_close_recovery_matches_native_trace_035() {
+        const CLIENT_ROOT: &str = "PVISOR_TRACE_035_CLIENT_ROOT";
+        const CLIENT_REPORT: &str = "PVISOR_TRACE_035_CLIENT_REPORT";
+        if let Some(root) = std::env::var_os(CLIENT_ROOT) {
+            size_fault_client(
+                Path::new(&root),
+                Path::new(&std::env::var_os(CLIENT_REPORT).unwrap()),
+            );
+            return;
+        }
+        let root = tempfile::Builder::new()
+            .prefix("chaos-035-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        let lower = root.path().join("lower");
+        let native = root.path().join("native");
+        populate(&lower);
+        populate(&native);
+        let initial_lower = snapshot(&lower);
+        let session = OverlayFs::mount(OverlayMountConfig::new(
+            vec![lower.clone()],
+            root.path().join("upper"),
+            Some(root.path().join("work")),
+            root.path().join("merged"),
+        ))
+        .expect("trace-035 real Linux FUSE mount");
+        let mount = session.mountpoint().to_path_buf();
+        let mountinfo = || {
+            fs::read_to_string("/proc/self/mountinfo")
+                .unwrap()
+                .lines()
+                .filter(|line| line.split_whitespace().nth(4) == mount.to_str())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let mounted = mountinfo();
+        assert_eq!(mounted.len(), 1);
+        let filesystem = mounted[0].split(" - ").nth(1).unwrap();
+        assert!(filesystem.starts_with("fuse ") || filesystem.starts_with("fuse."));
+        eprintln!("trace=035 mounted={mounted:?}");
+        let mut reports = Vec::new();
+        for (label, path) in [("native", &native), ("fuse", &mount)] {
+            let report = root.path().join(format!("{label}.report"));
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::detached_size_fault_close_recovery_matches_native_trace_035",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CLIENT_ROOT, path)
+                .env(CLIENT_REPORT, &report)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{label} client failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            reports.push(fs::read_to_string(report).unwrap());
+            assert_eq!(
+                snapshot(&lower),
+                initial_lower,
+                "{label}: host source changed"
+            );
+        }
+        assert_eq!(
+            reports[0], reports[1],
+            "seven checkpoint native/FUSE oracle"
+        );
+        eprintln!(
+            "trace=035 four EFBIG faults; seven checkpoints match native\n{}",
+            reports[1]
+        );
+        session.unmount().expect("trace-035 explicit clean unmount");
+        assert!(mountinfo().is_empty());
+        assert_eq!(snapshot(&lower), initial_lower);
+        eprintln!("trace=035 unmounted; host source preserved");
+    }
 }

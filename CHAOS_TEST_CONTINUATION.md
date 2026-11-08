@@ -1,0 +1,2205 @@
+# Bounded chaos testing continuation
+
+## Campaign
+
+- Requested duration: eight hours of iterative scenarios, investigation and repair.
+- Started: 2026-11-07 14:32:01 UTC.
+- Deadline: 2026-11-07 22:32:01 UTC.
+- Initial revision: `c0cb08d0`.
+- Branch: `test/bounded-chaos-20261107-continuation`.
+- Previous campaign: `CHAOS_TEST_LOG.md`; its PR #111 has been merged.
+- Publication: a separate PR, updated after each verified repair; no main merge.
+- Draft PR: https://github.com/DeepLink-org/pvisor/pull/118.
+- Execution: subagents execute scenarios serially; the parent reviews and
+  integrates findings and publishes verified fixes.
+
+This log records actual execution, not a claim that eight hours have elapsed.
+Interruptions, missing capabilities and failed checks must be recorded explicitly.
+
+## Safety limits
+
+- One active build/test workload, at most two Cargo jobs and one test thread.
+- Use `nice -n 10` and a 900-second command timeout with a 30-second kill grace.
+- Check memory, load and free disk before and after workloads. Stop launching
+  workloads below 6 GiB available memory or 20 GiB free disk, or above load1 8.
+- Keep generated data and fault injection in worktree-local temporary fixtures.
+- No host network changes, disk filling, unrelated process termination,
+  production credentials, paid services, or global cache cleanup.
+- Use targeted `mise run test -- PACKAGE` validation. Never alter real semspec
+  approval ledgers/snapshots, run approval commands, or weaken claims.
+- Do not start new workloads after the deadline; report actual elapsed time
+  separately from active test time.
+
+Initial host observation: 16 CPUs, 24,318 MiB available RAM, no used swap,
+347 GiB free disk, load1 0.65. `/dev/kvm` and `/dev/fuse` exist; end-to-end
+capabilities remain to be verified.
+
+## Rounds
+
+### 033 — Replay stdin and subprocess supervision
+
+Assigned to an isolated worker subagent. Investigate cancellation, early stdin
+closure, child exit and bounded process cleanup, taking account of the native
+fixture changes merged since the previous campaign.
+
+Confirmed defect: cancellation retained the pending stdin pipe during graceful
+termination. A cooperative SIGTERM handler draining stdin to EOF could not
+finish, was killed with SIGKILL, and lost its final output. Pending stdin now
+closes before cancellation signaling, including wall/quota, idle and step paths.
+README documents that remaining input is not delivered.
+
+Worker evidence on Linux, 2026-11-07 UTC:
+
+- 14:34:38–14:35:02: regression before repair failed as expected with SIGKILL;
+  0 passed, 1 failed, 149 skipped.
+- 14:35:28–14:35:45: process suite after repair passed; 16 passed, 134 skipped.
+- 14:35:56: targeted rustfmt check passed; `git diff --check` also passed.
+- Both test runs used `mise run test -- pvisor-replay -- --offline -E FILTER`,
+  respectively filtering the new cancellation regression and `process::tests::`.
+- Commands used `nice -n 10 timeout -k 30s 900s`, two build jobs, one test thread,
+  offline Cargo and an isolated `target-chaos-033` inside the worker worktree.
+- Across pre/post checks: minimum MemAvailable 24,445,900 KiB, maximum load1
+  1.21, minimum free disk 371,443,019,776 bytes. No admission limit was crossed.
+- Fixtures removed and no matching child processes found at completion.
+
+The new regression directly covers wall and idle cancellation, not quota or
+SIGINT step cancellation. Worker did not run the full package, Python, live
+agents/models or other operating systems. Initial mise discovery encountered an
+untrusted-config prompt; command-local trust resolved it without installing tools.
+
+Parent inspected the merged diff and cancellation paths. An independent reviewer
+subagent confirmed the production change on inspection and ran:
+
+- 14:37:35–14:38:13 UTC: `mise run test -- pvisor-replay -- --offline`,
+  150 passed, 0 skipped, three binaries.
+- 14:38:26–14:38:31 UTC: the new cancellation regression with
+  `--stress-count 10`, all ten iterations passed.
+- Resource checks remained safe: minimum MemAvailable 24,081,884 KiB,
+  maximum load1 1.51, minimum free disk 346 GiB.
+- No fixture directories or matching test processes remained.
+
+Review identified an unproven startup-timing assumption: cancellation at 250 ms
+can precede the child installing its signal handler on a slow host. This did not
+fail locally, but must be addressed rather than relying on the successful
+repeats. The original worker is refining the fixture and considering explicit
+quota/SIGINT coverage before the repair is published. Other-platform execution
+and induced slow startup remain untested.
+
+Follow-up, 14:40–14:41 UTC:
+
+- Extended the fixture to wall, idle, quota and SIGINT step cancellation.
+- Wall/idle now tolerate three-second native startup; this reduces but does
+  not eliminate startup starvation risk. Quota/step events follow handler setup.
+  No production readiness hook or timeout semantic change was introduced.
+- The fixture alarm is 40 seconds, beyond its wall bound plus step grace.
+- Revised baseline reproduced SIGKILL with all three production closes
+  temporarily removed: 0 passed, 1 failed, 149 skipped.
+- Restoring the repair passed 16 process tests, 134 skipped, and rustfmt.
+- Minimum MemAvailable 23,871,244 KiB; maximum load1 0.76; minimum free disk
+  371,151,233,024 bytes. No leftover fixture processes/directories found.
+- A follow-up merge conflicted at the regression, duplicating old/new fixture
+  text. Parent resolved it by retaining only the new four-trigger fixture;
+  production diff remains exactly the three stdin closes.
+- A fresh worker is validating the integrated full package before publication.
+
+Integrated-tree validation by the round 034 worker:
+
+- 14:43:31–14:44:14 UTC: `nice -n 10 timeout -k 30s 900s mise run test -- pvisor-replay -- --offline`
+  passed all 150 tests, zero skipped (20.289 seconds in nextest).
+- 14:44:22–14:44:24 UTC: `nice -n 10 timeout -k 30s 900s cargo fmt --all -- --check`
+  passed without edits. This formatting check is not a workspace test run.
+- Pre-test MemAvailable 24,730,554,368 bytes, load1 0.45, disk free
+  371,155,406,848 bytes; post-format MemAvailable 24,686,600,192 bytes,
+  load1 1.54, disk free 371,118,174,208 bytes. All safety gates passed.
+- This validates the final resolved fixture, unlike the earlier review run.
+  Linux-only evidence; macOS and induced startup starvation remain untested.
+
+### 034 — Exited leader with inherited stdin
+
+Assigned after round 033 workloads completed. After integrated-tree validation,
+the worker will test early leader exit with descendants retaining pipe ends,
+incomplete stdin delivery, bounded failure and process-group cleanup.
+
+Result: no new production defect. The existing early-exit rule rejects incomplete
+stdin delivery before waiting for EPIPE and kills the remaining process group.
+Added a Linux-only native-fork fixture for descendants holding stdin alone or
+stdin plus output pipes. Readiness uses a pipe handshake; a ten-second alarm
+bounds the descendant. Subreaper adoption and waitpid verify SIGKILL and reaping.
+
+- 14:48:29–14:48:33 UTC: targeted regression passed both variants, 1 passed,
+  150 filtered (24 ms test time).
+- 14:49:14–14:49:38 UTC: `mise run test -- pvisor-replay -- --offline`,
+  151 passed, none skipped (20.318 s).
+- Initial formatting check found two line-wrap differences, corrected narrowly;
+  final `cargo fmt --all -- --check` and `git diff --check` passed.
+- Lowest reported MemAvailable 24,509,943,808 bytes; highest load1 1.73;
+  lowest disk free 370,907,598,848 bytes. No matching processes remained.
+- No macOS, live agents/models, doctests or separate Python-suite testing.
+
+Parent review requested removal of an `.err().expect()` Clippy diagnostic and
+stronger fixture cleanup ownership so a stale PID file cannot cause a reused
+unrelated PID to be signaled after reaping. Worker is addressing these before
+publication, with targeted regression and warnings-denied Clippy.
+
+Review follow-up completed:
+
+- Cleanup now checks `waitpid(..., WNOHANG)` child ownership before signaling;
+  a reaped child or stale PID does not receive a signal.
+- Replaced `.err().expect()` with `.map(|_| ()).expect_err()` without adding
+  a production Debug implementation solely for tests.
+- 14:51:29–14:51:45 UTC: `cargo clippy -p pvisor-replay --all-targets --offline -- -D warnings`
+  passed with the same nice/timeout/resource limits.
+- 14:54:29–14:54:33 UTC: targeted mise regression passed, both variants,
+  1 passed (23 ms); final formatting and diff checks passed.
+- Final available memory 24,749,355,008 bytes, load1 0.69, disk free
+  370,757,128,192 bytes; no matching fixture processes remained.
+- Parent merged and reviewed the follow-up. Full 151-test run predates these
+  test-only cleanup/lint corrections; targeted regression and Clippy follow them.
+
+At 14:51 UTC, published round 033 revision `1694909b` had two successful checks,
+25 pending and none failing. This is not final CI success.
+
+### 035 — OverlayFS writable-handle namespace churn
+
+Assigned to a fresh isolated worker after round 034 finished its workloads.
+Explore staged rename/unlink/replacement with open writable handles and host
+source preservation, avoiding scenarios already covered in rounds 007 and 011.
+
+Result: no production defect reproduced. A re-executed client, not the FUSE
+server, receives a 16-byte RLIMIT_FSIZE. Two detached writable inodes reject
+positional write/truncate with EFBIG. Seven native-versus-FUSE checkpoints
+compare namespace, contents, EOF and inode equivalence across failed replacement,
+ancestor rename, unlink, parent recreation, fsync, checked close/drop and
+recovery via a surviving duplicate descriptor. Host lower state stays unchanged.
+Actual mountinfo presence and removal establish a real mount and explicit unmount.
+
+Worker commands, 2026-11-07 UTC, with standard resource/nice/timeout limits:
+
+- 14:57:44–14:57:57:
+  `mise run test -- pvisor-overlayfs -- --test namespace_sequence_mount --run-ignored ignored-only --no-capture -E 'test(detached_size_fault_close_recovery_matches_native_trace_035)'`,
+  1 passed, 2 filtered/skipped.
+- 14:58:07–14:58:14: `mise run test -- pvisor-overlayfs`,
+  73 passed, 12 skipped. Other ignored FUSE tests were not run.
+- 14:58:14–14:58:20:
+  `mise exec -- cargo clippy --offline --locked -p pvisor-overlayfs --test namespace_sequence_mount -- -D warnings`,
+  passed.
+- Targeted rustfmt and diff checks passed.
+- Minimum available memory 23,955,568 KiB; maximum load1 1.96;
+  minimum disk free 362,014,464 KiB. No fixtures/mounts remain.
+
+Parent reviewed and integrated the regression and README. These faults are
+client-kernel size-limit rejection, not backing-device errors; successful
+fsync/close after rejection does not prove delayed close-error handling.
+macOS, VM, concurrent execution, Python and workspace suites were not run.
+
+### 036 — OverlayFS backing I/O recovery
+
+Assigned after round 035 workloads finished. Explore a safe bounded backing-I/O
+failure and resource/error recovery, without public test-only APIs or host-wide
+fault injection. Distinguish actual server faults from client-side rejection.
+
+Result: no defect found. Used an existing private per-filesystem copy-loop seam
+on real Linux FUSE. After a successful staged write, rename/unlink and retained
+reader/writer/dup ownership, injected ENOSPC before copying or after three actual
+backing bytes. Zero progress returns ENOSPC; partial progress returns three and
+advances both offsets consistently. Readers observe the changed prefix. Sync,
+checked close and recovery via dup succeed, preserving replacement and lower.
+Reopening each stage through public API without injection allows full copy/sync.
+
+This is a synthetic server-loop failure, not physical disk exhaustion, a backing
+syscall returning ENOSPC, delayed writeback, or failing fsync/close coverage.
+
+Final worker checks, UTC 2026-11-07, standard nice/timeout/resource limits:
+
+- 15:02:15–15:02:23: `mise run test -- pvisor-overlayfs`,
+  73 passed, 13 skipped.
+- 15:02:37–15:02:38:
+  `mise run test -- pvisor-overlayfs -- --lib --run-ignored ignored-only --no-capture -E 'test(backing_copy_fault_detached_close_recovery_036)'`,
+  1 passed, two fault cases.
+- 15:02:38–15:02:39: explicitly reran mounted 007/011 traces, both passed
+  (24/21 operations).
+- `mise run lint-rust -- -p pvisor-overlayfs`, package fmt and diff checks passed.
+- Initial test-only owner-type compile error and two formatting differences
+  were corrected before these final checks.
+- Minimum MemAvailable 24,357,773,312 bytes; maximum load1 1.34033203125;
+  minimum disk free 370,215,366,656 bytes. Four test mounts detached, no
+  fixture mountinfo entries or fixture-backed descriptors remained.
+- No macOS, physical-device failures, delayed writeback or failing sync/close
+  tests. Round 035 preserved but not explicitly rerun.
+
+Parent reviewed the private regression and README and merged them cleanly.
+At 15:04 UTC CI for published round 035 had no failed checks and multiple
+in-progress checks; no final CI success is claimed.
+
+### 037 — Journal persistence failure recovery
+
+Assigned after round 036 workloads ended. Investigate safe deterministic
+journal/preimage persistence failure, ownership/error propagation and recovery,
+without duplicating round 006 torn-write coverage or injecting host-wide faults.
+
+Result: no product defect reproduced. After one durable append, the private test
+substitutes a read-only descriptor while retaining the original locked writer.
+The next emit fails with a downcastable AppendError::Unknown, leaves committed
+bytes unchanged and emits no notification. Poison applies to all clones, even
+exact committed retries, and survives restoring the writable descriptor. The
+writer lock lasts until the final owner drops. Two reopens preserve the first
+receipt and support quiet idempotent retries and contiguous offsets.
+
+This exercises a real descriptor write error, not ENOSPC, fsync failure, actual
+staged mutation/preimage durability, process crash or power loss.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:07:37: `mise run test -- pvisor-journal`, 30 passed, zero skipped.
+- 15:07:47:
+  `mise exec -- cargo clippy --locked -p pvisor-journal --all-targets -- -D warnings`,
+  passed.
+- 15:07:51: `mise exec -- cargo fmt -p pvisor-journal -- --check`, passed.
+- 15:07:52:
+  `RUSTDOCFLAGS='-D warnings' mise exec -- cargo doc --locked -p pvisor-journal --no-deps`,
+  passed. API boundary guards and diff checks passed unchanged.
+- Minimum MemAvailable 24,522,612,736 bytes; maximum load1 1.8755;
+  minimum free disk 370,143,096,832 bytes. No mounts/background processes;
+  fixtures cleaned up. No other platforms, affected consumer compilation,
+  Python or doctests were run.
+
+Parent reviewed and merged the regression and README cleanly.
+
+### 038 — Staged preimage publication recovery
+
+Assigned after round 037 workloads ended. Investigate an owned destination
+obstruction around preimage/metadata publication, preserving candidate ownership,
+accepted upper bytes and host source state across failure and retry/reopen.
+
+Result: no product defect reproduced. The private scheduling seam inserts a small
+owned nonempty directory at the legacy preimage final name after missing-entry
+check, after another staged file has succeeded. Both nondurable no-replace rename
+and durable hardlink publication reject the invalid winner with EINVAL.
+Repeated public copy-up attempts preserve accepted candidate bytes/inode, host
+sources and obstruction sentinel, without publishing a new upper or leaking
+pending journal temporaries. Removing the obstruction allows retry, sync and
+owner reopen with original baselines.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:10:53–15:11:03: targeted mise overlay-core library regression passed,
+  1 passed, 175 filtered; two publication variants.
+- 15:11:54–15:12:00: `mise run test -- pvisor-overlay-core`,
+  238 passed, 5 skipped.
+- 15:12:09–15:12:14: warnings-denied all-targets package Clippy passed.
+- Two new formatting differences from initial check corrected; final package
+  formatting and diff checks passed.
+- MemAvailable 24,030,216–24,267,324 KiB; load1 1.07–1.31;
+  free disk 369,826,463,744–369,928,208,384 bytes. No mounts/children;
+  worktree-local fixtures cleaned up.
+- No CLI/FUSE/VM, process crash/power loss, compact log, device/fsync failure,
+  macOS, Python, workspace-wide or doctest execution.
+
+Parent inspected the publication/copy-up/reopen assertions and integrated the
+private regression and README.
+
+### 039 — Managed stage seal publication failure
+
+Assigned after round 038 workloads ended. Explore managed sealed-v1 publication
+obstruction, completion refusal, retained candidates and admission/retry behavior,
+avoiding prior round 029 completion-publication coverage.
+
+Result: no confirmed defect. An external contract test covers checkpoint and
+strict policies, using a nonempty owned `sealed-v1` directory. Repeated atomic
+marker replacement failures after journal drain preserve bytes, inode/UID/GID,
+directory identities, policy and observations, without temporary leaks.
+Invalid seal blocks writable reopen/reuse. Removing obstruction alone does not
+complete the stage; exclusive unsealed reopen can mutate, completion retry
+succeeds, sealed reopen rejects mutation with EROFS, and explicit reuse clears seal.
+
+Worker checks within 15:13:27–15:17:07 UTC, standard resource limits:
+
+- `mise run test -- pvisor-overlay-core -- --test seal_publication`,
+  1 passed, zero skipped.
+- Selected stage library tests plus seal-publication binary, 13 passed,
+  164 skipped. Existing apply-executing cases excluded to avoid global apply-lock
+  effects; this was not a full package run.
+- `mise run lint-rust -- -p pvisor-overlay-core`, package fmt and diff passed.
+- An initial argument-separator mistake failed before compilation, then was
+  corrected. New-file format differences fixed before final passing checks.
+- Minimum MemAvailable 23,748,448 KiB; maximum load1 1.68;
+  minimum free disk 360,972,212 KiB. No mounts/children; fixtures cleaned.
+- No device/power-loss/runtime-receipt/FUSE/VM/macOS/workspace validation.
+
+Parent reviewed the public-contract assertions and integrated the new test/README.
+At 15:17 UTC published round 038 CI had no failures, with several checks still
+in progress; final CI success remains unconfirmed.
+
+### 040 — OverlayNet malformed-fragment isolation
+
+Assigned after round 039 workloads ended. Explore a new bounded packet/state
+boundary and healthy-flow recovery after malformed input, avoiding round 008/015
+coverage. No host networking changes or live external traffic.
+
+Confirmed defect: SYN listener admission checked raw flags/checksums but not
+semantic TCP validity. Malformed options could allocate the only flow slot even
+though smoltcp rejected the packet, making a healthy SYN to a different destination
+receive RST. Production change now reuses smoltcp IPv4/TCP semantic parsers before
+allocation and retains explicit fragment rejection.
+
+Public framed-link regression uses 15 fixed hostile frames (seven malformed TCP
+options, invalid IP version, three fragment cases, four truncations), one flow
+slot, UDP DNS barriers and a final unrelated SYN requiring SYN-ACK. It sends
+33 input frames and receives 18 replies, without external traffic.
+
+Worker checks, UTC 2026-11-07, standard resource limits:
+
+- 15:23:56–15:24:17: initial probe failed on unexpected flow-denial counters.
+- 15:25:10–15:25:11: strengthened distinct-destination reproduction failed
+  because the healthy SYN received RST.
+- 15:25:38–15:25:40: related VM/library plus vm_dns tests passed after fix,
+  15 passed, 76 skipped.
+- All-targets package warnings-denied Clippy and formatting/diff checks passed.
+- Minimum MemAvailable 24,426,827,776 bytes; maximum load1 1.719727;
+  minimum disk free 369,281,327,104 bytes.
+- Worker did not run full package/peer/workspace/Python suites, consumer builds,
+  real VM boot, other platforms, sustained fuzzing or full TCP application flow.
+
+Parent integrated the fix/test/README. Independent reviewer is checking actual
+stack admission semantics, VM/peer callers, test synchronization, full OverlayNet
+tests and targeted affected-consumer compilation before repair publication.
+
+Independent review:
+
+- Full `mise run test -- pvisor-overlaynet`: 115 passed, zero skipped across
+  four binaries; targeted owning-consumer `cargo check --locked -p pvisor --lib`
+  passed. No real VM boot or optional-feature consumer validation.
+- Resource checks: minimum MemAvailable 24,680,710,144 bytes, maximum load1
+  2.25, minimum disk free 368,803,643,392 bytes.
+- Confirmed compatibility of checksums, version/fragment rejection, flag parsing,
+  peer routing and deterministic UDP barriers on source inspection.
+- Found two additional source-traced admission gaps, not yet reproduced:
+  parsed zero-MSS SYN rejected by the actual listener and Ethernet wrong-unicast
+  destination rejected by the interface after allocation. Both can leave LocalDns
+  in Listen outside current handshake reaping.
+- Original worker is reproducing/addressing those before publication, preserving
+  the stack's broadcast/multicast acceptance rather than imposing router-only MAC.
+  No listener-reaping change is assumed necessary without investigation.
+
+Follow-up blocked: the model service rejected the network-validation assignment
+with a cybersecurity-risk error before execution; no new source changes resulted.
+No rephrased retry or safeguard bypass was attempted. The two source-traced gaps
+remain unresolved and unverified by reproducer tests. Publish only the separately
+reproduced malformed-option repair, which passed independent full tests/consumer
+compilation, without claiming complete stack-admission parity.
+
+### 041 — Compact journal writer recovery
+
+Assigned after the blocked round 040 follow-up. Return to non-network storage
+reliability: compact-log write failure, poison/ownership propagation and recovery
+after accepted staged data, avoiding the preceding journal/preimage/seal cases.
+
+Result: no product defect reproduced. A distinct private sync-error seam uses an
+O_PATH descriptor on the owned compact log to produce EBADF after Core accepted
+staged bytes and a later complete observation awaits sync. Original writer remains
+writable and locked. Poison blocks repeated sync, promotion, observation and
+consumption; frames, baselines and candidate bytes/inode remain unchanged.
+Drop/reopen drains complete frames; Core retry publishes the missing candidate,
+and another reopen preserves both candidates and original baselines.
+
+Worker checks, UTC 2026-11-07, standard resource limits:
+
+- 15:34:00–15:34:10: targeted mise overlay-core library regression,
+  1 passed, 176 skipped.
+- 15:34:37–15:34:41: selected compact-log/core/publication tests,
+  16 passed, 161 skipped.
+- All-targets package Clippy warnings denied, package fmt and diff passed.
+- Minimum MemAvailable 24,078,484 KiB; maximum load1 1.47;
+  minimum free disk 368,315,019,264 bytes. Fixtures cleaned.
+- No device/hardware fault, power loss, partial writes, fault while Core remains
+  live, full package, Python, doctests, macOS, FUSE or VM validation.
+
+Parent inspected the private fault/poison/reopen assertions and integrated test
+and README. At 15:35 UTC published round 040 CI had no failures, but many checks
+remained in progress.
+
+### 042 — Runtime receipt recovery admission
+
+Assigned after round 041 workloads ended. Investigate receipt-publication failure
+after successful storage sealing and subsequent restart/reuse admission, avoiding
+duplicate round 029 runtime and round 039 storage-only publication checks.
+
+Result: no confirmed defect. The checkpoint-policy fixture seals storage and
+publishes Bundle, then an owned nonempty completion.json directory makes receipt
+preflight fail. This is a destination-type preflight error, not rename/fsync.
+After removing only obstruction, two reopen cycles retain read-only storage,
+Unknown runtime status, blocked apply/drop/checkpoint/new-Run admission, candidate
+bytes/identity, host contents, journal/seal and Bundle. No receipt is synthesized.
+Explicit completion-owner retry commits the original result and confirms stopped.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- 15:39:10–15:40:16: exact new lifecycle test passed, 1 passed, 765 skipped.
+- 15:40:40–15:41:01: five focused completion lifecycle tests passed,
+  5 passed, 761 skipped. Five distinct tests, six executions total.
+- 15:41:05–15:41:35: package library/tests Clippy warnings denied passed.
+- Package formatting/diff checks passed.
+- Minimum MemAvailable 24,476,504,064 bytes; maximum load1 2.333;
+  minimum free disk 367,773,474,816 bytes. Fixtures removed, no mounts or
+  surviving workload children.
+- Reopen fixture only, not process crash/restart or managed execution. No CLI,
+  FUSE/VM, strict policy, receipt rename/fsync, power loss, macOS, full package,
+  Python or workspace validation.
+
+Parent inspected the receipt/admission/preservation assertions and integrated
+the private lifecycle regression and README.
+
+### 043 — Runtime completion handoff recovery
+
+Assigned after round 042 workloads ended. Inspect valid receipt versus failed
+Session completion publication and successor Execution ordering, avoiding existing
+lease/stale completion coverage. No-change evidence is acceptable if covered.
+
+Result: no confirmed defect. Extended an existing regression rather than adding
+a duplicate. Valid receipt commits, owned Session destination directory makes
+replacement fail with EISDIR, restoring saved stale Session permits repeated
+receipt-authoritative reconciliation. Root selectors fail closed while metadata
+is unreadable. Four old-Execution reconciliations preserve restoring/running
+successor Session bytes; receipt/Bundle stay unchanged and no temporary leaks.
+This directly exercises private publication, not live Session::finish callback.
+
+Worker checks, UTC 2026-11-07, standard workload limits:
+
+- Initial test expectation incorrectly assumed readable Session metadata during
+  obstruction; corrected to require fail-closed reads. Not a product fix.
+- 15:47:19–15:47:41: 22 selected completion/Session/registry/lifecycle tests
+  passed, 744 filtered/skipped.
+- 15:47:53–15:48:23: `mise run lint-rust -- -p pvisor`, all targets,
+  warnings denied, passed. Final package fmt/diff checks passed.
+- Minimum MemAvailable 24,213,229,568 bytes; maximum load1 2.2144;
+  minimum free disk 366,887,735,296 bytes. Fixtures absent and local TMPDIR empty;
+  no runtime children/mounts created.
+- No live CLI/VM completion, process crash/power loss, failing sync acknowledgement,
+  other platforms, Python, doctests or workspace validation.
+
+Parent inspected the incremental existing-test diff and integrated it with README.
+
+### 044 — Repeated VM teardown recovery
+
+Assigned after round 043 workloads ended. Inspect new VM lifecycle ordering and
+bounded cleanup/restart resources, reusing existing KVM tests where sufficient;
+one conservative-memory VM at a time, no host configuration changes.
+
+In progress: actual Linux KVM API version 12 verified. Initial targeted suite
+passed 26 tests, including two real KVM microtests. A new bounded ready-callback
+abort probe with caller-retained RAM/network aliases indicated retained vCPU,
+device descriptors and network peer ownership after aliases were released.
+The worker is investigating private Linux owner cleanup and all vCPU phases;
+this is not yet a reviewed or published repair.
+
+Two initial harness assumptions were corrected, not treated as product defects:
+RAM backing includes firmware reserved space, and network NONBLOCK setup occurs
+after guest queue activation, not at ready. The chosen repair direction is
+coherent owner teardown, not a callback-only special case or knowingly detaching
+leaked resources. Any synchronous thread join cannot guarantee a hard bound under
+arbitrary kernel/device stalls; external command watchdogs remain in force.
+At 15:58 UTC published round 043 CI had no failures but several pending checks.
+
+At 16:06:56 UTC all 33 reported checks for published revision `d4e76456` were
+successful, including aggregate CI and benchmark report. This is remote CI
+evidence for rounds through 043, not evidence for the unmerged VM repair.
+
+Confirmed worker reproduction at 15:56:02–15:56:03 UTC: baseline 3 fds /
+1 thread / 0 KVM fds became 57 / 3 / 1 after callback rejection, and the owned
+network peer did not see EOF within one second after caller aliases dropped.
+Runner exited/reaped before later workloads.
+
+Repair: private Linux VcpuHandle Drop disconnects both channels, kicks KVM_RUN
+and joins; exited waits for owner disconnection instead of permanent barrier.
+Queued pause/resume replies tolerate a vanished owner. Common Drop replaces the
+test-only hook, with pre-resume/exited/queued-response private KVM tests and an
+external API ready-abort hardware regression.
+
+Final-source worker real acceptance at 16:07:02.129–16:07:02.394 UTC:
+four invalid-firmware rejections interleaved with four ready aborts, then a healthy
+guest prints VM_EXIT_SOURCE_OK and produces authenticated exit 0. Every clean
+fd/TID set matches 3 fds / 1 thread / 0 KVM fds; intentional caller aliases alone
+retain 6 / 1 / 0. One VM, one vCPU and 256 MiB configured RAM at a time.
+This is real KVM, not mock execution. Whole round used 33 serial KVM constructions
+and 15 pre-VMM loader rejections; no concurrent VM pressure.
+
+Worker validation, standard limits:
+
+- Targeted `mise run test -- pvisor-vm` with selected library KVM tests, external
+  ready_abort_kvm, api_contract, api_boundary and repository_boundary:
+  30 passed, 642 skipped. Five selected microtests and integration use actual KVM;
+  API/notification tests do not establish guest execution.
+- Package lib/tests Clippy and rustdoc with warnings denied passed.
+- `cargo check --locked -p pvisor-cli -p pvisor-daemon -p pvisor-shim` passed.
+- Targeted rustfmt/diff checks passed; final workload ended 16:07:29 UTC.
+- All 42 pre/post gates passed: minimum MemAvailable 23,146,237,952 bytes,
+  maximum load1 3.912109375, minimum free disk 364,507,107,328 bytes.
+- A handwritten healthy-probe guest config initially omitted env and exited125;
+  corrected using owning GuestConfig serialization, not a product fix.
+- Existing local firmware was read, not modified. Build-script hardcoded guest
+  output was redirected via a temporary worktree-local symlink into isolated
+  output; symlink removed, no source-checkout output written. Evidence remains
+  under ignored target/chaos044-evidence in the worker.
+- All probe runners gone, owned RAM/rootfs fixtures removed, no fixture mounts.
+- No SMP, concurrent VMs, cold-RAM pager, other platforms, full package/workspace
+  or Python tests. Kernel/device stall can still make synchronous teardown wait.
+
+Parent integrated and inspected the patch; independent review is checking channel
+ownership, signal ordering, deadlocks, lifecycle phases and hardware regression.
+Separate source-inspection finding: public readiness ordering says callback
+precedes CPU execution, but private build resumes CPUs first. Not changed here.
+
+Independent review requests changes: idle software parking checks channel
+nonemptiness, which does not reveal disconnected empty channels. A parked CPU
+can ignore the one-shot kick and leave synchronous Drop waiting indefinitely
+without any host kernel/device stall. Idle PIO completion also clears immediate
+exit before checking owner loss. This source-established path has not yet been
+reproduced dynamically. Worker is fixing cancellation visibility in every phase
+and adding bounded parked-owner coverage before publication.
+
+Reviewer independently passed one real-KVM integration (two abort cycles),
+27 idle tests and 15 vstate tests during 16:10:34–16:12:41 UTC. One initial filter
+missed the intervening linux module; corrected filter ran vstate tests separately.
+Minimum MemAvailable 23,170,170,880 bytes, maximum load1 2.52, minimum disk free
+364,163,973,120 bytes. Hardware integration is ignored by default and not enabled
+in CI; it is manual hardware evidence, not an automated CI gate.
+
+Review follow-up reproduced parked-owner hang at 16:17:00–16:17:22 UTC:
+event-only KVM case failed its one-second teardown receipt; disabling only the
+fixture's idle gate recovered/reaped it without external timeout. Final fix
+checks try_recv at the top of every host iteration and dispatches queued events
+or disconnection, making cancellation independent of queue nonemptiness and kick.
+No new cancellation flag or public API.
+
+At 16:18:10–16:18:34 UTC, targeted tests passed 60, skipped 615: 27 idle units,
+eight KVM microtest VMs and two serial production-library integration VMs.
+New bounded cases cover event-only, claimed-after-wake and one-VM/two-vCPU dual
+standby with sequential handle destruction; the latter is not broad SMP coverage.
+Each has one-second receipt and one-second fixture-gate recovery on failure.
+
+Final relinked real guest acceptance at 16:20:25.001–16:20:25.258 UTC repeated
+four loader failures/four ready aborts with exact clean resource baseline, followed
+by VM_EXIT_SOURCE_OK and authenticated exit 0. Final Clippy/rustdoc/consumer checks
+and formatting/diff checks passed. Whole round totals now 49 serial VM
+constructions, 30 workload invocations, all 60 resource gates passed; minimum
+MemAvailable 23,058,665,472 bytes, maximum load1 3.912109375, minimum free disk
+363,633,881,088 bytes. Final workload ended 16:21:08 UTC.
+Owned fixtures/symlink removed, probe/red-test processes absent.
+
+Parent merged final follow-up cleanly. Fresh independent reviewer is checking the
+integrated cancellation correction and rerunning hardware cases before publication.
+
+Final independent review: no blocking findings. Verified durable channel
+cancellation, FIFO/control dispatch, PIO return ordering, paused/exited ownership
+and no new busy loop on source review. During 16:23:21–16:25:57 UTC:
+
+- Lifecycle/parked selectors: 23 passed, 659 skipped.
+- Explicit production ready-abort hardware integration: 1 passed (two serial VMs).
+- Remaining idle/deadline/dual/RAM controls: 16 passed, 666 skipped.
+- Total 40 distinct tests, all 27 idle units and all three parked-drop regressions.
+- Minimum MemAvailable 22,580,512 KiB; maximum load1 2.62;
+  minimum disk free 363,095,670,784 bytes; all pre/post gates passed.
+- Exact signal/PIO race supported by control-flow review, not deterministic race
+  injection. Worker final guest/Clippy/rustdoc/consumer evidence not rerun by reviewer.
+
+Parent accepts the focused Linux cleanup correction for publication. Kernel/device
+stall, manual-only ignored integration, and broader platform limits remain explicit.
+
+### 045 — VM readiness publication ordering
+
+Assigned after round 044 final review workloads ended. Investigate documented
+callback-before-CPU ordering versus private startup with bounded actual KVM
+evidence and caller analysis. Architectural/cross-platform tradeoffs require
+discussion before broad implementation; do not silently weaken the API contract.
+
+Source/caller analysis: fresh Unix build resumes CPUs before on_ready, restored
+starts paused; WHP starts paused and resumes after callback. Existing public API
+also permits explicit restored resume, and a runtime caller resumes restored
+before later fallible setup. Therefore transactional "Err means no guest side
+effects" is incompatible with explicit-resume behavior without a larger change.
+
+Bounded actual KVM probe at 16:30:19–16:31:17 UTC: two serial one-vCPU/32 MiB
+custom long-mode guests write marker 0x45 in owned guest RAM then HLT. First
+callback never calls resume: entry reports not paused, marker initially zero;
+after bounded 100 ms callback delay and pause, marker is 0x45. Returning Interrupted
+preserves the marker. Explicit-resume second variant behaves likewise.
+This proves execution before callback returns, not strict dynamic observation of
+execution before callback invocation; source lacks an ordering barrier.
+
+No architectural repair or contract weakening made. Parent asked user to decide:
+prepared/paused at callback entry, fresh auto-start only on success, explicit
+resume side effects not rolled back, explicit pause honored. Independent storage
+testing continues while this decision is pending. Diagnostic source/logs stay
+under ignored isolated output, not a defect-expecting normal regression.
+
+Final report: one diagnostic nextest passed (0.246 s, build 57.44 s), not a
+passing-contract claim. Own tiny payload, not full firmware/Linux boot. Resource
+pre/post: available memory 23.802/23.814 GB, load1 0.807/1.934, disk free
+363.060/362.935 GB. No surviving fixture/vCPU processes observed; exact fd/TID
+accounting not repeated. No Clippy/docs/consumer/platform checks because no repair.
+Diagnostic/evidence artifacts remain only in child target-chaos-045 and are not
+merged into the campaign PR.
+
+Compatibility refinement reported to user: existing WHP smoke explicitly resumes
+then pauses during callback and relies on successful return auto-resuming. Parent
+therefore recommends preserving that automatic-success behavior while guaranteeing
+prepared callback entry; honoring explicit pause persistently is a separate
+behavior change. No implementation while user decision remains pending.
+
+### 046 — Selective apply failure and retry
+
+Assigned after round 045 hardware workload ended. Explore bounded owned
+filesystem failure after partial selected application, retained candidates,
+unrelated-path isolation and retry/review consistency, avoiding prior apply cases.
+
+Result: no defect reproduced, no tracked code changes. Two tiny fixtures cover
+legacy/compact journal. Existing private publication seam removes owned target
+directory write permission before second replacement: real UID1000 gets EACCES
+after one selected file succeeds. Failure preserves failed host path and all
+candidate identities/bytes, preimages and Prepared ledger. Restoring permissions
+permits completion of original intent; only selected candidates/preimages consumed.
+Repeated recovery preserves a later host edit and unrelated remaining candidate.
+This is logical idempotent commit, not exactly-once physical Prepared writes.
+An empty owned temp directory may survive denied cleanup, per non-sweeping rules.
+
+Worker window 16:32:06–16:37:28 UTC, standard workload limits:
+
+- Existing apply recovery/stage tests: 17 passed, 160 skipped.
+- Temporary diagnostic: 1 passed, two journal-format cases.
+- Targeted lib/tests warnings-denied Clippy passed.
+- Final restored-source apply/stage plus seal integration: 18 passed,
+  160 skipped; formatting/diff checks passed.
+- Minimum MemAvailable 21.73 GiB; maximum load1 1.58;
+  minimum free disk 337.56 GiB. TMPDIR empty; no gate failures.
+- Probe bypasses global apply locks; ordinary stage tests use documented fixed
+  /tmp namespace. No shared locks removed or user mounts/processes touched.
+- Temporary probe removed to avoid duplicate test bloat; audit patch remains
+  child-local target-chaos-046/round046-probe.patch, not merged into PR.
+- No crash/device/power-loss/concurrent-writer/public CLI/FUSE/VM/other-platform/
+  full-package/workspace/Python coverage.
+
+### 047 — Post-commit apply cleanup recovery
+
+Assigned after round 046 workloads ended. Explore backup cleanup failure after
+ledger commit, repeated recovery preserving later host edits and refusal to
+consume unowned backup contents. No-change evidence acceptable if already covered.
+
+Confirmed cleanup-only retry liveness defect, not data loss: after durable
+Committed, a fixture-owned parent made nonwritable permits backup contents and
+ownership receipt removal but denies final directory removal. Cleanup propagates
+EACCES. Restoring permissions still leaves retry failing ENOENT because receipt
+was removed. Ledger stays committed/no pending; later host edits, unrelated
+candidate and journal remain intact. Replacing leftover with unowned sentinel
+directory is refused without modification.
+
+Initial diagnostic plus four existing tests passed (five tests, both formats).
+Worker retained diagnostic evidence locally. Parent selected a focused live-error
+repair rather than a new durable authority protocol: hold original verified
+directory fd/receipt and attempt exact, exclusive, no-follow receipt restoration
+through that fd if cleanup fails. Preserve original cleanup error and never
+overwrite receipt collisions or authorize rebound pathname. Failed restoration,
+process-death/power-loss gap remain explicit fail-closed limitations. Worker is
+implementing and testing this before independent review/publication.
+
+Worker repair integrated: verified directory fd retained; exclusive no-follow
+openat creates exact receipt, then file/directory sync. Original cleanup error
+remains returned; failed restoration adds explicit context with original kind.
+Regression covers legacy/compact permission retry preserving later host edits and
+unselected journal data; separate collision/moved-directory cases preserve file/
+symlink collisions and do not authorize rebound unowned pathname.
+
+At 16:45:06–16:45:10 UTC, targeted cleanup/recovery selectors passed 6 tests,
+173 skipped; lib/tests warnings-denied Clippy, package fmt/diff passed. All round
+workload gates: minimum MemAvailable 23,397,367,808 bytes, maximum load1 0.9297,
+minimum free disk 362,231,959,552 bytes. Independent reviewer now checks authority,
+error states and full overlay-core suite before publication.
+
+Independent review accepted live-error scope without blocking findings.
+At 16:46:21–16:46:35 UTC, exact `mise run test -- pvisor-overlay-core` passed
+242 tests, 5 skipped, 12 binaries; effective UID1000 exercised both DAC cases.
+MemAvailable 23,805,968,384→23,459,532,800 bytes, load1 0.575→1.026, disk free
+362,235,666,432→362,173,673,472 bytes; gates passed.
+
+Review caveats clarified before publication:
+
+- Existing receipt collisions remain untouched; restoration context can be noisy
+  if a valid receipt survived, but retry remains possible.
+- Successful restoration preserves original cleanup error; wrapped restoration
+  failure preserves error kind and text, not structured original raw errno.
+- Incomplete write can leave invalid receipt; failed sync can leave complete
+  readable bytes accepted by later recovery, not persistent poison. No new
+  crash-durability protocol.
+- Held directory secures restoration destination only; existing pathname-based
+  cleanup is not made safe against every concurrent namespace mutation.
+- Non-Linux, injected receipt write/sync failure and crash/power-loss not tested.
+
+At 16:46:13 UTC published VM revision `6e02bfe5` had all 33 checks green,
+including aggregate CI. This predates the cleanup repair.
+
+### 048 — Core resource admission cancellation
+
+Assigned after round 047 test workloads ended (documentation clarification only
+remains). Explore bounded in-memory admission/cancellation/owner ordering and
+quota recovery, avoiding earlier resource tests. No live network or host faults.
+
+Round 047 publication note: comment-only follow-up merge duplicated the helper
+with conflict markers. Parent resolved by retaining exactly one helper with the
+clarified comments; final production/test diff matches independently tested code,
+and `git diff --check` passed. No tests rerun after comment-only resolution.
+
+Round 048 scope corrected before execution: Core has no lease/admission ledger.
+Worker reported this without running tests; parent authorized owning
+`pvisor-daemon` in-memory admission/cancellation tests instead. Do not interpret
+Core contracts as resource-accounting coverage.
+
+Result after scope correction: no product defect reproduced. New focused daemon
+test covers independent CPU/memory/slot saturation crossed with original-owner
+drop before/after caller abort (six scenarios). Native-entry oneshot establishes
+durable Pending admission before completion. Cancellation correctly retains
+capacity; confirmed deletion restores exactly one admission, stale delete cannot
+release replacement. No sleeps, service listener, VM, subprocess or mount.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 16:50:29–16:51:34: three selected daemon tests passed, 132 skipped.
+- 16:52:19–16:52:39: new test stress-count3 passed all repetitions.
+- 24 new scenario instances total; 48 successful admissions, capacity rejections
+  and confirmed deletions each, 24 stale-delete rejections.
+- Targeted library/tests Clippy warnings denied, rustfmt and diff passed.
+- MemAvailable 22,894,592–23,455,180 KiB; load1 0.50–2.14;
+  disk free 361,647,357,952–362,082,021,376 bytes. Fixtures removed.
+- No full daemon/workspace/Python, native runtime, cgroup, network, other-platform
+  or parent-integrated-tree validation in this worker.
+
+Parent inspected and merged focused test/README. Next worker will include its
+integrated validation before a separate uncertain-create scenario.
+
+### 049 — Daemon uncertain-create cancellation
+
+Assigned after round 048 workloads ended. Explore caller cancellation combined
+with runtime creation failure and uncertain cleanup, keeping quota fenced until
+confirmed release, without live runtime/network services.
+
+Result: no production defect reproduced. Extended the same inherited test with
+35 net lines, not a duplicate. Twelve cases now cover CPU/memory/slots × two
+owner/caller drop orders × successful/uncertain failed creation. Aborted caller
+does not release quota. Failed creation plus Missing reconciliation keeps
+reservation; two cleanup failures retain Stopping and 429 admission without a
+second runtime create. Confirmed cleanup admits one replacement; stale deletion
+cannot release it. Final counters 2 creates / 4 deletes in uncertain variants.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 16:54:51–16:55:55: inherited integrated048 test passed first.
+- 16:56:40–16:57:00: six selected daemon cancellation/uncertainty tests passed,
+  129 skipped.
+- Package lib/tests warnings-denied Clippy, package fmt/diff passed.
+- Minimum MemAvailable 22,869,300 KiB, maximum load1 2.53,
+  minimum free disk 352,203,872 KiB. Local FakeRuntime only.
+- No full package/native runtime; startup restart not combined with new matrix.
+
+Parent inspected incremental matrix extension and merged it cleanly. Fresh
+worker will run integrated full daemon suite before publication.
+
+### 050 — Daemon control acknowledgement loss
+
+Assigned after round 049 workloads ended. First full daemon integrated validation,
+then bounded pause/resume acknowledgement/caller-cancellation and quota/intention
+reconciliation ordering, reusing coverage where already sufficient.
+
+Initial integrated full daemon run 16:58:39–17:00:05 UTC failed: 83 passed,
+1 failed, 4 skipped, 99 not run under fail-fast. The inherited checkout path plus
+campaign TMPDIR made a native Unix socket pathname exceed SUN_LEN in
+downloads_honor_byte_ranges_across_guest_frames. Not attributed to a product
+reliability defect; worker will retry once with shortest unique worktree-local
+TMPDIR, retaining the failed run as evidence. Pre/post available memory
+23,440,164/23,665,324 KiB, load1 1.46/2.27, disk free
+360,292,823,040/359,707,897,856 bytes; gates passed.
+
+Integrated rerun 17:00:50–17:01:51 UTC: exact `mise run test -- pvisor-daemon`
+passed 183, skipped 4 across six binaries (36.168 s nextest). Only campaign setup
+changed: unique short worktree-local `.t050` TMPDIR, representative socket bind
+checked at 95-byte path first. No code changes for path limitation.
+Pre/post MemAvailable 23,749,040/23,741,484 KiB, load1 1.56/2.68,
+free disk 359,695,151,104/359,769,837,568 bytes; gates passed. This validates
+final integrated rounds 048/049; initial failed run remains disclosed.
+
+Round 050 result: no product defect reproduced. New eight-case matrix covers
+pause/resume × lost/inconsistent acknowledgement × retry/newer queued control,
+reusing a private bounded gate after simulated native change. Caller abort retains
+intention, quota and exclusive ownership. Failed inspection preserves intent;
+retry observes without repeating control. Newer opposite control wins through
+GET and reopened disk records. Queue proof explicitly polls lifecycle write lock,
+then invokes private locked control; not merely assuming task scheduling.
+
+Worker final checks, UTC 2026-11-07, standard resource limits:
+
+- 17:05:18–17:05:24: six selected regressions passed, 130 skipped.
+- 17:05:24–17:05:25: final new test stress-count3 passed. Final-version total
+  40 scenario instances; preliminary-version executions tracked separately (72
+  including those, not 72 final-version cases).
+- Targeted Clippy warnings denied and package fmt/diff passed.
+- 17:05:42–17:06:19: final exact `mise run test -- pvisor-daemon`,
+  184 passed, 4 skipped after FakeRuntime helper changes.
+- MemAvailable 23,124,296–23,857,500 KiB; load1 1.02–2.68;
+  disk free 359,161,151,488–360,292,823,040 bytes. Short fixture dir removed.
+- New tests use FakeRuntime only; full package additionally runs existing local
+  IPC/loopback fixtures. No VM/cgroup/cloud/Python/workspace/ignored/other-platform
+  coverage. New cases saturate slots; CPU/memory covered by inherited matrix.
+
+Parent reviewed the lifecycle lock, gate ownership and final-state assertions
+and integrated test/README.
+
+### 051 — Renewal versus expiry cancellation
+
+Assigned after round 050 workloads ended. Explore accepted renewal cancellation
+and stale TTL expiry fencing with deterministic in-memory fixtures, not real-time
+waiting or live service/VM workloads.
+
+Result: no product defect reproduced. A focused test blocks disk commit after
+renewal validation, aborts public caller, waits lifecycle handoff, then invokes
+stale selected expiry cleanup. Committed extension survives. Same-deadline retry
+returns INVALID_REQUEST without reverting it. Directly modeled expired deadline
+returns SANDBOX_EXPIRED; failed/unconfirmed delete each retain Stopping/quota
+across two retries, confirmed delete admits replacement.
+It does not enqueue actual maintenance during blocked commit or cross a real clock.
+
+Worker checks, UTC 2026-11-07, standard limits:
+
+- 17:09:27: seven selected daemon tests passed, 130 skipped.
+- One initial new-line formatting difference corrected.
+- 17:11:04: final package fmt and lib/tests warnings-denied Clippy passed.
+- 17:11:33–17:11:53: same seven tests passed on final source (0.391 s nextest).
+- MemAvailable >=22.48 GiB, load1 <=2.22, disk free >=333.96 GiB.
+  Short 72-byte worktree-local TMPDIR empty and removed.
+- FakeRuntime/disk-barrier only, no real wait/VM/service/cgroup, no full package.
+
+Parent reviewed the lock-handoff/deadline/capacity assertions and integrated
+regression/README.
+
+### 052 — Registry uncertain-commit recovery
+
+Assigned after round 051 workloads ended. Explore existing Store failure seams,
+fail-stop mutation fencing and restart disk-winner recovery with local records,
+avoiding duplicate coverage and physical-fault claims.
+
+Result: no-code evidence, existing seven-case disk-winner test plus seven adjacent
+tests satisfy scenario. Hooks fail before/after intention, native create/pause,
+and unlink. Stale memory stays unpublished when disk wins; disabling injection
+still leaves fail-stop fencing further operations/native calls/disk mutation.
+Reopen chooses persisted state, preserves identity/credentials/resource quantities,
+retains capacity and allows replacement only after confirmed cleanup.
+
+At 17:13:35–17:14:41 UTC, targeted exact mise daemon selection passed 8,
+129 filtered (0.947 s nextest, 66 s total fresh build). MemAvailable
+24,114,960→23,893,164 KiB, load1 0.94→2.29, disk available
+349,838,668→349,712,564 KiB; gates passed. Fixtures/short TMPDIR cleaned.
+No source/docs edits; no Clippy/fmt because no edits. Private hooks/FakeRuntime,
+not full suite/native VM/device/power-loss coverage.
+
+### 053 — Malformed registry reopen recovery
+
+Assigned after round 052 workloads ended. Explore tiny malformed/truncated owned
+registry fixtures, non-destructive refusal and recovery after restoring exact
+bytes, reusing existing coverage rather than duplicating it.
+
+Initial selected storage checks at 17:16:19–17:17:24 UTC passed 4, skipped133:
+malformed/missing metadata, owner/version/record-ID rejection, mismatch byte
+preservation and separate healthy restart. No code changes. MemAvailable
+24,087,820→23,802,424 KiB, load1 0.92→2.58, disk free
+349,353,656→349,209,884 KiB; gates passed, fixtures/short TMPDIR cleaned.
+
+Gap identified explicitly: existing tests neither truncate a valid record nor
+restore exact original bytes and reopen that same fixture; malformed cases lack
+direct byte-preservation assertion. Parent requested bounded follow-up to complete
+this named recovery sequence rather than equating separate healthy-open evidence.
+No Clippy/fmt run on no-change initial selection.
+
+At 17:15 UTC published revision `5e0fa3da` CI had no failed checks; a few CLI/
+report jobs remained in progress. Not final CI success.
+
+Follow-up closes named recovery gap with 48 lines added to existing regression:
+record/ownership metadata each truncated at zero/one/missing-final-delimiter bytes.
+All six variants fail closed without modifying damaged bytes, counterpart,
+neighbor record or header. Exact original-byte restoration allows the same fixture
+to reopen with identity/version/record contents and exclusive lock intact.
+No product defect reproduced or implementation change.
+
+At 17:18:42 UTC selected two store tests passed, 135 skipped. Bare-shell Clippy
+initially used rustc1.90 and failed dependency minimum1.91; rerun through
+`mise exec` selected project toolchain and passed warnings-denied Clippy plus
+formatting/diff by 17:19:45 UTC. Earlier bare format passed but is not project
+toolchain evidence. MemAvailable 23,531,668–24,070,168 KiB, load1 1.11–1.62,
+disk free 348,950,716–349,053,704 KiB; gates passed, fixtures/TMPDIR cleaned.
+No physical crash/power-loss/sync durability/native VM/broader-corruption claim.
+
+Parent reviewed incremental same-fixture recovery assertions and merged test/README.
+
+### 054 — Real Host stagebox lifecycle recovery
+
+Assigned after round 053 workloads ended. Diversify into actual low-load
+spawn/review/selective apply/drop, guest failure/cancellation and later successful
+run, with source preservation and owned process/mount cleanup checked.
+
+Result: three real serial safe Host Sessions, no FakeRuntime or defect reproduced.
+At 17:25:44.392–17:25:45.545 UTC, 24 CLI operations (23 success, expected guest
+exit23 once) test failed stage A with background child, newer successful B
+recreating/accepting A-deleted path, then healthy C. Selective apply/drop of older
+failed stage preserves newer accepted file; unrelated scratch candidates remain
+until dropped. Original host contents unchanged before apply and previews inert.
+Final edit=accepted-from-failure, obsolete=reintroduced-success,
+health=healthy3, sentinel=untouched; no scratch files. All stages discarded/empty.
+
+Actual spawn uses Host, --safe, --overlaynet-deny-all, captured stdio, explicit
+stage and tokenized Python fixture. Recorded owner PIDs gone, no token/cwd matching
+descendants, readable mount-namespace fixture mounts or stage sockets. Failed
+Session returned in0.256s before background child's natural3s deadline.
+
+Worker checks, standard gates/limits:
+
+- 17:22:34–17:24:13 UTC: `mise run build -- debug product` passed98.62s,
+  existing local firmware, no downloads.
+- Supported static product CLI executed scenario. Explicit GNU product target
+  and musl nextest attempts failed during setup (unsupported target/missing
+  musl compiler); not counted as lifecycle evidence.
+- Three selected native mise pvisor-cli apply tests passed.
+- Integrated final daemon store truncation/restoration regression passed afterward.
+- Diff check passed. All30 guarded invocations admitted: minimum available memory
+  23,986,913,280 bytes, maximum load1 2.70, minimum boundary diskfree
+  354,402,889,728 bytes; final17:28:39 audit diskfree354,205,315,072.
+- No source code changed. Diagnostic artifacts retained child-local .t054 and
+  target-chaos-054, not merged. Temporary worktree target redirect removed;
+  no source-checkout outputs written.
+- No cancellation injection/VM/OCI/other-platform/concurrent-writer/full package/
+  workspace/Python coverage in054.
+
+### 055 — Real Host deadline and retained stage
+
+Assigned to same isolated worker after054 for validated build reuse. Explore
+documented bounded deadline/cancellation with owned descendant cleanup, selected
+acceptance of retained stage and healthy successor, no unrelated process kills.
+
+Result: no defect reproduced, same validated static CLI reused without build.
+At 17:31:35.899–17:31:38.870 UTC three real safe Host Sessions:
+
+- --timeout2s returned1 in2.172s; Bundle failed/deadline_exceeded, no workload
+  exit code. Ready parent/descendant each had8s natural fallback.
+- After pipe readiness, `pvisor kill STAGE --json` reported cooperative=true,
+  returned0; spawn returned143 in0.232s, Bundle cancelled, no fabricated process
+  failure/workload exit code. Descendant ignored SIGTERM but was cleaned.
+- Healthy successor returned0 in0.184s and verified prior accepted state before
+  staging next health file. Deadline/cancel stages selectively accepted result,
+  dropped scratch; healthy stage fully applied/zero candidates.
+
+All host sources unchanged before apply, preview inert. No owners/token/cwd
+descendants, readable fixture mounts or stage sockets afterward, before8s natural
+fallback. Final stages discarded/discarded/applied. Of23 CLI commands:20 exit0,
+one expected deadline1, cancellation143, and fully-applied-drop refusal1.
+Harness initially expected drop after full apply; product correctly refused,
+accepted files unchanged. Token checker initially matched its own parent shell;
+fixed to exclude only known checker/parent, not workload descendants.
+
+One selected native apply CLI test passed at17:33:26 UTC; diff check passed.
+All24 resource gates: minimum MemAvailable24,398,442,496 bytes, maximum load1
+1.045, minimum disk free354,012,622,848 bytes. Final17:33:45 audit load0.65.
+No tracked code changes; childlocal .t055 evidence not merged.
+No frontend disconnect/setsid/concurrent writer/VM/OCI/other-platform/fullsuite/
+Python coverage. Observed SIGTERM cancellation143 is not generic130 assumption.
+
+### 056 — Real Host frontend disconnection
+
+Assigned to same isolated worker for build reuse after055. Explore bounded owned
+frontend disconnection and descendant/runner ownership, receipt authority and
+Unknown admission before apply/drop. No unrelated process signaling.
+
+Result: no defect reproduced, three real serial Host Sessions. Caller-owned stdio
+EOF completed0 in0.216s with valid completed/exit0 receipt. Verified frontend
+identity/parent/starttime then pidfd SIGKILL targeted only frontend, not timeout
+wrapper or runner; wrapper Popen reported-9 in0.212s and owner committed cancelled
+without workload exitcode. Healthy successor completed0 in0.179s. Both fault cases
+had ready descendants with8s natural fallback, cleaned well before it.
+Host unchanged before apply; product receipt/Bundle binding validated before
+selective apply/drop; final accepted result/health/sentinel correct, scratch absent.
+
+Neither actual fault produced Unknown. A separate existing synthetic missing-
+receipt test passed (1 passed,765 skipped) and verifies typed Unknown review plus
+blocked apply/drop/no invented completion. Do not claim real Unknown observation.
+An initial harness expected shell137 instead of Popen-9; corrected classification
+on original stage, without relaunching variant.
+
+Fault execution17:37:06–17:37:07 UTC, same-stage reconciliation/healthy17:40:03,
+synthetic test17:40:19–17:40:38; final audit17:41:00. Of23CLI commands22 exit0,
+one expectedSIGKILL. Minimum available memory24,301,289,472 bytes, maximum load1
+0.924, minimum diskfree354,046,697,472 bytes, all gates passed. No owners/
+fixture descendants/mounts/sockets remain. No tracked source changes; evidence
+childlocal. No real uncommitted window/setsid/VM/OCI/other-platform/concurrency/
+fullsuite coverage.
+
+### 057 — Real staged rename/deletion conflicts
+
+Assigned same worker after056. Explore intervening owned host edits/type changes,
+whole-selection refusal and selective recovery without overwriting host changes.
+Completed machine artifacts stay ignored/childlocal, not campaign deliverables.
+
+At17:42:07 UTC all33 CI checks for published revision`0cc99847` were successful.
+Rounds054–056 add no code changes; their workflow evidence remains separate
+from those CI checks and from pending readiness045 semantics.
+
+Round057 result: no defect, two real serial safe Host Sessions at17:43:51–17:43:52
+UTC. Staged rename plus intervening original-source edit, and staged deletion
+plus host replacement by nonempty directory. Each whole-selection preview and
+execution blocked/exit3 without publishing unrelated path or apply ledger.
+Selective nonconflicting keep-file accept succeeded; conflicting rename/deletion
+stayed staged until drop, preserving host edit/directory. Completed exit0 receipts
+validated before acceptance; preview kept exact bytes/types/modes/identities/mtimes.
+
+22CLI commands18exit0/fourexpected3. Both stages discarded/empty, owners/fixture
+processes/mounts/sockets gone. Two selected native apply CLI regressions passed
+17:44:13–17:44:36 UTC,19filtered; diff check passed. Minimum MemAvailable
+24,288,653,312 bytes, maximum load1 1.232, minimum diskfree354,013,859,840 bytes,
+all gates passed. Evidence moved only after live references closed into ignored
+target/chaos054-evidence; no source changes. Not concurrent writers, interruption,
+VM/OCI/other-platform/fullsuite or multi-file transaction proof.
+
+### 058 — Real hardlink selective acceptance
+
+Assigned same worker after057. Derive documented host-hardlink and staged alias/
+metadata behavior, then validate selective acceptance, unrelated candidate
+retention and host identity/content preservation without duplicate fixtures.
+
+Result: no defect, three real serial Host Sessions at17:50:17–17:50:18 UTC.
+Controlled --safe --clear-access fixture is necessary: default safe deny rules
+reject multiply-linked files. Enforcement/staging stay installed; not default-
+preset hardlink coverage. Staged new alias plus mode0600→0640 requires copied-up
+source; excluding dependency blocks3. Normal preview inert; apply publishes those
+two as same hardlink group while uncopied host alias retains original inode/mode.
+In second variant an intervening host-alias chmod0660 blocks group application3
+without ledger or candidate loss. Unrelated candidate accepts, group/scratch drop,
+host chmod preserved. Healthy successor verifies topology/contents then applies.
+
+24CLI commands22exit0/twoblocked3, all receipts completed0 before acceptance.
+Final accepted pair nlink2/mode0640 separate from original alias nlink1/mode0600;
+conflicting pair original inode/nlink2/mode0660, unaccepted alias absent.
+Owners/fixtureprocesses/mounts/sockets gone, stages discarded/discarded/applied.
+One selected native hardlink CLI regression passed by17:50:48 UTC; diff passed.
+Minimum memory24,195,362,816 bytes, maxload1 1.032, mindisk353,937,096,704 bytes,
+all gates passed. No tracked changes, ignored childlocal evidence only.
+No concurrentwriter/crossfilesystem/ACL-xattr/otherplatform/fullsuite coverage.
+
+### 059 — Directory metadata versus child acceptance
+
+Assigned same worker after058. Explore existing-directory chmod/child edit
+selection, independent metadata retention and drop preservation; compare required
+new-directory dependency only where documented.
+
+Result: no defect, two real default-safe Host Sessions at17:53:57–17:53:58 UTC.
+Existing directory staged chmod0700→0750 plus child edit selects child only, with
+no required parent; apply preserves original parent inode/mode0700 and retains
+independent0750 candidate. New/deep child requires exactly both new ancestors,
+and applies their0751/0753 modes. Dropping remaining metadata/scratch preserves
+accepted children/new directories and original existing-parent mode. Healthy
+successor confirms final states, then applies health file. Receipts completed0.
+
+16CLI commands all0, previews inert, stages discarded/applied/empty, owners/
+fixtureprocesses/mounts/sockets gone. Two native overlay-core directory selection
+tests passed by17:54:17 UTC,177filtered. Minimum memory24,096,055,296 bytes,
+maxload1 1.045, mindisk354,072,793,088 bytes; gates/diff passed.
+No source changes; ignored evidence only. No ownership/xattrs/explicittimestamp/
+betweenpreview-parentedit/interruption/otherplatform/fullsuite coverage.
+
+### 060 — Tiny real Host file-size limit failure
+
+Assigned same worker after059. Validate documented child-only file limit and
+failure classification, retained earlier candidates/partial file semantics,
+selective acceptance and healthy successor without machine pressure.
+
+Result: no defect/docs discrepancy. Three variants/four real starts. Both
+--max-file-size1KiB runs install soft/hard1024, write4096 returns1024, nextbyte
+either caughtEFBIG27 then deliberateexit7 or defaultSIGXFSZ25/CLI153. Receipts
+failed/process_exit/7 or153 correctly, earlier keep candidates selectively
+accepted, scratch/exact1024byte partial retained then dropped. Requested/effective
+1024 and posix-rlimit mechanism reported. Guest-only core disabled for signalcase.
+Healthy no-override writes2048/completed0, accepts keep and drops2KiB file.
+
+Initial healthy attempt failed an incorrect harness comparison: outerPython uses
+RLIM_INFINITY=-1, guest uses18446744073709551615 equal to its own infinity constant.
+No leaked cap. Emptyfailed1 stage confirmed/dropped; corrected retry succeeds.
+Finishing-harness escaping error corrected without extra workload. Allfour stages
+discarded/empty, hostunchanged preapply/previewsinert, outer limits unchanged.
+
+Limited runs17:57:45 UTC, healthyretry17:59:50;27CLI commands24zero,oneeach7/153/
+recordedharness1. CLI resource-mapping native test1passed/148filtered by18:01:01,
+distinct from actual enforcement evidence. Gates: minmemory24,024,485,888 bytes,
+maxload0.795,mindisk353,984,143,360 bytes. Owners/fixtureprocesses/mounts/sockets
+gone, ignored evidence only, diffpassed. No otherdimensions/platforms/filesystems/
+aggregate-stagebudget/fullsuite coverage.
+
+### 061 — Workload-only descriptor exhaustion recovery
+
+Assigned same worker after060. Tiny fixed per-child fd cap and bounded EMFILE,
+close owned descriptors, successful same-Session staging, selective acceptance
+and healthy successor; no host-wide limits or fd pressure.
+
+Result: no defect/harness correction. Two real default-safe Host Sessions at
+18:04:19–18:04:20 UTC. Documented --max-open-files64 reports requested/effective
+64/64/posix-rlimit. Guest baseline0,1,2; reservefd3,60moreopens,61stloopEMFILE24
+at64occupied. Release reserve, stagedwrite/fsync succeeds, close61ownedfds restores
+baseline, reopen/append/fsync succeeds. Handled error yields completed0, not
+fabricated resource failure. Earlier and recovered candidates selected/applied,
+scratch retained then dropped. Original host unchanged preapply, previews inert.
+Healthy successor limit524288 matches unchangedharness, not64; healthfileaccepts.
+
+14CLIcommands all0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+Native requestedopenfilelimit test1passed/765filtered by18:04:47 UTC; diffpassed.
+Minmemory24,360,284,160bytes,maxload1.284,mindisk353,961,414,656bytes,gatespassed.
+No source changes, ignored evidence only. Not unusual inheritedfds/concurrent
+allocation/otherplatform/fullsuite coverage.
+
+### 062 — Tiny aggregate stage-size budget
+
+Assigned same worker after061. Derive actual stage-cap accounting/reclamation,
+then bounded individually small writes, cap failure and supported recovery,
+distinct from per-file rlimit without disk filling.
+
+Confirmed advertised-limit mismatch, unresolved pending user direction. At
+18:09:56–18:09:58 UTC three real default-safe FUSE Host stages:
+
+- Cap4KiB allows two full3072byte writes/peakpayload6161. Ordinary unlink/truncate
+  and512byte retry succeed, finalpayload1553. CLI postcheck exits1 reporting101336
+  retained-storage bytes, while committed receipt/status remain completed0.
+- Cap4KiB plus workloadexit7 retains6160payload/101330storage bytes, returns7 and
+  failed/process_exit/7, without size diagnostic because only success is checked.
+- Fresh uncapped samewrites payload6161/storage100598, CLI/receipt completed0.
+
+Accounting sums current regular-file lengths across retained stage records/
+journals, not live payload quota, allocated blocks or high-water budget. No
+partial writes/quota errors, no quota-reclamation claim from ordinary unlink.
+Selective keep-file accept/drop preserves host, receipts checked before acceptance,
+all stages discarded/empty, owners/processes/mounts/sockets gone.
+
+24CLI commands22zero/onepostcheck1/oneworkload7. Existing mapping test1passed
+148filtered by18:11:08 UTC proves parsing only, not enforcement. Gates:
+minmemory24,407,048,192 bytes,maxload0.702,mindisk353,952,768,000 bytes.
+No code/help/docs/semspec changes; ignored evidence only.
+
+Parent asked user to choose accurate posthoc diagnostic versus designed live
+budget (early rejection is also a compatibility option). No silent contract
+weakening or immutable receipt rewrite. Readiness045 and limit062 decisions
+remain pending; other independent testing continues.
+
+### 063 — Real literal path handling
+
+Assigned same worker after062. Inspect documented selection semantics then tiny
+space/Unicode/leading-dash/newline filenames with exact argv/JSON, selective
+acceptance and similarly named candidate isolation; no shell interpolation.
+
+Result: no defect/harness correction, two real safe Host Sessions at18:14:35–
+18:14:37 UTC. Six literal selections cover space, Unicode, leadingdash, newline,
+nestedUnicode/newline and glob-looking name. ReviewJSON preserves all12selected/
+comparison names. Each preview selects exactly one/no dependencies, is inert;
+apply consumes only exactliteral, others pending until drop. `literal[1]*.txt`
+does not expand glob; leadingdash uses --path=-draft.txt. Allargv arrays, no shell.
+Healthy successor verifies exact names/bytes and absent dropped comparisons.
+Receiptscompleted0, originalhostunchangedbeforeapply, bothstagesdiscarded/empty.
+
+29CLIcommandsall0; two native applyCLI path/byteidentity tests passed19filtered
+by18:14:46 UTC. Minmemory24,408,563,712bytes,maxload0.868,mindisk353,938,944,000bytes,
+gates/diffpassed. Owners/processes/mounts/socketsgone, ignored artifacts only.
+No real invalidUTF8filenames/normalization/casefoldingfilesystems/otherplatform/
+fullsuite coverage.
+
+### 064 — Real binary payload selective acceptance
+
+Assigned same worker after063. Tiny NUL/invalidUTF8/high-byte content and mixed
+text candidates, documented binary diff omission and byte-exact selective apply,
+not size pressure or filename encoding.
+
+Result: no binary review/apply defect, two real safe Host Sessions. Binaryedit
+1040→1560bytes, invalidUTF8add286bytes, delete215bytes, unrelatedtext. ReviewJSON
+keeps paths/kinds/sizes; diff explicitly binary(textdiffunavailable), emits no
+NUL/invalidUTF8/payloadmarkers while displaying text. Selectededit/add byteexact,
+then selecteddelete; unrelatedtext pending/drop leaveshosttextoriginal. Healthy
+successor checks hashes/deletion, accepts72bytebinaryhealth. Receiptscompleted0,
+hostunchangedpreapply and all applypreviews strictinert.
+
+Accepted hashes: edit1560bytes a444342734615ed29b2dee764728949b9f5c8270d0febe730119fc1d87234356;
+raw286bytes 22b107942cd3e32337a86340b2ce47f5da07794fb267ad670894d3cd340ab069.
+21CLIcommandsall0, staged/review18:18:08–18:18:09 UTC, same-stageaccept/healthy
+18:20:57. Initial harness learned stoppedreview advances empty session.lockmtime
+through operation bookkeeping; isolated only thattimestamp, bytes/identity/other
+metadata unchanged, strictapplypreview assertions unchanged, no replacementrun.
+
+Two native binarydiff tests passed32filtered by18:21:10 UTC,diffcheckpassed.
+Minmemory24,290,197,504bytes,maxload0.768,mindisk353,895,215,104bytes,gatespassed.
+Bothstagesdiscarded/empty, owners/processes/mounts/socketsgone. Ignored evidence
+only, no source changes. No real diffboundary/overbudget/concurrentreplacement/
+otherplatform/fullsuite coverage.
+
+### 065 — Real review diff budget boundaries
+
+Assigned same worker after064. Derive documented thresholds, bound total fixtures
+to a few MiB, verify explicit omission/truncation/binary classification and
+candidate/byte-exact acceptance independent of diff display.
+
+Confirmed narrow display diagnostic defect in both review/apply diff: truncation
+marker is emitted only at the following candidate iteration. If the final rendered
+file itself is clipped, output silently ends without marker. Two actual Sessions
+with1,347,617byte bounded payload reproduced it: applybody exactly262144bytes,
+endmarker absent, no diff-truncated notice; final reviewfile clipped atmax128
+similarly lacks notice. All perfile boundary skips, final-byte NUL detection,
+candidate retention, byte-exact apply and cleanup otherwise passed.
+
+Parent authorized minimal immediate notice when clipped output is detected,
+preserving current budget/format contracts, with final-file red/green and exactfit/
+nextcandidate coverage. Worker will rebuild static product and rerun actual
+clipped case on repaired binary, not reuse old binary as repair evidence.
+Independent review required before publication; quota062/receipts untouched.
+
+Original real trace18:27:05–18:27:06 UTC also validates perfile1023/1024/1025
+under configured1024budget, lastbyteNUL binaryskip, 1MiB+1 largefileomit, and
+262144bodybudget across two144KiBfiles. Three real Sessions total/35CLIall0,
+receiptscompleted0, strictapplypreviewsinert, stagesdiscarded/empty, ownedresources
+gone. A small initial formatter difference corrected before finalchecks.
+
+Worker focused final-file tests failed beforefix. Six intendedCLI files add shared
+bounded-body helper, call it in review/apply, two existingfixture regression cases
+and README. Tests cover finalclippednoticeonce/exactfitnomarker/exactfitfollowedby
+omittedcandidateonce. At18:32:47–18:32:53 UTC exact relevant mise test command
+for apply_cli+review_handoff_cli passed36/zeroskipped. Packagealltarget Clippy-Dwarnings
+and fmt/diff passed. Supporteddebugproduct rebuild18:33:52–18:34:35 passed42.540s.
+
+Fixedbinary SHA256a8a82b0b4832e224dde0df3aa4e2ba69ee6c35362cc90d5a4318bee6002bb088
+fresh realSession18:35:48 verifies apply262144bodybytes+noticeonce, review128
+final/singleclippingnoticeonce, smallfullpreviewnomarker, byteexactapply/drop.
+Exactatbudget only regression evidence, not realfixedCLI case. Minmemory
+22,343,155,712bytes,maxload1.963,mindisk352,087,252,992bytes; gatespassed.
+No multibyteUTF8clipping/otherplatform/workspace/Python coverage.
+
+Parent captured/merged frozen source, reviewed diff and confirmed only sixCLI
+files plus campaignlog, no machineartifacts. Fresh independent reviewer is running
+tests and checking budget semantics; no production publication yet.
+
+Independent review passes scoped diagnosticfix. At18:44:50–18:45:56 UTC exact
+apply_cli+review_handoff_cli suites passed36/zeroskipped;18:46:13–18:46:31 two
+diffunittests passed147filtered; diffcheckpassed. Minmemory21,563,514,880bytes,
+maxload2.077,mindisk351,706,181,632bytes; allgatespassed.
+Reviewer confirms zero/exactfit/nextcandidate behavior, immediatebreak prevents
+duplicatenotice, binary/metadata/inputerror/receipt/writebackunchanged.
+
+Known pre-existing caveat: lossydecoding after byteslice can replace partialUTF8
+with replacementcharacter and emit up totwobytes beyond accountedbudget. Midline
+notice also has no separatornewline. Not introduced by065, not established strict
+emittedbyteceiling. Parent accepts065forpublication with this explicit limitation;
+separate066will reproduce/fix validUTF8budget handling rather than broaden silently.
+
+### 066 — Multibyte diff clipping boundaries
+
+Assigned same worker after065review workloads ended. Tiny2/3/4byteUTF8 cut cases,
+actual emittedbytes and valid-prefix/omissionnotice, shared-renderer rule and
+zero/exactfit/ASCII compatibility. No quota/receipt change.
+
+Confirmed and worker-repaired existing UTF8clipping defect: baseline9realcutcases
+at18:53:45–18:53:46 UTC fabricateU+FFFD. Apply262144budget outputs262146/262145/
+262144bytes when cutting2/3/4bytecharacters after1/2/3bytes. Fixedvalidprefix
+outputs262143/262142/262141bytes. Reviewbudgets62/63/64 output64before/61after.
+Boundedtextprefix now emits actualvalidprefix/chargesonlyemittedbytes; up to3tail
+bytes unused instead of fabricatedtext. Notices/placementoutsidebudgetunchanged.
+
+Two newCLItests redbeforefix. Worker41green=38integration+3unit,147filtered,
+by18:56:45 UTC. Tests allcutpositions/zero/fullchar/exactfit/ASCII and genuine
+inputU+FFFD preservation. Packagefmt/alltargetClippy-Dwarnings passed, supported
+debugproductrebuild6.803s. FixedSHA8187f3684399e26fdc54a86bd23c84fc73075ece033738c6f97f4f4f13e70cfe
+fresh realSession18:57:42–18:57:43 repeatsninecuts, noticesonce/nofabrication/no
+overshoot, strictpreview/byteexactaccept/drop. TwoSessions70CLIall0, each786349
+payloadbytes, receiptscompleted0, stagesdiscarded/empty, ownedresourcesgone.
+Minmemory20,402,884,608bytes,maxload1.127,mindisk351,500,820,480bytes,gatespassed.
+No otherplatform/workspace/Python validation.
+
+Parentmergedfourintendedfiles; CRDTtestconflictsduplicatedold/new065tests.
+Resolved by retaining one refactored065test plus066tests/helpers in eachfile;
+productionhelpermergeclean. Finaldiffcheckpassed and freshreviewer is validating
+integratedsource and preserved065coverage before publication. No artifactmerge.
+
+Independent066review approves integratedsource. At19:02:50–19:03:59 UTC exact
+requestedmiseCLIlibrary+apply/reviewselection passed41/147filtered. Diffcheckpassed.
+Reviewer confirms one065testperfile/allassertionspreserved, prefix/accounting/
+zero/exactfit/U+FFFD semantics and no underflow. Arbitrary malformed rendererbytes
+stop atfirstinvalidsequence and reportclipping, potentially leavingmorethan3unused
+bytes; threebytelimit refers only splitting otherwisevalidUTF8. No injectedexternal
+malformedrenderer validation. Before/aftermemory20,149,896/19,395,536KiB,
+load0.74/2.58,disk343,105,372/342,749,340KiB,gatespassed. Workerstatic/reproduction/
+Clippy evidence distinct, not repeated byreviewer. Parent accepts066forpublication.
+
+### 067 — Compatible live frontend handoff
+
+Assigned same worker after066review. Verify documented sameprotocol/different-
+digest caller commands execute through original Host owner, retained authority,
+confirmed cancellation/completion and selectiveacceptance, using ownbuiltbinaries.
+
+Result: no defect, three real safe Host Sessions19:11:51–19:11:53 UTC. Ownstatic
+A8187f3684399e26fdc54a86bd23c84fc73075ece033738c6f97f4f4f13e70cfe versus nativeGNU
+B7358fc5be2a5c0d198c71f14d940b3727bda483483c5e2fb1e55e9eb2b77745b, both0.3.1,
+instance-control-3/envelope2. Astarts/Bcontrols then reversed: live statusprogress,
+ownerPID/starttime/exe/SHA/session/execution/endpoint unchanged; live review/drop
+refuse1, applypreviewblocked3. Otherbinary cooperativekill leads143 in0.320/0.306s,
+cancelledreceipt/no fabricatedexitcode, stoppedreview/selectiveapply/drop pass.
+HealthyBstart/Aaccept confirms continuation; originalsunchangeduntilapply.
+Differentbuild/digest evidence only, not source-version/protocol skew.
+
+32CLIcommands24zero/fourexpected1/twoblocked3/twocancel143; allstagesdiscarded/empty,
+owners/fixtureprocesses/mounts/socketsgone before8snaturalfallback.
+Two native Core envelope/correlationtests passed63filtered by19:12:21 UTC.
+Minmemory20,906,831,872bytes,maxload1.302,mindisk350,721,286,144bytes,gates/diffpassed.
+No source changes/artifactsmerge; toolcreatedharness/buildaliascanceled.
+No executable-replacement/incompatibleprotocol/otherplatform/fullsuite evidence.
+
+### 068 — Private executable path replacement while live
+
+Assigned same worker after067. Copy own binaries into private fixtureinstallation,
+atomic compatible path replacement only there, originalowner identity/failclosed
+control/confirmedreceipt and healthy newSession. No userinstallation edits.
+
+Result: no defect, two real safe Host Sessions19:21:03–19:21:05 UTC. Private0700
+installation copies ownA/B; atomicreplace onlyfixturepathname. Originalowner
+PID530913/start2091587 mappedAinode285833537/dev54 unchanged, afterreplace
+links0/(deleted) retainsAhash; pathnameB inode285833541/differenthash. ReplacementB
+status/kill reaches originalowner/IDs/endpoint unchanged, cooperativecancel143
+in0.430s, cancelledreceipt/no workloadexitcode. Retainedkeep selectiveapply/drop.
+FreshSessionPID530995/start2091644 mapsB/newIDs/digest, completes0 in0.227s,
+selectiveaccept/drop passes. Hostunchangedbeforeapply, bothstagesdiscarded/empty,
+owners/descendant/mounts/controlstagesocketsgone withoutmanualsignals.
+
+16CLI15zero/onecancel143 plus two boundedowncopycommands. Native verifiedimage
+identitytest1passed149filtered by19:21:46 UTC. Minmemory21,446,295,552bytes,
+maxload0.807,mindisk350,663,962,624bytes,gates/diffpassed. No source/artifactadds;
+ignored evidence only. Linuxsameprotocolbuildfixtureevidence, not rollingupgrade
+recommendation; existingdraininstallationguidance unchanged. No sourceskew/
+incompatibility/inplacemutation/otherplatform/fullsuite coverage.
+
+### 069 — Real symbolic-link selective acceptance
+
+Assigned same worker after068. Tiny owned relative/brokenlink add/replace/delete,
+documented nofollowreview and linkidentity versus targetcandidate selection,
+without external targets or concurrent namespace mutation.
+
+Result: no defect, two real default-safe Host Sessions19:31:34–19:31:44 UTC.
+Sixcandidates=tworeferentedits/twoaddedlinks/replacedlink/deletedlink.
+ReviewJSON linktypesexact; diff skips linkcontent, linkonlyapplydiff metadata/
+symlinkwithouttraversal. Threepreviewsstrictinert. Selectnewlink requiresno referent,
+otherlinkoperations then leave exactlytworeferentedits. Finalnew/replace link
+target.txt, brokenlink missing-target.txt, deletedlinkabsent, acceptedlinksresolve
+originalhostbytes not stagedreferents. Drop preservesthem, referentcontent/mode/
+ownership/dev/inode/size/nlink unchanged. Healthychecks/keepaccept/scratchdrop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+19CLI+one native symlinkselectiontestall0 (1passed22filtered). Fortyresourcegates:
+minmemory20,792,868,864bytes,maxload1.08936,mindisk350,740,353,024bytes,diffpassed.
+No source/artifactadds, ignored evidenceonly. No outsidefixturelinks/chains/loops/
+namespaceconcurrency/nonLinux coverage.
+
+At19:25:26 UTC all33 checks for publishedrevisionaf096e2f succeeded, including
+sixfixes. Pending045/062decisions unchanged, campaignnotfinished.
+
+### 070 — Real symlink/regular-file type transitions
+
+Assigned same worker after069. Owned-entry replacements bothdirections with
+separatereferentcandidate, nofollowdiff/preimage/selection and hostreferentpreservation.
+
+Result: no defect, two real default-safe Host Sessions19:34:03–19:34:13 UTC.
+from-link symlink->target.txt becomes regularmode0640/29bytes; from-file regular
+becomes symlink->target.txt; referentedit separate/unaccepted. Reviewtypesexact,
+reviewdiff skipstransitionswhensymlinkside, applydiff shows onlyregularside/not
+referentbytes. Fourpreviewstrictinert; eachselectionrequiredempty; acceptingboth
+leaves exactlyreferentedit. Drop preservestypechanges/referentoriginalidentity,
+contents/mode/ownership/nlink and sentinel. Healthychecks/keepaccept/scratchdrop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+20CLI+one nativetwotestselectionall0(2passed21filtered),diffpassed.
+Minmemory20,642,361,344bytes,maxload1.03955,mindisk350,877,847,552bytes,42gatespassed.
+No sourcechanges/rebuild/lint, ignored evidenceonly. No concurrentpreimage/
+outsidefixturelinks/chains/loops/nonLinux coverage.
+
+### 071 — Real regular-file/directory transitions
+
+Assigned same worker after070. Inspect documented closure rules then tiny
+file-to-directory/children and directory-to-file replacements, explicit selection,
+candidate retention or required whole-group behavior, safe acceptance/drop.
+
+Result: no defect, two default-safe Host Sessions19:36:38–19:36:54 UTC. Recreated
+file->directory isopaque, not ordinary newancestor: childonlyselectionblocks3
+"insideopaque;selectdirectoryatomicunit", excludeonechildblocks3"cannotexclude".
+Responsesexecutionnull/selected-requiredempty, no manufacturedclosure. Whole
+from-file accepts0750directory/opaque/typechange+both0644children, requiredempty;
+directory->0640regular31bytes replacesoldsubtree, unrelatedcandidatepending/drop.
+Fivepreviewsincludingrefusalsstrictinert, hostunchangedbeforeapply, drop preserves
+acceptedtransitions/sentinel. Healthychecks subtree/absence then keepaccept/drop.
+Receiptscompleted0, stagesdiscarded/empty, owners/processes/mounts/socketsgone.
+
+20CLI+one nativethreetestselectionexpectedstatuses(3passed176filtered),diffpassed.
+Minmemory20,649,103,360bytes,maxload0.94678,mindisk350,845,947,904bytes,42gatespassed.
+No sourcechanges, ignored evidenceonly. No concurrentwriter/interruptedapply
+in realtrace; conventionaldescendantconflict/recoverytests separate.
+
+### 072 — Real timestamp-only metadata intent
+
+Assigned same worker after071. Fixedpast nanosecondtimestamps only in fixture,
+derive supportedfile/directory intent/selection before assertion, preserve bytes/
+inode/mode and document filesystemresolution without changing hostclock.
+
+Result: supportedmtimeworkflow passes, two real safe Host Sessions19:39:59–
+19:40:09 UTC, no defectestablished. Explicitfilemtime1610000000987654321ns and
+dirmtime1620000000876543219ns acceptedexact/no rounding. Childonlyapply requires
+no parentmetadata and keepsdirmtimeintent staged; filethen directory selections
+independent, scratchdrop preservescontent/mtimes, healthyverifies/keepaccept.
+Threepreviews preservebytes/mode/uidgid/identity/size/mtime, separatelyrecorded
+hostatimesunchanged; stageatimesexcludedfromstrictcomparison.
+
+AtimeNOTpreservedexactly: requested1610000000123456789/1620000000234567891ns,
+accepted1794080399844239167/1794080399871238882ns afterbackingreads/enumeration.
+AtimeonlySETATTR intentionallynocopyup; no unsupportedguarantee manufactured.
+Regularfileinodebeforeapplystable then replacement285835114→285835186 expected;
+directoryinode285835113/mode0700 retained, sentinelidentity/content/mtimeunchanged.
+
+19CLI+one nativetwotestselectionall0(2passed177filtered),40gatesminmemory
+21,385,003,008bytes,maxload1.16650,mindisk350,765,895,680bytes,diffpassed.
+Receiptscompleted0, firstdiscarded/healthyapplied/empty, owners/resourcesgone.
+No sourcechanges, ignored evidenceonly. No atimeonly/ctime/timestampconflict/
+nonLinuxresolution guarantee.
+
+### 073 — User-xattr intent or explicit unsupported recovery
+
+Assigned same worker after072. Inspect capability first, tiny owned usernamespace
+attributes only; preserve state on explicit unsupported errors or validate exact
+supported intent/selection. No security/system/trusted attribute changes.
+
+Result: backing and realdefaultsafeFUSE support testeduserattr, no defect. Owned
+backingprobe set/read/remove binaryvalue thenENODATA61. Guestadds hex006163636570746564ff80
+tofileadd, removes existingbinaryvaluefromremove, stages directorybinaryvalue.
+Reviewretainsfileattr/directmetadataintent. Childonlyapply leavesdirectoryintent,
+then independentfileattradd/removeaccepts unchangedfilebytes/mode/ownership.
+Threepreviewsstrictinertincluding exacttestedxattr (atimeexcludedas072).
+Drop discardsdirectoryattr/scratch, preserveschild/fileattreffects; healthyreads
+exactbinaryvalues/ENODATA then keepaccept. Onlyuser.fixture-round073 touched.
+
+TwoHostSessions/19CLI+twobackingprobes+one nativetwotestselectionall0, 19:42:41–
+19:43:13 UTC. Initialharnessmissingstat/hashlib stoppedbeforeHoststart, corrected/
+backingproberepeated, not productdefect. Minmemory21,438,033,920bytes,maxload0.85791,
+mindisk350,732,521,472bytes,44gatespassed. Receiptscompleted0, stagesdiscarded/applied
+empty, owners/processes/mounts/socketsgone, diffpassed. No sourcechanges, ignored
+evidenceonly. Unsupportedrefusal/oversizedattrs/flags/conflict/nonLinuxnotcovered.
+
+### 074 — Real stopped Host workspace checkpoint lifecycle
+
+Assigned same worker after073. Inspect capability/CLI first, distinguish workspace
+snapshots from unsupported Host RAM checkpoints. Tiny owned stage/snapshot/
+reference lifecycle; existing integration or explicit capability gap if unavailable.
+
+Result: realworkspacecheckpoint/forkpasses, threeHostSessions19:46:09–19:46:22 UTC.
+Sourcea/b/scratch, accepta, disposablecheckpoint0refsdeletepasses; retainedrequest
+idretrysameID/reusedtrue/listone. Snapshot onlyb/scratch40bytesplus5preimagefiles
+859bytes, notacceptedaupper. Workspacefork copiesindependentupper, childsees
+hostacceptedaplus savedproposals and writesbranch-only. Parentupper/hostunchanged.
+Refs1 blocksdeleteCHECKPOINT_REFERENCED/exit1. Sourceacceptb/dropscratch; snapshot
+review/content/checkedmetadataunchanged. Childacceptbranch-only/dropsinherited,
+lineagerefstill1/deleteblocked. Healthyverifiesacceptedhost/a/b/branch/sentinel,
+absentscratchthen healthaccept. Filesystemproposal/preimage only, notHostRAM.
+
+32workflowCLI/sixhelpcalls/one nativetwocheckpointtestselection(2passed5filtered),
+diffpassed. 68gatesminmemory21,479,354,368bytes,maxload0.66748,mindisk350,842,138,624bytes.
+Receiptscompleted0, source/childdiscardedhealthapplied/empty, owners/resourcesgone.
+Referencedcheckpoint/lineagerecordsintentionallyownedignored evidence, no liveowner
+or mountreference. No source/artifactadds. No crashpublication/lowerimmutability/
+explicitbranch-reference-release/execution-RAMcheckpoint proof.
+
+### 075 — Read-only stopped inspect and checkpoint
+
+Assigned same worker after074. Documented noninteractive inspect, tiny owned
+write/metadata attempts, correctsavedview and checkpoint/host preservation,
+ownedinspectmount cleanup and no invented completion authority.
+
+Result: tworealreadonlyinspectpasses19:48:41–19:49:03 UTC, zero newSessions.
+Savedb/scratchupperplus currenthostlowera/branch/health viewed correctly:
+workspaceproposalview, NOT frozenlower. Each write/truncate/chmodb, unlinkscratch,
+createentry,writelowersentinel returnedEROFS30,12/12refusals. Firstinspect0,
+seconddeliberate37 forwardedunchanged. Host/checkpointupper/preimage/manifest
+bytes/mode/uidgid/identity/size/mtime unchanged; source/child/healthrecord+receipt
+hashesunchanged, refs1, absentterminaluppersnotrecreated, no newproposal/authority.
+Inspectmountpoints/parentsremoved, children/originalownergone, noresourceleft.
+
+Atimeseparate: firstread advancesonlyhealthloweratime, secondnone; excludedfrom
+strictcomparison, notclaimedimmutable. Sevencommandsincludingone nativeinspect
+declarationtest1passed765filtered;14gatesminmemory21,523,435,520bytes,maxload0.84033,
+mindisk350,718,005,248bytes,diffpassed. No sourceadds, priorcheckpointevidencekept.
+No liveinspect/terminal/arbitrarypathsandbox/frozenlower guarantee.
+
+### 076 — Retained-current-proposal inspect interruption
+
+Assigned same worker after075. Inspect documented cleanup/signal behavior,
+bounded ownedchild cancellation/earlyexit with safe cleanup plan, retainedcurrent
+proposal/records usable afterward. No unsupported SIGKILL guarantee invented.
+
+Result: no defect, real retainedcurrentproposalinspectroottermination19:51:56–
+19:52:23 UTC. Readinesspipe, root547453/start2276898+descendant547454/start2276899
+verifiedpidfds/token/cwd, SIGTERM onlyroot while frontendstaysnormalowner. Both
+8snaturalfallback, inspect143in0.046s, descendantsreapedbeforefallback, mountand
+parentremoved. NOT frontendtermination/SIGKILLcoverage. Inspectreadcorrectcurrent
+proposal, writeEROFS; host/upper/preimage/Run/receipthashes+metadataunchanged
+(atimeexcluded). Sourcecompleted unchanged/candidatesretained, subsequentreview/
+strictpreview/acceptproposal/dropscratch/healthy verifies. TwoSessionreceipts
+completed0, sourcediscardedhealthapplied/empty, owners/resourcesgone.
+
+14CLI+one native rootexit/reapingtest1passed149filtered,30gatesminmemory
+21,613,936,640bytes,maxload0.42334,mindisk350,790,250,496bytes,diffpassed.
+No source/artifactadds, ignored evidenceonly. No frontendSIGINT/death/ignoredTERM/
+SIGKILL guarantee.
+
+### 077 — Inspect launch failure and full package validation
+
+Assigned same worker after076. Brief bounded executable-launch failure with
+retainedproposal, teardown/successfulretry/acceptance, then exact full default
+`mise run test -- pvisor-cli` and `mise run test -- pvisor` serially if first
+passes and task review confirms safe defaults. No ignored/externalmodel cases.
+
+Confirmed small inspect cleanup defect: actualENOENT/EACCESlaunchfailures unmount
+and leave no children/datachanges, but each retains empty owned
+stage/inspect/PID-UUID directory. Command.spawn()? returns before explicitclose;
+innerRAIIunmounts, outerrootcleanup missed. Laterinspect/accept/drop/healthy works,
+host/upper/preimage/receiptunchanged; not data-loss or mountleak.
+
+Parent authorized focused sharedRAII cleanup for uniqueownedroot/all earlyreturns,
+unmountbeforedelete, nonpanickingDrop/preservedprimaryerror/no sharedpathdelete,
+red/green regression+realrebuiltvalidation. FullCLI/runtimepackage runs held until
+targetedrepairpasses; freshindependentreview required before publication.
+
+Targeted077repairgreen: newlauncherrorregressionredbeforefix(rootcount2versus
+sharedsentinel1), completecheckpointCLI8/8,fmt/Clippy-Dwarningspassed.
+SharedoneshotInspectCleanupRAII coverslocal/remoteearlyreturns, localownedroot
+cleanupnotrecursiveover sharedcontent, leasesoutlivemountcleanup. Rebuiltstatic
+SHA39a7e34b9583f15ff6dd470cf1fe2e14b0c3ea49ebbe3f15d48dc2ddc8320272 actualENOENT/
+EACCES/success leaveszeroinvocationroots and preservesproposal/receipts/host,
+accept/drop/healthy pass.
+
+Exactfull`mise run test -- pvisor-cli`19:58:57–19:59:20 UTC FAILED, notpasses:
+220passed/1failed/40ignored/98unrunfailfast. documentation_json test
+documented_ci_failure_and_timeout_keep_reviewable_candidates expects guest7 but
+nativeGNU Session1 reportsInfrastructure local-sandbox-setup failurebeforeexecution.
+Not yet classified environmental/product. Worker investigating actualinnerreason,
+no assertionweakening; fullpvisorheldbygate. Resourcegates safe(minsamplememory
+21.540GB,maxload1.053,mindisk350.805GB). Targetedcleanupfix remains separatepassing
+evidence; not published pending diagnosis/independentreview.
+
+FullCLIblockerclassifiedwithtwonarrowprobes: same nativeGNU+privateHOME returns
+expectedguest7; realinheritedHOME=/home/reiase plus ownedstageunder.t077 fails.
+Bundle stderr saysstagingHOMErejects five inheritednestedmounts, allOWN merged
+FUSE/sandboxtmpfsundercheckout/TMPDIR, EINVAL22. Not missingnativelibraries or
+inspectRAIIfix. Existingmountsafetypolicy remains unchanged.
+
+Parentapproved controlledfullvalidationHOME adjustment: dedicatedownedprivateHOME
+nonancestorofstage/TMPDIR (siblingfixtures), preserveinstalledCargo/Rustup/misetool
+dirs explicitly/offline/noinstalls, exactfullpackagecommands/no testweakening.
+Originalfailure remainsreal evidence; privateHOMEpass willnotclaim fullsuitepassed
+underactualHOMEancestor topology.
+
+ControlledprivateHOME fullCLI rerun20:02:57–20:03:51 UTC PASSED exact
+`mise run test -- pvisor-cli`:320passed/40ignored,nofilters/noignoredflags.
+Finalworkersource includes066+inspectRAII+partialconstructionunit. Sibling.h077
+HOME/.t077TMP and originaldiscoveredCargo/Rustup/misedirs explicitlypinned,
+noinstalls/externalmodels. Pre/postmemory21.708/21.685GB,load0.784/1.193,
+disk350.561/350.591GB,gatespassed. OriginalrealHOMEfullfailurestillseparate.
+Exactfullpvisornowstartedaftergatepassed; publicationstillrequiresindependentreview.
+
+PrivateHOME full`mise run test -- pvisor`20:04:15–20:04:42 UTC FAILED:
+117passed/1failed/10ignored/755unrunfailfast. environment_snapshot owned-tree
+projectiontest Unixsocketbind exceedsSUN_LEN, notinspectfix. Exactfixturepath
+TMP/.tmpXXXXXX/source/stage/control.sock: worktreeroot66bytes, .t077TMP72 gives
+109bytepath versus107usable. Parentauthorizednewuniqueworktree.7TMP69 for106byte
+path, representativebindpreflight and one exactfullruntime retry, no external
+paths/aliases/testweakening. SiblingprivateHOME remains. Originalfailureretained.
+Resourcegates safe(before/aftermemory21.739/21.469GB,load0.923/1.370,
+disk350.581/350.062GB). If deeperpathstillfails, reportgap instead of chase.
+
+Workerclarification: earlierconditionalauthorization permittedTMPDIR=worktreeroot
+afterpreflight103bytes, and that ONE fullruntime retry started20:06:29 UTC before
+later.7approval arrived. .7NOTused. Retry hit900s outertimeout20:21:29 UTC;
+no completedfullruntimepass or finalcounts. Captureguardbufferedoutputinmemory and
+was killedbeforeflush/afterrecord, so missingoutput is an evidencegap, not proof
+of a specific deadlock. Worker checkingretainednextestpartialreports without rerun.
+Immediateinspection foundno survivingownworktreeprocesses/mounts; memory21.78GB,
+load0.154,disk350.047GB safe. Parenthaltedallfullruntime retries, classified as
+incompletecoverage, requested frozen3-fileinspectfixhandoff/independentreview.
+Futureguardoutputmust stream toignoredfilesduringrun tosurvivewatchdog.
+FullCLIprivateHOME320pass remainsseparate; runtimefullnotcomplete.
+
+Frozen077handoff: threeCLI files(sharedguard+README+existingcheckpointtest).
+Finaltargeted inspect/workspaceselection14passed145filtered, earlierfullcheckpoint
+8/8, alltargetClippy-Dwarnings/fmt/supportedrebuildpassed. Finalstatic
+10f0313de5ae8610e9f51464d8a57449b6b60055e90b1ac2c161eb60c9ab557a checkpointlaunch
+ENOENT20:02:41 preservesprimaryerror/zeroleakedroot; original/fixedfullrealtraces
+19:54:28/19:58:40 eachtwoSessions/threeinspectattempts and acceptance/healthyverified.
+
+Completed52guardcommands/104samplesalladmitted: minmemory20,883,128,320bytes,
+maxload1.37012,mindisk350,062,485,504bytes. Timeoutretryexactpre/postsampleslost;
+recovered20:22:48auditmemory21,756,383,232bytes,load0.59277,disk350,048,555,008bytes,
+no remainingownprocesses/mounts. No retainednextestpartialreportfound, finalcounts
+unknown. OwnHOME/TMP/timeoutremnantsmovedintoignoredevidenceafterverification.
+Parentmergedthreefilescleanly/diffpassed, inspectingresourceordering; freshreviewer
+onlytargetedtests, no fullruntime repeat. Remoteearlyerror/macOS/unmountfailure
+integrationremain gaps, not covered byprivateHOMEfullCLIpass.
+
+Independent077review accepts localfix, no blockingfindings. At20:24:46–20:26:06
+UTC checkpointCLI8passed/zeroskipped, partialconstructionunit1passed150filtered,
+fmt/diffpassed. Outputstreamedtee-to-disk. PrivateHOME/TMP+offlineinstalledtoolpaths,
+memory20,622,600–21,182,096KiB,load0.92–1.83,disk341,435,024–341,880,004KiB,
+allgatespassed, no remainingfixtureprocesses/mounts.
+Reviewer confirmsone-shotcleanup/leaseordering/partialconstruction/nonrecursive
+deletion/primaryerrorpreservation. MalformedremoteIDcannotbecleanedbyunknownID
+protocol; no newguarantee. Remoteownersideexistinghandlerunmountsbutretains its
+enclosingUUIDdirectory, not coveredbylocal077fix.
+
+ParentclarifiedCLIREADME: earlycleanupbest-effort, localonlyemptyrootremoval;
+unmount/removal failurescanretainroot, remoteunmountdoesnotguaranteerootremoval.
+Documentation-onlyafterreview, implementation/testsunchanged. Acceptedfor
+publicationwithfullruntimeINCOMPLETE and realHOMEfullCLIgapexplicit.
+
+### 078 — Live-owner remote inspect root cleanup
+
+Assigned after077review. Source-traced remoteownerUUIDdirectoryretention willbe
+boundedrealreproduced, then focusedownerRAII onlyifconfirmed; protocol/Session
+authorityunchanged, no fullruntimepackage reruns.
+
+Confirmedreal078remoteownerrootleak20:29:45–20:29:46 UTC: successfulliveinspect
+leavesoneemptyserverUUIDroot, subsequentENOENTleavestwo. Mountsgone, sourceowner
+595202/start2503808same/running/no prematurecompletion, host/currentupper/preimage
+unchanged. FD34→34success/36immediateerror notsteadyFDleakclaim. Source later
+normalstdincompletion0/selectiveaccept/drop passes. Workerimplementingfocused
+private serverguard uniqueinvocationroot+mount, explicitunmount/mapclearDrop same
+path, tests+streamedlogs. No CLIREADME/fullruntime rerun/protocol change.
+
+Worker078fixedrealtrace20:34:56–20:34:57 UTC success+ENOENT leaveszeroinvocation
+roots/mounts. Owner598710/start2534895same/running, no earlyreceipt, host/upper/
+preimageunchanged(atimeexcluded). FDs35before/34afterboth snapshotonly, not exact
+steadystateclaim. Ownedstdinbytecompletes0, selectiveproposalapply/scratchdrop,
+stagediscarded/empty/allownedresourcesgone. Map1→0 explicitunmount/tableclear
+verifiedbyprivateactualmounttest, not statusAPI.
+
+Private InspectionMount owns optionalreadonlymount+uniqueRoot: sharedclose/Drop/
+failedconstruction, unmountbeforebest-effortemptyremoval/nonrecursive/sharedsafe.
+Two selectedruntime tests passed765filtered, fmt/runtime+CLIClippy-Dwarnings/
+supportedrebuild/diffpassed. Initialtestonlytypealiasinproductioncorrectedbefore
+finalchecks. FixedSHAe187ca3ef38cbd87e9d6fb993b4191fd63d42cfe864c831db26d3346f1ab9199.
+Thirtycompletedcommands/60gatesminmemory21,616,320,512bytes,maxload1.08936,
+mindisk349,143,384,064bytes. Streamedlogs/prelaunchrecordsdurable. Baselineempty
+leakdirsremovedonlyafterownercomplete, artifactcreatescanceled, ignored evidence.
+No macOS/unmountfailure/disconnectedcallercrash/SIGKILL guarantee or fullpackage
+retry.077fullCLI not evidenceoffullsuiteon078source; runtimefullstillINCOMPLETE.
+
+Parentmergedtwofilescleanly/diffpassed; freshindependentreviewcheckingowner/map/
+dropordering/client077interaction and targetedactualFUSE tests before publication.
+
+Independent078review accepts/no blockingfindings. ActualLinuxFUSE runtime2tests
+20:37:31–20:38:37 UTC and client077launch-error1test20:38:51–20:39:10 passed,
+765/7filtered; not capabilityskips. Source ordering/exclusivecreation/tableclear
+admissionmutex/driverteardown/one-shoterror semantics confirmed. Same32limit/protocol/
+publicAPI unchanged; failedunmountentrynotrestored remains existingnoguarantee.
+Streamedlogs/prepostgatesmemory20.54–20.78GiB,load0.57–1.94,disk>=324.47GiB safe,
+no fixturemounts; diffpassed. macOSskipifnomacFUSE, no FSKitclaim/unmountfaultinject/
+fullruntime rerun. Parent accepts078forpublication, runtimefullstillINCOMPLETE.
+
+### 079 — Workspace checkpoint replay after state change
+
+Assigned after078review. Tiny real stoppedproposal/checkpoint/requestid replay
+afteraccept/drop/deletion, preserving exactsavedbytes and documented retryauthority,
+without immediate-retry duplication or RAMcheckpoint claims.
+
+Result: no defect, onerealstoppedHostSession20:41:43–20:42:09 UTC.
+Rcapturesa/b/scratch, accepta, delayedRretrysameID/reusedtrue/oldsavedaincluded.
+NewQcapturesonlyb/scratch. Dropcurrentproposal, R/Qretriesstillreuseoldsnapshots
+withoutrestaging; newSrefusedDiscardedrequiresStaged/no newreceipt. Rrefs0delete
+passes; Rretryrefusedalreadycommittedcheckpointunavailable/newidneeded, immutable
+requestreceiptunchanged/no authorityresurrection. Qstillreviewable/reusable,
+listonlyQ. SnapshotQupperb27bytes/scratch8bytespreserved, hostaaccepted/bOriginal.
+
+21CLI+twonativereplay/deletiontests(1passed7filteredCLI,1passed766filteredruntime),
+46gatesminmemory21,953,712,128bytes,maxload0.65967,mindisk348,162,506,752bytes,
+diffpassed. Owner/resourcesgone, receiptcompleted0/stagediscardedempty; Q/receipts
+intentionallyignoredownedevidence. No source/artifactadds. No crashpublication/
+crossSessionkeycollision/frozenlower claim.
+
+### 080 — Checkpoint key validation and cross-Session scope
+
+Assigned after079. DerivevalidIDrules first, boundedordinaryinvalidIDs only,
+inertrejection/validretry plus two distinctSessions sharingkey with source-scoped
+snapshots/receipts. PublicIDhash may legitimatelyrepeat acrosssources.
+
+Result: no defect, two real Host Sessions20:44:59–20:46:00 UTC.
+Invalidempty/space/257xIDs reject1(invalidhostidentity/nonblankdurablerequest),
+no checkpoint/receiptreservation and both host/upper/preimage/Run/receipts unchanged.
+Emptyrejectionexecutedtwice becauseharness wronglyexpectedwordrequestindiagnostic,
+correctedonsamefixtures/no extraSessions. Samevalidkeyround080-same-key derives
+samepublichashID inA/B but ownsource/stage/receipt identity andsaved-A/Bbytes.
+Retries preserveoriginalownsnapshot. DeleteAunreferencedthenAreplayrefuses;
+Bunaffected/reusable even afterBapply/drop. Selectivepublishownproposals/scratchdrop,
+sentinelpreserved, receiptscompleted0/stagesdiscardedempty/ownersresourcesgone.
+
+26CLI+one nativetwobound/deletiontestselection(2passed765filtered),54gates
+minmemory22,218,158,080bytes,maxload0.65527,mindisk348,257,361,920bytes,diffpassed.
+No source/artifactadds, Bcheckpoint/receiptsignoredowned evidence. No requestrace/
+crashpublication/frozenlower coverage.
+
+### 081 — Checkpoint selector ambiguity or exact-ID refusal
+
+Assigned after080. Derive actualresolution contractfirst, two same-sourcecheckpoints,
+inert ambiguous/missingprefix show/review/delete and exact-IDcontinuation, no global
+userhistory or invented prefix-support claim.
+
+Result: no defect, onerealHostSession20:51:46–20:51:56 UTC. Resolver supports
+exactIDsanduniqueprefixes. Twosame-sourcecheckpoints make request- ambiguous;
+show/review/deleteeachreject1. request-missing same3operationsreject1. Allsix
+refusals preservebothsnapshots/receipts/currentupper/preimages/host/Run/completion
+(atimeexcluded), otherowned080Bunchanged. ExactIDs+uniqueprefixwork, refs0;
+deletefirstexact then request- uniqueonlyremaining/deleteit, listempty. Current
+proposal/scratchstillusable, selectiveaccept/drop preserveshost/sentinel.
+
+24CLI+one nativeambiguous/corruptiontest1passed766filtered,50gatesminmemory
+22,178,922,496bytes,maxload0.45850,mindisk348,235,505,664bytes,diffpassed.
+Owner/resourcesgone, receiptcompleted0/stagediscardedempty. No source/artifactadds.
+No concurrentcheckpoint race/mixedexecutioncollision/realmanifestcorruption.
+
+### 082 — Owned checkpoint GC scope or manifest recovery
+
+Assigned after081. InspectpublicGC capabilitywithoutglobalstoremutation; if
+unsupportedforHost, tiny ownedworkspace manifestcorruption/restoreexactbytes and
+non-destructiverefusal, preservingreceipts/othercheckpoints/semspecuntouched.
+
+Result: workspaceGC supportsstoppedHost, no defect/newSessions/mounts. Existing080B
+explicitSOURCE checkpointgc--kindworkspace scope=session_workspace_transactions,
+notglobalstore. Tinyowned.pending/.deleted directoriesremovedexactly2, secondGC0;
+executionremoved0/publisheddeleted0. Publishedsnapshot/manifest/metadata/.requests
+receipts retained, .retain-directory and similarlyprefixedregularfile untouched.
+Checkpointshow/review/refs0/replayoldkeyreused, terminalstage/host/Run/completion/
+otherSession unchanged, no upperrecreated. No publicdryrunoption, noneclaimed.
+
+NineCLI+one nativetworeceipt/leasevalidationselection2passed765filtered,
+20:54:24–20:54:34 UTC,20gatesminmemory22,170,628,096bytes,maxload0.57373,
+mindisk348,183,019,520bytes,diffpassed. No source/artifactadds; retainedcontrols
+movedtoignoredevidence afterward, originalcheckpointintact. No executionRAMGC/
+concurrentpublication/crash/legacycommittedpending case or manifestcorruption.
+
+### 083 — Longer-idle real Host owner and retained descriptor
+
+Assigned after082. One workload deliberately blocked on ownedinput about130s,
+finitefixturetimer/alarm/watchdog, no busyloops or agentstatuspolling. Validate
+owner/authority acrossidle, postidle livequery/readonlyinspect and heldfd append,
+normalcompletion/selectiveacceptance and healthycontinuation with no machine load.
+
+Result: no defect, realblockedidle130.015756860s20:57:37–20:59:47 UTC; guestmeasured
+130.107841826s, sourcecommand130.310659s. Alarm200/watchdog300, nokeepalive/poll.
+Owner618998/start2670908/exedev54inode285927221/session/execution/path/digeststable
+before/afteridle/inspect. Heldwritablefd3 virtualdev95inode2 unchanged, append/fsync
+afterownedinput succeeds. Host/upper/preimageunchanged/no receiptwhilelive;
+postidlestatusrunning/readonlyinspectreadsinitialproposal/cleansroot. Normal0receipt,
+strictpreview/selectiveacceptbefore-idle+after-idle/dropscratch; quickhealth0.
+
+Timeoutsourcefacts: startupreadtimeoutclearedafteradmission, frameIO5s, operation310s/
+caller315s. This verifiesworkload/frontendidle/heldFDlifetime130s, NOT stalledsingle
+request or310soperationexpiry. 14CLI+one nativeownershiptest1passed150filtered,
+overall20:57:37–21:00:07 UTC,30gatesminmemory22,115,549,184bytes,maxload0.58936,
+mindisk348,190,879,744bytes,diffpassed. Stagesdiscarded/appliedempty/resourcesgone.
+No source/artifactadds; ignored evidenceonly.
+
+### 084 — Five-minute idle then cooperative cancellation
+
+Assigned after083. Deliberate330sfinite blockedfixture, atmostoneowneddescendant,
+fallback420/watchdog480, no CPU/busyloop/keepalive. Validate longlifetime+knowncancel/
+reaping/retainedstage, NOT a stalled310sRPC timeout claim.
+
+At21:02:03 UTC all33 checks for published eight-fix revision6fe01698 succeeded.
+RemoteCI evidence remains separate from localfullruntimeINCOMPLETE and privateHOME
+fullCLI coverage; no upgrade of those local claims.
+
+084result: no defect, real blockedidle330.099640046s21:04:20–21:09:50 UTC,
+source330.372530266s. Guest+onechildalarm410/watchdog480, nokeepalive/poll/CPUwork.
+Owner620213/start2711229/exe/session/execution and guestbirthidentitiesstable,
+heldstagedfd3/virtualdev95inode2 synced32bytes, descendantcloseditsdup. No receipt/
+hostwrite/upper-preimagechangewhileidle. Publickill cooperative/terminationrequested
+stopping, no harnessrawsignal/stdinEOF. Cancel-to-completion0.054422925s, source143,
+receiptcancelled/noexitcode/failure, bothguestPIDsreaped. Strictpreview/acceptknown
+proposal/drop/healthy0 pass; stagesdiscarded/appliedempty/resourcesgone.
+
+14CLI+one nativetwocancel/reapingtests2passed149filtered, overall21:04:20–21:10:10
+UTC,30gatesminmemory22,128,332,800bytes,maxload0.69971,mindisk348,268,662,784bytes,
+diffpassed. No source/artifactadds. Sessionidle/cancel testNOT stalled310sRPC;
+ignoredTERM/opencontrol/suspend/resume/nonLinuxnotcovered.
+
+### 085 — Cancellation overlapping a live inspect view
+
+Assigned after084. Boundedownedview/FD/inputgates, publiccooperativecancel and
+allrefsclosedcleanup/status/authority, derivingbusy/unmount guarantees first,
+not inventing post-owner viewavailability or SIGKILL cleanup.
+
+085result: no permanentroot/mount/processleak or authoritycorruption; revocation
+isnottransparentinspectionsuccess. Completeoverlap21:15:36–21:15:37 UTC:
+publickill0/cooperative/stopping, inspectrelease0.25safteracceptance whileowner
+stillalive/noreceiptyet andviewalreadydetached. HeldreadonlyFDcloseEIO5; child
+catches/reports/exit0, inspectfrontend1unknowninspectsession becauseownertableclear.
+Source143/receiptcancelled/noexitcode/failure, bothfrontendsclose0.310084371safter
+kill. Allrefsclosed => zeromounts/roots. Proposal/host preserved, selectiveaccept/
+scratchdrop/healthy0 pass. No availability-after-revocation guarantee.
+
+Firsttraceharnessoverlystrictreleaseassertion stoppedbeforetwofrontendexitrecords/
+immediatepostsamples; authoritativecancelledreceipt/laternoleakaudit retained,
+thoseexitsnotclaimed. Secondtracecapturedfully. Overall21:14:11–21:17:08 UTC,
+threeHostSessions/twoinspects,19guardattempts17exitrecords;36recordedsamples
+minmemory22,141,530,112bytes,maxload0.43652,mindisk348,267,741,184bytes. Allowners/
+inspectchildren/resourcesgone, initialunacceptedstage subsequentlydropped.
+One nativecleanupregression1passed766filtered,diffpassed, no source/artifactadds.
+
+### 086 — Inspect release-before-cancel control
+
+Assigned after085. Releaseview/waitfrontend0/rootandmountgone BEFORE publicsource
+cancellation, to distinguish ordinarysuccess from documentedrevocation/errorrace,
+without strongerbusyview guarantees.
+
+086controlpasses21:19:41–21:20:00 UTC. Releaseinspectfirst: FDclosesclean,
+frontend0/emptystderr/0.039620075s, pidgone/zeroroots-mounts/sourceunchanged/no
+receipt; sourcestatusrunning. THEN publickillcooperative, source143/cancelled
+receipt/noexitcode/failure, cancel-to-closed0.060965834s. Selectiveaccept/drop/
+health0 pass, owners/resourcesgone/stagesdiscarded-appliedempty. No overlapEIO/
+unknowninspectsession, differentiates085withoutstrongerpostowner guarantee.
+13CLI+one nativeinspectlaunchtest1passed7filtered,28gatesminmemory22,046,490,624bytes,
+maxload0.63818,mindisk348,258,684,928bytes,diffpassed. No source/artifactadds.
+
+### 087 — Owned committed checkpoint manifest restoration
+
+Assigned after086. Tiny ownedmanifesttruncation, exactbytesbackup, corruption
+surfacedwithoutfallback/resnapshot/receiptmutation, samefixtureexactrestore and
+healthyreplay. No semspecledger/snapshot changes or authority-contract invention.
+
+087result: no defect, onerealHostSession21:22:45–21:23:08 UTC. Two checkpoints,
+backedexact1916byteAmanifestthen truncate0. Eightshow/review/retry/list/delete/
+uniqueprefix/Bshow/newrequestoperationsreject1EOFparseerror. Wholecommittedindex
+validationdoesnothideAcorruptionwhenBselected. Damagedstate/currentproposal/
+preimage/host/completion/receipts/Bunchanged, no recapture/reservation. Workspace
+GC0legitimatelydoesnotverifypublishedsemanticsandpreservescorruptmanifest.
+Restoreexactbytes/sameinode285946987/mode/nlink1/originalmtime, hash
+8890602843b1c15d5b034c9978dad3d4f2a1c484fe86758a8da2260c6ac669d1, samefixture
+showsboth/refs0/retriesreusedtrue/reviewworks/currentselectiveaccept-drop.
+
+23CLI+one nativecorruptiontest1passed766filtered,48gatesminmemory22,197,940,224bytes,
+maxload0.23340,mindisk348,222,730,240bytes,diffpassed. Owner/resourcesgone,
+receiptcompleted0/stagediscardedempty, restoredcheckpointsignoredownedevidence.
+No source/artifactadds. No interruptedrestore/ownershipforgery/concurrentwriter/
+frozenlower claim.
+
+### 088 — Saved payload validation with valid manifest
+
+Assigned after087. Derive actualprivatepayloadintegrity guarantees, tinyownedupper
+filemissing/exactrestore, explicitvalidationresponsibilities without assuming
+unpromisedperfilehashes or immutablelower; preservecurrentstate/receipts.
+
+088result: scopedprivatepayloadtrustboundary, no inventedintegritydefect. One
+HostSession21:26:52–21:27:14 UTC, Aupperproposal26bytes renamedtoownbackupwhile
+validmanifest/preimage/receipts intact. Show/retry/list0 retainIDs/reusedtrue;
+reviewomitsmissingproposal/scratchonly. Currentinspectreads savedcurrentupper;
+checkpointAinspectreadsoriginalLIVELOWER, notcurrentupper/othercheckpoint.
+Privateworkspace schema/sealnotperfiledigest; nofile-recreation/authenticationclaim.
+Host/currentproposal/authority/Ametadata/Bunchanged. Renameoriginalinode285947158
+back(exact26bytes/hash76a337c1a00c12856c014a813372c34ceaed1ce89df17be33725d3e239279d48),
+review/inspect/replayhealthy, selectivecurrentaccept/drop passes.
+
+18CLI+one nativeordinarysnapshotcopytest1passed766filtered (NOT missingdetection),
+38gatesminmemory22,194,126,848bytes,maxload0.45996,mindisk348,180,590,592bytes,
+diffpassed. Owner/resourcesgone, receiptcompleted0/stagediscardedempty, restored
+checkpointsignoredownedevidence. No source/artifactadds. Whole-rootmissing/
+bytecorruption/alteredpayloadfork/concurrency/authenticationnotcovered.
+
+### 089 — Tiny workload memory-limit denial and recovery
+
+Assigned after088. Derive actual Hostmemorylimit mechanism, atmost80MiBone
+attemptwithsmallcap/lowresidentuse, accurateENOMEM/process-exit semantics and
+retainedproposal, not hostOOM/RSS/cgroup guarantee.
+
+089preflight finds supportedHost--memory64MiB/rlimitAS and optionalown delegated
+childcgroup; parentcontrolsnotspecifiedforchange. Firststaticproduct64MiBSession
+failedBEFOREAgent: infrastructure/unattestedsandbox/emptystdio-upper, ZERO allocation
+attempts. OwncgroupattemptEACCES13/fallbackinheritedrlimits; parent/globalcontrols
+unchanged. InvestigatingELF/mappedloaderfootprint, notclaimingguestENOMEM/pass.
+ParentallowsONE same64MiBflag/80MiBattemptownnativeGNUtraceonlyifpreflightfits;
+no capincrease/guest-onlysubstitute/permissionbypass. Else recordbudget-capability
+gap and stop, atmost3Sessionsincludinghealthy. ActualRSSmustremainsmall.
+
+089finalGAP, notAgentmemorydenialpass. Staticlimitedcommand0.169s/exit1
+failed-infrastructure/zeroattestation/output/candidates/allocationattempts.
+Page-roundedPT_LOADstatic80,097,280bytes(76.387MiB), GNU70,692,864(67.418MiB)
+bothabove64MiBbeforestack/interpreter; ASlimitappliedbeforelauncherselfexec.
+No nativelimitedtrace/capincrease/substitution. CgroupEACCES13/fallbackrlimits,
+no ownedchildresidue/parentcontrolchange. Uncappedhealth0/0.181s/normalizedinfiniteAS,
+RSS13,053,952bytes, priorproposal/sentinelsafe, healthaccept/diagnosticdrop.
+
+21:31:34–21:35:08 UTC,nineCLI+one nativemappingtest1passed150filtered(parsingonly),
+20gatesminmemory22,162,030,592bytes,maxload0.48438,mindisk348,163,411,968bytes,
+diffpassed. Bothowners/resourcesgone, no source/artifactadds. Guest64MiB/ENOMEM/
+inSessionrecovery remainsUNVALIDATED; smallerlauncher or explicitlimiterplacement
+decisionneeded, no architecturechange.
+
+### 090 — Tiny per-workload CPU-time limit
+
+Assigned after089. Verify documentedHostCPUflag/rounding, atmostonecore3s fallback
+with~1CPU-secondcap, owncoredisabled, exactsignal/receipt and retainedproposal,
+uncappedquickhealthy; no fork or sustainedhostpressure.
+
+090result: supported--max-cpu-time500ms roundsupsoft=hardRLIMIT_CPU1s. Guestcore0
+onlyguest, parentCPU/core unchanged. Onesinglethread boundedloop lastdurableCPU
+0.800735300s/processCPU0.811695871s/wall0.812119524s, limitedcommand1.200252504s;
+2.8s/3salarmfallbacknotreached. CLI137/failed-process_exit137/resource.posix_rlimit1,
+termination_signalnull. Consistentwithhardcap but137aloneNOT kernel-causeproof,
+no RSS/OOM/cgroupclaim. Earlierfsyncedkeep retained/hostunchanged, inertpreview/
+selectiveaccept/drop/uncappedhealth0ambientlimitscorrect, ownerresourcesgone.
+
+21:39:06–21:39:44 UTC,12CLI+one nativeexitsemantictest1passed766filtered,
+26gatesminmemory22,240,149,504bytes,maxload0.39844,mindisk348,346,384,384bytes,
+diffpassed. No source/artifactadds. FinalCPUusage/softSIGXCPU/exactkernelcause/
+multithread/nonLinuxnotcovered; no more CPUloadneeded.
+
+### 091 — Bounded binary stdio capture and inheritance
+
+Assigned after090. Atmost64KiBperstream, defaultcapture/inherit raw/text contracts
+derivedfirst, ownfile-sinks/draining toavoid terminalflood/deadlock, metadataJSON/
+framing/authority and retainedproposal, no unpromisedoutputquota claim.
+
+091result: no defect, twosafeHostSessions21:45:20–21:45:21 UTC. Eachstream65536
+guestbytes/NUL/invalidUTF8/multibytes, alternating1021chunks, twoharnessreaders
+drain4KiBdirectignoredfiles. Capturematches exactlossyUTF8contract(notrawartifact):
+82998UTF8bytes/8731replacementchars/4366NULs perstream, truncationfalse, notforwarded
+frontend. Inheritstdoutraw65536exact; framedgueststderr65536exactplus2112CLI
+diagnosticbytes outsideframe. StatusJSON2663bytesvalid/bounded/noguestmarkers.
+Hostunchangedpreapply/previewinert, selectkeep/dropscratch, successorchecksprevious,
+receiptscompleted0/resourcesgone. Defaultcaptureretains1MiBrawinputperstreamthen
+lossydecode, notDockerrawlogs orquota guarantee.
+
+SixteenCLI+nativeoutputdraintest1passed766filteredby21:47:57 UTC. Firsttestattempt
+failedbeforeexecutionmissingcommandlocalMISEtrustenv; prescribedenvrestoredrerun
+passes,bothrecorded.18attempts36gatesminmemory22,157,905,920bytes,maxload0.447754,
+mindisk348,343,881,728bytes,diffpassed. No source/artifactadds. No forcedslowconsumer/
+saturation/overretentionbudget evidence.
+
+### 092 — Paused stdout consumer and cancellation
+
+Assigned after091. Bounded256KiBASCIIflood toownedpipe/2sfinitepausedreader,
+stderrdrained/guaranteedresumeddrain, measurecapacity/occupancyifpossible, separate
+publiccancel responsiveness versus frontendbackpressure, no terminalflood.
+
+092result: no defect, actualstdoutfull65536/65536bytes atonephaseobservationwhile
+finiteconsumerpaused; resume2.000491s. Guestattempt262144ASCIIbytes/readinessstderr,
+separatepublickill0/cooperativeack0.012154s BEFORE drainresumes. Sourceeventually
+143/receiptcancelled/noexitcode-failure, received65536exactpayloadprefix/noinvented
+bytes. Completionobservedafterdrainresume, notsampledduringpause/no strongerclaim.
+Proposal/hostsafe, strictpreview/selectaccept/drop/health0 pass.
+
+21:51:06–21:51:09 UTC,10CLI/20gatesminmemory22,273,888,256bytes,maxload0.246582,
+mindisk348,268,584,960bytes,diffpassed. Guestalarm15/watchdog60, stderr2140bytes
+drained, timer/finallyalwaysreleasesconsumer, no owners/mounts/rootsremaining.
+Initialimporterrorbeforeworkloadfixed. No source/artifactadds/nativetestsrerun,
+no capture-saturation/quota/completion-before-drain guarantee.
+
+### 093 — Capture retention exact/over boundary
+
+Assigned after092. Defaultperstreamrawretention1MiB/continue-drain contract,
+bounded~2.2MiBtotalpayload, exactfit/overflags and documentedlossydecode/statusJSON,
+not liveoutputquota nor diff066valid-prefix behavior.
+
+093result: onerealHostcapture21:53:08–21:53:09 UTC/0.261116s, total2097219bytes.
+Stdoutexact1048576raw/storedUTF8/truncatedfalse; stderrover1048643raw, retains
+1048576rawprefix thenlossydecode1048578UTF8/truncatedtrue becausefourbytecharcrosses
+boundary. OneU+FFFDexpectedcapturecontract, NOTdiff066rule. Gueststages
+ALL_WRITES_RETURNEDafterbothstreams, provesovercapdrainnotexecutionquota; completed0
+Bundle/receiptmatchcalculatedlossyprefix. Status2507bytesvalid/excludespayload.
+Hostunchanged/strictpreview/keepaccept/diagnosticdrop/sentinelsafe.
+
+EightCLI/16gatesminmemory22,219,796,480bytes,maxload0.358398,mindisk348,306,292,736bytes,
+diffpassed. Owner/resourcesgone, no source/artifactadds/nativetestrepeat. No
+configurableCLIoutputlimit/rawartifact/outputquota guarantee.
+
+### 094 — Inherited stdout consumer disappearance
+
+Assigned after093. Derivefd/relaycontract, tinywrite afterclosingonlyownedreadend,
+EPIPE/defaultSIGPIPEorfrontendlossclassification, knownreceiptbeforeacceptance,
+finitealarms/draining/no externalFDchanges.
+
+094result: no defect, two realHostSessions21:55:29 UTC. Inheritedstdoutreaderclosed
+onlyafterstderrreadiness, guestinputthenone2048bytewrite=>EPIPE32/no writecount.
+Guestcatches/stageserrno/updatesproposal/stderrrecovery, frontend0/0.224464s,
+receiptcompleted0/nofailure, no implicitcancel/Unknown. Stderr2172bytesdrained,
+coreguestonly0/alarm15/watchdog60. Knownreceiptbeforeaccept, strictpreview,
+selectiveproposalaccept/dropscratch-diagnostic/health0ambientstatepass.
+
+NineCLI/18gatesminmemory22,266,740,736bytes,maxload0.589844,mindisk348,303,757,312bytes,
+diffpassed. Owners/resourcesgone, no source/artifactadds/nativefullrepeat.
+No defaultSIGPIPE/stderr-readerloss/frontenddisconnection guarantee.
+
+### 095 — Final targeted/package regression sweep
+
+Assigned after094. Currenteight-fixsource, warmcache/offline/originaltools,
+shortsiblingprivateHOME/TMP, onepackage/testthread/twojobs/nice. Fullreplay/net/
+overlay-core/CLI plus TARGETEDruntimeinspect and selectedKVMowner/boundarycases.
+No fullpvisorruntimeretry; watchdog<=180s/command and stopnewcommands22:17:01UTC
+toleavefinalauditwindow. Outputstreamed/prelaunchrecordsdurable, no unrunpasses.
+
+095finalsweepALLSIXCOMMANDSPASS/863tests, before22:02UTC:
+
+| Selection | UTC interval | Result |
+| --- | --- | --- |
+| Full pvisor-replay |21:58:05–21:58:42|151passed/0skipped|
+| Full pvisor-overlaynet |21:58:53–21:59:10|115passed/0skipped|
+| Full pvisor-overlay-core |21:59:20–21:59:26|242passed/5defaultskipped|
+| Full pvisor-cli |21:59:38–22:00:33|320passed/40defaultskipped|
+| TARGETED runtime inspect |22:00:45|2passed/765filtered|
+| TARGETED VM/API/boundaries |22:01:08–22:01:40|33passed/642filtered|
+
+Allnice10/180swatchdog/offline2jobs1thread. Sibling.h095/.t095/privateHOMEoriginal
+installedtoolpathspinned; realHOMEfullCLIgapunchanged. ActualKVMaccess/readonly
+firmwareverified(SHA634d73f20c042894afa196fe396e561e9cf6b6a61c2e61fcd961eddb2e5cdf88),
+owner-drop/parked/notification/memory/shutdown+readyaborttwoserial256MiBVMcycles ran.
+Onlyfilteredreadyabortignoredintegrationoptedin, notunfilteredignoredtests.
+No staticrebuild; nativesourceincludesfinal078fix, staticremainse187ca3ef38cbd87e9d6fb993b4191fd63d42cfe864c831db26d3346f1ab9199.
+ChildHEAD5e0fa3da+workingcratediffSHA62ad5f7a3bf2ff99975bc896e7ada912c36c9c01f527f155fe0bed96605deaaf
+identifiesisolatedsource, not parentGitHEAD claim.
+
+Twelveprepostgatesminmemory21,867,405,312bytes,maxload1.568848,mindisk348,044,017,664bytes.
+Noremainingworktreeprocess/mount, ownfixturesmovedignoredevidence, toolartifactadds
+canceled/diffpassed. No sourcechanges. Runtime/VM areTARGETEDnotfullpasses,
+fullruntime077stillINCOMPLETE; Linuxx86KVM only, no Python/workspace claim.
+
+### 096 — Final long-lived inspection ownership
+
+Assignedafter095. Lasttwo serialrealHost+readonlyinspectionphasesabout600seach,
+heldreadonlyFD/cwd acrossidlewithoutkeepalive/CPUwork. Releaseinspectfirst,
+then normalcompletion versuspubliccancel, knownreceipt/acceptance/cleanup.
+Eachphase timegated tofinish+cleanup by22:30:30UTC, alarms660/watchdogs720;
+no furthernativepackage/rebuild/faultcases afterward, leaveclosingauditwindow.
+
+LateCIobservation22:05UTC: latestpublishedlogrevision1d5ee877 now31success/
+2failures(aggregateCI+CLIcontracts/bats), NOTallgreenlatest. DirectBatsfailure
+run42417079029/job128539329201 testcase4 "run applies environment and working
+directory", tests/podman/system/030-run.bats:21 expectedvalue:/tmp. Other34Bats
+casespass, actualoutputnotprinted. Joblog/smallartifactretained; no rootcause
+or flaky/environment attribution established.
+
+CItestedmerge0aae95f of1d5ee877 into newmain9972c8a6c76c474fca91b12f7715e1bdc5028233
+(wheelacceptance#119), runtimeartifact0.3.2 vsbranchbase0.3.1. No branchmerge/
+rebase made. Parentdelegatedindependentagentremote-CI/codeanalysis ONLY, nolocal
+build/test alongside096; onefailed-jobrerunauthorizedafterretainingfailure.
+Passingretrywillnoterasefailure. Prior6fe01698/23b0greenremainhistoricalevidence,
+not latestmergeguarantee. Eightproductionfixesunchanged pendingattribution.
+
+RemoteagentONEretry result22:14UTC: run42417079029 attempt2COMPLETEDSUCCESS,
+Bats12854432501522:10:59–22:13:51 all35casesincluding4pass, aggregateCI128545032336
+22:13:54–22:13:56success. Sameexactmerge0aae95fb8d6066e9b4160047a432c4fe0c154ec0
+and SAMEruntimeartifact13592415974/SHA4adbeeda5ca5d6e6ffd7f1e8145aa35094303391f5d57d28267cfa0dfc49a78e
+bothattempts; no sourcefix/localtest/retryloop. Originalartifact13592022384 and
+retry13592492838 retained. InitialfailureNOTerased, onefailedrepro/notcauseproof.
+Sourceanalysis actualmain#117/#119 doesNOTchangeenv/cwd/Bats/adapter/workflow;
+dataforwardingpathnoevidencedbadmapping. Originalstatus0 beforeoutputassert, stdout/
+stderrmergedbyBats and helperomitsactualbyteswhenexitmatches, so wrongvalue/
+truncation/extradiagnosticsundistinguished. No productpatchjustified or causalattribution.
+
+096phaseApassed22:06:12–22:16:12 UTC: heldremoteinspectFD/cwd600.049881s,
+sameFDdev121inode2/sameowner651320-start/exe/sessionidentity. Releaseinspectfirst
+frontend0/zeroroot-mount, then sourceinputnormal0/committedcompleted, selective
+accept/drop pass. PhaseB starts onlyaftertimegate withabout14minremainingbefore
+22:30:30; another600s, then inspectrelease/sourcecancel asplanned. Not yet claimed
+complete and no sourcechanges.
+
+Closinginstructions: after096report/allrefsclose, no furthernative/build/fault/
+reruncommands. Two ownedresource/sourceidentity snapshots with onefinite
+posttestquiescencetimer ending22:31:30UTC iftimepermits; streamrecords, no loop/
+keepalive/newSession. Hardfinishby22:32:01, preserveownignored evidence/caches/
+checkpoints, no globalcleanup or unrelatedsignals. Parentownsfinalpublication.
+
+096 phase B passed at 22:16:25.451–22:26:25.902 UTC. Its inspection FD/cwd
+remained valid for 600.080110 seconds, with the same FD identity and unchanged
+owner, executable and Session identifiers. Inspection closed successfully first,
+leaving zero invocation roots and mounts. Public cancellation then acknowledged
+in 0.010221 seconds; source exited 143 and committed cancelled without a workload
+exit code or failure. Selective acceptance and drop preserved the host.
+Both phases have closed all source/inspect references and passed their immediate
+no-owned-process/no-mount checks. No further runtime or build workload is assigned.
+
+## Closing audit
+
+Requested campaign window: **2026-11-07 14:32:01–22:32:01 UTC**.
+This was iterative testing, investigation, repair, review and publication, not
+eight hours of uninterrupted pressure. The final runtime workload ended at
+**22:26:25.902 UTC**. The final two-snapshot quiescence audit completed at
+**22:31:30.100 UTC**. No further test, build or fault workload was launched.
+
+Eight production repairs were independently reviewed and published to draft
+PR https://github.com/DeepLink-org/pvisor/pull/118:
+
+| Round | Repair | Commit |
+| --- | --- | --- |
+| 033 | Close pending stdin before replay cancellation | `1694909b` |
+| 040 | Validate SYN semantics before allocating a flow | `4cbf714b` |
+| 044 | Stop and join Linux vCPUs on owner teardown, including idle parking | `6e02bfe5` |
+| 047 | Preserve backup cleanup retry ownership after a live removal error | `36e6e4de` |
+| 065 | Report diff clipping within the final file | `c2e0a99a` |
+| 066 | Keep diff output within a valid UTF-8 byte prefix | `af096e2f` |
+| 077 | Clean local inspect roots after launch/partial-construction failures | `de131ff9` |
+| 078 | Clean server-owned inspect roots on unmount and table teardown | `6fe01698` |
+
+The final six-command local sweep passed **863 tests**: replay 151, OverlayNet
+115, overlay-core 242, CLI 320, targeted runtime 2, and targeted VM/API checks 33.
+The full-package runs had 45 default skips; additional tests were filtered from
+the targeted runtime/VM commands. Private nonancestor HOME/TMP and installed
+offline tool paths were explicit. This does not establish the original real-HOME
+full CLI topology as passing.
+
+Full `pvisor` runtime coverage remains **INCOMPLETE**: the first run failed on a
+Unix socket path limit, and its sole short-path retry timed out after 900 seconds
+with final progress output lost. No full-runtime success or particular hang cause
+is claimed. Later guards streamed output while running.
+
+The late Bats failure is also retained: the original exact-output assertion failed
+without recording its actual bytes. One authorized retry passed all 35 cases and
+aggregate CI on the same merge commit and runtime artifact. This is non-reproduction,
+not root-cause attribution or proof that a timing-dependent regression is absent.
+
+Unresolved product decisions and coverage limits remain:
+
+- Readiness callback versus guest execution ordering (045).
+- Post-success stage-size diagnostics versus actual live quota enforcement (062).
+- Source-traced zero-MSS/Ethernet admission gaps whose follow-up was blocked (040).
+- The 64 MiB memory experiment never reached Agent execution because the available
+  debug launchers already exceeded that address-space budget (089).
+- Workspace manifests do not authenticate every private saved payload file (088).
+- Local validation is Linux-focused; other-platform CI is separate evidence.
+  No full workspace, Python suite, power-loss or arbitrary device-stall guarantee
+  is claimed.
+
+No main merge, force-push, global cache cleanup, host-network reconfiguration,
+disk-filling test, unrelated process termination, tool installation, semspec
+approval/revocation, real approval ledger or approved snapshot edit was performed.
+Owned evidence, retained checkpoints and build caches remain in ignored worker
+directories rather than being deleted globally.
+
+### Final quiescence result
+
+Snapshots at **22:27:31.519** and **22:31:30.100 UTC**, separated by one finite
+238.326-second timer, both found:
+
+- Zero owned workload processes; old owners 651320/654615 were birth-checked absent.
+- Zero worktree fixture mounts, retained fixture sockets or inspection roots.
+- Zero `pvisor`-named cgroup children in the inspected root/owned leaf.
+- Unchanged validated static binary and product-source diff identities.
+- No remaining build alias or transient tool-created script additions.
+
+Round 096 used 17 CLI commands and 36 resource checks, all admitted. Its minimum
+MemAvailable was 22,111,449,088 bytes, maximum recorded load1 1.0927734375 and
+minimum free disk 347,744,477,184 bytes. Final snapshot: MemAvailable
+**22,206,992,384 bytes**, load1 **0.391113**, free disk **347,761,025,024 bytes**.
+These are boundary observations, not continuous sampling or a universal leak proof.
+
+All assigned local workloads and the remote CI investigation have returned.
+The final log publication may trigger ordinary repository CI; it contains no
+additional production changes. Last tested code and the one authorized Bats retry
+are described above; no success is invented for a newly triggered log-only run.

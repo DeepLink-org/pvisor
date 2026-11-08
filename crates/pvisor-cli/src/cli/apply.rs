@@ -453,9 +453,10 @@ fn print_diff(response: &ApplyCommandResponse) -> anyhow::Result<()> {
             continue;
         }
         let output = super::diff::unified(&old, &new, &change.path)?;
-        let keep = remaining.min(output.len());
-        print!("{}", String::from_utf8_lossy(&output[..keep]));
-        remaining -= keep;
+        if super::diff::print_bounded_diff(&output, &mut remaining) {
+            println!("diff truncated at 262144 bytes");
+            break;
+        }
     }
     Ok(())
 }

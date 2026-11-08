@@ -754,8 +754,56 @@ mod tests {
         let (store, mut registry) = Store::open(directory.path()).unwrap();
         store.initialize(&mut registry).unwrap();
         store.commit_record(ID, Some(&record(ID))).unwrap();
+        store.commit_record(OTHER, Some(&record(OTHER))).unwrap();
         drop(store);
         let path = directory.path().join(format!("records/{ID}.json"));
+        let metadata_path = directory.path().join("records/meta.json");
+        let other_path = directory.path().join(format!("records/{OTHER}.json"));
+        let header_path = directory.path().join("sandboxes.json");
+        let original = fs::read(&path).unwrap();
+        let metadata = fs::read(&metadata_path).unwrap();
+        let other = fs::read(&other_path).unwrap();
+        let header = fs::read(&header_path).unwrap();
+        // Tiny, fixed truncations: empty, opening delimiter only, and missing
+        // the closing delimiter. Restore this same owned fixture after each.
+        for (target, bytes) in [(&path, &original), (&metadata_path, &metadata)] {
+            for length in [0, 1, bytes.len() - 1] {
+                let damaged = &bytes[..length];
+                fs::write(target, damaged).unwrap();
+                assert!(Store::open(directory.path()).is_err());
+                for (file, intact) in [
+                    (&path, &original),
+                    (&metadata_path, &metadata),
+                    (&other_path, &other),
+                    (&header_path, &header),
+                ] {
+                    let expected = if file == target { damaged } else { intact };
+                    assert_eq!(fs::read(file).unwrap(), expected);
+                }
+                fs::write(target, bytes).unwrap();
+                let (store, restored) = Store::open(directory.path()).unwrap();
+                assert_eq!(restored.owner, registry.owner);
+                assert_eq!(restored.version, 2);
+                assert_eq!(restored.sandboxes.len(), 2);
+                for (id, encoded) in [(ID, &original), (OTHER, &other)] {
+                    let expected: StoredRecord = serde_json::from_slice(encoded).unwrap();
+                    assert_eq!(
+                        serde_json::to_vec(&restored.sandboxes[id]).unwrap(),
+                        serde_json::to_vec(&expected.record).unwrap()
+                    );
+                }
+                assert!(Store::open(directory.path()).is_err());
+                drop(store);
+                for (file, intact) in [
+                    (&path, &original),
+                    (&metadata_path, &metadata),
+                    (&other_path, &other),
+                    (&header_path, &header),
+                ] {
+                    assert_eq!(fs::read(file).unwrap(), *intact);
+                }
+            }
+        }
         fs::write(&path, b"broken").unwrap();
         assert!(Store::open(directory.path()).is_err());
         fs::remove_file(&path).unwrap();

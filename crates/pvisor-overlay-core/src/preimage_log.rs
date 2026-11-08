@@ -751,6 +751,125 @@ mod tests {
         assert_eq!(retry.observations().unwrap().len(), 1);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_sync_retains_staged_candidates_and_reopen_promotes_complete_frames() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let target = temp.path().join("target");
+        let upper = temp.path().join("upper");
+        let journal = temp.path().join("preimages");
+        fs::create_dir(&target).unwrap();
+        for name in ["kept", "next"] {
+            fs::write(target.join(name), format!("host {name}")).unwrap();
+        }
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_compact_preimages()
+        .unwrap();
+        fs::write(core.copy_up(Path::new("kept")).unwrap(), b"staged kept").unwrap();
+        core.sync_preimages().unwrap();
+        let kept_inode = fs::metadata(upper.join("kept")).unwrap().ino();
+        drop(core);
+
+        let path = journal.join(crate::core::PREIMAGE_LOG_NAME);
+        let mut log = PreimageLog::open(&path).unwrap();
+        let baseline = crate::fingerprint_at(&target, Path::new("next")).unwrap();
+        log.observe(Path::new("next"), false, || Ok(baseline.clone()))
+            .unwrap();
+        let observations = log.observations().unwrap();
+        assert_eq!(observations.len(), 2);
+        for observation in &observations {
+            assert_eq!(
+                observation.state,
+                crate::fingerprint_at(&target, &observation.relative_path()).unwrap()
+            );
+        }
+        let bytes = fs::read(&path).unwrap();
+        let synced = log.state.synced;
+        assert!(log.state.cursor > synced);
+
+        // O_PATH pins this owned inode but cannot fsync it (EBADF). Invoke
+        // the existing private sync seam without replacing the locked writer,
+        // changing its binding, filling storage, or relying on DAC privileges.
+        let unsyncable = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+            .open(&path)
+            .unwrap();
+        assert_eq!(
+            log.transaction(|_, state| sync(&unsyncable, state))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert!(log.state.poisoned);
+        assert_eq!(log.state.synced, synced);
+        for _ in 0..2 {
+            // The real writable descriptor is still intact: poison, not the
+            // injected descriptor, must prevent acknowledgement and mutations.
+            for result in [
+                log.sync_all(),
+                log.observe(Path::new("next"), true, || panic!("must not recapture")),
+                log.observe(Path::new("new"), false, || panic!("must not capture")),
+                log.consume(&[PathBuf::from("kept")]),
+            ] {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+            }
+            assert_eq!(
+                PreimageLog::open(&path).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(PreimageLog::read_complete(&path).unwrap(), observations);
+            assert_eq!(fs::read(upper.join("kept")).unwrap(), b"staged kept");
+            assert_eq!(fs::metadata(upper.join("kept")).unwrap().ino(), kept_inode);
+            assert!(!upper.join("next").exists());
+        }
+        drop(unsyncable);
+        drop(log);
+
+        let mut retry = PreimageLog::open(&path).unwrap();
+        assert_eq!(retry.state.synced, retry.state.cursor);
+        retry
+            .observe(Path::new("next"), true, || panic!("must adopt first value"))
+            .unwrap();
+        assert_eq!(retry.observations().unwrap(), observations);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        drop(retry);
+
+        // Hand the same backing back to Core. Retry publishes only the missing
+        // candidate, then a second owner verifies both staged files/baselines.
+        for publish in [true, false] {
+            let core = OverlayCore::open_existing(
+                vec![target.clone()],
+                upper.clone(),
+                None,
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            if publish {
+                fs::write(core.copy_up(Path::new("next")).unwrap(), b"staged next").unwrap();
+            }
+            core.sync_preimages().unwrap();
+            assert_eq!(fs::read(upper.join("kept")).unwrap(), b"staged kept");
+            assert_eq!(fs::metadata(upper.join("kept")).unwrap().ino(), kept_inode);
+            assert_eq!(fs::read(upper.join("next")).unwrap(), b"staged next");
+            assert_eq!(fs::read(target.join("kept")).unwrap(), b"host kept");
+            assert_eq!(fs::read(target.join("next")).unwrap(), b"host next");
+            assert_eq!(PreimageLog::read_complete(&path).unwrap(), observations);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
     #[test]
     fn competing_writers_are_rejected_while_readers_and_later_owners_can_open() {
         const ROLE: &str = "PVISOR_PREIMAGE_LOG_CHILD";

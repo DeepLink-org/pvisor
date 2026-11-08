@@ -321,6 +321,28 @@ consumption starts after owner teardown, and a new owner observes the next
 generation. Concurrent requests still arbitrate first publication on one owner;
 a non-durable losing read does not invalidate a durable winner's membership.
 
+On Linux, the internal
+`failed_sync_retains_staged_candidates_and_reopen_promotes_complete_frames`
+regression injects `EBADF` through the private sync seam using an `O_PATH`
+descriptor for the owned log inode, after Core has accepted staged bytes and a
+later complete observation awaits sync. The original writer stays locked and
+writable. Repeated sync, observation/promotion and consumption calls reject the
+poisoned owner without altering frames or existing candidates. Drop/reopen drains
+and adopts the complete observations; Core retry and another reopen retain the
+original baselines and staged bytes. This tests explicit sync-error handling,
+not device failure, partial writes, power loss or Core-level fault propagation.
+
+The internal `preimage_publication_directory_race_preserves_candidates_and_reopens`
+regression inserts a small owned nonempty directory at a legacy preimage's final
+name after the missing-entry check, after another file's staged bytes have been
+accepted. Both read-observation rename and durable mutation link publication
+reject the invalid winner. Repeated public copy-up calls propagate the error
+without publishing the new candidate, consuming existing staged bytes, modifying
+host sources or removing the obstruction. Failed publication cleans its temporary
+entry; removing only the fixture obstruction permits retry and owner reopen with
+both original baselines retained. This is deterministic private-seam scheduling,
+not process interruption, compact-log failure, or a device/fsync fault.
+
 `FilesystemService::prepare_copy_ups(paths, truncate)` prepares durable baseline
 observations and regular-file bytes without publishing upper entries or changing
 hardlink groups. Physical hardlink aliases share one prepared copy but retain
@@ -465,6 +487,27 @@ formats. They check preservation of later host edits and unselected candidates,
 and idempotent consumption. These simulate interruption states, not process
 kills or power loss; they invoke lock-owned recovery directly so all fixture
 writes stay under their temporary root rather than the global lock namespace.
+
+Backup cleanup happens after ledger commit. Its failure remains an error, not
+a warning or a rollback: committed recovery retries cleanup without replaying
+target writes or consuming candidates again. If recursive removal fails after
+unlinking the verified ownership receipt, cleanup exclusively recreates and
+syncs that receipt through the still-held original directory descriptor. It
+never overwrites a collision or authorizes a rebound pathname during receipt
+restoration. The preceding pathname-based cleanup is not protected against all
+concurrent hostile namespace changes. The non-root permission regression covers
+both journal formats, later host edits and unselected candidates; a separate
+fixture checks restoration collisions and rebinding.
+
+This live-error repair does not close the process-death/power-loss window
+between receipt removal and directory removal, or guarantee successful receipt
+restoration. A failed write can leave an incomplete receipt that subsequent
+validation rejects; a sync failure can leave a complete readable receipt that
+later recovery accepts. There is no persistent sync-failed marker or new crash
+protocol. Successful restoration preserves the original cleanup error, including
+its raw errno. Failed restoration wraps that error, retaining its kind and both
+error messages, but not its raw errno structure. Logical commit idempotence is
+not a promise of exactly-once filesystem writes.
 
 ### Restricted filesystem-root apply
 
@@ -648,6 +691,17 @@ and all workers must join before bottom-up directory drains, parent persistence
 and atomic `sealed-v1` publication. Errors (including worker startup/panic) do
 not publish a new seal. Explicit workload fsync and journal synchronization do
 not use this pool. The caller still owns the stage lease and must stop writers.
+
+`tests/seal_publication.rs` obstructs the final `sealed-v1` replacement with a
+small owned nonempty directory after staged writes and compact-journal drain,
+for checkpoint and strict policies. Repeated completion failures retain candidate
+bytes/inode ownership, backing directories, policy and observations, and clean
+the atomic writer's temporary entry. The invalid seal blocks writable reopen
+and reuse. Removing only that obstruction does not establish completion:
+an exclusively owned unsealed reopen can resume mutations, but reuse remains
+rejected until completion succeeds. Successful retry blocks mutations on reopen;
+explicit same-policy reuse clears the seal. This covers a real namespace
+publication error, not host storage failure, power loss or runtime receipts.
 
 The inventory holds O(files + directories) paths and inode identities; regular-file
 descriptors and worker threads are bounded by the selected worker count. Directory

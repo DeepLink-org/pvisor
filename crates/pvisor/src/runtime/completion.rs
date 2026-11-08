@@ -527,8 +527,9 @@ mod tests {
             ServiceContext, SessionSelection, SessionService, StatusRequest,
         };
         use crate::{Session, SessionState};
+        use std::fs;
         for committed in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
             let (record, result) = fixture(root.path());
             let mut config = crate::RunConfig::default();
             config.run.executor = crate::RunExecutorKind::Vm;
@@ -539,9 +540,63 @@ mod tests {
                 "state":"running","head":null,"checkpoints":{},"requests":{},"resumes":{},"forks":{},"stores":[]
             })).unwrap();
             session.write().unwrap();
+            let session_path = root.path().join("execution-session.json");
+            let receipt_path = root.path().join(FILENAME);
+            let bundle_path = RunBundle::path(root.path());
+            let bundle_bytes = fs::read(&bundle_path).unwrap();
             if committed {
                 Completion::commit(&record, &result).unwrap();
+                let receipt_bytes = fs::read(&receipt_path).unwrap();
+                let mut completed = session.clone();
+                completed
+                    .apply(super::super::execution::SessionTransition::Completed(
+                        &result,
+                    ))
+                    .unwrap();
+                // Exercise finish's private publication step after its transition,
+                // without a production hook between Session reread and write.
+                let saved = root.path().join("session-before-completion.json");
+                fs::rename(&session_path, &saved).unwrap();
+                fs::create_dir(&session_path).unwrap();
+                fs::write(session_path.join("owned-sentinel"), b"obstruction").unwrap();
+                let error = completed.write().unwrap_err();
+                assert!(
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.raw_os_error() == Some(libc::EISDIR)),
+                    "{error:#}"
+                );
+                assert_eq!(
+                    fs::read(session_path.join("owned-sentinel")).unwrap(),
+                    b"obstruction"
+                );
+                assert!(Session::read(&record).is_err());
+                // Root selectors consult Session metadata first and fail closed
+                // while it is unreadable, rather than bypassing the obstruction.
+                assert!(RunRecord::read(root.path()).is_err());
+                assert_eq!(fs::read(&receipt_path).unwrap(), receipt_bytes);
+                assert_eq!(fs::read(&bundle_path).unwrap(), bundle_bytes);
+                assert!(!fs::read_dir(root.path()).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".pvisor.")
+                }));
+                fs::remove_file(session_path.join("owned-sentinel")).unwrap();
+                fs::remove_dir(&session_path).unwrap();
+                fs::rename(saved, &session_path).unwrap();
+                assert_eq!(
+                    RunRecord::read(root.path()).unwrap().state,
+                    RunRecordState::Completed
+                );
+                RunBundle::read(root.path()).unwrap();
+                assert_eq!(
+                    Session::read(&record).unwrap().unwrap().state(),
+                    SessionState::Running
+                );
             }
+            let receipt_bytes = committed.then(|| fs::read(&receipt_path).unwrap());
             for _ in 0..2 {
                 let status = SessionService::status(
                     &ServiceContext::default(),
@@ -570,22 +625,32 @@ mod tests {
                     }
                 );
             }
-            if committed {
+            if let Some(receipt_bytes) = receipt_bytes {
                 let mut successor = Session::read(&record).unwrap().unwrap();
                 let mut stored = serde_json::to_value(&successor).unwrap();
-                stored["state"] = serde_json::to_value(SessionState::Restoring).unwrap();
                 stored["active_stage"] =
                     serde_json::json!(root.path().join("executions/successor"));
                 stored["previous_stage"] = serde_json::json!(root.path());
-                successor = serde_json::from_value(stored).unwrap();
-                successor.write().unwrap();
-                let _session = successor.lock().unwrap();
-                let _execution = super::super::registry::RunLease::acquire(root.path()).unwrap();
-                let mut original = record.clone();
-                reconcile(&mut original).unwrap();
-                let unchanged = Session::read(&record).unwrap().unwrap();
-                assert_eq!(unchanged.state(), SessionState::Restoring);
-                assert_eq!(unchanged.active_stage(), successor.active_stage());
+                for state in [SessionState::Restoring, SessionState::Running] {
+                    stored["state"] = serde_json::to_value(state).unwrap();
+                    if state == SessionState::Running {
+                        stored["active_execution"] = serde_json::json!("execution-successor");
+                    }
+                    successor = serde_json::from_value(stored.clone()).unwrap();
+                    successor.write().unwrap();
+                    let before = fs::read(&session_path).unwrap();
+                    let _session = successor.lock().unwrap();
+                    let _execution =
+                        super::super::registry::RunLease::acquire(root.path()).unwrap();
+                    for _ in 0..2 {
+                        let mut original = record.clone();
+                        reconcile(&mut original).unwrap();
+                        assert_eq!(original.state, RunRecordState::Completed);
+                        assert_eq!(fs::read(&session_path).unwrap(), before);
+                        assert_eq!(fs::read(&receipt_path).unwrap(), receipt_bytes);
+                        assert_eq!(fs::read(&bundle_path).unwrap(), bundle_bytes);
+                    }
+                }
             }
         }
     }

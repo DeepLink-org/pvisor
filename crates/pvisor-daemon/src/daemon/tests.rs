@@ -574,7 +574,7 @@ fn block_disk(daemon: &Daemon) -> (DiskGate, oneshot::Receiver<()>) {
     (gate, receiver)
 }
 
-struct NativeCreateGate {
+struct NativeGate {
     entered: oneshot::Sender<()>,
     release: oneshot::Receiver<()>,
 }
@@ -611,9 +611,24 @@ struct FakeState {
 #[derive(Default)]
 struct FakeRuntime {
     state: Mutex<FakeState>,
-    create_gate: Mutex<Option<NativeCreateGate>>,
+    create_gate: Mutex<Option<NativeGate>>,
+    control_gate: Mutex<Option<NativeGate>>,
     inspect_delays: Mutex<BTreeMap<String, Duration>>,
     delete_ids: Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl FakeRuntime {
+    async fn acknowledge_control(
+        &self,
+        reply: anyhow::Result<RuntimeState>,
+    ) -> anyhow::Result<RuntimeState> {
+        let gate = self.control_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            tokio::time::timeout(IO_TIMEOUT, gate.release).await??;
+        }
+        reply
+    }
 }
 
 #[async_trait::async_trait]
@@ -655,29 +670,35 @@ impl Runtime for FakeRuntime {
     }
 
     async fn pause(&self, id: &str) -> anyhow::Result<RuntimeState> {
-        let mut state = self.state.lock().unwrap();
-        state.pauses += 1;
-        let reply = state.control_reply.take();
-        let sandbox = state
-            .sandboxes
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
-        anyhow::ensure!(*sandbox == RuntimeState::Running, "sandbox not running");
-        *sandbox = RuntimeState::Paused;
-        reply.unwrap_or(Ok(*sandbox))
+        let reply = {
+            let mut state = self.state.lock().unwrap();
+            state.pauses += 1;
+            let reply = state.control_reply.take();
+            let sandbox = state
+                .sandboxes
+                .get_mut(id)
+                .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
+            anyhow::ensure!(*sandbox == RuntimeState::Running, "sandbox not running");
+            *sandbox = RuntimeState::Paused;
+            reply.unwrap_or(Ok(*sandbox))
+        };
+        self.acknowledge_control(reply).await
     }
 
     async fn resume(&self, id: &str) -> anyhow::Result<RuntimeState> {
-        let mut state = self.state.lock().unwrap();
-        state.resumes += 1;
-        let reply = state.control_reply.take();
-        let sandbox = state
-            .sandboxes
-            .get_mut(id)
-            .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
-        anyhow::ensure!(*sandbox == RuntimeState::Paused, "sandbox not paused");
-        *sandbox = RuntimeState::Running;
-        reply.unwrap_or(Ok(*sandbox))
+        let reply = {
+            let mut state = self.state.lock().unwrap();
+            state.resumes += 1;
+            let reply = state.control_reply.take();
+            let sandbox = state
+                .sandboxes
+                .get_mut(id)
+                .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
+            anyhow::ensure!(*sandbox == RuntimeState::Paused, "sandbox not paused");
+            *sandbox = RuntimeState::Running;
+            reply.unwrap_or(Ok(*sandbox))
+        };
+        self.acknowledge_control(reply).await
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -986,6 +1007,133 @@ async fn lost_control_ack_retry_commits_observation_without_get() {
         drop(daemon);
         let (_store, disk) = super::store::Store::open(directory.path()).unwrap();
         assert_eq!(disk.sandboxes[&sandbox.id].sandbox.status.state, confirmed);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_accepted_control_retains_intent_quota_and_serializes_newer_control() {
+    for pause in [false, true] {
+        for lost_ack in [false, true] {
+            for newer_queued in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let runtime = Arc::new(FakeRuntime::default());
+                let mut cfg = config(&directory);
+                cfg.max_sandboxes = 1;
+                let daemon = open(cfg, &runtime).await;
+                let sandbox = bounded(create(&daemon)).await;
+                if !pause {
+                    bounded(daemon.pause(&sandbox.id)).await.unwrap();
+                }
+                let (entered, receiver) = oneshot::channel();
+                let (release, release_receiver) = oneshot::channel();
+                *runtime.control_gate.lock().unwrap() = Some(NativeGate {
+                    entered,
+                    release: release_receiver,
+                });
+                runtime.state.lock().unwrap().control_reply = Some(if lost_ack {
+                    Err(anyhow::anyhow!("ack lost after applied control"))
+                } else {
+                    Ok(RuntimeState::Stopped)
+                });
+                let caller = {
+                    let daemon = daemon.clone();
+                    let id = sandbox.id.clone();
+                    tokio::spawn(async move {
+                        if pause {
+                            daemon.pause(&id).await
+                        } else {
+                            daemon.resume(&id).await
+                        }
+                    })
+                };
+                // Entry is after both the durable intention and the native change,
+                // but before the acknowledgement is delivered to the owned worker.
+                bounded(receiver).await.unwrap();
+                caller.abort();
+                assert!(bounded(caller).await.unwrap_err().is_cancelled());
+                let intention = if pause { "Pausing" } else { "Resuming" };
+                assert_eq!(
+                    bounded(daemon.list()).await.unwrap()[0].status.state,
+                    intention
+                );
+                let calls = runtime_calls(&runtime);
+                assert_eq!(
+                    bounded(daemon.create(request())).await.unwrap_err().code,
+                    "CAPACITY_EXCEEDED"
+                );
+                assert_eq!(runtime_calls(&runtime), calls);
+                let operation = bounded(daemon.operation(&sandbox.id)).await.unwrap();
+                assert!(
+                    operation.try_write().is_err(),
+                    "accepted control still owns gate"
+                );
+                if newer_queued {
+                    // Queue the same exclusive gate used by the public wrapper,
+                    // rather than assuming when a spawned caller gets scheduled.
+                    let mut newer = Box::pin(operation.write());
+                    std::future::poll_fn(|cx| {
+                        assert!(newer.as_mut().poll(cx).is_pending());
+                        std::task::Poll::Ready(())
+                    })
+                    .await;
+                    release.send(()).unwrap();
+                    let _newer = bounded(newer).await;
+                    bounded(daemon.control_locked(&sandbox.id, !pause))
+                        .await
+                        .unwrap();
+                } else {
+                    release.send(()).unwrap();
+                    // Lock handoff proves owned completion without timing/polling.
+                    drop(bounded(operation.write()).await);
+                    assert_eq!(
+                        bounded(daemon.list()).await.unwrap()[0].status.state,
+                        intention
+                    );
+                    runtime.state.lock().unwrap().inspect_error = true;
+                    assert!(bounded(daemon.control(&sandbox.id, pause)).await.is_err());
+                    assert_eq!(
+                        bounded(daemon.list()).await.unwrap()[0].status.state,
+                        intention
+                    );
+                    assert_eq!(
+                        bounded(daemon.create(request())).await.unwrap_err().code,
+                        "CAPACITY_EXCEEDED"
+                    );
+                    runtime.state.lock().unwrap().inspect_error = false;
+                    bounded(daemon.control(&sandbox.id, pause)).await.unwrap();
+                    let after = runtime_calls(&runtime);
+                    assert_eq!(
+                        (after.2, after.3),
+                        (calls.2, calls.3),
+                        "retry only observes"
+                    );
+                    bounded(daemon.control(&sandbox.id, !pause)).await.unwrap();
+                }
+                // A newer opposite control wins, including subsequent reconciliation;
+                // the cancelled worker must not publish its older observation later.
+                let final_state = if pause { "Running" } else { "Paused" };
+                assert_eq!(
+                    bounded(daemon.get(&sandbox.id)).await.unwrap().status.state,
+                    final_state
+                );
+                assert_eq!(
+                    bounded(daemon.list()).await.unwrap()[0].status.state,
+                    final_state
+                );
+                assert_eq!(
+                    bounded(daemon.create(request())).await.unwrap_err().code,
+                    "CAPACITY_EXCEEDED"
+                );
+                drop(operation);
+                drop(daemon);
+                let (store, disk) = super::store::Store::open(directory.path()).unwrap();
+                assert_eq!(
+                    disk.sandboxes[&sandbox.id].sandbox.status.state,
+                    final_state
+                );
+                drop(store);
+            }
+        }
     }
 }
 
@@ -1729,6 +1877,128 @@ async fn stale_maintenance_expiration_does_not_delete_renewed_sandbox() {
 }
 
 #[tokio::test]
+async fn cancelled_accepted_renewal_survives_stale_cleanup_but_not_expiration() {
+    for outcome in [DeleteOutcome::Error, DeleteOutcome::Unconfirmed] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 1;
+        let daemon = open(cfg, &runtime).await;
+        let sandbox = bounded(create(&daemon)).await;
+        let renewed_until = sandbox.expires_at.unwrap() + chrono::Duration::seconds(600);
+        let (disk_gate, entered) = block_disk(&daemon);
+        let caller = {
+            let daemon = daemon.clone();
+            let id = sandbox.id.clone();
+            tokio::spawn(async move {
+                daemon
+                    .renew(
+                        &id,
+                        super::RenewRequest {
+                            expires_at: renewed_until,
+                        },
+                    )
+                    .await
+            })
+        };
+        // Renewal has validated the old TTL and owns the lifecycle gate, but its
+        // new deadline is not durable yet. Disconnect only the public caller.
+        bounded(entered).await.unwrap();
+        caller.abort();
+        assert!(bounded(caller).await.unwrap_err().is_cancelled());
+        assert_eq!(
+            bounded(daemon.list()).await.unwrap()[0].expires_at,
+            sandbox.expires_at
+        );
+        let operation = bounded(daemon.operation(&sandbox.id)).await.unwrap();
+        let mut handoff = Box::pin(operation.write());
+        std::future::poll_fn(|cx| {
+            assert!(handoff.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        disk_gate.release();
+        drop(bounded(handoff).await);
+        // An expiry job selected from an old scan must use the committed deadline,
+        // even when the caller never received the accepted renewal's response.
+        bounded(daemon.delete_conditionally(&sandbox.id, true))
+            .await
+            .unwrap();
+        assert_eq!(
+            bounded(daemon.get(&sandbox.id)).await.unwrap().expires_at,
+            Some(renewed_until)
+        );
+        assert_eq!(runtime.state.lock().unwrap().deletes, 0);
+        let calls = runtime_calls(&runtime);
+        assert_eq!(
+            bounded(daemon.renew(
+                &sandbox.id,
+                super::RenewRequest {
+                    expires_at: renewed_until,
+                },
+            ))
+            .await
+            .unwrap_err()
+            .code,
+            "INVALID_REQUEST",
+            "retrying the same deadline cannot undo the committed extension"
+        );
+        assert_eq!(runtime_calls(&runtime), calls);
+        assert_eq!(
+            bounded(daemon.list()).await.unwrap()[0].expires_at,
+            Some(renewed_until)
+        );
+
+        // Model expiration directly, as in the existing TTL tests: no wall-clock
+        // wait or production clock hook. Once expired, renewal cannot revive it.
+        bounded(daemon.update(&sandbox.id, |registry| {
+            let mut record = registry.sandboxes[&sandbox.id].clone();
+            record.sandbox.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+            Ok((Some(record), ()))
+        }))
+        .await
+        .unwrap();
+        runtime.state.lock().unwrap().delete_outcome = outcome;
+        for _ in 0..2 {
+            assert_eq!(
+                bounded(daemon.delete_conditionally(&sandbox.id, true))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "RUNTIME_UNAVAILABLE"
+            );
+            assert_eq!(
+                bounded(daemon.renew(
+                    &sandbox.id,
+                    super::RenewRequest {
+                        expires_at: renewed_until + chrono::Duration::seconds(600),
+                    },
+                ))
+                .await
+                .unwrap_err()
+                .code,
+                "SANDBOX_EXPIRED"
+            );
+            assert_eq!(
+                bounded(daemon.get(&sandbox.id)).await.unwrap().status.state,
+                "Stopping"
+            );
+            assert_eq!(
+                bounded(daemon.create(request())).await.unwrap_err().code,
+                "CAPACITY_EXCEEDED"
+            );
+        }
+        assert_eq!(runtime.state.lock().unwrap().creates, 1);
+        runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Confirmed;
+        bounded(daemon.delete_conditionally(&sandbox.id, true))
+            .await
+            .unwrap();
+        assert!(bounded(daemon.list()).await.unwrap().is_empty());
+        bounded(create(&daemon)).await;
+    }
+}
+
+#[tokio::test]
 async fn unknown_get_ids_do_not_grow_weak_operation_table() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Arc::new(FakeRuntime::default());
@@ -2153,7 +2423,7 @@ async fn cancelling_an_accepted_public_create_does_not_cancel_disk_or_native_wor
     let runtime = Arc::new(FakeRuntime::default());
     let (native_entered, native_receiver) = oneshot::channel();
     let (native_release, release_receiver) = oneshot::channel();
-    *runtime.create_gate.lock().unwrap() = Some(NativeCreateGate {
+    *runtime.create_gate.lock().unwrap() = Some(NativeGate {
         entered: native_entered,
         release: release_receiver,
     });
@@ -2192,6 +2462,124 @@ async fn cancelling_an_accepted_public_create_does_not_cancel_disk_or_native_wor
     assert_eq!(restored[0].id, id);
     assert_eq!(restored[0].status.state, "Running");
     assert_eq!(runtime.state.lock().unwrap().creates, 1);
+}
+
+#[tokio::test]
+async fn cancelled_pending_create_retains_then_recovers_exact_capacity_across_owner_drops() {
+    for (cpu, memory, slots) in [
+        (1000, 128 * MIB, 2),
+        (2000, 64 * MIB, 2),
+        (2000, 128 * MIB, 1),
+    ] {
+        for (owner_first, uncertain) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(FakeRuntime::default());
+            if uncertain {
+                runtime.state.lock().unwrap().create_failure = Some(true);
+            }
+            let mut cfg = config(&directory);
+            cfg.cpu_millis = cpu;
+            cfg.memory_bytes = memory;
+            cfg.max_sandboxes = slots;
+            let owner = open_unreconciled(cfg, &runtime).await;
+            bounded(async {
+                while !owner.reconciled.load(std::sync::atomic::Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            let survivor = owner.clone();
+            let (entered, receiver) = oneshot::channel();
+            let (release, release_receiver) = oneshot::channel();
+            *runtime.create_gate.lock().unwrap() = Some(NativeGate {
+                entered,
+                release: release_receiver,
+            });
+            let caller = {
+                let owner = owner.clone();
+                tokio::spawn(async move { owner.create(request()).await })
+            };
+            // Runtime entry proves admission committed, but no runtime object exists yet.
+            bounded(receiver).await.unwrap();
+            let pending = bounded(survivor.list()).await.unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].status.state, "Pending");
+            let id = &pending[0].id;
+            if owner_first {
+                drop(owner);
+                caller.abort();
+                assert!(bounded(caller).await.unwrap_err().is_cancelled());
+            } else {
+                caller.abort();
+                assert!(bounded(caller).await.unwrap_err().is_cancelled());
+                drop(owner);
+            }
+            let rejected = bounded(survivor.create(request())).await.unwrap_err();
+            assert_eq!(
+                (rejected.status, rejected.code.as_str()),
+                (429, "CAPACITY_EXCEEDED")
+            );
+            assert_eq!(runtime.state.lock().unwrap().creates, 0);
+            let operation = bounded(survivor.operation(id)).await.unwrap();
+            assert!(operation.try_write().is_err());
+            release.send(()).unwrap();
+            // The lifecycle gate, rather than a delay, acknowledges owned completion.
+            drop(bounded(operation.write()).await);
+            assert_eq!(
+                bounded(survivor.list()).await.unwrap()[0].status.state,
+                if uncertain { "Failed" } else { "Running" }
+            );
+            drop(operation);
+            if uncertain {
+                // Missing on reconciliation alone does not confirm failed-create cleanup.
+                assert_eq!(
+                    bounded(survivor.get(id)).await.unwrap().status.state,
+                    "Failed"
+                );
+                for _ in 0..2 {
+                    runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Error;
+                    let error = bounded(survivor.delete(id)).await.unwrap_err();
+                    assert_eq!(
+                        (error.status, error.code.as_str()),
+                        (503, "RUNTIME_UNAVAILABLE")
+                    );
+                    assert_eq!(
+                        bounded(survivor.get(id)).await.unwrap().status.state,
+                        "Stopping"
+                    );
+                    let rejected = bounded(survivor.create(request())).await.unwrap_err();
+                    assert_eq!(
+                        (rejected.status, rejected.code.as_str()),
+                        (429, "CAPACITY_EXCEEDED")
+                    );
+                    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+                }
+                let mut state = runtime.state.lock().unwrap();
+                state.create_failure = None;
+                state.delete_outcome = DeleteOutcome::Confirmed;
+            }
+            bounded(survivor.delete(id)).await.unwrap();
+            assert!(bounded(survivor.list()).await.unwrap().is_empty());
+            let replacement = bounded(create(&survivor)).await;
+            // A stale delete must neither release the replacement nor add quota.
+            assert_eq!(bounded(survivor.delete(id)).await.unwrap_err().status, 404);
+            let rejected = bounded(survivor.create(request())).await.unwrap_err();
+            assert_eq!(
+                (rejected.status, rejected.code.as_str()),
+                (429, "CAPACITY_EXCEEDED")
+            );
+            assert_eq!(bounded(survivor.list()).await.unwrap().len(), 1);
+            bounded(survivor.delete(&replacement.id)).await.unwrap();
+            assert!(bounded(survivor.list()).await.unwrap().is_empty());
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(
+                (state.creates, state.deletes),
+                (2, if uncertain { 4 } else { 2 })
+            );
+            assert!(state.sandboxes.is_empty());
+        }
+    }
 }
 
 async fn occupied_v1(directory: &TempDir) -> (String, BTreeMap<std::path::PathBuf, Vec<u8>>) {

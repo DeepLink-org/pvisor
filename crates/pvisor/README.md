@@ -418,6 +418,11 @@ closed before writable workspace teardown. Capture retains request receipts,
 Session locks and detached operation ownership after frontend timeout. Guest
 AgentCtl retains its separate guest-facing trust boundary.
 
+Each owner-held inspect entry owns its unique mount directory. Explicit unmount,
+table teardown and failed construction release the read-only mount before
+best-effort removal of only its empty invocation directory; shared stage contents
+and nonempty or still-mounted directories are never recursively removed.
+
 Stopped status, review, apply, drop and inspect execute in the calling process.
 Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
@@ -666,6 +671,23 @@ sync may leave a receipt visible; reopening validates its full binding before
 projecting it. Legacy Run schema 1 and Bundle schema 4 remain readable with their
 original guarantees. These local receipts do not make remote side effects or
 event delivery exactly once, and are not power-loss acceptance evidence.
+
+The private completion/status regression also obstructs Session JSON replacement
+after a valid completion receipt commits. It exercises the publication step
+directly, not a live VM completion callback. Restoring the saved stale Session
+allows repeated status reconciliation from the unchanged receipt and Bundle;
+reconciling the old Execution leaves both restoring and running successor Session
+bytes unchanged. This covers a local rename failure, not crash or fsync faults.
+
+The private `sealed_storage_without_completion_receipt_refuses_recovery_and_reuse`
+regression completes a compact-journal storage stage and writes its Bundle before
+obstructing `completion.json` with an owned directory. Receipt preflight rejects
+that nonregular destination; this does not simulate a rename or fsync failure.
+After removing the obstruction, repeated storage reopen stays read-only while
+runtime status remains Unknown and apply, drop, checkpoint and fresh Run storage
+reuse refuse admission, retaining candidate identity, bytes and observations.
+An explicit completion-owner retry can bind the original result; reopening alone
+never creates a receipt. This fixture does not launch a process, FUSE mount or VM.
 
 The lower-level `PVisor::run()` and `SessionService::start()` still return a bare
 `RunHandle`. Embedded Execution callers and daemon detached supervisors retain their

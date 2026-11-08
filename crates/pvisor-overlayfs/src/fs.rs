@@ -2914,6 +2914,167 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a working Linux /dev/fuse and fusermount3"]
+    fn backing_copy_fault_detached_close_recovery_036() {
+        use crate::api::{
+            OverlayConfiguration, OverlayMountConfig, OverlayMounting, OverlaySessionControl,
+        };
+        use std::os::fd::{AsRawFd, IntoRawFd};
+
+        fn copy(input: &File, output: &File) -> io::Result<usize> {
+            let mut src = 0;
+            let mut dst = 0;
+            let count = unsafe {
+                libc::copy_file_range(
+                    input.as_raw_fd(),
+                    &mut src,
+                    output.as_raw_fd(),
+                    &mut dst,
+                    16,
+                    0,
+                )
+            };
+            if count < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                assert_eq!(src, count as i64);
+                assert_eq!(dst, count as i64);
+                Ok(count as usize)
+            }
+        }
+        fn close(file: File) {
+            // Do not retry close: Linux has already released the descriptor.
+            assert_eq!(unsafe { libc::close(file.into_raw_fd()) }, 0);
+        }
+        fn contents(file: &File) -> Vec<u8> {
+            let mut bytes = vec![0; 32];
+            let count = file.read_at(&mut bytes, 0).unwrap();
+            bytes.truncate(count);
+            bytes
+        }
+        fn assert_no_fixture_descriptors(root: &Path) {
+            let remaining: Vec<_> = fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter_map(|fd| fs::read_link(&fd).ok().map(|target| (fd, target)))
+                .filter(|(_, target)| target.starts_with(root))
+                .collect();
+            assert!(
+                remaining.is_empty(),
+                "fixture descriptors leaked: {remaining:?}"
+            );
+        }
+
+        for limit in [0, 3] {
+            let root = tempfile::Builder::new()
+                .prefix("chaos-036-")
+                .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+                .unwrap();
+            let lower = root.path().join("lower");
+            let upper = root.path().join("upper");
+            let mount = root.path().join("merged");
+            fs::create_dir(&lower).unwrap();
+            fs::create_dir(&mount).unwrap();
+            fs::write(lower.join("input"), b"abcdefghijklmnop").unwrap();
+            fs::write(lower.join("target"), b"original").unwrap();
+            let mut filesystem = OverlayFs::new(vec![lower.clone()], upper.clone(), None).unwrap();
+            // Existing private per-instance seam fails the server's copy loop,
+            // after actual backing writes, not the client kernel's admission.
+            filesystem.copy_fault_after = Some(limit);
+            let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+            let dispatch = filesystem.control.clone();
+            let background = fuser::spawn_mount2(
+                filesystem,
+                &mount,
+                &[fuser::MountOption::DefaultPermissions],
+            )
+            .unwrap();
+            let mountinfo = || {
+                fs::read_to_string("/proc/self/mountinfo")
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.split_whitespace().nth(4) == mount.to_str())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            let mounted = mountinfo();
+            assert_eq!(mounted.len(), 1);
+            assert!(mounted[0].split(" - ").nth(1).unwrap().starts_with("fuse"));
+            eprintln!("trace=036 limit={limit} mounted={mounted:?}");
+            let input = File::open(mount.join("input")).unwrap();
+            let reader = File::open(mount.join("target")).unwrap();
+            let writer = OpenOptions::new()
+                .write(true)
+                .open(mount.join("target"))
+                .unwrap();
+            assert_eq!(writer.write_at(b"0123456789ABCDEF", 0).unwrap(), 16);
+            writer.sync_all().unwrap();
+            assert_eq!(contents(&reader), b"0123456789ABCDEF");
+            fs::rename(mount.join("target"), mount.join("moved")).unwrap();
+            fs::remove_file(mount.join("moved")).unwrap();
+            let dup = writer.try_clone().unwrap();
+            fs::write(mount.join("target"), b"replacement").unwrap();
+            let result = copy(&input, &writer);
+            if limit == 0 {
+                assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENOSPC));
+            } else {
+                assert_eq!(result.unwrap(), limit as usize);
+            }
+            let mut expected = b"0123456789ABCDEF".to_vec();
+            expected[..limit as usize].copy_from_slice(&b"abcdefghijklmnop"[..limit as usize]);
+            assert_eq!(contents(&reader), expected);
+            writer.sync_all().unwrap();
+            dup.sync_data().unwrap();
+            close(writer);
+            drop(input);
+            assert_eq!(contents(&reader), expected);
+            assert_eq!(dup.write_at(b"RECOVER", 0).unwrap(), 7);
+            dup.sync_all().unwrap();
+            expected[..7].copy_from_slice(b"RECOVER");
+            assert_eq!(contents(&reader), expected);
+            close(dup);
+            close(reader);
+            assert_eq!(fs::read(mount.join("target")).unwrap(), b"replacement");
+            assert_eq!(fs::read(lower.join("input")).unwrap(), b"abcdefghijklmnop");
+            assert_eq!(fs::read(lower.join("target")).unwrap(), b"original");
+            assert!(!lower.join("moved").exists());
+            assert_eq!(fs::read(upper.join("target")).unwrap(), b"replacement");
+            assert!(!upper.join("moved").exists());
+            dispatch.shutdown().unwrap();
+            background.unmount().unwrap();
+            assert!(mountinfo().is_empty());
+            assert_no_fixture_descriptors(root.path());
+
+            // A new public-API owner reopens the same stage without the private
+            // fault. No descriptor or failed-copy state may poison recovery.
+            let session = crate::api::OverlayFs::mount(OverlayMountConfig::new(
+                vec![lower.clone()],
+                upper.clone(),
+                None,
+                mount.clone(),
+            ))
+            .unwrap();
+            let input = File::open(mount.join("input")).unwrap();
+            let output = OpenOptions::new()
+                .write(true)
+                .open(mount.join("target"))
+                .unwrap();
+            assert_eq!(copy(&input, &output).unwrap(), 16);
+            output.sync_all().unwrap();
+            close(output);
+            close(input);
+            assert_eq!(fs::read(mount.join("target")).unwrap(), b"abcdefghijklmnop");
+            assert_eq!(fs::read(lower.join("target")).unwrap(), b"original");
+            assert_eq!(fs::read(lower.join("input")).unwrap(), b"abcdefghijklmnop");
+            session.unmount().unwrap();
+            assert!(mountinfo().is_empty());
+            assert_no_fixture_descriptors(root.path());
+            eprintln!("trace=036 limit={limit} recovered; both mountinfo entries absent");
+        }
+    }
+
     #[test]
     fn mutation_effects_cover_aliases_parents_and_subtrees_without_sibling_eviction() {
         let temp = tempfile::tempdir().unwrap();

@@ -83,6 +83,13 @@ combine with `--path` or `--include`. Exclusions alone require `--interactive`.
 See the [apply reference](../../docs/src/en/reference/cli.md#apply) for the complete
 argument, JSON and exit-code contracts.
 
+`inspect` owns its read-only view until command cleanup finishes, including when
+the command cannot be launched. Early errors attempt to release the view while
+preserving the original command error and the Session's proposal and completion
+records. Local cleanup removes only the empty invocation directory; failed
+unmount or removal can retain it. Remote cleanup requests unmount from the live
+owner but does not guarantee removal of the owner's enclosing directory.
+
 Apply rejects `--target`, `-o` and `--output-dir`. Use `--store DIR` for Session lookup;
 the writeback target cannot be redirected. The runtime entry point is
 `SessionService::apply_command` with `ApplyCommandRequest` and a schema-1
@@ -128,6 +135,13 @@ bytes, never the original paths. Review reads the currently available lower
 files; it does not reconstruct a historical baseline or certify that apply will
 succeed. Concurrent content writes can still change those lower files; use apply
 preview for conflict checks. JSON retains the existing changeset contract.
+
+Rendered diff bodies share one byte budget across files. Review and apply preview
+report clipping even inside the final file; an exact fit is unmarked unless
+another candidate is omitted. Notices and selection summaries are outside that
+body budget. Clipping retains a valid UTF-8 prefix without adding replacement
+characters; a partial character is omitted, so up to three budget bytes may
+remain unused.
 
 The seven live VM flags are command-local, under **Live VM** in command help:
 
