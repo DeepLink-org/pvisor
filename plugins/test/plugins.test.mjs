@@ -7,6 +7,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { Backend, execute, selection } from "../backend.mjs";
 import registerPi from "../pi.mjs";
 import { registerDsh } from "../dsh.mjs";
@@ -154,6 +155,68 @@ test("cancellation settles the child and marks the outcome interrupted", async (
   assert.equal(result.signal, "SIGTERM");
   assert.throws(() => execute(process.execPath, ["--version"], { signal: controller.signal }));
 });
+
+for (const kind of ["pi", "dsh"]) {
+  test(`${kind} cancellation during capability probing preserves exact-selector recovery without a spawn`, { timeout: 5000 }, async (t) => {
+    const f = await fixture(t);
+    const original = await readFile(f.binary, "utf8");
+    const ready = path.join(f.root, "probe-ready");
+    await writeFile(f.binary, `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+setInterval(() => {}, 1000);
+`);
+    const controller = new AbortController();
+    let running;
+    if (kind === "pi") {
+      const registered = [];
+      registerPi({ registerTool: (tool) => registered.push(tool), registerCommand() {}, on() {} }, {
+        createBackend: () => f.backend,
+      });
+      running = registered.find((tool) => tool.name === "pvisor_spawn")
+        .execute("cancel-probe", { argv: ["never-run"] }, controller.signal, undefined, { cwd: f.project });
+    } else {
+      const definitions = new Map();
+      registerDsh({ tools: { register: (tool) => definitions.set(tool.name, tool) } },
+        (tool) => tool, () => f.backend);
+      running = definitions.get("pvisor_spawn").execute({ argv: ["never-run"] }, {
+        agent: { session: { header: { cwd: f.project } } }, signal: controller.signal,
+      });
+    }
+    running.catch(() => {});
+    t.after(async () => {
+      controller.abort();
+      await running.catch(() => {});
+    });
+    let pid;
+    const deadline = Date.now() + 2000;
+    while (!pid && Date.now() < deadline) {
+      try { pid = Number(await readFile(ready, "utf8")); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (!pid) await delay(10);
+    }
+    assert.ok(pid, "capability probe must start before cancellation");
+    controller.abort();
+    let selector;
+    await assert.rejects(running, (error) => {
+      selector = /^Stage (.+); execution failed, do not retry automatically:/.exec(error.message)?.[1];
+      assert.ok(selector, error.message);
+      assert.match(error.message, /abort/i);
+      return true;
+    });
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    await assert.rejects(readFile(path.join(f.root, "calls.jsonl")), { code: "ENOENT" });
+    // Reopen after the operator fixes the runtime; never rerun the task.
+    await writeFile(f.binary, original);
+    const reopened = new Backend(f.project, f.options);
+    assert.equal((await reopened.task(selector)).selector, selector);
+    await reopened.operate("status", { selector });
+    await reopened.operate("review", { selector });
+    assert.deepEqual((await f.calls()).map((call) => call.args), [
+      ["status", selector, "--json"], ["review", selector, "--diff"],
+    ]);
+  });
+}
 
 const success = { exit_code: 0, interrupted: false, stdout: "preview", stderr: "", signal: null, truncated: false };
 

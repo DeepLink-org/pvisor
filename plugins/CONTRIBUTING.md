@@ -44,6 +44,7 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-09 | Runtime deadlines fail without accepting output | Real native deadline |
 | DOC-PLUGINS-10 | MCP shutdown does not accept or discard pending results | Real stdio shutdown, reopened adapter and native review |
 | DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
+| DOC-PLUGINS-12 | Cancelling an active task retains its exact selector and staged candidates without publication | Real native cancellation after a staged write; reopened status, review, read-only preview and drop |
 
 The npm fixture verifies real package-manager installation and external runtime
 selection, not Homebrew/pip installation, native file semantics or a published registry release.
@@ -68,8 +69,10 @@ Tested contracts: Pi 0.79.3 extension loading and argument validation; DSH
 Web/Desktop approval checks separately. No model credentials are needed for
 these compiler/loader checks.
 
-`backend.mjs` translates to native commands and owns adapter identity and process
-supervision. `tools.mjs` is the shared model-facing schema. Host adapters own
+`backend.mjs` translates to native commands and owns adapter identity.
+`process.mjs` supervises all runtime subprocesses, including capability and
+version probes, with bounded output, cancellation, escalation and stream draining.
+`tools.mjs` is the shared model-facing schema. Host adapters own
 only host registration and approvals. `runtime.mjs` selects an operator-specified
 absolute CLI path or `pvisor` from the host PATH and probes required CLI
 capabilities before use. It ignores empty and relative PATH entries and never

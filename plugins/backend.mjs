@@ -1,11 +1,12 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveRuntime } from "./runtime.mjs";
+import { execute } from "./process.mjs";
 
-const OUTPUT_LIMIT = 256 * 1024;
+export { execute } from "./process.mjs";
+
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function within(parent, child) {
@@ -70,71 +71,6 @@ export function selection(paths) {
   return [...new Set(paths)];
 }
 
-/**
- * Drain both streams after reaching the display budget. Cancellation requests
- * native teardown; forced CLI termination remains an uncertain native outcome.
- */
-export function execute(binary, args, { cwd, env, signal, deadlineMs = 30_000 } = {}) {
-  signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], shell: false });
-    const buffers = { stdout: [], stderr: [] };
-    const sizes = { stdout: 0, stderr: 0 };
-    let truncated = false;
-    let interrupted = false;
-    let escalation;
-    let drainDeadline;
-    const interrupt = () => {
-      if (interrupted) return;
-      interrupted = true;
-      child.kill("SIGTERM");
-      escalation = setTimeout(() => {
-        child.kill("SIGKILL");
-        // A lost supervisor's descendants may retain the output descriptors.
-        // Stop waiting for those streams without claiming native teardown.
-        drainDeadline = setTimeout(() => {
-          child.stdout.destroy();
-          child.stderr.destroy();
-        }, 5_000);
-        drainDeadline.unref();
-      }, 5_000);
-      escalation.unref();
-    };
-    const deadline = setTimeout(interrupt, deadlineMs);
-    deadline.unref();
-    const cleanup = () => {
-      clearTimeout(deadline);
-      clearTimeout(escalation);
-      clearTimeout(drainDeadline);
-      signal?.removeEventListener("abort", interrupt);
-    };
-    signal?.addEventListener("abort", interrupt, { once: true });
-    if (signal?.aborted) interrupt();
-    for (const stream of ["stdout", "stderr"]) {
-      child[stream].on("data", (bytes) => {
-        const remaining = OUTPUT_LIMIT - sizes[stream];
-        if (bytes.length > remaining) truncated = true;
-        if (remaining > 0) {
-          buffers[stream].push(bytes.subarray(0, remaining));
-          sizes[stream] += Math.min(remaining, bytes.length);
-        }
-      });
-    }
-    child.on("error", (error) => { cleanup(); reject(error); });
-    child.on("close", (code, terminationSignal) => {
-      cleanup();
-      resolve({
-        exit_code: code,
-        signal: terminationSignal,
-        interrupted,
-        stdout: Buffer.concat(buffers.stdout).toString("utf8"),
-        stderr: Buffer.concat(buffers.stderr).toString("utf8"),
-        truncated,
-      });
-    });
-  });
-}
-
 /** One project-bound adapter; native pVisor remains the owner of Session state. */
 export class Backend {
   constructor(project = process.env.PVISOR_PLUGIN_PROJECT || process.cwd(), options = {}) {
@@ -190,7 +126,7 @@ export class Backend {
   async doctor(input = {}, signal) {
     fields(input, []);
     const project = await this.project();
-    const binary = await resolveRuntime(this.binary);
+    const binary = await resolveRuntime(this.binary, { signal });
     const result = await execute(binary, ["--version"], { cwd: project, signal });
     return {
       ...result,
@@ -225,7 +161,7 @@ export class Backend {
       "--timeout", `${seconds}s`, "--", ...argv,
     ];
     try {
-      const binary = await resolveRuntime(this.binary);
+      const binary = await resolveRuntime(this.binary, { signal });
       const home = await privateHome(project);
       const result = {
         selector: stage, stage, project,
@@ -263,7 +199,7 @@ export class Backend {
       if (action === "status") args.push("--json");
       if (action === "review") args.push("--diff");
     }
-    const binary = await resolveRuntime(this.binary);
+    const binary = await resolveRuntime(this.binary, { signal });
     if (action === "preview") {
       // Native preview only observes existing lock inodes. Ordinary Host
       // Sessions reconcile/initialize their control state through status first.

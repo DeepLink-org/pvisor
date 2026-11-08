@@ -1,8 +1,7 @@
 import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { execFile } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
+import { execute } from "./process.mjs";
 
 const installation = "Install or upgrade pVisor through Homebrew or pip (pvisor-sandbox): https://deeplink-org.github.io/pvisor/start/installation/. Restart the Agent host after changing PATH, or set PVISOR_PLUGIN_BINARY to an absolute executable path.";
 
@@ -15,14 +14,19 @@ async function executable(binary) {
 }
 
 /** Probe required CLI capabilities; package and runtime versions are independent. */
-export async function checkRuntimeContract(binary) {
-  const run = promisify(execFile);
+export async function checkRuntimeContract(binary, { signal } = {}) {
+  signal?.throwIfAborted();
   try {
     for (const [command, flags] of [
       ["spawn", ["--safe", "--no-agent-defaults", "--stage", "--timeout", "--overlaynet-deny-all"]],
       ["apply", ["--path", "--dry-run", "--json"]],
     ]) {
-      const { stdout } = await run(binary, [command, "--help"], { timeout: 10_000, maxBuffer: 256 * 1024 });
+      const result = await execute(binary, [command, "--help"], { signal, deadlineMs: 10_000 });
+      signal?.throwIfAborted();
+      if (result.exit_code !== 0 || result.interrupted || result.truncated) {
+        throw new Error(`${command} probe failed (exit=${result.exit_code}, signal=${result.signal}, interrupted=${result.interrupted}, truncated=${result.truncated})`);
+      }
+      const { stdout } = result;
       for (const flag of flags) {
         if (!stdout.includes(`${flag} `) && !stdout.includes(`${flag}\n`)) {
           throw new Error(`${command} lacks ${flag}`);
@@ -30,13 +34,15 @@ export async function checkRuntimeContract(binary) {
       }
     }
   } catch (error) {
+    signal?.throwIfAborted();
     throw new Error(`Incompatible pVisor at ${binary}: ${error.message}. ${installation} No downgraded execution is allowed.`);
   }
   return binary;
 }
 
 /** Use an operator override or the host PATH; never install or download a runtime. */
-export async function resolveRuntime(override, { searchPath = process.env.PATH || "" } = {}) {
+export async function resolveRuntime(override, { searchPath = process.env.PATH || "", signal } = {}) {
+  signal?.throwIfAborted();
   let binary;
   if (override !== undefined) {
     if (typeof override !== "string" || !path.isAbsolute(override) || override.includes("\0")) {
@@ -61,5 +67,5 @@ export async function resolveRuntime(override, { searchPath = process.env.PATH |
     if (!binary) throw new Error(`pVisor was not found on the Agent host PATH. ${installation}`);
   }
   // Revalidate separately upgraded runtimes; never fall back from incompatibility.
-  return checkRuntimeContract(binary);
+  return checkRuntimeContract(binary, { signal });
 }

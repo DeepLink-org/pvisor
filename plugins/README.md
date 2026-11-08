@@ -236,8 +236,12 @@ do not recursively delete the state root as an uninstall step.
 
 ## Maintenance
 
-`backend.mjs` owns CLI translation, task identity, process supervision and output
-bounds. `tools.mjs` owns the shared read/execute schema. Pi and DSH add only host
+`backend.mjs` owns CLI translation and task identity. `process.mjs` owns bounded
+output and process supervision for both runtime probes and task commands.
+Cancellation also interrupts capability checks; a stalled probe has a ten-second
+deadline, followed by at most five seconds each for termination escalation and
+output draining. Forced termination does not certify descendant teardown.
+`tools.mjs` owns the shared read/execute schema. Pi and DSH add only host
 lifecycle/approval adaptation. `mcp.mjs` owns stdio JSON-RPC transport; it never
 adds acceptance authority. Do not duplicate filesystem state, bypass native
 locks, use `last`, retry commands automatically, or silently enable host execution.
