@@ -1849,6 +1849,23 @@ Run it without KVM using:
 mise run test -- pvisor -- --lib -E 'test(subprocess_always_uses_v2_and_killed_bridge_leaves_metrics)'
 ```
 
+The prepared-rootfs and prepared-workspace independent-process lease regressions
+share a test-only child owner in `tests/support/lease_child.rs`. It forces terse
+libtest output so `LEASE_READY` and `WORKSPACE_LEASE_READY` remain exact lines.
+Readiness and post-release exit each have a five-second bound; every assertion
+path kills/reaps the owned child and joins its stdout reader. Readiness uses
+one timed notification, fixed-size chunk matching and a capped 4 KiB raw stdout
+tail, so noisy or unterminated output cannot grow a line/channel or extend the
+wait. Draining continues after readiness. Kill/reap and join are not a bound
+on arbitrary descendants or uninterruptible kernel I/O. The lease and
+garbage-collection assertions, including normal and abrupt workspace-reader
+exit, remain unchanged:
+
+```bash
+mise run test -- pvisor -- --test prepared_rootfs -E 'test(=prepared_rootfs_lease_is_independent_in_another_process)'
+mise run test -- pvisor -- --test prepared_workspace -E 'test(=prepared_workspace_independent_process_lease_survives_lost_catalog_pin)'
+```
+
 On macOS, source builds that use HVF must be signed. `mise run build -- release` does this;
 the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedded
 `pvisor-guest` supervisor is built as a static Linux musl ELF

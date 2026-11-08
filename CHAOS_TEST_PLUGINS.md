@@ -2954,3 +2954,159 @@ OS-temp root, scoped nested-fixture diff boundary and optional diagnostic ERR
 hook. Wrong PATH-variable candidates remain reverted. Micro scripts and local
 evidence remain diagnostic artifacts, not publication deliverables. Earlier
 32-cycle endurance evidence and its coverage qualifications are unchanged.
+
+#### Round 16 reviewed-hypothesis full retry — second harness blocker
+
+Independent review reported no findings on the rootfs harness repair. Parent
+granted one full retry after04:43:37 UTC, explicitly based on the captured
+pretty-prefix red and terse green, not an equivalent blind repetition.
+
+- Exact unfiltered `mise run test -- pvisor` ran
+  **04:44:59.540–04:59:59.561 UTC**,900.021s, exit124 at the external watchdog.
+  Same offline pinned tools, private HOME/XDG/cache directories in a separate
+  `.data/round16-retry` evidence root, default short TMP, jobs2/thread1/nice10,
+  resource guard, streamed separate stdout/stderr plus tee/pipefail, and
+ 900s+30s kill grace. Preflight gates passed again. No ignored-test opt-in,
+  filter, source-library change, shared-artifact overwrite or optional Python.
+- Nextest default run `dc1ce3f8-bf83-4663-91b7-904296b9e0c5`:
+ 875 runnable tests across24 binaries,10default skips.
+  Compile21.62s; test878.016s. Final summary:
+  **831passed/1SIGTERM-failed/10skipped/43unrun due to signal**.
+  The repaired rootfs independent-process test passed0.014s at826/875.
+  The last completed test was
+  `pvisor::prepared_workspace::legacy_store_adds_workspace_catalog_without_changing_rootfs_v1`
+  at831/875. The new active blocker was
+  `pvisor::prepared_workspace::prepared_workspace_independent_process_lease_survives_lost_catalog_pin`,
+  terminated after795.300s. Full-package runtime coverage remains **INCOMPLETE**.
+- Post-release static source inspection found another pretty-output exact-marker
+  protocol in that workspace test: child prints `WORKSPACE_LEASE_READY` then
+  blocks on stdin; parent waits for an exact trimmed line without a readiness
+  bound or child ownership guard, while child arguments omit terse formatting.
+  This is a strong same-mechanism hypothesis, **not a captured-marker diagnostic
+  for this second test yet**. No genuine workspace-lease failure or status-repair
+  causality is established. Parent was informed; no further test, correction or
+  long retry was launched.
+- HEAD remains `97f72ac5354ee505c954dfdc206c0d3f691200b0`.
+  New source manifest SHA256
+  `8561873ae7baa2f647fc389a23f5c0d053308f79b8ef01acb0ac65e251f6bf16`;
+  working diff SHA256
+  `b22ce2a24aae2c7ecb4b8c5a59e17c830909ae5989e8fa03ede2fca418704f71`.
+  The source difference is the reviewed test/README correction and campaign/
+  inherited task edits, not a production-library repair.
+- All18 resource samples passed: minimum RAM18,613,297,152bytes,
+  minimum disk341,187,092,480bytes, maximum load1=1.10595703125.
+  Final04:59:59 sample RAM18,750,124,032bytes,
+  disk341,231,198,208bytes, load1=0.046875.
+- Cleanup at05:00:14 UTC found no owned executable/private-HOME processes
+  or checkout mounts. Same three inaccessible same-UID `/proc` entries were
+  preserved and unattributed; no unrelated process was killed or unknown tree
+  deleted. **Sole workload slot released at05:00:14 UTC** for queued work.
+  `git diff --check` passed. Own target and both evidence trees remain.
+- Durable retry combined log SHA256
+  `8082011ce2ffe26082039a2163a0cdd1cbc095a126895c2810905f7813096615`;
+  logs/events/source/environment/mount records live in `.data/round16-retry`.
+  Original timeout and focused red/green evidence remain separate and unchanged.
+  No standalone replayable nextest archive is claimed.
+- Recommended follow-up: a separately authorized bounded workspace marker
+  diagnostic and coherent test-only ownership correction. Do not start another
+ 900s run on the unchanged hypothesis. No workspace/Python/macOS/packaging,
+  cloud/model, publication or semspec coverage/changes are implied.
+
+#### Round 16 shared readiness ownership — static preparation only
+
+Parent authorized same-class workspace preparation while round17 owns the sole
+workload slot. No test/build/native execution or formatter was run for this step.
+The two prepared-base integration tests now share
+`crates/pvisor/tests/support/lease_child.rs`: a test-only owned child, forced terse
+format, exact marker, five-second readiness/exit bounds, raw stdout diagnostic,
+and kill/reap/reader join on all assertion paths. The reader continues draining
+after readiness so the child's final libtest output does not encounter a closed
+stdout pipe. Both caller files retain their lease/catalog/GC assertions, including
+workspace normal and abrupt-reader exit. Support and crate READMEs describe the
+rule. No public runtime/library surface changed.
+
+This shared source is **not yet validated**. A future separately granted focused
+workspace red will temporarily select pretty output in the helper to capture
+the suspected prefixed `WORKSPACE_LEASE_READY` line, then restore forced terse
+for focused green coverage of both protocols. The second marker remains
+unconfirmed by a raw-output diagnostic until that run. Parent was notified that
+the source is ready for static review. Neither another full900s attempt nor
+optional Python work is authorized by this static preparation.
+
+Static review found that the initial shared helper's repeated timed receive
+could continue consuming queued noise after its deadline, and its line/channel/
+diagnostic buffers were unbounded. Those are preparation defects, not a new
+observed runtime failure. While round17 retains the workload slot, the helper
+was changed to fixed1KiB reads, a4KiB raw diagnostic tail, constant-size exact
+line state, and at most one readiness/error notification with one5s timed
+receive. The drain never queues noise or performs blocking bounded-channel
+sends, and continues after readiness. Two finite in-memory helper regressions
+cover8KiB unterminated/noisy input, split/prefixed markers and capped diagnostics;
+they are **not yet run**, nor is the revised helper compiled/formatted.
+READMEs distinguish these readiness bounds from arbitrary descendants or
+uninterruptible kernel I/O during kill/reap/join. Lease/GC assertions and both
+historical full-attempt outcomes remain unchanged.
+
+### Remote CI checkpoint — published revision only
+
+At 2026-11-08 05:07:59 UTC, `gh pr checks 121` reported 34 successful checks,
+one documentation-deployment skip, no failures and no pending checks for the
+published PR revision `1fb4a457`. CI run:
+https://github.com/DeepLink-org/pvisor/actions/runs/42448166227.
+The previously failing macOS Node22 plugin contracts and Python/task-routing
+job passed in this run, as did the Linux/macOS runtime and CLI shards.
+
+This is remote evidence for that committed revision, not a replacement for
+the two incomplete local single-thread full-runtime attempts or validation
+of the uncommitted shared lease helper and extended-recovery/IPC fixtures.
+It grants no permission to merge main or publish packages. Round17 remains
+the sole local workload; the requested campaign deadline is still09:04 UTC.
+
+#### Round 16 final shared-helper validation
+
+After bounded-parser rereview reported no findings, parent granted the sole
+slot after round17 case2 at05:24 UTC. No third full-package run was authorized
+or started. The following were serial, nice10/offline/jobs2/thread1, using
+the same pinned tools/private HOME/default short TMP and durable tee+pipefail.
+
+| UTC | Exact command/check | Actual outcome |
+| --- | --- | --- |
+| 05:25:24.768–05:25:30.550 | `mise run test -- pvisor -- --test prepared_workspace -E 'test(=prepared_workspace_independent_process_lease_survives_lost_catalog_pin)'`, helper temporarily selecting pretty output | **Red:1failed/9filtered skips**, exit100, compile0.44s/test5.003s; not external20s timeout |
+| 05:25:49.925–05:25:50.039 | `mise exec -- rustfmt --edition 2024 crates/pvisor/tests/prepared_rootfs.rs crates/pvisor/tests/prepared_workspace.rs crates/pvisor/tests/support/lease_child.rs`, after restoring terse | Passed; helper signature formatted |
+| 05:25:55.131–05:25:55.996 | `mise run test -- pvisor -- --test prepared_rootfs --test prepared_workspace -E 'test(=prepared_rootfs_lease_is_independent_in_another_process) \| test(=prepared_workspace_independent_process_lease_survives_lost_catalog_pin) \| test(lease_child::tests::)'` | **6passed/11filtered skips**, exit0, compile0.49s/test0.043s |
+| 05:26:05.677–05:26:29.576 | `mise exec -- cargo clippy --locked --offline -p pvisor --test prepared_rootfs --test prepared_workspace -- -D warnings` | Passed,23.77s Cargo time;180s watchdog rather than20s test budget |
+| 05:26:48.544–05:26:48.658 | `mise exec -- rustfmt --check --edition 2024 crates/pvisor/tests/prepared_rootfs.rs crates/pvisor/tests/prepared_workspace.rs crates/pvisor/tests/support/lease_child.rs` | Passed; `git diff --check` also passed |
+
+The workspace red captured the exact previously unconfirmed raw line:
+`"test prepared_workspace_independent_process_lease_survives_lost_catalog_pin ... WORKSPACE_LEASE_READY\n"`.
+The five-second readiness assertion failed, then RAII killed/reaped the child
+and joined its reader. Immediate postred process/mount inspection found no
+survivor. Red nextest ID `41d78475-5f33-4bbb-b734-022f253e31ad`.
+This confirms the second pretty-prefix handshake defect, not a product lease
+failure. The original full attempts remain825/831passes followed by timeout.
+
+Green nextest ID `f77c669f-7a34-4e1a-b7cb-cd951ae05985`:
+rootfs lease0.013s; workspace lease0.024s including normal and abrupt-reader exit;
+four additional helper passes are the same two finite matcher/tail regressions
+compiled into each integration binary, not four distinct claims. The tests cover
+8KiB bounded finite noise/unterminated input, prefixed marker refusal, a marker
+split across chunks, and capped tail retention. They do not constitute arbitrary
+process/fault coverage or a new passing full-package result.
+
+All10 pre/post resource samples passed: minimum RAM18,293,198,848bytes,
+minimum disk341,205,491,712bytes, maximum load1=1.04052734375.
+At05:26:48.676 cleanup again found owned processes=[] and checkout mounts=[].
+Same three inaccessible same-UID `/proc` entries were preserved and unattributed.
+No unknown tree deletion, unrelated process signal, install, shared-artifact write
+or production-library change. **Slot released05:26:48 UTC** for queued work.
+
+Final five-file source manifest, explicitly including the new helper and support
+README rather than only tracked-file hashes:
+`.data/round16/shared-source-hashes.json`, SHA256
+`6ec052df92c453da5dd48d906b463559af73976a34b7d7e5005c8f8d64b1e85a`.
+Validated helper SHA256
+`c9cf830fd8d97db4af982b90f9c69fa695dddbfd85c835e539c87a56737298bc`.
+Durable command/resource logs are `.data/round16/{workspace-red,shared-fmt,shared-green,shared-clippy,shared-fmt-check}.{log,events.jsonl}`;
+final audit is `shared-cleanup.json`.
+Parent received code-ready evidence before slot release. Any full retry remains
+a separate decision requiring explicit permission; optional Python was not run.

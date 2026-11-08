@@ -13,10 +13,13 @@ use pvisor::environment_snapshot::{BaseReference, SnapshotStore};
 use pvisor_vm::api::RuntimeSupport;
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     os::unix::fs::{MetadataExt, symlink},
-    process::{Command, Stdio},
+    process::Command,
 };
+
+#[path = "support/lease_child.rs"]
+mod lease_child;
 
 #[test]
 fn prepared_rootfs_survives_preparer_exit_and_gc_without_rescanning_source() {
@@ -159,29 +162,15 @@ fn prepared_rootfs_lease_is_independent_in_another_process() {
     )
     .unwrap();
     drop(base);
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             "prepared_rootfs_lease_is_independent_in_another_process",
             "--nocapture",
         ])
-        .env(ROLE, temp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    loop {
-        let mut line = String::new();
-        assert_ne!(
-            output.read_line(&mut line).unwrap(),
-            0,
-            "child exited before acquiring lease"
-        );
-        if line.trim() == "LEASE_READY" {
-            break;
-        }
-    }
+        .env(ROLE, temp.path());
+    let child = lease_child::LeaseChild::spawn(command, "LEASE_READY");
     // Fault injection: losing a persistent catalog pin must not defeat an
     // already acquired independent process lease. This is not a removal API.
     fs::remove_file(
@@ -193,8 +182,7 @@ fn prepared_rootfs_lease_is_independent_in_another_process() {
     .unwrap();
     store.collect_abandoned().unwrap();
     assert!(store.open_base(&reference).is_ok());
-    child.stdin.take().unwrap().write_all(b"x").unwrap();
-    assert!(child.wait().unwrap().success());
+    child.release();
     store.collect_abandoned().unwrap();
     assert!(store.open_base(&reference).is_err());
 }
