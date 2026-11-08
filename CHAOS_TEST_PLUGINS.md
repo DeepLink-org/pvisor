@@ -343,3 +343,349 @@ false or throws. A truly stuck native status/drop inside the after-hook was
 The 20-second reconciliation budget is not a hard wall-clock cleanup guarantee:
 bounded supervisor termination/output-drain grace may extend settlement.
 No builds, Rust/Python suites, publication or unrelated cleanup were performed.
+
+### Round 3 — approval scope and edits after preview
+
+- UTC start: 2026-11-08 01:44:13; final workload ended 01:48:09; cleanup and
+  sole TEST/BUILD slot released at 01:48:17; handoff/documentation about 01:50 UTC.
+  This is a short completed round, not eight hours of execution or artificial waiting.
+- Read root README/AGENTS, plugin README/CONTRIBUTING and this campaign log;
+  discovery found no nested plugin README/AGENT(S). No production code changed,
+  and no Git commits, pushes, merges, package publication or semspec edits.
+- Story: a Pi/DSH user sees a successful apply preview and a pending approval.
+  Pause that exact callback with a manually resolved promise, change the real
+  project file, revise the caller's selector/paths, switch the active project,
+  and then approve. The original project's native apply rejects the conflict;
+  the external edit survives, the other project's stage stays unpublished, and
+  scratch files stay staged. Reopen both exact selectors to inspect candidates.
+  Explicitly restore the baseline and obtain a new approval to accept only the
+  original selected file; native drop later disposes of remaining candidates.
+
+#### Findings and ownership contract
+
+No incorrect acceptance was reproduced and no product repair was warranted.
+Native conflict authority correctly rechecks the host after preview; the
+adapter does not treat a successful preview as permission to overwrite a later
+editor change. Captured initiating project and exact selection remain scoped.
+
+Pi parses its own command JSON before awaiting confirmation. DSH's public
+[tool-author contract](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md),
+read during this round, says dispatch detaches lossless JSON and recursively
+freezes arguments before policy/execution. Therefore a mutable object passed
+directly to a test's injected `defineTool` identity function is not evidence of
+a normal-host approval exploit. The new fixture explicitly models detached,
+frozen arguments, then mutates the caller's original object. This is modeled
+host-contract coverage, not execution of DSH's actual registry. The source was
+upstream `master` documentation, not independently verified against the pinned
+0.2.1-alpha.2 binary; that version-alignment gap remains explicit.
+
+New files are `approval-fixture.mjs`, `approval.test.mjs` and
+`approval.native.mjs` under `plugins/test/`. The fixture releases callbacks
+deterministically, without readiness polling or timing sleeps, and settles
+owned pending approvals in `finally`. Portable tests check approval reason,
+project/selector/paths and absence of mutation calls. DOC-PLUGINS-14/15 check
+real native file state and recoverability. Pi false confirmation and thrown
+confirmation errors refuse mutations; DSH additionally checks rejected,
+cancelled, unavailable, thrown service errors and an aborted signal followed
+by an allowed-once answer. Both apply and drop are covered. No native state,
+conflict logic, product recovery API or additional approval authority was added.
+
+#### Commands and outcomes
+
+Read round2's trust-prompt warning before execution. Every workload used:
+`MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0`,
+`CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1`, and
+`nice -n 10 timeout -k 30 120`. Setup/check tool calls were bounded at 15s.
+A process-local owned PATH shim used this exact serial dispatch:
+
+```sh
+if [ "$1" = --test ]; then
+  shift
+  if [ -n "$ROUND3_TEST_PATTERN" ]; then
+    exec /usr/bin/node --test --test-concurrency=1 --test-name-pattern="$ROUND3_TEST_PATTERN" "$@"
+  fi
+  exec /usr/bin/node --test --test-concurrency=1 "$@"
+fi
+exec /usr/bin/node "$@"
+```
+
+The guard checked MemAvailable >= 6 GiB, free disk >= 20 GiB and load1 <= 8
+before and after each workload; any failing precondition refused launch.
+No tools were installed and no fresh native build was needed.
+
+| UTC interval | Exact task and scope | Result |
+| --- | --- | --- |
+| 01:44:27–01:44:49 | `mise run test-agent-plugins`, serial shim | Integrated readiness follow-up + EPIPE baseline: **33 passed**, 0 failed/skipped/cancelled; 22.177s. Immediately reported to coordinator |
+| 01:47:35–01:47:57 | `mise run test-agent-plugins`, serial shim, four new portable approval cases | **37 passed**, 0 failed/skipped/cancelled; 22.200s |
+| 01:48:06–01:48:09 | `PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/target/debug/pvisor mise run test-agent-plugins-native`, serial shim with `ROUND3_TEST_PATTERN='DOC-PLUGINS-14\|DOC-PLUGINS-15'`, owned TMPDIR | **Four named native approval cases passed**, 0 failed; 2.793s. Node also reported two empty file-level pass entries (six total), not two additional executed scenarios |
+| 01:48:17 | `git diff --check`; owned fixture/process/mount scan | Passed; native temporary root empty, no associated processes or current-namespace mounts |
+
+There was no red/green production repair: the new tests passed against existing
+behavior. Round2 disconnect native cases were deliberately excluded while its
+worker corrected reviewed fixtures; this is not validation of those corrections.
+No overlap edits to MCP, disconnect fixtures/tests or distribution tests.
+
+#### Resources, cleanup and gaps
+
+- All six resource boundary checks passed: MemAvailable
+  19,666,026,496–19,919,679,488 bytes (~18.32–18.55 GiB), disk free
+  345,225,101,312–345,313,492,992 bytes (~321.52–321.60 GiB), load1
+  0.365–0.538. No concurrent test/build workload was launched.
+- Bounded fixtures lived in the owned per-turn scratch root. Native tasks
+  completed before approval injection; teardown called native drop before
+  removing each fixture. Successful private HOMEs were removed by Backend.
+  Final owned native TMPDIR was empty. No global cleanup, unrelated signals,
+  host/network changes, credentials, cloud/model calls or paid services.
+- Native CLI reused round1's external artifact/version/hash; its source revision
+  remains unverified. These are real Host safe/deny-all Sessions and actual host
+  file conflict checks, with **mock approval callbacks**, not interactive Pi/DSH
+  or a loader/compiler revalidation. No Rust/Python suites, builds, Clippy,
+  rustdoc, platform matrix or full native plugin suite ran in round3.
+- Next scenario recommendation: concurrent *legitimate* native operations on one
+  retained stage while approval is pending (a second selective apply or drop).
+  Check native lock/completion behavior and clear user-facing refusal or no-op
+  without inventing preview snapshot guarantees or editing private stage files.
+
+#### Round 3 static-review follow-up — failure-path fixture ownership
+
+Review found three actionable fixture defects despite the passing happy-path
+checks above. This follow-up changes tests/helpers only. It was initially
+unvalidated while round4 owned the sole TEST/BUILD slot; final follow-up
+validation is recorded below. The earlier 37 portable/four native results apply
+to the pre-review fixture version, not these edits.
+
+- Native fixture now registers every run attempt before starting it, retains
+  every owned operation promise, supplies five-second native task deadlines,
+  and combines an owned cancellation controller with the test lifecycle signal.
+  Teardown aborts and awaits owned work, then discovers and validates every
+  private task record, including runs that never returned a successful result.
+  It requires an existing native receipt and terminal, non-live native status,
+  followed by successful uninterrupted drop before removing the root.
+  Reconciliation has a 20-second operation-admission budget and individual
+  two-second cancellation deadlines (supervisor kill/drain grace can extend
+  settlement). Missing/unknown/live state or any cleanup failure preserves the
+  root and throws `Preserved fixture ABSOLUTE_PATH: ...`. Setup mkdir failures
+  are also covered by the already-registered cleanup hook.
+- Approval operations attach success/error handlers immediately, including the
+  retry. Waiting for the gate races early operation settlement, test
+  cancellation and a five-second owned deadline. Finally releases the captured
+  gate, cancels unsettled operations and awaits settlement. Added a deterministic
+  early-preview-failure case for each host; neither waits for an approval that
+  will never be requested.
+- Conflict acceptance now records the real Backend apply call/result, requires
+  exactly one apply of the original selector/paths/project, uninterrupted native
+  exit 3, structured `blocked` status with the original source stage, and a
+  conflict blocker. An arbitrary plugin/service error no longer satisfies it.
+
+These review edits were initially unvalidated. Final validation is recorded
+under “Round 3 final follow-up validation” below.
+
+### Round 4 — terminal operations during pending selective approval
+
+- UTC: 2026-11-08 01:50:22–01:55:58 for investigation/workloads/cleanup;
+  report and handoff followed. Sole test/build slot explicitly released to parent
+  at 01:55:58. This is about six minutes of low-load work, not eight hours.
+- Read root AGENTS/README/CONTRIBUTING, plugin README/CONTRIBUTING and this
+  campaign log; no nested plugin instructions/READMEs existed. Round3 approval
+  files were not in this child. Added independent `concurrent-approval-*` files;
+  reused round2's small selector discovery/reconcile-removal helpers without
+  changing them. No production code, MCP/disconnect/distribution/round1 files,
+  private stage state or frozen input ownership semantics changed.
+
+#### Story and finding
+
+Held Pi's actual confirmation callback or DSH's actual approval-service callback
+pending after a successful real native preview of `a.txt` and `b.txt`. The
+completed safe Host Session also held unselected `c.txt`. While the callback was
+pending, an operator used the native CLI to apply one selected file, apply both
+selected files, or drop all candidates; a fourth scenario used another explicit
+plugin operation to apply `c.txt`. A fifth combined partial native apply with a
+host edit to the still-pending `b.txt`. Then the user approved the original
+preview. Inputs were frozen, not mutated by the host.
+
+**No product defect demonstrated.** Ten native cases (five per host contract)
+confirm the native runtime remains authoritative:
+
+- After terminal apply of `a.txt`, stale approval safely applies only pending
+  approved `b.txt`; native JSON identifies exactly that selection and one apply.
+  A later user edit to already-applied `a.txt` survives. Unselected `c.txt` stays
+  unpublished and reviewable.
+- After terminal apply of both selected files, stale approval returns native
+  success with empty `selected` and `execution: null`: an informative no-op,
+  not an error or a second publication. User edits survive; `c.txt` remains.
+- After terminal drop, stale approval surfaces the native discarded diagnostic;
+  no candidate is resurrected and no host edit overwritten.
+- After another plugin apply of `c.txt`, the pending approval publishes exactly
+  `a.txt` and `b.txt`, with all three files matching their separately authorized
+  contents.
+- If the user edits pending `b.txt` after partially applying `a.txt`, native
+  apply refuses with `target changed after staging ... b.txt; refusing to
+  overwrite concurrent changes`. Both host edits survive; pending `b.txt` and
+  `c.txt` remain reviewable.
+
+Every case requires one preview, one post-approval apply, one approval request,
+one Session, and no automatic retry/drop. Two portable regressions independently
+require propagation of native mutation failure without retry. Host registration
+and approval are callback contracts, **not real interactive Pi/DSH clients**.
+Native files, previews, CLI operations and conflict decisions are real.
+
+#### Exact commands, harness corrections and results
+
+All workloads ran serially through process-local
+`MISE_TRUSTED_CONFIG_PATHS="$PWD"`, `MISE_YES=1`, `MISE_AUTO_INSTALL=0`,
+`CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=1`, `NEXTEST_TEST_THREADS=1`, and
+`nice -n 10 timeout -k 30 120`. No installs or fresh build. The owned PATH shim
+replaces task `node --test` with `/usr/bin/node --test --test-concurrency=1`;
+scoped runs additionally insert `--test-name-pattern="concurrent approval"`.
+The exact repository mise tasks were retained. Native commands set
+`PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/target/debug/pvisor`.
+Later native runs set `PVISOR_PLUGIN_TEST_OUTPUT_DIR="$PWD/.round4-owned"`.
+
+| UTC | Workload | Outcome |
+| --- | --- | --- |
+| 01:52:09–01:52:11 | `mise run test-agent-plugins-native`, scoped | Initial eight new cases: two passed, six harness failures. Incorrectly expected a stale-selection error instead of safe subset/no-op; cleanup incorrectly expected drop success after all candidates already applied. No product repair |
+| 01:52:57 | Same task, single partial-apply case | Harness still expected `b.txt` absent rather than its correctly approved publication; failed. Terminal/drop cleanup succeeded |
+| 01:53:18–01:53:22 | Same task, ten new cases | Six passed, four harness failures: expected literal “conflict” instead of precise native concurrent-change diagnostic, and dereferenced no-op `execution: null`. Corrected assertions to exact native semantics |
+| 01:54:14–01:54:36 | `mise run test-agent-plugins`, full | **37 passed, 0 failed/skipped/cancelled**, 22.216s (35 inherited plus two new) |
+| 01:54:36–01:54:59 | `mise run test-agent-plugins-native`, full | **25 passed, 1 failed**, 23.164s; all ten round4 cases passed. Existing round2 client-pipe-loss case failed at status sampling; details below. No blind rerun to erase this failure |
+| 01:55:37 | `mise run test-agent-plugins`, scoped, final | **Two new portable cases passed**; Node also counted five unmatched file wrappers as passing, reporting seven overall. This is not seven exercised cases |
+| 01:55:37–01:55:41 | `mise run test-agent-plugins-native`, scoped, final | **Ten new native cases passed**; two unmatched file wrappers counted by Node, reporting twelve overall. No round2 native cases re-executed |
+| 01:55:41–01:55:58 | `git diff --check`; guarded owned-root reconciliation/process/mount scan/removal | Diff check passed; all retained documentation fixture Sessions terminal and explicitly dropped; owned root removed |
+
+The final scoped run follows the final test assertion changes. The earlier
+full adapter run preceded a wording/diagnostic assertion refinement in the two
+new portable cases. No Rust/Python suites, compiler builds, lint, rustdoc or
+platform matrix were run.
+
+#### Preserved aggregate failure, not a round4 approval failure
+
+The full suite failed in unchanged `plugins/test/disconnect.native.mjs:87`:
+
+```js
+const final = await f.until(async () => {
+  const status = JSON.parse(ok(await reopened.operate("status", { selector })).stdout);
+  // A status sampled during owner shutdown can be transiently unknown.
+  // Wait for the receipt; do not use that earlier sample as authority for
+  // a later operation, which independently reconciles native ownership.
+  return !status.live && ["cancelled", "failed", "completed"].includes(status.state) ? status : false;
+}, "native owner must reconcile after transport loss", 20_000);
+```
+
+Complete failing-test diagnostic payload (JSON pretty-printed, paths unchanged):
+
+```text
+DOC-PLUGINS-13 client pipe loss: recover a lost spawn response without rerun or acceptance (343.913663ms)
+AssertionError [ERR_ASSERTION]:
+{
+  "selector": "/tmp/delta-terminal-.delta-fs-rb2Jwc/plugin-disconnect-QRkJUh/state/f0e7b106-147b-4847-9a59-11b22397276f/stage",
+  "project": "/tmp/delta-terminal-.delta-fs-rb2Jwc/plugin-disconnect-QRkJUh/project",
+  "stage": "/tmp/delta-terminal-.delta-fs-rb2Jwc/plugin-disconnect-QRkJUh/state/f0e7b106-147b-4847-9a59-11b22397276f/stage",
+  "exit_code": 1,
+  "signal": null,
+  "interrupted": false,
+  "stdout": "",
+  "stderr": "Error: owning Session control endpoint unavailable\n",
+  "truncated": false
+}
+1 !== 0
+at ok (plugins/test/disconnect.native.mjs:10:10)
+at plugins/test/disconnect.native.mjs:87:33
+at async Object.until (plugins/test/disconnect-fixture.mjs:74:22)
+at async TestContext.<anonymous> (plugins/test/disconnect.native.mjs:86:19)
+at async Test.run (node:internal/test_runner/test:1409:7)
+at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+generatedMessage: false, code: ERR_ASSERTION, actual: 1, expected: 0, operator: strictEqual
+```
+
+This is an unavailable control endpoint during owner shutdown, not a successfully
+parsed unknown state. Round2's cleanup hook completed without a cleanup failure.
+Parent was notified before any change to that area; none was made. The owning
+worker must investigate harness-versus-product behavior separately. A passing
+round4 filter does not supersede the **25/26 aggregate result**.
+
+#### Resources, cleanup and gaps
+
+- All recorded workload pre/post gates passed: MemAvailable
+  19,756,699,648–19,994,103,808 bytes (18.40–18.62 GiB), workspace disk free
+  345,173,458,944–345,225,367,552 bytes (~321.46–321.52 GiB), load1
+  0.270–1.093. Final post-cleanup: 19,923,333,120 bytes available,
+  345,199,153,152 bytes disk free, load1 0.912.
+- New fixture registers teardown before attempting native run, discovers even a
+  run that fails before returning its selector, and requires terminal/live=false
+  status plus native drop before removal. Already-applied drop refusal is accepted
+  only with explicit native applied state and zero changed files. Unknown or
+  unresolvable ownership preserves the root with an error. Pending approval is
+  rejected/settled before cleanup; approval readiness races operation settlement
+  so early preview errors cannot leave a readiness-only wait.
+- New fixture roots are bounded; private HOME/TMP is owned outside the project.
+  Each successful teardown checks current-namespace mountinfo and current-UID
+  process command lines for its exact root before removal. The full suite's
+  output-directory option retained existing documentation fixtures; the final
+  guarded cleanup separately reconciled all **13** native Sessions there
+  (completed/failed/cancelled, never live), successfully dropped each, scanned
+  owned processes/mounts and removed `.round4-owned`. No unrelated kill, cleanup,
+  native private-state mutation, or uncertain-root recursive removal was used.
+- Initial harness probes used tool-owned terminal temporary roots. Two
+  already-applied fixtures were conservatively preserved by their failed cleanup;
+  on the next terminal call those tool-lifetime roots were already absent, so no
+  later explicit deletion was claimed for them. They were completed Sessions;
+  the failure was refusing an impossible drop after all candidates were applied.
+- Same compatible prebuilt CLI as round1, no rebuild/source provenance claim.
+  Linux Host only. No cloud/model/credential use, host/network/system changes,
+  installs, Git commit/push/merge, publication or semspec changes.
+- Next scenario after investigating the inherited disconnect failure: two
+  projects/tasks with overlapping relative filenames and simultaneous approvals,
+  checking exact selector/project binding without a `last` fallback.
+
+### Round 3 final follow-up validation
+
+No workloads were launched while round4 owned the slot.
+
+The coordinator subsequently released the sole slot for final follow-up checks.
+The same exact-worktree mise trust/noninteractive settings, explicit serial
+Node shim, `nice -n 10 timeout -k 30 120`, jobs2/threads1 and resource guards
+were used. TMPDIR was an owned **durable worktree directory**,
+`.round3-validation-20261108T015614/tmp`, so uncertain fixtures would not depend
+on the lifetime of terminal scratch.
+
+| UTC interval | Command/check | Result |
+| --- | --- | --- |
+| 01:56:27–01:56:49 | `mise run test-agent-plugins` | **39 passed**, 0 failed/skipped/cancelled; 22.290s, including both new early-preview-failure tests |
+| 01:56:54–01:56:57 | Scoped `mise run test-agent-plugins-native` with the prior binary and `ROUND3_TEST_PATTERN='DOC-PLUGINS-14\|DOC-PLUGINS-15'` | Two approval-conflict tests failed only because the diagnostic matcher expected the word `conflict`; two refusal/recovery cases passed. Native-aware teardown safely removed all four case roots despite these assertion failures |
+| 01:57:10–01:57:14 | Same scoped native task after correcting the diagnostic assertion | **Four actual approval cases passed**, 0 failed; 3.506s. Node's six passes include two empty unmatched file entries, not extra native scenarios; disconnect cases did not execute |
+| 01:57:14–01:57:33 | `git diff --check`, owned processes/mounts/records scan and cleanup | Diff check passed, zero associated processes/mounts, no native task/run records or case roots remained; owned durable validation root removed |
+
+The conflict assertion now checks the exact blocker, including the original
+project's absolute `src.txt` path:
+`overlay apply failed: target changed after staging at PATH; refusing to overwrite concurrent changes`.
+It still requires original selector/paths/project, exactly one actual native
+apply call, uninterrupted exit 3, structured `blocked` status and original
+source stage. This is a stronger match to observed native conflict authority,
+not acceptance of arbitrary errors.
+
+All six workload resource checks passed: MemAvailable
+19,684,761,600–19,927,715,840 bytes, disk free
+345,143,517,184–345,222,062,080 bytes, load1 0.730–1.340. The first cleanup
+inspection conservatively stopped on the owned Node compile-cache directory
+instead of treating it as an unexpected native fixture; an explicit second
+check confirmed only that cache and one retained portable fake-runtime HOME
+remained, with no task/run records. Only those owned artifacts/root were then
+removed. No global cleanup or unrelated processes were touched.
+
+Sole TEST/BUILD slot released to the coordinator at **01:57:33 UTC**. No test
+logic changed after the final passing checks; only this results entry changed.
+The native source-provenance, upstream host-version alignment and mocked-UI
+limitations above remain unchanged.
+
+### Publication and review checkpoint
+
+- Round 3's ownership/gate fixes passed static rereview and final execution.
+  The diagnostic matcher was subsequently corrected to the exact observed
+  concurrent-write blocker; no production changes were needed.
+- Round 4's passing scenario evidence above predates static review findings:
+  all native operations must be cancelled/joined before teardown, and portable
+  approval waits must handle early settlement. Those fixture fixes are pending;
+  round 4 coverage is not yet publication-ready.
+- Round 5 is investigating the preserved native status failure with a
+  deterministic source regression. No causal attribution to the old prebuilt
+  binary is established.

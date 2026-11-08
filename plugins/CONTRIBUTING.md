@@ -46,11 +46,21 @@ missing example; they do not approve semantic specifications or edit review ledg
 | DOC-PLUGINS-11 | A project and the default durable stage can both live under HOME | Real native lifecycle in an isolated user HOME; private task HOME avoids inherited FUSE submounts |
 | DOC-PLUGINS-12 | Cancelling an active task retains its exact selector and staged candidates without publication | Real native cancellation after a staged write; reopened status, review, read-only preview and drop |
 | DOC-PLUGINS-13 | Active MCP EOF, truncated-frame EOF, abrupt server death and client pipe loss retain candidates and refuse live mutations | Real native stdio faults before the spawn response, explicit private-record selector discovery, reopened reconciliation/review/preview/drop; separate fake-runtime test verifies output loss cancels even with input still open |
+| DOC-PLUGINS-14 | Host edits after preview still conflict at apply; changing caller input or active project does not redirect approval | Deterministically paused Pi/DSH approval callbacks, two real native projects/stages, external host edit, refusal and explicit recovery with a new approval |
+| DOC-PLUGINS-15 | Rejected, cancelled, unavailable or failed approvals preserve candidates | Pi false/throwing confirmation and DSH closed outcomes/service error/aborted signal, real native file absence and reopened review/preview after each refusal |
 
 The npm fixture verifies real package-manager installation and external runtime
 selection, not Homebrew/pip installation, native file semantics or a published registry release.
 The native suite never substitutes a fake executable or skips unavailable
 staging. CI retains native case directories on failure.
+
+Approval-race fixtures mock host registration and approval callbacks, not a real
+interactive Pi or DSH UI. Pi receives a command string and parses its own input.
+The DSH fixture models detached, frozen JSON arguments as described by the
+[upstream tool-author contract](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md).
+That upstream `master` documentation is not a revalidation of the pinned host
+release. Mutating a direct `registerDsh` callback's borrowed object outside that
+dispatch contract is not evidence of a normal-host approval bypass.
 
 Ordinary PR CI runs portable contracts on Linux/macOS with Node 22.19.0 and 24,
 actual pinned Pi/DSH loader checks, and the strict native suite in the Linux CLI
