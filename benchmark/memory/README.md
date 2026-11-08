@@ -332,3 +332,85 @@ The documentation before cleanup is preserved in
 Original reports, failed executions, frozen sources and raw curves remain in their
 own directories. Historical and incomplete measurements are excluded from the
 current comparison. This documentation cleanup starts no new measurements.
+
+## PID-1 allocator reclaim and whole-VMM memory
+
+B-ALLOCATOR-RECLAIM-ENG asks whether explicitly trimming an application's cached
+free heap reduces the whole VM's host process footprint. It is an engineering
+experiment, not a published user benchmark. The Apple Silicon observer reads
+`proc_pid_rusage` physical footprint and resident size for the one VMM process;
+the Python coordinator and shared host caches/kernel costs are outside that
+scope. These are actual process counters, not configured guest capacity.
+
+Use a fresh private minimal glibc rootfs, containing the matching dynamic loader,
+libc, libpthread and libdl in `/lib`. The native loader must be executable. The
+retained qualification used copies from Ubuntu 20.04/glibc 2.31, with file mode
+0755. Do not expose an existing writable image as the experiment root.
+The runner copies that input into each trial's new root. It boots the current
+embedded PID 1, uses real vsock Start/ReclaimAllocator requests, and stages the
+payload/SO as virtual files. The harness does not patch product source or inject
+an alternative reclamation policy; it measures the selected VMM build's policy.
+
+Build outside the measurement window (Apple Silicon example):
+
+```sh
+cargo build --locked --release -p pvisor-vm --lib
+mkdir -p benchmark/memory/.data/allocator-build
+rustc --edition=2024 -C opt-level=2 -C panic=abort -C lto=thin \
+  benchmark/memory/allocator_reclaim_vm.rs -L dependency=target/release/deps \
+  --extern pvisor_vm=target/release/libpvisor_vm.rlib \
+  -o benchmark/memory/.data/allocator-build/vmm
+codesign --force --sign - --entitlements crates/pvisor/macos-hypervisor.entitlements \
+  benchmark/memory/.data/allocator-build/vmm
+PVISOR_RECLAIM_LIB_DIR=/path/to/guest/lib mise exec -- sh tools/allocator-reclaim/build.sh aarch64 /tmp/reclaim
+cp /tmp/reclaim/payload benchmark/memory/.data/allocator-build/payload
+```
+
+The input root must be prepared before either command below. Supply the selected
+firmware explicitly. Choose a short fresh output path because UNIX socket paths
+have a platform limit:
+
+```sh
+PVISOR_GUEST_RECLAIM=1 python3 benchmark/memory/allocator_reclaim.py \
+  --vmm benchmark/memory/.data/allocator-build/vmm \
+  --firmware target/release/libkrunfw.5.dylib \
+  --payload benchmark/memory/.data/allocator-build/payload \
+  --so /tmp/reclaim/libpvisor-reclaim.so \
+  --root benchmark/memory/.data/allocator-build/root \
+  --output benchmark/memory/.data/allocator-preflight --preflight
+# Repeat without --preflight and with a different fresh output for five rounds.
+```
+
+Each round randomizes the four size/trim conditions. Every VM has 512 MiB and two
+vCPUs. Four allocation threads share one arena, with automatic trim and mmap
+allocation disabled so `free` retains the controlled 64/256 MiB heap. A live guard
+and full-byte oracle protect correctness. Inspect-only and trim arms both preload
+the same SO and use the same control path. Fixed five-second pre-request and
+15-second post-request windows use 250 ms observations; the final two seconds'
+median defines each phase. The observer rejects other VMs/builds, missing
+retained heap, unexpected exits, invalid output and changed artifacts; it keeps
+all valid slow/no-benefit samples. Kernel free-page reporting is asynchronous.
+A separate refill/readback follows each observation. After refill, the observer
+records host usage, issues another trim/inspect with the allocation still live,
+waits three seconds and verifies every byte and the guard again before normal
+payload exit. This correctness tail does not enter the primary 5/15-second result.
+
+Every batch freezes its harness, component source hashes, binary/firmware/library
+hashes, input modes, host identity and git state. Per-trial protocol frames,
+VMM logs, guest counters and raw host curves remain in `.data/`. Preflight,
+failed and formal batches stay separate. Summary fields contain paired extra
+host-byte drops relative to inspect and bootstrap 95% intervals; no tail latency
+or production-density conclusion is supported. Lack of an immediate host drop
+must remain a result even when guest RssAnon falls by the entire payload.
+
+Observer/protocol contracts:
+`mise run test-py -- discover -s benchmark/memory -p test_allocator_reclaim.py`.
+
+The engineering results are retained in
+[allocator_reclaim_results.md](allocator_reclaim_results.md). The original
+`ar-f1` cohort measures the old MADV_FREE policy; the HVF mapping repair is
+qualified separately in fresh `ar-fix-*` cohorts, never merged with that baseline.
+The ordinary anonymous-RAM path pauses vCPUs, drains device accesses, unmaps HVF,
+replaces reported full host pages with anonymous zero mappings, remaps HVF and
+only then completes the free-page report. File/COW and cold-pager ownership paths
+are excluded. Reuse must restore host accounting and preserve live bytes.

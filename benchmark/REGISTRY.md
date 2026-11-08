@@ -977,6 +977,15 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 对每个适配器使用固定的原生格式样本，校验前缀结构、工具参数和观测内容，同时校验工作区没有被修改。
 - **入口脚本：** `benchmark/replay/replay.md`（七个 bench cell；`prepare.py` 冻结和预检，semspec bench 与公共 runtime 测量，hooks 逐次验证；旧公开绑定保留历史时钟，拒绝被新 Python 口径覆盖）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
 
+### B-ALLOCATOR-RECLAIM-ENG：预加载回收能否降低整台 VM 的宿主占用 {#b-allocator-reclaim-eng}
+
+- **角色：** engineering A/B；仅保存工程实验，不发布用户 benchmark。
+- **Motivation：** 判断 PID-1 控制的 malloc_trim 是否经空闲页报告实际降低 VMM 的内存，而非只降低 guest 进程 RSS。
+- **想要的结论：** 64/256 MiB 已释放堆在显式回收与相同 SO 的仅查询对照下，VMM 整个进程的驻留内存/物理 footprint、guest MemAvailable/RssAnon 及回收后重分配完整性；不将配置容量或 guest RSS 当作宿主收益。
+- **实验设计：** 当前 Apple Silicon/HVF 单 VM、512 MiB/2 vCPU、最小 glibc userspace；四个分配线程、单 arena、禁用自动 trim/mmap，每页非零数据并全量验证。每轮两个大小、trim/inspect 条件预先随机排序，各条件新 VM，同样 SO/固件/二进制；先自由释放后固定 5 秒基线、15 秒观察，宿主每 250 ms 采样，阶段末 2 秒中位数作为稳定读数。五轮独立配对，报告全部样本、范围及配对 bootstrap 95% 区间，不报告尾延迟。外部观察者不在 VMM 计量范围内；物理 footprint 包含 VMM 进程及其 guest RAM，但不包含未归属该进程的宿主文件缓存和内核成本。无冷压缩/offload/去重，无全局缓存或系统设置变更。内容/退出/身份/外部构建或其他 VM 干扰失败即批次失败，保留失败证据，不剔除有效慢样本。记录宿主、来源和制品摘要，原始数据保存在 memory/.data/。
+- **入口：** `benchmark/memory/allocator_reclaim.py`，使用 `allocator_reclaim_vm.rs` 公共 VM API runner 和 `tools/allocator-reclaim/payload.rs`；宿主回收默认关闭，实验须显式设置 `PVISOR_GUEST_RECLAIM=1`，复现见 memory/README.md。
+- **宿主释放修复验证：** 先使用无 vCPU 的独立 HVF 映射探针比较 mapped MADV_FREE、unmap/MADV_FREE/remap 和 unmap/匿名零映射替换/remap，记录 footprint/RSS 与边界内容；只作机制诊断。修复后保持原 64/256 MiB、5/15 秒、五轮随机配对协议，新批次独立保存，不与修复前样本合并。增加跨回收周期页复用与活跃边界完整性验证，默认路径不依赖账本 reusable 标记或强制造内存压力。
+
 ### B-VM-MEMORY：VM 闲置时能省多少内存，恢复要付出什么 {#b-vm-memory}
 
 - **JSON 入口状态：** 未准备 [memory/memory.json](memory/memory.json)（拒绝测量）。

@@ -1,0 +1,37 @@
+[package]
+name = "pvisor-allocator-reclaim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Optional guest artifacts use cross-link settings separate from the host workspace.
+[workspace]
+
+[lib]
+path = "reclaim.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "=0.2.191"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+strip = "symbols"
+
+[[bin]]
+name = "subject"
+path = "subject.rs"
+
+[[bin]]
+name = "static-subject"
+path = "uninstrumented.rs"
+
+[[bin]]
+name = "payload"
+path = "payload.rs"
+
+[[example]]
+name = "interposer"
+path = "interposer.rs"
+crate-type = ["cdylib"]

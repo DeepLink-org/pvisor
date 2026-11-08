@@ -75,12 +75,18 @@ impl ReadHints {
 pub(crate) struct SharedFreeReports(Mutex<Option<Arc<FreeReport>>>);
 pub(crate) struct FreeReport {
     pub(crate) ranges: Vec<(u64, usize)>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) submitted: Instant,
     done: AtomicBool,
     event: Arc<crate::utils::eventfd::EventFd>,
 }
 impl FreeReport {
     pub(crate) fn is_done(&self) -> bool {
         self.done.load(Ordering::Acquire)
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn retry(&self) -> std::io::Result<()> {
+        self.event.write(1)
     }
 }
 impl SharedFreeReports {
@@ -91,6 +97,8 @@ impl SharedFreeReports {
     ) -> Arc<FreeReport> {
         let report = Arc::new(FreeReport {
             ranges,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            submitted: Instant::now(),
             done: AtomicBool::new(false),
             event,
         });
@@ -160,6 +168,19 @@ impl Drop for ColdFaultLease<'_> {
 }
 
 impl MemoryGate {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn free_reports(&self) -> Option<Arc<SharedFreeReports>> {
+        self.state.lock().unwrap().free_reports.clone()
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn ordinary_balloon_reclaim_allowed(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.closed
+            && state.active == 0
+            && !state.balloon_discard_disabled
+            && state.prepare.is_none()
+            && !state.dedup_advised
+    }
     /// Optional maintenance must skip retained device buffers without waiting.
     /// A busy result leaves the gate unchanged; success blocks new accesses.
     pub fn try_close(&self) -> Result<bool, &'static str> {
@@ -361,9 +382,19 @@ fn registry() -> &'static Registry {
 fn key(mem: &GuestMemoryMmap) -> usize {
     mem.iter().next().expect("device memory is empty").as_ptr() as usize
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn ordinary_free_reports(setting: Option<&std::ffi::OsStr>) -> Option<Arc<SharedFreeReports>> {
+    (setting == Some(std::ffi::OsStr::new("1"))).then(Default::default)
+}
+
 /// Register before device activation. Weak entries do not retain terminated VMs.
 pub fn register(mem: &GuestMemoryMmap) -> Arc<MemoryGate> {
     let gate = Arc::new(MemoryGate::default());
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        gate.state.lock().unwrap().free_reports =
+            ordinary_free_reports(std::env::var_os("PVISOR_GUEST_RECLAIM").as_deref());
+    }
     let mut registry = registry().lock().unwrap();
     registry.retain(|_, gate| gate.strong_count() != 0);
     registry.insert(key(mem), Arc::downgrade(&gate));
@@ -435,6 +466,16 @@ impl Drop for HostRead {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn ordinary_free_reports_require_explicit_opt_in() {
+        use std::ffi::OsStr;
+        for setting in [None, Some(""), Some("0"), Some("true"), Some("1 ")] {
+            assert!(ordinary_free_reports(setting.map(OsStr::new)).is_none());
+        }
+        assert!(ordinary_free_reports(Some(OsStr::new("1"))).is_some());
+    }
+
     #[test]
     fn read_hints_align_bound_and_split_without_payload_access() {
         let hints = ReadHints::default();

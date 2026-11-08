@@ -168,6 +168,44 @@ concurrent exec routing; native CLI acceptance exercises the same behavior in a 
 
 ### Native daemon operations
 
+The host-only adapter exposes the opt-in experimental `ReclaimAllocator`
+operation for a live registered PID/generation. Set
+`GuestConfig.process.allocator_reclaim` to an absolute guest path to the matching
+`libpvisor-reclaim.so` before launch. The host stages that library in the image or
+an existing payload/share; the ordinary process launcher appends it to LD_PRELOAD
+without replacing existing preloads. No option means no preload or channel.
+This option is inherited by control-adapter exec/Start launches, each of which
+gets its own socketpair and registered process identity.
+
+PID 1 owns one endpoint of a private SOCK_SEQPACKET socketpair; the preloaded SO
+owns a persistent detached worker on the other. `trim=false` checks the allocator;
+`trim=true` calls glibc malloc_trim(0) in that worker while application threads
+continue normally. No ptrace, shellcode, registers, syscall replay, signal handler
+or application safe point is used. The worker blocks on the socket between
+requests and has a 256 KiB stack reservation. The SO must match the target ABI;
+the reference build uses the glibc 2.17 ABI, with no 2.34 layout requirement.
+Static and secure-execution binaries can ignore preload; incompatible libraries
+can prevent workload startup. Only opt in supported dynamic glibc workloads.
+
+The channel descriptor intentionally survives same-PID exec. The constructor
+recreates the worker when preload, the private binding environment and descriptor
+survive. An atfork child handler only validates/closes the inherited socket;
+it never starts a thread or calls the allocator. Fork descendants have no
+independent control. A fork/vfork child that execs rejects the parent's binding;
+an inode check prevents closing an unrelated descriptor that reused the old FD.
+Clearing the environment, closing descriptors, or switching to an unsupported
+executable loses control. An exec during an admitted request may lose its reply.
+
+PID 1 validates packet size, magic, request sequence and kernel SCM_CREDENTIALS.
+The process registry fences PID reuse/reaping during a request. Each response wait
+is bounded to two seconds. An allocator/protocol/timeout error closes and retires
+that registered channel, so stale replies cannot satisfy a later request. The
+workload continues: there is no stop/kill or cancellation of an in-flight trim.
+A timed-out call may still complete. The channel is cooperative instrumentation,
+not a security boundary against the target manipulating its own descriptors or
+libraries. Main exit retains normal descendant teardown and shared reaping.
+See the [SO build, activation and native tests](../../tools/allocator-reclaim/README.md).
+
 The optional control adapter also accepts tracked `Start` requests with explicit
 `Started { pid }` acknowledgements, PID-fenced `Signal`/`Resize`, guest-local
 `File` operations and `Info` observations. These use the same process launcher

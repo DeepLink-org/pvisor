@@ -71,6 +71,29 @@ pub enum Request {
     },
     /// Return guest launch binding and actual guest memory/CPU observations.
     Info {},
+    /// Cooperatively inspect or trim a registered child's allocator.
+    /// Requires ProcessConfig::allocator_reclaim at launch. Only host-CID peers
+    /// may request this operation; no executable payload or address is accepted.
+    /// PID 1 exchanges a bounded request with a persistent preload worker over
+    /// its private socketpair. Original threads continue running; no ptrace,
+    /// injected code or application safe point is used. Same-PID exec can retain
+    /// the channel; fork descendants do not inherit independent control.
+    /// Value replies contain status, pid, allocator and worker_tid. Trim adds
+    /// malloc_trim_result and anonymous RSS before/after (null if unavailable).
+    /// Guest counters do not measure host physical-memory savings.
+    /// Failure replies Failure; disconnecting does not cancel an admitted call.
+    ReclaimAllocator {
+        /// Live registered guest child PID; PID 1 and unregistered PIDs fail.
+        pid: u32,
+        /// Registration identity fencing guest PID reuse; stale values fail.
+        generation: u64,
+        /// False inspects; true calls malloc_trim(0) in the preload worker.
+        /// One request executes at a time. Responses have a two-second wait
+        /// budget. Any channel/protocol/allocator error retires the channel;
+        /// the target is neither stopped nor killed. A timed-out call may still
+        /// complete, and cannot safely be canceled. Further requests then fail.
+        trim: bool,
+    },
     /// Connect to guest loopback TCP, then exchange framed data and EOF.
     Connect {
         /// Nonzero guest TCP port.
@@ -189,7 +212,7 @@ pub enum Reply {
         /// Monotonic registration identity fencing guest PID reuse.
         generation: u64,
     },
-    /// Bounded JSON metadata from File or Info. No host paths or credentials.
+    /// Bounded JSON metadata from File, Info or ReclaimAllocator. No host paths or credentials.
     Value {
         /// Operation-specific metadata; stream transfers use Output instead.
         value: serde_json::Value,
@@ -264,5 +287,27 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"operation":"Ping","host_path":"/"}"#).is_err()
         );
+    }
+
+    #[test]
+    fn allocator_request_has_no_machine_code_or_address_input() {
+        let request = Request::ReclaimAllocator {
+            pid: 23,
+            generation: 4,
+            trim: true,
+        };
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &request).unwrap();
+        assert!(matches!(
+            read_frame::<Request>(&mut &frame[..]).unwrap(),
+            Request::ReclaimAllocator {
+                pid: 23,
+                generation: 4,
+                trim: true
+            }
+        ));
+        assert!(serde_json::from_str::<Request>(
+            r#"{"operation":"ReclaimAllocator","pid":23,"generation":4,"trim":true,"shellcode":[204]}"#
+        ).is_err());
     }
 }

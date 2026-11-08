@@ -419,12 +419,15 @@ impl<B: Backend> Builder<B> {
         }
         idle.set_offload_minimum(self.idle_offload_minimum);
         idle.enable(self.guest_idle);
-        on_ready(VmmHandle {
+        let handle = VmmHandle {
             idle,
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        })?;
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let balloon_reports = vm.lock().unwrap().device_memory_gate().free_reports();
+        on_ready(handle.clone())?;
         startup = startup.next("vm.start_worker");
         B::start_worker(&self.resources, vm.clone(), receiver)?;
         startup.complete(None);
@@ -433,6 +436,10 @@ impl<B: Backend> Builder<B> {
             events
                 .run()
                 .map_err(|e| io::Error::other(format!("VM event loop: {e:?}")))?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Some(reports) = &balloon_reports {
+                crate::balloon_reclaim::process(&handle, reports)?;
+            }
         }
     }
 }
