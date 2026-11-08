@@ -109,6 +109,16 @@ fn serve(
             },
         ),
         Request::File { request } => super::files::serve(&mut stream, request),
+        Request::ReclaimAllocator {
+            pid,
+            generation,
+            trim,
+        } => write_frame(
+            &mut stream,
+            &Reply::Value {
+                value: processes.reclaim_allocator(pid, generation, trim)?,
+            },
+        ),
         Request::Signal {
             pid,
             generation,
@@ -377,6 +387,308 @@ pub(super) fn start(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_native_control_roundtrip() {
+        reclaim_subject(None);
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_multithread_control_roundtrip() {
+        for mode in ["--threads", "--thread-churn"] {
+            reclaim_subject(Some(mode));
+        }
+    }
+
+    fn reclaim_config(mode: Option<&str>) -> GuestConfig {
+        GuestConfig {
+            argv: std::iter::once(std::env::var("PVISOR_RECLAIM_SUBJECT").expect("glibc fixture"))
+                .chain(mode.map(str::to_owned))
+                .collect(),
+            cwd: "/".into(),
+            process: Some(pvisor_guest::ProcessConfig {
+                allocator_reclaim: Some(
+                    std::env::var("PVISOR_RECLAIM_SO")
+                        .expect("preload SO")
+                        .into(),
+                ),
+                stdin: pvisor_guest::StdinMode::Pipe,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn reclaim_subject(mode: Option<&str>) {
+        let processes = Processes::default();
+        let config = reclaim_config(mode);
+        let mut spawned = processes.spawn(&config, true).unwrap();
+        let stdout = spawned.outputs.remove(0).0;
+        let main = spawned.process;
+        let pid = main.id();
+        let generation = main.generation();
+        let registry = processes.clone();
+        let reaper = std::thread::spawn(move || registry.supervise(main).unwrap());
+        let result = (|| -> io::Result<serde_json::Value> {
+            use std::io::BufRead;
+            let mut ready = String::new();
+            std::io::BufReader::new(stdout).read_line(&mut ready)?;
+            if !ready.starts_with("ready pid=") {
+                return Err(io::Error::other("subject did not become ready"));
+            }
+            assert!(
+                processes
+                    .reclaim_allocator(pid, generation + 1, true)
+                    .is_err()
+            );
+            let mut report = serde_json::Value::Null;
+            for trim in [false, true] {
+                let (mut client, server) = UnixStream::pair()?;
+                write_frame(
+                    &mut client,
+                    &Request::ReclaimAllocator {
+                        pid,
+                        generation,
+                        trim,
+                    },
+                )?;
+                serve(
+                    server,
+                    &config,
+                    &processes,
+                    pid,
+                    &Arc::new(Mutex::new(None)),
+                )?;
+                let Reply::Value { value } = read_frame(&mut client)? else {
+                    return Err(io::Error::other("missing report"));
+                };
+                eprintln!("allocator-reclaim {mode:?}: {value}");
+                report = value;
+            }
+            let repeated = processes.reclaim_allocator(pid, generation, true)?;
+            assert_eq!(repeated["worker_tid"], report["worker_tid"]);
+            if mode.is_some() {
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+                let vm_before = status
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("VmSize:")?
+                            .split_whitespace()
+                            .next()?
+                            .parse::<u64>()
+                            .ok()
+                    })
+                    .unwrap();
+                let fd_before = std::fs::read_dir(format!("/proc/{pid}/fd"))?.count();
+                for _ in 0..5 {
+                    processes.reclaim_allocator(pid, generation, true)?;
+                }
+                if mode == Some("--threads") {
+                    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+                    let vm_after = status
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("VmSize:")?
+                                .split_whitespace()
+                                .next()?
+                                .parse::<u64>()
+                                .ok()
+                        })
+                        .unwrap();
+                    if vm_after > vm_before + 1024
+                        || std::fs::read_dir(format!("/proc/{pid}/fd"))?.count() != fd_before
+                    {
+                        return Err(io::Error::other(
+                            "repeated reclaim retained mappings or file descriptors",
+                        ));
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            Ok(report)
+        })();
+        let _ = processes.signal(pid, libc::SIGTERM);
+        let code = reaper.join().unwrap();
+        let report = result.unwrap();
+        assert_eq!(
+            code, 143,
+            "subject should remain alive with its live allocation intact"
+        );
+        assert_eq!(report["status"], "trimmed");
+        assert_ne!(
+            report["worker_tid"], report["pid"],
+            "trim must run in the worker"
+        );
+        assert_eq!(report["malloc_trim_result"], 1);
+        assert!(
+            report["rss_anon_before_bytes"].as_u64().unwrap()
+                > report["rss_anon_after_bytes"].as_u64().unwrap() + (32 << 20)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_cpu_bound_process() {
+        reclaim_subject(Some("--busy"));
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_preserves_a_blocked_read() {
+        use std::io::BufRead;
+        let processes = Processes::default();
+        let config = reclaim_config(Some("--blocked-read"));
+        let mut spawned = processes.spawn(&config, true).unwrap();
+        let mut output = std::io::BufReader::new(spawned.outputs.remove(0).0);
+        let pid = spawned.process.id();
+        let generation = spawned.process.generation();
+        let registry = processes.clone();
+        let reaper = std::thread::spawn(move || registry.supervise(spawned.process).unwrap());
+        let result = (|| -> io::Result<()> {
+            let mut line = String::new();
+            output.read_line(&mut line)?;
+            processes.reclaim_allocator(pid, generation, true)?;
+            let mut input = spawned.input.take().unwrap();
+            input.write_all(b"X")?;
+            drop(input);
+            line.clear();
+            output.read_line(&mut line)?;
+            if line != "read-ok\n" {
+                return Err(io::Error::other("read was skipped or replayed incorrectly"));
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = processes.signal(pid, libc::SIGTERM);
+        }
+        assert_eq!(reaper.join().unwrap(), 0);
+        result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_fork_exec_preserves_parent_control() {
+        reclaim_lifecycle(false);
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_closed_channel_retires_without_stopping_target() {
+        reclaim_lifecycle(true);
+    }
+
+    fn reclaim_lifecycle(close: bool) {
+        use std::io::BufRead;
+        let processes = Processes::default();
+        let mut spawned = processes
+            .spawn(&reclaim_config(Some("--lifecycle")), true)
+            .unwrap();
+        let mut output = std::io::BufReader::new(spawned.outputs.remove(0).0);
+        let mut input = spawned.input.take().unwrap();
+        let pid = spawned.process.id();
+        let generation = spawned.process.generation();
+        let registry = processes.clone();
+        let reaper = std::thread::spawn(move || registry.supervise(spawned.process).unwrap());
+        let mut line = String::new();
+        let result = (|| -> io::Result<()> {
+            output.read_line(&mut line)?;
+            assert!(line.starts_with("ready pid="));
+            let first = processes.reclaim_allocator(pid, generation, true)?;
+            if close {
+                input.write_all(b"C")?;
+                line.clear();
+                output.read_line(&mut line)?;
+                assert_eq!(line, "channel-closed\n");
+                assert!(processes.reclaim_allocator(pid, generation, true).is_err());
+                assert!(processes.reclaim_allocator(pid, generation, true).is_err());
+                input.write_all(b"R")?;
+                line.clear();
+                output.read_line(&mut line)?;
+                assert_eq!(line, "fork-parent-ok\n");
+            } else {
+                for _ in 0..5 {
+                    for command in *b"FXV" {
+                        input.write_all(&[command])?;
+                        let report = processes.reclaim_allocator(pid, generation, true)?;
+                        assert_eq!(report["worker_tid"], first["worker_tid"]);
+                        if command == b'X' || command == b'V' {
+                            line.clear();
+                            output.read_line(&mut line)?;
+                            assert_eq!(
+                                line,
+                                if command == b'X' {
+                                    "fork-exec-child-ok\n"
+                                } else {
+                                    "vfork-exec-child-ok\n"
+                                }
+                            );
+                        }
+                        line.clear();
+                        output.read_line(&mut line)?;
+                        assert_eq!(line, "fork-parent-ok\n");
+                    }
+                }
+                input.write_all(b"E")?;
+                line.clear();
+                output.read_line(&mut line)?;
+                assert!(line.starts_with("ready pid="));
+                let report = processes.reclaim_allocator(pid, generation, true)?;
+                assert_eq!(report["pid"], pid);
+                assert_ne!(report["worker_tid"], first["worker_tid"]);
+                assert_eq!(report["malloc_trim_result"], 1);
+            }
+            Ok(())
+        })();
+        drop(input);
+        if result.is_err() {
+            let _ = processes.signal(pid, libc::SIGKILL);
+        }
+        assert_eq!(reaper.join().unwrap(), 0);
+        result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_rejects_interposed_malloc() {
+        use std::io::BufRead;
+        let processes = Processes::default();
+        let mut config = reclaim_config(None);
+        config.env.insert(
+            "LD_PRELOAD".into(),
+            std::env::var("PVISOR_RECLAIM_INTERPOSER").unwrap(),
+        );
+        let mut spawned = processes.spawn(&config, true).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(spawned.outputs.remove(0).0)
+            .read_line(&mut line)
+            .unwrap();
+        let result =
+            processes.reclaim_allocator(spawned.process.id(), spawned.process.generation(), true);
+        let _ = processes.signal(spawned.process.id(), libc::SIGTERM);
+        assert_eq!(processes.supervise(spawned.process).unwrap(), 143);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    #[ignore = "requires Linux and preload/glibc fixtures; see guest README"]
+    fn allocator_reclaim_static_target_times_out_without_stopping() {
+        use std::io::BufRead;
+        let processes = Processes::default();
+        let mut config = reclaim_config(None);
+        config.argv = vec![std::env::var("PVISOR_RECLAIM_STATIC").unwrap()];
+        let mut spawned = processes.spawn(&config, true).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(spawned.outputs.remove(0).0)
+            .read_line(&mut line)
+            .unwrap();
+        let result =
+            processes.reclaim_allocator(spawned.process.id(), spawned.process.generation(), true);
+        let _ = processes.signal(spawned.process.id(), libc::SIGTERM);
+        assert_eq!(processes.supervise(spawned.process).unwrap(), 143);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
 
     #[test]
     fn tcp_tunnel_guest_eof_releases_the_input_reader() {

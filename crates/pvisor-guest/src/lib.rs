@@ -120,6 +120,17 @@ pub struct ProcessConfig {
     /// Optional PTY dimensions, rows then columns, both nonzero. A PTY combines
     /// output streams and requires a new session.
     pub tty: Option<[u16; 2]>,
+    /// Opt-in absolute guest path to the glibc allocator-reclaim preload SO.
+    /// The launcher appends it to LD_PRELOAD and supplies a private socketpair.
+    /// Each registered process gets one worker; same-PID exec retains control
+    /// when the environment/descriptor survive. Fork children close the channel
+    /// and are not independently controlled. Static/secure-execution programs
+    /// or programs that close the descriptor may not provide reclamation;
+    /// requests then fail without stopping the workload. The SO must match the
+    /// target ABI; an incompatible preload can cause workload startup to fail.
+    /// Omission creates no channel and makes no preload changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocator_reclaim: Option<PathBuf>,
     /// Create the working directory before spawning; false requires it to exist.
     pub create_workdir: bool,
 }
@@ -217,6 +228,23 @@ impl GuestConfig {
         for path in std::iter::once(&self.cwd).chain(self.workspace.iter()) {
             CString::new(path.as_os_str().as_encoded_bytes())
                 .map_err(|_| invalid("guest paths contain NUL"))?;
+        }
+        if let Some(path) = self
+            .process
+            .as_ref()
+            .and_then(|options| options.allocator_reclaim.as_ref())
+        {
+            let path = path
+                .to_str()
+                .ok_or_else(|| invalid("invalid reclaim SO path"))?;
+            if !guest_absolute(Path::new(path))
+                || path.contains(['\0', ':', '$'])
+                || path.chars().any(char::is_whitespace)
+            {
+                return Err(invalid(
+                    "reclaim SO needs an absolute loader-safe guest path",
+                ));
+            }
         }
         if self
             .agent
@@ -378,6 +406,38 @@ impl GuestConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reclaim_preload_is_optional_and_validates_loader_paths() {
+        let mut config: GuestConfig =
+            serde_json::from_str(r#"{"argv":["/bin/true"],"env":{},"cwd":"/"}"#).unwrap();
+        assert!(config.process.is_none());
+        config.process = Some(ProcessConfig::default());
+        assert!(
+            serde_json::to_value(&config).unwrap()["process"]
+                .get("allocator_reclaim")
+                .is_none()
+        );
+        for path in [
+            "relative.so",
+            "/lib/with space.so",
+            "/lib/a:b.so",
+            "/lib/$LIB.so",
+            "/lib/a\0b",
+        ] {
+            config.process.as_mut().unwrap().allocator_reclaim = Some(path.into());
+            assert!(config.command().is_err(), "{path:?}");
+        }
+        config.process.as_mut().unwrap().allocator_reclaim =
+            Some("/opt/pvisor/libreclaim.so".into());
+        config.command().unwrap();
+        let decoded: GuestConfig =
+            serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert_eq!(
+            decoded.process.unwrap().allocator_reclaim.unwrap(),
+            Path::new("/opt/pvisor/libreclaim.so")
+        );
+    }
 
     #[test]
     fn guest_paths_use_linux_syntax_on_every_host() {

@@ -137,13 +137,20 @@ impl Balloon {
                 let advice = libc::MADV_DONTNEED;
                 #[cfg(target_os = "macos")]
                 let advice = libc::MADV_FREE;
-                unsafe {
+                // SAFETY: the descriptor refers to guest-owned free RAM under this lease.
+                if unsafe {
                     libc::madvise(
                         host_addr as *mut libc::c_void,
                         desc.len.try_into().unwrap(),
                         advice,
                     )
-                };
+                } != 0
+                {
+                    warn!(
+                        "balloon: host discard failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
             }
 
             have_used = true;

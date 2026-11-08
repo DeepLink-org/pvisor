@@ -1898,3 +1898,27 @@ attributed to capture. Byte contents, file offsets, unchanged source allocation
 and sparse destination checks remain enforced. KVM entry-failure diagnostics
 distinguish the host CPU returned by KVM from the runtime's vCPU ID; entry
 failures remain fatal.
+
+## Apple Silicon 的空闲页实际释放
+
+普通匿名私有 RAM 的 virtio-balloon free-page reporting 通过事件循环中的
+映射事务处理。设备先保留描述符链，不提交 used ring；回调返回、释放设备租约后，
+运行时复用同一个控制锁暂停全部 vCPU，并通过 RAM gate 排空设备访问。只对报告
+范围内完整的宿主页解除 HVF GPA 映射，用 MAP_FIXED 匿名零映射替换原 HVA，再建立
+HVF 映射。HVA 所有权和地址保持不变，空闲页不复制、不写回。事务完成并恢复运行后
+才确认报告，guest 在此之前不能复用这些页。
+
+这条默认路径不使用 MADV_FREE_REUSABLE 的 reusable 账本标记，也不只依赖
+MADV_FREE 建议：新零映射会实际丢弃原驻留/压缩页面，guest 后续访问按需分配并正常
+计费。相邻/重叠报告先合并，不跨 RAM region；范围溢出、越界或跨 region 的报告
+保守拒绝。未被完整报告的 16 KiB 宿主页边缘不会被改动。
+
+文件/COW backing、不可变内核/设备窗口、启用 RAM preparation/cold pager 或去重
+advice 的实例保留原有所有权策略，不进入匿名零映射替换。设备忙时通过已有事件
+通知重试，预算两秒；持续暂停/繁忙则跳过本次 advisory discard 并归还报告，避免
+无限占住 guest 空闲页。不添加轮询线程或空闲定时器。HVF unmap、零映射替换或 remap
+中途失败会终止独立 runner，绝不继续执行部分变更的映射。Linux 的既有 discard
+策略不变；建议调用失败现在有日志。
+
+工程验证及 64/256 MiB 整个 VMM 的 footprint/RSS 对照见
+[allocator reclaim 实验](../../benchmark/memory/README.md#pid-1-allocator-reclaim-and-whole-vmm-memory)。

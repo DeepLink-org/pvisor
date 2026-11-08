@@ -1,4 +1,5 @@
 benchmark_id,role,entry,status
+B-ALLOCATOR-RECLAIM-ENG,engineering A/B,memory/allocator_reclaim.json,explicit-python-phase-memory
 B-LAZY-STARTUP,user-facing,storage/lazy_local_reads.json,explicit-python-lazy-local-reads
 B-LAZY-STARTUP,user-facing,storage/lazy_storage.json,explicit-python-lazy-benefits
 B-LAZY-STARTUP,user-facing,storage/lazy_runtime.json,explicit-python-lazy-benefits

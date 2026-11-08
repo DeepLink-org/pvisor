@@ -218,6 +218,19 @@ class RegistryTests(unittest.TestCase):
                 )
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
+            if row["status"] == "explicit-python-phase-memory":
+                self.assertEqual(row["benchmark_id"], "B-ALLOCATOR-RECLAIM-ENG")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "memory/allocator_reclaim.json")
+                self.assertEqual(
+                    table,
+                    {
+                        "allocator-reclaim": "$ python3 @REPO@/benchmark/memory/allocator_reclaim.py "
+                        "--vmm @VMM@ --firmware @FIRMWARE@ --payload @PAYLOAD@ --so @SO@ --root @ROOTFS@ --output @OUTPUT@"
+                    },
+                )
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             if row["status"] == "explicit-python-paired-library-curves":
                 self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
                 self.assertEqual(row["role"], "engineering A/B")
