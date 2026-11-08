@@ -1997,3 +1997,660 @@ post-review coverage is four native passes plus four helper passes; earlier
 passes are not substituted for those stronger checks. The previously listed
 Linux-only/MCP/UI/platform limitations remain unchanged. No full portable or
 native aggregate, Rust/Python suite or build was run.
+
+<!-- Repeated causal baseline from the source merge, not additional execution.
+The canonical round11 record is above; retain this excerpt only as merge context.
+### Round 11 — coding-client stops reading MCP diagnostic replies
+
+- Actual UTC: static preparation 03:00:32–03:02:20; sole TEST/BUILD slot granted
+  by coordinator after round10's 03:00:59 release. Workloads
+  03:02:33–03:07:45, final static/resource/ownership audit 03:06–03:08.
+  This is a bounded round in the requested 01:04–09:04 campaign, not evidence
+  of eight hours of testing.
+- User story: a coding-agent UI stops reading replies while diagnostic calls
+  finish and more requests arrive, then resumes, cancels or closes. No host
+  pressure, network service, install, cloud call or credential was needed.
+- Read root instructions/README, plugin README, campaign history and current
+  MCP/backend/process/summary implementation. Previous summary and disconnect
+  regression helpers were not changed. Source baseline: HEAD
+  `14f226b47c31e459a803fe5b7611854f0659cb87`.
+
+#### Confirmed queue rule and minimal repair
+
+The existing 32-request admission limit covers execution only: `send()` writes
+without observing backpressure and `finally` immediately removes the completed
+ID. The 1 MiB incoming-frame limit and subprocess capture limit of 256 KiB per
+stream do not bound completed replies accumulated in stdout's writable queue.
+Parse errors, duplicate-ID and admission-error responses also use that queue.
+This is a source-confirmed missing aggregate bound, not a claim that transient
+buffering proves a universal memory leak.
+
+Compared alternatives with the coordinator before implementation:
+pausing stdin until drain delays cancellation/EOF, while async per-send waits
+need coordinated admission/error queues and changed ID lifetime to avoid merely
+moving the unbounded queue. Chosen rule: a conservative internal 8 MiB serialized
+UTF-8 writable-backlog budget, counting `Buffer` bytes after JSON escaping.
+Every response uses this rule. On overload, emit one bounded stderr diagnostic
+(not another queued JSON-RPC error), stop input and abort all active operations.
+Allow one second for queued replies to flush; then force output termination,
+with explicit exit only after all active operations' `finally` blocks have
+settled and their supervisors have returned. Request-ID/cancellation semantics,
+incoming-frame limits and public tool authority are unchanged.
+
+A forced closure may leave a partial final frame or undelivered completion.
+That is an uncertain outcome requiring exact-selector reconciliation, never an
+automatic rerun, acceptance or disposal. README documents both this limit and
+that it does not bound total RSS, native work or client buffers.
+
+#### Deterministic evidence and exact commands
+
+New `plugins/test/transport.test.mjs` uses a fake CLI but the real MCP server,
+real child processes and OS pipes. It never claims native pipeline coverage.
+Finite diagnostics are four at a time, at most 36 × 256 KiB: 9 MiB raw plus
+approximately 9 MiB serialized reply generation, not unlimited sends or memory
+pressure. The escaped-NUL case uses six diagnostics with under 13 MiB combined
+raw/serialized generation. Run the two overload cases separately to keep each
+workload under 20 MiB fixture generation. The ordinary resume/cancel/EOF/EPIPE
+cases each use only one diagnostic. Exact complete newline JSON-RPC frames,
+unique IDs, cancellation, single task/no retry and explicit non-successful
+overload exit are asserted. Forced-close testing permits an incomplete final
+frame but still validates every complete frame.
+
+All task invocations used an owned explicit PATH shim:
+
+```sh
+# node shim, preserving the task's file arguments:
+/usr/bin/node --test --test-concurrency=1 --test-timeout=120000 \
+  --test-name-pattern="$ROUND11_FILTER" "$@"
+
+# Common task invocation (guarded before and after):
+env PATH="$PWD/.round11-owned/bin:$PATH" TMPDIR="$PWD/.round11-owned/tmp" \
+  MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0 \
+  CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1 \
+  nice -n 10 timeout -k 30 120 mise run TASK
+```
+
+| UTC | Exact task / name filter | Actual outcome |
+| --- | --- | --- |
+| 03:02:33–03:02:35 | `test-agent-plugins`; `^transport: stopped reader` on original MCP | **Red**, one actual case failed the missing-overload assertion after all 36 finite diagnostics; 9 unmatched wrappers, cleanup passed |
+| 03:02:58–03:03:00 | `test-agent-plugins`; `^transport:` before adding forced-close case | 4 actual cases passed, 9 wrappers; overload after 32 diagnostics, resumed framing/cancellation/EOF/EPIPE passed |
+| 03:04:14–03:04:29 | `test-agent-plugins`; `^transport: escaped-byte` | **Failure retained:** new case timed out at 15s. `process.stdout.destroy()` alone leaves Node's pending native stdio writes able to hold process exit. Owned cleanup resumed output/joined processes and removed fixture |
+| 03:04:55–03:04:57 | same escaped-byte task/filter, after explicit post-settlement exit repair | 1 actual case passed in 1.138s, 9 wrappers; stopped reader remained stopped until exit |
+| 03:05:05–03:05:06 | `test-agent-plugins-native`; `^coding task: Python unittest failure retains candidates without retry$` | 1 actual native case / 1 tiny Session passed, 7 unmatched wrappers |
+| 03:05:40–03:05:42 | `test-agent-plugins`; `^(transport: (?!escaped-byte)\|MCP \|lost MCP output\|shared model tool)` | 8 actual cases passed, 7 wrappers |
+| 03:06:13–03:06:15 | same portable task/filter, after strengthening EOF/EPIPE to pause output after a diagnostic | **Final 8 actual cases passed**, 7 wrappers; 0 failed/cancelled |
+| 03:07:43–03:07:45 | `test-agent-plugins`; `^transport: escaped-byte`, strengthened after coordinator review | **Final 1 actual case passed** in 2.000s, 9 wrappers; fake acknowledges cancellation but delays exit 1.8s, MCP remains alive beyond 1s flush deadline and exits 1 only after fake exit |
+
+The table's `\|` denotes regex alternation as passed in the shell filter.
+The full portable task's packed npm install case `DOC-PLUGINS-07` was excluded
+by these precise names; no loopback registry, installs or external network.
+No full portable aggregate was run. Final portable and separate escaped-byte
+checks cover all five new cases, plus existing MCP protocol/authority and lost
+output cancellation cases.
+
+The final forced-close case keeps stdout paused until MCP exits. At 1.25s after
+overload it explicitly checks that MCP is still alive and the cancelled fake task
+has not exited; only after that task's exit record may MCP exit with code 1.
+This covers both unconditional premature timer exit and a missing post-settlement
+exit trigger, rather than merely proving that idle finite diagnostics shut down.
+
+The native check is deliberately separate: existing offline Python unittest
+failure retained candidates without retry or host acceptance, reported terminal
+failed/nonlive state, reviewed and dropped the one owned Session. It used the
+existing pre-setup ownership hook and abort/join/native-terminal/drop cleanup.
+It is native backend lifecycle evidence, **not a native slow-consumer test**.
+Read-only binary before/after SHA-256, with no rebuild or overwrite:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+#### Resources, cleanup and limits
+
+- Every pre/post workload gate passed: MemAvailable
+  19,084,685,312–19,186,778,112 bytes; free disk
+  342,780,678,144–342,957,576,192 bytes; load1 0.882–1.460.
+- New fixtures register teardown before setup, immediately observe server
+  settlement/errors, cap retained stdout at 18 MiB, pending frames at 2 MiB and
+  stderr at 8 KiB. Readiness waits have eight-second deadlines and stop on server
+  exit. Fake subprocesses record start/exit, have a finite lifetime and are
+  supervised by the actual adapter; unknown outstanding fake ownership preserves
+  the fixture instead of deleting it. Teardown closes input/resumes output,
+  bounds the join and checks all fake starts have exits before root removal.
+- Final current-UID `/proc` and mount-namespace scans found no process or mount
+  referring to the owned round11 root; durable fixture tmp directory was empty,
+  including after the retained timeout failure. Native fixture cleanup passed.
+  Temporary runner/shim/log files were removed after evidence transcription.
+  `git diff --check` passed.
+- Not measured: total RSS ceilings, arbitrary client kernel buffering, Windows,
+  macOS, VM/OCI, real UI behavior, native slow-consumer cancellation or complete
+  delivery after forced output close. Serialized backlog is bounded, but one
+  frame's serialization and existing bounded execution captures are separate
+  transient allocations. Joining supervised CLI operations does not certify
+  descendant/native teardown after forced CLI termination.
+- No Rust/Python aggregate, build, lint, rustdoc, semspec changes/approvals,
+  commit, push, merge or publication. Original user stage/Pulsing and pending
+  ancestor-policy decision remain untouched. Coordinator retains review and PR121
+  publication authority.
+
+-->
+### Round 15 — independent MCP stdio loss and input-error cancellation
+
+- Actual UTC: static preparation while round14 owned the slot; parent granted
+  the sole TEST/BUILD slot after routing release04:07:19. Active work
+  2026-11-08 04:08:15–04:11:09, followed by this evidence transcription.
+  No background test ran during the static-only interval.
+- Story: a coding client loses diagnostic, response and request pipes in
+  different orders while one task is active. Preserve bounded cancellation,
+  exact task identity and uncertain outcomes; never retry or accept automatically.
+- Read root/plugin README and instructions, plugin maintenance guidance,
+  campaign history and current MCP/backend/process/transport/disconnect sources.
+  No nested plugin README/agent instructions were found. Parent approved the
+  diagnostic-only stderr policy and was notified before MCP edits.
+
+#### Negative evidence and confirmed narrow defect
+
+Real closed-stderr tests passed against unchanged production: an oversized
+unterminated frame still cancelled and joined a marker-gated task, and an owned
+`console.error` with stderr closed did not prevent healthy ping or explicit
+cancellation. Node Console's default error handling already consumes its write
+errors. No stderr defect is claimed and no stderr listener/logger rewrite was
+added.
+
+Three real pipe-order cases also passed unchanged: EOF with partial JSON before
+response-pipe loss; response-pipe loss before input EOF; and malformed-frame
+reply after response-pipe loss followed by EOF. All close stderr independently.
+Synthetic stdout EIO with closed stderr passed as well.
+
+**Synthetic stdin EIO error-event injection failed deterministically**:
+the server exited without the active fake's cancellation marker. The fake's
+independent eight-second safety deadline ended it; cleanup waited for its exit
+record before removing the owned root. This establishes an unhandled stream
+error-event boundary, not a real kernel EIO incident or a claim that ordinary
+client input closure produces read errors.
+
+Repair: share the existing stdout error policy with stdin, make disconnect
+idempotent, and use that disconnect for the existing fatal unterminated-frame
+path. Fatal frame/backlog cancellation now precedes diagnostic emission.
+Unexpected authority-stream errors set exitCode1; no new explicit process.exit
+was added, so active supervisors settle before exit. EOF/EPIPE semantics and the
+existing overload flush/join rule are retained. README distinguishes diagnostic
+loss from authority-stream failure and never treats either as task success.
+
+#### Exact checks and counts
+
+All checks used `mise run test-agent-plugins`, via owned serial Node PATH shim:
+
+```sh
+/usr/bin/node --test --test-concurrency=1 --test-timeout=120000 \
+  --test-name-pattern="$ROUND15_FILTER" "$@"
+```
+
+The common wrapper was `nice -n 10 timeout -k 30 120 mise run
+test-agent-plugins`, process-local `MISE_TRUSTED_CONFIG_PATHS="$PWD"`,
+`MISE_YES=1 MISE_AUTO_INSTALL=0`, Cargo jobs2 and Rust/nextest/math threads1.
+Durable TMPDIR was `$PWD/.asv8/round15/tmp`; logs and the exact runner/shim
+remain under `.asv8/round15/`. No install or network fixture was selected.
+
+| Actual UTC | Exact ROUND15_FILTER | Actual outcome |
+| --- | --- | --- |
+| 04:09:00–01 | `^stdio:` (initial two fixtures only) | Unchanged production: 2 actual passes, 10 unmatched file wrappers |
+| 04:09:45–54 | `^stdio: (unexpected\|all client)` | Unchanged production: stdin synthetic EIO red; 4 actual passes; 10 unmatched wrappers; owned fake safety/cleanup completed |
+| 04:10:34–36 | `^(stdio: (?!closed stderr backlog)\|transport: (?!stopped reader\|escaped-byte)\|MCP \|lost MCP output\|shared model tool)` | Final source: 14 actual passes, 8 unmatched wrappers, 22 reported passes; zero failed/cancelled |
+| 04:10:36–38 | `^stdio: closed stderr backlog` | Final source: 1 actual pass, 10 unmatched wrappers; zero failed/cancelled |
+
+The table's `\|` denotes regex alternation in the shell filter. The last check
+reuses the six bounded escaped-NUL diagnostics, under13MiB combined raw/serialized
+generation, separately from other workloads. It holds stdout paused, closes
+stderr, observes task cancellation and survival beyond the one-second flush
+deadline, then explicitly releases the fake and verifies exit records before
+MCP exit1. Other new fixtures use about1MiB input or tiny frames. The original
+ordinary-byte overload and original open-stderr escaped overload were not rerun;
+the separate closed-stderr variant retains the same marker-gated join assertions.
+
+#### Resources, ownership and gaps
+
+- All eight pre/post resource gates passed: available RAM
+  18,161,426,432–18,448,277,504 bytes; disk
+  342,392,430,592–342,435,725,312 bytes; maximum load1=0.36669921875.
+- Hooks precede setup, server settlement is immediately observed, readiness
+  races server exit and has an eight-second bound. Existing fake processes
+  have finite deadlines and explicit start/exit records. Red cleanup gained a
+  bounded exit-record wait, never signals a recorded numeric PID, and preserves
+  roots with unknown ownership. Existing ChildProcess-handle cleanup is retained.
+- At04:11:09, owned TMPDIR was empty; current-UID argv inspection found no owned
+  fixture process and no denied reads; current-namespace mountinfo had no owned
+  mount. Evidence runner/shim/logs totalled7112 bytes before transcription.
+  `git diff --check` passed.
+- Real MCP subprocesses and OS pipes, but fake CLI only: **no native Session,
+  native status recovery or native end-to-end transport claim**. No native
+  binary access/build, full portable aggregate, Rust/Python tests, UI/cloud,
+  platform-matrix check, install, semspec change, commits/push/merge/publication.
+  User Pulsing/stage and pending ancestor-policy decision remain untouched.
+- Existing unrelated paced-endurance files/task/doc changes were not edited.
+  Parent owns review/publication; slot release is reported separately.
+
+#### Round 11 CI follow-up — fake diagnostic signal ledger, static preparation
+
+PR121 head `97f72ac5`, CI run `42442198759`, job `128613692663`
+(`macos-latest`, Node 22.19.0) reported 75/76 portable cases passing. The
+marker-gated escaped-byte case took 1.6946s and failed only its after-hook:
+`Preserved fixture .../plugin-transport-RfSoc0: fake processes not joined`,
+ledger PID `2141`. No event trace or process mode was printed. This is not
+proof that PID 2141 remained alive; the retained CI fixture was not accessible
+from the local Linux worktree. Coordinator reports other Node/macOS/Linux
+matrix entries passed.
+
+Static source evidence: all fake CLI invocations publish `start` and register an
+`exit` callback, but only task mode handles SIGTERM. Overload cancels concurrent
+doctor probes/version commands as well as the task. Default SIGTERM termination
+does not invoke Node's JavaScript `exit` callback: `execute` may correctly observe
+child close and return an interrupted result while the fake ledger lacks `exit`.
+The CI log does not identify whether this was PID 2141's exact path.
+
+Prepared a finite held-version/cancelled-doctor regression to demonstrate this
+mechanism deterministically from the actual supervisor response and event order.
+Added per-process mode records and a bounded 8 KiB event trace to ownership
+failures; did not suppress missing exits or weaken the ownership guard. Proposed
+fixture-only repair: register SIGTERM handling and exit logging for every mode
+before publishing any start record; marker-gated delayed release applies only
+to task mode. No production change. Red/green execution and repair remain pending
+an explicit slot grant; paced round14 currently owns the sole workload slot.
+
+#### Round 11 CI fixture repair — local red/green and bounded cleanup
+
+Coordinator granted the sole slot after paced14's 04:02:38 release. No production
+change: the fixture now installs SIGTERM and exit logging before start publication
+in **every** fake CLI mode, and applies marker-gated cancellation only to task
+mode. Missing exit records still fail ownership reconciliation; bounded mode/event
+traces make a future failure diagnosable.
+
+| UTC | Exact `test-agent-plugins` name filter | Actual outcome |
+| --- | --- | --- |
+| 04:03:49 | `^transport: cancelled diagnostic`, old signal helper | **Red:** 1 actual case failed, 9 wrappers; returned supervisor result had `interrupted=true`, `signal="SIGTERM"` instead of controlled-exit `null`; missing fake exit preserved root |
+| 04:04:28–04:04:30 | `^transport: (cancelled diagnostic\|escaped-byte)`, repaired helper | **2 actual cases passed**, 9 wrappers; held diagnostic returned interrupted/`signal=null` with cancel+exit records; marker-gated case passed |
+| 04:04:30–04:04:32 | `^(transport: (?!escaped-byte\|cancelled diagnostic)\|MCP \|lost MCP output\|shared model tool)` | 8 actual cases passed, 7 wrappers, but new mode trace exposed a fixture counter/readiness substring collision; diagnostic count printed 64 rather than 32 |
+| 04:05:16–04:05:19 | same filter after matching exact anchored `version PID` events | **Final 8 actual cases passed**, 7 wrappers; count correctly 32, same finite 36-diagnostic ceiling |
+
+Same guarded exact mise task/shim settings as above; the two overload cases ran
+in separate workloads, below the per-run generation budget. The held-version
+regression generates no diagnostic payload and has an independent eight-second
+safety deadline. No install/network fixture, native task or rebuild was needed.
+The mode-trace metric collision is fixed in both batch accounting and paused-
+diagnostic readiness, not hidden by changing the expected printed count.
+
+Exact red fixture evidence:
+
+```text
+start 959899
+mode:help 959899
+exit 959899
+start 959908
+mode:help 959908
+exit 959908
+start 959915
+mode:version 959915
+versionHeld 959915
+```
+
+The actual JSON-RPC reply from `execute` proved the version subprocess had
+closed with SIGTERM; its fake JavaScript exit callback had not run. Subsequent
+local checks found all three recorded PIDs absent and no current-UID process or
+mount referring to the owned root. Only then was the exact preserved red root
+`plugin-transport-r36i9j` removed. Green roots cleaned themselves; owned tmp was
+empty afterward. This proves a deterministic false-positive ledger mechanism
+on local Linux/Node 24.22.1, **not** PID 2141's exact mode or lifetime on CI.
+
+All workload gates passed: MemAvailable 18,121,273,344–18,397,216,768 bytes,
+disk free 342,460,391,424–342,502,068,224 bytes, load1 0.386–1.031.
+Final ownership scans and `git diff --check` passed; temporary runner/shim/log
+files removed. Production `mcp.mjs` SHA-256 remains
+`11b531c5dd7b2fdb8ae77eba47210f00b9dbd3534b7c7025c63a40697a9d5b0a`.
+No macOS or Node 22 local validation, CI rerun/cancellation, native repair,
+commit/push/publication or unrelated PID probing/termination was performed.
+Coordinator retains the cross-platform review and publication decision.
+
+### Round 14 — opt-in paced coding/review endurance
+
+- Static preparation began while round13 and then round12 follow-up owned the
+  sole TEST/BUILD slot. Parent granted this round the slot after the round12
+  release at 03:17:24 UTC. The four paced segments ran on 2026-11-08 from
+  03:19:29.020 through 04:01:20.405. Final owned audit completed at
+  04:02:38.805; the slot was explicitly released immediately afterward.
+  This is approximately 42 minutes across the paced invocation window, not an
+  eight-hour result, a throughput measurement or 42 minutes of active testing.
+- No production bug was confirmed and no production code was changed by this
+  round. Added `plugins/test/paced-endurance.native.mjs`, the dedicated
+  `test-agent-plugins-paced` mise task, contributor documentation and the exact
+  public-task inventory entries for both long-lived and paced opt-ins.
+  The inventory adjunct was explicitly requested by the parent following its
+  CI diagnosis; it is separate from endurance's negative product finding.
+- Read root README/AGENTS, campaign, plugin README/CONTRIBUTING, coding,
+  approval, project-identity, disconnect and descendant ownership fixtures.
+  For the inventory adjunct, read `tests/README.md`, `tests/tasks.toml` and
+  the routing script. No additional applicable nested README/AGENT files
+  were found in these paths.
+- Native artifact was used read-only at
+  `/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`.
+  SHA256 before/after each segment remained
+  `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`.
+  Its freshness/source provenance was supplied by the parent, not established
+  by a local native rebuild. The local source HEAD was
+  `75574fa2fda52f0eaa002a6f80aed1f828b46e54`, plus inherited uncommitted
+  filename/summary fixes; those production files were not edited here.
+  Parent identified the reviewed attached-path fix as published `87ce42e7`.
+
+#### Stories, seed and actual evidence
+
+Seed `1401`; four finite segments of eight sequential Node child subtests.
+The first six cycles rotate the six user stories; the last two select from
+the previous observed outcome plus the seeded generator. Each subtest's
+existing coding-fixture after hook cancels/joins owned promises, reconciles
+exact terminal/nonlive authority, drops candidates or proves applied-empty,
+checks observable ownership and removes its root before another cycle begins.
+Every launch/operation receives immediate rejection handling through the
+existing fixture tracker. Approval entry races settlement and has a finite
+deadline; no code waits unconditionally for an unentered approval gate.
+
+| Story | Actual cycles | Evidence checked |
+| --- | ---: | --- |
+| Success, accept source and discard scratch | 5 | Exact preview selects only `src.txt`, scratch remains pending, explicit Pi mock acceptance changes only the host source |
+| Exit7, retained candidate and reopen | 6 | Adapter exit7, native failed/nonlive, bounded output, fresh Backend review/preview and rejected approval preserve host baseline; explicit drop |
+| True host conflict and fixture-only recovery | 5 | Host edit after stage creation causes native apply exit3/blocked and preserves editor bytes; restore only the owned host baseline and obtain a new approval |
+| User cancellation after observed readiness | 6 | Discover exact selector; observe owned Python birth identity in timed sleep; race readiness against run settlement; refuse live apply/drop; cancel/join to exit143, interrupted, cancelled/nonlive |
+| Fresh adapter views | 6 | Two fresh Backend objects reopen one exact retained task; reject `last`; source and summary identity remain bound to that stage |
+| Empty/no-op task | 4 | No candidates, explicit source selection is empty, apply has no host effect and cleanup remains terminal/nonlive |
+
+Two simultaneously retained same-project tasks were deliberately not added:
+the parent recommended the existing round6 ownership coverage instead of a
+second shared-project lifecycle. These six fresh-view cycles are reopen tests,
+not evidence of two fresh native task views of the same project.
+
+All 32 actual native task attempts passed, with no reruns or fixture failures.
+The runner reports nine passing tests per invocation because its parent test is
+included; the scenario count is eight, not nine. Actual task exits were 20
+successes, six expected exit7 and six expected cancellations. Five conflict
+refusals were expected negative operations, not failed endurance cycles.
+No task output was truncated; each tiny workload output remained below32KiB
+and each project file below16KiB. At most one native task was active at a time.
+
+Segments1–2 used a trivial unittest preflight plus the file-state oracles.
+Before segment3, strengthened the harness to run a real source-content
+assertion, assert changed-files0 after explicit drop, and verify that an
+already-applied source selection has empty selected changes, scratch-only
+pending summary and native `execution:null` without accepting scratch.
+All final16 cycles passed these stronger assertions; five exercised the
+already-applied check. Do not attribute those assertions retroactively to the
+first16 cycles. No production fix or broad suite was stacked between segments.
+
+| Segment | UTC start–end | Actual cycles | Active fixture ms | Deliberate idle ms | Measured invocation wall ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | 03:19:29.020–03:29:34.196 | 8 | 4,197 | 600,728 | 605,194 |
+| 2 | 03:30:25.513–03:40:30.633 | 8 | 4,157 | 600,701 | 605,137 |
+| 3 | 03:41:34.061–03:51:39.507 | 8 | 4,449 | 600,725 | 605,464 |
+| 4 | 03:52:29.742–04:01:20.405 | 8 | 4,745 | 525,650 | 530,680 |
+
+Total measured active fixture time was17.548s; deliberate idle was
+2327.804s (38m47.804s), using31 real75-second gaps with sampling overhead.
+Summed invocation wall time was2346.475s (39m06.475s); the remaining time
+between invocations was inspection/reporting, not additional active testing.
+Idle uses kernel timers, not spinning or artificial load. Before/midpoint/
+after idle samples verify the completed cycle does not leave owned resources.
+
+Actual adapter-operation counts were54,51,64,67 (236 total), plus42 explicitly
+counted tiny fixture commands. The32 successful existing cleanup reconciliations
+each performed native status/drop,64 additional cleanup operations; these are
+reported separately rather than folded into the adapter counter. Capability/
+version probe subprocesses are not counted as user operations. Durable run
+records include each exact selector, token, output, exit and interruption state.
+
+#### Exact commands and the separate routing failure
+
+Initial setup used a15-second bound for Node syntax, `git diff --check`,
+artifact hash and resource inspection. No native artifact was built or changed.
+Each segment used this exact opt-in task, substituting segment1,2,3,4 in order:
+
+```sh
+PVISOR_PLUGIN_PACED_ENDURANCE=1 PVISOR_PLUGIN_PACED_SEGMENT=1 \
+PVISOR_PLUGIN_PACED_SEED=1401 \
+PVISOR_PLUGIN_BINARY=/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor \
+PVISOR_PLUGIN_TEST_OUTPUT_DIR="$PWD/.asv8/round14/evidence" \
+TMPDIR="$PWD/.asv8/round14/tmp" MISE_TRUSTED_CONFIG_PATHS="$PWD" \
+mise run test-agent-plugins-paced
+```
+
+Each invocation redirected stdout/stderr to its own bounded retained
+`.asv8/round14/segmentN.log`. The task explicitly executes:
+
+```sh
+export CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+exec nice -n 10 timeout -k 30s 850s node --test --test-concurrency=1 \
+  --test-name-pattern='^paced endurance:' plugins/test/paced-endurance.native.mjs
+```
+
+Node's bound is820s. The shell allows850s to TERM plus30s kill grace, up to880s;
+it is not a hard850-second wall bound. Node receives both pattern and concurrency
+as its own options, with no trailing-argument ambiguity, portable aggregate,
+packed npm fixture or install. The ordinary native suite skips the new file
+unless its explicit opt-in is set. The runner also refuses new launches after
+the campaign's09:04UTC deadline.
+
+`/usr/bin/node --check plugins/test/paced-endurance.native.mjs` passed on the
+initial and strengthened versions. `git diff --check` passed. One read-only
+post-segment evidence-summary command failed from nested shell/heredoc quoting;
+the direct Python summary corrected that command. It launched no task and is
+not a product or endurance-cycle failure.
+
+At the parent's request, corrected the exact expected public inventory in
+`tests/tasks/test-task-routing.sh` by adding only
+`test-agent-plugins-long-lived` and `test-agent-plugins-paced`; did not weaken
+the inventory diff, stubs or other routing assertions. After all paced segments,
+ran once, serially:
+
+```sh
+MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_AUTO_INSTALL=false \
+CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 \
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 TMPDIR="$PWD/.asv8/round14/tmp" \
+nice -n 10 timeout -k 30s 850s mise run test-task-routing
+```
+
+**The whole routing task failed; it is not green.** It passed the corrected
+inventory and three Node entrypoint routing checks, then failed at the
+doctor-dev routing stage. Source expects the fake tool command log to include
+`cargo nextest --version` (tab-separated by its logger). The retained actual
+doctor output instead resolved real installed paths, including
+`/home/reiase/.cargo/bin/cargo`, the real mise Python/uv/jq/actionlint paths and
+real `cargo-nextest0.9.137`; the outer error was `FAIL: return 1`.
+Local mise was2026.8.5. This suggests a nested task/stub-PATH environment issue,
+but the exact cause is not established. The task's EXIT trap deleted its own
+temporary expected/actual command logs, so only full outer stdout/stderr and
+source expectations are preserved; no claim is made to have recovered those
+deleted logs or distinguished doctor failure from its following assertion.
+Parent was notified immediately. No rerun, host mise setting change or relaxed
+assertion followed. This task builds the standalone semspec parser once and
+then uses fake tools for routing; it did not run real Python/benchmark suites,
+native rebuilds, semspec cases, approval/revoke or specification edits.
+
+#### Resources, ownership and handoff
+
+The paced run recorded203 resource/ownership snapshots. All133 quiescent
+segment-start, after-hook, idle and final snapshots had zero owned command
+lines, zero visible owned mount observations and zero retained stage directories.
+Across paced samples: available RAM at least17,378,504,704 bytes, disk at
+least342,508,982,272 bytes, load1 at most1.60. Guards check available RAM>=6GiB,
+disk>=20GiB, load1<=8 and owned evidence<=16MiB before/after cycles and through
+idle; a crossing aborts only owned work and stops subsequent launches.
+
+Owned-process observations record host PID, start ticks before/after inspection,
+state and wait channel; never use workload-printed namespace PIDs for host
+signals. Observed permission denials were0; three `/proc` disappearance/birth
+races were recorded across203 snapshots. Mount observations include self and
+observable same-UID owned processes, can count the same mount in several views,
+and are not a count of all namespaces or a containment certification.
+Host RAM changes alone were not treated as leak proof.
+
+Before routing: available17,850,003,456 bytes, disk342,509,346,816, load1=1.8965.
+Final04:02:38.805 audit after routing: available18,138,542,080 bytes,
+disk342,463,524,864, load1=1.9448; no owned processes/self mounts/fixture roots,
+no permission denials/races, and owned TMPDIR empty. All32 fixture roots were
+reconciled and removed; no uncertain fixture remained and no manual process
+termination or global cleanup was used. Artifact hash remained unchanged.
+
+Durable local evidence is `.asv8/round14/`: four runner logs,
+`evidence/paced-1401-segment-{1,2,3,4}.jsonl`, `artifact.log`, `summary.json`,
+`routing-resources.jsonl`, `task-routing.log`, `routing-invocation.txt` and
+`source-frontier.json`. Retention was534,421 bytes at the final owned audit
+before the small invocation/frontier notes were added, well below the16MiB cap.
+Per-segment JSONL is exclusive-create, at most4MiB; the runner refuses evidence
+overwrite and never silently retries an uncertain segment.
+
+Integration deliverables are only the new paced native file, dedicated mise
+task, paced contributor section, this round14 entry and the two exact routing
+inventory additions. Inherited round12/filename/summary files and evidence
+directories are not additional changes authored by this round. No commits,
+push, Git merge, publication, network/install/cloud/credential access, real
+Pulsing/stage access, unrelated kills, full portable/native aggregate, broad
+Rust/Python suites or semspec changes were performed. Linux safe Host evidence
+does not establish macOS/VM/OCI behavior, actual Pi UI decisions or MCP
+transport/backpressure behavior. Ancestor policy was not relaxed.
+
+#### Round14 routing follow-up — candidate rejected by the same assertion
+
+After static review, parent supplied a fixture-only hypothesis: nested mise
+reconstructs PATH from `MISE_ORIG_PATH`, losing the fixture's fake-tool prefix.
+Prepared the requested minimal candidate:
+
+```sh
+fixture_path="$work/bin:${MISE_ORIG_PATH:-$PATH}"
+export PATH="$fixture_path" MISE_ORIG_PATH="$fixture_path"
+```
+
+Also added an explicit opt-in `PVISOR_TASK_TEST_FAILURE_DIR` diagnostic ERR
+hook that copies only the fixture's stdout, stderr, command ledger, expected
+line and public inventory files before its ordinary EXIT cleanup. It changes
+no task/doctor assertions, host configuration or product code.
+
+Parent granted one short TEST/BUILD slot at04:06:16 after round11 released it.
+One exact `mise run test-task-routing` invocation used the preceding
+nice10/850s+30s/offline/no-auto-install/jobs2/thread1 environment, plus:
+
+```sh
+PVISOR_TASK_TEST_FAILURE_DIR="$PWD/.asv8/round14/routing-followup-failure"
+```
+
+**The candidate did not fix routing.** The invocation started at04:07:02.900
+and failed at the same doctor-dev check. This time preserved evidence pinpoints
+`check_line cargo nextest --version` at source line157, whose internal
+`return 1` triggered the ERR hook. Expected-line is25 bytes, containing the
+tab-separated fake command; actual `commands` is0 bytes. Inner stdout is564
+bytes of real installed-tool doctor output, including actual
+`cargo-nextest0.9.137`; stderr is83 bytes. Public and expected inventories are
+identical461-byte files. Thus inventory correction is passing, but the whole
+routing task remains red and the PATH hypothesis is not a validated repair.
+No additional candidate, retry or host-setting change followed.
+
+Full durable outer output is `.asv8/round14/task-routing-followup.log`; exact
+inner files are in `.asv8/round14/routing-followup-failure/`. The earlier
+invocation's deleted inner files were not retroactively recovered. The proposed
+two-line environment change remains an unverified review candidate, not a
+production fix or a green validation claim.
+
+Pre guard: RAM18,424,848,384 bytes, disk342,453,641,216 bytes, load1=0.3174.
+At04:07:19.936 after failure: RAM18,443,096,064, same free disk, load1=0.2266;
+owned TMPDIR, fixture roots and self-owned mount observations were empty.
+Final host-birth scan found zero owned processes, zero permission denials and
+zero races. Slot released immediately after this audit, explicitly to the
+parent for queued work. No further workload ran.
+
+After that release, parent requested static removal of the unverified
+`PATH`/`MISE_ORIG_PATH` candidate. Restored the original
+`export PATH="$work/bin:$PATH"` without another execution. Final routing
+deliverables are only the two exact public-inventory entries and the small
+opt-in failure-evidence hook, which is diagnostic tooling, not a routing fix.
+No assertion was weakened. The local whole-task routing result remains red;
+the parent assigned further environment investigation separately. Inventory
+and paced coverage must not be described as a green full-routing result.
+
+#### Round 15 final integration — CI fixture and stdio cases together
+
+Parent regranted the sole slot after the earlier round15 release, before any
+queued worker started. Merged exact CI-helper frontier
+`d4acbdda-e65d-467d-a7f1-539d6f68414c.1911170`. Resolved transport conflicts
+retaining both `holdVersion` and injection options, all-mode SIGTERM/exit hooks
+before start publication, held-diagnostic regression, closed-stderr overload
+variant, and the nine-second bounded exit-record cleanup with an8KiB
+`eventTrace` failure diagnostic. Preserved both campaign histories. No production
+code changed during this integration.
+
+Final combined source SHA-256, before and after checks:
+
+```text
+plugins/test/transport.test.mjs
+90482c5f38dc844602ae03b3dcdb499fee8ea417841dab678ac30eec7411f71c
+plugins/mcp.mjs
+c57abd7f812febce9d8bfcb801bcf54985c8c4f5c53e89b89dabe0df81d63a3a
+```
+
+Same exact guarded mise task, serial Node shim and durable owned TMPDIR as
+round15 above; each overload ran separately, below20MiB generation per run.
+The earlier14+1 results remain pre-integration evidence, not the final fixture.
+
+| UTC 2026-11-08 | Exact ROUND15_FILTER | Final integrated outcome |
+| --- | --- | --- |
+| 04:12:58–04:13:00 | `^(stdio: (?!closed stderr backlog)\|transport: (?!stopped reader\|escaped-byte))` | 11 actual passes, 10 unmatched wrappers; held diagnostic interrupted=true/signal=null; zero failures/cancellations |
+| 04:13:00–02 | `^transport: stopped reader` | 1 actual pass, 10 wrappers; exactly32 completed diagnostics before overload |
+| 04:13:02–04 | `^transport: escaped-byte` | 1 actual pass, 10 wrappers; open-stderr marker-gated join beyond flush deadline |
+| 04:13:04–06 | `^stdio: closed stderr backlog` | 1 actual pass, 10 wrappers; closed-stderr marker-gated join beyond flush deadline |
+
+All eight pre/post gates passed: available RAM
+18,072,444,928–18,346,504,192 bytes; free disk
+342,387,896,320–342,389,174,272 bytes; maximum load1=0.4755859375.
+Logs are `.asv8/round15/integrated-{small,ordinary-overload,escaped,closedstderr}.log`.
+No install fixture, network, native task/build, platform-matrix or full aggregate
+was run. Final ownership/hash/diff audit and renewed slot release are reported
+to the parent separately; review/publication remain the parent's responsibility.
+
+#### Round14 routing micro — hidden baseline variable still unproven
+
+Parent next requested a tiny isolated doctor-only probe of the actual hidden
+`__MISE_ORIG_PATH` variable, explicitly before any full-task retry. Prepared
+`.asv8/round14-routing-micro.sh` statically: copy the same tools-stripped mise
+configuration and task include into an owned temporary root, provide fake
+tools with a command ledger, prefix both PATH and `__MISE_ORIG_PATH`, disable
+auto-install/network, and invoke only `doctor dev`. Diagnostics record only
+the two selected path controls, copied config identity/hash and filtered doctor
+task metadata, never the full environment.
+
+Parent granted this short slot at04:13:39 after round15 release. Executed:
+
+```sh
+CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+nice -n 10 timeout -k 30s 15s bash .asv8/round14-routing-micro.sh
+```
+
+The micro started at04:14:08.982 and failed its fake-ledger assertion in about
+0.15s. Both recorded PATH controls began with the owned fake-tool directory,
+and selected doctor metadata identified the copied tools-stripped config:
+SHA256 `267450e5803ebcd28dd7d91afa90664ffa4ae340dfcfbdc591078f7a3866587f`.
+Nevertheless, the actual fake command ledger was still0 bytes against the
+25-byte expected nextest line; inner doctor stdout was the same564 bytes of
+real installed-tool output. This does not validate either baseline-variable
+repair or establish the underlying configuration/PATH cause.
+**No full-task retry followed, and no new fixture PATH edit was made.**
+
+Preserved `.asv8/round14/routing-micro.log` and
+`routing-micro-evidence/{identity.txt,doctor-task.json,stdout,stderr,commands,expected}`.
+The copied temporary root was removed by its scoped EXIT hook; the micro script
+and evidence are diagnostic artifacts, not integration/publication deliverables.
+Pre guard: RAM18,204,827,648 bytes, disk342,383,431,680 bytes, load1=0.4497.
+Final04:14:22.705 audit: RAM18,318,991,360, same free disk, load1=0.3804;
+zero owned processes/mounts, zero denied/raced process observations, empty TMPDIR.
+Explicitly released the slot immediately to the parent for runtime round16.
+
+Static review also hardened the opt-in routing failure-evidence hook: capture
+the original exit status, disable ERR recursion before I/O, make all diagnostic
+writes/copies best-effort, and return the original status. This is diagnostic
+error preservation, not a fix for the routing failure; no task assertion or
+host/product behavior changed. No additional test of that static hardening was
+claimed by the doctor-only micro.

@@ -159,7 +159,11 @@ A record can precede native startup, so an absent stage is not proof that it is
 safe to rerun. Do not edit records or invent completion receipts.
 
 Closing MCP input cancels active supervised commands. Losing the response pipe
-also cancels them once an output write detects the disconnect. Killing the MCP
+also cancels them once an output write detects the disconnect. Input/output
+stream errors stop admission and cancel supervised commands; unexpected errors
+leave a nonzero server exit after those operations settle. Stderr is diagnostic
+only: losing it alone does not cancel a healthy JSON-RPC connection or establish
+task success. Killing the MCP
 server abruptly cannot run that cleanup: native work may continue until its
 own completion or runtime deadline. Reconcile status before acceptance; live or
 uncertain work is not approval to apply or discard candidates.

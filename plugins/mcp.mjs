@@ -27,6 +27,7 @@ function finishOverload() {
 // If completed replies accumulate, close rather than queue without a bound.
 const OUTPUT_BACKLOG_LIMIT = 8 * 1024 * 1024;
 function disconnect() {
+  if (disconnected) return;
   disconnected = true;
   process.stdin.destroy();
   for (const controller of active.values()) controller.abort();
@@ -35,9 +36,9 @@ const send = (id, value, error = false) => {
   if (!disconnected) {
     const frame = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
     if (process.stdout.writableLength + frame.length > OUTPUT_BACKLOG_LIMIT) {
-      console.error("MCP output backlog exceeds 8 MiB; closing transport. Undelivered results are uncertain; do not retry automatically.");
       process.exitCode = 1;
       disconnect();
+      console.error("MCP output backlog exceeds 8 MiB; closing transport. Undelivered results are uncertain; do not retry automatically.");
       // Flush already queued complete frames if the reader resumes promptly.
       // A stopped reader must not keep the server alive indefinitely. Forced
       // closure may truncate the last frame; it is not completion evidence.
@@ -56,13 +57,15 @@ const send = (id, value, error = false) => {
 // A client can lose its response pipe before closing its request pipe.
 // Cancel supervised work instead of crashing on an unhandled EPIPE, and do
 // not accept further requests or try to deliver results to the lost peer.
-process.stdout.on("error", (error) => {
-  disconnect();
-  if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
-    console.error(`MCP output failed: ${error.message}`);
-    process.exitCode = 1;
-  }
-});
+for (const [stream, name] of [[process.stdin, "input"], [process.stdout, "output"]]) {
+  stream.on("error", (error) => {
+    disconnect();
+    if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
+      process.exitCode = 1;
+      console.error(`MCP ${name} failed: ${error.message}`);
+    }
+  });
+}
 
 async function dispatch(message) {
   if (disconnected) return;
@@ -145,10 +148,9 @@ process.stdin.on("data", (bytes) => {
     }
   }
   if (pending.length > 1024 * 1024) {
-    console.error("Unterminated MCP frame exceeds 1 MiB");
-    process.stdin.destroy();
-    for (const controller of active.values()) controller.abort();
     process.exitCode = 1;
+    disconnect();
+    console.error("Unterminated MCP frame exceeds 1 MiB");
   }
 });
 process.stdin.on("end", () => {

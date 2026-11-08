@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 // Fake CLI, real MCP subprocess and OS pipes. No native Sessions or network.
-async function peer(t, { escaped = false, delayedCancel = false } = {}) {
+async function peer(t, { escaped = false, delayedCancel = false, holdVersion = false, injection } = {}) {
   let root, child, closed;
   const errors = [];
   t.after(async () => {
@@ -21,17 +21,27 @@ async function peer(t, { escaped = false, delayedCancel = false } = {}) {
     }
     if (root) {
       // Every fake process has a finite deadline; unknown ownership preserves root.
-      const events = await readFile(path.join(root, "events"), "utf8").catch((error) => {
+      const readEvents = () => readFile(path.join(root, "events"), "utf8").catch((error) => {
         if (error.code === "ENOENT") return "";
         throw error;
       });
+      // A red crash may orphan the finite fake. Wait for its owned exit record,
+      // never signal a recorded numeric PID or delete an uncertain root.
+      const deadline = Date.now() + 9000;
       const live = new Set();
-      for (const line of events.trim().split("\n").filter(Boolean)) {
-        const [event, pid] = line.split(" ");
-        if (event === "start") live.add(Number(pid));
-        if (event === "exit") live.delete(Number(pid));
-      }
-      assert.deepEqual([...live], [], `Preserved fixture ${root}: fake processes not joined`);
+      let eventTrace = "";
+      do {
+        live.clear();
+        eventTrace = await readEvents();
+        for (const line of eventTrace.trim().split("\n").filter(Boolean)) {
+          const [event, pid] = line.split(" ");
+          if (event === "start") live.add(Number(pid));
+          if (event === "exit") live.delete(Number(pid));
+        }
+        if (!live.size) break;
+        await delay(20);
+      } while (Date.now() < deadline);
+      assert.deepEqual([...live], [], `Preserved fixture ${root}: fake processes not joined; bounded event trace:\n${eventTrace.slice(-8192)}`);
       await rm(root, { recursive: true });
     }
   });
@@ -42,30 +52,52 @@ async function peer(t, { escaped = false, delayedCancel = false } = {}) {
   await writeFile(binary, `#!${process.execPath}
 import { appendFileSync, existsSync } from "node:fs";
 const log = (event) => appendFileSync(${JSON.stringify(events)}, event + " " + process.pid + "\\n");
-log("start");
+const task = !process.argv.includes("--help") && !process.argv.includes("--version");
+// Default signal termination does not emit JavaScript's exit event. Install
+// both hooks before start publication for probes/diagnostics as well as tasks.
 process.on("exit", () => log("exit"));
+process.on("SIGTERM", () => {
+  log("cancel");
+  if (task && ${delayedCancel}) {
+    const gate = setInterval(() => {
+      if (existsSync(${JSON.stringify(path.join(root, "release"))})) {
+        clearInterval(gate);
+        log("released");
+        process.exit(0);
+      }
+    }, 20);
+  } else process.exit(0);
+});
+log("start");
+log(process.argv.includes("--help") ? "mode:help" : process.argv.includes("--version") ? "mode:version" : "mode:task");
 if (process.argv.includes("--help")) {
   console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json ");
 } else if (process.argv.includes("--version")) {
-  process.stdout.write(${JSON.stringify(escaped ? "\0" : "x")}.repeat(256 * 1024), () => log("version"));
+  if (${holdVersion}) {
+    setTimeout(() => process.exit(2), 8000);
+    setInterval(() => {}, 1000);
+    log("versionHeld");
+  } else {
+    process.stdout.write(${JSON.stringify(escaped ? "\0" : "x")}.repeat(256 * 1024), () => log("version"));
+  }
 } else {
   log("ready");
-  process.on("SIGTERM", () => {
-    log("cancel");
-    if (${delayedCancel}) {
-      const gate = setInterval(() => {
-        if (existsSync(${JSON.stringify(path.join(root, "release"))})) {
-          clearInterval(gate);
-          log("released");
-          process.exit(0);
-        }
-      }, 20);
-    } else process.exit(0);
-  });
   setTimeout(() => process.exit(2), ${delayedCancel ? 8000 : 15000});
 }
 `, { mode: 0o700 });
+  const preload = path.join(root, "inject.mjs");
+  if (injection) await writeFile(preload, `
+import { existsSync } from "node:fs";
+const timer = setInterval(() => {
+  if (existsSync(${JSON.stringify(path.join(root, "inject"))})) {
+    clearInterval(timer);
+    ${injection}
+  }
+}, 10);
+timer.unref();
+`);
   child = spawn(process.execPath, [
+    ...(injection ? ["--import", preload] : []),
     fileURLToPath(new URL("../mcp.mjs", import.meta.url)), "--project", path.join(root, "project"),
   ], {
     env: { ...process.env, TMPDIR: root, PVISOR_PLUGIN_BINARY: binary, PVISOR_PLUGIN_STATE_DIR: path.join(root, "state") },
@@ -141,12 +173,12 @@ test("transport: stopped reader has bounded reply backlog and cancels without re
     }
     await f.until(async () => {
       const log = await f.log();
-      return log.split("version ").length - 1 >= (batch + 1) * 4 ||
+      return (log.match(/^version \d+$/gm) || []).length >= (batch + 1) * 4 ||
         f.stderr().includes("MCP output backlog");
     }, `bounded diagnostics batch ${batch}`);
     await delay(100);
   }
-  t.diagnostic(`Completed bounded fake diagnostics: ${(await f.log()).split("version ").length - 1}; raw generation budget 9 MiB, serialized replies about 9 MiB maximum`);
+  t.diagnostic(`Completed bounded fake diagnostics: ${((await f.log()).match(/^version \d+$/gm) || []).length}; raw generation budget 9 MiB, serialized replies about 9 MiB maximum`);
   assert.match(f.stderr(), /MCP output backlog exceeds 8 MiB/, "completed requests must not queue unlimited replies");
   f.child.stdout.resume();
   const result = await f.closed;
@@ -158,16 +190,33 @@ test("transport: stopped reader has bounded reply backlog and cancels without re
   assert.deepEqual(f.errors, []);
 });
 
-test("transport: escaped-byte backlog joins cancellation before forced output exit", { timeout: 15000 }, async (t) => {
+test("transport: cancelled diagnostic records controlled exit before ownership cleanup", { timeout: 15000 }, async (t) => {
+  const f = await peer(t, { holdVersion: true });
+  f.send(2, "tools/call", { name: "pvisor_doctor" });
+  const ready = await f.until(async () => (await f.log()).match(/^versionHeld (\d+)$/m), "held fake diagnostic");
+  const pid = ready[1];
+  f.send(undefined, "notifications/cancelled", { requestId: 2 });
+  const reply = await f.until(() => f.responses.find((item) => item.id === 2), "cancelled diagnostic response");
+  const result = JSON.parse(reply.result.content[0].text);
+  t.diagnostic(`Held diagnostic ${pid}: interrupted=${result.interrupted}, signal=${result.signal}`);
+  assert.equal(result.interrupted, true);
+  assert.equal(result.signal, null, "fake handles cancellation rather than default signal termination");
+  assert.ok((await f.log()).includes(`cancel ${pid}\n`), "diagnostic cancellation acknowledged");
+  assert.ok((await f.log()).includes(`exit ${pid}\n`), "diagnostic exit recorded before MCP response");
+  assert.deepEqual(f.errors, []);
+});
+
+for (const closedStderr of [false, true]) {
+test(`${closedStderr ? "stdio: closed stderr" : "transport: escaped-byte"} backlog joins cancellation before forced output exit`, { timeout: 15000 }, async (t) => {
   const f = await peer(t, { escaped: true, delayedCancel: true });
   f.send(2, "tools/call", { name: "pvisor_spawn", arguments: { argv: ["wait"] } });
   const ready = await f.until(async () => (await f.log()).match(/^ready (\d+)$/m), "active delayed-cancel task");
   const taskPid = ready[1];
   f.child.stdout.pause();
+  if (closedStderr) f.child.stderr.destroy();
   // Six 256 KiB NUL diagnostics inflate through both JSON serialization layers.
   // Under 13 MiB combined raw/serialized generation, independent of RSS/timing.
   for (let n = 0; n < 6; n++) f.send(10 + n, "tools/call", { name: "pvisor_doctor" });
-  await f.until(() => f.stderr().includes("MCP output backlog"), "escaped-byte overload");
   await f.until(async () => (await f.log()).includes(`cancel ${taskPid}\n`), "delayed cancellation acknowledged");
   // The fixture cannot complete on its own just after this observation:
   // release is controlled by this test, not a competing 1.8-second timer.
@@ -183,9 +232,10 @@ test("transport: escaped-byte backlog joins cancellation before forced output ex
   // the shared parser still verifies every complete frame and exact unique ID.
   f.child.stdout.resume();
   await f.closed;
-  assert.match(f.stderr(), /MCP output backlog exceeds 8 MiB/);
+  if (!closedStderr) assert.match(f.stderr(), /MCP output backlog exceeds 8 MiB/);
   assert.deepEqual(f.errors, []);
 });
+}
 
 test("transport: paused reader resumes with exact IDs and explicit cancellation", { timeout: 15000 }, async (t) => {
   const f = await peer(t);
@@ -193,7 +243,7 @@ test("transport: paused reader resumes with exact IDs and explicit cancellation"
   await f.until(async () => (await f.log()).includes("ready "), "active fake task");
   f.child.stdout.pause();
   f.send(3, "tools/call", { name: "pvisor_doctor" });
-  await f.until(async () => (await f.log()).includes("version "), "one diagnostic");
+  await f.until(async () => /^version \d+$/m.test(await f.log()), "one diagnostic");
   f.send(undefined, "notifications/cancelled", { requestId: 2 });
   await f.until(async () => (await f.log()).includes("cancel "), "cancellation while reader paused");
   f.send(4, "ping");
@@ -214,7 +264,7 @@ for (const fault of ["EOF", "EPIPE"]) {
     await f.until(async () => (await f.log()).includes("ready "), "active fake task");
     f.child.stdout.pause();
     f.send(3, "tools/call", { name: "pvisor_doctor" });
-    await f.until(async () => (await f.log()).includes("version "), "diagnostic before disconnect");
+    await f.until(async () => /^version \d+$/m.test(await f.log()), "diagnostic before disconnect");
     if (fault === "EOF") {
       f.child.stdin.end();
       await f.until(async () => (await f.log()).includes("cancel "), "EOF cancels despite paused output");
@@ -229,5 +279,85 @@ for (const fault of ["EOF", "EPIPE"]) {
     assert.equal((await readdir(path.join(f.root, "state"))).length, 1);
     assert.equal(f.stderr(), "");
     assert.deepEqual(f.errors, []);
+  });
+}
+
+test("stdio: closed stderr cannot crash oversized-frame cancellation before join", { timeout: 20000 }, async (t) => {
+  const f = await peer(t, { delayedCancel: true });
+  f.send(2, "tools/call", { name: "pvisor_spawn", arguments: { argv: ["wait"] } });
+  const ready = await f.until(async () => (await f.log()).match(/^ready (\d+)$/m), "active task");
+  f.child.stderr.destroy();
+  f.child.stdin.write("x".repeat(1024 * 1024 + 1));
+  await f.until(async () => (await f.log()).includes(`cancel ${ready[1]}\n`), "frame failure cancels");
+  await delay(100);
+  assert.equal(f.child.exitCode, null, "diagnostic EPIPE must not abandon cancellation join");
+  await writeFile(path.join(f.root, "release"), "join");
+  assert.deepEqual(await f.closed, { code: 1, signal: null });
+  assert.ok((await f.log()).includes(`released ${ready[1]}\n`));
+  assert.ok((await f.log()).includes(`exit ${ready[1]}\n`));
+  assert.equal((await readdir(path.join(f.root, "state"))).length, 1);
+});
+
+test("stdio: optional stderr loss preserves healthy JSON-RPC and explicit cancellation", { timeout: 15000 }, async (t) => {
+  const f = await peer(t, { injection: 'console.error("owned diagnostic");' });
+  f.send(2, "tools/call", { name: "pvisor_spawn", arguments: { argv: ["wait"] } });
+  await f.until(async () => (await f.log()).includes("ready "), "active task");
+  f.child.stderr.destroy();
+  await writeFile(path.join(f.root, "inject"), "diagnostic");
+  await delay(100);
+  f.send(3, "ping");
+  await f.until(() => f.responses.some((item) => item.id === 3), "healthy ping after diagnostic sink loss");
+  assert.ok(!(await f.log()).includes("cancel "), "stderr alone is not client disconnect");
+  f.send(undefined, "notifications/cancelled", { requestId: 2 });
+  await f.until(() => f.responses.some((item) => item.id === 2), "explicit cancellation reply");
+  assert.equal(f.responses.find((item) => item.id === 2).result.isError, true);
+  f.child.stdin.end();
+  assert.deepEqual(await f.closed, { code: 0, signal: null });
+});
+
+for (const stream of ["stdin", "stdout"]) {
+  test(`stdio: unexpected ${stream} error joins cancellation with stderr closed`, { timeout: 20000 }, async (t) => {
+    // Controlled error-event seam for uncommon non-EPIPE I/O faults. The rest
+    // of transport, supervision and OS pipes is real; not a kernel EIO claim.
+    const f = await peer(t, { delayedCancel: true, injection:
+      `process.${stream}.emit("error", Object.assign(new Error("owned I/O fault"), { code: "EIO" }));` });
+    f.send(2, "tools/call", { name: "pvisor_spawn", arguments: { argv: ["wait"] } });
+    const ready = await f.until(async () => (await f.log()).match(/^ready (\d+)$/m), "active task");
+    f.child.stderr.destroy();
+    await writeFile(path.join(f.root, "inject"), "error");
+    await f.until(async () => (await f.log()).includes(`cancel ${ready[1]}\n`), "authority error cancellation");
+    await delay(100);
+    assert.equal(f.child.exitCode, null, "authority error must join before exiting");
+    await writeFile(path.join(f.root, "release"), "join");
+    assert.deepEqual(await f.closed, { code: 1, signal: null });
+    assert.ok((await f.log()).includes(`released ${ready[1]}\n`));
+    assert.ok((await f.log()).includes(`exit ${ready[1]}\n`));
+    assert.equal((await readdir(path.join(f.root, "state"))).length, 1);
+  });
+}
+
+for (const order of ["EOF-first", "output-first", "malformed-first"]) {
+  test(`stdio: all client pipes close ${order} without abandoning active work`, { timeout: 20000 }, async (t) => {
+    const f = await peer(t, { delayedCancel: true });
+    f.send(2, "tools/call", { name: "pvisor_spawn", arguments: { argv: ["wait"] } });
+    const ready = await f.until(async () => (await f.log()).match(/^ready (\d+)$/m), "active task");
+    f.child.stderr.destroy();
+    if (order === "EOF-first") {
+      f.child.stdin.end("{");
+      await f.until(async () => (await f.log()).includes("cancel "), "EOF cancellation");
+      f.child.stdout.destroy();
+    } else {
+      f.child.stdout.destroy();
+      if (order === "malformed-first") f.child.stdin.write("{]\n");
+      else f.send(3, "ping");
+      await f.until(async () => (await f.log()).includes("cancel "), "output cancellation");
+      f.child.stdin.end("{");
+    }
+    assert.equal(f.child.exitCode, null, "lost pipes do not abandon join");
+    await writeFile(path.join(f.root, "release"), "join");
+    assert.deepEqual(await f.closed, { code: 0, signal: null });
+    assert.ok((await f.log()).includes(`released ${ready[1]}\n`));
+    assert.ok((await f.log()).includes(`exit ${ready[1]}\n`));
+    assert.equal((await readdir(path.join(f.root, "state"))).length, 1);
   });
 }
