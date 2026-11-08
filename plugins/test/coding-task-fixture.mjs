@@ -13,8 +13,12 @@ export function ok(result) {
   return result;
 }
 
-/** One fresh coding task, with durable ownership even when setup/spawn fails. */
-export async function codingFixture(t, { runMilliseconds = 15_000 } = {}) {
+/**
+ * One fresh coding task, with durable ownership even when setup/spawn fails.
+ * Optional verifyOwnership runs inside the removal guard after native disposal;
+ * throwing preserves the root when an observer cannot certify ownership.
+ */
+export async function codingFixture(t, { runMilliseconds = 15_000, verifyOwnership = async () => {} } = {}) {
   const controller = new AbortController();
   const owned = [];
   let root;
@@ -64,6 +68,7 @@ export async function codingFixture(t, { runMilliseconds = 15_000 } = {}) {
         } else ok(dropped);
       }
       if (process.platform === "linux") {
+        await verifyOwnership();
         assert.ok(!(await readFile("/proc/self/mountinfo", "utf8")).includes(root));
         for (const pid of (await readdir("/proc")).filter((name) => /^\d+$/.test(name) && Number(name) !== process.pid)) {
           try {

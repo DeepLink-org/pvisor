@@ -1948,3 +1948,52 @@ summary: `3bc3e0b7545084e8557473d6e2217e57c6778ab3c1e9e3b5a76cb15ff68c6405`.
 - Next scene: exact selection of a rename/type change with a leading-dash
   destination, retaining native required dependencies and host conflict refusal;
   use another explicitly granted bounded slot rather than broad filename APIs.
+
+### Round 12 post-review final-source validation
+
+Parent granted the sole slot after round13's03:16:18 release. Strengthened
+helper and native checks completed by03:17:24, when the slot was released
+again. The preceding “validation pending” paragraph records the earlier
+static-only phase, not the final state.
+
+- `mise run test-agent-plugins`: **four actual fake-I/O helper tests passed**.
+  Node reported14 passes, including10 no-match file placeholders. The filter
+  excluded all other portable cases, including DOC-PLUGINS-07 packed install.
+- `mise run test-agent-plugins-native`: **four actual native cases passed**.
+  Node reported13 passes, including nine no-match file placeholders; elapsed
+  2.683s. Final case durations including approval/reconciliation hooks were
+  0.491s/0.693s/0.471s/0.683s in matrix order.
+- Both exact mise tasks used the private Node shim with
+  `--test-concurrency=1 --test-name-pattern='^descendant (pipes|observer):'`,
+  the same owned TMPDIR/evidence/binary environment and nice10/jobs2/thread1/
+  120s+30s outer limits as above. The shim was removed after release.
+- All four immediate terminal snapshots explicitly recorded empty `processes`,
+  `inaccessible`, `unstable` and `reused` arrays, before the15s early-observation
+  bound. No delayed safety wait was needed. Cancellation readiness births were
+  retained for matching by hostPID/start ticks. Nonzero cases finish without a
+  live-readiness phase and use exact-token/bracketed identity observation.
+- The focused helper tests passed simulated argv replacement, numeric PID reuse,
+  birth-read race, EACCES and voluntary self-exit during safety cleanup. The
+  last case still rejects with the original survivor assertion after the
+  simulated survivor disappears; an empty observation at40s also fails.
+- Final native operations again numbered26 explicit calls plus8 cleanup
+  status/drop calls. All four stages were terminal/nonlive, rejected approval
+  left host files absent and candidates reviewable, no automatic retry occurred,
+  native drop succeeded, and all fixture roots were removed.
+- Final read-only binary SHA256 was unchanged; `git diff --check` passed.
+  Logs are `.asv8/round12/{observer-reviewed,native-reviewed}.log` in addition
+  to the earlier three logs. Local evidence plus shim before its removal was
+  212,435 bytes. No installs, publication or production edits.
+
+Pre/post resources for these two workloads: minimum available RAM
+18,963,443,712 bytes, minimum free disk342,657,921,024 bytes, maximum
+load1=1.1171875. Final03:17:24 audit: available19,071,094,784 bytes,
+free342,698,389,504 bytes, load1=1.1005859375; zero owned task command lines,
+zero owned mounts, empty fixture directory. No unknown root remains.
+
+Totals including pre-review attempts are now16 actual native attempts:
+14 scenario passes and two initial readiness-harness failures. Definitive
+post-review coverage is four native passes plus four helper passes; earlier
+passes are not substituted for those stronger checks. The previously listed
+Linux-only/MCP/UI/platform limitations remain unchanged. No full portable or
+native aggregate, Rust/Python suite or build was run.

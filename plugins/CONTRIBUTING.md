@@ -93,6 +93,18 @@ and nested-Git index isolation through atomic save, rename, chmod and selective
 acceptance. Its default interpreter is `/usr/bin/python3`; operators can set
 `PVISOR_PLUGIN_TEST_PYTHON` to an offline interpreter accessible under `--safe`.
 An interpreter installed only under the original HOME may be inaccessible.
+`descendants.native.mjs` checks Linux native inherited stdout/stderr and stdin
+EOF with a background child or detached `setsid` grandchild, both after exit7
+and user cancellation. Its at-most-three-process workloads each arm independent
+45-second alarms. Host `/proc` birth identities and exact owned argv tokens
+observe teardown with bracketed birth/UID rechecks and readiness-birth matching;
+denied or unstable observations fail closed and preserve the fixture root.
+Terminal observation must precede the40s voluntary exit, and any survivor
+fails even if it exits during the subsequent safety-only wait. Namespace PIDs
+are never used for host signals. These cases
+check exact-selector terminal status, retained review, rejected Pi mock approval
+and no retry/publication. They do not certify arbitrary descendant containment
+on other executors or platforms, or exercise MCP transport/backpressure.
 `tools.mjs` is the shared model-facing schema. Host adapters own
 only host registration and approvals. `runtime.mjs` selects an operator-specified
 absolute CLI path or `pvisor` from the host PATH and probes required CLI
