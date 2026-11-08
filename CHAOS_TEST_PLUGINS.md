@@ -832,3 +832,54 @@ also saw round4's newly authorized validation shell referencing the fresh binary
 it was not a round5 leak and was not signalled. Fresh artifact hash was unchanged
 and binary/cache retained for that read-only reuse. No additional workloads ran
 after the slot release.
+
+#### Round 4 follow-up validation — reviewed harness, repaired native artifact
+
+Parent granted the sole slot after round5 released it at 02:04:39 UTC. Static
+rereview of the harness follow-up was clean. Validation ran 02:05:39–02:06:52;
+the slot was explicitly released again at **02:06:52 UTC**. No source changes
+were made after that rereview; this entry records the completed checks.
+
+Used the round5 repaired CLI read-only, without rebuilding or overwriting:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+SHA-256: 6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+The hash was independently verified before testing. Artifact source provenance
+supplied by parent: HEAD `c80b0eba298ef63cfc88b3147dd51db477f26319` plus four-file
+Rust diff hash
+`c5745e80972a0d9397ff3b4ceedbce306193e9bfe755232d9c2ddd70bc725131`.
+This is a different artifact from the original round4 prebuilt binary.
+
+All commands retained exact mise tasks and the explicit serial Node shim,
+process-local exact-worktree mise trust/noninteractive/no-install settings,
+nice 10, Cargo jobs 2, test threads 1, resource guards and
+`timeout -k 30 120`. Native tasks set `PVISOR_PLUGIN_BINARY` to the path above
+and `PVISOR_PLUGIN_TEST_OUTPUT_DIR="$PWD/.round4-owned"`.
+
+| UTC | Command/check | Actual result |
+| --- | --- | --- |
+| 02:05:39 | `mise run test-agent-plugins`, shim adds `--test-name-pattern="concurrent approval"` | **4 exercised portable cases pass**; five unmatched file wrappers also counted by Node, nine overall; 0.208s |
+| 02:05:39–02:05:43 | `mise run test-agent-plugins-native`, same filter | **10 exercised native cases pass**; two unmatched wrappers also counted, twelve overall; 4.030s |
+| 02:05:53–02:06:15 | `mise run test-agent-plugins`, unfiltered | **39 passed**, zero failed/skipped/cancelled; 22.284s |
+| 02:06:15–02:06:38 | `mise run test-agent-plugins-native`, unfiltered | **26 passed**, zero failed/skipped/cancelled; 23.278s. Client-pipe-loss case reconciled cancelled |
+| 02:06:52 | Guarded reconciliation/drop, owned-root process/mount scan and removal; `git diff --check` | All passed |
+
+This validates the reviewed harness revision, including both early-preview
+failure regressions. The repaired artifact's 26/26 result is distinct from,
+and does not erase, the earlier 25/26 failure and its preserved diagnostic.
+No additional product repair or disconnect-test change was made by round4.
+
+All workload guards passed: MemAvailable 19,116,789,760–19,473,637,376 bytes,
+workspace disk free 343,297,925,120–343,306,694,656 bytes, load1 0.955–1.334.
+Final cleanup post-check: 19,332,976,640 bytes available, 343,297,925,120 bytes
+disk free, load1 1.0625. New fixtures joined their tracked operations and
+reconciled their native Sessions before removal in both runs. The full suite's
+retained documentation fixtures were separately reconciled: **13 terminal
+Sessions, 13 successful explicit drops**, no owned process/current-namespace
+mount remaining; `.round4-owned` removed. No uncertain root was deleted.
+
+No installs, builds, Rust/Python suites, interactive clients, source mutation
+outside the four round4 files, commits, pushes, merges or publication occurred.
