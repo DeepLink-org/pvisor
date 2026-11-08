@@ -10,7 +10,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-pub use pvisor_core::overlay::OverlayStatus as ControlOverlayStatus;
+#[cfg(test)]
+use pvisor_core::overlay::OverlayStatus as ControlOverlayStatus;
 use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
@@ -554,7 +555,8 @@ pub fn control_mount_inspect(stage: &Path) -> anyhow::Result<(String, PathBuf)> 
     ))
 }
 
-pub fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStatus> {
+#[cfg(test)]
+fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStatus> {
     Ok(serde_json::from_value(control_request(
         stage,
         super::host_transport::InstanceCommand::OverlayStatus {},
@@ -566,15 +568,6 @@ pub fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
         stage,
         super::host_transport::InstanceCommand::Observations {},
     )
-}
-
-pub(crate) fn control_status_observations(
-    stage: &Path,
-) -> anyhow::Result<super::session_service::status::Activity> {
-    Ok(serde_json::from_value(control_request(
-        stage,
-        super::host_transport::InstanceCommand::StatusObservations {},
-    )?)?)
 }
 
 pub fn control_unmount_inspect(stage: &Path, id: String) -> anyhow::Result<()> {

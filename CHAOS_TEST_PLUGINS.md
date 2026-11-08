@@ -689,3 +689,146 @@ limitations above remain unchanged.
 - Round 5 is investigating the preserved native status failure with a
   deterministic source regression. No causal attribution to the old prebuilt
   binary is established.
+
+#### Round 4 static-review follow-up — code ready, validation pending
+
+Static review found two test-harness defects, not product defects. This
+follow-up changes only the three round4 test/helper files and this log:
+
+- Native fixture teardown previously waited only for the approval operation.
+  Direct CLI operations had deadlines but were not fixture-cancelled/settled;
+  the second plugin apply and final review were neither tracked nor given
+  fixture signals. Teardown is now registered before fallible setup. Every
+  native call, including capability resolution, spawn, adapter preview/apply,
+  second-client apply, direct CLI and review, is registered before invocation
+  with an immediate rejection handler. Signals combine fixture cancellation,
+  test cancellation, caller cancellation and a per-call deadline. Teardown
+  aborts the fixture, rejects approval and settles all registered work before
+  terminal reconciliation/drop using fresh bounded signals. Failed setup
+  removes a root only when native run was never attempted; an attempted run
+  with no discoverable record preserves the root rather than guessing.
+- Portable tests previously awaited only gate readiness after swallowing an
+  early operation rejection. A shared approval-operation helper now races
+  readiness with operation settlement, immediately observes both promises,
+  and provides close/reject/settle cleanup. Portable tests use `finally` even
+  on assertion failure. Added one deterministic early-preview failure case per
+  host: readiness must reject with that failure, no approval may be requested,
+  and no mutation may run. Native tests use the same readiness helper.
+
+**No workloads were run for this follow-up:** round5 owns the sole Rust
+test/build slot. Prior passing results describe the pre-review harness, not
+this revision. Expected new portable coverage is four cases (two prior plus
+two early-preview regressions); native coverage remains ten cases. Parent must
+schedule validation after the slot becomes available. No production or
+round1/round2/round3 files changed.
+
+### Round 5 — native status loses owner discovery during cancellation
+
+- Investigation began about 01:55 UTC after parent reported round4's aggregate
+  native suite failure. Slot granted after round3 at 01:57:33; substantive work
+  ended 02:04:39 UTC. This is an incremental repair, not eight hours elapsed.
+- Original integration evidence supplied by parent: round4 full native task
+  01:54:36–01:54:59, 25 passed/1 failed. DOC-PLUGINS-13 client pipe loss failed
+  at `disconnect.native.mjs:87`, the strict status-result check, with exit 1,
+  no signal/interruption/truncation, empty stdout, stderr exactly
+  `Error: owning Session control endpoint unavailable\n`. The native cleanup
+  after-hook did not fail. No rerun of that external-artifact failure was made.
+- Read root/plugin context plus pvisor and pvisor-cli READMEs, relevant owner,
+  status, registry, teardown and build/test-task code. No nested crate
+  README/AGENT instructions were present. Scope remains one runtime status
+  repair, not an API-boundary migration.
+
+#### Source diagnosis, deterministic red and minimal repair
+
+Status selected an `Arc<Owner>`, but filesystem sampling subsequently called
+`control_ping(stage)` and `control_overlay_status(stage)`. Both independently
+read the record and resolve local discovery. The actual Execution can unregister
+its owner and clear `live_control` between those calls. The second lookup then
+fails even though status still owns the exact selected owner.
+
+Compared generic retry/error fallback (would hide authority failures), broader
+record/lease serialization (unnecessary coordination), and using the existing
+selected owner (chosen). Status now reads filesystem and optional activity
+through that owner. Its existing `current_record` validation still checks exact
+Session/Execution/stage identity. Offline and external owner routing are
+unchanged; optional activity remains optional. No automatic retry, completion
+invention, mutation authority or relaxed cancelled assertion was added.
+Removed the now-unused private status-observation rediscovery helper; the
+overlay rediscovery helper remains test-only for existing registry coverage.
+No crate-root public API was removed.
+
+A test-only, thread-local one-shot hook deterministically models discovery
+teardown. In the red source the hook ran **after a successful ping and before
+the second owner lookup**. It removed the exact registration and cleared its
+recorded endpoint while status retained its selected owner. The original code
+failed with the exact endpoint-unavailable diagnostic. In the repaired source
+the same hook runs immediately before sampling through the retained owner.
+Additional branches change Execution identity or corrupt the overlay's upper
+record; both still fail rather than returning filesystem data.
+
+This is synchronized native-runtime control-flow evidence using an owned
+sleep process and synthetic overlay records, not a fully concurrent physical
+owner teardown. It confirms the checkout bug independently of the earlier
+external binary, whose source alignment remains unproven. Status fields are
+sequential observations, not a newly promised atomic filesystem/lifecycle view.
+
+#### Commands and actual outcomes
+
+All workloads were serial, resource-guarded, `nice -n 10`, with two Cargo jobs,
+one test thread, offline Cargo, no automatic tool installation, process-local
+mise trust/noninteractive settings and `timeout -k 30 840` under an 870s tool
+limit. No command approached that limit. Native tests used the explicit serial
+Node shim, not ineffective argument forwarding.
+
+| UTC | Exact command/check | Outcome |
+| --- | --- | --- |
+| 01:58:55–02:00:02 | `mise run test -- pvisor -- --lib -E 'test(status_retains_selected_owner_across_teardown_discovery_removal)'` | **Red: 1 failed**, 767 skipped; cold compile 66s; exact endpoint-unavailable error after deterministic ping/teardown/rediscovery ordering; owned process cancelled/reaped before assertion |
+| 02:01:09–02:01:31 | `mise run test -- pvisor -- --lib -E 'test(status_retains_selected_owner_across_teardown_discovery_removal) \| test(local_queries_use_the_exact_owner_even_without_a_working_socket) \| test(runtime::session_service::tests::)'` | **20 passed**, 748 skipped; one unused private re-export warning subsequently removed |
+| 02:02:46 | `mise exec -- rustfmt --edition 2024` on the four changed Rust files | Passed |
+| 02:02:47–02:03:04 | `mise run test -- pvisor -- --lib -E 'test(runtime::instance_control::tests::) \| test(runtime::session_service::tests::) \| test(local_control_serves_shared_overlay_contracts_without_a_socket)'` | **44 passed**, 724 skipped, no warnings; nextest ID `d521b24e-6cf3-4742-89e8-f8a2f52f05d7` |
+| 02:03:04–02:03:35 | `mise exec -- cargo build --locked --offline -p pvisor-cli --bin pvisor` | Passed, 31.41s; fresh checkout-local GNU Host CLI, not a packaged product/firmware build |
+| 02:03:51–02:04:10 | `PVISOR_PLUGIN_BINARY="$PWD/target/debug/pvisor" mise run test-agent-plugins-native` | **16 passed**, zero failed/skipped/cancelled; 18.905s; real fresh-CLI stdio/native staging and strict cancellation assertions |
+| 02:04:10–02:04:39 | `mise exec -- cargo clippy --locked --offline -p pvisor --lib --tests -- -D warnings` | Passed |
+
+Final fresh-CLI faults: EOF/truncated EOF/client pipe loss cancelled; owned server
+SIGKILL naturally completed after the bounded 12-second command. Retained
+candidates remained reviewable; live mutations were refused. No adapter test
+changes were needed, and no nonzero status results were suppressed.
+
+#### Build provenance, resources, cleanup and remaining gaps
+
+- Fresh binary path:
+  `/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor`.
+  SHA-256 `6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20`.
+  ELF x86-64 PIE, GNU/Linux dynamic loader, unstripped debug build. No external
+  installed/debug CLI was overwritten.
+- Tested source HEAD `c80b0eba298ef63cfc88b3147dd51db477f26319` plus uncommitted
+  changes. SHA-256 of `git diff --` for the four runtime Rust paths:
+  `c5745e80972a0d9397ff3b4ceedbce306193e9bfe755232d9c2ddd70bc725131`.
+  The crate README addition documents the selected-owner read semantics.
+- Every workload resource gate passed: MemAvailable
+  19,121,278,976–20,409,352,192 bytes, disk free
+  343,641,554,944–345,140,113,408 bytes, load1 0.891–2.213.
+  Builds consumed under 2 GiB additional disk; no cache cleanup performed.
+- Owned regression processes are cancelled and awaited before result assertions.
+  Native fixtures use the reviewed terminal-reconciliation/drop cleanup; no
+  unrelated process, mount, network or system changes were made.
+- Workload slot released at 02:04:39 UTC for round4 follow-up validation.
+  No commits, pushes, Git merges, publication, model calls, credentials,
+  installs or semspec approval/claim changes.
+- Full runtime/package/workspace tests were not run; targeted coverage was chosen
+  rather than spending a known potentially hanging 900s full-runtime attempt.
+  No VM boot, OCI, macOS, product packaging/firmware, rustdoc or Python coverage.
+  The full native plugin suite available in this child has 16 cases, not the
+  parent's later round3/round4 aggregate additions.
+- Recommended next scenario: owner identity changes to a successor Execution
+  while a read is in progress, checking strict refusal without stale mutation
+  authority. Do not generalize this selected-owner read fix into retrying
+  uncertain commands or preserving discovery after Execution completion.
+
+Final audit at 02:05:58 UTC: `git diff --check` passed, no round5 regression or
+disconnect fixture process/current-namespace mount remained. The process scan
+also saw round4's newly authorized validation shell referencing the fresh binary;
+it was not a round5 leak and was not signalled. Fresh artifact hash was unchanged
+and binary/cache retained for that read-only reuse. No additional workloads ran
+after the slot release.

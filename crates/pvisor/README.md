@@ -409,6 +409,15 @@ The process-local owner table holds weak references keyed by exact Session/Execu
 The actual Execution task registers and unregisters its owner; retained handles do
 not prolong discovery after completion.
 
+Once a status query selects a local owner, filesystem and activity samples use
+that same retained owner rather than rediscovering it between a ping and a read.
+Concurrent teardown can remove discovery without invalidating this read-only
+selection. The owner still validates the current Session/Execution/stage binding;
+changed identities and corrupt workspace records remain errors. This does not
+extend discovery, retain writable mounts, or authorize apply/drop after shutdown.
+The synchronized teardown regression checks discovery removal between selection
+and sampling, plus changed-identity and malformed-overlay rejection.
+
 The instance socket is the only host control listener. Same-process status,
 workspace observations/inspect and native capture call that Execution's owner
 objects directly, including when external instance control is disabled. The old
