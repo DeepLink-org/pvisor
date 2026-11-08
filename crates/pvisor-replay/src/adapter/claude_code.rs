@@ -2740,15 +2740,27 @@ mod tests {
     fn bash_reports_truncation_and_background_cleanup() {
         let workspace = tempfile::tempdir().unwrap();
         let large_log = workspace.path().join("large.log");
-        let (_, is_error, _, truncated) = run_bash(
-            "yes x | head -c 6291456",
+        // Truncation is an output contract, not a two-second throughput
+        // benchmark on loaded CI hosts. A finite writer also avoids a SIGPIPE
+        // producer racing process-group cleanup after a pipeline completes.
+        let (content, is_error, return_code, truncated) = run_bash(
+            "dd if=/dev/zero bs=1024 count=6144 2>/dev/null",
             workspace.path(),
-            Duration::from_secs(2),
+            Duration::from_secs(30),
             &large_log,
         )
         .unwrap();
-        assert!(!is_error);
+        assert_eq!(return_code, Some(0), "Bash output command failed");
+        assert!(!is_error, "output command failed or required cleanup");
         assert!(truncated);
+        assert!(
+            content
+                .contains("[output truncated by pvisor replay; full output is in the process log]")
+        );
+        assert_eq!(
+            std::fs::metadata(&large_log).unwrap().len(),
+            6 * 1024 * 1024
+        );
 
         let background_log = workspace.path().join("background.log");
         let (content, is_error, _, _) = run_bash(
