@@ -49,7 +49,7 @@ assert.throws(() => validateToolArguments(spawn, { name: spawn.name, arguments: 
 const { defineTool } = await import(pathToFileURL(path.join(dshRoot, "lib/index.js")));
 const dshTools = [];
 registerDsh({ tools: { register: (tool) => dshTools.push(tool) }, approval: {} }, defineTool);
-assert.deepEqual(dshTools.map((tool) => tool.name), [...tools.map((tool) => tool.name), "pvisor_apply", "pvisor_drop"]);
+assert.deepEqual(dshTools.map((tool) => tool.name), [...tools.map((tool) => tool.name), "pvisor_apply", "pvisor_drop", "pvisor_drop_batch"]);
 // DSH cannot represent numeric bounds in its DSL; shared backend validation
 // must still reject them before any native process is launched.
 await assert.rejects(
@@ -58,8 +58,19 @@ await assert.rejects(
     { agent: { session: { header: { cwd: process.cwd() } } }, signal: new AbortController().signal },
   ),
 );
+const nestedTools = [];
+registerDsh({ tools: { register: (tool) => nestedTools.push(tool) }, approval: {} }, defineTool, () => ({
+  doctor: async () => ({ exit_code: 0 }),
+  run: async () => ({ exit_code: 0, output_status: "complete", selector: "/fixture/stage" }),
+}));
+const fanout = nestedTools.find((tool) => tool.name === "pvisor_fanout");
+const nestedResult = await fanout.execute({ tasks: [{ name: "sample", argv: ["true"] }] }, {
+  agent: { session: { header: { cwd: process.cwd() } } }, signal: new AbortController().signal,
+});
+assert.equal(nestedResult.exit_code, 0);
+assert.equal(nestedResult.results[0].result.selector, "/fixture/stage");
 console.log(JSON.stringify({
   pi: { version: piPackage.version, checks: "extension loader, catalog, command registration, argument validation" },
-  dsh: { version: dshPackage.version, checks: "defineTool compiler, catalog, backend bounds" },
+  dsh: { version: dshPackage.version, checks: "defineTool compiler, catalog, nested fanout schema, backend bounds" },
   scope: "No interactive UI, profile composition, Electron or live-model acceptance",
 }, null, 2));

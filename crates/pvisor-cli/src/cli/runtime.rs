@@ -25,6 +25,10 @@ pub struct StatusArgs {
     pub output_dir: PathBuf,
     #[arg(long)]
     pub json: bool,
+    /// Lifecycle only: do not enumerate stage files, checkpoints or apply batches.
+    #[arg(long, requires = "json", conflicts_with_all = ["review", "diff"])]
+    #[serde(default)]
+    pub lifecycle: bool,
     /// Show the Session's Run Bundle, safety evidence, and staged changes.
     #[arg(long)]
     pub review: bool,
@@ -148,6 +152,19 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             checkpoint: None,
             mount: None,
         });
+    }
+    if args.lifecycle {
+        let response = pvisor::session_service::SessionService::lifecycle_status(
+            &super::host::service_context(),
+            pvisor::session_service::StatusRequest {
+                session: pvisor::session_service::SessionSelection {
+                    selector: args.selector,
+                    storage: args.output_dir,
+                },
+            },
+        )?;
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
     }
     let response = pvisor::session_service::SessionService::status(
         &super::host::service_context(),
@@ -613,7 +630,7 @@ fn render_drop(response: pvisor::session_service::MutationResponse) {
     }
 }
 
-fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRecord> {
+pub(super) fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRecord> {
     let storage = output_dir
         .canonicalize()
         .unwrap_or_else(|_| output_dir.to_path_buf());

@@ -58,6 +58,8 @@ pub(crate) struct Owner {
     mounts: Mutex<HashMap<String, InspectionMount>>,
     inspections_open: AtomicBool,
     capture_admission: Arc<tokio::sync::Semaphore>,
+    #[cfg(target_os = "linux")]
+    exec: Mutex<Option<Arc<crate::executor::host_exec::Broker>>>,
 }
 
 // The owner, not the caller, owns this unique invocation directory. Both
@@ -162,6 +164,8 @@ pub(crate) fn register(
         mounts: Mutex::new(HashMap::new()),
         inspections_open: AtomicBool::new(true),
         capture_admission: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
+        #[cfg(target_os = "linux")]
+        exec: Mutex::new(None),
     });
     let mut owners = owners().lock().unwrap_or_else(|e| e.into_inner());
     anyhow::ensure!(
@@ -187,6 +191,48 @@ pub(crate) fn local_owner(record: &super::RunRecord) -> Option<Arc<Owner>> {
     let owner = find(&record.run_id, record.execution_id.as_deref()?)?;
     let saved = owner.record.as_ref()?;
     (saved.stage_dir() == record.stage_dir()).then_some(owner)
+}
+
+impl Owner {
+    pub(crate) fn exec_supported(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.execution.status().state == pvisor_core::RunState::Running
+                && self
+                    .exec
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct ExecRegistration(Arc<Owner>);
+
+#[cfg(target_os = "linux")]
+impl Drop for ExecRegistration {
+    fn drop(&mut self) {
+        self.0.exec.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn install_exec(
+    execution: &Execution,
+    broker: Arc<crate::executor::host_exec::Broker>,
+) -> Option<ExecRegistration> {
+    let status = execution.status();
+    let owner = find(
+        status.run_id.as_str(),
+        status.execution.execution_id.as_str(),
+    )?;
+    *owner.exec.lock().unwrap_or_else(|e| e.into_inner()) = Some(broker);
+    Some(ExecRegistration(owner))
 }
 
 pub(crate) fn socket(handle: &RunHandle) -> anyhow::Result<PathBuf> {
@@ -417,6 +463,17 @@ async fn serve(
     else {
         return;
     };
+    #[cfg(target_os = "linux")]
+    if matches!(
+        request.command,
+        super::host_transport::InstanceCommand::Exec { .. }
+    ) {
+        if let Ok(stream) = stream.into_std() {
+            let _ = stream.set_nonblocking(false);
+            let _ = tokio::task::spawn_blocking(move || serve_exec(stream, request, owner)).await;
+        }
+        return;
+    }
     retain_reply.store(
         matches!(
             request.command,
@@ -470,6 +527,26 @@ async fn dispatch(
             })
     };
     let value = match request.command {
+        InstanceCommand::Exec { .. } => {
+            return Err(AgentCtlHostError::new(
+                AgentCtlHostErrorCode::Unsupported,
+                "Session exec requires a running Linux Host sandbox",
+            ));
+        }
+        InstanceCommand::LifecycleStatus {} => {
+            let record = owner.current_record().map_err(error)?;
+            let result = super::session_service::SessionService::lifecycle_status(
+                &Default::default(),
+                super::session_service::StatusRequest {
+                    session: super::session_service::SessionSelection {
+                        selector: Some(record.stage_dir()),
+                        storage: record.storage.clone(),
+                    },
+                },
+            )
+            .map_err(error)?;
+            serde_json::to_value(result)
+        }
         InstanceCommand::SessionStatus {} => {
             let record = owner.current_record().map_err(error)?;
             let result = super::session_service::SessionService::status(
@@ -677,6 +754,65 @@ impl Owner {
         };
         value.map_err(|e| error(e.into()))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn serve_exec(
+    mut stream: std::os::unix::net::UnixStream,
+    request: AgentCtlHostRequest<super::host_transport::InstanceCommand>,
+    owner: Arc<Owner>,
+) {
+    use anyhow::Context;
+    use std::os::fd::AsRawFd;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        request.validate()?;
+        let status = owner.execution.status();
+        validate_host_target(request.target.as_ref(), status.run_id.as_str(), status.execution.execution_id.as_str())?;
+        anyhow::ensure!(status.state == pvisor_core::RunState::Running, "Session exec requires a running Session; no implicit resume");
+        let broker = owner.exec.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            .ok_or_else(|| anyhow::anyhow!("CAPABILITY_UNSUPPORTED: exec requires a Linux Host PID-namespace sandbox"))?;
+        let super::host_transport::InstanceCommand::Exec { argv, tty } = &request.command else { unreachable!() };
+        let operation = crate::executor::host_exec::Request { argv: argv.clone(), tty: *tty };
+        operation.validate()?;
+        stream.set_read_timeout(Some(IO_TIMEOUT))?;
+        let (marker, fds) = crate::executor::host_exec::receive(stream.as_raw_fd(), 1)?;
+        anyhow::ensure!(marker == b"E" && fds.len() == 3, "invalid exec stdio transfer");
+        let mut reply = broker.start(&operation, &fds)?;
+        loop {
+            let mut descriptors = [
+                libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: reply.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            ];
+            if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, 100) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted { continue; }
+                return Err(error.into());
+            }
+            anyhow::ensure!(descriptors[0].revents == 0, "exec caller disconnected; command cleanup requested");
+            if descriptors[1].revents != 0 {
+                let value: serde_json::Value = super::host_transport::read_host_frame_sync(&mut reply)?;
+                anyhow::ensure!(value.get("error").is_none(), "exec failed: {}", value["error"]);
+                if value["started"].as_bool() == Some(true) {
+                    super::host_transport::write_host_frame_sync(&mut stream, &AgentCtlHostResponse {
+                        version: AGENTCTL_HOST_VERSION, request_id: request.request_id.clone(),
+                        result: Ok(serde_json::json!({"started":true,"session_id":status.run_id,
+                            "execution_id":status.execution.execution_id})),
+                    })?;
+                    continue;
+                }
+                let code = value["code"].as_i64().context("exec exit code unavailable")?;
+                return Ok(serde_json::json!({"session_id":status.run_id,"execution_id":status.execution.execution_id,"exit_code":code}));
+            }
+            anyhow::ensure!(!owner.execution.status().state.is_terminal(), "Session ended while exec was active");
+        }
+    })().map_err(|error| AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable, format!("{error:#}")));
+    let response = AgentCtlHostResponse {
+        version: AGENTCTL_HOST_VERSION,
+        request_id: request.request_id,
+        result,
+    };
+    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    let _ = super::host_transport::write_host_frame_sync(&mut stream, &response);
 }
 
 async fn respond(

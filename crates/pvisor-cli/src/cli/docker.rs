@@ -241,6 +241,9 @@ pub(super) struct Logs {
 }
 #[derive(Debug, Args)]
 pub(super) struct Exec {
+    /// Interpret TARGET as a live Session selector (Linux Host sandbox only).
+    #[arg(long)]
+    session: bool,
     #[arg(short, long)]
     interactive: bool,
     #[arg(short = 't', long)]
@@ -253,8 +256,8 @@ pub(super) struct Exec {
     cwd: Option<PathBuf>,
     #[arg(short = 'u', long)]
     user: Option<String>,
-    /// Container followed by the executable and its literal arguments.
-    #[arg(required = true, num_args = 2.., trailing_var_arg = true, value_names = ["CONTAINER", "COMMAND"])]
+    /// Container (or --session selector), executable and literal arguments.
+    #[arg(required = true, num_args = 2.., trailing_var_arg = true, value_names = ["TARGET", "COMMAND"])]
     invocation: Vec<String>,
 }
 
@@ -389,6 +392,24 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     let command = command.ungroup();
+    if let DockerCommand::Exec(args) = &command
+        && args.session
+    {
+        anyhow::ensure!(
+            args.env.is_empty()
+                && args.env_files.is_empty()
+                && args.cwd.is_none()
+                && args.user.is_none(),
+            "Session exec inherits cwd, environment and identity; overrides are unsupported"
+        );
+        let _terminal = Terminal::new(args.tty, args.interactive)?;
+        return super::session_exec::run(
+            std::path::Path::new(&args.invocation[0]),
+            &args.invocation[1..],
+            args.interactive,
+            args.tty,
+        );
+    }
     if let DockerCommand::Build(args) = command {
         return build::run(args);
     }

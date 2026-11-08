@@ -20,11 +20,23 @@ async function fixture(t) {
   const binary = path.join(root, "fake-pvisor.mjs");
   const log = path.join(root, "calls.jsonl");
   await writeFile(binary, `#!${process.execPath}
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
   console.log("--safe --no-agent-defaults --stage --timeout --overlaynet-deny-all --path --dry-run --json ");
   process.exit(0);
+}
+if (args[0] === "status" && args.includes("--review")) {
+  const code = JSON.parse(readFileSync(args[1]+"/fixture-result.json","utf8")).code;
+  console.log(JSON.stringify({schema_version:6,filesystem:{target:process.cwd()},
+    run:{run_id:"fixture",execution_id:"fixture-execution",state:code?"failed":"completed",
+      exit_code:code,finished_at_unix_ms:1,output:{stdout:"task stdout",stderr:"task stderr"}}}));
+  process.exit(0);
+}
+if (args[0] === "spawn") {
+  const stage=args[args.indexOf("--stage")+1];
+  mkdirSync(stage,{recursive:true});
+  writeFileSync(stage+"/fixture-result.json",JSON.stringify({code:args.includes("fail")?7:0}));
 }
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, cwd: process.cwd(), home: process.env.HOME, cache: process.env.XDG_CACHE_HOME })+"\\n");
 if (args.includes("wait")) { setTimeout(() => {}, 120000); }
@@ -35,7 +47,7 @@ else {
   if (args.includes("fail")) process.exitCode = 7;
 }
 `, { mode: 0o700 });
-  const options = { binary, stateDir: path.join(root, "private-state") };
+  const options = { binary, stateDir: path.join(root, "private-state"), execution: "host" };
   const backend = new Backend(project, options);
   const calls = async () => (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
   return { root, project, binary, options, backend, calls };
@@ -64,7 +76,9 @@ test("run always selects safe Host staging, exact argv, deny-all and deadline", 
     "--timeout", "17s", "--", ...argv,
   ]);
   const record = JSON.parse(await readFile(path.join(path.dirname(result.stage), "task.json"), "utf8"));
-  assert.deepEqual(Object.keys(record).sort(), ["project", "schema_version", "task"]);
+  assert.deepEqual(Object.keys(record).sort(), ["created_at_unix_ms", "execution", "project", "schema_version", "task"]);
+  assert.equal(record.execution.selected, "host");
+  assert.ok(Number.isSafeInteger(record.created_at_unix_ms));
 });
 
 test("failure retains exact task identity and never retries or accepts", async (t) => {
@@ -77,7 +91,7 @@ test("failure retains exact task identity and never retries or accepts", async (
   await f.backend.operate("preview", { selector: result.selector, paths: ["file with spaces", "src"] });
   const calls = await f.calls();
   assert.deepEqual(calls[1].args, ["status", result.stage, "--json"]);
-  assert.deepEqual(calls[2].args, ["review", result.stage, "--diff"]);
+  assert.deepEqual(calls[2].args, ["review", result.stage, "--json"]);
   assert.deepEqual(calls[3].args, ["status", result.stage, "--json"]);
   assert.deepEqual(calls[4].args, ["apply", result.stage, "--json", "--dry-run", "--path", "file with spaces", "--path", "src"]);
 });
@@ -160,13 +174,19 @@ const success = { exit_code: 0, interrupted: false, stdout: "preview", stderr: "
 function hostBackend(log) {
   return {
     project: async () => "/project",
-    operate: async (action, input) => { log.push({ action, input }); return success; },
+    operate: async (action, input) => {
+      log.push({ action, input });
+      return action === "preview" ? { ...success, summary: "preview", approval_ready: true,
+        stdout: JSON.stringify({ schema_version: 1, mode: "preview", source: { stage: input.selector },
+          scope: { target: "/project" }, selected: input.paths.map((path) => ({ path, kind: "modified" })),
+          required: [], remaining: { in_scope: 0 } }) } : success;
+    },
     run: async (input) => { log.push({ action: "run", input }); return success; },
     doctor: async () => success,
   };
 }
 
-test("Pi registers additive tools and requires UI confirmation for each mutation", async () => {
+test("Pi confirms apply but drops explicit tasks without a UI or confirmation", async () => {
   const commands = new Map();
   const registered = [];
   const log = [];
@@ -186,7 +206,10 @@ test("Pi registers additive tools and requires UI confirmation for each mutation
   assert.deepEqual(log.map((call) => call.action), ["preview", "preview", "apply"]);
   ctx.hasUI = false;
   await commands.get("pvisor").handler("drop /stage", ctx);
-  assert.ok(!log.some((call) => call.action === "drop"));
+  assert.equal(log.at(-1).action, "drop");
+  const before = log.length;
+  await apply('apply {"selector":"/stage","paths":["src"]}', ctx);
+  assert.equal(log.length, before, "Apply still requires an interactive UI");
 });
 
 test("Pi uses call cwd and propagates tool cancellation and failures", async () => {
@@ -206,7 +229,7 @@ test("Pi uses call cwd and propagates tool cancellation and failures", async () 
   assert.deepEqual(observed, { cwd: "/another", signal });
 });
 
-test("DSH permits only allowed-once; cancellation or unavailable approval cannot mutate", async () => {
+test("DSH apply permits only allowed-once; cancellation or unavailable approval cannot publish", async () => {
   const definitions = new Map();
   const log = [];
   let answer = "unavailable";
@@ -219,15 +242,16 @@ test("DSH permits only allowed-once; cancellation or unavailable approval cannot
   const exec = () => ({ agent: { session: { header: { cwd: "/project" } } }, signal: controller.signal, callId: "call" });
   const apply = definitions.get("pvisor_apply");
   assert.equal(apply.parameters.selector.required, true);
+  assert.equal(apply.parameters.summary.required, true);
   assert.equal(definitions.get("pvisor_spawn").parameters.argv.minItems, undefined);
   assert.equal(definitions.get("pvisor_spawn").parameters.timeout_seconds.minimum, undefined);
   assert.equal(definitions.get("pvisor_spawn").parameters.timeout_seconds.required, undefined);
   for (answer of ["rejected", "cancelled", "unavailable", "allowed-always"]) {
-    await assert.rejects(apply.execute({ selector: "/stage", paths: ["src"] }, exec()), /not approved/);
+    await assert.rejects(apply.execute({ selector: "/stage", paths: ["src"], summary: "Update selected source." }, exec()), /not approved/);
   }
   assert.ok(log.every((call) => call.action === "preview"));
   answer = "allowed-once";
-  await apply.execute({ selector: "/stage", paths: ["src"] }, exec());
+  await apply.execute({ selector: "/stage", paths: ["src"], summary: "Update selected source." }, exec());
   assert.equal(log.at(-1).action, "apply");
   controller.abort();
   await assert.rejects(definitions.get("pvisor_drop").execute({ selector: "/stage" }, exec()));
@@ -242,7 +266,7 @@ test("Pi and DSH never ask for approval or publish after a blocked native previe
     const client = hostBackend(log);
     client.operate = async (action) => {
       log.push({ action });
-      return { ...success, exit_code: 3, stderr: "native conflict" };
+      return { ...success, exit_code: 3, stderr: "native conflict", summary: "Apply blocked: native conflict", approval_ready: false };
     };
     if (kind === "pi") {
       const commands = new Map();
@@ -264,7 +288,7 @@ test("Pi and DSH never ask for approval or publish after a blocked native previe
         tools: { register: (tool) => definitions.set(tool.name, tool) },
         approval: { request: async () => { prompts++; return "allowed-once"; } },
       }, (value) => value, () => client);
-      await assert.rejects(definitions.get("pvisor_apply").execute({ selector: "/stage", paths: ["src"] }, {
+      await assert.rejects(definitions.get("pvisor_apply").execute({ selector: "/stage", paths: ["src"], summary: "Update selected source." }, {
         agent: { session: { header: { cwd: "/project" } } }, signal: new AbortController().signal,
       }), /native conflict/);
     }
@@ -281,7 +305,7 @@ test("DSH rechecks cancellation after an approval answer settles", async () => {
     tools: { register: (tool) => definitions.set(tool.name, tool) },
     approval: { request: async () => { controller.abort(); return "allowed-once"; } },
   }, (value) => value, () => hostBackend(log));
-  await assert.rejects(definitions.get("pvisor_apply").execute({ selector: "/stage", paths: ["src"] }, {
+  await assert.rejects(definitions.get("pvisor_apply").execute({ selector: "/stage", paths: ["src"], summary: "Update selected source." }, {
     agent: { session: { header: { cwd: "/project" } } }, signal: controller.signal,
   }));
   assert.deepEqual(log.map((call) => call.action), ["preview"]);
@@ -307,7 +331,7 @@ test("MCP refuses an implicit plugin-cache project", async () => {
 test("MCP initializes, reports tools, contains malformed input, and refuses mutation tools", { timeout: 5000 }, async (t) => {
   const f = await fixture(t);
   const child = spawn(process.execPath, [fileURLToPath(new URL("../mcp.mjs", import.meta.url)), "--project", f.project], {
-    env: { ...process.env, PVISOR_PLUGIN_BINARY: f.binary, PVISOR_PLUGIN_STATE_DIR: f.options.stateDir },
+    env: { ...process.env, PVISOR_PLUGIN_BINARY: f.binary, PVISOR_PLUGIN_STATE_DIR: f.options.stateDir, PVISOR_PLUGIN_EXECUTION: "host" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const lines = createInterface({ input: child.stdout });
@@ -335,6 +359,11 @@ test("MCP initializes, reports tools, contains malformed input, and refuses muta
   assert.deepEqual(initialized.result.serverInfo, { name: pkg.name, version: pkg.version });
   const listed = await request("tools/list");
   assert.deepEqual(listed.result.tools.map((tool) => tool.name), tools.map((tool) => tool.name));
+  for (const name of ["pvisor_fork", "pvisor_export"]) {
+    const entry = listed.result.tools.find((tool) => tool.name === name);
+    assert.equal(entry.annotations.readOnlyHint, false);
+    assert.equal(entry.annotations.idempotentHint, false);
+  }
   const invalid = await request("tools/list", null);
   assert.equal(invalid.error.code, -32600);
   assert.equal((await request("nonexistent")).error.code, -32601);

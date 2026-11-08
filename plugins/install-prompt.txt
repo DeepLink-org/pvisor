@@ -15,17 +15,17 @@ Harness (DSH), or Codex. Use the registry release, not a source checkout.
    Do not install unrelated Agent applications, change model logins, or remove
    existing plugins without permission. Explain host-profile changes first.
 4. Use the selected host's native package manager:
-     Pi: pi install npm:pvisor-agent-plugins@0.1.1
-     DSH Web: dsh plugin --profile web add pvisor-agent-plugins@0.1.1
-     DSH Desktop: dsh plugin --profile desktop add pvisor-agent-plugins@0.1.1
+     Pi: pi install npm:pvisor-agent-plugins@0.1.12
+     DSH Web: dsh plugin --profile web add pvisor-agent-plugins@0.1.12
+     DSH Desktop: dsh plugin --profile desktop add pvisor-agent-plugins@0.1.12
    npm installs only the plugin. The Agent host must have pvisor on its PATH;
    desktop apps may not inherit terminal PATH. If needed, configure the absolute
    CLI path with PVISOR_PLUGIN_BINARY in the host environment. Invalid overrides
    or missing CLI capabilities are errors; never silently select another runtime.
 5. For Codex, install the remote workflow and register tools from the project:
-     codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.1
+     codex plugin marketplace add DeepLink-org/pvisor --ref plugins-v0.1.12
      codex plugin add pvisor@pvisor
-     codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.1 pvisor-agent-mcp --project "$PWD"
+     codex mcp add pvisor -- npx --yes --package pvisor-agent-plugins@0.1.12 pvisor-agent-mcp --project "$PWD"
    A client without plugins may use MCP alone. Do not register duplicate servers
    or infer the project from an installed plugin's cwd.
 6. Never print keys or put credentials in plugin config or task records. Do not
@@ -37,7 +37,8 @@ Harness (DSH), or Codex. Use the registry release, not a source checkout.
    assume a published runtime is compatible. In a disposable project, run pvisor_spawn to
    create two files, review both, accept one and drop the other. Verify the host
    was unchanged before acceptance and the accepted file survives drop.
-   Test user rejection as well as approval in Pi or DSH. Codex acceptance stays
+   Test apply rejection and approval in Pi/DSH; verify single and batch drop do
+   not prompt but still reject invalid selectors and respect cancellation. Codex acceptance stays
    with the user through native pvisor review/apply/drop from the Homebrew or pip
    installation. The npm plugin does not provide a pvisor launcher.
 8. Report exact installed versions, host/profile, runtime selection, config
@@ -45,6 +46,13 @@ Harness (DSH), or Codex. Use the registry release, not a source checkout.
    intercept native Agent tools. Every spawn is an independent Session.
    Task HOME/XDG state is fresh and private, not the host's login/config/cache
    directory. Workspace stages remain persistent in the configured state root.
+9. To test export, ask the operator to configure PVISOR_PLUGIN_EXPORT_DIR as an
+   existing private 0700 artifact root outside project/state/toolchain, then
+   restart the host. The model supplies only a new child name and explicit paths;
+   do not let task arguments choose an arbitrary host output directory.
+   Export before full apply/drop; inspect the manifest and partial_results.
+   Fork needs a stopped retained Host source and an explicit child argv; native
+   timeout/policy are inherited, not widened by plugin flags.
 
 Missing/incompatible runtime or failed confinement are errors. Never substitute
 host execution, remove --safe, automatically retry uncertain side effects,

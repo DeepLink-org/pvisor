@@ -38,8 +38,9 @@ pub use effects::{DropRequest, MutationOutcome, MutationResponse};
 pub use views::{ReviewContext, ReviewRequest, ReviewResponse, ReviewUnavailable};
 pub(crate) mod status;
 pub use status::{
-    DeniedSample, ExecutionSummary, FilesystemActivity, FilesystemSummary, NetworkActivity,
-    ObservationSource, StatusExecution, StatusOverlay, StatusRequest, StatusResponse, StatusRun,
+    DeniedSample, ExecutionSummary, FilesystemActivity, FilesystemSummary, LifecycleStatus,
+    NetworkActivity, ObservationSource, StatusExecution, StatusOverlay, StatusRequest,
+    StatusResponse, StatusRun,
 };
 pub use workspace::{
     WorkspaceCreateRequest, WorkspaceCreateResponse, WorkspaceDeleteRequest, WorkspaceGcRequest,

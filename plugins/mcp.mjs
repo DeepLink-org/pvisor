@@ -16,6 +16,7 @@ if (!project) {
 }
 const backend = new Backend(project);
 const active = new Map();
+const statefulTools = new Set(["pvisor_spawn", "pvisor_fork", "pvisor_export", "pvisor_fanout", "pvisor_doctor"]);
 let initialized = false;
 const send = (id, value, error = false) =>
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, [error ? "error" : "result"]: value })}\n`);
@@ -50,7 +51,7 @@ async function dispatch(message) {
         protocolVersion: versions.includes(params.protocolVersion) ? params.protocolVersion : "2025-11-25",
         capabilities: { tools: {} },
         serverInfo: { name, version },
-        instructions: "Task-only staging. Native Agent tools are not intercepted. No automatic retries or acceptance. Use the same exact stage selector as native pvisor status/review/apply/drop and let the user accept selected results.",
+        instructions: "Task-only staging. Native Agent tools are not intercepted. Fresh spawns are independent; explicit workspace fork branches retained files, not memory/conversations. Export extracts artifacts without acceptance. No automatic retries or acceptance. Keep exact selectors and let the user accept selected results.",
       });
     } else if (method === "ping") {
       send(id, {});
@@ -59,7 +60,8 @@ async function dispatch(message) {
     } else if (method === "tools/list") {
       send(id, { tools: tools.map((tool) => ({
         ...tool,
-        annotations: { readOnlyHint: tool.name !== "pvisor_spawn", destructiveHint: false, idempotentHint: tool.name !== "pvisor_spawn", openWorldHint: false },
+        annotations: { readOnlyHint: !statefulTools.has(tool.name), destructiveHint: false,
+          idempotentHint: !statefulTools.has(tool.name), openWorldHint: false },
       })) });
     } else if (method === "tools/call") {
       try {
