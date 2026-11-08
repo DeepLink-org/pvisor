@@ -459,6 +459,12 @@ publication dependencies. Child publication advances only their journaled mtime,
 not mode/owner/xattrs; interrupted-child recovery tolerates that timestamp change
 but still rejects parent permission/ownership/xattr changes. Opaque-directory and
 hardlink dependency checks remain unchanged.
+The Linux `preview_existing_parent_conflicts_preserve_host_and_stage` regression
+documents this conservative fence with legacy and compact journals, file and
+directory-prefix selectors, sibling namespace changes and real metadata/content
+conflicts. Editing an existing unselected sibling's contents does not itself
+change the parent timestamp and does not block preview. These checks distinguish
+current behavior from any future decision to admit unrelated namespace changes.
 No inventory survives target publication or upper pruning. Target checks occur at publication time;
 completion/recovery collects fresh remaining changes after pruning. Recovery
 must not reuse stale metadata across mutation boundaries.

@@ -1141,3 +1141,91 @@ assertions were retained and pass after the production fix, not weakened.
   under adapter output truncation and disconnect, without interpreting a
   truncated result as complete. Separately test pytest when a compatible
   system/project-local installation is available offline; do not relax HOME.
+
+### Round 8 — reported preview conflict at an existing parent
+
+- Investigation and fixtures only; no production behavior change. Static work
+  preceded the sole TEST/BUILD grant; workloads ran 2026-11-08
+  02:24:41–02:25:16 UTC and the slot was released immediately afterward.
+  Read root README/AGENTS and overlay-core README; discovery found no additional
+  ancestor instructions/READMEs for the edited source.
+- The reported schema1 preview blocked/exit3, empty selected/required and null
+  execution, named `experiments/pvisor-case` while the candidate was modified
+  `experiments/pvisor-case/scratch.txt` (14 bytes, mode0644). This identifies
+  the failed conflict fence, not the external change that caused it. The pasted
+  JSON was truncated and exact selection paths remain unknown. Neither the
+  user's Pulsing project nor its retained stage was accessed or modified.
+
+#### Source evidence and bounded reproduction
+
+`core.rs::ensure_upper_parents` records existing parents before importing them
+for child copy-up. `apply.rs::prepare_apply_preimages` retains those recorded
+ancestors as read-only fences without selecting their metadata.
+`validate_target_preimages` compares the complete directory fingerprint during
+ordinary preview/apply; only recovery has a timestamp-tolerant exception.
+This agrees with the existing overlay-core README contract, not an accidental
+adapter selection expansion.
+
+Added one Linux Core fixture matrix, 36 scenarios: legacy/compact journals ×
+file-specific/directory-prefix selectors × nine external mutations. Each stages
+an existing nested scratch file, verifies an initially successful inert preview,
+then mutates only owned disposable host data after first observation. A fixed
+past parent mtime avoids timing sleeps or host clock changes.
+
+- Sibling file creation/removal and subdirectory creation reproduce the exact
+  `target changed after staging at .../experiments/pvisor-case; refusing to
+  overwrite concurrent changes` blocker. Parent dev/inode are unchanged; its
+  fingerprint differs only by timestamp. Normal execution also refuses.
+- Selected-file content edits and parent mode/user-xattr edits refuse. Parent
+  replacement/symlink rebinding also refuse; these namespace operations change
+  the containing `experiments` ancestor, which validation encounters first.
+  The matrix does not establish a persisted inode-identity fence.
+- Changing only an existing unselected sibling's contents succeeds in preview;
+  it does not change the parent's mtime and is not overwritten. This successful
+  branch is preview-only, not an additional execution workflow.
+- Both selectors initially request only the file with no implicit dependencies.
+  Every preview is checked for preservation; failed execution retains host
+  bytes/types/modes/mtimes, parent fingerprint including ownership/xattrs,
+  symlink target, original journal and staged bytes, with no pending apply.
+
+The reported symptom is reproduced, but **the real user's cause is unknown**.
+Editor cache/temp/lock creation after first touch is sufficient; legitimate
+directory metadata changes or rebinding can also explain a parent blocker.
+Host-side task effects could trigger the same fence if they occur after its
+baseline was captured; no such effect was observed on the user's machine.
+No repair red/green is claimed: the new expected-behavior matrix passes against
+unchanged production code.
+
+#### Decision, commands, resources and gaps
+
+Do not globally reuse the recovery matcher. Directory `PathFingerprint` records
+mode/UID/GID/mtime/xattrs, not persistent dev/inode identity or child inventory.
+Ignoring ancestor timestamps would discard a conservative rebinding signal.
+Recommendation: keep current behavior pending user confirmation of exact paths
+and relevant host/editor actions. A less conservative policy would need a
+separately scoped design for structural-only ancestor versus selected directory
+or recursive replacement validation, persisted identity/legacy-stage treatment,
+and publication-time checks. This is larger than this bounded investigation;
+no schema migration or contract weakening was attempted.
+
+All workloads used no-install/noninteractive mise settings, offline Cargo,
+`CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1`, nice10 and finite
+`timeout -k 30` guards (840s for tests, 120s for format).
+
+| UTC | Command | Result |
+| --- | --- | --- |
+| 02:24:41–02:24:51 | `mise run test -- pvisor-overlay-core -- --lib -E 'test(preview_existing_parent_conflicts_preserve_host_and_stage) \| test(existing_parent_recovery_tolerates_child_mtime_but_not_permission_changes) \| test(selected_file_requires_new_ancestors_but_not_existing_directory_metadata)'` | 3 passed, 177 filtered; includes 36 new matrix scenarios |
+| 02:25:09–02:25:16 | `mise run test -- pvisor-overlay-core` | 243 passed, 5 skipped across 12 binaries |
+| Same final guarded interval | `mise exec -- cargo fmt -p pvisor-overlay-core -- --check` | Passed |
+
+An earlier formatting check found only new-test layout differences; corrected
+before tests. Resource boundary observations: available RAM
+18,784,894,976–19,375,087,616 bytes, disk free
+343,152,738,304–343,175,110,656 bytes, load1 0.655–0.876; all gates passed.
+Owned TMPDIR `.round8-owned/tmp` was empty after tests; both empty directories
+were removed. No native Sessions/mounts were started and no shared CLI artifact
+was overwritten. This is Core filesystem evidence, not a fresh Host/plugin UI
+reproduction or a running-task concurrency trace. No Clippy, doctests, rustdoc,
+Python, adapter, VM/OCI, non-Linux or workspace-wide checks were run. No installs,
+network/cloud/credential calls, unrelated kills/global cleanup, semspec changes,
+commits, pushes, Git merges or publication.
