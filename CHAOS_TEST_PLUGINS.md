@@ -1481,3 +1481,181 @@ persisted native output (inherit does not also populate native capture).
 Parent should statically review the opt-in fixture lifecycle before integrating
 the four focused source/documentation files and this log; no production repair
 is offered for PR121 in this round.
+
+### Round 11 — coding-client stops reading MCP diagnostic replies
+
+- Actual UTC: static preparation 03:00:32–03:02:20; sole TEST/BUILD slot granted
+  by coordinator after round10's 03:00:59 release. Workloads
+  03:02:33–03:07:45, final static/resource/ownership audit 03:06–03:08.
+  This is a bounded round in the requested 01:04–09:04 campaign, not evidence
+  of eight hours of testing.
+- User story: a coding-agent UI stops reading replies while diagnostic calls
+  finish and more requests arrive, then resumes, cancels or closes. No host
+  pressure, network service, install, cloud call or credential was needed.
+- Read root instructions/README, plugin README, campaign history and current
+  MCP/backend/process/summary implementation. Previous summary and disconnect
+  regression helpers were not changed. Source baseline: HEAD
+  `14f226b47c31e459a803fe5b7611854f0659cb87`.
+
+#### Confirmed queue rule and minimal repair
+
+The existing 32-request admission limit covers execution only: `send()` writes
+without observing backpressure and `finally` immediately removes the completed
+ID. The 1 MiB incoming-frame limit and subprocess capture limit of 256 KiB per
+stream do not bound completed replies accumulated in stdout's writable queue.
+Parse errors, duplicate-ID and admission-error responses also use that queue.
+This is a source-confirmed missing aggregate bound, not a claim that transient
+buffering proves a universal memory leak.
+
+Compared alternatives with the coordinator before implementation:
+pausing stdin until drain delays cancellation/EOF, while async per-send waits
+need coordinated admission/error queues and changed ID lifetime to avoid merely
+moving the unbounded queue. Chosen rule: a conservative internal 8 MiB serialized
+UTF-8 writable-backlog budget, counting `Buffer` bytes after JSON escaping.
+Every response uses this rule. On overload, emit one bounded stderr diagnostic
+(not another queued JSON-RPC error), stop input and abort all active operations.
+Allow one second for queued replies to flush; then force output termination,
+with explicit exit only after all active operations' `finally` blocks have
+settled and their supervisors have returned. Request-ID/cancellation semantics,
+incoming-frame limits and public tool authority are unchanged.
+
+A forced closure may leave a partial final frame or undelivered completion.
+That is an uncertain outcome requiring exact-selector reconciliation, never an
+automatic rerun, acceptance or disposal. README documents both this limit and
+that it does not bound total RSS, native work or client buffers.
+
+#### Deterministic evidence and exact commands
+
+New `plugins/test/transport.test.mjs` uses a fake CLI but the real MCP server,
+real child processes and OS pipes. It never claims native pipeline coverage.
+Finite diagnostics are four at a time, at most 36 × 256 KiB: 9 MiB raw plus
+approximately 9 MiB serialized reply generation, not unlimited sends or memory
+pressure. The escaped-NUL case uses six diagnostics with under 13 MiB combined
+raw/serialized generation. Run the two overload cases separately to keep each
+workload under 20 MiB fixture generation. The ordinary resume/cancel/EOF/EPIPE
+cases each use only one diagnostic. Exact complete newline JSON-RPC frames,
+unique IDs, cancellation, single task/no retry and explicit non-successful
+overload exit are asserted. Forced-close testing permits an incomplete final
+frame but still validates every complete frame.
+
+All task invocations used an owned explicit PATH shim:
+
+```sh
+# node shim, preserving the task's file arguments:
+/usr/bin/node --test --test-concurrency=1 --test-timeout=120000 \
+  --test-name-pattern="$ROUND11_FILTER" "$@"
+
+# Common task invocation (guarded before and after):
+env PATH="$PWD/.round11-owned/bin:$PATH" TMPDIR="$PWD/.round11-owned/tmp" \
+  MISE_TRUSTED_CONFIG_PATHS="$PWD" MISE_YES=1 MISE_AUTO_INSTALL=0 \
+  CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1 \
+  nice -n 10 timeout -k 30 120 mise run TASK
+```
+
+| UTC | Exact task / name filter | Actual outcome |
+| --- | --- | --- |
+| 03:02:33–03:02:35 | `test-agent-plugins`; `^transport: stopped reader` on original MCP | **Red**, one actual case failed the missing-overload assertion after all 36 finite diagnostics; 9 unmatched wrappers, cleanup passed |
+| 03:02:58–03:03:00 | `test-agent-plugins`; `^transport:` before adding forced-close case | 4 actual cases passed, 9 wrappers; overload after 32 diagnostics, resumed framing/cancellation/EOF/EPIPE passed |
+| 03:04:14–03:04:29 | `test-agent-plugins`; `^transport: escaped-byte` | **Failure retained:** new case timed out at 15s. `process.stdout.destroy()` alone leaves Node's pending native stdio writes able to hold process exit. Owned cleanup resumed output/joined processes and removed fixture |
+| 03:04:55–03:04:57 | same escaped-byte task/filter, after explicit post-settlement exit repair | 1 actual case passed in 1.138s, 9 wrappers; stopped reader remained stopped until exit |
+| 03:05:05–03:05:06 | `test-agent-plugins-native`; `^coding task: Python unittest failure retains candidates without retry$` | 1 actual native case / 1 tiny Session passed, 7 unmatched wrappers |
+| 03:05:40–03:05:42 | `test-agent-plugins`; `^(transport: (?!escaped-byte)\|MCP \|lost MCP output\|shared model tool)` | 8 actual cases passed, 7 wrappers |
+| 03:06:13–03:06:15 | same portable task/filter, after strengthening EOF/EPIPE to pause output after a diagnostic | **Final 8 actual cases passed**, 7 wrappers; 0 failed/cancelled |
+| 03:07:43–03:07:45 | `test-agent-plugins`; `^transport: escaped-byte`, strengthened after coordinator review | **Final 1 actual case passed** in 2.000s, 9 wrappers; fake acknowledges cancellation but delays exit 1.8s, MCP remains alive beyond 1s flush deadline and exits 1 only after fake exit |
+
+The table's `\|` denotes regex alternation as passed in the shell filter.
+The full portable task's packed npm install case `DOC-PLUGINS-07` was excluded
+by these precise names; no loopback registry, installs or external network.
+No full portable aggregate was run. Final portable and separate escaped-byte
+checks cover all five new cases, plus existing MCP protocol/authority and lost
+output cancellation cases.
+
+The final forced-close case keeps stdout paused until MCP exits. At 1.25s after
+overload it explicitly checks that MCP is still alive and the cancelled fake task
+has not exited; only after that task's exit record may MCP exit with code 1.
+This covers both unconditional premature timer exit and a missing post-settlement
+exit trigger, rather than merely proving that idle finite diagnostics shut down.
+
+The native check is deliberately separate: existing offline Python unittest
+failure retained candidates without retry or host acceptance, reported terminal
+failed/nonlive state, reviewed and dropped the one owned Session. It used the
+existing pre-setup ownership hook and abort/join/native-terminal/drop cleanup.
+It is native backend lifecycle evidence, **not a native slow-consumer test**.
+Read-only binary before/after SHA-256, with no rebuild or overwrite:
+
+```text
+/home/reiase/workspace/pvisor/.delta/worktrees/c3re3k2mzkkm/pvisor/target/debug/pvisor
+6da4ef6844ed2f36a9d7c0cc2172c77b576b99c0e354a296515b855785960f20
+```
+
+#### Resources, cleanup and limits
+
+- Every pre/post workload gate passed: MemAvailable
+  19,084,685,312–19,186,778,112 bytes; free disk
+  342,780,678,144–342,957,576,192 bytes; load1 0.882–1.460.
+- New fixtures register teardown before setup, immediately observe server
+  settlement/errors, cap retained stdout at 18 MiB, pending frames at 2 MiB and
+  stderr at 8 KiB. Readiness waits have eight-second deadlines and stop on server
+  exit. Fake subprocesses record start/exit, have a finite lifetime and are
+  supervised by the actual adapter; unknown outstanding fake ownership preserves
+  the fixture instead of deleting it. Teardown closes input/resumes output,
+  bounds the join and checks all fake starts have exits before root removal.
+- Final current-UID `/proc` and mount-namespace scans found no process or mount
+  referring to the owned round11 root; durable fixture tmp directory was empty,
+  including after the retained timeout failure. Native fixture cleanup passed.
+  Temporary runner/shim/log files were removed after evidence transcription.
+  `git diff --check` passed.
+- Not measured: total RSS ceilings, arbitrary client kernel buffering, Windows,
+  macOS, VM/OCI, real UI behavior, native slow-consumer cancellation or complete
+  delivery after forced output close. Serialized backlog is bounded, but one
+  frame's serialization and existing bounded execution captures are separate
+  transient allocations. Joining supervised CLI operations does not certify
+  descendant/native teardown after forced CLI termination.
+- No Rust/Python aggregate, build, lint, rustdoc, semspec changes/approvals,
+  commit, push, merge or publication. Original user stage/Pulsing and pending
+  ancestor-policy decision remain untouched. Coordinator retains review and PR121
+  publication authority.
+
+#### Round 11 rereview — deterministic cancellation release, validation pending
+
+After slot release, coordinator rereview identified scheduling headroom in the
+1.8-second fake cancellation delay: the 1.25-second observation left only
+550 milliseconds before expected task exit. The earlier passing result above
+is retained, but it does not validate this follow-up.
+
+Static-only follow-up changes only `transport.test.mjs`: the fake now waits for
+an explicit owned release marker after acknowledging cancellation. The test
+asserts MCP/task survival beyond the one-second flush deadline, then publishes
+release and checks the fake's release/exit records before MCP exit. An independent
+eight-second fake safety deadline and the existing per-test deadline still bound
+failure. Teardown publishes release too, so assertions cannot strand the gated
+fake. Removed the three-second shutdown performance assertion; the claim is
+ordering and bounded completion, not scheduling performance. No production
+change. **No workload run yet**: round12 owns the sole slot; focused validation
+requires a new coordinator grant.
+
+#### Round 11 final follow-up validation — marker-gated cancellation
+
+Coordinator explicitly regranted the sole slot after round12 released at
+03:11:15 UTC. Used the same exact guarded mise task, explicit serial Node shim,
+durable `.round11-owned/tmp`, no-auto-install/nice/jobs/thread/deadline settings
+and separate generation budgets documented above:
+
+| UTC | Exact task / name filter | Actual final outcome |
+| --- | --- | --- |
+| 03:11:53–03:11:55 | `test-agent-plugins`; `^transport: escaped-byte` | **1 actual case passed**, 9 unmatched wrappers; marker-gated test 1.465s, no failed/cancelled |
+| 03:11:55–03:11:58 | `test-agent-plugins`; `^(transport: (?!escaped-byte)\|MCP \|lost MCP output\|shared model tool)` | **8 actual cases passed**, 7 unmatched wrappers; no failed/cancelled, overload after 32 bounded diagnostics |
+
+The marker case proved MCP remained alive after the flush deadline while the
+fake still owned execution; the test then explicitly released the task, observed
+its release/exit records and MCP exit 1 with stdout still paused. This replaces
+the narrow 1.8s-versus-1.25s scheduling race with test-controlled ordering.
+No production change or native repeat was needed. `DOC-PLUGINS-07` remained
+excluded; no installation or network fixture ran.
+
+All four new resource gates passed: MemAvailable
+19,168,964,608–19,253,121,024 bytes, free disk 342,834,515,968 bytes,
+load1 1.152–1.166. Final fixture tmp was empty; current-UID process and mount
+scans found no owned round11 process/mount. Temporary runner/shim/log files
+removed after transcription; `git diff --check` passed. Slot released again
+after final cleanup for the coordinator's next round.

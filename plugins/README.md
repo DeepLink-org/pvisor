@@ -164,6 +164,17 @@ server abruptly cannot run that cleanup: native work may continue until its
 own completion or runtime deadline. Reconcile status before acceptance; live or
 uncertain work is not approval to apply or discard candidates.
 
+MCP keeps reading cancellation messages when a client stops reading responses.
+Completed replies share an internal 8 MiB serialized UTF-8 output backlog budget,
+including JSON escaping and protocol errors; the 32 active-request limit alone
+does not bound completed replies. Exceeding this budget closes input, cancels
+active supervised commands and reports the overload on stderr. Already queued
+output gets at most one second to drain before the output pipe is destroyed.
+A forced close can leave a partial final frame or undelivered results. Treat
+those outcomes as uncertain, reconcile exact task selectors, and never rerun or
+accept automatically. This bounds the server's queued transport bytes, not total
+process memory, native execution output, or the client's buffers.
+
 | Tool | Effect |
 | --- | --- |
 | `pvisor_doctor` | Check required CLI capabilities and show binary path, project, runtime version and adapter scope; it does not test FUSE or certify isolation |
