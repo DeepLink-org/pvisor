@@ -215,6 +215,106 @@ worktree TMPDIR was empty, fixture mount audit empty and `git diff --check`
 passed. No real broken pipe/device-full condition, power-loss, FUSE mount,
 Python, doctest, clippy, rustdoc or cross-platform run is claimed.
 
+### Round 04 — local backend copy error, healthy retry and stage reopen
+
+Investigation 14:34:23.640–14:37Z inspected existing direct-copy and prepared
+copy contracts. Extended the existing conventional test backend, retaining its
+original rejection test unchanged in meaning, with an explicit healthy toggle
+and copy counter. New `direct_copy_failure_retries_cleanly_then_reopens_without_recopying`
+uses eight combinations: ordinary/prepared copy, a partial EIO/short-success
+length mismatch, and upper-root/separate-work scratch placement. Two rejected
+attempts each leave no scratch entries or published upper file. A healthy retry
+copies exactly once; subsequent copy-up and owner reopen preserve staged edits,
+inode identity and lower bytes without invoking the backend again. This is one
+new scenario and one new test. No product defect was found.
+
+Commands use `python3 target/chaos8h/supervise.py NAME` and the unchanged
+nice/offline/two-job/one-test-thread environment:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r04-direct-copy-targeted` | `mise run test -- pvisor-overlay-core -- --offline --test-threads 1 -E 'test(direct_copy_failure_retries_cleanly_then_reopens_without_recopying)'` | 14:36:11.475–14:36:19.905 | 8.428 | 1 passed, 248 skipped |
+| `r04-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-overlay-core/tests/direct_copy.rs` | 14:36:28.026–14:36:28.111 | 0.084 | exit 0 |
+| `r04-package` | `mise run test -- pvisor-overlay-core -- --offline --test-threads 1 --no-fail-fast` | 14:36:28.157–14:36:33.181 | 5.022 | **244 passed, 5 default ignored** |
+
+Full-package run ID `0952ab77-9b4a-4e8a-a1fc-73cde8939868`.
+Two test executions ran 245 test instances, plus one formatting execution.
+Final `crates/pvisor-overlay-core/tests/direct_copy.rs` SHA-256:
+`5ce85365b73682e75487371571838d7f631eeffc88427985a0ac9e6941fc36d7`.
+Source/lockfile identity remains the continuation identity above.
+
+**Containment protocol deviation:** the full-package validation was broader
+than the inspected scenario. Existing apply tests create canonical
+`/tmp/pvisor-apply-locks-1000` lock files independently of TMPDIR. A read-only
+audit observed **150 zero-byte files** with mtimes inside this command's
+interval, 14:36:28.598658–14:36:33.078517Z; directory and files were owned by
+UID 1000. There was no prelaunch directory inventory, so these are observed
+matching files, not 150 proven newly created files. No files outside the
+worktree were removed or edited for cleanup. Raw bounded names/inodes/times
+are in `target/chaos8h/r04-outside-artifact-audit.json`. The parent was notified
+immediately; its instruction is to retain these normal helper artifacts and
+not delete unknown shared state. This round does **not** satisfy universal
+worktree-only fixture confinement. Subsequent selections will be inspected for
+all fixture paths before running; broad apply suites are excluded.
+
+Minimum sampled available RAM 10,495,451,136 bytes; disk 268,094,029,824 bytes;
+maximum load1 3.1373 and swap used 7,670,259,712 bytes. All resource gates passed.
+No owned survivors or fixture mounts; worktree TMPDIR empty and `git diff --check`
+passed. At 14:37Z no matching nextest/build/test/supervisor workload remained.
+The five preexisting ignored tests were not explicitly selected. No real service,
+mount, actual device failure, power loss, Python, doctest, rustdoc, clippy or
+cross-platform execution is claimed.
+
+### Round 05 — reused empty native call IDs and terminal receipt ordering
+
+The round 01 static-review follow-up identified a real coverage gap, not a
+confirmed product defect: complete empty-ID sequences did not independently
+prove unresolved tracking. A new conventional journal test covers both terminal
+outcomes, prior completed work followed by reused empty IDs, a tool finish
+without run completion, unresolved starts across terminal runs, and complete
+reopens. Rejected admission is repeated, preserves exact bytes, reports the
+empty ID, and releases its run lock. No implementation repair was needed.
+
+After the round 04 confinement discovery, the entire journal-only execution
+surface was inspected: its fixtures use `tempfile::tempdir()` and journal I/O
+below that root, hence this supervisor's worktree TMPDIR. Only library journal
+tests were selected, not process, bridge, model or full-package tests.
+
+Commands use the same supervised environment:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r05-journal-targeted` | `mise run test -- pvisor-replay -- --offline --test-threads 1 --lib -E 'test(journal::tests::)'` | 14:39:49.486–14:40:10.819 | 21.331 | 10 passed, 130 skipped |
+| `r05-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-replay/src/journal.rs` | 14:40:10.866–14:40:10.950 | 0.082 | exit 1: new append-call formatting |
+| `r05-final` | same selected journal test command | 14:40:41.792–14:40:45.597 | 3.804 | **10 passed, 130 skipped** |
+| `r05-format-final` | same formatting command | 14:40:45.643–14:40:45.731 | 0.086 | exit 0 |
+
+Two test executions ran 20 instances; the new scenario itself ran twice.
+Final nextest run ID `b3e9c8f3-bc73-48b6-b660-df7759f83ccd`.
+Final source `crates/pvisor-replay/src/journal.rs` SHA-256:
+`9ab7a871f6496a57cf703357349fa7ab04c40dc52bf875b5a104e2a361efc66d`.
+Only a new test was added; the published round 01 production logic is preserved.
+Minimum sampled RAM 10,237,308,928 bytes, disk 267,896,422,400 bytes;
+maximum load1 2.9410 and swap used 7,660,560,384 bytes. All workload resource
+gates passed; owned survivor lists empty.
+
+**Inactive tool gap:** after the final format check, the same terminal command
+included the read-only discovery `MISE_OFFLINE=true mise exec -- cargo nextest run --help`
+without the supervisor's trusted-config environment. It blocked on an interactive
+trust prompt; no trust option was accepted. Terminal's 600-second bound
+terminated the whole invocation at 14:50:41.710Z. The interval from
+14:40:45.731Z to that termination, **595.979 seconds**, is not active testing
+or investigation. No descendant/supervisor/nextest/rustc process with this
+worktree cwd remained in the 14:51:02Z read-only process audit. Local TMPDIR and
+worktree mount audit were empty; `git diff --check` passed. No persistent trust
+configuration was intentionally changed. All subsequent mise discovery must
+also run through the supervisor, with a <=60-second outer discovery bound.
+
+The direct alternative, supervised `mise exec -- cargo nextest run --help`,
+completed at 14:51Z in 0.082 seconds (`r06-nextest-options`), with no prompt,
+failed gate or survivor. It documents the supported finite stress options;
+it is discovery, not a test execution.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.

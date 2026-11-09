@@ -431,6 +431,67 @@ mod tests {
     }
 
     #[test]
+    fn empty_call_id_reuse_tracks_unfinished_work_across_terminal_runs() {
+        for terminal in ["run_finished", "run_failed"] {
+            for finish_new_tool in [false, true] {
+                let temporary = tempfile::tempdir().unwrap();
+                let path = temporary.path().join("replay-events.jsonl");
+                write_events(
+                    &path,
+                    &[
+                        serde_json::json!({"event": "tool_started", "call_id": ""}),
+                        serde_json::json!({"event": "tool_finished", "call_id": ""}),
+                        serde_json::json!({"event": terminal}),
+                    ],
+                );
+                assert_eq!(Journal::find_ambiguous(&path).unwrap(), None);
+                let mut owner = Journal::open(temporary.path()).unwrap();
+                owner
+                    .append(
+                        "tool_started",
+                        [("call_id".into(), Value::String("".into()))],
+                    )
+                    .unwrap();
+                assert_eq!(Journal::find_ambiguous(&path).unwrap(), Some("".into()));
+                if finish_new_tool {
+                    owner
+                        .append(
+                            "tool_finished",
+                            [("call_id".into(), Value::String("".into()))],
+                        )
+                        .unwrap();
+                    // A tool finish alone does not prove run completion.
+                    assert_eq!(Journal::find_ambiguous(&path).unwrap(), Some("".into()));
+                }
+                owner.append(terminal, []).unwrap();
+                drop(owner);
+                let committed = fs::read(&path).unwrap();
+                for _ in 0..2 {
+                    if finish_new_tool {
+                        let reopened = Journal::open(temporary.path()).unwrap();
+                        drop(reopened);
+                        assert_eq!(Journal::find_ambiguous(&path).unwrap(), None);
+                    } else {
+                        let error = Journal::open(temporary.path()).err().unwrap();
+                        assert_eq!(error.kind, ReplayErrorKind::AmbiguousExecution);
+                        assert!(error.message.contains("uncertain started tool call \"\""));
+                        assert_eq!(Journal::find_ambiguous(&path).unwrap(), Some("".into()));
+                        // Failed admission releases its run lock, even when
+                        // the diagnostic ID is empty rather than nonempty.
+                        let lock = OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(temporary.path().join("run.lock"))
+                            .unwrap();
+                        lock.try_lock_exclusive().unwrap();
+                    }
+                    assert_eq!(fs::read(&path).unwrap(), committed);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn opening_a_journal_rejects_ambiguous_state_while_holding_the_lock() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("replay-events.jsonl");
