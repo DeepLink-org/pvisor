@@ -123,7 +123,7 @@ fn observation(event: pvisor_core::event::Event) -> Result<Option<Value>, Replay
         domain,
         name,
         version,
-        mut payload,
+        payload,
     } = event.data
         && domain == "replay"
     {
@@ -133,8 +133,22 @@ fn observation(event: pvisor_core::event::Event) -> Result<Option<Value>, Replay
                 "unsupported replay observation version",
             ));
         }
-        payload["event"] = Value::String(name);
-        return Ok(Some(payload));
+        let Value::Object(mut fields) = payload else {
+            return Err(ReplayError::new(
+                ReplayErrorKind::AmbiguousExecution,
+                "replay observation payload must be an object",
+            ));
+        };
+        if matches!(name.as_str(), "tool_started" | "tool_finished")
+            && fields.get("call_id").and_then(Value::as_str).is_none()
+        {
+            return Err(ReplayError::new(
+                ReplayErrorKind::AmbiguousExecution,
+                "replay observation tool receipt requires a string call_id",
+            ));
+        }
+        fields.insert("event".into(), Value::String(name));
+        return Ok(Some(Value::Object(fields)));
     }
     Ok(None)
 }
@@ -194,6 +208,120 @@ mod tests {
         assert!(read_observations(&path).is_err());
         assert!(Journal::open(temporary.path()).is_err());
         assert_eq!(fs::read_to_string(path).unwrap(), old);
+    }
+
+    #[test]
+    fn malformed_receipts_reject_without_mutation_then_allow_explicit_restore() {
+        use pvisor_journal::api::Journal as FactJournal;
+
+        let invalid = [
+            serde_json::json!(false),
+            serde_json::json!(null),
+            serde_json::json!(7),
+            serde_json::json!("call-1"),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"call_id": null}),
+            serde_json::json!({"call_id": 7}),
+        ];
+        for name in ["tool_started", "tool_finished"] {
+            for payload in &invalid {
+                let temporary = tempfile::tempdir().unwrap();
+                let path = temporary.path().join("replay-events.jsonl");
+                let journal = FactJournal::open(&path).unwrap();
+                let healthy = fs::read(&path).unwrap();
+                let trace = Trace::new(journal, "receipt-fault-fixture");
+                trace
+                    .journal()
+                    .append(trace.event(
+                        vec!["replay".into()],
+                        None,
+                        None,
+                        vec![],
+                        Fact::Observation {
+                            domain: "replay".into(),
+                            name: name.into(),
+                            version: 1,
+                            payload: payload.clone(),
+                        },
+                    ))
+                    .unwrap();
+                drop(trace);
+                let damaged = fs::read(&path).unwrap();
+                for _ in 0..2 {
+                    let error = Journal::open(temporary.path())
+                        .err()
+                        .unwrap_or_else(|| panic!("accepted malformed {name} receipt: {payload}"));
+                    assert_eq!(error.kind, ReplayErrorKind::AmbiguousExecution);
+                    assert!(error.message.contains("replay observation"));
+                    assert_eq!(fs::read(&path).unwrap(), damaged);
+                    assert!(read_observations(&path).is_err());
+                }
+                // Only the owner restores the pre-fault backup. Rejection
+                // must release both locks and leave subsequent use healthy.
+                fs::write(&path, &healthy).unwrap();
+                let mut recovered = Journal::open(temporary.path()).unwrap();
+                // Codex and OpenCode currently accept empty string native
+                // IDs. Those still participate in start/finish tracking.
+                for call_id in ["", "healthy"] {
+                    for event in [
+                        serde_json::json!({"event":"tool_started", "call_id":call_id}),
+                        serde_json::json!({"event":"tool_finished", "call_id":call_id}),
+                        serde_json::json!({"event":"run_finished"}),
+                    ] {
+                        let mut fields = event.as_object().unwrap().clone();
+                        let name = fields.remove("event").unwrap();
+                        recovered.append(name.as_str().unwrap(), fields).unwrap();
+                    }
+                }
+                drop(recovered);
+                assert!(Journal::open(temporary.path()).is_ok());
+                assert_eq!(read_observations(&path).unwrap().len(), 6);
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_validation_preserves_other_domains_and_open_observation_fields() {
+        let trace = Trace::new(pvisor_journal::api::Journal::memory(), "scope-fixture");
+        for payload in [
+            serde_json::json!(false),
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({"call_id": 7}),
+        ] {
+            let event = trace.event(
+                vec![],
+                None,
+                None,
+                vec![],
+                Fact::Observation {
+                    domain: "unrelated".into(),
+                    name: "tool_started".into(),
+                    version: 99,
+                    payload,
+                },
+            );
+            assert_eq!(observation(event).unwrap(), None);
+        }
+        let event = trace.event(
+            vec![],
+            None,
+            None,
+            vec![],
+            Fact::Observation {
+                domain: "replay".into(),
+                name: "future_diagnostic".into(),
+                version: 1,
+                payload: serde_json::json!({"call_id": 7, "extra": [true]}),
+            },
+        );
+        assert_eq!(
+            observation(event).unwrap(),
+            Some(serde_json::json!({
+                "event": "future_diagnostic", "call_id": 7, "extra": [true]
+            }))
+        );
     }
 
     fn write_events(path: &Path, events: &[Value]) {

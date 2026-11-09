@@ -14,6 +14,13 @@ An unresolved start remains ambiguous after run failure and blocks retry in
 that state directory; use a new sandbox and run ID rather than silently
 repeating uncertain side effects.
 
+Replay observations require object payloads; tool start/finish receipts also
+require a string call ID (including empty IDs accepted by native adapters).
+Admission and diagnostic reads reject malformed
+receipts with an ambiguous-execution error rather than panicking or silently
+ignoring an uncertain operation. Rejection does not repair complete records:
+explicit owner restoration is required, and failed admission releases its locks.
+
 Artifact-publication failures report completed operations from the latest run's
 durable finish receipts, including separate operations that reuse a native ID.
 Fully resolved terminal runs allow an explicit rerun into a fresh output root;
