@@ -16,6 +16,26 @@ Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
+
+### Live Host Session exec
+
+Linux filesystem-isolated Host Sessions create a private exec broker inside
+their original PID namespace. Authenticated owner requests start additional
+processes under the existing mount/user/network namespaces, Landlock policy,
+cwd, environment and limits. No host `nsenter` or relaunch is involved.
+Workloads do not inherit the control descriptor. At most four exec jobs run
+at once. Each has its own subreaper; disconnect cleans its descendants without
+stopping the main workload. Main-workload exit ends the namespace and all jobs.
+Paused, stopped, VM, non-Linux and Landlock-only Sessions are unsupported.
+The Linux synthetic root uses `pivot_root` and detaches its inherited host
+mount tree. A still-running sibling sandbox must not pin another Session's
+FUSE mount and prevent independent stop/drop. Failure to establish this root
+boundary aborts setup rather than falling back to chroot.
+
+`SessionService::lifecycle_status` reports identity, execution phase and
+`exec_supported` without traversing upper files, checkpoints or apply ledgers.
+It omits inventory counts rather than inventing zero. Offline completion still
+reads and validates the recorded Bundle; this is not an O(1) history index.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Session lifecycle commands, the per-Session owner

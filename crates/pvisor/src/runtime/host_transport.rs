@@ -153,6 +153,16 @@ pub enum InstanceCommand {
     Status {},
     /// Read Session status and owner observations.
     SessionStatus {},
+    /// Read execution lifecycle only, without scanning upper files or ledgers.
+    LifecycleStatus {},
+    /// Start a process in the existing Linux Host sandbox. Three stdio FDs
+    /// follow the frame; cwd, environment and policy cannot be overridden.
+    Exec {
+        /// Literal program and arguments, resolved inside the sandbox.
+        argv: Vec<String>,
+        /// Stdio descriptors refer to a caller-owned PTY slave.
+        tty: bool,
+    },
     /// Request cancellation; completion and resource release remain owner-owned.
     Terminate {},
     /// Pause vCPUs of the same live VM Execution.
@@ -519,6 +529,26 @@ pub fn write_host_frame_sync<T: Serialize>(
 ) -> anyhow::Result<()> {
     std::io::Write::write_all(stream, &encode_host_frame(value)?)?;
     Ok(())
+}
+
+/// Transfer stdin/stdout/stderr for one explicit `InstanceCommand::Exec`.
+/// The caller retains ownership; the receiver gets CLOEXEC duplicates. Send
+/// after the request frame, exactly once. This grants no Session authority.
+/// Do not retry after a lost reply. Non-Linux platforms return Unsupported.
+pub fn send_exec_stdio(
+    stream: &std::os::unix::net::UnixStream,
+    stdio: [std::os::fd::BorrowedFd<'_>; 3],
+) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        crate::executor::host_exec::send(stream.as_raw_fd(), b"E", &stdio.map(|fd| fd.as_raw_fd()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (stream, stdio);
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
+    }
 }
 
 /// Read exactly one bounded newline-delimited JSON frame, retaining pipelined bytes.

@@ -22,6 +22,8 @@ test("DOC-PLUGINS-07: packed plugin uses a separately installed runtime and unin
   assert.equal(plugin.optionalDependencies, undefined);
   assert.equal(plugin.dependencies, undefined);
   assert.equal(plugin.bin.pvisor, undefined, "The plugin must not shadow the system CLI");
+  const manifest = JSON.parse(await readFile(path.join(source, "plugin.json"), "utf8"));
+  assert.equal(manifest.version, plugin.version);
   const nativeBin = path.join(root, "external-runtime", "bin");
   await mkdir(nativeBin, { recursive: true });
   // This executable verifies packaging/routing only. Native file semantics are
@@ -40,6 +42,7 @@ else console.log(JSON.stringify(args));
     ...process.env, npm_config_userconfig: config, npm_config_cache: path.join(root, "cache"),
     npm_config_audit: "false", npm_config_fund: "false", npm_config_ignore_scripts: "true",
     npm_config_prefix: prefix,
+    PVISOR_PLUGIN_EXECUTION: "host",
   };
   delete npmEnv.PVISOR_PLUGIN_BINARY;
   async function packed(directory, metadata) {
@@ -99,6 +102,9 @@ else console.log(JSON.stringify(args));
   assert.ok(!requests.some((url) => url.includes("pvisor-agent-runtime")), "npm must never request native packages");
   await assert.rejects(stat(path.join(installed, "test")), { code: "ENOENT" });
   await assert.rejects(stat(path.join(prefix, "bin/pvisor")), { code: "ENOENT" });
+  const fanoutUsage = await execute(path.join(prefix, "bin/pvisor-agent-fanout"), [], { cwd: project, env: npmEnv });
+  assert.equal(fanoutUsage.exit_code, 2);
+  assert.match(fanoutUsage.stderr, /--project DIR --input/);
   for (const name of ["runtime.json", "release.mjs", "pvisor.mjs"]) {
     await assert.rejects(stat(path.join(installed, name)), { code: "ENOENT" });
   }

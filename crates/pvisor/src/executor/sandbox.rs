@@ -147,6 +147,9 @@ pub(crate) struct SandboxPlan {
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
     pub process_limit: Option<u64>,
+    /// Inherited, owner-only broker channel. Closed in every workload child.
+    #[serde(default)]
+    pub exec_fd: Option<libc::c_int>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -189,6 +192,12 @@ fn run_internal() -> anyhow::Result<()> {
         serde_json::from_slice(&encoded).context("decode rootless sandbox plan")?;
     if plan.probe_only {
         return run_probe(plan);
+    }
+    if let Some(fd) = plan.exec_fd {
+        anyhow::ensure!(
+            fd > 2 && unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0,
+            "invalid sandbox exec channel"
+        );
     }
     let mut arguments = std::env::args_os().skip(2);
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
@@ -254,7 +263,7 @@ fn run_internal() -> anyhow::Result<()> {
 
     // Enumerating /proc/self/fd must happen before Landlock intentionally
     // removes access to the host procfs tree.
-    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
+    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()), plan.exec_fd)
         .context("close inherited file descriptors")?;
 
     if !plan.filesystem_isolated {
@@ -354,7 +363,7 @@ fn run_landlock_only(
     std::env::set_current_dir(&plan.cwd)
         .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
     // Enumerating /proc/self/fd must happen before Landlock removes access to it.
-    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
+    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()), None)
         .context("close inherited file descriptors")?;
 
     let landlock_abi =
@@ -466,7 +475,8 @@ fn run_internal() -> anyhow::Result<()> {
 
     if plan.restrict_reads {
         // Do not retain host files or sockets opened before Seatbelt was installed.
-        close_unexpected_file_descriptors(None).context("close inherited file descriptors")?;
+        close_unexpected_file_descriptors(None, None)
+            .context("close inherited file descriptors")?;
     }
 
     // The child process is configuring its environment immediately before
@@ -649,6 +659,7 @@ pub(crate) fn restrict_krun_runner(
         filesystem_landlock_only: false,
         probe_only: false,
         process_limit: None,
+        exec_fd: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
     drop_process_capabilities().context("drop libkrun namespace capabilities")?;
@@ -1409,15 +1420,23 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> anyhow::Result<()> {
         bind_staged_workspace(&plan.root, source, workspace)?;
     }
 
-    // chroot is safe here because the process has a private mount namespace,
-    // no Agent code has run, every non-stdio FD is closed immediately below,
-    // and all namespace capabilities are dropped before exec.
-    if unsafe { libc::chroot(root.as_ptr()) } != 0 {
+    // chroot alone keeps the inherited host mount tree alive. In particular,
+    // another Session's FUSE mount can then remain pinned until this sandbox
+    // exits, blocking that Session's independent teardown. Pivot and detach
+    // the old root before dropping namespace capabilities or running Agent code.
+    let old_root = plan.root.join(".pvisor-old-root");
+    std::fs::create_dir(&old_root)?;
+    let old_root = path_cstring(&old_root)?;
+    if unsafe { libc::syscall(libc::SYS_pivot_root, root.as_ptr(), old_root.as_ptr()) } != 0 {
         return Err(Error::last_os_error().into());
     }
     if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
         return Err(Error::last_os_error().into());
     }
+    if unsafe { libc::umount2(c"/.pvisor-old-root".as_ptr(), libc::MNT_DETACH) } != 0 {
+        return Err(Error::last_os_error().into());
+    }
+    std::fs::remove_dir("/.pvisor-old-root")?;
     Ok(())
 }
 
@@ -1845,7 +1864,9 @@ extern "C" fn forward_launcher_signal(signal: libc::c_int) {
 }
 
 #[cfg(target_os = "linux")]
-fn install_namespace_signal_handlers(handler: libc::sighandler_t) -> std::io::Result<()> {
+pub(super) fn install_namespace_signal_handlers(
+    handler: libc::sighandler_t,
+) -> std::io::Result<()> {
     for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
         let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
         action.sa_sigaction = handler;
@@ -1861,7 +1882,7 @@ fn install_namespace_signal_handlers(handler: libc::sighandler_t) -> std::io::Re
 }
 
 #[cfg(target_os = "linux")]
-fn exit_with_wait_status(status: libc::c_int) -> ! {
+pub(super) fn exit_with_wait_status(status: libc::c_int) -> ! {
     if libc::WIFEXITED(status) {
         unsafe { libc::_exit(libc::WEXITSTATUS(status)) };
     }
@@ -1915,6 +1936,11 @@ fn supervise_pid_namespace(
         return Err(std::io::Error::last_os_error()).context("fork PID namespace init");
     }
     if namespace_init > 0 {
+        if let Some(fd) = plan.exec_fd {
+            unsafe {
+                libc::close(fd);
+            }
+        }
         drop_process_capabilities().context("drop PID supervisor namespace capabilities")?;
         unsafe {
             libc::close(ready_pipe[1]);
@@ -2044,6 +2070,11 @@ fn supervise_pid_namespace(
         unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
     }
     if agent == 0 {
+        if let Some(fd) = plan.exec_fd {
+            unsafe {
+                libc::close(fd);
+            }
+        }
         let supervisor = unsafe { libc::getppid() };
         if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0
             || unsafe { libc::getppid() } != supervisor
@@ -2078,6 +2109,13 @@ fn supervise_pid_namespace(
     unsafe {
         libc::close(ready_pipe[1]);
         libc::close(release_pipe[0]);
+    }
+
+    if let Some(fd) = plan.exec_fd {
+        use std::os::fd::FromRawFd;
+        super::host_exec::supervise(agent, unsafe {
+            std::os::unix::net::UnixDatagram::from_raw_fd(fd)
+        });
     }
 
     // Reap all descendants while the Agent is alive. Orphans are reparented
@@ -2139,7 +2177,10 @@ fn mount_pid_namespace_procfs() -> std::io::Result<()> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Result<()> {
+fn close_unexpected_file_descriptors(
+    retain: Option<libc::c_int>,
+    extra: Option<libc::c_int>,
+) -> std::io::Result<()> {
     let mut descriptors = Vec::new();
     let directory = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -2154,7 +2195,7 @@ fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Re
         let Ok(fd) = name.parse::<libc::c_int>() else {
             continue;
         };
-        if fd > libc::STDERR_FILENO && Some(fd) != retain {
+        if fd > libc::STDERR_FILENO && Some(fd) != retain && Some(fd) != extra {
             descriptors.push(fd);
         }
     }

@@ -938,6 +938,25 @@ Linux 新 VM 在启用去重且未指定 `vm.ram_backing` 时使用私有匿名 
 
 runner 显式调用 `handle.advise_ram_dedup()`，将尽力而为的建议安装报告写入 stderr；建议失败不阻止执行。Linux 建议覆盖普通私有匿名 RAM 与恢复的私有 COW 映射。live `MAP_SHARED` RAM 被跳过，不转换映射；macOS 对其他条件合格的映射报告不支持。`accepted_bytes` 表示这些区间的建议被接受，不是已合并字节、节省或 KSM scanner 已启用。不修改宿主全局 KSM 参数，不需要新服务。资格检查、快照所有权和验证范围见[当前接入与验证基础](../design/memory-optimization/deduplication.md#direction)。
 
+### VM 可用性预检 {#vm-check}
+
+```bash
+pvisor vm-check --json
+```
+
+此源码版命令返回 schema version 1，包含 `operation: "vm-check"`、
+`platform`、`architecture`、`backend`、`can_create_vm`、`reason`、
+`firmware`、`boot_verified` 和 `scope`。Linux 打开 `/dev/kvm`、要求
+KVM API 12，并创建和关闭空 VM。Apple Silicon 尝试创建和销毁 HVF VM。
+不改变设备权限，也不启动 guest。
+
+Firmware 为 `embedded`、`bundled_unloaded`、`missing` 或 `unsupported`。
+发现 bundled firmware 不等于加载成功；`boot_verified` 始终为 false。
+Rootfs、guest 工具、暂存及生命周期能力需要单独检查。
+报告虚拟化不可用仍属于成功查询（退出码 0），调用方需检查 JSON 字段，
+不能仅看退出码。插件默认值与降级授权见
+[插件策略](../guides/agents/plugins.md#execution-policy)。
+
 ### VM rootfs 与 executor 边界 {#vm-rootfs}
 
 `--rootfs image=<IMAGE>` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、

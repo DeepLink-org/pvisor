@@ -63,7 +63,7 @@ impl StatusState {
             RunRecordState::Hibernated => Self::Hibernated,
         }
     }
-    fn live(state: RunState) -> Self {
+    pub(crate) fn live(state: RunState) -> Self {
         match state {
             RunState::Created => Self::Created,
             RunState::Starting => Self::Starting,
