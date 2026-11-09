@@ -1089,7 +1089,7 @@ private raw (uncompressed) RAM file and a same-UID host-only control socket for
 that exact container ID/launch generation. `docker::managed` exposes Status,
 Offload-with-existing-backing and Resume using the existing `VmControl`; it
 neither invents a Session nor converts the image to a template. Omission leaves
-the ordinary anonymous-RAM launch unchanged. Pools/shared kernel RAM conflict.
+the ordinary anonymous-RAM launch unchanged. Shared kernel RAM conflicts; physical pools require the explicit managed-sharing profile below.
 The private backing is an unlinked SSD file retained by live VM descriptors;
 process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
 report is a live diagnostic locator, never a reusable checkpoint. The owner
@@ -2384,3 +2384,36 @@ Local indexed Raw with a short block tail, no zero blocks, or more than 8192 run
 node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
+
+### Experimental managed physical sharing
+
+On Linux x86-64, ordinary OCI `--managed-memory --memory-pool SOCKET`
+combines physical sharing with daemon-controlled offload. Managed RAM uses an
+owned file backing; compression remains independently optional through
+`--managed-memory-compression`. The physical pool is negotiated before VM
+construction. Nonphysical pools fail startup without fallback or reconnection.
+Before reclaim, replaced pages (including private COW writes and zero pages)
+are reattached under the CPU/device barrier. Only successful native reclaim
+permits compressed publication and an offloaded acknowledgement. A reattachment
+failure fences further controls; it is not reported as a successful offload.
+Scans skip paused/offloaded VMs, and stale in-flight publications cannot replace
+reattached pages. Ordinary non-managed sharing keeps its anonymous RAM path.
+
+This integration does not change daemon watermarks, writeback limits, admission,
+or restore reservations. It does not implement automatic switching between
+sharing and offload, and does not establish a performance benefit. Linux mmap,
+reclaim and real-VM recovery validation is required before deployment.
+
+For local, host-only compatibility checks on macOS hosts without `mise` and
+`cargo-nextest`, the special fallback runner is serial libtest:
+`cargo test -p pvisor --lib executor::vm::pager::tests -- --test-threads=1`
+and `cargo test -p pvisor --lib docker::managed::tests -- --test-threads=1`.
+CLI parser tests (`-p pvisor-cli --lib cli::docker::tests`) and VM public
+contract tests (`-p pvisor-vm --test api_contract`) use the same serial runner.
+Internal handle tests (`-p pvisor-vm --lib handle::shared_backing_tests`) and
+API boundary guards (`-p pvisor-vm --test api_boundary`) use that runner too.
+The configuration matrix (`-p pvisor --lib
+docker::tests::managed_shared_pool_acceptance_is_independent_of_compression`)
+also uses this runner. These checks start no VM; they do not exercise Linux reattachment or FUSE.
+Use the standard runner when it is installed, and validate Linux-specific
+`shared_backing_` tests separately before any real workload experiment.

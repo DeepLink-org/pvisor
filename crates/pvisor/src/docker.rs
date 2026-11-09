@@ -1951,6 +1951,7 @@ fn run_vm<Backing>(
     }
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
     let endpoint = socket(&instance)?;
+    managed::validate_config(&instance.config)?;
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
@@ -1960,10 +1961,12 @@ fn run_vm<Backing>(
         .memory_pool
         .as_deref()
         .map(|pool| {
-            crate::executor::vm::prepare_pool(
-                pool,
-                crate::env::os(crate::env::ram::METRICS_ENV).is_some(),
-            )
+            let metrics = crate::env::os(crate::env::ram::METRICS_ENV).is_some();
+            if instance.config.managed_memory {
+                crate::executor::vm::prepare_managed_pool(pool, metrics)
+            } else {
+                crate::executor::vm::prepare_pool(pool, metrics)
+            }
         })
         .transpose()?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
@@ -1974,7 +1977,6 @@ fn run_vm<Backing>(
         vm.shared_kernel_base(directory.clone())?;
     }
     let directory = store.directory(&instance.id);
-    managed::validate_config(&instance.config)?;
     let managed_ram = if instance.config.managed_memory {
         let backing = std::sync::Arc::new(if instance.config.managed_memory_compression {
             managed::Backing::from_parent(&managed::Target {
@@ -1984,6 +1986,8 @@ fn run_vm<Backing>(
         } else {
             managed::Backing::create(&directory, false)?
         });
+        // Shared pages must reattach to the owned backing before reclaim,
+        // whether the backing is raw or compressed.
         vm.ram_backing(backing.file.try_clone()?)?;
         Some(backing)
     } else {
@@ -2172,7 +2176,11 @@ fn run_vm<Backing>(
         {
             crate::executor::vm::start_diagnostics(&handle)?;
             if let Some(pager) = pager {
-                pager.start(handle.clone())?;
+                if instance.config.managed_memory {
+                    pager.start_managed_sharing(handle.clone())?;
+                } else {
+                    pager.start(handle.clone())?;
+                }
             }
         }
         if let Some(endpoint) = &mut managed_control {
@@ -2217,6 +2225,26 @@ mod tests {
                 .to_string()
                 .contains("requires managed memory")
         );
+    }
+
+    #[test]
+    fn managed_shared_pool_acceptance_is_independent_of_compression() {
+        let mut config = request();
+        config.memory_pool = Some("/private/pool.sock".into());
+        assert!(managed::validate_config(&config).is_ok());
+        config.managed_memory = true;
+        for compressed in [false, true] {
+            config.managed_memory_compression = compressed;
+            let result = managed::validate_config(&config);
+            if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                result.unwrap();
+                config.shared_kernel_base = Some("/private/kernel".into());
+                assert!(managed::validate_config(&config).is_err());
+                config.shared_kernel_base = None;
+            } else {
+                assert!(result.unwrap_err().to_string().contains("Linux x86-64"));
+            }
+        }
     }
 
     #[test]

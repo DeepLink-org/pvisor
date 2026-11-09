@@ -153,6 +153,7 @@ mod native {
         )?;
         vm.run(move |handle| {
             let options = |physical| ColdRamOptions {
+                shared_backing: false,
                 metrics: a.metrics,
                 page_granular: physical,
                 share_resident: physical,

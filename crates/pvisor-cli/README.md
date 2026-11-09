@@ -1116,3 +1116,22 @@ is a test probe; embedded `pvisor-guest` runs inside Linux guests.
 See the [platform matrix](../../docs/src/en/reference/platforms.md),
 [binary inventory and implementation comparison](../../docs/src/en/reference/platforms.md#binaries)
 and [shared real-VM test driver](../../tests/vm_cli_contract.py).
+
+### Experimental managed physical sharing
+
+On Linux x86-64, ordinary OCI `--managed-memory --memory-pool SOCKET`
+combines physical sharing with daemon-controlled offload. Managed RAM uses an
+owned file backing; compression remains independently optional through
+`--managed-memory-compression`. The physical pool is negotiated before VM
+construction. Nonphysical pools fail startup without fallback or reconnection.
+Before reclaim, replaced pages (including private COW writes and zero pages)
+are reattached under the CPU/device barrier. Only successful native reclaim
+permits compressed publication and an offloaded acknowledgement. A reattachment
+failure fences further controls; it is not reported as a successful offload.
+Scans skip paused/offloaded VMs, and stale in-flight publications cannot replace
+reattached pages. Ordinary non-managed sharing keeps its anonymous RAM path.
+
+This integration does not change daemon watermarks, writeback limits, admission,
+or restore reservations. It does not implement automatic switching between
+sharing and offload, and does not establish a performance benefit. Linux mmap,
+reclaim and real-VM recovery validation is required before deployment.

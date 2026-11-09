@@ -169,7 +169,7 @@ pub(super) struct Run {
     #[arg(long, value_name = "auto|SOCKET")]
     memory_pool: Option<PathBuf>,
     /// Enable cooperative daemon memory controls (Linux); does not enable automatic offload.
-    #[arg(long, conflicts_with_all = ["memory_pool", "shared_memory_pool", "shared_kernel_base"])]
+    #[arg(long, conflicts_with = "shared_kernel_base")]
     managed_memory: bool,
     /// Compress managed RAM backing on offload (Linux/FUSE; opt-in).
     #[arg(long, requires = "managed_memory")]
@@ -864,7 +864,6 @@ mod tests {
             vec![
                 "pvisor",
                 "run",
-                "--managed-memory",
                 "--managed-memory-compression",
                 "-M",
                 "alpine",
@@ -885,7 +884,62 @@ mod tests {
     }
 
     #[test]
-    fn managed_memory_is_explicit_and_conflicts_with_pager() {
+    fn managed_sharing_does_not_require_compression() {
+        use clap::Parser;
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine"
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory-compression",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_compressed_sharing_is_explicit() {
+        use clap::Parser;
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--managed-memory-compression",
+                "--memory-pool",
+                "/private/pool.sock",
+                "alpine",
+            ])
+            .is_ok()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--shared-kernel-base",
+                "/private/kernel",
+                "alpine",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_memory_allows_explicit_pool_but_rejects_shared_kernel() {
         use clap::Parser;
         let parsed = crate::cli::Cli::try_parse_from([
             "pvisor",
@@ -898,7 +952,7 @@ mod tests {
         assert!(parsed.is_ok());
         assert!(
             crate::cli::Cli::try_parse_from(["pvisor", "run", "--managed-memory", "-M", "alpine"])
-                .is_err()
+                .is_ok()
         );
     }
 

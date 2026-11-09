@@ -1877,6 +1877,28 @@ node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
 
+## Experimental shared backing offload
+
+The experimental ordinary OCI adapter selects `ColdRamOptions.shared_backing`
+with an explicitly negotiated physical `memory_pool`. The profile keeps the VM-owned live backing, including
+FUSE `ram_compression`. It does not enable KSM, UFFD compression, snapshot
+restoration or change scan/admission/reclaim policies. Default remains off.
+
+The sharing worker tracks replaced pages independently of pool references.
+Under the existing CPU/device transition barrier, offload invalidates old
+publication generations, copies each replaced page (including COW and zeroed
+pages) to its original backing offset, and remaps it MAP_SHARED before existing
+reclaim. The scratch copy is 4 KiB; per-page ownership metadata and deferred
+references are charged to the VM. Detached pins are released outside VM locks.
+The host still commits compressed generations before reporting success.
+Mapping, writeback or commit failure follows fail-stop; API deletion alone is
+not proof of physical cleanup. This is an experimental correctness path, not a
+claim of performance benefit or completed rollout qualification.
+
+Guest-idle automatic reclaim remains incompatible with cold pagers. This
+integration enables externally managed reclaim only; it does not change the
+existing automatic idle policy or vCPU control protocol.
+
 ## Shared CLI VM contracts and Windows directory rename
 
 Windows directory rename updates cached paths for the directory and all

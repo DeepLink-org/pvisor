@@ -182,8 +182,8 @@ pub(super) fn validate_config(config: &super::Create) -> Result<()> {
             "managed container RAM requires Linux x86-64"
         );
         ensure!(
-            config.memory_pool.is_none() && config.shared_kernel_base.is_none(),
-            "managed whole-VM offload conflicts with RAM pooling/shared kernel RAM"
+            config.shared_kernel_base.is_none(),
+            "managed whole-VM offload conflicts with shared kernel RAM"
         );
     }
     Ok(())
@@ -472,6 +472,25 @@ mod tests {
         let mut data = [0; 17];
         store.read_at(0, &mut data).unwrap();
         assert_eq!(&data, b"second generation");
+    }
+
+    #[test]
+    fn native_reclaim_failure_never_publishes_compressed_generation() {
+        let (mut c, vm) = control();
+        let (backing, store) = backing::staged();
+        c.backing = backing;
+        vm.fail.store(true, Ordering::SeqCst);
+        assert!(store.lock().unwrap().head_id().is_none());
+        let r = request(&c, HostVmCommand::Offload { file: None });
+        assert!(c.apply(&r).is_err());
+        assert!(store.lock().unwrap().head_id().is_none());
+        assert_eq!(c.status.state, VmState::Running); // no Offloaded acknowledgement
+        assert!(vm.paused.load(Ordering::SeqCst));
+        for command in [HostVmCommand::Resume, HostVmCommand::Offload { file: None }] {
+            let r = request(&c, command);
+            assert!(c.apply(&r).is_err());
+        }
+        assert_eq!(vm.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
