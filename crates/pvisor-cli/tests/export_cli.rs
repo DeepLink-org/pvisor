@@ -122,7 +122,8 @@ fn run_and_spawn_help_match_their_pinned_baselines() {
     for (command, digest) in [
         (
             "run",
-            "9f1c0305bee76b16ffd646a075cc72f592df24a8baf6884e534ce8f4c7766956",
+            // Explicit cooperative memory controls add one opt-in run flag.
+            "f318f6408e8718a90d7b5454319d3583f9edcaee0ca059208290cd31ddd17b83",
         ),
         (
             "spawn",
