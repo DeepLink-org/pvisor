@@ -171,6 +171,9 @@ pub(super) struct Run {
     /// Enable cooperative daemon memory controls (Linux); does not enable automatic offload.
     #[arg(long, conflicts_with_all = ["memory_pool", "shared_memory_pool", "shared_kernel_base"])]
     managed_memory: bool,
+    /// Compress managed RAM backing on offload (Linux/FUSE; opt-in).
+    #[arg(long, requires = "managed_memory")]
+    managed_memory_compression: bool,
     /// Use the same-user shared memory pool, starting its daemon if needed (--memory-pool auto).
     #[arg(short = 'M', conflicts_with = "memory_pool")]
     shared_memory_pool: bool,
@@ -560,6 +563,7 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
                     .map(super::daemon::resolve_pool)
                     .transpose()?,
                 managed_memory: args.managed_memory,
+                managed_memory_compression: args.managed_memory_compression,
                 shared_kernel_base: args.shared_kernel_base,
                 auto_remove: args.rm,
                 interactive: args.interactive,
@@ -851,6 +855,33 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DockerCommand,
+    }
+
+    #[test]
+    fn managed_compression_requires_explicit_managed_owner() {
+        for args in [
+            vec!["pvisor", "run", "--managed-memory-compression", "alpine"],
+            vec![
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--managed-memory-compression",
+                "-M",
+                "alpine",
+            ],
+        ] {
+            assert!(crate::cli::Cli::try_parse_from(args).is_err());
+        }
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--managed-memory",
+                "--managed-memory-compression",
+                "alpine",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

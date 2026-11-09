@@ -1095,6 +1095,29 @@ process exit releases it even without Rust destructors. Its `/proc/PID/fd/N`
 report is a live diagnostic locator, never a reusable checkpoint. The owner
 retires the generation control socket only after reaping its VMM.
 
+`Create.managed_memory_compression` additionally selects the existing compressed
+RAM store and a private FUSE mapping; it requires `managed_memory` and host FUSE
+support. This is default-off, persists in container configuration, and does not
+change OCI image preparation or scheduler policy. Setup failure is explicit:
+there is no raw-backing fallback. After native CPU/device writeback and reclaim,
+the same serialized control worker drains the logical backing and commits the
+compressed generation before acknowledging Offloaded. Resume cannot overtake
+publication; a drain/commit error fences subsequent controls until teardown.
+The native RAM report precedes compression and is not a measurement of net host
+memory saved. Compression CPU, staging I/O and page-cache charges remain real costs.
+
+Compressed staging, immutable layers and the FUSE mount are private to this launch
+under the instance directory. The existing container owner retains the FUSE mount outside the VMM process,
+which uses `_exit`. A private inherited socketpair fences generation/inode handoff
+and compressed publication; no new image or launch path is introduced. The owner
+reaps the VMM before joining publication and releasing the mount. A child-channel
+disconnect does not release backing ownership. This does not turn stalled native
+I/O into successful teardown.
+Normal destruction unmounts before removing storage; forced process death can leave
+mounts/files which the external owner must independently audit. No durable checkpoint
+or crash recovery is provided. Unit storage/protocol tests are not Linux KVM/FUSE
+acceptance or evidence of improved density; qualify this opt-in before deployment.
+
 This is cooperative: an external owner must reserve memory before launch, bind
 the exact generation and cgroup, declare only process-clean safe waits, and keep
 all tool/attachment/background traffic behind scheduler permits. No timer or

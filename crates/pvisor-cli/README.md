@@ -399,8 +399,13 @@ replay owner reserves/binds it through `pvisor-daemon pressure-serve`, reports
 safe waits and obtains a request permit before using the existing guest exec
 channel. Do not mix direct interactive/exec/background access with those waits.
 The flag conflicts with `--memory-pool`, `-M` and `--shared-kernel-base`; omission
-preserves ordinary main startup. This backing is uncompressed, not the historical
-compressed replay runtime. See the runtime's independent-container contract.
+preserves ordinary main startup. The default backing remains uncompressed. Add
+`--managed-memory-compression` with `--managed-memory` to opt into private
+compressed backing (Linux/FUSE). The container configuration retains this choice;
+unsupported FUSE setup fails without fallback. Offload acknowledgement includes
+compressed publication and Resume is serialized after it. This is live backing,
+not a checkpoint, and does not enable shared RAM or automatic idle offload.
+See the runtime's independent-container contract and validation limits.
 
 
 `pvisor run` creates a container, optionally with Linux staged binds as described

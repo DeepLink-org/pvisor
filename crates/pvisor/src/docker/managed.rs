@@ -12,6 +12,8 @@ use pvisor_core::{
     operation::{VmMemory, VmState},
 };
 use pvisor_vm::api::VmControl;
+mod backing;
+pub(super) use backing::{Backing, OWNER_FD, ParentBacking};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -76,7 +78,8 @@ pub struct Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Status {
-    /// Running, or Offloaded after completed native writeback/reclaim.
+    /// Running, or Offloaded after native writeback/reclaim and, when selected,
+    /// compressed generation publication. Publication failure never acknowledges.
     pub state: VmState,
     /// Best-effort native reclaim report; not a guaranteed physical saving.
     pub memory: Option<VmMemory>,
@@ -169,6 +172,10 @@ pub(super) fn retire(target: &Target) -> Result<()> {
 }
 
 pub(super) fn validate_config(config: &super::Create) -> Result<()> {
+    ensure!(
+        !config.managed_memory_compression || config.managed_memory,
+        "compressed managed RAM requires managed memory"
+    );
     if config.managed_memory {
         ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -184,7 +191,7 @@ pub(super) fn validate_config(config: &super::Create) -> Result<()> {
 
 struct Control {
     target: Target,
-    backing: PathBuf,
+    backing: Arc<Backing>,
     vm: Arc<dyn VmControl>,
     status: Status,
     failed: bool,
@@ -212,25 +219,36 @@ impl Control {
                     self.status.state == VmState::Running,
                     "offload requires Running"
                 );
-                self.vm.offload_ram().map(|report| Status {
-                    state: VmState::Offloaded,
-                    memory: Some(VmMemory {
-                        backing_file: self.backing.clone(),
-                        backed_bytes: report.backed_bytes,
-                        resident_before_bytes: report.resident_before_bytes,
-                        resident_after_bytes: report.resident_after_bytes,
-                    }),
-                })
+                self.vm
+                    .offload_ram()
+                    .map_err(anyhow::Error::msg)
+                    .and_then(|report| {
+                        // The worker owns this transition through native reclaim AND
+                        // compressed publication. No Resume can race the commit.
+                        self.backing.finish_offload()?;
+                        Ok(Status {
+                            state: VmState::Offloaded,
+                            memory: Some(VmMemory {
+                                backing_file: self.backing.path(),
+                                backed_bytes: report.backed_bytes,
+                                resident_before_bytes: report.resident_before_bytes,
+                                resident_after_bytes: report.resident_after_bytes,
+                            }),
+                        })
+                    })
             }
             HostVmCommand::Resume => {
                 ensure!(
                     self.status.state == VmState::Offloaded,
                     "resume requires Offloaded"
                 );
-                self.vm.resume().map(|()| Status {
-                    state: VmState::Running,
-                    memory: None,
-                })
+                self.vm
+                    .resume()
+                    .map_err(anyhow::Error::msg)
+                    .map(|()| Status {
+                        state: VmState::Running,
+                        memory: None,
+                    })
             }
             _ => anyhow::bail!("unsupported managed container command"),
         };
@@ -252,11 +270,12 @@ pub(super) struct Endpoint {
     path: PathBuf,
     identity: (u64, u64),
     target: Target,
-    backing: PathBuf,
+    backing: Arc<Backing>,
     stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Endpoint {
-    pub(super) fn bind(target: Target, backing: PathBuf) -> Result<Self> {
+    pub(super) fn bind(target: Target, backing: Arc<Backing>) -> Result<Self> {
         let path = target.socket()?;
         let listener = UnixListener::bind(&path)?; // never remove a preexisting endpoint
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
@@ -269,6 +288,7 @@ impl Endpoint {
             target,
             backing,
             stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
         })
     }
     pub(super) fn start(&mut self, vm: Arc<dyn VmControl>) -> Result<()> {
@@ -287,48 +307,57 @@ impl Endpoint {
             },
             failed: false,
         };
-        std::thread::Builder::new()
-            .name("docker-memory".into())
-            .spawn(move || {
-                // One worker serializes transitions; disconnect never cancels native I/O.
-                while !stop.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            let _ = (|| -> Result<()> {
-                                stream.set_nonblocking(false)?;
-                                authorize_host_peer_sync(&stream)?;
-                                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                                stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-                                let request: Request = read_host_frame_sync(&mut stream)?;
-                                let result = control
-                                    .apply(&request)
-                                    .map_err(|e| format!("{e:#}").chars().take(512).collect());
-                                write_host_frame_sync(
-                                    &mut stream,
-                                    &Response {
-                                        version: 1,
-                                        request_id: request.request_id,
-                                        target: control.target.clone(),
-                                        result,
-                                    },
-                                )?;
-                                Ok(())
-                            })();
+        self.worker = Some(
+            std::thread::Builder::new()
+                .name("docker-memory".into())
+                .spawn(move || {
+                    // One worker serializes transitions; disconnect never cancels native I/O.
+                    while !stop.load(Ordering::Acquire) {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                let _ = (|| -> Result<()> {
+                                    stream.set_nonblocking(false)?;
+                                    authorize_host_peer_sync(&stream)?;
+                                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                                    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                                    let request: Request = read_host_frame_sync(&mut stream)?;
+                                    let result = control
+                                        .apply(&request)
+                                        .map_err(|e| format!("{e:#}").chars().take(512).collect());
+                                    write_host_frame_sync(
+                                        &mut stream,
+                                        &Response {
+                                            version: 1,
+                                            request_id: request.request_id,
+                                            target: control.target.clone(),
+                                            result,
+                                        },
+                                    )?;
+                                    Ok(())
+                                })();
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(10))
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                            Err(_) => break,
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10))
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
-                        Err(_) => break,
                     }
-                }
-            })?;
+                })?,
+        );
         Ok(())
     }
 }
 impl Drop for Endpoint {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        // Keep the backing/mount alive until in-flight control has drained.
+        // A native I/O stall is not treated as completed teardown.
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() {
+                tracing::error!("managed memory worker panicked during shutdown");
+            }
+        }
         if fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.identity) {
             let _ = fs::remove_file(&self.path);
         }
@@ -371,6 +400,10 @@ mod tests {
             })
         }
     }
+    fn raw_backing() -> Arc<Backing> {
+        let directory = tempfile::tempdir().unwrap();
+        Arc::new(Backing::create(directory.path(), false).unwrap())
+    }
     fn target() -> Target {
         Target {
             container_id: "a".repeat(64),
@@ -382,7 +415,7 @@ mod tests {
         (
             Control {
                 target: target(),
-                backing: "/private/ram".into(),
+                backing: raw_backing(),
                 vm: vm.clone(),
                 status: Status {
                     state: VmState::Running,
@@ -401,6 +434,108 @@ mod tests {
             command,
         }
     }
+    #[test]
+    fn compressed_commit_precedes_ack_and_preserves_changed_data() {
+        let (mut c, vm) = control();
+        let (backing, store) = backing::staged();
+        c.backing = backing;
+        let lock = store.lock().unwrap();
+        let (send, recv) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let r = request(&c, HostVmCommand::Offload { file: None });
+            let result = c.apply(&r);
+            send.send((c, result)).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while vm.calls.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        // Native reclaim finished, but publication is deliberately blocked.
+        assert!(recv.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(lock);
+        let (mut c, result) = recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(result.unwrap().state, VmState::Offloaded);
+        let first = store.lock().unwrap().head_id().unwrap();
+        let r = request(&c, HostVmCommand::Resume);
+        c.apply(&r).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .write_at(0, b"second generation")
+            .unwrap();
+        let r = request(&c, HostVmCommand::Offload { file: None });
+        c.apply(&r).unwrap();
+        let store = store.lock().unwrap();
+        assert_ne!(first, store.head_id().unwrap());
+        let mut data = [0; 17];
+        store.read_at(0, &mut data).unwrap();
+        assert_eq!(&data, b"second generation");
+    }
+
+    #[test]
+    fn compressed_publication_failure_never_acknowledges_or_resumes() {
+        let (mut c, vm) = control();
+        let (backing, store) = backing::staged();
+        c.backing = backing;
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = store.lock().unwrap();
+            panic!("injected store failure");
+        });
+        let r = request(&c, HostVmCommand::Offload { file: None });
+        assert!(c.apply(&r).is_err());
+        assert_eq!(c.status.state, VmState::Running); // no success publication
+        for command in [
+            HostVmCommand::Status,
+            HostVmCommand::Resume,
+            HostVmCommand::Offload { file: None },
+        ] {
+            let r = request(&c, command);
+            assert!(c.apply(&r).is_err());
+        }
+        assert_eq!(vm.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shutdown_waits_for_in_flight_publication_before_releasing_backing() {
+        let (backing, store) = backing::staged();
+        let weak = Arc::downgrade(&backing);
+        let target = target();
+        let path = target.socket().unwrap();
+        let mut endpoint = Endpoint::bind(target.clone(), backing).unwrap();
+        let vm = Arc::new(Mock::default());
+        endpoint.start(vm.clone()).unwrap();
+        let (dev, ino) = endpoint.identity;
+        let lock = store.lock().unwrap();
+        let request = std::thread::spawn(move || {
+            exchange(
+                &path,
+                dev,
+                ino,
+                &target,
+                HostVmCommand::Offload { file: None },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while vm.calls.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let (send, recv) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            drop(endpoint);
+            send.send(()).unwrap();
+        });
+        assert!(recv.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(weak.upgrade().is_some());
+        drop(lock);
+        assert_eq!(request.join().unwrap().unwrap().state, VmState::Offloaded);
+        recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        shutdown.join().unwrap();
+        assert!(weak.upgrade().is_none());
+    }
+
     #[test]
     fn stale_generation_and_unsupported_path_never_dispatch() {
         let (mut c, vm) = control();
@@ -444,7 +579,7 @@ mod tests {
     #[test]
     fn private_endpoint_roundtrip_preserves_generation_and_rejects_inode_change() {
         let target = target();
-        let mut ep = Endpoint::bind(target.clone(), "/private/ram".into()).unwrap();
+        let mut ep = Endpoint::bind(target.clone(), raw_backing()).unwrap();
         let vm = Arc::new(Mock::default());
         ep.start(vm).unwrap();
         let (dev, ino) = ep.identity;
@@ -485,7 +620,7 @@ mod tests {
         assert!(retire(&t).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"not a socket");
         fs::remove_file(&path).unwrap();
-        let ep = Endpoint::bind(t.clone(), "/private/ram".into()).unwrap();
+        let ep = Endpoint::bind(t.clone(), raw_backing()).unwrap();
         retire(&t).unwrap();
         assert!(!path.exists());
         drop(ep);

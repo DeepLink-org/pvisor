@@ -621,6 +621,7 @@ impl Stage {
             memory_mib: options.memory_mib,
             memory_pool: None,
             managed_memory: false,
+            managed_memory_compression: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,

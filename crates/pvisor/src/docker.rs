@@ -249,12 +249,19 @@ pub struct Create {
     /// startup. On macOS pool loss terminates dependent VMs; no reconnect occurs.
     #[serde(default)]
     pub memory_pool: Option<PathBuf>,
-    /// Opt in to host-only native offload/resume and private raw RAM backing.
+    /// Opt in to host-only native offload/resume and private RAM backing.
+    /// Raw by default; managed_memory_compression explicitly selects compression.
     /// Linux x86-64 only; incompatible with memory pools/shared kernel RAM.
     /// A cooperative owner must gate all guest requests through its scheduler.
     /// False preserves ordinary launch behavior; this does not enable a timer.
     #[serde(default)]
     pub managed_memory: bool,
+    /// Compress the private managed RAM backing on acknowledged offload.
+    /// Requires managed_memory on Linux x86-64 and host FUSE support. Defaults
+    /// false; never falls back to raw backing if compression setup fails.
+    /// Live backing only, not a restart checkpoint or shared memory pool.
+    #[serde(default)]
+    pub managed_memory_compression: bool,
     /// Optional private shared boot-kernel directory on Apple Silicon macOS.
     /// Equal firmware bytes map one read-only inode with private COW writes.
     /// Canonicalized at creation, retained across start, and excluded from guest
@@ -1641,7 +1648,36 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             .mode(0o600)
             .open(directory.join("stderr.log"))?;
         let stderr_offset = stderr.metadata()?.len();
-        let child = Command::new(std::env::current_exe()?)
+        // Declare before ChildGuard: the VMM must be reaped before its FUSE owner.
+        let (_ram_owner, ram_channel) = if instance.config.managed_memory_compression {
+            let (owner, channel) = managed::ParentBacking::prepare(
+                &directory,
+                managed::Target {
+                    container_id: instance.id.clone(),
+                    generation: instance.generation.clone(),
+                },
+            )?;
+            (Some(owner), Some(channel))
+        } else {
+            (None, None)
+        };
+        let mut command = Command::new(std::env::current_exe()?);
+        command.env_remove(managed::OWNER_FD);
+        if let Some(channel) = &ram_channel {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let fd = channel.as_raw_fd();
+            command.env(managed::OWNER_FD, fd.to_string());
+            // Only the dedicated socketpair is inherited. fcntl is async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = command
             .arg("--pvisor-internal-docker-vm")
             .arg(&store.root)
             .arg(&instance.id)
@@ -1651,6 +1687,7 @@ fn run_owner_generation(store: &Store, instance: &mut Instance) -> anyhow::Resul
             .stderr(stderr)
             .spawn()?;
         let mut child = ChildGuard(child);
+        drop(ram_channel);
         spawned = true;
         let endpoint = socket(instance)?;
         // Close and join listeners before committing completion/releasing the
@@ -1939,28 +1976,28 @@ fn run_vm<Backing>(
     let directory = store.directory(&instance.id);
     managed::validate_config(&instance.config)?;
     let managed_ram = if instance.config.managed_memory {
-        let file = tempfile::tempfile_in(&directory)?;
-        vm.ram_backing(file.try_clone()?)?;
-        Some(file)
+        let backing = std::sync::Arc::new(if instance.config.managed_memory_compression {
+            managed::Backing::from_parent(&managed::Target {
+                container_id: instance.id.clone(),
+                generation: instance.generation.clone(),
+            })?
+        } else {
+            managed::Backing::create(&directory, false)?
+        });
+        vm.ram_backing(backing.file.try_clone()?)?;
+        Some(backing)
     } else {
         None
     };
     let mut managed_control = managed_ram
         .as_ref()
-        .map(|file| {
+        .map(|backing| {
             managed::Endpoint::bind(
                 managed::Target {
                     container_id: instance.id.clone(),
                     generation: instance.generation.clone(),
                 },
-                {
-                    use std::os::fd::AsRawFd;
-                    PathBuf::from(format!(
-                        "/proc/{}/fd/{}",
-                        std::process::id(),
-                        file.as_raw_fd()
-                    ))
-                },
+                backing.clone(),
             )
         })
         .transpose()?;
@@ -2162,6 +2199,25 @@ pub use pvisor_guest::control::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compression_rejects_unmanaged_config_and_defaults_off_for_old_records() {
+        let mut config = request();
+        let mut value = serde_json::to_value(&config).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("managed_memory_compression");
+        let old: Create = serde_json::from_value(value).unwrap();
+        assert!(!old.managed_memory_compression);
+        config.managed_memory_compression = true;
+        assert!(
+            managed::validate_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("requires managed memory")
+        );
+    }
 
     #[test]
     fn startup_diagnostic_excludes_previous_generations_without_truncating_logs() {
@@ -3146,6 +3202,7 @@ mod tests {
             memory_mib: 128,
             memory_pool: None,
             managed_memory: false,
+            managed_memory_compression: false,
             shared_kernel_base: None,
             auto_remove: false,
             interactive: false,
@@ -3281,6 +3338,7 @@ mod tests {
         assert!(restored.shared_kernel_base.is_none());
         assert!(restored.memory_pool.is_none());
         assert!(!restored.managed_memory);
+        assert!(!restored.managed_memory_compression);
     }
     #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
