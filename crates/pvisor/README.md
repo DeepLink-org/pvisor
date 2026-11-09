@@ -457,7 +457,11 @@ Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Session root's `session.lock`: same UID, `0600`, one hard link,
 no symlink. Its diagnostic record names the lock protocol, PID and operation;
 unknown disk schemas refuse mutation. Different compatible binaries share this
-lock. Residual lock metadata is cleared only after its process has died and no
+lock. Stopped status/review use `SessionDirectoryLock::acquire_read`: the same
+exclusive lock and owner validation, but no diagnostic owner write, truncate or
+fsync. A missing legacy lock inode may be initialized. Existing residual owner
+bytes are preserved, and required completion reconciliation remains durable.
+Residual lock metadata is cleared only after its process has died and no
 valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
 the Execution lease remains an additional fence. Read-only inspect uses the stage's
 ordered lower-mutability declaration; absent or rebound declarations use Mutable.

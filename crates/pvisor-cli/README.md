@@ -48,7 +48,10 @@ state is read through immutable accessors, and native checkpoint deletion delega
 to the runtime service with the same request-local admission hooks. VM launch options are assembled through
 `VmExecutionInputs`; RunSpec's existing wire encoding remains compatible, while
 runtime admission validates the typed inputs before starting any drivers. Each running Session owns its recorded private control socket; stopped Session operations
-run directly in the caller. Embedded execution publishes the same discovery record.
+run directly in the caller. Stopped `status` and `review` retain exclusive Session
+locking and owner validation without rewriting the diagnostic lock owner or syncing
+it on acquisition/release. Required completion reconciliation remains durable.
+Embedded execution publishes the same discovery record.
 Execution-state fork may branch a running source from an immutable checkpoint.
 The runtime's execution-operation lease fences source identity, checkpoint
 references and request replay; the source retains its live Execution lease.
