@@ -111,6 +111,71 @@ It noted a nonblocking coverage gap: the empty-ID completed sequence proves
 acceptance/reopen, but does not independently prove unresolved empty-ID ambiguity
 tracking. That remains a follow-up, not a claimed tested property of this round.
 
+### Round 02 — scoped approval narrowing, denial and policy reuse
+
+Inspection found a divergence from the existing request-scoped API contract:
+leaf `NetworkPolicy::one_time_grant` discarded unrelated grants, but Scoped
+capabilities appended the approved rule to existing scope/fallback rules and
+retained default-allow behavior. A new external contract test reproduced
+authorization of `existing.example` through a temporary grant intended only
+for `new.example:443/TcpTunnel`.
+
+The minimal fix changes only scoped grant derivation in
+`crates/pvisor-core/src/network.rs`: each scope uses default deny and the
+singleton approved rule; the fallback is narrowed likewise. Explicit denies
+and bandwidth limits remain, including per-scope and fallback constraints.
+The source config is cloned, never mutated. Fallback Deny still refuses audit
+extension. This is Core's embedding approval extension; it does not add an
+interactive approval feature to the CLI.
+
+Two external tests cover six default-action/fallback combinations, unrelated
+preexisting and ambient permissions, changed port/transport, private resolution,
+exact explicit-denial results, unchanged bandwidth constraints, failed-approval
+retries and subsequent source-policy reuse. Separate denial cases locate
+requested-destination denial in Session, Workspace, fallback policy and a
+fully denied fallback. Scoped evaluation intersects all scopes and fallback;
+approval never overrides an explicit deny.
+
+All commands use the same supervised nice/offline/two-job/one-test-thread
+environment as round 01:
+
+| Evidence name | Command after supervisor | UTC interval on 2026-11-09 | Monotonic seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r02-regression` | `mise run test -- pvisor-core -- --offline --test-threads 1 -E 'test(scoped_approval_is_request_scoped_without_poisoning_the_source_policy)'` | 14:26:07.292–14:26:17.746 | 10.453 | **1 failed**, 88 skipped: unrelated existing host authorized |
+| `r02-regression-fixed` | same targeted command | 14:26:50.997–14:26:55.434 | 4.436 | **1 failed**, 88 skipped: test fixture incorrectly assumed a fallback allowlist allowed `existing.example` |
+| `r02-targeted-final` | `mise run test -- pvisor-core -- --offline --test-threads 1 -E 'test(scoped_approval_)'` | 14:27:20.581–14:27:21.262 | 0.680 | 2 passed, 88 skipped |
+| `r02-package` | `mise run test -- pvisor-core -- --offline --test-threads 1 --no-fail-fast` | 14:27:21.309–14:27:22.105 | 0.794 | 90 passed, 0 skipped |
+| `r02-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-core/src/network.rs crates/pvisor-core/tests/network_contracts.rs` | 14:27:22.151–14:27:22.250 | 0.097 | exit 1: one new multiline assertion formatting difference |
+| `r02-final-package` | same full package command | 14:27:43.382–14:27:44.411 | 1.028 | **90 passed, 0 skipped**, including final strengthened deny assertions |
+| `r02-format-final` | same formatting command | 14:27:44.456–14:27:44.555 | 0.097 | exit 0 |
+| `r02-overlaynet-consumer` | `mise exec -- cargo check --offline --locked -p pvisor-overlaynet --all-targets` | 14:27:44.599–14:27:59.687 | 15.087 | exit 0 |
+
+The test-fixture correction added `existing.example` to that fallback allowlist,
+so the original source actually authorized it before the temporary grant.
+Source-policy preservation compares the original exact decision instead of
+incorrectly deriving it from only the top layer's default action. This corrects
+the independent oracle for conjunctive scopes, not a weakened product check.
+Original unexpected outputs remain in raw evidence. Formatting was applied
+before the final full-package run. Nextest final package run:
+`0907bfcb-4eb3-4084-bbb0-56624227229f`.
+
+Unchanged HEAD/Cargo.lock as above. Final SHA-256:
+
+- `crates/pvisor-core/src/network.rs`:
+  `de84d155ca8dbdcea6016a7951c5a2485ee3c2f0cdd3e715a5f246a9f8c44117`
+- `crates/pvisor-core/tests/network_contracts.rs`:
+  `5e877fc06c196418a8bc37cc996e5927805e5cd7490d59a41ab446b7eb892df6`
+- `crates/pvisor-core/README.md`:
+  `812b276656f21d82b57b10f53b1b66a3496a7084b9ea5473a17a71d439914a6c`
+
+Round safety samples: minimum MemAvailable 10,030,182,400 bytes; minimum disk
+268,444,798,976 bytes; maximum load1 4.0777; maximum swap used 7,492,120,576
+bytes. Growing ambient swap use is recorded without attributing it to tests.
+No failed gate, termination, survivor or fixture mount. Local TMPDIR empty;
+`git diff --check` passed. Consumer validation covers OverlayNet all-target
+compilation, not runtime audit transport or all workspace consumers. No Python,
+clippy/rustdoc/doctests or cross-platform execution.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.
