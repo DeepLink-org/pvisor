@@ -75,7 +75,8 @@ the exact project runner; positional package selection runs Rust only.
 | `r01-process-harness-check` | `mise run test -- pvisor-replay -- --offline --test-threads 1 -E 'test(cleans_background_descendants_after_the_leader_exits)'` | 14:21:34.898–14:21:35.428 | 0.528 | 1 passed, 152 skipped |
 | `r01-package-fixed-harness` | `mise run test -- pvisor-replay -- --offline --test-threads 1 --no-fail-fast` | 14:21:35.473–14:21:56.641 | 21.166 | **153 passed, 0 skipped** |
 | `r01-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-replay/src/journal.rs` | 14:22:07.471–14:22:07.572 | 0.099 | exit 1: two new formatting differences |
-| `r01-format-fixed` | same formatting command | 14:22:39 approximately | 0.083 | exit 0 after applying formatting-only changes |
+| `r01-format-fixed` | same formatting command | 14:22:32.659–14:22:32.743 | 0.083 | exit 0 after applying formatting-only changes |
+| `r01-post-format-targeted` | same exact two-test targeted command as `r01-regression-fixed` | 14:24:06.770–14:24:11.551 | 4.779 | **2 passed, 151 skipped** on final formatted source |
 
 The first package failure was a **supervisor instrumentation defect**, not a
 product repair: enabling child-subreaper ownership without promptly reaping
@@ -89,7 +90,9 @@ not proposed as production code.
 Source identity: unchanged HEAD and Cargo.lock above. Final journal source
 SHA-256 `4bce1859478dfc4f991414150c3dca8dfed1d2a74b223c40f1a63a7b5867b933`;
 README `b05420cf0eb7100f3fb071c9e249a68482c4c520c0e75c1d43e355ef5d0f5c64`.
-Final changes after package validation were formatting only.
+Final changes after package validation were formatting only; the exact two-test
+targeted check was then rerun against the final formatted source at the parent's
+request. Its nextest run ID is `ce2659e9-1177-4e72-bbf6-d731b7b41169`.
 Inherited journal test SHA-256 remains
 `ae821548276faf1602832271de71cfc343a2b982ae0496bfefda2b1733e1c34a`.
 
@@ -102,6 +105,11 @@ audit. `git diff --check` passed. No Python suite, clippy, rustdoc, doctests,
 live model/network service, other-platform or workspace-wide validation was run.
 This is one newly designed scenario with its regression/validation executions,
 not 153 new chaos scenarios.
+
+Independent static review arranged by the parent found no blocking issues.
+It noted a nonblocking coverage gap: the empty-ID completed sequence proves
+acceptance/reopen, but does not independently prove unresolved empty-ID ambiguity
+tracking. That remains a follow-up, not a claimed tested property of this round.
 
 ## Checkpoints, gaps and limitations
 
