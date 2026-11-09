@@ -353,10 +353,10 @@ impl Drop for Endpoint {
         self.stop.store(true, Ordering::Release);
         // Keep the backing/mount alive until in-flight control has drained.
         // A native I/O stall is not treated as completed teardown.
-        if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
-                tracing::error!("managed memory worker panicked during shutdown");
-            }
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            tracing::error!("managed memory worker panicked during shutdown");
         }
         if fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.identity) {
             let _ = fs::remove_file(&self.path);
