@@ -970,6 +970,10 @@ pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyho
             entry.header().uid().unwrap_or(0),
             entry.header().gid().unwrap_or(0),
         );
+        if entry.header().entry_type().is_hard_link() {
+            let source = entry.link_name()?.context("OCI hard link has no source")?;
+            prepare_hard_link(rootfs, &relative, &source)?;
+        }
         let unpacked = entry.unpack_in(rootfs)?;
         anyhow::ensure!(
             unpacked,
@@ -1139,6 +1143,32 @@ fn clean_relative(path: &Path) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(clean)
+}
+
+// tar overwrites regular files and symlinks, but hard_link returns EEXIST.
+// OCI layer entries must also replace a hard link's existing destination.
+fn prepare_hard_link(root: &Path, target: &Path, source: &Path) -> anyhow::Result<()> {
+    let source = clean_relative(source)?;
+    anyhow::ensure!(
+        !source.as_os_str().is_empty() && !source.starts_with(target),
+        "OCI hard link source overlaps destination"
+    );
+    // Validate the source before removing anything. In particular, a broken
+    // or escaping source must not destroy a valid lower-layer destination.
+    let resolved = root.join(&source).canonicalize()?;
+    anyhow::ensure!(
+        resolved.starts_with(root.canonicalize()?),
+        "OCI hard link source escaped rootfs"
+    );
+    anyhow::ensure!(
+        fs::metadata(&resolved)?.is_file(),
+        "OCI hard link source is not a file"
+    );
+    anyhow::ensure!(
+        !resolved.starts_with(root.join(target)),
+        "OCI hard link source overlaps destination"
+    );
+    remove_relative(root, target)
 }
 
 fn ensure_no_symlink_ancestors(root: &Path, relative: &Path) -> anyhow::Result<()> {
@@ -1815,6 +1845,73 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn layer_hard_links_replace_existing_destinations_and_repeated_members() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"outside").unwrap();
+        fs::write(root.path().join("source"), b"new").unwrap();
+        fs::write(root.path().join("target"), b"old").unwrap();
+        symlink(outside.path(), root.path().join("link")).unwrap();
+        fs::create_dir(root.path().join("dir")).unwrap();
+        fs::write(root.path().join("dir/old"), b"old").unwrap();
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        let mut archive = tar::Builder::new(layer.reopen().unwrap());
+        for name in ["target", "target", "link", "dir"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Link);
+            header.set_mode(0o644);
+            header.set_size(0);
+            archive.append_link(&mut header, name, "source").unwrap();
+        }
+        archive.finish().unwrap();
+        apply_layer(
+            layer.path(),
+            "application/vnd.oci.image.layer.v1.tar",
+            root.path(),
+        )
+        .unwrap();
+        for name in ["target", "link", "dir"] {
+            assert_eq!(fs::read(root.path().join(name)).unwrap(), b"new");
+            assert_eq!(
+                fs::metadata(root.path().join(name)).unwrap().ino(),
+                fs::metadata(root.path().join("source")).unwrap().ino()
+            );
+        }
+        assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn invalid_hard_link_source_preserves_destination() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(root.path().join("target"), b"old").unwrap();
+        symlink(outside.path(), root.path().join("escape")).unwrap();
+        for source in ["missing", "../outside", "/outside", "target", "escape"] {
+            assert!(
+                prepare_hard_link(root.path(), Path::new("target"), Path::new(source)).is_err()
+            );
+            assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
+        }
+    }
+
+    #[test]
+    fn hard_link_destination_cannot_traverse_symlink() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("target"), b"outside").unwrap();
+        fs::write(root.path().join("source"), b"new").unwrap();
+        symlink(outside.path(), root.path().join("escape")).unwrap();
+        assert!(
+            prepare_hard_link(root.path(), Path::new("escape/target"), Path::new("source"))
+                .is_err()
+        );
+        assert_eq!(fs::read(outside.path().join("target")).unwrap(), b"outside");
     }
 
     #[test]
