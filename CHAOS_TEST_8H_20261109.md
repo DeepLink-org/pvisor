@@ -534,6 +534,340 @@ no stop/termination/survivors. TMPDIR/mount audit empty; diffcheck passed at
 15:14:55Z. This is in-process namespace/reopen coverage, not mounted protocol,
 apply, power-loss, Python, doctest, rustdoc, clippy or other-platform coverage.
 
+### Round 11 — finite real-timer lifecycle repetition under normal host load
+
+Repeated the already inspected round 08 native idle/progress/cancellation
+scenario three times to check scheduling/cleanup stability over a longer real
+lifecycle run. This adds **zero new scenarios or permanent tests**. Each
+iteration still executes the two independent 90-second pipe/redirected cases
+and their fresh-process recovery checks, rather than sleeping outside a test.
+
+Exact supervised command:
+
+```sh
+python3 target/chaos8h/supervise.py r11-slow-idle-repeat \
+  mise run test -- pvisor-replay -- --offline --test-threads 1 --lib \
+  --run-ignored only \
+  -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)' \
+  --stress-count 3 --status-level slow --final-status-level fail --show-progress none
+```
+
+UTC 15:16:15.355–15:25:16.004Z; supervised 540.648 seconds, nextest 540.175
+seconds; **3/3 iterations passed**, each with 140 selected/default skips.
+Individual test durations 180.059, 180.057 and 180.059 seconds. Run ID
+`b15b8d58-bd90-4998-981c-bc9fcd4d9452`. No source change since round 08.
+Minimum of 109 safety samples: RAM 10,731,810,816 bytes, disk 267,387,736,064
+bytes; maximum load1 3.6953125, swap used 7,952,318,464 bytes. No failed gate,
+stop or survivors. Post-round TMPDIR/mount audit empty at 15:27:06Z.
+
+Read-only CI checkpoint supplied by the parent: on published commit `95799565`,
+CI run `42640053333` Linux CLI job `129238750428` subsequently completed
+SUCCESS; the overall CI run was still in progress when observed. This later
+pass is **not** proof that the earlier missing-filesystem/completion failure
+was repaired; its root cause remains unknown. No risky local CLI rerun or
+universal/full-green CI claim follows from that checkpoint.
+
+### Round 12 — deeper generated namespace exploration
+
+A disposable standalone Rust driver under ignored `target/chaos8h/driver`
+uses public OverlayCore/FilesystemService and a native oracle. No permanent
+test/product API is added. Xorshift64 `(<<13, >>7, <<17)` selects bounded
+create/mkdir/remove/rename operations over 18 fixed relative names (depth <=3).
+Rename sources are existing names and moves into their own descendants are
+excluded. Every operation compares result, complete visible names/types/bytes
+and unchanged lower contents. Every 32 steps, the owner captures/restores its
+documented hardlink groups across reopen and checks visible state and scratch
+cleanup. Three formats are explored: none, legacy and compact preimages.
+Optional link/write exploration is separately controlled, initially disabled.
+Fixture sizes remain bounded by the small name set, with no mount/apply/
+external authority or service.
+
+**Unexpected result, not a product defect:** the first strict native-errno
+oracle stopped at format 0, seed 1, step 65, `Rename("f/b", "f")`. Both backends
+rejected: native ENOTEMPTY (39), OverlayCore EISDIR (21). The destination was a
+nonempty directory and the source a regular file. The exact-oracle failure and
+full bounded trace remain retained. It was reproduced unchanged using root
+dependency pins; no product repair or successful full trace is claimed.
+
+Initially, standalone offline lock generation selected newer already-cached
+dependencies (`r12-basic-generated`), so that execution is diagnostic only.
+Its lock is retained as `r12-driver-initial.lock`, SHA-256
+`159d088f0d3785e6e515dea4e15ebdf2a7dab046ab109fcd0aea1f5f8b7e02a8`.
+The driver lock was then seeded from the unchanged root lock and resolved
+offline. A package identity comparison confirms every dependency's
+name/version/source matches a root-lock package (only the disposable driver
+itself is additional). New driver lock SHA-256
+`d943278c8e08b0c19cd1a9de671ccbf8b7958b454275b800fd05d6a97c1f58c1`.
+`r12-root-pinned-exact` reproduces the same errno-precedence mismatch.
+
+Before further exploration, a **separately named semantic oracle** is defined:
+only when the pre-operation source is a regular file and destination is a
+known nonempty directory, accept EISDIR, ENOTEMPTY or EEXIST, still requiring
+failure and unchanged native/visible/lower trees. All other cases retain exact
+native errno checks. The original strict-oracle test is retained, not rewritten
+to pass. POSIX.1-2024 [2.3 Error Numbers](https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html)
+states that when multiple errors apply any may be returned because detection
+order is undefined; [rename](https://pubs.opengroup.org/onlinepubs/9799919799/functions/rename.html)
+lists precisely these conditions/codes. This is explicit diagnostic
+classification, not assertion relaxation of a product regression or semspec.
+The parent reviewed and required this distinction.
+
+The driver uses the project's exact `mise run test` wrapper with its own
+explicit disposable package and manifest, **not** an affected production-package
+gate. All commands run through the inspected supervisor. Define:
+
+```sh
+DRIVER='target/chaos8h/driver/Cargo.toml'
+# Each run's four environment values and filter are recorded below.
+python3 target/chaos8h/supervise.py NAME env \
+  PVISOR_CHAOS_SEED_BASE=BASE PVISOR_CHAOS_SEEDS=SEEDS \
+  PVISOR_CHAOS_STEPS=STEPS PVISOR_CHAOS_LINKS=LINKS \
+  mise run test -- pvisor-chaos-driver -- --manifest-path "$DRIVER" \
+  --offline --test-threads 1 -E 'test(=generated_namespace_trace_posix_errors)' \
+  --success-output final
+```
+
+| Evidence | Selection/configuration | UTC interval | Supervised seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r12-driver-lock` | `mise exec -- cargo generate-lockfile --manifest-path target/chaos8h/driver/Cargo.toml --offline` | 15:28:49.163–49.344 | 0.180 | setup only, independent newer-cache lock |
+| `r12-basic-generated` | BASE=1 SEEDS=16 STEPS=512 LINKS=0; original exact test, `--no-capture` | 15:28:55.444–15:29:07.469 | 12.024 | **1 failed** at step 65; later seeds not reached |
+| `r12-pin-driver-lock` | supervised Python copies initial driver lock to evidence then seeds driver lock from root | 15:30:44.118–44.167 | 0.047 | setup only, root lock unchanged |
+| `r12-resolve-root-pins` | `mise exec -- cargo check --manifest-path target/chaos8h/driver/Cargo.toml --offline --tests` | 15:30:44.214–50.753 | 6.538 | exit 0, no tests; root-pinned dependencies |
+| `r12-root-pinned-exact` | BASE=1 SEEDS=1 STEPS=128 LINKS=0; `-E 'test(=generated_namespace_trace)'` | 15:31:35.504–45.435 | 9.930 | **1 failed**, same step 65 / errno difference |
+| `r12-posix-generated` | BASE=1 SEEDS=16 STEPS=512 LINKS=0; separate POSIX oracle | 15:32:40.904–51.480 | 10.575 | 1 passed, 1 exact-oracle test not selected |
+| `r12-links-generated` | BASE=1 SEEDS=16 STEPS=512 LINKS=1 | 15:33:08.240–18.347 | 10.106 | 1 passed, 1 not selected |
+| `r12-deeper-links` | BASE=1001 SEEDS=64 STEPS=4096 LINKS=1 | 15:33:43.417–15:39:16.613 | 333.194 | 1 passed (332.886s nextest), 1 not selected |
+
+The first exact run used the same base command with `--no-capture` instead of
+the filter/success-output options; nextest enforces serial execution in that
+mode and warned the explicit thread count was redundant. Complete exact
+commands for all setup/executions are retained in their JSON evidence.
+
+Three successful generated executions cover **288 seed/format traces, 835,584
+operations and 26,112 close/reopen checkpoints**: 252,237 successful mutations
+and 583,347 ordinary rejected operations. Basic counts by create/mkdir/remove/
+rename: 5,997 / 6,135 / 6,423 / 6,021. First link/write sweep counts:
+4,161 / 4,101 / 4,290 / 3,885 / 4,104 / 4,035. Deep sweep counts:
+132,363 / 129,828 / 138,072 / 124,422 / 130,788 / 130,959.
+These are generated cases of one parameterized namespace harness, not 835,584
+new scenarios. Five test invocations ran five test instances: two retained
+exact-oracle failures and three separately defined semantic-oracle passes.
+No implementation defect or repair is claimed.
+
+Final driver source SHA-256
+`65b4cf15774dea5138f1905174cd804430d53d3f8e0e815db380b3c4d4aaf2aa`;
+manifest `884076dbe90ab09c3ec98ac49467d7eba58fae8659f9cee02a77ff62d1720a4d`.
+Root lock hash remains the continuation identity. Driver profile is standalone
+debug-with-debuginfo, distinct from root package profile; package identity
+agreement is not a claim of full workspace feature/profile equivalence.
+Deep run ID `b0e64ccb-38e0-42c6-a369-b4f57d19b37b`.
+
+Minimum sampled available RAM 10,504,192,000 bytes; disk 266,903,248,896 bytes;
+maximum load1 5.4453125, swap used 8,190,373,888 bytes. Offline cache builds
+were serial; all resource gates passed. All survivor lists empty, no stop.
+At 15:39:45Z TMPDIR and fixture-mount audit were empty and diffcheck passed.
+No external lock/socket artifact was created by the driver. The strict
+failures remain historical failures; the limited POSIX classification does not
+assert arbitrary errno equivalence, mounted protocol correctness, native power
+loss, or non-Linux behavior.
+
+### Round 13 — correct the introduced native-oracle portability defect
+
+Parent-supplied macOS CI evidence on run `42643028679`, job `129249032013`
+found the new round 10 trace fails at step 6, `Remove("dir", false)`:
+OverlayCore EISDIR (21), native macOS EPERM (1). That job had 718 passes,
+one failure and 463 not run; Linux passed. These are external CI observations,
+not local macOS execution. The test's assumed universal native errno was wrong;
+this is an **introduced test-oracle defect**, not an OverlayCore product defect.
+
+The authoritative [POSIX.1-2024 unlink contract](https://pubs.opengroup.org/onlinepubs/9799919799/functions/unlink.html)
+normatively specifies EPERM for directory unlink; its rationale explicitly
+documents Linux/LSB EISDIR and advises portable applications to handle either.
+It is imprecise to say the normative POSIX text simply permits both.
+
+The narrow test-only repair captures pre-operation native type/state. **Only**
+`Remove(path, false)` of a pre-proven directory accepts native EPERM or EISDIR.
+Core must still return exactly EISDIR. Both operations must fail, and explicit
+before/after native and overlay trees must remain identical. Every other errno
+assertion, all 28 operations/14 failures, all three journal variants, lower
+isolation, first-touch baseline and every reopen check remain. No whole-test or
+platform skip was introduced. README records the exact exception.
+
+Supervised commands:
+
+| Evidence | Command | UTC interval | Seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r13-oracle-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-overlay-core/tests/namespace_recovery.rs` | 15:43:24.573–24.672 | 0.097 | exit 1: new assertion formatting |
+| `r13-portable-oracle` | `mise run test -- pvisor-overlay-core -- --offline --test-threads 1 --test namespace_recovery --test direct_copy` | 15:43:44.471–45.171 | 0.699 | **3 passed, 0 skipped** on Linux |
+| `r13-oracle-format-final` | same format command | 15:43:45.217–45.302 | 0.083 | exit 0 |
+
+One root-package test invocation ran three instances. This repairs the oracle
+based on observed macOS CI and the documented native-platform behavior; local
+macOS validation was **not** run. Final test SHA-256:
+`4e42e3e126755f7679dd6d5f1a9f2685562eb051ba07d39db97b0c5cd0bd2812`;
+README:
+`adc72d647cb00ba4f721fff89c3241238d85d5f0fa14c35e9f41cb6dc167e019`.
+Nextest run `c0a9d49f-853e-4f48-8a0e-621f7f26f336`.
+
+Minimum sampled RAM 11,025,760,256 bytes; disk 266,898,755,584 bytes;
+maximum load1 2.8174, swap used 8,231,944,192 bytes. All gates passed, no
+stop/termination/survivors. TMPDIR/mount audit empty; diffcheck passed at
+15:43:56Z. The unfinished disposable journal driver had not been run and was
+paused for this CI correction. The parent's benchmark comparison on this head
+subsequently passed, but the earlier benchmark threshold failure remains part
+of the historical record, not erased by a later pass.
+
+### Round 14 — generated journal graph, retries and torn-tail recovery
+
+Extended the disposable standalone driver with a second public-API harness,
+`journal_generated.rs`. Xorshift64 generates 48 event templates per seed with
+0..3 causal edges, fixed identities, finite fractional JSON values and small
+payloads. A separate graph oracle repeatedly removes nodes whose causes are
+outside the remaining graph (independent of the implementation's DFS). Selected
+requests are original templates, changed-content identity conflicts, explicitly
+invalid empty scopes or self-causes. Memory and durable journals must agree with
+the independent commit/retry/reject prediction, exact receipts, durability,
+contiguous offsets and quiet retries/rejections. Durable bytes must remain
+unchanged for every retry/rejection.
+
+Every 16 operations the durable owner closes/reopens and compares all committed
+events/receipts. Every 32 operations the closed fixture gets one small
+unterminated tail (`{`, `{"position":`, or `{"event":{"id":"partial`).
+Read/validate must fail without modifying bytes; writer reopen must truncate
+exactly that tail and retain the complete original prefix. This is explicit
+closed-file fixture injection, **not** process interruption, device failure or
+power loss. Fixtures stay small and worktree-local; no mounts/host-control/
+external services or shared locks are used.
+
+Setup: supervised `mise exec -- cargo check --manifest-path target/chaos8h/driver/Cargo.toml --offline --tests`
+at 15:45:03.112–15:45:04.475Z, 1.361 seconds, exit 0. Exact test template:
+
+```sh
+python3 target/chaos8h/supervise.py NAME env \
+  PVISOR_CHAOS_SEED_BASE=BASE PVISOR_CHAOS_SEEDS=SEEDS PVISOR_CHAOS_STEPS=STEPS \
+  mise run test -- pvisor-chaos-driver -- \
+  --manifest-path target/chaos8h/driver/Cargo.toml --offline --test-threads 1 \
+  --test journal_generated --success-output final
+```
+
+| Evidence | BASE / SEEDS / STEPS | UTC interval | Supervised seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r14-graph-initial` | 1 / 8 / 1024 | 15:45:04.521–15:45:12.207 | 7.685 | 1 passed |
+| `r14-graph-deeper` | 1001 / 64 / 4096 | 15:45:26.976–15:47:38.209 | 131.232 | **1 passed** (130.932s nextest) |
+
+Two test invocations/instances, **72 generated seed traces and 270,336 logical
+transitions**, executed on both memory/durable backends. Model counts: 3,243
+new commits, 124,861 retries, 74,641 identity conflicts, 13,060 causal-cycle
+rejections and 54,531 invalid events. There were 16,896 close/reopen checkpoints
+and 8,448 torn-tail injections. Recovery also rechecks each committed original
+receipt; those extra retry calls are not mislabeled as new logical transitions.
+One new parameterized scenario family, no permanent product/test additions and
+no implementation defect found.
+
+Driver source SHA-256
+`1c62d1e09fc429b1b7584d856409dcbdd7e610d741ad442ba8107e4dca763a49`;
+updated manifest
+`b4384dd5dc660626a604e6d4203c6e72cde89d1bb28ab0b5252c3deee6e4f97d`;
+updated standalone lock
+`5a6c59ead28f80bcbfb0440fa658c214de76c6dd2bc3e84441571d30cf947615`.
+Every dependency package identity still matches the unchanged root lock; only
+the disposable driver package is additional. The same standalone-profile/feature
+and not-an-affected-package-gate limitations as round 12 apply.
+Deep run ID `136526a8-1d3e-477f-b930-6a6ef218e437`.
+
+Minimum sampled RAM 10,992,730,112 bytes; disk 266,784,657,408 bytes;
+maximum load1 3.6915, swap used 8,300,175,360 bytes. Swap remains closely
+observed without changing host configuration. All resource gates passed, no
+stop/termination/survivors. TMPDIR/mount audit empty and diffcheck passed at
+15:48:09Z. No broader package, real crash/power loss, other platform, Python,
+doctest, rustdoc or clippy execution was performed.
+
+### Round 15 — expanded namespace seeds and finite-float journal recovery
+
+No permanent tests or product code were added. Reused the bounded namespace
+driver with a disjoint seed range, then varied the disposable journal payload
+profile. The float profile includes templates for positive/negative zero,
+minimum positive normal/subnormal, positive/negative maximum finite values,
+`1e-307`, `1e307`, and additional random finite `f64` bit patterns. Nonfinite
+bit patterns are replaced by zero because JSON's contract here is finite values.
+The graph still determines which templates can commit; this is not a claim
+that every individual generated boundary template committed in every seed.
+Receipt identity, unchanged rejected/retried bytes, independent graph outcomes
+and torn-tail/reopen checks remain unchanged.
+
+Exact supervised commands:
+
+```sh
+python3 target/chaos8h/supervise.py r15-namespace-expanded env \
+  PVISOR_CHAOS_SEED_BASE=100001 PVISOR_CHAOS_SEEDS=64 \
+  PVISOR_CHAOS_STEPS=4096 PVISOR_CHAOS_LINKS=1 \
+  mise run test -- pvisor-chaos-driver -- \
+  --manifest-path target/chaos8h/driver/Cargo.toml --offline --test-threads 1 \
+  --test namespace_generated -E 'test(=generated_namespace_trace_posix_errors)' \
+  --success-output final
+
+python3 target/chaos8h/supervise.py r15-graph-float-boundaries env \
+  PVISOR_CHAOS_SEED_BASE=200001 PVISOR_CHAOS_SEEDS=64 \
+  PVISOR_CHAOS_STEPS=4096 PVISOR_CHAOS_FLOAT_BITS=1 \
+  mise run test -- pvisor-chaos-driver -- \
+  --manifest-path target/chaos8h/driver/Cargo.toml --offline --test-threads 1 \
+  --test journal_generated --success-output final
+```
+
+| Evidence | UTC interval | Supervised seconds | Outcome |
+| --- | --- | ---: | --- |
+| `r15-namespace-expanded` | 15:49:43.902–15:55:16.834 | 332.930 | **1 passed**, 1 exact-oracle test not selected |
+| `r15-graph-float-boundaries` | 15:56:05.181–15:58:15.843 | 130.661 | **1 passed**, 0 skipped |
+
+Namespace: 192 seed/format traces, 786,432 operations, 24,576 reopen checkpoints;
+239,892 successful mutations and 546,540 rejected operations. Operation counts
+create/mkdir/remove/rename/link/write:
+130,416 / 131,184 / 138,258 / 124,230 / 130,848 / 131,496.
+Journal: 64 graph traces, 262,144 logical transitions on both memory/durable
+backends, 16,384 reopens and 8,192 injected tails. Model counts commit/retry/
+conflict/cycle/invalid: 2,890 / 122,889 / 71,781 / 12,202 / 52,382.
+Two test invocations ran two instances. These are deeper parameter profiles
+of the existing two harness families, **not 1,048,576 new scenarios**.
+No implementation defect was found. Original exact-oracle failures remain
+historical failures.
+
+Namespace source unchanged from round 12; journal source SHA-256 now
+`8f4c54c165d0d8390ded0c88ce20488df0d45c604886bc334ed0e7edb4185986`.
+Manifest/driver lock retain round 14 identities. The default fractional profile
+retains its prior generation rule; this execution explicitly selected float bits.
+Standalone package/profile limitations still apply. Run IDs:
+namespace `a4c86dc2-e7f4-4587-98e5-8862d40f70e2`;
+journal `9f1f36a1-e957-4098-8b72-b19f8e31654e`.
+
+Minimum sampled RAM 10,745,585,664 bytes; disk 266,763,980,800 bytes;
+maximum load1 4.7037. No formal RAM/disk/load admission gate failed, no watchdog
+stop, and all owned survivors were empty. TMPDIR/mount audit empty; diffcheck
+passed at 15:59:14Z.
+
+**New safety concern:** swap became entirely used (8,589,930,496 bytes) in four
+samples at 15:56:50.462667, 15:56:55.491000, 15:57:00.508186 and
+15:57:05.547501Z. At the single read-only follow-up sample, 15:59:41.003568Z,
+only 233,376 swap bytes were free, although MemAvailable was 11,212,275,712
+bytes, load1 3.0127 and disk 266,768,576,512 bytes. Boot/clock still matched;
+the formal gate error list was empty. This is not attributed to this workload.
+The worker paused further launches for parent safety review instead of inventing
+a failed formal gate or running cold builds into nearly exhausted swap.
+
+Through this checkpoint the continuation has 51 supervised command executions
+totaling **1,952.606 elapsed seconds** (tests/builds/format/discovery combined),
+not CPU time or elapsed campaign time. Investigation/read-only work is separate;
+the recorded interruption/trust-prompt gaps remain excluded. The fixed deadline
+is unchanged and eight hours of active execution is **not** claimed.
+
+Safety-pause audit at 16:01:17.244557Z found no matching worktree-owned
+nextest/rustc/test/supervisor workload, no TMPDIR entries and no worktree fixture
+mounts (`target/chaos8h/r15-pause-audit.json`). Diffcheck passed. The inherited
+journal contract source still hashes to
+`ae821548276faf1602832271de71cfc343a2b982ae0496bfefda2b1733e1c34a`.
+External canonical lock artifacts observed in round 04 remain untouched.
+This pause is reported for conservative safety review, not a claim that the
+formal RAM/disk/load gate failed or that the deadline has been reached.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.

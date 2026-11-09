@@ -74,3 +74,20 @@ eight-hour window alone must never be reported as a completed eight-hour test.
   must not count as active testing.
 - Handoff resource sample: available RAM 11,071,672,320 bytes, free disk
   268,266,602,496 bytes, load1 2.65088, swap free 864,407,552 bytes.
+- After round 15 the testing worker conservatively stopped new launches when
+  swap became full, despite the original RAM/disk/load gates passing. Its final
+  cleanup audit was at 16:01:17 UTC. The interval until the parent's 16:41:28 UTC
+  resource observation is unobserved safety-pause time, not active testing.
+- At 16:41:28–31 UTC, memory PSI some/full averages were zero. Three one-second
+  vmstat interval samples had zero swap-out, CPU 94–99% idle, and swap-in of
+  1468, 4 and 16 KiB/s. Available RAM was approximately 18.29 GiB and free swap
+  approximately 184 MiB. These samples show no current sustained memory stall;
+  they do not establish the cause of earlier swap use or guarantee future safety.
+- The worker was authorized to resume only warm-cache, small, serial functional
+  workloads at one Cargo build job and one test thread. New admission/stop
+  thresholds are at least 10 GiB available RAM, 64 MiB free swap and 20 GiB free
+  disk; load1 at most 8; memory PSI full avg10 at most 0.5%; and no sustained
+  swap-out above 16 MiB/s over ten seconds. Long commands sample every five
+  seconds. No new cold builds or broad package expansion; no host swap changes.
+  A failed safety condition stops owned work and requires a new assessment.
+  The original 22:14:45.971695 UTC deadline remains unchanged.

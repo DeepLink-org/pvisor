@@ -161,13 +161,49 @@ fn namespace_trace(compact: Option<bool>) {
     ];
     let mut failures = 0;
     for (index, operation) in operations.into_iter().enumerate() {
+        let before = native_tree(&native);
+        let directory_unlink = matches!(
+            operation,
+            Remove(path, false) if before.get(Path::new(path)) == Some(&None)
+        );
         let expected = operation.native(&native);
         let actual = operation.overlay(&service);
-        assert_eq!(
-            actual.as_ref().err().map(|error| error.raw_os_error()),
-            expected.as_ref().err().map(|error| error.raw_os_error()),
-            "step {index}: {operation:?}, actual={actual:?}, expected={expected:?}"
-        );
+        if directory_unlink {
+            // POSIX unlink specifies EPERM; its rationale documents Linux/LSB
+            // EISDIR and tells portable callers to handle either. Core's
+            // adapter-facing contract remains EISDIR on every platform.
+            assert_eq!(
+                actual.as_ref().err().and_then(|error| error.raw_os_error()),
+                Some(libc::EISDIR),
+                "step {index}: {operation:?}, actual={actual:?}"
+            );
+            assert!(
+                matches!(
+                    expected
+                        .as_ref()
+                        .err()
+                        .and_then(|error| error.raw_os_error()),
+                    Some(libc::EPERM | libc::EISDIR)
+                ),
+                "step {index}: {operation:?}, expected={expected:?}"
+            );
+            assert_eq!(
+                native_tree(&native),
+                before,
+                "native unlink changed a directory"
+            );
+            assert_eq!(
+                overlay_tree(&service),
+                before,
+                "overlay unlink changed a directory"
+            );
+        } else {
+            assert_eq!(
+                actual.as_ref().err().map(|error| error.raw_os_error()),
+                expected.as_ref().err().map(|error| error.raw_os_error()),
+                "step {index}: {operation:?}, actual={actual:?}, expected={expected:?}"
+            );
+        }
         failures += usize::from(expected.is_err());
         assert_eq!(
             overlay_tree(&service),
