@@ -19,8 +19,8 @@ uncompressed backing or another executor.
 
 This is a separately selected **replay/owner integration API**, not automatic
 management of arbitrary `pvisor run` processes, and not an extension of the
-OpenSandbox/E2B prepared-template backend below. No new flag has been silently
-added to ordinary OCI startup. All tools, health checks and file requests for an
+OpenSandbox/E2B prepared-template backend below. Ordinary OCI startup opts in explicitly with `--managed-memory`; see the
+container binding section below. All tools, health checks and file requests for an
 enrolled VM must pass through the trusted owner's scheduling boundary. Direct
 `exec`, automatic guest-idle control and another control authority must not race
 this owner. The owner must already provision an offload-capable VM using main's
@@ -1488,3 +1488,31 @@ template. Reserve before starting the ordinary CLI, bind after normal startup,
 and gate every tool through Wait/Acquire. After Ready, the replay owner still
 checks guest-channel readiness before starting the tool deadline. No permission
 is granted by a missing endpoint or an incompatible RAM-pool configuration.
+
+
+### Replay-owner checks and contained failures
+
+Process inspection is an owner operation, not a scheduler control timeout.
+Use one monotonic deadline across listing guest `/proc`, reading process
+identities and bounded retries for processes that disappear during inspection.
+The replay integration exercised a 30-second total window and recorded elapsed
+time above the former 3- and 9-second thresholds. Do not reset the window for
+each PID or treat an incomplete scan as proof that the guest is quiescent.
+This budget does not change the tool execution timeout or daemon control limits.
+
+A guest request timeout does not prove the request had no effect. Do not blindly
+retry a mutating tool request or return the VM to safe wait. An owner may contain
+a guest-local fault while keeping peer trajectories running only after proving
+that the affected VM cannot execute more work. In the Active/Ready states, fence
+further requests, terminate that VM, independently verify process/thread exit,
+retire its identity-pinned control socket and audit mounts. Retain the empty
+bound cgroup until `release` acknowledges the returned reservation; only then
+remove its unit/cgroup. Removing the cgroup first makes node accounting uncertain.
+An in-flight control transition, failed cleanup, lost scheduler or inconsistent
+accounting still requires a node-wide safety stop, with reservations retained.
+The daemon does not perform this owner-side isolation automatically.
+
+Report batch termination separately from success: failed, cancelled and unexecuted
+steps are not completed steps. A safely contained infrastructure failure is not
+a model-generated terminal reward. Tool-timeout continuation still requires
+confirmed descendant cleanup and a responsive environment.

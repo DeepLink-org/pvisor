@@ -42,7 +42,7 @@ impl Owner {
     fn plan(&mut self) -> Result<Vec<Action>> {
         ensure!(!self.failed, "storage uncertain");
         let before = serde_json::to_vec(&self.policy.snapshot.entries)?;
-        let (parent, charges) = self.measure()?;
+        let (parent, charges) = self.measure().context("pressure resource measurement")?;
         let actions = self.policy.plan(parent, &charges)?;
         if before != serde_json::to_vec(&self.policy.snapshot.entries)? {
             self.save()?;
@@ -78,7 +78,12 @@ impl Owner {
     }
 
     fn measure(&self) -> Result<(u64, BTreeMap<String, u64>)> {
-        let m = fs::symlink_metadata(&self.policy.config.cgroup_root)?;
+        let m = fs::symlink_metadata(&self.policy.config.cgroup_root).with_context(|| {
+            format!(
+                "inspect node cgroup {}",
+                self.policy.config.cgroup_root.display()
+            )
+        })?;
         ensure!(
             m.is_dir() && (m.dev(), m.ino()) == self.root_identity,
             "node cgroup identity changed"
@@ -93,7 +98,9 @@ impl Owner {
             if self.policy.snapshot.entries[id].state == State::Released {
                 continue;
             }
-            bound.check_cgroup()?;
+            bound.check_cgroup().with_context(|| {
+                format!("measure VM {id} cgroup {}", bound.binding.cgroup.display())
+            })?;
             ensure!(
                 number(&bound.binding.cgroup.join("memory.max"))?
                     <= self.policy.snapshot.entries[id].memory_bytes,
@@ -249,7 +256,8 @@ async fn handle(owner: &Arc<Mutex<Owner>>, envelope: Envelope) -> Result<Snapsho
 }
 
 fn number(path: &Path) -> Result<u64> {
-    fs::read_to_string(path)?
+    fs::read_to_string(path)
+        .with_context(|| format!("read counter {}", path.display()))?
         .trim()
         .parse()
         .with_context(|| format!("invalid counter {}", path.display()))
@@ -275,7 +283,8 @@ fn check_budget(root: &Path, budget: u64) -> Result<()> {
 
 impl Bound {
     fn check_cgroup(&self) -> Result<()> {
-        let m = fs::symlink_metadata(&self.binding.cgroup)?;
+        let m = fs::symlink_metadata(&self.binding.cgroup)
+            .with_context(|| format!("inspect VM cgroup {}", self.binding.cgroup.display()))?;
         ensure!(
             m.is_dir() && m.dev() == self.cgroup_dev && m.ino() == self.cgroup_ino,
             "VM cgroup identity changed"
@@ -649,6 +658,14 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn missing_counter_reports_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.current");
+        let error = number(&path).unwrap_err();
+        assert!(format!("{error:#}").contains(&path.display().to_string()));
     }
 
     #[test]
