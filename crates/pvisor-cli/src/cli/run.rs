@@ -1191,6 +1191,9 @@ impl RunArgs {
 struct TerminalReportingExecutor(Arc<dyn RunExecutor>);
 
 fn notify_executor_output(output: &pvisor::ExecutorOutput) {
+    if output.state.is_terminal() {
+        super::host_service::notify_executor_finished();
+    }
     if output
         .failure
         .as_ref()

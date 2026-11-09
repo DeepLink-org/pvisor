@@ -47,6 +47,7 @@ static OWNER_READY: AtomicBool = AtomicBool::new(false);
 static SOURCE_LOCK: Mutex<Option<pvisor::SessionDirectoryLock>> = Mutex::new(None);
 static OWNER_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static OWNER_FINALIZING: AtomicBool = AtomicBool::new(false);
+static OWNER_EXECUTOR_FINISHED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn notify_cancel(signal: i32) {
     if OWNER_SIGNAL
@@ -76,6 +77,11 @@ pub(super) fn release_source_lock() {
 pub(super) fn observe_run(handle: &pvisor::RunHandle) {
     // An owner executes one Run; this clone observes status without issuing controls.
     let _ = OWNER_RUN.set(handle.execution().clone());
+}
+// Executor completion precedes filesystem capture and the durable completion receipt.
+// Do not require the public terminal status: it is published after those writes.
+pub(super) fn notify_executor_finished() {
+    OWNER_EXECUTOR_FINISHED.store(true, Ordering::SeqCst);
 }
 pub(super) fn notify_cleanup() {
     OWNER_FINALIZING.store(true, Ordering::SeqCst);
@@ -591,9 +597,10 @@ fn watch_owner(parent: i32, finished: Arc<AtomicBool>) -> anyhow::Result<()> {
         }
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             if !finalization
-                && OWNER_RUN
-                    .get()
-                    .is_some_and(|run| run.status().state.is_terminal())
+                && (OWNER_EXECUTOR_FINISHED.load(Ordering::SeqCst)
+                    || OWNER_RUN
+                        .get()
+                        .is_some_and(|run| run.status().state.is_terminal()))
             {
                 finalization = true;
                 deadline = Some(Instant::now() + FINALIZATION_GRACE);
@@ -951,6 +958,41 @@ mod tests {
             finished.store(true, Ordering::SeqCst);
             watcher.join().unwrap().unwrap();
         });
+    }
+
+    #[test]
+    fn executor_finished_gets_receipt_grace_but_running_cancel_still_escalates() {
+        const NAME: &str =
+            "executor_finished_gets_receipt_grace_but_running_cancel_still_escalates";
+        let mode = std::env::var("PVISOR_OWNER_RECEIPT_TEST").ok();
+        if mode.is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            for (mode, expected) in [("finished", 0), ("running", 128 + libc::SIGTERM)] {
+                let status = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &format!("{module}::{NAME}"), "--test-threads=1"])
+                    .env("PVISOR_OWNER_RECEIPT_TEST", mode)
+                    .process_group(0)
+                    .status()
+                    .unwrap();
+                assert_eq!(status.code(), Some(expected), "{mode}");
+            }
+            return;
+        }
+        super::super::host_process::become_subreaper().unwrap();
+        // No public terminal Run exists yet: persistence has not completed.
+        assert!(OWNER_RUN.get().is_none());
+        OWNER_SIGNAL.store(libc::SIGTERM, Ordering::SeqCst);
+        notify_cleanup();
+        if mode.as_deref() == Some("finished") {
+            notify_executor_finished();
+        }
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = finished.clone();
+        let parent = unsafe { libc::getppid() };
+        let watcher = std::thread::spawn(move || watch_owner(parent, done));
+        std::thread::sleep(GRACE * 2);
+        finished.store(true, Ordering::SeqCst);
+        watcher.join().unwrap().unwrap();
     }
 
     #[test]

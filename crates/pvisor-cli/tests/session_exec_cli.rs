@@ -87,18 +87,19 @@ try:
             while True:
                 r=cli('status',peer_stage,'--lifecycle','--json')
                 if r.returncode==0 and json.loads(r.stdout)['state']=='running': break
-                assert peer.poll() is None and time.monotonic()<deadline
+                assert peer.poll() is None, peer.communicate()
+                assert time.monotonic()<deadline, (r.returncode,r.stdout,r.stderr)
                 time.sleep(.02)
             assert cli('exec','--session',peer_stage,'true').returncode==0
             assert cli('kill',stage,'--json').returncode==0
-            run.communicate(timeout=10)
+            run.communicate(timeout=60)
             dropped=cli('drop',stage)
             assert dropped.returncode==0, (dropped.stdout,dropped.stderr)
             peer_status=json.loads(cli('status',peer_stage,'--lifecycle','--json').stdout)
             assert peer_status['state']=='running', peer_status
         finally:
             cli('kill',peer_stage,'--json')
-            peer.communicate(timeout=10)
+            peer.communicate(timeout=60)
             dropped=cli('drop',peer_stage)
             assert dropped.returncode==0, (dropped.stdout,dropped.stderr)
     elif mode=='pty':
@@ -140,13 +141,16 @@ try:
         finally: os.close(master)
         assert state()['state']=='running'
 finally:
+    # Owner allows 2s cancellation plus 45s receipt finalization; wait for it.
     killed=cli('kill',stage,'--json')
-    out,err=run.communicate(timeout=10)
+    out,err=run.communicate(timeout=60)
 assert cli('exec','--session',stage,'true').returncode!=0, 'stopped Session was implicitly restarted'
 review=cli('review',stage,'--json')
 assert review.returncode==0, review.stderr
 if mode=='ordinary':
-    assert any(x['path']=='child.txt' for x in json.loads(review.stdout)['filesystem']['changes'])
+    reviewed=json.loads(review.stdout)
+    assert 'filesystem' in reviewed, {'review':reviewed, 'kill':(killed.returncode,killed.stdout,killed.stderr), 'owner':(run.returncode,out,err)}
+    assert any(x['path']=='child.txt' for x in reviewed['filesystem']['changes']), reviewed
 if mode!='overlap':
     dropped=cli('drop',stage)
     assert dropped.returncode==0, (dropped.stdout,dropped.stderr,killed.stdout,killed.stderr,out,err,state())
