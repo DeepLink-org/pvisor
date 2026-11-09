@@ -91,3 +91,14 @@ eight-hour window alone must never be reported as a completed eight-hour test.
   seconds. No new cold builds or broad package expansion; no host swap changes.
   A failed safety condition stops owned work and requires a new assessment.
   The original 22:14:45.971695 UTC deadline remains unchanged.
+- At 16:54:48.192917 UTC, the resumed worker crossed three tightened stop
+  thresholds: free swap 10,280,960 bytes, memory full PSI avg10 0.62%, and
+  swap-out 20,911,470 bytes/s over at least ten seconds. The supervisor stopped
+  and reaped its owned workload. The interrupted namespace run is incomplete,
+  not a pass or a product assertion failure, and receives no coverage count.
+- At 16:56:35.863 UTC, final owned-process, temporary-fixture and mount audits
+  were empty. Only the proven-owned interrupted fixture was removed after
+  ownership/type/device/no-symlink/no-mount checks. Evidence was retained.
+- No automatic restart is pending. The user was asked to confirm after freeing
+  resources before another assessment. The original deadline was not reached
+  or extended, and this campaign is paused, not an eight-hour completion.

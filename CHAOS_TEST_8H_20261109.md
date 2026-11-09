@@ -868,6 +868,165 @@ External canonical lock artifacts observed in round 04 remain untouched.
 This pause is reported for conservative safety review, not a claim that the
 formal RAM/disk/load gate failed or that the deadline has been reached.
 
+### Round 16 — resume with tighter gates and warm-cache lifecycle checks
+
+Parent authorized resumption inside the **unchanged** deadline after its
+16:41:28–31Z safety assessment: memory PSI averages zero, interval swap-out
+zero, mostly idle CPU, available RAM 18.29 GiB and free swap 184 MiB. This is
+the parent's read-only assessment, not worker testing. Full swap earlier was
+not alone evidence of active pressure; no attribution to this campaign follows.
+
+First resumed worker observation: 16:42:29.405780Z, matching boot ID and
+CLOCK_BOOTTIME 184201.4793. The whole worker-unobserved interval
+**16:01:17.244557–16:42:29.405780Z, 2,472.161 seconds**, is an explicit safety
+pause, **not active testing**. The parent's short measurement is distinct from
+both that gap and resumed worker workload.
+
+From resumption onward: **Cargo jobs 1**, nextest threads 1, niceness 10;
+admission/monitoring requires available RAM >=10 GiB, swap free >=64 MiB,
+disk >=20 GiB, load1 <=8, memory `full` PSI avg10 <=0.5%, and swap-out averaging
+no more than 16 MiB/s over at least ten seconds. Samples remain every five
+seconds; boot/clock and the fixed cleanup boundary remain enforced. Any failed
+gate stops owned work without waiting loops. No host swap/cache/state changes
+or unrelated signals are permitted.
+
+The ignored supervisor was updated and checked with synthetic threshold inputs,
+including the ten-second rate bound. New supervisor SHA-256:
+`6603468cd33e6bdd26a27681af68cbe60efca4c09afe5bb2dabaebb623a0cb01`.
+This instrumentation change requires no Rust build. Discovery additionally has
+a 45-second internal timeout under a 60-second terminal bound. No product/test
+source was edited on resumption. Selected test sources/locks remain unchanged
+and their previously compiled build state was reused. Both Cargo runs reported
+`Finished` in <=0.07 seconds with **no Compiling lines**.
+
+| Evidence | Exact command after supervisor | UTC interval | Supervised seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r16-tight-supervisor-check` | `python3 -c` importing supervisor and asserting tightened admission/PSI/rate thresholds (exact script in JSON) | 16:43:45.167–45.227 | 0.058 | exit 0, no build/test scenario |
+| `r16-warm-journal` | `mise run test -- pvisor-journal -- --offline --test-threads 1 --test async_cancellation --test snapshot_recovery` | 16:44:17.601–18.086 | 0.483 | **2 passed, 0 skipped** |
+| `r16-warm-idle-lifecycle` | `mise run test -- pvisor-replay -- --offline --test-threads 1 --lib --run-ignored only -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)'` | 16:44:31.306–16:47:31.830 | 180.522 | **1 passed (180.065s), 140 skipped** |
+
+Two test invocations/three instances, repetitions of existing contracts rather
+than new scenarios. The real timer run again exercised two slow-progress,
+pending-stdin cancellation and fresh-process recovery pairs. No special direct
+binary runner was substituted; these are exact `mise` runs.
+Run IDs: journal `1712aa09-a993-4de0-a53a-76dc3e091e91`,
+lifecycle `34d5bc11-1be3-492e-92e6-9ec994b22bb0`.
+
+Minimum sampled available RAM 18,794,450,944 bytes; swap free 216,588,288 bytes;
+disk 266,675,097,600 bytes. Maximum load1 0.6934, full PSI avg10 0.00% and
+observed ten-second swap-out rate 0 bytes/s. All tightened gates passed,
+no stop/termination/survivors. TMPDIR/mount audit empty and diffcheck passed at
+16:47:52Z. Prior failures, deviations and gaps are not erased by these passes.
+Parent reports publication of the independently reviewed oracle correction and
+rounds 11–15 at PR commit `9062c63a`; this is not a local macOS pass or a new
+production fix.
+
+### Round 17 — warm generated recovery, then confirmed safety stop
+
+No source/test edits or cold builds were performed. Both exact mise runs reused
+the already inspected disposable harness and reported `Finished` in <=0.02s,
+with no `Compiling` lines. The tightened round 16 limits and five-second
+monitoring were active throughout.
+
+Completed journal command:
+
+```sh
+python3 target/chaos8h/supervise.py r17-warm-graph env \
+  PVISOR_CHAOS_SEED_BASE=400001 PVISOR_CHAOS_SEEDS=64 \
+  PVISOR_CHAOS_STEPS=4096 PVISOR_CHAOS_FLOAT_BITS=1 \
+  mise run test -- pvisor-chaos-driver -- \
+  --manifest-path target/chaos8h/driver/Cargo.toml --offline --test-threads 1 \
+  --test journal_generated --success-output final
+```
+
+16:48:46.330–16:50:49.047Z, 122.716 supervised seconds, **1 passed** (122.430s
+nextest), zero skipped. Run ID `edc2b661-40e8-40a8-b2cd-95aaada673d5`.
+This completed 64 generated graph traces, 262,144 logical transitions on both
+memory/durable backends, 16,384 reopens and 8,192 torn tails. Model counts
+commit/retry/conflict/cycle/invalid:
+2,849 / 121,728 / 70,256 / 14,963 / 52,348.
+This is deeper input coverage of the existing harness, not a new scenario
+or permanent test.
+
+**Interrupted namespace command, not a pass or product defect:**
+
+```sh
+python3 target/chaos8h/supervise.py r17-warm-namespace env \
+  PVISOR_CHAOS_SEED_BASE=500001 PVISOR_CHAOS_SEEDS=64 \
+  PVISOR_CHAOS_STEPS=4096 PVISOR_CHAOS_LINKS=1 \
+  mise run test -- pvisor-chaos-driver -- \
+  --manifest-path target/chaos8h/driver/Cargo.toml --offline --test-threads 1 \
+  --test namespace_generated -E 'test(=generated_namespace_trace_posix_errors)' \
+  --success-output final
+```
+
+Initial admission passed at 16:51:06.744732Z. At
+**16:54:48.192917Z**, three tightened conditions failed simultaneously:
+
+- Swap free **10,280,960 bytes**, below 64 MiB.
+- Memory full PSI avg10 **0.62%**, above 0.5%.
+- Swap-out averaged **20,911,470.403 bytes/s** over the monitored >=10-second
+  interval, above 16 MiB/s.
+
+That sample still had MemAvailable 18,500,849,664 bytes, disk
+266,604,503,040 bytes and load1 2.7485; passing those older dimensions does not
+override the tightened failures. The cause of host pressure is not attributed
+to this workload.
+
+The supervisor signaled only its owned process session/identified descendants,
+bounded termination/escalation and reaping, and returned **75** for the stop
+reason. Nextest recorded **SIGTERM**, zero passed/one interrupted test failed/
+one not selected; run ID `6582f204-94e5-4b69-bb66-51d8870b2091`.
+The supervisor's leader returncode field was 0, but the explicit safety-stop
+status overrides it; this is never counted as a successful test.
+Command ended 16:54:48.718070Z after **221.972 seconds**, survivor list empty.
+No complete trace/operation count is credited to this interrupted execution.
+
+Parent confirmed the safety blocker and prohibited restart, relaxed limits,
+deadline extension, further tests/builds/discovery or resource waiting/polling.
+Only bounded existing-evidence analysis and owned cleanup followed.
+
+Across the two runs, minimum sampled available RAM was 17,982,771,200 bytes;
+swap free 10,280,960 bytes; disk 266,604,503,040 bytes. Maximum load1 2.7485,
+PSI full avg10 0.62% and >=10-second swap-out 20,911,470.403 bytes/s.
+Source/lock identities and the standalone-driver limitations remain as in
+rounds 14–15.
+
+**Cleanup at 16:56:35.863065Z:** the killed native test left one disposable
+`.tmpEfgXez` under the exclusively owned worktree TMPDIR. Its 20 entries were
+inventoried and checked for current UID, same device, regular-file/directory
+types, no symlinks and no mounts. Only that proven-owned fixture was removed.
+No other directory was swept. The post-cleanup TMPDIR was empty; no process in
+the owned leader's group/session or matching worktree test/build/supervisor
+workload remained, and there were no worktree fixture mounts. Bounded audit:
+`target/chaos8h/audit-r17-cleanup.json`. Raw test logs/JSON were preserved.
+Round 04's external canonical lock artifacts remain untouched.
+
+### Worker handoff at the confirmed safety blocker
+
+- Deadline remains **2026-11-09T22:14:45.971695Z**, CLOCK_BOOTTIME
+  **204138.010742897**, original boot ID unchanged. The deadline has not been
+  reached or extended; this worker stops because of the confirmed tightened
+  safety breach, not task completion.
+- Continuation observations began 14:32:03.923080673Z. The recorded provider/
+  handoff gap before that, the 595.979-second trust-prompt interval, and the
+  2,472.161-second safety pause before resumption remain excluded from active
+  work. No continuous eight-hour claim is made.
+- Through the stop, **56 supervised commands totaled 2,478.357 elapsed
+  seconds** (tests/builds/format/discovery combined, including interrupted
+  owned time). Resumed supervised time alone was 525.751 seconds. These are
+  not CPU time, completed-test-only time, or the wall duration of the campaign.
+  Static investigation/read-only analysis is separately recorded by the
+  per-round observation intervals; it has no independent continuous-work timer.
+- No additional product defect was confirmed after the preserved round 01/02
+  fixes. The introduced native-oracle portability defect was repaired narrowly
+  and root-package validated on Linux; no post-repair macOS result or local
+  macOS execution is claimed. Earlier strict-oracle mismatches and CLI/benchmark failures
+  remain in the record with their classifications and limitations.
+- No commits, pushes, PR publications, merges, semantic approvals, host swap/
+  cache changes or unrelated process signals were performed by this worker.
+  Parent owns publication and any decision to ask the user to free resources.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.
