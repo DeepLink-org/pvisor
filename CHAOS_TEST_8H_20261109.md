@@ -315,6 +315,86 @@ completed at 14:51Z in 0.082 seconds (`r06-nextest-options`), with no prompt,
 failed gate or survivor. It documents the supported finite stress options;
 it is discovery, not a test execution.
 
+### Round 06 — cancelled queued durable appends retain the last writer owner
+
+Existing cancellation coverage used volatile memory or an unpolled future.
+A new external `tests/async_cancellation.rs` uses the documented public API and
+a deliberately occupied one-thread Tokio blocking pool. Zero, one and two
+manual polls distinguish never-submitted work from accepted queued work. After
+dropping every caller journal/producer/future, only accepted work retains the
+writer and notification sender. Releasing the bounded gate must commit once,
+notify once, close the last sender, release its lock, validate/read, and resolve
+an exact close/reopen retry without rewriting or duplicate notifications.
+The gate has its own five-second fail-safe; readiness/commit checks are bounded.
+This is ordinary cancellation/ownership testing, not a storage or process fault.
+No product defect was found.
+
+All journal fixture paths and subprocess cwd handling were inspected before
+the package run. Fixtures follow the supervisor's local TMPDIR; no canonical
+external lock path is used by this package. Commands have the usual supervisor
+prefix and environment:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r06-queued-cancellation` | `mise run test -- pvisor-journal -- --offline --test-threads 1 --test async_cancellation` | 14:53:07.645–14:53:08.320 | 0.674 | 1 passed |
+| `r06-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-journal/tests/async_cancellation.rs` | 14:53:08.366–14:53:08.449 | 0.081 | exit 0 |
+| `r06-package` | `mise run test -- pvisor-journal -- --offline --test-threads 1 --no-fail-fast` | 14:53:47.595–14:53:49.067 | 1.470 | **33 passed, 0 skipped** |
+| `r06-cancellation-repeat` | `mise run test -- pvisor-journal -- --offline --test-threads 1 --test async_cancellation --stress-count 1000 --status-level fail --final-status-level fail --show-progress none` | 14:53:49.114–14:53:59.115 | 10.000 | **1000 iterations passed** (9.540s nextest time) |
+
+This is one newly designed scenario, three test invocations, 1,034 test
+instances including 1,000 repetitions, not 1,000 new scenarios.
+Package run ID `e6335582-306e-433f-962c-9469c5b95a6e`; finite repetition run ID
+`1aa6afa1-ad2f-4335-a80f-6d97f6eab4f4`. New test SHA-256:
+`d77568d41b53c4ab2ced4a4e624e4e0bbdecb6dfe27f98135274fbde855f1afd`.
+Minimum sampled RAM (including supervised help discovery) 10,399,309,824 bytes;
+disk 267,898,032,128 bytes; maximum load1 2.2847, swap used 7,656,476,672 bytes.
+No failed gates, stop reason or survivors. TMPDIR/mount audit empty and
+`git diff --check` passed at 14:54Z. No consumer, Python, doctest, clippy,
+rustdoc or cross-platform validation was performed.
+
+### Round 07 — Linux CI same-Session review failure triage (not reproduced)
+
+The parent supplied Linux CI run `42636228764`, job `129225272460`: 323 passed,
+one failed and 40 skipped. The failed same-Session exec fixture reached embedded
+Python `KeyError: 'filesystem'` during final review. This is external CI evidence,
+not a local campaign test result. No full-green CI result is claimed.
+
+Static inspection confirms normal successful `review --json` still includes
+the Bundle's filesystem. Its separate successful diagnostic response for unknown
+completion deliberately omits filesystem and reports
+`state: unknown`, `code: COMPLETION_UNCOMMITTED`. A missing completion receipt
+is therefore a plausible path to the KeyError, **not a reproduced root cause**.
+The fixture previously discarded the diagnostic JSON and owner/kill results in
+this failure. A minimal diagnostics-only change keeps the original required
+filesystem/child.txt assertion, adds an explicit filesystem-key assertion with
+the complete review response and kill/owner return codes/stdout/stderr, and
+retains all lifecycle, readiness, isolation and process-cleanup assertions.
+No product behavior or expected success was changed.
+
+The real CLI fixture was **not executed locally**: it requires safe Host
+namespace/FUSE lifecycle and canonical `/tmp/pvisor-host-UID` authority without
+a discovered contained override. Broadening that shared state/configuration is
+outside campaign permission. The parent explicitly agreed to static diagnostics
+and independent contained follow-up rather than running this fixture.
+
+Supervised commands and outcomes:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r07-cli-compile` | `mise run test -- pvisor-cli -- --offline --test-threads 1 --test session_exec_cli --no-run` | 14:56:26.897–14:57:30.410 | 63.512 | compiled; **zero tests executed** |
+| `r07-python-parse` | `python3 -c` reading CASE from `session_exec_cli.rs` and calling `ast.parse` | 14:57:43.543–14:57:43.592 | 0.047 | syntax valid; CASE not evaluated |
+| `r07-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-cli/tests/session_exec_cli.rs` | 14:57:43.639–14:57:43.746 | 0.106 | exit 0 |
+
+Exact parse command is retained in `r07-python-parse.json`. New source SHA-256:
+`d47766e9aca4ff6b539606cc14c4d5720ebef76a62d108b45575dfcc58c8a0b7`.
+This round contains **no newly executed fault scenario** and no validated repair
+of the CI failure. Compilation checks Rust embedding, not Python runtime
+semantics or real Session cleanup. Nextest correctly warns test-threads is
+ignored for no-run. Minimum sampled RAM 9,469,300,736 bytes; disk
+267,576,438,784 bytes; maximum load1 4.2505, swap used 8,002,011,136 bytes.
+No failed gate/termination/survivor. At 14:57:53Z local TMPDIR and fixture
+mount audit were empty and `git diff --check` passed.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.
