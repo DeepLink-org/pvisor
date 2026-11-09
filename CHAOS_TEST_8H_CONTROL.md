@@ -55,3 +55,22 @@ investigation time, and any unknown gaps. It must list executed scenarios,
 failures, fixes, exact validation commands, default or selected skips, safety
 measurements and remaining cleanup or platform limitations. A requested
 eight-hour window alone must never be reported as a completed eight-hour test.
+
+## Coordinator checkpoints
+
+- By 14:31 UTC, two validated repairs were published to PR #129: replay receipt
+  admission (`340b4d85`) and scoped network approval narrowing (`90d4921f`).
+  Each received independent read-only review with no blocking findings.
+- The first testing worker then ended with a provider content-safety error.
+  This was an execution interruption, not a product test result. Its last
+  captured report and fixes were preserved.
+- At 14:31:28.296788 UTC, the boot ID still matched and `CLOCK_BOOTTIME` was
+  176340.335829089. A command-line process audit found only the audit command's
+  own matches, no matching supervisor or test survivors. This is a limited
+  process audit, not proof of absence in every namespace.
+- A successor worker was assigned independent, non-destructive functional
+  recovery scenarios. The provider-blocked scenario was not retried. The
+  original deadline remains unchanged, and any unobserved handoff interval
+  must not count as active testing.
+- Handoff resource sample: available RAM 11,071,672,320 bytes, free disk
+  268,266,602,496 bytes, load1 2.65088, swap free 864,407,552 bytes.

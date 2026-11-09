@@ -176,6 +176,45 @@ No failed gate, termination, survivor or fixture mount. Local TMPDIR empty;
 compilation, not runtime audit transport or all workspace consumers. No Python,
 clippy/rustdoc/doctests or cross-platform execution.
 
+### Round 03 — snapshot destination failures and independent retry recovery
+
+Continuation investigation 14:32:03.923–14:34:23.640Z selected a new ordinary
+public-API scenario after reading journal contracts and existing snapshot tests.
+The new external `tests/snapshot_recovery.rs` exercises nine combinations:
+destination WriteZero, Other and BrokenPipe at zero bytes, the complete header,
+and one byte before EOF. Every destination also first returns two Interrupted
+errors and thereafter accepts only seven-byte short writes. Each failure checks
+the exact error kind, exact partial output, unchanged source bytes and records,
+quiet original-event retry, and a fresh successful snapshot from byte zero.
+The sequence finishes with a causal append through a clone, exact notification,
+LocalSync/contiguous offset checks and closed-file validate/read/reopen retries.
+No implementation defect was found; this is one new scenario, not nine new
+tests or 32 new scenarios. The inherited header test is not newly authored work.
+
+All commands retain the inspected supervisor's nice/offline/two-job/one-thread
+limits. `python3 target/chaos8h/supervise.py NAME` precedes these exact commands:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r03-snapshot-targeted` | `mise run test -- pvisor-journal -- --offline --test-threads 1 -E 'test(snapshot_output_faults_preserve_source_receipts_and_reopen)'` | 14:33:32.985–14:33:43.821 | 10.835 | 1 passed, 31 skipped |
+| `r03-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-journal/tests/snapshot_recovery.rs` | 14:33:56.215–14:33:56.301 | 0.084 | exit 1: array formatting only |
+| `r03-package` | `mise run test -- pvisor-journal -- --offline --test-threads 1 --no-fail-fast` | 14:34:09.101–14:34:10.733 | 1.631 | **32 passed, 0 skipped** |
+| `r03-format-final` | same formatting command | 14:34:10.780–14:34:10.864 | 0.082 | exit 0 |
+
+Two test executions ran 33 test instances; two additional executions checked
+formatting. Final package run ID `90e64e16-bf77-4a0c-8076-21419dcad3c4`.
+New test SHA-256:
+`9bf679300d03fe43924e3f018292f3f02be8f2e3fb62a9b7cd5a6a5e90ef4748`.
+Inherited journal contract source hash remains exactly as recorded in round 01.
+Final formatting preceded the full package run.
+
+Minimum sampled available RAM 10,617,974,784 bytes; free disk 268,236,984,320
+bytes; maximum load1 3.4932 and swap used 7,714,291,712 bytes. All admission
+gates passed, no stop/termination, all survivor lists empty. At 14:34:23Z the
+worktree TMPDIR was empty, fixture mount audit empty and `git diff --check`
+passed. No real broken pipe/device-full condition, power-loss, FUSE mount,
+Python, doctest, clippy, rustdoc or cross-platform run is claimed.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.
@@ -183,3 +222,20 @@ Each completed round will record exact commands, timings, source identity,
 results, cleanup and coverage limitations. Testing gaps and interruptions will
 be recorded separately; supervised workload time is not the same as elapsed
 campaign time.
+
+### Worker interruption and continuation
+
+The original worker stopped after round 02 because of a provider content-safety
+error. Its blocked scenario is not retried or reconstructed. The last recorded
+workload ended 14:27:59.687Z; a new isolated continuation worker first observed
+the worktree at 14:32:03.923080673Z (CLOCK_BOOTTIME 176375.96, same boot ID).
+The intervening 244.236 seconds are not claimed as active testing. The parent
+independently reported no matching survivors at 14:31:28Z.
+
+Continuation HEAD is `90d4921f29355dc92720e62c56c44a30c74477f2`;
+the round 01 replay source and round 02 Core source hashes match their recorded
+final identities. Cargo.lock SHA-256 is
+`7ba7442e1d003cb6b66be416504fb086324608de5e984ce84e1ccf94006c38a4`.
+The inherited journal contract addition and prior reports are preserved.
+The fixed deadline is unchanged. The existing local supervisor was inspected
+before reuse, including its prompt adopted-zombie reaping.
