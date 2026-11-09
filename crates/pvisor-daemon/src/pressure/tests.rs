@@ -192,3 +192,16 @@ fn stale_requests_and_early_release_cannot_discard_ownership() {
     c.max_writebacks = 17;
     assert!(Policy::new(c).is_err());
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ordinary_files_cannot_impersonate_cgroup_accounting() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("cgroup.controllers"), "memory").unwrap();
+    let mut config = config();
+    config.cgroup_root = root.path().canonicalize().unwrap();
+    let state = root.path().join("state");
+    let error = super::serve(state.clone(), config).await.unwrap_err();
+    assert!(error.to_string().contains("not a cgroup v2 filesystem"));
+    assert!(!state.exists(), "invalid accounting must not create state");
+}

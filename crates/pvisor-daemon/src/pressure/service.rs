@@ -419,7 +419,9 @@ pub async fn serve(directory: PathBuf, config: Config) -> Result<()> {
             "cannot inspect cgroup filesystem"
         );
         ensure!(
-            unsafe { stat.assume_init() }.f_type == libc::CGROUP2_SUPER_MAGIC,
+            // libc uses unsigned f_type on musl and signed f_type on GNU.
+            i128::from(unsafe { stat.assume_init() }.f_type)
+                == i128::from(libc::CGROUP2_SUPER_MAGIC),
             "not a cgroup v2 filesystem"
         );
     }
