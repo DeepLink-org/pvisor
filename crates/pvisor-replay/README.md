@@ -84,6 +84,23 @@ for native startup; this tolerates cold starts but is not a readiness handshake,
 so startup starvation beyond that budget can still fail the test. Its independent
 alarm exceeds the wall deadline plus the longest termination grace.
 
+The ignored `slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process`
+check exercises real lifecycle timers for about three minutes. In both pipe and
+redirected-stdout modes, a native child emits stdout/stderr progress at 20-second
+intervals before stalling with pending stdin. The 30-second idle watchdog must
+refresh on both streams, then cancel, deliver stdin EOF, capture cooperative
+shutdown output and reap the child/group. A fresh process must then succeed.
+The child has an independent 150-second alarm; the owner has a 120-second wall
+deadline per mode. Run it explicitly with:
+
+```sh
+mise run test -- pvisor-replay -- --lib --run-ignored only \
+  -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)'
+```
+
+This is a low-load timer/cleanup contract, not live-agent continuation coverage
+or a throughput benchmark.
+
 The Linux leader-exit fixture covers incomplete stdin delivery when a descendant
 keeps the read end open, both with and without inherited stdout/stderr. A native
 pipe handshake establishes the descendant before the leader exits. The executor

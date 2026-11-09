@@ -395,6 +395,145 @@ ignored for no-run. Minimum sampled RAM 9,469,300,736 bytes; disk
 No failed gate/termination/survivor. At 14:57:53Z local TMPDIR and fixture
 mount audit were empty and `git diff --check` passed.
 
+### Round 08 — real slow progress, idle cancellation and fresh-process recovery
+
+Added an explicitly ignored conventional native-process lifecycle test after
+inspecting the existing process runner and cancellation fixtures. It runs two
+sequential pipe/redirected-stdout cases. Each child emits progress at 20, 40 and
+60 seconds, including stderr-only progress at 40 seconds, then stalls with
+512 KiB configured stdin pending. The real 30-second idle timer must refresh
+from both output sources and terminate around 90 seconds rather than the
+120-second wall deadline. Cooperative termination must receive stdin EOF,
+retain final stdout/stderr, reap the child and remove its process group. A
+fresh small native child then succeeds without cleanup/timeout flags.
+
+These approximately three minutes are **observed low-load lifecycle/timer
+testing**, not inactivity counted as work. Per-child 150-second independent
+alarms bound a broken owner. No shell interpreter, external agent, network,
+mount, shared host authority or real-service mutation is used by the new case.
+Only an owned native re-execution and small local disposable files are involved.
+The default suite stays fast by leaving the long test ignored; README supplies
+its explicit selection. No production behavior was changed or defect found.
+
+Supervised exact commands:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r08-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-replay/src/process.rs` | 15:00:18.259–15:00:18.361 | 0.101 | exit 1: two new formatting differences |
+| `r08-slow-idle` | `mise run test -- pvisor-replay -- --offline --test-threads 1 --lib --run-ignored only -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)'` | 15:00:38.984–15:03:42.688 | 183.702 | **1 passed (180.058s test), 140 skipped** |
+| `r08-related-process` | `mise run test -- pvisor-replay -- --offline --test-threads 1 --lib -E 'test(idle_timeout_still_fires_when_redirect_stalls) \| test(redirected_stdout_growth_refreshes_idle_watchdog) \| test(cancellation_closes_pending_stdin_before_graceful_termination) \| test(times_out_and_reaps_the_foreground_process_group) \| test(stdin_backpressure_does_not_suspend_wall_or_idle_supervision)'` | 15:04:20.177–15:04:28.568 | 8.390 | **5 passed, 136 skipped** |
+| `r08-format-final` | same formatting command | 15:04:28.614–15:04:28.709 | 0.094 | exit 0 |
+
+One newly designed scenario, two test invocations, six test instances. The four
+native subprocesses in the new scenario are two stalled+recovered pairs, not
+four independent scenarios. New test run ID `77357c8f-ed45-4073-ab2f-007a08797ae1`;
+related run `e20d8888-a187-45bc-8291-ad18077ab1fb`.
+Source SHA-256 `crates/pvisor-replay/src/process.rs`:
+`7522237d717524bb46fb8dabad89bf685bc48aee1d9c6089c83508fb5e52f8ec`;
+README:
+`52f686510ffc69bc7505dbfacd08eda6ccb67e83bfd2ef18cf985fa8d0bb1ee3`.
+Formatting was applied before execution; README-only documentation followed.
+
+Minimum sampled available RAM 10,776,887,296 bytes, disk 267,498,651,648 bytes;
+maximum load1 3.671875, swap used 7,976,529,920 bytes. Samples every five
+seconds passed all gates. No termination/survivors; no matching owned workload
+at 15:04:45Z. TMPDIR/mount audit empty; the two transient crate-local `.tmp*`
+directories reported by Delta during existing fixtures were both already gone.
+`git diff --check` passed. Broader package, live model, Python, doctest, rustdoc,
+clippy and non-Linux platforms were not run.
+
+### Round 09 — delayed response error, sibling cancellation and slot recovery
+
+Inspected OverlayNet's public router/sink, body-owned admission and the existing
+in-memory bandwidth lifecycle tests. New `tests/stream_recovery.rs` uses an
+always-accepting local sink and literal-IP requests; it opens no socket, does no
+DNS or upstream connect and creates no filesystem fixture. One body produces an
+exact prefix then a delayed BrokenPipe; another remains pending. Independent
+healthy requests at 45 and 90 seconds must leave both retained bodies active.
+Dropping the sibling and observing the error must release only their owners.
+Finally, admitting all 128 retained bodies, rejecting the 129th with 429, dropping
+them and serving another healthy request proves actual semaphore recovery, not
+just a counter decrement.
+
+The ordinary test uses paused Tokio time; an explicitly ignored twin executes
+the same lifecycle against **90 seconds of real Tokio timers** with a 120-second
+outer deadline. This is one designed scenario exercised with two clock modes,
+not transport reconnect or a real upstream read-timeout test. No product defect
+was found. README documents the contained scope and explicit real-timer command.
+
+Supervised commands:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r09-stream-virtual` | `mise run test -- pvisor-overlaynet -- --offline --test-threads 1 --test stream_recovery -E 'test(delayed_body_error_and_cancelled_sibling_release_only_their_own_requests)'` | 15:07:52.988–15:08:03.500 | 10.510 | 1 passed, 1 skipped |
+| `r09-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-overlaynet/tests/stream_recovery.rs` | 15:08:03.545–15:08:03.628 | 0.082 | exit 1: formatting only |
+| `r09-stream-virtual-final` | same virtual command, after adding full-capacity assertions | 15:08:27.029–15:08:27.924 | 0.892 | 1 passed, 1 skipped |
+| `r09-stream-real` | `mise run test -- pvisor-overlaynet -- --offline --test-threads 1 --test stream_recovery --run-ignored only -E 'test(real_delayed_body_error_retains_admission_then_recovers)'` | 15:08:27.972–15:09:58.470 | 90.497 | **1 passed (90.018s test), 1 skipped** |
+| `r09-related-contracts` | `mise run test -- pvisor-overlaynet -- --offline --test-threads 1 --test bandwidth_lifecycle --test stream_recovery` | 15:10:33.385–15:10:34.282 | 0.896 | **3 passed, 1 ignored** |
+| `r09-format-final` | same formatting command | 15:10:34.329–15:10:34.411 | 0.081 | exit 0 |
+
+Four test invocations ran six test instances. Real run ID
+`f668336c-dd29-4279-ad18-1289208f4f6b`; final related run
+`1cc50034-fce1-4f05-bfeb-0ad7579175ba`. Final test SHA-256:
+`3f43b2d102eb00ccb52cf8fc040da64772d03ce67e7fde58a8ed38a4264a69ca`;
+README:
+`660f2ee4558baea833b3d962bada5cab340c0695195876a9d6eacafff9339c76`.
+
+Minimum sampled RAM 10,529,202,176 bytes; disk 267,444,760,576 bytes;
+maximum load1 3.2740, swap used 7,963,992,064 bytes. All gates passed; no
+stop/termination or owned survivors. TMPDIR and mount audit empty, diffcheck
+passed at 15:10:57Z. Broader OverlayNet tests were intentionally not run:
+peer fixtures use canonical `/tmp`, and the scenario requires neither peer
+networking nor live transport. No full package/platform/Python/doctest/rustdoc/
+clippy or external service coverage is claimed.
+
+### Round 10 — namespace failure/retry trace against a native filesystem oracle
+
+New conventional external `tests/namespace_recovery.rs` exercises a fixed
+28-operation trace through the existing public in-process FilesystemService.
+An independent disposable native tree supplies expected errno and visible
+names/types/bytes. Fourteen ordinary type, existence and nonempty-directory
+errors are interleaved with successful rename replacement, deletion, whiteouts
+and file/directory recreation. Every operation checks lower contents unchanged,
+compares the complete visible tree, drops/reopens the owner and compares again,
+including after each rejected operation. Work scratch must be empty.
+
+The final trace runs three variants: no journal, legacy preimages and compact
+preimages, for 84 operations and 84 reopens per test execution. Both journaled
+variants check the original first-touch baseline remains after all replacements.
+This is one designed failure/recovery scenario with three storage variants,
+not 84 new scenarios. No implementation defect was found.
+
+Both selected test binaries were inspected for fixture confinement; they use
+small owned paths under local TMPDIR and no mounts, apply/global-lock helper,
+host-control authority or network. Full overlay-core package validation was
+deliberately **not** repeated after round 04's containment deviation.
+
+Supervised commands:
+
+| Evidence name | Command | UTC interval | Elapsed seconds | Outcome |
+| --- | --- | --- | ---: | --- |
+| `r10-namespace-trace` | `mise run test -- pvisor-overlay-core -- --offline --test-threads 1 --test namespace_recovery` | 15:13:08.238–15:13:08.857 | 0.617 | 1 passed, initial no-journal trace |
+| `r10-format` | `mise exec -- rustfmt --check --edition 2024 crates/pvisor-overlay-core/tests/namespace_recovery.rs` | 15:13:49.679–15:13:49.763 | 0.082 | exit 1: multiline assertions |
+| `r10-journal-variants` | same selected test command | 15:14:04.662–15:14:05.316 | 0.652 | 1 passed, all three variants |
+| `r10-format-final` | same formatting command | 15:14:05.361–15:14:05.442 | 0.080 | exit 0 |
+| `r10-related-contracts` | `mise run test -- pvisor-overlay-core -- --offline --test-threads 1 --test namespace_recovery --test direct_copy` | 15:14:43.270–15:14:43.770 | 0.499 | **3 passed, 0 skipped** |
+
+Three test invocations ran five test instances; the new trace itself ran three
+times (one initial + two final three-variant executions), not five new traces.
+Final nextest run ID `c9604e1d-f8cd-4feb-9d91-0e7ff3b69113`.
+Final test SHA-256
+`1a8f2938878645cc33ccfe776fecf030a1280a866e809035fe848d361057ed65`;
+README
+`002a19bf6c53f0ebf6a56325ca0a8eba0ddd91447a92b327c500353f8aa1f406`.
+README documents the finite trace scope, not arbitrary POSIX equivalence.
+
+Minimum sampled RAM 10,918,133,760 bytes; disk 267,418,169,344 bytes;
+maximum load1 3.0245, swap used 7,955,509,248 bytes. All admission gates passed,
+no stop/termination/survivors. TMPDIR/mount audit empty; diffcheck passed at
+15:14:55Z. This is in-process namespace/reopen coverage, not mounted protocol,
+apply, power-loss, Python, doctest, rustdoc, clippy or other-platform coverage.
+
 ## Checkpoints, gaps and limitations
 
 This document is a live checkpoint, not a claim of completed eight-hour testing.
