@@ -179,7 +179,8 @@ pub struct RunArgs {
     #[arg(long)]
     no_agent_defaults: bool,
 
-    /// Atomically write the finalized RunResult as JSON before exit; required with --spec.
+    /// Atomically write finalized RunResult JSON before exit; required with --spec.
+    /// Ordinary Sessions write a plain RunResult; --spec retains its delegated envelope.
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
@@ -940,6 +941,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         None,
         PolicySource::CurrentDefaults,
         args.stage_launch,
+        args.result_file,
     )
     .await
 }
@@ -1297,6 +1299,7 @@ async fn execute_config(
     lineage: Option<RunLineage>,
     policy_source: PolicySource,
     stage_launch: Option<StageLaunch>,
+    result_file: Option<PathBuf>,
 ) -> anyhow::Result<i32> {
     reject_ask_config(&config)?;
     let safe = safe || config.run.profile == pvisor_core::RunProfile::Safe;
@@ -1879,6 +1882,10 @@ async fn execute_config(
     pvisor::startup_mark_run("cli.session_started", &run_id);
     let result = wait_cli_session(managed).await?;
     pvisor::startup_mark_run("cli.run_finished", &run_id);
+    if let Some(path) = result_file {
+        pvisor::write_private_json(&path, &result)
+            .with_context(|| format!("write RunResult to {}", path.display()))?;
+    }
     drop(pvisor);
     if let Some(writer) = json_writer {
         writer.finish()?;
@@ -4270,6 +4277,7 @@ mod tests {
             false,
             None,
             PolicySource::CurrentDefaults,
+            None,
             None,
         )
         .await

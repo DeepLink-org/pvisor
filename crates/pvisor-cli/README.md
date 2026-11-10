@@ -103,6 +103,18 @@ pvisor review last
 pvisor apply last --path src
 ```
 
+`spawn --result-file FILE` atomically publishes the finalized Core `RunResult`
+as plain JSON, including failed workloads and nonzero exit codes. Relative paths
+use the launch directory; missing parent directories are created, and the result
+file is owner-only (`0600`). Publication follows Execution completion and preserves
+the workload's exit code on success. A write failure returns a CLI error while
+retaining the completed Run Bundle and completion receipt; it does not rerun the
+workload or undo its side effects. Failures before a RunResult exists do not
+produce a result file.
+
+Prepared JSON `--spec` continues to require `--result-file` and retains its
+existing `DelegatedRunOutput` envelope containing `result` and `agentctl`.
+
 `apply SOURCE` defaults to the recorded project. SOURCE is required: a Session ID,
 stage directory, workspace selector (including `last`), or staged-bind instance
 name/ID (with `--mount` when needed; see the container profile below).

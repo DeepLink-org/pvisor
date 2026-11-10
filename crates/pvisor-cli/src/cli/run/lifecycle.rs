@@ -224,6 +224,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         }),
         pvisor::session_service::policy::PolicySource::Inherited(parent_isolation),
         None,
+        None,
     )
     .await
 }
