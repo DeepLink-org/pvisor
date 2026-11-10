@@ -179,8 +179,7 @@ pub struct RunArgs {
     #[arg(long)]
     no_agent_defaults: bool,
 
-    /// Atomically write finalized RunResult JSON before exit; required with --spec.
-    /// Ordinary Sessions write a plain RunResult; --spec retains its delegated envelope.
+    /// Atomically write the finalized RunResult as JSON before exit; required with --spec.
     #[arg(long, value_name = "FILE")]
     result_file: Option<PathBuf>,
 
