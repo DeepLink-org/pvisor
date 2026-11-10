@@ -206,6 +206,21 @@ crashed shim would orphan the booted VM together with its bridge proxies,
 the pod network namespace they pin and the `/run` sockets. A fork/prctl
 race is closed by re-checking the spawning pid passed in the runner's
 environment: a parent that died before the prctl rejects the start.
+The sandbox holder arms the same `PR_SET_PDEATHSIG(SIGTERM)` (default
+disposition — it owns no task sockets), so a crashed shim also takes down
+the namespace holder instead of leaking the pod's namespaces for days.
+
+`PR_SET_PDEATHSIG` binds to the *thread* that forked the child, not to the
+process. Every internal child (VM runner, sandbox holder, init/exec
+parents) is therefore forked on the dedicated never-exiting
+`pvisor-internal-spawner` thread: forking from a pooled worker thread (for
+example a tokio `spawn_blocking` thread, which idle-exits within seconds)
+tied a healthy runner's death signal to that thread's lifetime — observed
+live as sandboxes dying with exit status 143 exactly when the forking
+pool thread hit its keep-alive, ~11 seconds after creation.
+`tests/internal_spawn_lifetime.rs` reproduces the mechanism (a pdeath
+child forked on a short-lived pool thread dies with the thread; the same
+child forked via the dedicated thread survives it).
 Non-terminal task IO rides the named virtio-console ports
 (`krun-stdin/stdout/stderr`); the guest supervisor waits for them, so
 `CloseIO` EOF and piped stdin reach the workload with runc-compatible

@@ -33,7 +33,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::LazyLock;
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -396,6 +398,53 @@ pub fn spawn_internal(
     )
 }
 
+/// One fork request for the dedicated internal-spawn thread.
+struct InternalSpawnRequest {
+    command: Command,
+    reply: mpsc::Sender<std::io::Result<Child>>,
+}
+
+/// Dedicated fork thread for every internal child (VM runner, sandbox
+/// holder, init/exec parents).
+///
+/// `PR_SET_PDEATHSIG` children must not be forked from pooled worker
+/// threads: the pdeath parent is the *thread* that forks, and pooled
+/// threads (for example tokio `spawn_blocking` workers) idle-exit within
+/// seconds-to-minutes while the shim process lives, which would SIGTERM
+/// healthy long-lived children (observed live: a VM runner and its sandbox
+/// dying with exit status 143 exactly ~11 s after creation once the
+/// forking blocking thread hit its keep-alive). This thread never exits
+/// before the shim process does, so the death signal tracks the shim's
+/// own lifetime.
+static INTERNAL_SPAWNER: LazyLock<mpsc::Sender<InternalSpawnRequest>> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::channel::<InternalSpawnRequest>();
+    std::thread::Builder::new()
+        .name("pvisor-internal-spawner".to_owned())
+        .spawn(move || {
+            for mut request in rx {
+                let _ = request.reply.send(request.command.spawn());
+            }
+        })
+        .expect("spawn the internal fork thread");
+    tx
+});
+
+/// Fork one internal child on the dedicated thread so its parent-death
+/// lifetime is the shim process, not a transient worker thread.
+///
+/// The command must already carry its final configuration; only the spawn
+/// itself is delegated. Panics only if the fork thread died, which means
+/// the shim is shutting down.
+pub fn fork_internal(command: Command) -> std::io::Result<Child> {
+    let (reply, inbox) = mpsc::channel();
+    INTERNAL_SPAWNER
+        .send(InternalSpawnRequest { command, reply })
+        .expect("internal fork thread exited");
+    inbox
+        .recv()
+        .expect("internal fork thread dropped a pending request")
+}
+
 /// [`spawn_internal`] with control over waiting for the internal parent to
 /// exit: the sandbox holder IS the parent and stays alive, so it must be
 /// spawned detached.
@@ -462,11 +511,8 @@ pub fn spawn_internal_opts(
             .join(",");
         command.env(ENV_INJECT_FDS, rendered);
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .spawn()
-        .context("spawn internal process")?;
+    command.stdin(Stdio::null()).stdout(Stdio::null());
+    let mut child = fork_internal(command).context("spawn internal process")?;
 
     // Drop this process's copies of the child-side ends (CLOEXEC already
     // kept the parent-only ends out of the child).
@@ -1194,6 +1240,32 @@ fn arm_parent_death_cleanup(task_id: &str, bridge_ports: &[u16]) -> Result<()> {
     Ok(())
 }
 
+/// The holder must die with its shim: it pins the pod's namespaces and
+/// would otherwise leak them past sandbox teardown when the shim crashes
+/// (observed live: holders reparented to init surviving for days, each
+/// pinning a dead pod's network namespace). The default `SIGTERM`
+/// disposition terminates the holder — it owns no task sockets, so unlike
+/// the VM runner it needs no death handler. The fork/prctl race (parent
+/// dying between fork and `prctl`, which never re-arms the signal) is
+/// closed by re-checking the spawning pid carried in [`ENV_PARENT_PID`].
+fn arm_holder_parent_death() -> Result<()> {
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
+        }
+    }
+    let expected: u32 = std::env::var(ENV_PARENT_PID)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .context("parent pid env")?;
+    if unsafe { libc::getppid() } != expected as libc::pid_t {
+        return Err(anyhow::anyhow!(
+            "shim parent {expected} is gone before holder start"
+        ));
+    }
+    Ok(())
+}
+
 /// Poll the egress gate file until the sidecar's policy arrives.
 /// `Ok(None)` on timeout — callers boot deny-all in that case.
 #[cfg(feature = "vm")]
@@ -1251,6 +1323,7 @@ fn run_sandbox_holder_requested() -> Result<bool> {
 fn sandbox_holder_main() -> Result<()> {
     let plan: crate::plan::SandboxPlan = read_plan(ENV_SANDBOX_PLAN)?;
     let start_fd = fd_from_env(ENV_START_FD)?;
+    arm_holder_parent_death()?;
 
     if let Some(netns) = plan.netns_path.as_deref() {
         setns_by_path(netns, NamespaceKind::Network).context("join sandbox network namespace")?;
