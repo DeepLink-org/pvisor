@@ -196,8 +196,16 @@ failures are logged (to the runner diagnostics, i.e.
 
 VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
 VMM for the whole task), waits on a start pipe for `Start`, and exits with
-the guest workload's exit code. The runner holds no end of the start pipe,
-so a shim exit delivers EOF and the runner terminates instead of leaking.
+the guest workload's exit code. Before `Start` the runner holds no end of
+the start pipe, so a shim exit delivers EOF and the runner terminates
+instead of leaking. After `Start` — the write end is consumed — the runner
+arms `PR_SET_PDEATHSIG(SIGTERM)` instead: a shim exit (or crash) delivers
+SIGTERM, whose handler unlinks the task's control and bridge sockets (the
+same cleanup as the runner-exit belt and braces) and exits. Without it a
+crashed shim would orphan the booted VM together with its bridge proxies,
+the pod network namespace they pin and the `/run` sockets. A fork/prctl
+race is closed by re-checking the spawning pid passed in the runner's
+environment: a parent that died before the prctl rejects the start.
 Non-terminal task IO rides the named virtio-console ports
 (`krun-stdin/stdout/stderr`); the guest supervisor waits for them, so
 `CloseIO` EOF and piped stdin reach the workload with runc-compatible
@@ -397,6 +405,16 @@ pod namespaces (pause replacement, including shareProcessNamespace pods),
 and containers that join the shared namespaces unless their spec overrides
 them. Pod-level **VM** sandboxes are unsupported and return a clear error;
 per-container VMs use `io.pvisor.executor=vm`.
+
+containerd's startup restore probes a `sandboxer = "shim"` runtime's Task
+service with the *sandbox id* before it trusts the shim again; the Task
+service therefore also answers `State` and `Connect` for that id by
+reporting the holder process (running or stopped, mirroring how runc's
+pod-sandbox mode reports its pause task). Before this, every containerd
+restart made containerd publish synthetic exit-255 events for all pvisor
+sandboxes and kubelet killed the pods. Full containerd-restart survival
+additionally needs container-level reattach support and remains a known
+limitation (see the campaign notes in `CHAOS_TEST_SHIM_6H_20261110.md`).
 
 ## Limitations (deliberate)
 
