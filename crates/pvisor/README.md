@@ -2334,3 +2334,10 @@ Local indexed Raw with a short block tail, no zero blocks, or more than 8192 run
 node-owned views, compressed snapshots and other platforms retain their previous
 path. This optimization does not enable offload on restored COW memory and does
 not promise a measured total-memory saving before workload validation.
+
+### Shared-pool disconnect fairness
+
+Physical-pool candidate retirement uses serialized cleanup passes with at most
+256 candidates under the shared pool lock per batch. Live page and statistics
+requests can run between batches; the five-second RPC deadline is unchanged.
+Actual shared references remain pinned until peer-exit proof, as before.
