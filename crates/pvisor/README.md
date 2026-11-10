@@ -401,6 +401,17 @@ listener or per-command worker is required. Once the Execution has published
 terminal status, owner escalation allows the runtime's bounded RAM/macFUSE
 resource teardown to finish before forced exit and Session completion publication.
 
+For macOS Host staging with macFUSE 5.4.0's FSKit backend, a dead or
+unresponsive filesystem server can leave pending requests, mount inspection
+and unmount commands blocked in kernel I/O
+([upstream #1201](https://github.com/macfuse/macfuse/issues/1201)).
+A process timeout or delivered signal does not prove mount detachment.
+A pending unmount can temporarily hide its entry from the cached mount table,
+so absence there is not cleanup proof
+([upstream #1228](https://github.com/macfuse/macfuse/issues/1228)).
+If teardown leaves completion uncommitted, treat the Session outcome as `Unknown`;
+retained files alone do not authorize apply or drop.
+
 Each running Session publishes `live_control` in its host-only Run record before
 executor entry. It contains the canonical path, device/inode, protocol
 `pvisor-instance-control-3`, owner PID, executable path and BLAKE3 digest:
