@@ -118,6 +118,9 @@ struct LiveTask {
 /// pause-container replacement) and its lifecycle.
 struct SandboxState {
     id: String,
+    /// The sandbox bundle directory (holder plan scratch space); reported
+    /// by the Task service's sandbox-id fallback for containerd restore.
+    bundle: PathBuf,
     internal: InternalChild,
     exit_tx: watch::Sender<Option<ExitInfo>>,
     created_at: SystemTime,
@@ -836,6 +839,32 @@ fn set_executable(path: &std::path::Path) -> Result<()> {
         .with_context(|| format!("chmod {} +x", path.display()))
 }
 
+impl PvisorTask {
+    /// Task-service view of the pod sandbox behind `id`: the holder's
+    /// process state, for containerd restore probes. NotFound for any id
+    /// that is not this shim's sandbox.
+    async fn sandbox_task_state(&self, id: &str) -> ttrpc::Result<StateResponse> {
+        let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+        let Some(state) = sandbox.as_ref().filter(|state| state.id == id) else {
+            return Err(not_found(id));
+        };
+        let mut response = StateResponse::new();
+        response.set_id(state.id.clone());
+        response.set_bundle(state.bundle.to_string_lossy().to_string());
+        response.set_pid(state.internal.pid.unwrap_or(0));
+        let exit = state.exit_tx.borrow();
+        if let Some(exit) = exit.as_ref() {
+            response.set_status(Status::STOPPED);
+            response.set_exit_status(exit.status);
+            response.set_exited_at(timestamp_from(exit.exited_at));
+        } else {
+            response.set_status(Status::RUNNING);
+        }
+        drop(exit);
+        Ok(response)
+    }
+}
+
 #[async_trait]
 impl Task for PvisorTask {
     async fn create(
@@ -1213,45 +1242,60 @@ impl Task for PvisorTask {
     }
 
     async fn state(&self, _ctx: &TtrpcContext, req: StateRequest) -> ttrpc::Result<StateResponse> {
-        let tasks = self.inner.tasks.lock().expect("tasks mutex");
-        let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
-        if !req.exec_id.is_empty() {
-            let exec = live
-                .entry
-                .execs
-                .get(&req.exec_id)
-                .ok_or_else(|| not_found(&req.exec_id))?;
-            let mut response = StateResponse::new();
-            response.set_id(req.id.clone());
-            response.set_exec_id(req.exec_id.clone());
-            response.set_bundle(live.entry.bundle.to_string_lossy().to_string());
-            response.set_pid(exec.pid.unwrap_or(0));
-            response.set_status(status_to_api(exec.status));
-            response.set_stdin(exec.stdin.clone().unwrap_or_default());
-            response.set_stdout(exec.stdout.clone().unwrap_or_default());
-            response.set_stderr(exec.stderr.clone().unwrap_or_default());
-            response.set_terminal(exec.terminal);
-            if let Some(exit) = exec.exit.as_ref() {
-                response.set_exit_status(exit.status);
-                response.set_exited_at(timestamp_from(exit.exited_at));
-            }
-            return Ok(response);
+        let task_response: Option<ttrpc::Result<StateResponse>> = {
+            let tasks = self.inner.tasks.lock().expect("tasks mutex");
+            tasks.get(&req.id).map(|live| {
+                if !req.exec_id.is_empty() {
+                    let exec = live
+                        .entry
+                        .execs
+                        .get(&req.exec_id)
+                        .ok_or_else(|| not_found(&req.exec_id))?;
+                    let mut response = StateResponse::new();
+                    response.set_id(req.id.clone());
+                    response.set_exec_id(req.exec_id.clone());
+                    response.set_bundle(live.entry.bundle.to_string_lossy().to_string());
+                    response.set_pid(exec.pid.unwrap_or(0));
+                    response.set_status(status_to_api(exec.status));
+                    response.set_stdin(exec.stdin.clone().unwrap_or_default());
+                    response.set_stdout(exec.stdout.clone().unwrap_or_default());
+                    response.set_stderr(exec.stderr.clone().unwrap_or_default());
+                    response.set_terminal(exec.terminal);
+                    if let Some(exit) = exec.exit.as_ref() {
+                        response.set_exit_status(exit.status);
+                        response.set_exited_at(timestamp_from(exit.exited_at));
+                    }
+                    return Ok(response);
+                }
+                let entry = &live.entry;
+                let mut response = StateResponse::new();
+                response.set_id(entry.id.clone());
+                response.set_bundle(entry.bundle.to_string_lossy().to_string());
+                response.set_pid(entry.pid.unwrap_or(0));
+                response.set_status(status_to_api(entry.status));
+                response.set_stdin(entry.stdin.clone().unwrap_or_default());
+                response.set_stdout(entry.stdout.clone().unwrap_or_default());
+                response.set_stderr(entry.stderr.clone().unwrap_or_default());
+                response.set_terminal(entry.terminal);
+                if let Some(exit) = entry.exit.as_ref() {
+                    response.set_exit_status(exit.status);
+                    response.set_exited_at(timestamp_from(exit.exited_at));
+                }
+                Ok(response)
+            })
+        };
+        match task_response {
+            Some(result) => result,
+            // containerd's startup restore probes the shim's Task service
+            // with the sandbox id (sandboxer = "shim": the shim, not
+            // containerd, owns the pod sandbox). Answering NotFound there
+            // makes containerd publish a sandbox exit and kubelet kill the
+            // pod after every containerd restart. The holder is the
+            // process behind that id; report it the way runc's pod-sandbox
+            // mode reports its pause task.
+            None if req.exec_id.is_empty() => self.sandbox_task_state(&req.id).await,
+            None => Err(not_found(&req.id)),
         }
-        let entry = &live.entry;
-        let mut response = StateResponse::new();
-        response.set_id(entry.id.clone());
-        response.set_bundle(entry.bundle.to_string_lossy().to_string());
-        response.set_pid(entry.pid.unwrap_or(0));
-        response.set_status(status_to_api(entry.status));
-        response.set_stdin(entry.stdin.clone().unwrap_or_default());
-        response.set_stdout(entry.stdout.clone().unwrap_or_default());
-        response.set_stderr(entry.stderr.clone().unwrap_or_default());
-        response.set_terminal(entry.terminal);
-        if let Some(exit) = entry.exit.as_ref() {
-            response.set_exit_status(exit.status);
-            response.set_exited_at(timestamp_from(exit.exited_at));
-        }
-        Ok(response)
     }
 
     async fn wait(&self, _ctx: &TtrpcContext, req: WaitRequest) -> ttrpc::Result<WaitResponse> {
@@ -1566,11 +1610,27 @@ impl Task for PvisorTask {
         _ctx: &TtrpcContext,
         req: ConnectRequest,
     ) -> ttrpc::Result<ConnectResponse> {
-        let tasks = self.inner.tasks.lock().expect("tasks mutex");
-        let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
+        let task_pid = {
+            let tasks = self.inner.tasks.lock().expect("tasks mutex");
+            tasks.get(&req.id).map(|live| live.entry.pid.unwrap_or(0))
+        };
+        let task_pid = match task_pid {
+            Some(pid) => pid,
+            // containerd's restore probes with the sandbox id before any
+            // task RPC; answer with the holder the way `state` does, or a
+            // containerd restart kills every pod this shim serves.
+            None => {
+                let sandbox = self.inner.sandbox.lock().expect("sandbox mutex");
+                sandbox
+                    .as_ref()
+                    .filter(|state| state.id == req.id)
+                    .map(|state| state.internal.pid.unwrap_or(0))
+                    .ok_or_else(|| not_found(&req.id))?
+            }
+        };
         let mut response = ConnectResponse::new();
         response.set_shim_pid(process::id());
-        response.set_task_pid(live.entry.pid.unwrap_or(0));
+        response.set_task_pid(task_pid);
         Ok(response)
     }
 
@@ -1775,6 +1835,7 @@ impl Sandbox for PvisorSandbox {
         let (exit_tx, _) = watch::channel(None);
         *self.inner.sandbox.lock().expect("sandbox mutex") = Some(SandboxState {
             id: req.sandbox_id.clone(),
+            bundle: bundle.clone(),
             internal,
             exit_tx,
             created_at: SystemTime::now(),
