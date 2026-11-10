@@ -77,6 +77,8 @@ port and transport restrictions still apply.
 An audit grant derives a request-scoped policy from the canonical capability;
 it retains explicit denies and bandwidth limits, and does not mutate the source
 policy or authorize other hosts, ports, transports, or private DNS results.
+For scoped capabilities this narrowing applies to every layer and the fallback:
+existing allow rules and default-allow behavior do not widen the temporary grant.
 Approval request hosts must be exact hostnames or IP literals. Wildcards and
 CIDRs are policy expressions, not single destinations, and cannot be approved
 as request hosts.

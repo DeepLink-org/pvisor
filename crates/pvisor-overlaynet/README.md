@@ -97,6 +97,22 @@ drivers are not implemented.
 mise run test -- pvisor-overlaynet
 ```
 
+`tests/stream_recovery.rs` uses the public router and an accepting in-memory
+sink, without opening sockets or contacting an upstream. A delayed body error,
+a separately cancelled pending body and intervening healthy requests must retain
+independent admission ownership. After cleanup, all 128 slots must be available
+again, overload must return 429, and dropping the held bodies must restore service.
+The ordinary case uses paused Tokio time. Its explicitly ignored real-timer
+counterpart holds the delayed error for 90 seconds:
+
+```sh
+mise run test -- pvisor-overlaynet -- --test stream_recovery --run-ignored only \
+  -E 'test(real_delayed_body_error_retains_admission_then_recovers)'
+```
+
+This checks router/body ownership and delayed local sink errors, not a real
+HTTP transport, upstream read timeout or network reconnect.
+
 ## Links
 
 - [OverlayNet architecture](../../docs/src/zh/design/overlaynet.md)

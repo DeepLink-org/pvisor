@@ -28,6 +28,18 @@ Ordinary rename between two names of the same regular-file hardlink is a no-op,
 including a lower alias whose sibling has already copied up. NOREPLACE still
 returns EEXIST, and a missing source returns ENOENT even when both names match.
 
+`tests/namespace_recovery.rs` compares a fixed 28-operation, small in-process
+namespace trace with a disposable native filesystem tree. Fourteen ordinary
+type/existence/nonempty-directory errors are interleaved with successful retries,
+rename replacement, whiteouts and file/directory recreation. Every step compares
+errno, visible names/types/bytes and unchanged lower contents, then reopens the
+same backing and compares again. The trace runs without preimages and with both
+legacy and compact journals; journaled runs retain the original first-touch
+baseline. Only for unlink of a pre-proven directory, the native oracle accepts
+POSIX/macOS EPERM or Linux/LSB EISDIR while requiring Core's EISDIR and unchanged
+trees. All other error comparisons remain exact. It does not mount FUSE, apply
+changes or claim arbitrary POSIX coverage.
+
 ## Explicit private VM backing metadata (Linux)
 
 `OverlayLayout::with_private_backing()` opts an exclusively owned fresh upper

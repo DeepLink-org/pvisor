@@ -14,6 +14,13 @@ An unresolved start remains ambiguous after run failure and blocks retry in
 that state directory; use a new sandbox and run ID rather than silently
 repeating uncertain side effects.
 
+Replay observations require object payloads; tool start/finish receipts also
+require a string call ID (including empty IDs accepted by native adapters).
+Admission and diagnostic reads reject malformed
+receipts with an ambiguous-execution error rather than panicking or silently
+ignoring an uncertain operation. Rejection does not repair complete records:
+explicit owner restoration is required, and failed admission releases its locks.
+
 Artifact-publication failures report completed operations from the latest run's
 durable finish receipts, including separate operations that reuse a native ID.
 Fully resolved terminal runs allow an explicit rerun into a fresh output root;
@@ -76,6 +83,23 @@ timeouts, log quotas and SIGINT step limits. Wall/idle cases allow three seconds
 for native startup; this tolerates cold starts but is not a readiness handshake,
 so startup starvation beyond that budget can still fail the test. Its independent
 alarm exceeds the wall deadline plus the longest termination grace.
+
+The ignored `slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process`
+check exercises real lifecycle timers for about three minutes. In both pipe and
+redirected-stdout modes, a native child emits stdout/stderr progress at 20-second
+intervals before stalling with pending stdin. The 30-second idle watchdog must
+refresh on both streams, then cancel, deliver stdin EOF, capture cooperative
+shutdown output and reap the child/group. A fresh process must then succeed.
+The child has an independent 150-second alarm; the owner has a 120-second wall
+deadline per mode. Run it explicitly with:
+
+```sh
+mise run test -- pvisor-replay -- --lib --run-ignored only \
+  -E 'test(slow_progress_then_idle_cancellation_drains_and_allows_a_fresh_process)'
+```
+
+This is a low-load timer/cleanup contract, not live-agent continuation coverage
+or a throughput benchmark.
 
 The Linux leader-exit fixture covers incomplete stdin delivery when a descendant
 keeps the read end open, both with and without inherited stdout/stderr. A native

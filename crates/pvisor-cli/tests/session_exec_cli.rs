@@ -146,7 +146,13 @@ assert cli('exec','--session',stage,'true').returncode!=0, 'stopped Session was 
 review=cli('review',stage,'--json')
 assert review.returncode==0, review.stderr
 if mode=='ordinary':
-    assert any(x['path']=='child.txt' for x in json.loads(review.stdout)['filesystem']['changes'])
+    reviewed=json.loads(review.stdout)
+    assert 'filesystem' in reviewed, {
+        'review':reviewed, 'review_stderr':review.stderr,
+        'kill':(killed.returncode,killed.stdout,killed.stderr),
+        'owner':(run.returncode,out,err),
+    }
+    assert any(x['path']=='child.txt' for x in reviewed['filesystem']['changes']), reviewed
 if mode!='overlap':
     dropped=cli('drop',stage)
     assert dropped.returncode==0, (dropped.stdout,dropped.stderr,killed.stdout,killed.stderr,out,err,state())
