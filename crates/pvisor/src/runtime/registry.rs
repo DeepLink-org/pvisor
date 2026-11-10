@@ -299,10 +299,10 @@ impl RunRecord {
             .unwrap_or_else(|| self.storage.clone())
     }
 
-    /// Initialize preview lock inodes during explicit project-scope launch only.
+    /// Initialize preview lock inodes while launching a new staged workspace.
     /// The caller owns the new Execution lease; previews must never call this method.
     pub(crate) fn initialize_apply_observation_locks(&self) -> anyhow::Result<()> {
-        if self.project_apply_scope.is_none() {
+        if self.overlay.is_none() {
             return Ok(());
         }
         use std::os::unix::fs::OpenOptionsExt;
@@ -1119,6 +1119,41 @@ mod tests {
         run.schema_version = 3;
         run.completion_protocol = Some(1);
         assert!(run.validate_schema().is_err());
+    }
+
+    #[test]
+    fn staged_workspace_initializes_observation_locks_without_project_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let run = record(temp.path(), &stage, &stage.join("upper"));
+        let _lease = RunLease::acquire_new(&stage).unwrap();
+        assert!(run.project_apply_scope.is_none());
+        run.initialize_apply_observation_locks().unwrap();
+        for path in [
+            stage.join("session.lock"),
+            stage.join("execution-operation").join(LEASE_FILENAME),
+        ] {
+            assert!(
+                path.is_file(),
+                "launch did not initialize {}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            fs::metadata(stage.join("session.lock")).unwrap().mode() & 0o7777,
+            0o600
+        );
+        drop(RunLease::observe_existing(&stage.join("execution-operation")).unwrap());
+    }
+
+    #[test]
+    fn unstaged_workspace_does_not_initialize_observation_locks() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("unstaged");
+        let mut run = record(&stage, &stage, &stage.join("upper"));
+        run.overlay = None;
+        run.initialize_apply_observation_locks().unwrap();
+        assert!(!stage.exists());
     }
 
     #[test]

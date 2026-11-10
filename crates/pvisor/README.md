@@ -273,15 +273,16 @@ or sync lock files. These locks exclude the same mutators as execution without
 initializing anything in a project that contains its own stage (for example
 `./experiment`). Execution retains its diagnostic-owner and mutation lock APIs.
 
-Explicit project-scope stage preparation initializes the Session-directory and
+New staged workspace preparation initializes the Session-directory and
 ExecutionSession observation locks while holding the new Execution lease, before
-publishing the Run record. The Execution lease is already created by launch.
-Ordinary spawn without that explicit scope does not gain lock-initialization side
-effects. Stages missing any required lock fail preview closed with an
-existing-lock error; preview never initializes the missing locks. Recreate such a stage
-with the explicit launch contract. Ordinary workspace records keep their
-recorded target contract for execution, but preview still requires existing lock
-inodes. This limitation is not treated as a successful empty preview.
+publishing the Run record. This includes ordinary workspace stages without an
+explicit project scope, so their first preview does not require a prior review.
+The Execution lease is already created by launch. Unstaged Sessions do not
+initialize these observation locks. Existing stages missing any required lock
+still fail preview closed with an existing-lock error; preview never initializes
+or repairs missing locks. Recreate such a stage to obtain the launch-time locks.
+Ordinary workspace records retain their recorded apply target; initializing locks
+does not grant rootstage project authority or change target validation.
 
 Dry-run does not recover pending intent, create ledgers, consume upper/preimages
 or create scope/target directories. Reads can update atime; file/directory contents,

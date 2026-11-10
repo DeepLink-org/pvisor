@@ -1105,88 +1105,99 @@ mod tests {
     #[test]
     fn native_stage_preparation_initializes_locks_before_first_preview() {
         use crate::runtime::drivers::{OverlayExecutionPrepareOpts, prepare_overlay_execution};
-        let root = tempfile::tempdir().unwrap();
-        let project = root.path().join("project");
-        fs::create_dir(&project).unwrap();
-        let project = project.canonicalize().unwrap();
-        let stage = project.join("experiment");
-        let mut spec = pvisor_core::RunSpec::process("native-stage-preview", "test", "true");
-        spec.metadata.insert(
-            "pvisor.workspace".into(),
-            serde_json::to_value(&project).unwrap(),
-        );
-        spec.metadata.insert(
-            PROJECT_APPLY_SCOPE_KEY.into(),
-            serde_json::to_value(ProjectApplyScope::capture(&project).unwrap()).unwrap(),
-        );
-        let mut preparation = crate::PVisor::new()
-            .resolve_run(spec.clone())
-            .unwrap()
-            .preparation;
-        // Exercise the actual native mountless preparation and completion path,
-        // without entering a VM or granting writes to the real host root.
-        preparation.guest_workspace_overlay = true;
-        let execution = pvisor_core::ExecutionId::new("native-preview-execution");
-        let session = prepare_overlay_execution(
-            &mut spec,
-            &preparation,
-            OverlayExecutionPrepareOpts {
-                storage: &stage,
-                overlay: crate::runtime::OverlayHint {
-                    lower_dirs: vec!["/".into()],
-                    stage_dir: Some(stage.clone()),
-                    ..Default::default()
-                },
-                vm_network: None,
-                execution_id: &execution,
-            },
-        )
-        .unwrap();
-        for path in [
-            stage.join("session.lock"),
-            stage.join(crate::runtime::registry::LEASE_FILENAME),
-            stage
-                .join("execution-operation")
-                .join(crate::runtime::registry::LEASE_FILENAME),
-        ] {
-            assert!(
-                path.is_file(),
-                "launch did not initialize {}",
-                path.display()
+        for rootstage in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let project = root.path().join("project");
+            fs::create_dir(&project).unwrap();
+            let project = project.canonicalize().unwrap();
+            let stage = project.join("experiment");
+            let mut spec = pvisor_core::RunSpec::process("native-stage-preview", "test", "true");
+            spec.metadata.insert(
+                "pvisor.workspace".into(),
+                serde_json::to_value(&project).unwrap(),
             );
-        }
-        let mut teardown = session.teardown(Some(0), true, false);
-        assert!(
-            teardown.error_message().is_none(),
-            "{:?}",
-            teardown.error_message()
-        );
-        let result: pvisor_core::RunResult = serde_json::from_value(serde_json::json!({
-            "run_id":spec.run_id,"execution_id":execution,"state":"completed",
-            "started_at_unix_ms":teardown.run_record().started_at_unix_ms,
-            "finished_at_unix_ms":pvisor_core::unix_now_ms(),"exit_code":0
-        }))
-        .unwrap();
-        teardown
-            .persist(
-                &result,
-                crate::AgentCtlSnapshot {
-                    run_id: spec.run_id.to_string(),
-                    execution_id: execution.to_string(),
-                    directive: crate::AgentDirective::Continue,
-                    clients: vec![],
+            if rootstage {
+                spec.metadata.insert(
+                    PROJECT_APPLY_SCOPE_KEY.into(),
+                    serde_json::to_value(ProjectApplyScope::capture(&project).unwrap()).unwrap(),
+                );
+            }
+            let mut preparation = crate::PVisor::new()
+                .resolve_run(spec.clone())
+                .unwrap()
+                .preparation;
+            // Exercise the actual native mountless preparation and completion path,
+            // without entering a VM or granting writes to the real host root.
+            preparation.guest_workspace_overlay = true;
+            let execution = pvisor_core::ExecutionId::new("native-preview-execution");
+            let session = prepare_overlay_execution(
+                &mut spec,
+                &preparation,
+                OverlayExecutionPrepareOpts {
+                    storage: &stage,
+                    overlay: crate::runtime::OverlayHint {
+                        lower_dirs: vec![if rootstage {
+                            "/".into()
+                        } else {
+                            project.clone()
+                        }],
+                        stage_dir: Some(stage.clone()),
+                        ..Default::default()
+                    },
+                    vm_network: None,
+                    execution_id: &execution,
                 },
-                false,
             )
             .unwrap();
-        teardown.complete(&result).unwrap();
-        drop(teardown);
-        let record = RunRecord::read(&stage).unwrap();
-        seed_execution_session(&record);
-        let before = tree_snapshot(root.path());
-        let preview = run(request(&record, true));
-        assert_eq!(preview.status, "ready", "{:?}", preview.blockers);
-        assert_eq!(before, tree_snapshot(root.path()));
+            for path in [
+                stage.join("session.lock"),
+                stage.join(crate::runtime::registry::LEASE_FILENAME),
+                stage
+                    .join("execution-operation")
+                    .join(crate::runtime::registry::LEASE_FILENAME),
+            ] {
+                assert!(
+                    path.is_file(),
+                    "launch did not initialize {}",
+                    path.display()
+                );
+            }
+            let mut teardown = session.teardown(Some(0), true, false);
+            assert!(
+                teardown.error_message().is_none(),
+                "{:?}",
+                teardown.error_message()
+            );
+            let result: pvisor_core::RunResult = serde_json::from_value(serde_json::json!({
+                "run_id":spec.run_id,"execution_id":execution,"state":"completed",
+                "started_at_unix_ms":teardown.run_record().started_at_unix_ms,
+                "finished_at_unix_ms":pvisor_core::unix_now_ms(),"exit_code":0
+            }))
+            .unwrap();
+            teardown
+                .persist(
+                    &result,
+                    crate::AgentCtlSnapshot {
+                        run_id: spec.run_id.to_string(),
+                        execution_id: execution.to_string(),
+                        directive: crate::AgentDirective::Continue,
+                        clients: vec![],
+                    },
+                    false,
+                )
+                .unwrap();
+            teardown.complete(&result).unwrap();
+            drop(teardown);
+            let record = RunRecord::read(&stage).unwrap();
+            assert_eq!(record.project_apply_scope.is_some(), rootstage);
+            if rootstage {
+                seed_execution_session(&record);
+            }
+            let before = tree_snapshot(root.path());
+            let preview = run(request(&record, true));
+            assert_eq!(preview.status, "ready", "{:?}", preview.blockers);
+            assert_eq!(before, tree_snapshot(root.path()));
+        }
     }
 
     #[test]
