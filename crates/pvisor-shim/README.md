@@ -362,9 +362,16 @@ regression, not a mystery.
   deny-default allowlist is a valid deny-all policy, including during
   live updates. The gate belongs to the sandbox and is unlinked on
   sandbox shutdown, not on individual workload exit/delete, so workload
-  restarts retain their policy. The 3-second gate window only spans the
+  restarts retain their policy; when the shim crashes instead, the holder's
+  parent-death handler performs that unlink so killed policy sandboxes
+  leave no gate residue in `/run`. The 3-second gate window only spans the
   sidecar's Create, which kubelet issues milliseconds after the workload's
-  Start. The gate stays a live channel for the task's lifetime: a runner
+  Start. The boot-time read tolerates torn writes (the sidecar publishes
+  non-atomically): unparseable content is treated as not-yet-arrived and
+  retried for the whole window, and a gate that is still absent or
+  uncompilable at the deadline boots deny-all — an empty allowlist on a
+  real NIC — instead of no network, so the task is never stranded offline.
+  The gate stays a live channel for the task's lifetime: a runner
   thread applies its first read too, covering updates during initial VM setup,
   then hot-swaps the compiled overlaynet policy on every change (a rule set that fails to compile keeps the previous policy and is
   logged). The sidecar's own runtime API can only update nftables inside
