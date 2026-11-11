@@ -206,7 +206,11 @@ The frontend self-executes one owner over an inherited private socketpair. The
 owner remains in the original session, owns descendant cleanup, and installs
 signal handlers before unblocking signals. Interactive Sessions use the original
 controlling terminal and may receive Ctrl-C directly; foreground ownership is
-restored at exit. Other commands never start a worker. Live commands execute
+restored at exit. Cancellation retains the two-second running-executor grace.
+Once the executor returns a terminal outcome, the owner allows the existing bounded
+45-second finalization grace for filesystem capture and completion receipts, even
+before public terminal status is published. Missing receipts remain unknown.
+Other commands never start a worker. Live commands execute
 inside the starting owner binary through `pvisor-instance-control-3`; compatible
 caller binaries need not have matching digests. Stopped operations take the Session
 root's `session.lock`. Apply/drop refuse an owner still holding stage. See the runtime
