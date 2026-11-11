@@ -273,15 +273,16 @@ or sync lock files. These locks exclude the same mutators as execution without
 initializing anything in a project that contains its own stage (for example
 `./experiment`). Execution retains its diagnostic-owner and mutation lock APIs.
 
-Explicit project-scope stage preparation initializes the Session-directory and
+New staged workspace preparation initializes the Session-directory and
 ExecutionSession observation locks while holding the new Execution lease, before
-publishing the Run record. The Execution lease is already created by launch.
-Ordinary spawn without that explicit scope does not gain lock-initialization side
-effects. Stages missing any required lock fail preview closed with an
-existing-lock error; preview never initializes the missing locks. Recreate such a stage
-with the explicit launch contract. Ordinary workspace records keep their
-recorded target contract for execution, but preview still requires existing lock
-inodes. This limitation is not treated as a successful empty preview.
+publishing the Run record. This includes ordinary workspace stages without an
+explicit project scope, so their first preview does not require a prior review.
+The Execution lease is already created by launch. Unstaged Sessions do not
+initialize these observation locks. Existing stages missing any required lock
+still fail preview closed with an existing-lock error; preview never initializes
+or repairs missing locks. Recreate such a stage to obtain the launch-time locks.
+Ordinary workspace records retain their recorded apply target; initializing locks
+does not grant rootstage project authority or change target validation.
 
 Dry-run does not recover pending intent, create ledgers, consume upper/preimages
 or create scope/target directories. Reads can update atime; file/directory contents,
@@ -399,6 +400,17 @@ cancellation and disconnection are handled by the owner. No user-wide Session
 listener or per-command worker is required. Once the Execution has published
 terminal status, owner escalation allows the runtime's bounded RAM/macFUSE
 resource teardown to finish before forced exit and Session completion publication.
+
+For macOS Host staging with macFUSE 5.4.0's FSKit backend, a dead or
+unresponsive filesystem server can leave pending requests, mount inspection
+and unmount commands blocked in kernel I/O
+([upstream #1201](https://github.com/macfuse/macfuse/issues/1201)).
+A process timeout or delivered signal does not prove mount detachment.
+A pending unmount can temporarily hide its entry from the cached mount table,
+so absence there is not cleanup proof
+([upstream #1228](https://github.com/macfuse/macfuse/issues/1228)).
+If teardown leaves completion uncommitted, treat the Session outcome as `Unknown`;
+retained files alone do not authorize apply or drop.
 
 Each running Session publishes `live_control` in its host-only Run record before
 executor entry. It contains the canonical path, device/inode, protocol
